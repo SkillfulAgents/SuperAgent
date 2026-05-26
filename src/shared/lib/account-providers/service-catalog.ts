@@ -392,3 +392,9 @@ export function getProviderSlug(slug: string, providerName: ProviderName): strin
   if (!entry) return slug
   return (entry[SLUG_KEY[providerName]] as string | undefined) ?? slug
 }
+
+export function getToolkitSlugFromProviderSlug(providerSlug: string, providerName: ProviderName): string | undefined {
+  const key = SLUG_KEY[providerName]
+  const entry = SUPPORTED_PROVIDERS.find((p) => p[key] === providerSlug)
+  return entry?.slug
+}

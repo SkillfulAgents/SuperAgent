@@ -1,7 +1,7 @@
 import { BaseAccountProvider } from './base-account-provider'
-import type { InitiateConnectionResult, ProviderConnection } from './base-account-provider'
+import type { InitiateConnectionResult, ProviderConnection, ProviderConnectionListItem } from './base-account-provider'
 import { resolveDisplayName } from './display-name-helpers'
-import { getProviderSlug } from './service-catalog'
+import { getProviderSlug, getToolkitSlugFromProviderSlug } from './service-catalog'
 
 const NANGO_API_BASE = 'https://api.nango.dev'
 
@@ -47,6 +47,35 @@ export class NangoAccountProvider extends BaseAccountProvider {
   constructor(opts: { secretKey: string }) {
     super()
     this.secretKey = opts.secretKey
+  }
+
+  async listConnections(userId?: string): Promise<ProviderConnectionListItem[]> {
+    const response = await this.nangoFetch('/connections') as {
+      connections: Array<{
+        connection_id: string
+        provider_config_key: string
+        created_at?: string
+        end_user?: { id: string }
+        errors?: Array<{ type: string }>
+      }>
+    }
+
+    const connections = Array.isArray(response?.connections) ? response.connections : []
+    const result: ProviderConnectionListItem[] = []
+    for (const conn of connections) {
+      if (userId && conn.end_user?.id && conn.end_user.id !== userId) continue
+
+      const toolkitSlug = getToolkitSlugFromProviderSlug(conn.provider_config_key, 'nango')
+      if (!toolkitSlug) continue
+
+      const hasErrors = Array.isArray(conn.errors) && conn.errors.length > 0
+      const hasAuthError = hasErrors && conn.errors!.some((e) => e.type === 'auth')
+      const status: ProviderConnectionListItem['status'] =
+        hasAuthError ? 'FAILED' : hasErrors ? 'INACTIVE' : 'ACTIVE'
+
+      result.push({ id: conn.connection_id, status, toolkitSlug, createdAt: conn.created_at })
+    }
+    return result
   }
 
   async initiateConnection(

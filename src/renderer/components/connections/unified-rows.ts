@@ -17,6 +17,7 @@ export interface UnifiedRow {
   mcpTools?: Array<{ name: string; description?: string }>
   mcpStatus?: RemoteMcpServer['status']
   mcpErrorMessage?: string | null
+  accountStatus?: ConnectedAccount['status']
 }
 
 interface BuildArgs {
@@ -59,6 +60,7 @@ export function buildUnifiedRows({
       date: account.createdAt,
       granted: grantOverrides?.[key] ?? serverGranted,
       toolkit: account.toolkitSlug,
+      accountStatus: account.status,
     })
   }
 

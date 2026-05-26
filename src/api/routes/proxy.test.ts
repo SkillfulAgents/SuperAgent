@@ -16,9 +16,11 @@ vi.mock('@shared/lib/proxy/allowed-hosts', () => ({
 }))
 
 const mockMakeApiCall = vi.fn()
+const mockGetConnection = vi.fn()
 const mockAccountProvider = {
   name: 'composio',
   makeApiCall: (...args: unknown[]) => mockMakeApiCall(...args),
+  getConnection: (...args: unknown[]) => mockGetConnection(...args),
 }
 
 vi.mock('@shared/lib/account-providers', () => ({
@@ -41,10 +43,14 @@ const mockInnerJoin = vi.fn()
 const mockDbFrom = vi.fn()
 const mockInsertValues = vi.fn()
 
+const mockDbUpdateSet = vi.fn()
+const mockDbUpdateWhere = vi.fn()
+
 vi.mock('@shared/lib/db', () => ({
   db: {
     select: () => ({ from: mockDbFrom }),
     insert: () => ({ values: mockInsertValues }),
+    update: () => ({ set: (...args: unknown[]) => { mockDbUpdateSet(...args); return { where: (...wArgs: unknown[]) => mockDbUpdateWhere(...wArgs) } } }),
   },
 }))
 
@@ -112,6 +118,12 @@ describe('proxy route', () => {
 
     // Default: DB insert for audit log succeeds
     mockInsertValues.mockResolvedValue(undefined)
+
+    // Default: remote connection is active
+    mockGetConnection.mockResolvedValue({ id: 'mock-conn', status: 'ACTIVE' })
+
+    // Default: DB update succeeds
+    mockDbUpdateWhere.mockResolvedValue(undefined)
 
     // Default: policy allows everything (non-breaking for existing tests)
     mockMatchScopes.mockReturnValue({ matched: true, scopes: ['test.scope'], descriptions: {} })
@@ -186,6 +198,7 @@ describe('proxy route', () => {
           toolkitSlug: 'gmail',
           providerConnectionId: 'comp-123',
             providerName: 'composio',
+          status: 'active',
         },
       },
     ])
@@ -212,6 +225,7 @@ describe('proxy route', () => {
           toolkitSlug: 'gmail',
           providerConnectionId: 'comp-123',
           providerName: 'composio',
+          status: 'active',
         },
       },
     ])
@@ -237,6 +251,7 @@ describe('proxy route', () => {
           toolkitSlug: 'gmail',
           providerConnectionId: 'comp-123',
           providerName: 'composio',
+          status: 'active',
         },
       },
     ])
@@ -276,6 +291,7 @@ describe('proxy route', () => {
           toolkitSlug: 'slack',
           providerConnectionId: 'comp-456',
           providerName: 'composio',
+          status: 'active',
         },
       },
     ])
@@ -315,6 +331,7 @@ describe('proxy route', () => {
           toolkitSlug: 'github',
           providerConnectionId: 'comp-789',
           providerName: 'composio',
+          status: 'active',
         },
       },
     ])
@@ -366,10 +383,12 @@ describe('proxy route', () => {
           toolkitSlug: toolkit,
           providerConnectionId,
           providerName: 'composio',
+          status: 'active',
         },
       },
     ])
     mockIsHostAllowed.mockReturnValue(true)
+    mockGetConnection.mockResolvedValue({ id: providerConnectionId, status: 'ACTIVE' })
     const PROVIDER_SKIP_HEADERS = new Set(['transfer-encoding', 'content-encoding', 'content-length'])
     const filteredHeaders = Object.fromEntries(
       Object.entries(upstreamHeaders).filter(([k]) => !PROVIDER_SKIP_HEADERS.has(k.toLowerCase()))
@@ -436,6 +455,7 @@ describe('proxy route', () => {
             toolkitSlug: 'gmail',
             providerConnectionId: 'comp-123',
             providerName: 'composio',
+          status: 'active',
           },
         },
       ])
@@ -466,6 +486,7 @@ describe('proxy route', () => {
             toolkitSlug: 'gmail',
             providerConnectionId: 'comp-502-audit',
             providerName: 'composio',
+          status: 'active',
           },
         },
       ])
@@ -511,6 +532,7 @@ describe('proxy route', () => {
             toolkitSlug: 'gmail',
             providerConnectionId: 'comp-fetch-fail',
             providerName: 'composio',
+          status: 'active',
           },
         },
       ])
@@ -667,6 +689,7 @@ describe('proxy route', () => {
             toolkitSlug: 'gmail',
             providerConnectionId: 'comp-123',
             providerName: 'composio',
+          status: 'active',
           },
         },
       ])
@@ -698,6 +721,159 @@ describe('proxy route', () => {
       expect(res.status).toBe(404)
       const body = await res.json()
       expect(body.error).toBe('not found')
+    })
+  })
+
+  // =========================================================================
+  // Account status checks
+  // =========================================================================
+  describe('account status checks', () => {
+    it('returns 403 when local account status is expired', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+      mockInnerJoin.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([
+        {
+          account: {
+            id: 'acc-123',
+            toolkitSlug: 'gmail',
+            providerConnectionId: 'comp-123',
+            providerName: 'composio',
+            status: 'expired',
+          },
+        },
+      ])
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.accountStatus).toBe('expired')
+      expect(body.error).toContain('expired')
+    })
+
+    it('returns 403 when local account status is revoked', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+      mockInnerJoin.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([
+        {
+          account: {
+            id: 'acc-123',
+            toolkitSlug: 'gmail',
+            providerConnectionId: 'comp-123',
+            providerName: 'composio',
+            status: 'revoked',
+          },
+        },
+      ])
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.accountStatus).toBe('revoked')
+    })
+
+    it('does not call makeApiCall when local status is non-active', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      mockDbFrom.mockReturnValue({ innerJoin: mockInnerJoin })
+      mockInnerJoin.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([
+        {
+          account: {
+            id: 'acc-123',
+            toolkitSlug: 'gmail',
+            providerConnectionId: 'comp-123',
+            providerName: 'composio',
+            status: 'expired',
+          },
+        },
+      ])
+
+      await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(mockMakeApiCall).not.toHaveBeenCalled()
+      expect(mockGetConnection).not.toHaveBeenCalled()
+    })
+
+    it('returns 403 when remote status check returns non-ACTIVE', async () => {
+      setupSuccessPath()
+      mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.accountStatus).toBe('expired')
+      expect(mockMakeApiCall).not.toHaveBeenCalled()
+    })
+
+    it('updates DB status when remote returns EXPIRED', async () => {
+      setupSuccessPath()
+      mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'EXPIRED' })
+
+      await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      // Wait for fire-and-forget DB update
+      await new Promise((r) => setTimeout(r, 10))
+      expect(mockDbUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'expired' }))
+    })
+
+    it('updates DB status to revoked when remote returns FAILED', async () => {
+      setupSuccessPath()
+      mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'FAILED' })
+
+      await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      expect(mockDbUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'revoked' }))
+    })
+
+    it('returns 403 with revoked when remote status is FAILED', async () => {
+      setupSuccessPath()
+      mockGetConnection.mockResolvedValueOnce({ id: 'comp-123', status: 'FAILED' })
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(403)
+      const body = await res.json()
+      expect(body.accountStatus).toBe('revoked')
+    })
+
+    it('proceeds with request when remote status check fails (network error)', async () => {
+      setupSuccessPath()
+      mockGetConnection.mockRejectedValueOnce(new Error('Network error'))
+
+      const res = await makeRequest(
+        '/api/proxy/my-agent/acc-123/gmail.googleapis.com/gmail/v1/messages',
+        { headers: { Authorization: 'Bearer synth_valid' } }
+      )
+
+      expect(res.status).toBe(200)
+      expect(mockMakeApiCall).toHaveBeenCalled()
     })
   })
 })
@@ -734,6 +910,7 @@ describe('proxy policy enforcement', () => {
           toolkitSlug: 'gmail',
           providerConnectionId: 'comp-123',
             providerName: 'composio',
+          status: 'active',
           userId: 'user-1',
         },
       },
@@ -920,7 +1097,6 @@ describe('proxy policy enforcement', () => {
 // proxy route. The proxy route now delegates to provider.makeApiCall().
 // ===========================================================================
 
-// eslint-disable-next-line vitest/no-disabled-tests
 describe.skip('proxy token caching (moved to composio-account-provider)', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -966,6 +1142,7 @@ describe.skip('proxy token caching (moved to composio-account-provider)', () => 
           toolkitSlug: 'gmail',
           providerConnectionId: opts.providerConnectionId,
             providerName: 'composio',
+          status: 'active',
         },
       },
     ])
@@ -1152,6 +1329,7 @@ describe.skip('proxy token caching (moved to composio-account-provider)', () => 
           toolkitSlug: 'gmail',
           providerConnectionId: 'comp-B',
             providerName: 'composio',
+          status: 'active',
         },
       },
     ])
@@ -1170,7 +1348,6 @@ describe.skip('proxy token caching (moved to composio-account-provider)', () => 
   })
 })
 
-// eslint-disable-next-line vitest/no-disabled-tests
 describe.skip('proxy fallback to Composio proxy execute (moved to composio-account-provider)', () => {
   beforeEach(() => {
     vi.useFakeTimers()

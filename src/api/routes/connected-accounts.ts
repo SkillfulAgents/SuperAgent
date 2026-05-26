@@ -52,7 +52,7 @@ connectedAccountsRouter.get('/', async (c) => {
 connectedAccountsRouter.post('/', async (c) => {
   try {
     const body = await c.req.json()
-    const { providerConnectionId, providerName, toolkitSlug, displayName } = body
+    const { providerConnectionId, providerName, toolkitSlug, displayName, status: reqStatus } = body
 
     if (!providerConnectionId || !toolkitSlug || !displayName) {
       return c.json(
@@ -74,7 +74,7 @@ connectedAccountsRouter.post('/', async (c) => {
       toolkitSlug,
       displayName,
       userId: getCurrentUserId(c),
-      status: 'active',
+      status: reqStatus ?? 'active',
       createdAt: now,
       updatedAt: now,
     })
@@ -101,14 +101,38 @@ connectedAccountsRouter.post('/', async (c) => {
   }
 })
 
+// POST /api/connected-accounts/sync - Trigger account status sync with remote providers
+connectedAccountsRouter.post('/sync', async (c) => {
+  try {
+    const { accountSyncService } = await import('@shared/lib/scheduler/account-sync-service')
+    await accountSyncService.syncAll()
+    return c.json({ success: true })
+  } catch (error: any) {
+    console.error('Account sync failed:', error)
+    return c.json({ error: error.message || 'Sync failed' }, 500)
+  }
+})
+
 // POST /api/connected-accounts/initiate - Start OAuth flow
 connectedAccountsRouter.post('/initiate', async (c) => {
   try {
     const body = await c.req.json()
-    const { providerSlug, electron } = body
+    const { providerSlug, electron, reconnectAccountId } = body
 
     if (!providerSlug) {
       return c.json({ error: 'Missing required field: providerSlug' }, 400)
+    }
+
+    // If reconnecting, verify the account exists and belongs to this user
+    if (reconnectAccountId) {
+      const [existing] = await db
+        .select()
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, reconnectAccountId))
+        .limit(1)
+      if (!existing) {
+        return c.json({ error: 'Account not found' }, 404)
+      }
     }
 
     const provider = getDefaultAccountProvider()
@@ -122,13 +146,14 @@ connectedAccountsRouter.post('/initiate', async (c) => {
 
     // Build the callback URL
     // For Electron, use custom protocol; for web, use HTTP callback
+    const reconnectParam = reconnectAccountId ? `&reconnectAccountId=${encodeURIComponent(reconnectAccountId)}` : ''
     let callbackUrl: string
     if (electron) {
       const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
-      callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}`
+      callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${reconnectParam}`
     } else {
       const origin = getAppBaseUrlFromRequest(c)
-      callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}`
+      callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${reconnectParam}`
     }
 
     const userId = isAuthMode()
@@ -180,7 +205,7 @@ connectedAccountsRouter.post('/initiate', async (c) => {
 connectedAccountsRouter.post('/complete', async (c) => {
   try {
     const body = await c.req.json()
-    const { connectionId, toolkit, providerName: reqProviderName } = body
+    const { connectionId, toolkit, providerName: reqProviderName, reconnectAccountId } = body
 
     if (!connectionId) {
       return c.json({ error: 'Missing connectionId' }, 400)
@@ -207,24 +232,55 @@ connectedAccountsRouter.post('/complete', async (c) => {
 
     const displayName = await accountProvider.getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
 
-    const id = crypto.randomUUID()
     const now = new Date()
+    let id: string
 
-    await db.insert(connectedAccounts).values({
-      id,
-      providerConnectionId: connectionId,
-      providerName,
-      toolkitSlug,
-      displayName,
-      userId: getCurrentUserId(c),
-      status: 'active',
-      createdAt: now,
-      updatedAt: now,
-    })
+    if (reconnectAccountId) {
+      // Look up old connection ID before updating so we can clean it up remotely
+      const [oldRecord] = await db
+        .select({ providerConnectionId: connectedAccounts.providerConnectionId })
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, reconnectAccountId))
+        .limit(1)
 
-    trackServerEvent('account_oauth_succeeded', { toolkitSlug })
+      // Reconnecting: update existing record to preserve agent mappings and scope policies
+      await db.update(connectedAccounts)
+        .set({
+          providerConnectionId: connectionId,
+          providerName,
+          displayName,
+          status: 'active',
+          updatedAt: now,
+        })
+        .where(eq(connectedAccounts.id, reconnectAccountId))
+      id = reconnectAccountId
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+      // Clean up the old remote connection (fire-and-forget)
+      if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
+        accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
+          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
+      }
+
+      trackServerEvent('account_oauth_reconnected', { toolkitSlug })
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+    } else {
+      id = crypto.randomUUID()
+
+      await db.insert(connectedAccounts).values({
+        id,
+        providerConnectionId: connectionId,
+        providerName,
+        toolkitSlug,
+        displayName,
+        userId: getCurrentUserId(c),
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      trackServerEvent('account_oauth_succeeded', { toolkitSlug })
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+    }
 
     return c.json({
       success: true,
@@ -257,6 +313,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
     const status = c.req.query('status')
     const toolkit = c.req.query('toolkit')
     const providerName = c.req.query('providerName') ?? 'composio'
+    const reconnectAccountId = c.req.query('reconnectAccountId')
 
     if (!isValidProviderName(providerName)) {
       return c.html(
@@ -292,24 +349,52 @@ connectedAccountsRouter.get('/callback', async (c) => {
 
     const displayName = await accountProvider.getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
 
-    const id = crypto.randomUUID()
     const now = new Date()
+    let id: string
 
-    await db.insert(connectedAccounts).values({
-      id,
-      providerConnectionId: connectionId,
-      providerName,
-      toolkitSlug,
-      displayName,
-      userId: getCurrentUserId(c),
-      status: 'active',
-      createdAt: now,
-      updatedAt: now,
-    })
+    if (reconnectAccountId) {
+      const [oldRecord] = await db
+        .select({ providerConnectionId: connectedAccounts.providerConnectionId })
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, reconnectAccountId))
+        .limit(1)
 
-    trackServerEvent('account_oauth_succeeded', { toolkitSlug })
+      await db.update(connectedAccounts)
+        .set({
+          providerConnectionId: connectionId,
+          providerName,
+          displayName,
+          status: 'active',
+          updatedAt: now,
+        })
+        .where(eq(connectedAccounts.id, reconnectAccountId))
+      id = reconnectAccountId
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+      if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
+        accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
+          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
+      }
+
+      trackServerEvent('account_oauth_reconnected', { toolkitSlug })
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+    } else {
+      id = crypto.randomUUID()
+
+      await db.insert(connectedAccounts).values({
+        id,
+        providerConnectionId: connectionId,
+        providerName,
+        toolkitSlug,
+        displayName,
+        userId: getCurrentUserId(c),
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      trackServerEvent('account_oauth_succeeded', { toolkitSlug })
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+    }
 
     return c.html(
       generateCallbackHtml({

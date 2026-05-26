@@ -61,9 +61,11 @@ export interface IntegrationRowActionsProps {
    * by the row's Switch toggle.
    */
   hideRemoveFromAgent?: boolean
+  /** Account status for OAuth rows. Shows reconnect action when not active. */
+  accountStatus?: 'active' | 'expired' | 'revoked'
 }
 
-export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agentSlug, hideRemoveFromAgent }: IntegrationRowActionsProps) {
+export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agentSlug, hideRemoveFromAgent, accountStatus }: IntegrationRowActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState(name)
@@ -179,6 +181,45 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
     }
   }
 
+  const [oauthReconnectPending, setOauthReconnectPending] = useState(false)
+
+  const runOAuthReconnect = async () => {
+    if (!toolkit) return
+    const popup = prepareOAuthPopup()
+    try {
+      setOauthReconnectPending(true)
+      const { apiFetch } = await import('@renderer/lib/api')
+      const res = await apiFetch('/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          providerSlug: toolkit,
+          electron: !!window.electronAPI,
+          reconnectAccountId: id,
+        }),
+      })
+      if (!res.ok) {
+        popup.close()
+        const data = await res.json()
+        setActionError(data.error || 'Failed to initiate reconnection')
+        setOauthReconnectPending(false)
+        return
+      }
+      const data = await res.json()
+      if (data.redirectUrl) {
+        await popup.navigate(data.redirectUrl)
+        // Wait for callback — the page will reload/invalidate queries on completion
+      }
+      setOauthReconnectPending(false)
+      setMenuOpen(false)
+      queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
+    } catch (err) {
+      popup.close()
+      setOauthReconnectPending(false)
+      setActionError(err instanceof Error ? err.message : 'Reconnect failed')
+    }
+  }
+
   const openTools = () => {
     setMenuOpen(false)
     setToolsError(null)
@@ -284,6 +325,17 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
             <Pencil className="h-3.5 w-3.5" />
             Rename
           </button>
+          {type === 'oauth' && accountStatus && accountStatus !== 'active' && (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400 hover:bg-amber-500/10 transition-colors"
+              onClick={runOAuthReconnect}
+              disabled={oauthReconnectPending}
+            >
+              {oauthReconnectPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              Reconnect
+            </button>
+          )}
           {canEditScopes && (
             <button
               type="button"

@@ -10,6 +10,7 @@ import {
   Plus,
   Pencil,
   MoreVertical,
+  RefreshCw,
 } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Button } from '@renderer/components/ui/button'
@@ -19,6 +20,7 @@ import { DeclineButton } from './decline-button'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
+import { AccountStatusBadge } from '@renderer/components/connections/account-status-badge'
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
 import { ConnectionSuccessHeader } from '@renderer/components/connections/connection-success-header'
 import { PolicySummaryPill } from '@renderer/components/ui/policy-summary-pill'
@@ -29,6 +31,7 @@ import {
   type ConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
+import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
 interface ConnectedAccountRequestItemProps {
@@ -68,6 +71,7 @@ export function ConnectedAccountRequestItem({
   const isOAuthInitiator = useRef(false)
 
   const { track } = useAnalyticsTracking()
+  const oauthReconnect = useOAuthReconnect()
   const provider = getProvider(toolkit)
   const accounts = useMemo(() => data?.accounts ?? [], [data])
 
@@ -75,8 +79,9 @@ export function ConnectedAccountRequestItem({
   const hasAutoSelected = useRef(false)
   useEffect(() => {
     if (hasAutoSelected.current) return
-    if (accounts.length === 1 && selectedAccountIds.size === 0) {
-      setSelectedAccountIds(new Set([accounts[0].id]))
+    const activeAccounts = accounts.filter((a) => a.status === 'active')
+    if (activeAccounts.length === 1 && selectedAccountIds.size === 0) {
+      setSelectedAccountIds(new Set([activeAccounts[0].id]))
       hasAutoSelected.current = true
     }
   }, [accounts, selectedAccountIds.size])
@@ -174,6 +179,8 @@ export function ConnectedAccountRequestItem({
   }, [invalidateConnectedAccounts, refetch, toolkit])
 
   const toggleAccount = useCallback((accountId: string) => {
+    const account = accounts.find((a) => a.id === accountId)
+    if (account && account.status !== 'active') return
     setSelectedAccountIds((prev) => {
       const next = new Set(prev)
       if (next.has(accountId)) {
@@ -183,7 +190,7 @@ export function ConnectedAccountRequestItem({
       }
       return next
     })
-  }, [])
+  }, [accounts])
 
   const handleConnectNew = async () => {
     setStatus('connecting')
@@ -340,7 +347,7 @@ export function ConnectedAccountRequestItem({
                 account={account}
                 selected={selectedAccountIds.has(account.id)}
                 onToggle={() => toggleAccount(account.id)}
-                disabled={status !== 'pending'}
+                disabled={status !== 'pending' || account.status !== 'active'}
                 isEditing={editingAccount === account.id}
                 editName={editName}
                 onStartEdit={() => {
@@ -370,6 +377,9 @@ export function ConnectedAccountRequestItem({
                   setPolicyEditorIsNewAccount(false)
                   setPolicyEditorAccountId(account.id)
                 }}
+                onReconnect={account.status !== 'active'
+                  ? () => oauthReconnect(account.id, account.toolkitSlug)
+                  : undefined}
               />
             ))}
           </div>
@@ -486,6 +496,7 @@ interface AccountOptionProps {
   onSaveEdit: () => void
   onEditNameChange: (value: string) => void
   isSavingRename: boolean
+  onReconnect?: () => void
   onOpenPolicies: () => void
 }
 
@@ -502,6 +513,7 @@ function AccountOption({
   onEditNameChange,
   isSavingRename,
   onOpenPolicies,
+  onReconnect,
 }: AccountOptionProps) {
   const connectedDate = new Date(account.createdAt)
   const connectedAgo = formatDistanceToNow(connectedDate, { addSuffix: true })
@@ -558,7 +570,7 @@ function AccountOption({
         selected
           ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
           : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
-        disabled && 'opacity-50 cursor-not-allowed'
+        disabled && account.status !== 'active' ? 'cursor-default' : disabled && 'opacity-50 cursor-not-allowed'
       )}
       role="button"
       tabIndex={0}
@@ -570,20 +582,33 @@ function AccountOption({
         }
       }}
     >
-      <input
-        type="checkbox"
-        checked={selected}
-        disabled={disabled}
-        onChange={() => !disabled && onToggle()}
-        onClick={(e) => e.stopPropagation()}
-        className="mx-1 shrink-0"
-      />
+      {account.status !== 'active' && onReconnect ? (
+        <Button
+          size="xs"
+          variant="outline"
+          className="mx-1 shrink-0 h-6 px-2 text-xs gap-1"
+          onClick={(e) => { e.stopPropagation(); onReconnect() }}
+        >
+          <RefreshCw className="h-3 w-3" />
+          Reconnect
+        </Button>
+      ) : (
+        <input
+          type="checkbox"
+          checked={selected}
+          disabled={disabled}
+          onChange={() => !disabled && onToggle()}
+          onClick={(e) => e.stopPropagation()}
+          className="mx-1 shrink-0"
+        />
+      )}
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-white dark:bg-zinc-200">
         <ServiceIcon slug={account.toolkitSlug} fallback="request" className="h-5 w-5" />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
           <span className="truncate text-sm font-normal text-foreground">{account.displayName}</span>
+          <AccountStatusBadge status={account.status} />
         </div>
         <p className="truncate text-xs text-muted-foreground">connected {connectedAgo}</p>
       </div>

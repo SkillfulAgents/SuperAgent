@@ -20,6 +20,7 @@ import { ConnectionAgentsDialog } from '@renderer/components/connections/connect
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
 import { buildUnifiedRows, type UnifiedRow } from '@renderer/components/connections/unified-rows'
+import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 
 export function ConnectionsTab() {
   const { data: settings } = useUserSettings()
@@ -27,6 +28,7 @@ export function ConnectionsTab() {
   const { data: accountsData, isLoading: isLoadingAccounts } = useConnectedAccounts()
   const { data: mcpsData, isLoading: isLoadingMcps } = useRemoteMcps()
   const { data: triggerCounts } = useTriggerCountsPerAccount()
+  const oauthReconnect = useOAuthReconnect()
 
   const [policyEditorAccount, setPolicyEditorAccount] = useState<{ id: string; toolkit: string } | null>(null)
   const [policyEditorMcp, setPolicyEditorMcp] = useState<{ id: string; name: string; tools: Array<{ name: string; description?: string }> } | null>(null)
@@ -49,6 +51,9 @@ export function ConnectionsTab() {
       <ConnectionRow
         key={row.key}
         row={row}
+        onReconnect={row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
+          ? () => oauthReconnect(row.id, row.toolkit!)
+          : undefined}
         subtitleExtra={
           triggerCount > 0 ? (
             <span className="inline-flex items-center gap-0.5 shrink-0">
@@ -82,6 +87,7 @@ export function ConnectionsTab() {
               name={row.name}
               toolkit={row.toolkit}
               mcpTools={row.mcpTools}
+              accountStatus={row.accountStatus}
             />
           </>
         }

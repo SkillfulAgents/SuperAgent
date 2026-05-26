@@ -25,6 +25,10 @@ export function getAccountProviderByName(name: string): BaseAccountProvider {
   return getAccountProvider(name)
 }
 
+export function getRegisteredProviders(): BaseAccountProvider[] {
+  return Array.from(providers.values())
+}
+
 export function getDefaultAccountProvider(): BaseAccountProvider {
   const preferred = getDefaultAccountProviderType()
   const p = providers.get(preferred)

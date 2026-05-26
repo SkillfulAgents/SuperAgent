@@ -1,11 +1,12 @@
 import { BaseAccountProvider } from './base-account-provider'
-import type { InitiateConnectionResult, ProviderConnection } from './base-account-provider'
+import type { InitiateConnectionResult, ProviderConnection, ProviderConnectionListItem } from './base-account-provider'
 import { resolveDisplayName } from './display-name-helpers'
 import {
   getOrCreateAuthConfig,
   initiateConnection as composioInitiateConnection,
   getConnection as composioGetConnection,
   deleteConnection as composioDeleteConnection,
+  listConnections as composioListConnections,
   getConnectionToken,
   proxyExecute,
   ComposioRedactedTokenError,
@@ -29,6 +30,18 @@ export class ComposioAccountProvider extends BaseAccountProvider {
   readonly name = 'composio' as const
 
   private connectionModeCache = new Map<string, ConnectionMode>()
+
+  async listConnections(userId?: string): Promise<ProviderConnectionListItem[]> {
+    const connections = await composioListConnections(undefined, userId)
+    return connections
+      .filter((c) => c.toolkitSlug)
+      .map((c) => ({
+        id: c.id,
+        status: c.status,
+        toolkitSlug: c.toolkitSlug!,
+        createdAt: c.createdAt,
+      }))
+  }
 
   async initiateConnection(
     toolkitSlug: string,

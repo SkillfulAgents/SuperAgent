@@ -31,6 +31,7 @@ interface ConnectionRow {
   mcpTools?: Array<{ name: string; description?: string }>
   mcpStatus?: RemoteMcpServer['status']
   mcpErrorMessage?: string | null
+  accountStatus?: 'active' | 'expired' | 'revoked'
 }
 
 export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) {
@@ -53,6 +54,7 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
         type: 'oauth',
         date: account.createdAt,
         toolkit: account.toolkitSlug,
+        accountStatus: account.status,
       })
     }
 
@@ -112,6 +114,7 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
                   toolkit={conn.toolkit}
                   mcpTools={conn.mcpTools}
                   agentSlug={agentSlug}
+                  accountStatus={conn.accountStatus}
                 />
               }
             />

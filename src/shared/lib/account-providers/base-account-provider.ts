@@ -11,8 +11,17 @@ export interface ProviderConnection {
   status: 'ACTIVE' | 'INITIATED' | 'INITIALIZING' | 'FAILED' | 'EXPIRED' | 'INACTIVE'
 }
 
+export interface ProviderConnectionListItem {
+  id: string
+  status: ProviderConnection['status']
+  toolkitSlug: string
+  createdAt?: string
+}
+
 export abstract class BaseAccountProvider {
   abstract readonly name: ProviderName
+
+  abstract listConnections(userId?: string): Promise<ProviderConnectionListItem[]>
 
   abstract initiateConnection(
     toolkitSlug: string,
