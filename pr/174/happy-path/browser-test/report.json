@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the SuperAgent browser-use feature successfully opens a browser, navigates to a URL, and returns the page title to the user.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 - Successfully loaded the SuperAgent homepage with the agent list visible in the sidebar.",
+    "Step 2: Found and clicked the \"QA-20260527-223349-q36n\" agent in the sidebar - Successfully opened the agent chat interface with a message input field.",
+    "Step 3: Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was successfully sent and appeared in the chat view.",
+    "Step 4: Waited for the agent response (up to 3 minutes) - The agent completed the task in 10 seconds. It executed three tool calls in sequence: ToolSearch, Open Browser https://example.com, and Browser MCP: Browser Get State.",
+    "Step 5: Verified the response mentions \"Example Domain\" - The agent correctly reported: \"The page title is \"Example Domain\".\" The live browser preview panel on the right confirms the page was successfully loaded, showing the Example Domain IANA placeholder page."
+  ],
+  "bugs": [],
+  "durationMs": 96960,
+  "sessionId": "b2211f02-4306-4924-9ca1-87fc71907390",
+  "cost": {
+    "inputTokens": 369,
+    "outputTokens": 10200,
+    "cacheCreationTokens": 61570,
+    "cacheReadTokens": 1465814,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.274913
+  }
+}
