@@ -35,6 +35,52 @@ function SettingRow({ name, subtitle, right }: SettingRowProps) {
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
 
+function HoverArrow() {
+  return (
+    <span className="inline-flex overflow-hidden w-0 ml-0 opacity-0 transition-all duration-150 group-hover:w-4 group-hover:ml-2 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:ml-2 group-focus-visible:opacity-100">
+      <ArrowUpRight className="h-4 w-4 shrink-0" />
+    </span>
+  )
+}
+
+function AccessKeyInput({ onClose }: { onClose: () => void }) {
+  const [key, setKey] = useState('')
+  const saveKey = useSavePlatformAccessKey()
+
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <Input
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder="Paste account key"
+          className="font-mono text-xs h-8 flex-1"
+          autoFocus
+        />
+        <Button
+          size="sm"
+          className="h-8"
+          disabled={!key.trim() || saveKey.isPending}
+          onClick={() => {
+            saveKey.mutate(key.trim(), { onSuccess: onClose })
+          }}
+        >
+          {saveKey.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Submit'}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-8"
+          onClick={onClose}
+        >
+          Cancel
+        </Button>
+      </div>
+      <RequestError message={saveKey.isError ? saveKey.error.message : null} />
+    </>
+  )
+}
+
 interface NotConnectedEmptyStateProps {
   readOnly: boolean
   isLaunching: boolean
@@ -43,8 +89,6 @@ interface NotConnectedEmptyStateProps {
 
 function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnectedEmptyStateProps) {
   const [showKeyInput, setShowKeyInput] = useState(false)
-  const [key, setKey] = useState('')
-  const saveKey = useSavePlatformAccessKey()
 
   return (
     <div className="rounded-xl border border-dashed bg-background px-6 py-10">
@@ -56,44 +100,7 @@ function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnect
         {!readOnly && (
           <div className="w-full max-w-sm mt-3 space-y-2">
             {showKeyInput ? (
-              <>
-                <div className="flex items-center gap-2">
-                  <Input
-                    value={key}
-                    onChange={(e) => setKey(e.target.value)}
-                    placeholder="Paste account key"
-                    className="font-mono text-xs h-8 flex-1"
-                    autoFocus
-                  />
-                  <Button
-                    size="sm"
-                    className="h-8"
-                    disabled={!key.trim() || saveKey.isPending}
-                    onClick={() => {
-                      saveKey.mutate(key.trim(), {
-                        onSuccess: () => {
-                          setKey('')
-                          setShowKeyInput(false)
-                        },
-                      })
-                    }}
-                  >
-                    {saveKey.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Submit'}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-8"
-                    onClick={() => {
-                      setShowKeyInput(false)
-                      setKey('')
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-                <RequestError message={saveKey.isError ? saveKey.error.message : null} />
-              </>
+              <AccessKeyInput onClose={() => setShowKeyInput(false)} />
             ) : (
               <div className="flex items-center justify-center gap-2">
                 <Button size="sm" onClick={onConnect} disabled={isLaunching} className="group gap-0">
@@ -101,9 +108,7 @@ function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnect
                   {isLaunching ? (
                     <Loader2 className="ml-2 h-4 w-4 animate-spin" />
                   ) : (
-                    <span className="inline-flex overflow-hidden w-0 ml-0 opacity-0 transition-all duration-150 group-hover:w-4 group-hover:ml-2 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:ml-2 group-focus-visible:opacity-100">
-                      <ArrowUpRight className="h-4 w-4 shrink-0" />
-                    </span>
+                    <HoverArrow />
                   )}
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => setShowKeyInput(true)}>
@@ -127,48 +132,11 @@ interface ReconnectRowProps {
 
 function ReconnectRow({ readOnly, isLaunching, connectLabel, onReconnect }: ReconnectRowProps) {
   const [showInput, setShowInput] = useState(false)
-  const [key, setKey] = useState('')
-  const saveKey = useSavePlatformAccessKey()
 
   if (showInput) {
     return (
       <div className="py-3 px-4 space-y-2">
-        <div className="flex items-center gap-2">
-          <Input
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="Paste account key"
-            className="font-mono text-xs h-8 flex-1"
-            autoFocus
-          />
-          <Button
-            size="sm"
-            className="h-8"
-            disabled={!key.trim() || saveKey.isPending}
-            onClick={() => {
-              saveKey.mutate(key.trim(), {
-                onSuccess: () => {
-                  setKey('')
-                  setShowInput(false)
-                },
-              })
-            }}
-          >
-            {saveKey.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Submit'}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-8"
-            onClick={() => {
-              setShowInput(false)
-              setKey('')
-            }}
-          >
-            Cancel
-          </Button>
-        </div>
-        <RequestError message={saveKey.isError ? saveKey.error.message : null} />
+        <AccessKeyInput onClose={() => setShowInput(false)} />
       </div>
     )
   }
@@ -194,9 +162,7 @@ function ReconnectRow({ readOnly, isLaunching, connectLabel, onReconnect }: Reco
             {isLaunching ? (
               <Loader2 className="ml-2 h-4 w-4 animate-spin" />
             ) : (
-              <span className="inline-flex overflow-hidden w-0 ml-0 opacity-0 transition-all duration-150 group-hover:w-4 group-hover:ml-2 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:ml-2 group-focus-visible:opacity-100">
-                <ArrowUpRight className="h-4 w-4 shrink-0" />
-              </span>
+              <HoverArrow />
             )}
           </Button>
           {!readOnly && (
@@ -289,9 +255,7 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
                 disabled={!data?.platformBaseUrl}
               >
                 Go to Account
-                <span className="inline-flex overflow-hidden w-0 ml-0 opacity-0 transition-all duration-150 group-hover:w-4 group-hover:ml-2 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:ml-2 group-focus-visible:opacity-100">
-                  <ArrowUpRight className="h-4 w-4 shrink-0" />
-                </span>
+                <HoverArrow />
               </Button>
             }
           />
@@ -328,10 +292,12 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
         </Alert>
       )}
       {error && (
-        <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
-          {error}
-          {error.includes('membership') ? ' Create or join an organization in Platform, then try again.' : ''}
-        </div>
+        <Alert variant="destructive" className="py-2 text-xs">
+          <AlertDescription className="text-xs">
+            {error}
+            {error.includes('membership') ? ' Create or join an organization in Platform, then try again.' : ''}
+          </AlertDescription>
+        </Alert>
       )}
     </div>
   )
