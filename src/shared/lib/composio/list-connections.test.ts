@@ -69,8 +69,8 @@ describe('listConnections pagination', () => {
     await listConnections('gmail', 'custom-user')
 
     const url = mockFetch.mock.calls[0][0] as string
-    expect(url).toContain('user_id=custom-user')
-    expect(url).toContain('toolkit_slug=gmail')
+    expect(url).toContain('user_ids=custom-user')
+    expect(url).toContain('toolkit_slugs=gmail')
   })
 
   it('stops after max pages to prevent infinite loops', async () => {

@@ -71,7 +71,7 @@ export function ConnectedAccountRequestItem({
   const isOAuthInitiator = useRef(false)
 
   const { track } = useAnalyticsTracking()
-  const oauthReconnect = useOAuthReconnect()
+  const { reconnect: oauthReconnect } = useOAuthReconnect()
   const provider = getProvider(toolkit)
   const accounts = useMemo(() => data?.accounts ?? [], [data])
 

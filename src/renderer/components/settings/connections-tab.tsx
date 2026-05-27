@@ -28,7 +28,7 @@ export function ConnectionsTab() {
   const { data: accountsData, isLoading: isLoadingAccounts } = useConnectedAccounts()
   const { data: mcpsData, isLoading: isLoadingMcps } = useRemoteMcps()
   const { data: triggerCounts } = useTriggerCountsPerAccount()
-  const oauthReconnect = useOAuthReconnect()
+  const { reconnect: oauthReconnect, pendingAccountId } = useOAuthReconnect()
 
   const [policyEditorAccount, setPolicyEditorAccount] = useState<{ id: string; toolkit: string } | null>(null)
   const [policyEditorMcp, setPolicyEditorMcp] = useState<{ id: string; name: string; tools: Array<{ name: string; description?: string }> } | null>(null)
@@ -54,6 +54,7 @@ export function ConnectionsTab() {
         onReconnect={row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
           ? () => oauthReconnect(row.id, row.toolkit!)
           : undefined}
+        reconnecting={pendingAccountId === row.id}
         subtitleExtra={
           triggerCount > 0 ? (
             <span className="inline-flex items-center gap-0.5 shrink-0">

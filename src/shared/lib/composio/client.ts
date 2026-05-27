@@ -280,11 +280,11 @@ export async function listConnections(
     if (!userId) {
       throw new ComposioApiError('Composio User ID is not configured', 401)
     }
-    baseEndpoint += `user_id=${encodeURIComponent(userId)}&`
+    baseEndpoint += `user_ids=${encodeURIComponent(userId)}&`
   }
 
   if (toolkit) {
-    baseEndpoint += `toolkit_slug=${encodeURIComponent(toolkit)}&`
+    baseEndpoint += `toolkit_slugs=${encodeURIComponent(toolkit)}&`
   }
 
   const all: ComposioConnection[] = []

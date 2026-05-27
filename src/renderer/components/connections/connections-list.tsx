@@ -105,7 +105,7 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
   const removeAccount = useRemoveAgentConnectedAccount()
   const assignMcp = useAssignMcpToAgent()
   const removeMcp = useRemoveMcpFromAgent()
-  const oauthReconnect = useOAuthReconnect()
+  const { reconnect: oauthReconnect, pendingAccountId } = useOAuthReconnect()
 
   // Optimistic overrides keyed by row.key. Keeps the row visually in its new
   // section while the mutation is in-flight so the View Transition can animate
@@ -222,6 +222,7 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         onReconnect={row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
           ? () => oauthReconnect(row.id, row.toolkit!)
           : undefined}
+        reconnecting={pendingAccountId === row.id}
         right={
           <>
             <IntegrationRowActions

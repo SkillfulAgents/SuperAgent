@@ -1,4 +1,4 @@
-import { AlertTriangle, RefreshCw } from 'lucide-react'
+import { AlertTriangle, RefreshCw, Loader2 } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils/cn'
 
@@ -22,11 +22,26 @@ const STATUS_COPY: Record<UnhealthyStatus, { label: string; headline: string; cl
 interface AccountStatusBadgeProps {
   status?: 'active' | 'expired' | 'revoked' | null
   onReconnect?: () => void
+  loading?: boolean
 }
 
-export function AccountStatusBadge({ status, onReconnect }: AccountStatusBadgeProps) {
+export function AccountStatusBadge({ status, onReconnect, loading }: AccountStatusBadgeProps) {
   if (!status || status === 'active') return null
   const { label, headline, className, hoverClassName } = STATUS_COPY[status]
+
+  if (loading) {
+    return (
+      <span
+        className={cn(
+          'inline-flex items-center gap-1 shrink-0 rounded-full px-1.5 py-0 text-2xs',
+          className,
+        )}
+      >
+        <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
+        Reconnecting…
+      </span>
+    )
+  }
 
   const pill = (
     <span

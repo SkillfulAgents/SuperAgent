@@ -16,9 +16,11 @@ interface ConnectionRowProps {
   viewTransitionName?: string
   /** Called when the user clicks the status badge to reconnect. */
   onReconnect?: () => void
+  /** Show spinner on the status badge while reconnecting. */
+  reconnecting?: boolean
 }
 
-export function ConnectionRow({ row, right, subtitleExtra, viewTransitionName, onReconnect }: ConnectionRowProps) {
+export function ConnectionRow({ row, right, subtitleExtra, viewTransitionName, onReconnect, reconnecting }: ConnectionRowProps) {
   return (
     <IntegrationRow
       viewTransitionName={viewTransitionName}
@@ -28,7 +30,7 @@ export function ConnectionRow({ row, right, subtitleExtra, viewTransitionName, o
       nameBadge={
         <>
           <McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />
-          <AccountStatusBadge status={row.accountStatus} onReconnect={onReconnect} />
+          <AccountStatusBadge status={row.accountStatus} onReconnect={onReconnect} loading={reconnecting} />
         </>
       }
       subtitle={
