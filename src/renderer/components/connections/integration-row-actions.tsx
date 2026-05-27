@@ -63,9 +63,16 @@ export interface IntegrationRowActionsProps {
   hideRemoveFromAgent?: boolean
   /** Account status for OAuth rows. Shows reconnect action when not active. */
   accountStatus?: 'active' | 'expired' | 'revoked'
+  /**
+   * Rendering layout:
+   *  - 'menu' (default): a single Settings icon button that opens a popover with all actions.
+   *  - 'buttons': two inline outline buttons (Rename + Delete). Used on the
+   *    connection detail page where actions are surfaced directly in the header.
+   */
+  layout?: 'menu' | 'buttons'
 }
 
-export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agentSlug, hideRemoveFromAgent, accountStatus }: IntegrationRowActionsProps) {
+export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agentSlug, hideRemoveFromAgent, accountStatus, layout = 'menu' }: IntegrationRowActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState(name)
@@ -291,6 +298,51 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
 
   return (
     <>
+      {layout === 'buttons' ? (
+        <div className="flex items-center gap-2">
+          {type === 'oauth' && accountStatus && accountStatus !== 'active' && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 text-amber-700 dark:text-amber-400"
+              onClick={runOAuthReconnect}
+              disabled={oauthReconnectPending}
+              data-testid={`integration-row-actions-reconnect-${type}-${id}`}
+            >
+              {oauthReconnectPending ? (
+                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+              )}
+              Reconnect
+            </Button>
+          )}
+          <Button
+            ref={triggerRef}
+            type="button"
+            size="icon"
+            variant="outline"
+            className="h-8 w-8"
+            aria-label={`Rename ${name}`}
+            onClick={openRename}
+            data-testid={`integration-row-actions-rename-${type}-${id}`}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8"
+            onClick={openDelete}
+            data-testid={`integration-row-actions-delete-${type}-${id}`}
+          >
+            <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+            Delete
+          </Button>
+        </div>
+      ) : (
       <Popover
         open={menuOpen}
         onOpenChange={(open) => {
@@ -421,6 +473,7 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
           )}
         </PopoverContent>
       </Popover>
+      )}
 
       {/* Rename dialog */}
       <Dialog open={renameOpen} onOpenChange={(open) => { if (!renamePending) setRenameOpen(open) }}>

@@ -30,22 +30,28 @@ interface ScopePolicy {
   decision: PolicyDecision
 }
 
-interface ScopePolicyEditorProps {
+interface ScopePolicyEditorBodyProps {
   accountId: string
   toolkit: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  /** Optional custom header to replace the default title. */
-  header?: React.ReactNode
+  /** Called after a successful save. */
+  onSaved?: () => void
+  /** Called when the user clicks Cancel. */
+  onCancel?: () => void
+  /** Hide the bottom action bar (Save/Cancel). When true, the parent is responsible for triggering save. */
+  hideActions?: boolean
 }
 
-export function ScopePolicyEditor({
+/**
+ * Inline body of the scope policy editor — same content as the Dialog version,
+ * just without the Dialog frame. Reused on the connection detail page.
+ */
+export function ScopePolicyEditorBody({
   accountId,
   toolkit,
-  open,
-  onOpenChange,
-  header,
-}: ScopePolicyEditorProps) {
+  onSaved,
+  onCancel,
+  hideActions,
+}: ScopePolicyEditorBodyProps) {
   const queryClient = useQueryClient()
   const [policies, setPolicies] = useState<ScopePolicy[]>([])
   const [accountDefault, setAccountDefault] = useState<PolicyDecision>('default')
@@ -85,7 +91,6 @@ export function ScopePolicyEditor({
 
   // Fetch existing policies
   useEffect(() => {
-    if (!open) return
     setLoading(true)
     setFetchError(null)
     setTextFilter('')
@@ -119,7 +124,7 @@ export function ScopePolicyEditor({
         setPolicies(allScopes.map((scope) => ({ scope, decision: 'default' })))
         setLoading(false)
       })
-  }, [open, accountId, allScopes])
+  }, [accountId, allScopes])
 
   // Filtered policies
   const filteredPolicies = useMemo(() => {
@@ -156,7 +161,7 @@ export function ScopePolicyEditor({
         body: JSON.stringify({ policies: batch }),
       })
       queryClient.invalidateQueries({ queryKey: ['scope-policies', accountId] })
-      onOpenChange(false)
+      onSaved?.()
     } catch (error) {
       console.error('Failed to save policies:', error)
     } finally {
@@ -170,6 +175,139 @@ export function ScopePolicyEditor({
     )
   }
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-3 min-h-0 flex-1">
+      {fetchError && (
+        <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 rounded-md px-2 py-1.5">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          {fetchError}
+        </div>
+      )}
+
+      {/* Account default */}
+      <div className="flex items-center justify-between rounded-md border p-2">
+        <div>
+          <span className="text-sm font-medium">Account Default</span>
+          <p className="text-xs text-muted-foreground">
+            Applies to scopes without an explicit policy
+          </p>
+        </div>
+        <PolicyDecisionToggle
+          value={accountDefault}
+          onChange={(v) => setAccountDefault(v)}
+          size="md"
+        />
+      </div>
+
+      {/* Filters */}
+      {allScopes.length > 0 && (
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Filter scopes..."
+              value={textFilter}
+              onChange={(e) => setTextFilter(e.target.value)}
+              className="h-8 text-xs pl-7"
+            />
+          </div>
+          <Select
+            value={decisionFilter}
+            onValueChange={(v) => setDecisionFilter(v as 'all' | PolicyDecision)}
+          >
+            <SelectTrigger className="w-[100px] h-8 text-xs shrink-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="allow">Allow</SelectItem>
+              <SelectItem value="review">Review</SelectItem>
+              <SelectItem value="block">Block</SelectItem>
+              <SelectItem value="default">Default</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {/* Per-scope policies */}
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {allScopes.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center">
+            No scopes defined for this API.
+          </p>
+        ) : filteredPolicies.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center">
+            No scopes match your filters.
+          </p>
+        ) : (
+          <div className="space-y-1">
+            {filteredPolicies.map((p) => (
+              <div
+                key={p.scope}
+                data-testid={`scope-row-${p.scope}`}
+                className="flex items-center justify-between rounded border px-2 py-1.5"
+              >
+                <div className="flex-1 min-w-0 mr-2">
+                  <span className="text-xs font-mono font-medium">
+                    <HighlightMatch text={p.scope} query={textFilter} />
+                  </span>
+                  {scopeDescriptions[p.scope] && (
+                    <p className="text-xs text-muted-foreground truncate">
+                      <HighlightMatch text={scopeDescriptions[p.scope]} query={textFilter} />
+                    </p>
+                  )}
+                </div>
+                <PolicyDecisionToggle
+                  value={p.decision}
+                  onChange={(v) => updateScopePolicy(p.scope, v)}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {!hideActions && (
+        <div className="flex justify-end gap-2 pt-2 border-t">
+          {onCancel && (
+            <Button variant="outline" size="sm" onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
+          <Button data-testid="scope-policy-save" size="sm" onClick={handleSave} disabled={saving}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+            Save Policies
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface ScopePolicyEditorProps {
+  accountId: string
+  toolkit: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** Optional custom header to replace the default title. */
+  header?: React.ReactNode
+}
+
+export function ScopePolicyEditor({
+  accountId,
+  toolkit,
+  open,
+  onOpenChange,
+  header,
+}: ScopePolicyEditorProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
@@ -177,114 +315,14 @@ export function ScopePolicyEditor({
           {header ?? <DialogTitle className="capitalize">{toolkit} Scope Policies</DialogTitle>}
           <DialogDescription className="sr-only">Configure per-scope access policies for {toolkit}</DialogDescription>
         </DialogHeader>
-
-        {loading ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-          </div>
-        ) : (
-          <>
-            {fetchError && (
-              <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 rounded-md px-2 py-1.5">
-                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                {fetchError}
-              </div>
-            )}
-
-            {/* Account default */}
-            <div className="flex items-center justify-between rounded-md border p-2">
-              <div>
-                <span className="text-sm font-medium">Account Default</span>
-                <p className="text-xs text-muted-foreground">
-                  Applies to scopes without an explicit policy
-                </p>
-              </div>
-              <PolicyDecisionToggle
-                value={accountDefault}
-                onChange={(v) => setAccountDefault(v)}
-                size="md"
-              />
-            </div>
-
-            {/* Filters */}
-            {allScopes.length > 0 && (
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                  <Input
-                    placeholder="Filter scopes..."
-                    value={textFilter}
-                    onChange={(e) => setTextFilter(e.target.value)}
-                    className="h-8 text-xs pl-7"
-                  />
-                </div>
-                <Select
-                  value={decisionFilter}
-                  onValueChange={(v) => setDecisionFilter(v as 'all' | PolicyDecision)}
-                >
-                  <SelectTrigger className="w-[100px] h-8 text-xs shrink-0">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="allow">Allow</SelectItem>
-                    <SelectItem value="review">Review</SelectItem>
-                    <SelectItem value="block">Block</SelectItem>
-                    <SelectItem value="default">Default</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-
-            {/* Per-scope policies */}
-            <div className="flex-1 overflow-y-auto">
-              {allScopes.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4 text-center">
-                  No scopes defined for this API.
-                </p>
-              ) : filteredPolicies.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4 text-center">
-                  No scopes match your filters.
-                </p>
-              ) : (
-                <div className="space-y-1">
-                  {filteredPolicies.map((p) => (
-                    <div
-                      key={p.scope}
-                      data-testid={`scope-row-${p.scope}`}
-                      className="flex items-center justify-between rounded border px-2 py-1.5"
-                    >
-                      <div className="flex-1 min-w-0 mr-2">
-                        <span className="text-xs font-mono font-medium">
-                          <HighlightMatch text={p.scope} query={textFilter} />
-                        </span>
-                        {scopeDescriptions[p.scope] && (
-                          <p className="text-xs text-muted-foreground truncate">
-                            <HighlightMatch text={scopeDescriptions[p.scope]} query={textFilter} />
-                          </p>
-                        )}
-                      </div>
-                      <PolicyDecisionToggle
-                        value={p.decision}
-                        onChange={(v) => updateScopePolicy(p.scope, v)}
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
+        {open && (
+          <ScopePolicyEditorBody
+            accountId={accountId}
+            toolkit={toolkit}
+            onSaved={() => onOpenChange(false)}
+            onCancel={() => onOpenChange(false)}
+          />
         )}
-
-        <div className="flex justify-end gap-2 pt-2 border-t">
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button data-testid="scope-policy-save" size="sm" onClick={handleSave} disabled={saving || loading}>
-            {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
-            Save Policies
-          </Button>
-        </div>
       </DialogContent>
     </Dialog>
   )

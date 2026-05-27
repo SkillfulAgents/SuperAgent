@@ -1,0 +1,100 @@
+import { ChevronLeft } from 'lucide-react'
+import { Button } from '@renderer/components/ui/button'
+import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { ConnectionAgentsList } from '@renderer/components/connections/connection-agents-dialog'
+import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
+import { ScopePolicyEditorBody } from '@renderer/components/settings/scope-policy-editor'
+import { ToolPolicyEditorBody } from '@renderer/components/settings/tool-policy-editor'
+import { useHideSettingsHeader } from '@renderer/components/settings/settings-page'
+import { formatCompactDistance, safeDate } from '@renderer/components/connections/utils'
+import type { UnifiedRow } from '@renderer/components/connections/unified-rows'
+
+interface ConnectionDetailPageProps {
+  row: UnifiedRow
+  onBack: () => void
+}
+
+/**
+ * Detail view for a single connection: two columns showing which agents have
+ * access and the per-scope / per-tool permissions for the connection.
+ */
+export function ConnectionDetailPage({ row, onBack }: ConnectionDetailPageProps) {
+  // Hide the default SettingsPage header — the detail page owns its own.
+  useHideSettingsHeader(true)
+  return (
+    <div className="space-y-4 lg:-mx-[152px]">
+      {/* Back / breadcrumb */}
+      <div className="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onBack}
+          className="-ml-2 h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+          data-testid="connection-detail-back"
+        >
+          <ChevronLeft className="h-3.5 w-3.5 mr-1" />
+          Connections
+        </Button>
+      </div>
+
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <div className="h-10 w-10 rounded-md bg-muted dark:bg-zinc-200 flex items-center justify-center shrink-0">
+          <ServiceIcon
+            slug={row.iconSlug}
+            fallback={row.iconFallback}
+            className="h-5 w-5 text-muted-foreground/60"
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-medium truncate">{row.name}</h2>
+          <p className="text-xs text-muted-foreground truncate">
+            {row.type === 'oauth' ? 'API' : 'MCP'}
+            {row.subtitle ? ` · ${row.subtitle}` : ''}
+            {' · '}
+            <span className="tabular-nums">{formatCompactDistance(safeDate(row.date))}</span>
+          </p>
+        </div>
+        <div className="shrink-0">
+          <IntegrationRowActions
+            type={row.type}
+            id={row.id}
+            name={row.name}
+            toolkit={row.toolkit}
+            mcpTools={row.mcpTools}
+            accountStatus={row.accountStatus}
+            layout="buttons"
+          />
+        </div>
+      </div>
+
+      {/* Two columns */}
+      <div className="grid grid-cols-1 lg:grid-cols-[5fr_6fr] gap-4 pt-4">
+        {/* Agents column */}
+        <section className="min-w-0">
+          <ConnectionAgentsList type={row.type} id={row.id} name={row.name} sectioned />
+        </section>
+
+        {/* Permissions column */}
+        <section className="space-y-2 min-w-0">
+          <h3 className="text-xs font-normal text-muted-foreground">Permissions</h3>
+          <div className="rounded-xl border bg-background p-3">
+            {row.type === 'oauth' && row.toolkit ? (
+              <ScopePolicyEditorBody accountId={row.id} toolkit={row.toolkit} />
+            ) : row.type === 'mcp' ? (
+              <ToolPolicyEditorBody
+                mcpId={row.id}
+                mcpName={row.name}
+                tools={row.mcpTools ?? []}
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                No permissions configurable for this connection.
+              </p>
+            )}
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}

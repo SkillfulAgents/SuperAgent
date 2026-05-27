@@ -1,9 +1,8 @@
 import type { ReactNode } from 'react'
-import { formatDistanceToNow } from 'date-fns'
 import { IntegrationRow } from './integration-row'
 import { McpStatusPill } from './mcp-status-pill'
 import { AccountStatusBadge } from './account-status-badge'
-import { safeDate } from './utils'
+import { formatCompactDistance, safeDate } from './utils'
 import type { UnifiedRow } from './unified-rows'
 
 interface ConnectionRowProps {
@@ -12,21 +11,42 @@ interface ConnectionRowProps {
   right: ReactNode
   /** Optional trailing item appended after the timestamp (e.g. trigger count). */
   subtitleExtra?: ReactNode
+  /**
+   * Optional content right-justified at the end of the subtitle row (no `·`
+   * separator). Used for inline metadata like "N agents connected".
+   */
+  subtitleTrailing?: ReactNode
   /** When set, animates row position via the View Transitions API. */
   viewTransitionName?: string
+  /** When provided, the row becomes clickable (and Enter/Space-activatable). */
+  onActivate?: () => void
+  /** Accessible label for the row when interactive. */
+  ariaLabel?: string
   /** Called when the user clicks the status badge to reconnect. */
   onReconnect?: () => void
   /** Show spinner on the status badge while reconnecting. */
   reconnecting?: boolean
 }
 
-export function ConnectionRow({ row, right, subtitleExtra, viewTransitionName, onReconnect, reconnecting }: ConnectionRowProps) {
+export function ConnectionRow({
+  row,
+  right,
+  subtitleExtra,
+  subtitleTrailing,
+  viewTransitionName,
+  onActivate,
+  ariaLabel,
+  onReconnect,
+  reconnecting,
+}: ConnectionRowProps) {
   return (
     <IntegrationRow
       viewTransitionName={viewTransitionName}
       iconSlug={row.iconSlug}
       iconFallback={row.iconFallback}
       name={row.name}
+      onActivate={onActivate}
+      ariaLabel={ariaLabel}
       nameBadge={
         <>
           <McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />
@@ -43,14 +63,17 @@ export function ConnectionRow({ row, right, subtitleExtra, viewTransitionName, o
             </>
           )}
           <span className="shrink-0">·</span>
-          <span className="whitespace-nowrap shrink-0">
-            {formatDistanceToNow(safeDate(row.date), { addSuffix: true })}
+          <span className="whitespace-nowrap shrink-0 tabular-nums">
+            {formatCompactDistance(safeDate(row.date))}
           </span>
           {subtitleExtra && (
             <>
               <span className="shrink-0">·</span>
               {subtitleExtra}
             </>
+          )}
+          {subtitleTrailing && (
+            <span className="ml-auto shrink-0 pl-2">{subtitleTrailing}</span>
           )}
         </>
       }

@@ -32,6 +32,28 @@ export interface SettingsPageSectionGroup {
   sections: SettingsPageSection[]
 }
 
+/**
+ * Lets the active section suppress the default SettingsPage header (title +
+ * actions) — useful when the section is showing a sub-view that wants to own
+ * its own header (e.g. a detail page with a back button).
+ */
+const SettingsPageHeaderContext = React.createContext<
+  ((hidden: boolean) => void) | null
+>(null)
+
+/**
+ * Call from inside a section to hide the SettingsPage's PageTitle + actions
+ * for as long as the component is mounted with `hidden === true`.
+ */
+export function useHideSettingsHeader(hidden: boolean): void {
+  const setHidden = React.useContext(SettingsPageHeaderContext)
+  React.useEffect(() => {
+    if (!setHidden) return
+    setHidden(hidden)
+    return () => setHidden(false)
+  }, [setHidden, hidden])
+}
+
 interface SettingsPageProps {
   groups: SettingsPageSectionGroup[]
   initialSection?: string
@@ -64,6 +86,13 @@ export function SettingsPage({
   const activeSection = allSections.find((s) => s.id === active)
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
+
+  const [headerHidden, setHeaderHidden] = React.useState(false)
+  // Reset header visibility whenever the active section changes so a hide
+  // from one section doesn't leak into the next.
+  React.useEffect(() => {
+    setHeaderHidden(false)
+  }, [active])
 
   return (
     <SidebarProvider className="h-screen" data-testid={dataTestId}>
@@ -111,11 +140,15 @@ export function SettingsPage({
       <SidebarInset className="min-w-0">
         <div className="h-12 shrink-0 app-drag-region" />
         <SettingsPageContainer>
-          <PageTitle
-            title={activeSection?.label ?? 'Settings'}
-            actions={activeSection?.headerActions}
-          />
-          {activeSection?.render()}
+          {!headerHidden && (
+            <PageTitle
+              title={activeSection?.label ?? 'Settings'}
+              actions={activeSection?.headerActions}
+            />
+          )}
+          <SettingsPageHeaderContext.Provider value={setHeaderHidden}>
+            {activeSection?.render()}
+          </SettingsPageHeaderContext.Provider>
         </SettingsPageContainer>
       </SidebarInset>
     </SidebarProvider>
