@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import {
   Select,
   SelectContent,
@@ -5,10 +6,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/components/ui/select'
-import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
-import { Alert, AlertDescription } from '@renderer/components/ui/alert'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, Lock } from 'lucide-react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { ProviderApiKeyInput } from './provider-api-key-input'
@@ -35,6 +34,110 @@ const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
   },
 }
 
+const PROVIDER_DESCRIPTIONS: Partial<Record<LlmProviderId, string>> = {
+  anthropic: 'Direct API access to Claude models.',
+  openrouter: 'Multi-model access through a single API key.',
+  bedrock: 'AWS-managed Claude inference with IAM or API key credentials.',
+  platform: 'Use credentials provided by your Superagent account.',
+}
+
+const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
+
+interface SettingRowProps {
+  name: string
+  subtitle?: ReactNode
+  right: ReactNode
+}
+
+function SettingRow({ name, subtitle, right }: SettingRowProps) {
+  return (
+    <div className="py-3 px-4">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium truncate">{name}</div>
+          {subtitle && (
+            <div className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</div>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">{right}</div>
+      </div>
+    </div>
+  )
+}
+
+interface ProviderCardProps {
+  id: LlmProviderId
+  name: string
+  description?: string
+  selected: boolean
+  disabled?: boolean
+  disabledReason?: string
+  onSelect: () => void
+  children?: ReactNode
+}
+
+function ProviderCard({
+  id,
+  name,
+  description,
+  selected,
+  disabled = false,
+  disabledReason,
+  onSelect,
+  children,
+}: ProviderCardProps) {
+  return (
+    <div
+      className={`rounded-xl border bg-background transition-colors ${
+        selected ? 'border-primary' : disabled ? 'opacity-60' : 'hover:border-muted-foreground/40'
+      }`}
+      data-testid={`llm-provider-card-${id}`}
+    >
+      <button
+        type="button"
+        onClick={disabled ? undefined : onSelect}
+        disabled={disabled}
+        className="w-full flex items-start gap-3 px-4 py-3 text-left disabled:cursor-not-allowed"
+        aria-pressed={selected}
+      >
+        <div
+          className={`mt-0.5 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
+            selected ? 'border-primary' : 'border-muted-foreground/40'
+          }`}
+        >
+          {selected && <div className="h-2 w-2 rounded-full bg-primary" />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">{name}</span>
+            {disabled && disabledReason && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Lock className="h-3 w-3" />
+                {disabledReason}
+              </span>
+            )}
+          </div>
+          {description && (
+            <div className="text-[11px] text-muted-foreground mt-0.5">{description}</div>
+          )}
+        </div>
+      </button>
+
+      {/* Expanded credentials area when selected */}
+      <div
+        className={`grid transition-all duration-200 ease-in-out ${
+          selected ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+        }`}
+      >
+        <div className="overflow-hidden">
+          <div className="px-4 pb-6 pt-5 border-t border-border/50">{children}</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function LlmTab() {
   const { data: settings, isLoading } = useSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
@@ -43,148 +146,142 @@ export function LlmTab() {
   const isPlatformConnected = platformAuth?.connected ?? false
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const providerStatus = settings?.llmProviderStatus ?? []
-  const activeProviderInfo = providerStatus.find(p => p.id === activeProvider)
-  const modelOptions = activeProviderInfo?.availableModels ?? []
 
   return (
     <div className="space-y-6">
-      {/* Provider Section */}
-      <div className="space-y-4">
-        <h3 className="text-sm font-medium">LLM Provider</h3>
-        <div className="space-y-2">
-          <Label htmlFor="llm-provider">Provider</Label>
-          <Select
-            value={activeProvider}
-            onValueChange={(value) => {
-              if (value === 'platform' && !isPlatformConnected) return
-              updateSettings.mutate({ llmProvider: value as LlmProviderId })
-            }}
-            disabled={isLoading}
-          >
-            <SelectTrigger id="llm-provider">
-              <SelectValue placeholder="Select a provider" />
-            </SelectTrigger>
-            <SelectContent>
-              {providerStatus.map((provider) => (
-                <SelectItem
+      {/* Provider selection — radio cards, expanded card shows credentials + models */}
+      <div className="space-y-3">
+        {providerStatus.map((provider) => {
+          const isSelected = activeProvider === provider.id
+          const platformLocked = provider.id === 'platform' && !isPlatformConnected
+          const modelOptions = provider.availableModels ?? []
+
+          return (
+            <ProviderCard
+              key={provider.id}
+              id={provider.id}
+              name={provider.name}
+              description={PROVIDER_DESCRIPTIONS[provider.id]}
+              selected={isSelected}
+              disabled={platformLocked || isLoading}
+              disabledReason={platformLocked ? 'Requires Account login' : undefined}
+              onSelect={() => updateSettings.mutate({ llmProvider: provider.id })}
+            >
+              {provider.id === 'platform' ? (
+                <p className="text-xs text-muted-foreground">
+                  {isPlatformConnected
+                    ? 'Your account is providing credentials. Manage it from the Account settings tab.'
+                    : 'Connect from the Account settings tab to use this provider.'}
+                </p>
+              ) : provider.id === 'bedrock' ? (
+                <BedrockCredentialsInput
+                  key="bedrock"
+                  disabled={isLoading}
+                  showNotConfiguredAlert={false}
+                />
+              ) : (
+                <ProviderApiKeyInput
                   key={provider.id}
-                  value={provider.id}
-                  disabled={provider.id === 'platform' && !isPlatformConnected}
-                >
-                  {provider.name}
-                  {provider.id === 'platform' && !isPlatformConnected && (
-                    <span className="text-muted-foreground ml-2">(requires platform login)</span>
+                  providerId={provider.id}
+                  label={SIMPLE_PROVIDER_KEY_CONFIG[provider.id]?.label ?? `${provider.name} API Key`}
+                  placeholder={SIMPLE_PROVIDER_KEY_CONFIG[provider.id]?.placeholder}
+                  envVarName={SIMPLE_PROVIDER_KEY_CONFIG[provider.id]?.envVarName}
+                  apiKeySettingsField={SIMPLE_PROVIDER_KEY_CONFIG[provider.id]?.apiKeySettingsField ?? ''}
+                  disabled={isLoading}
+                  showNotConfiguredAlert={false}
+                />
+              )}
+
+              {/* Model selection lives inside the selected provider since available models are provider-specific */}
+              {isSelected && (
+                <div className="mt-6 -mx-4 -mb-6 border-t border-border/50">
+                  {modelOptions.length === 0 ? (
+                    <p className="px-4 py-3 text-[11px] text-muted-foreground">
+                      Configure credentials to load available models.
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-border/50">
+                      <SettingRow
+                        name="Default model"
+                        subtitle="Used for new sessions when no per-message model is selected"
+                        right={
+                          <Select
+                            value={settings?.models?.agentModel ?? modelOptions[0]?.value ?? ''}
+                            onValueChange={(value) => {
+                              updateSettings.mutate({ models: { agentModel: value } })
+                            }}
+                            disabled={isLoading}
+                          >
+                            <SelectTrigger id="agent-model" className="w-[170px] h-8">
+                              <SelectValue placeholder="Select a model" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {modelOptions.map((model) => (
+                                <SelectItem key={model.value} value={model.value}>
+                                  {model.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        }
+                      />
+                      <SettingRow
+                        name="Summarizer model"
+                        subtitle="Used for session name generation and API key validation"
+                        right={
+                          <Select
+                            value={settings?.models?.summarizerModel ?? modelOptions[0]?.value ?? ''}
+                            onValueChange={(value) => {
+                              updateSettings.mutate({ models: { summarizerModel: value } })
+                            }}
+                            disabled={isLoading}
+                          >
+                            <SelectTrigger id="summarizer-model" className="w-[170px] h-8">
+                              <SelectValue placeholder="Select a model" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {modelOptions.map((model) => (
+                                <SelectItem key={model.value} value={model.value}>
+                                  {model.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        }
+                      />
+                    </div>
                   )}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+                </div>
+              )}
+            </ProviderCard>
+          )
+        })}
 
         {settings?.hasRunningAgents && (
-          <Alert>
-            <AlertTriangle className="h-4 w-4" />
-            <AlertDescription>
-              Running agents will use the previous provider until restarted.
-            </AlertDescription>
-          </Alert>
-        )}
-      </div>
-
-      {/* Credentials Section */}
-      <div className="pt-4 border-t space-y-4">
-        <h3 className="text-sm font-medium">{activeProvider === 'bedrock' ? 'Credentials' : 'API Key'}</h3>
-        {activeProvider === 'bedrock' ? (
-          <BedrockCredentialsInput key="bedrock" disabled={isLoading} />
-        ) : activeProvider === 'platform' ? (
-          <p className="text-sm text-muted-foreground">
-            {isPlatformConnected
-              ? 'Platform connected.'
-              : 'Platform not connected. Connect it from the Platform settings tab.'}
-          </p>
-        ) : (
-          <ProviderApiKeyInput
-            key={activeProvider}
-            providerId={activeProvider}
-            label={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].label}
-            placeholder={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].placeholder}
-            envVarName={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].envVarName}
-            apiKeySettingsField={SIMPLE_PROVIDER_KEY_CONFIG[activeProvider].apiKeySettingsField}
-            disabled={isLoading}
-          />
-        )}
-      </div>
-
-      {/* Models Section */}
-      <div className="pt-4 border-t space-y-4">
-        <h3 className="text-sm font-medium">Models</h3>
-        <div className="space-y-2">
-          <Label htmlFor="agent-model">Default Model</Label>
-          <Select
-            value={settings?.models?.agentModel ?? modelOptions[0]?.value ?? ''}
-            onValueChange={(value) => {
-              updateSettings.mutate({ models: { agentModel: value } })
-            }}
-            disabled={isLoading}
-          >
-            <SelectTrigger id="agent-model">
-              <SelectValue placeholder="Select a model" />
-            </SelectTrigger>
-            <SelectContent>
-              {modelOptions.map((model) => (
-                <SelectItem key={model.value} value={model.value}>
-                  {model.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            Used for new sessions when no per-message model is selected.
-          </p>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="summarizer-model">Summarizer Model</Label>
-          <Select
-            value={settings?.models?.summarizerModel ?? modelOptions[0]?.value ?? ''}
-            onValueChange={(value) => {
-              updateSettings.mutate({ models: { summarizerModel: value } })
-            }}
-            disabled={isLoading}
-          >
-            <SelectTrigger id="summarizer-model">
-              <SelectValue placeholder="Select a model" />
-            </SelectTrigger>
-            <SelectContent>
-              {modelOptions.map((model) => (
-                <SelectItem key={model.value} value={model.value}>
-                  {model.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            Model used for session name generation and API key validation
-          </p>
-        </div>
-      </div>
-
-      {/* Advanced Section */}
-      <div className="pt-4 border-t space-y-4">
-        <h3 className="text-sm font-medium">Advanced</h3>
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5 pr-4">
-            <Label htmlFor="enable-tool-search">Tool search</Label>
-            <p className="text-xs text-muted-foreground">
-              Load tool definitions on demand via a meta-tool instead of upfront. Saves ~15-20K context tokens per turn for SuperAgent&apos;s ~60+ tool surface. Turn off only when debugging tool-loading behavior. Requires Sonnet 4+ or Opus 4+; ignored on Haiku.
-            </p>
+          <div className="flex gap-2 rounded-md bg-yellow-500/10 px-2.5 py-2 text-[11px] text-yellow-700 dark:text-yellow-500/90 leading-relaxed">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <p>Running agents will use the previous provider until restarted.</p>
           </div>
-          <Switch
-            id="enable-tool-search"
-            checked={settings?.enableToolSearch !== false}
-            onCheckedChange={(checked: boolean) => {
-              updateSettings.mutate({ enableToolSearch: checked })
-            }}
-            disabled={isLoading}
+        )}
+      </div>
+
+      {/* Advanced */}
+      <div className="space-y-2">
+        <h3 className={SECTION_HEADING}>Advanced</h3>
+        <div className={CARD_CLASS}>
+          <SettingRow
+            name="Tool search"
+            subtitle="Load tool definitions on demand to save ~15-20K tokens per turn. Disable only when debugging. Requires Sonnet/Opus 4+; ignored on Haiku."
+            right={
+              <Switch
+                id="enable-tool-search"
+                checked={settings?.enableToolSearch !== false}
+                onCheckedChange={(checked: boolean) => {
+                  updateSettings.mutate({ enableToolSearch: checked })
+                }}
+                disabled={isLoading}
+              />
+            }
           />
         </div>
       </div>

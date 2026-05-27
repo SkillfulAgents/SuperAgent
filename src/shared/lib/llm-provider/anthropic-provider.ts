@@ -3,7 +3,7 @@ import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm
 
 export class AnthropicLlmProvider extends BaseLlmProvider {
   readonly id = 'anthropic' as const
-  readonly name = 'Anthropic (Claude)'
+  readonly name = 'Anthropic'
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'ANTHROPIC_API_KEY'
 

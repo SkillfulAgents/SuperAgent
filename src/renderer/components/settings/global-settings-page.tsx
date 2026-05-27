@@ -44,7 +44,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection }: Gl
   ]
 
   const adminSections: SettingsPageSection[] = [
-    { id: 'llm', label: 'LLM', icon: <Brain className="h-4 w-4" />, render: () => <LlmTab /> },
+    { id: 'llm', label: 'LLM Provider', icon: <Brain className="h-4 w-4" />, render: () => <LlmTab /> },
     { id: 'runtime', label: 'Runtime', icon: <Container className="h-4 w-4" />, render: () => <RuntimeTab /> },
     { id: 'browser', label: 'Browser Use', icon: <Globe className="h-4 w-4" />, render: () => <BrowserTab /> },
     ...(isElectron() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Terminal className="h-4 w-4" />, render: () => <ComputerUseTab /> }] : []),
