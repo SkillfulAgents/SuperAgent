@@ -3,7 +3,7 @@ import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup }
 import { ProfileTab } from './profile-tab'
 import { GeneralTab } from './general-tab'
 import { RuntimeTab } from './runtime-tab'
-import { ComposioTab } from './composio-tab'
+import { AccountProviderTab } from './account-provider-tab'
 import { NotificationsTab } from './notifications-tab'
 import { BrowserTab } from './browser-tab'
 import { SkillsetsTab } from './skillsets-tab'
@@ -48,7 +48,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection }: Gl
     { id: 'runtime', label: 'Runtime', icon: <Container className="h-4 w-4" />, render: () => <RuntimeTab /> },
     { id: 'browser', label: 'Browser Use', icon: <Globe className="h-4 w-4" />, render: () => <BrowserTab /> },
     ...(isElectron() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Terminal className="h-4 w-4" />, render: () => <ComputerUseTab /> }] : []),
-    { id: 'composio', label: 'Account Provider', icon: <ShieldEllipsis className="h-4 w-4" />, render: () => <ComposioTab /> },
+    { id: 'account-provider', label: 'Account Provider', icon: <ShieldEllipsis className="h-4 w-4" />, render: () => <AccountProviderTab /> },
     { id: 'voice', label: 'Voice', icon: <Mic className="h-4 w-4" />, render: () => <VoiceTab /> },
     { id: 'skillsets', label: 'Skillsets', icon: <Library className="h-4 w-4" />, render: () => <SkillsetsTab /> },
     ...(isAuthMode ? [{ id: 'analytics', label: 'Analytics', icon: <Activity className="h-4 w-4" />, render: () => <AnalyticsTab /> }] : []),

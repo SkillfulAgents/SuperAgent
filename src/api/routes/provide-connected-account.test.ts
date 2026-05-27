@@ -59,7 +59,8 @@ vi.mock('@shared/lib/db/schema', () => ({
     userId: 'user_id',
     status: 'status',
     displayName: 'display_name',
-    composioConnectionId: 'composio_connection_id',
+    providerConnectionId: 'provider_connection_id',
+    providerName: 'provider_name',
   },
   agentConnectedAccounts: {
     id: 'id',
@@ -132,7 +133,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listPendingScheduledTasks: vi.fn(),
 }))
 
-vi.mock('@shared/lib/composio/providers', () => ({
+vi.mock('@shared/lib/account-providers', () => ({
   getProvider: vi.fn(),
 }))
 
@@ -171,7 +172,6 @@ vi.mock('@shared/lib/services/agent-template-service', () => ({
   publishAgentToSkillset: vi.fn(),
   refreshAgentTemplates: vi.fn(),
   hasOnboardingSkill: vi.fn(),
-  collectAgentRequiredEnvVars: vi.fn(),
 }))
 
 vi.mock('@shared/lib/utils/retry', () => ({

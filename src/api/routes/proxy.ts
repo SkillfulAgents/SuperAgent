@@ -5,19 +5,7 @@ import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
-import { translateProxyBody } from '@shared/lib/proxy/body-translation'
-import {
-  buildProxyParameters,
-  envelopeToResponse,
-  PROXY_SKIP_REQUEST_HEADERS,
-  PROXY_SKIP_RESPONSE_HEADERS,
-} from '@shared/lib/proxy/composio-envelope'
-import {
-  getConnectionToken,
-  proxyExecute,
-  ComposioRedactedTokenError,
-  type ProxyExecuteParams,
-} from '@shared/lib/composio/client'
+import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { db } from '@shared/lib/db'
@@ -27,58 +15,6 @@ import {
   proxyAuditLog,
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
-
-// Per-connection mode cache: composioConnectionId → either a real token (use direct fetch)
-// or a "use-proxy" sentinel (token is redacted; route through Composio's proxy execute).
-type ConnectionMode =
-  | { kind: 'token'; accessToken: string; cacheExpiresAt: number }
-  | { kind: 'use-proxy'; cacheExpiresAt: number }
-
-const connectionModeCache = new Map<string, ConnectionMode>()
-
-const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes
-
-async function resolveConnectionMode(
-  composioConnectionId: string
-): Promise<ConnectionMode> {
-  const cached = connectionModeCache.get(composioConnectionId)
-  if (cached && cached.cacheExpiresAt > Date.now()) {
-    return cached
-  }
-
-  try {
-    const { accessToken, expiresAt } = await getConnectionToken(
-      composioConnectionId
-    )
-
-    let ttl = DEFAULT_CACHE_TTL_MS
-    if (expiresAt) {
-      const tokenExpiresMs = new Date(expiresAt).getTime() - Date.now()
-      // Expire cache 60s before token expires, capped at 5 minutes
-      ttl = Math.min(tokenExpiresMs - 60_000, DEFAULT_CACHE_TTL_MS)
-    }
-    // At least 30s cache to avoid hammering Composio
-    ttl = Math.max(ttl, 30_000)
-
-    const mode: ConnectionMode = {
-      kind: 'token',
-      accessToken,
-      cacheExpiresAt: Date.now() + ttl,
-    }
-    connectionModeCache.set(composioConnectionId, mode)
-    return mode
-  } catch (err) {
-    if (err instanceof ComposioRedactedTokenError) {
-      const mode: ConnectionMode = {
-        kind: 'use-proxy',
-        cacheExpiresAt: Date.now() + DEFAULT_CACHE_TTL_MS,
-      }
-      connectionModeCache.set(composioConnectionId, mode)
-      return mode
-    }
-    throw err
-  }
-}
 
 async function logAuditEntry(entry: {
   agentSlug: string
@@ -200,6 +136,23 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
 
   const account = results[0].account
 
+  // 2b. Reject requests for accounts with non-active local status
+  if (account.status !== 'active') {
+    await logAuditEntry({
+      agentSlug,
+      accountId,
+      toolkit: account.toolkitSlug,
+      targetHost,
+      targetPath,
+      method: c.req.method,
+      errorMessage: `Account status is ${account.status}`,
+    })
+    return c.json({
+      error: `Connected account is ${account.status}. Re-authenticate to restore access.`,
+      accountStatus: account.status,
+    }, 403)
+  }
+
   // 3. Validate target host against toolkit allowlist
   if (!isHostAllowed(account.toolkitSlug, targetHost)) {
     await logAuditEntry({
@@ -315,102 +268,76 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       ...extras,
     })
 
-  // 4. Resolve how to forward this connection: real token vs. Composio proxy
-  let mode: ConnectionMode
-  try {
-    mode = await runWithAttribution(
-      attribution.fromResourceCreator(account.userId),
-      () => resolveConnectionMode(account.composioConnectionId),
-    )
-  } catch (error) {
-    await audit({ errorMessage: `Failed to fetch access token: ${error}` })
-    return c.json({ error: 'Failed to fetch access token' }, 502)
-  }
-
-  // 5. Build target URL (used by both forward paths)
+  // 4. Build target URL
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const queryString = new URL(c.req.url).search
   const targetUrl = `https://${targetHost}/${targetPath}${queryString}`
 
-  if (mode.kind === 'token') {
-    // 6a. Direct forward path (unchanged behavior, full streaming + body pass-through)
-    const forwardHeaders = new Headers()
-    c.req.raw.headers.forEach((value, key) => {
-      if (!PROXY_SKIP_REQUEST_HEADERS.has(key.toLowerCase())) {
-        forwardHeaders.set(key, value)
-      }
-    })
-    forwardHeaders.set('Authorization', `Bearer ${mode.accessToken}`)
+  // 5. Verify remote connection status before forwarding
+  const provider = getAccountProviderByName(account.providerName)
 
-    const init: RequestInit = { method, headers: forwardHeaders }
-    if (method !== 'GET' && method !== 'HEAD') {
-      init.body = await c.req.arrayBuffer()
-    }
-
-    try {
-      const response = await fetch(targetUrl, init)
-
-      // Fire-and-forget audit log to avoid adding latency to proxied responses
-      audit({ statusCode: response.status })
-
-      const responseHeaders = new Headers()
-      response.headers.forEach((value, key) => {
-        if (!PROXY_SKIP_RESPONSE_HEADERS.has(key.toLowerCase())) {
-          responseHeaders.set(key, value)
-        }
-      })
-
-      return new Response(response.body, {
-        status: response.status,
-        headers: responseHeaders,
-      })
-    } catch (error) {
-      await audit({ errorMessage: `Proxy request failed: ${error}` })
-      return c.json(
-        { error: 'Proxy request failed', details: String(error) },
-        502
-      )
-    }
-  }
-
-  // 6b. Composio proxy execute path (for redacted connections)
-  const parameters = buildProxyParameters(c.req.raw.headers)
-
-  const contentType = c.req.header('Content-Type') ?? null
-  const requestBuffer =
-    method === 'GET' || method === 'HEAD'
-      ? new ArrayBuffer(0)
-      : await c.req.arrayBuffer()
-  const translation = translateProxyBody(method, contentType, requestBuffer)
-
-  if (!translation.ok) {
-    await audit({ statusCode: translation.status, errorMessage: translation.message })
-    return c.json(
-      { error: translation.errorCode, message: translation.message },
-      translation.status
-    )
-  }
-
-  let result
   try {
-    result = await proxyExecute({
-      endpoint: targetUrl,
-      method: method as ProxyExecuteParams['method'],
-      connectedAccountId: account.composioConnectionId,
-      ...(translation.body !== undefined ? { body: translation.body } : {}),
-      ...(parameters.length ? { parameters } : {}),
-      ...(translation.binaryBody ? { binaryBody: translation.binaryBody } : {}),
-    })
+    const remoteConnection = await provider.getConnection(
+      account.providerConnectionId,
+      account.toolkitSlug,
+    )
+    if (remoteConnection.status !== 'ACTIVE') {
+      const newStatus = remoteConnection.status === 'EXPIRED' ? 'expired' as const : 'revoked' as const
+      db.update(connectedAccounts)
+        .set({ status: newStatus, updatedAt: new Date() })
+        .where(eq(connectedAccounts.id, accountId))
+        .catch((err) => console.error('[proxy] Failed to update account status:', err))
+      await audit({ errorMessage: `Remote connection status: ${remoteConnection.status}` })
+      return c.json({
+        error: `Connected account is ${newStatus}. Re-authenticate to restore access.`,
+        accountStatus: newStatus,
+      }, 403)
+    }
+  } catch (statusCheckErr) {
+    console.warn('[proxy] Remote status check failed, proceeding with request:', statusCheckErr)
+  }
+
+  // 6. Forward via account provider (handles token retrieval/proxy internally)
+  const requestBody = (method === 'GET' || method === 'HEAD')
+    ? null
+    : await c.req.arrayBuffer()
+
+  let response: Response
+  try {
+    response = await runWithAttribution(
+      attribution.fromResourceCreator(account.userId),
+      () => provider.makeApiCall({
+        providerConnectionId: account.providerConnectionId,
+        toolkitSlug: account.toolkitSlug,
+        targetUrl,
+        method,
+        headers: c.req.raw.headers,
+        body: requestBody,
+      }),
+    )
   } catch (error) {
-    await audit({ errorMessage: `Proxy request failed: ${error}` })
+    const isTokenError = String(error).includes('token') || String(error).includes('Token')
+    const errorLabel = isTokenError ? 'Failed to fetch access token' : 'Proxy request failed'
+
+    if (isTokenError) {
+      db.update(connectedAccounts)
+        .set({ status: 'expired', updatedAt: new Date() })
+        .where(eq(connectedAccounts.id, accountId))
+        .catch((err) => console.error('[proxy] Failed to update account status:', err))
+    }
+
+    await audit({ errorMessage: `${errorLabel}: ${error}` })
     return c.json(
-      { error: 'Proxy request failed', details: String(error) },
+      { error: errorLabel, details: String(error), ...(isTokenError ? { accountStatus: 'expired' } : {}) },
       502
     )
   }
 
-  audit({ statusCode: result.status })
-  return envelopeToResponse(result)
+  audit({
+    statusCode: response.status,
+    ...(response.status >= 400 ? { errorMessage: `Upstream returned ${response.status}` } : {}),
+  })
+  return response
 })
 
 export default proxy

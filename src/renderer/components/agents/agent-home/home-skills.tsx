@@ -15,10 +15,8 @@ import { StatusBadge } from '../status-badge'
 import { SkillFilesDialog } from '../skill-files-dialog'
 import { SkillPublishDialog } from '../skill-publish-dialog'
 import { SkillPRDialog } from '../skill-pr-dialog'
-import { SkillInstallDialog } from '../skill-install-dialog'
 import { HomeCollapsible } from './home-collapsible'
 import { HomeSkillsBrowseDialog } from './home-skills-browse-dialog'
-import { apiFetch } from '@renderer/lib/api'
 import { useAgentSkills, useDiscoverableSkills, useUpdateSkill, useExportSkill, useImportSkillZip } from '@renderer/hooks/use-agent-skills'
 import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
 import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
@@ -238,10 +236,6 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
   const [importFile, setImportFile] = useState<File | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const importSkill = useImportSkillZip()
-  const [secretsPrompt, setSecretsPrompt] = useState<{
-    requiredEnvVars: Array<{ name: string; description: string }>
-    skillDir: string
-  } | null>(null)
 
   const acceptFile = useCallback((file: File | null | undefined) => {
     if (!file) return
@@ -268,12 +262,6 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
 
     try {
       const result = await importSkill.mutateAsync({ agentSlug, file: importFile })
-
-      if (result.requiredEnvVars && result.requiredEnvVars.length > 0) {
-        setSecretsPrompt({ requiredEnvVars: result.requiredEnvVars, skillDir: result.skillDir })
-        return
-      }
-
       closeDialog()
       toast.success(`Imported skill "${result.skillName}"`)
     } catch {
@@ -288,7 +276,7 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
 
   return (
     <>
-      <Dialog open={open && !secretsPrompt} onOpenChange={(o) => { if (!o) closeDialog() }}>
+      <Dialog open={open} onOpenChange={(o) => { if (!o) closeDialog() }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle className="font-medium">Import a Skill</DialogTitle>
@@ -379,37 +367,6 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
         </DialogContent>
       </Dialog>
 
-      {secretsPrompt && (
-        <SkillInstallDialog
-          open={!!secretsPrompt}
-          onOpenChange={(o) => {
-            if (!o) {
-              setSecretsPrompt(null)
-              closeDialog()
-            }
-          }}
-          skillName="imported skill"
-          requiredEnvVars={secretsPrompt.requiredEnvVars}
-          onInstall={async (envVars) => {
-            for (const [key, value] of Object.entries(envVars)) {
-              if (value && typeof value === 'string') {
-                try {
-                  await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/secrets`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ key, value }),
-                  })
-                } catch (error) {
-                  console.error(`Failed to save secret ${key}:`, error)
-                }
-              }
-            }
-            setSecretsPrompt(null)
-            closeDialog()
-            toast.success('Skill imported successfully')
-          }}
-        />
-      )}
     </>
   )
 }

@@ -34,6 +34,8 @@ export interface ApiKeySettings {
   browserbaseProjectId?: string
   deepgramApiKey?: string
   openaiApiKey?: string
+  nangoSecretKey?: string
+  accountProviderUserId?: string
 }
 
 export type SttProvider = 'deepgram' | 'openai' | 'platform'
@@ -66,12 +68,15 @@ export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform'
 
 export type BrowserbaseStealthOs = 'linux' | 'windows' | 'mac' | 'mobile' | 'tablet'
 
+export type AccountProviderType = 'composio' | 'nango'
+
 export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
   autoSleepTimeoutMinutes?: number
   autoDeleteInactiveDays?: number
   setupCompleted?: boolean
+  accountProvider?: AccountProviderType
   hostBrowserProvider?: HostBrowserProviderId
   chromeProfileId?: string
   chromeHeadless?: boolean
@@ -235,11 +240,13 @@ export interface GlobalSettingsResponse {
     bedrock: ApiKeyStatus
     platform: ApiKeyStatus
     composio: ApiKeyStatus
+    nango: ApiKeyStatus
     browserbase: ApiKeyStatus
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
   }
   composioUserId?: string
+  accountProviderUserId?: string
   voice?: VoiceSettings
   models: ModelSettings
   agentLimits: AgentLimitsSettings
@@ -485,6 +492,38 @@ export function getComposioUserId(): string | undefined {
     return settings.apiKeys.composioUserId
   }
   return process.env.COMPOSIO_USER_ID
+}
+
+export function getNangoApiKeyStatus(): ApiKeyStatus {
+  const settings = getSettings()
+  if (settings.apiKeys?.nangoSecretKey) {
+    return { isConfigured: true, source: 'settings' }
+  }
+  if (process.env.NANGO_SECRET_KEY) {
+    return { isConfigured: true, source: 'env' }
+  }
+  return { isConfigured: false, source: 'none' }
+}
+
+export function getNangoSecretKey(): string | undefined {
+  const settings = getSettings()
+  if (settings.apiKeys?.nangoSecretKey) {
+    return settings.apiKeys.nangoSecretKey
+  }
+  return process.env.NANGO_SECRET_KEY
+}
+
+export function getAccountProviderUserId(): string | undefined {
+  const settings = getSettings()
+  if (settings.apiKeys?.accountProviderUserId) {
+    return settings.apiKeys.accountProviderUserId
+  }
+  return getComposioUserId()
+}
+
+export function getDefaultAccountProviderType(): AccountProviderType {
+  const settings = getSettings()
+  return settings.app?.accountProvider ?? 'composio'
 }
 
 /**

@@ -271,9 +271,7 @@ Skills live in `/workspace/.claude/skills/<skill-name>/` and need a `SKILL.md` f
 name: Human-readable skill name (e.g., "Fetch Weather", "Send Slack Notification")
 description: Short description of what this skill does (CRITICAL - this determines when it's invoked)
 metadata:
-  required_env_vars:
-    - name: ENV_VAR_NAME
-      description: What this environment variable is for
+  version: "1.0.0"
 ---
 
 # Skill Name
@@ -284,7 +282,7 @@ What this skill does and how to use it.
 [Example commands or code]
 ```
 
-**Important**: If your skill requires any API keys, tokens, passwords, or other secrets, you MUST list them under `metadata.required_env_vars` in the frontmatter. This enables the platform to automatically prompt the user for these values. Do not rely on free-text documentation for secret requirements — use the structured metadata.
+**Secrets**: If your skill needs an API key, token, password, or other secret, tell the user to add it under the agent's Settings → Secrets and read it from `process.env.<NAME>` (or the shell equivalent).
 
 **Naming**: Use kebab-case, be descriptive (`send-slack-notification`, `parse-csv-to-json`, `fetch-github-issues`)
 

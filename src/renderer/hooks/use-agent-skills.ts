@@ -64,7 +64,7 @@ export function useInstallSkill() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { installed: boolean; requiredEnvVars?: Array<{ name: string; description: string }> },
+    { installed: boolean },
     Error,
     {
       agentSlug: string
@@ -72,14 +72,13 @@ export function useInstallSkill() {
       skillPath: string
       skillName: string
       skillVersion: string
-      envVars?: Record<string, string>
     }
   >({
-    mutationFn: async ({ agentSlug, skillsetId, skillPath, skillName, skillVersion, envVars }) => {
+    mutationFn: async ({ agentSlug, skillsetId, skillPath, skillName, skillVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/install`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ skillsetId, skillPath, skillName, skillVersion, envVars }),
+        body: JSON.stringify({ skillsetId, skillPath, skillName, skillVersion }),
       })
       if (!res.ok) {
         const data = await res.json()
@@ -261,7 +260,7 @@ export function useImportSkillZip() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { skillDir: string; skillName: string; requiredEnvVars?: Array<{ name: string; description: string }> },
+    { skillDir: string; skillName: string },
     Error,
     { agentSlug: string; file: File }
   >({

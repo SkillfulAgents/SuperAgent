@@ -94,10 +94,11 @@ export const verification = sqliteTable('verification', {
 // Agents, sessions, messages, and secrets are now file-based
 // =============================================================================
 
-// Connected accounts - app-level OAuth connections managed by Composio
+// Connected accounts - app-level OAuth connections via pluggable providers (Composio, Nango, …)
 export const connectedAccounts = sqliteTable('connected_accounts', {
   id: text('id').primaryKey(),
-  composioConnectionId: text('composio_connection_id').notNull().unique(),
+  providerConnectionId: text('provider_connection_id').notNull().unique(),
+  providerName: text('provider_name').notNull().default('composio'),
   toolkitSlug: text('toolkit_slug').notNull(), // e.g., 'gmail', 'slack', 'github'
   displayName: text('display_name').notNull(), // User-friendly label
   status: text('status', { enum: ['active', 'revoked', 'expired'] })

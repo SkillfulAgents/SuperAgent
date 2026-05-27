@@ -79,7 +79,8 @@ vi.mock('@shared/lib/db/schema', () => ({
   connectedAccounts: {
     id: 'id',
     toolkitSlug: 'toolkit_slug',
-    composioConnectionId: 'composio_connection_id',
+    providerConnectionId: 'provider_connection_id',
+    providerName: 'provider_name',
     status: 'status',
     displayName: 'display_name',
   },
@@ -175,7 +176,8 @@ describe('containerManager.ensureRunning — env var construction', () => {
       toolkitSlug: string
       displayName: string
       status: string
-      composioConnectionId: string
+      providerConnectionId: string
+      providerName: string
     }>
   ) {
     // First db.select().from() call: connected accounts
@@ -214,10 +216,10 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
   it('CONNECTED_ACCOUNTS includes only active accounts, grouped by toolkitSlug', async () => {
     setupAccountMocks([
-      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', composioConnectionId: 'c1' },
-      { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'user2@gmail.com', status: 'active', composioConnectionId: 'c2' },
-      { id: 'acc-3', toolkitSlug: 'slack', displayName: 'My Slack', status: 'active', composioConnectionId: 'c3' },
-      { id: 'acc-4', toolkitSlug: 'github', displayName: 'My GH', status: 'expired', composioConnectionId: 'c4' },
+      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
+      { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'user2@gmail.com', status: 'active', providerConnectionId: 'c2', providerName: 'composio' },
+      { id: 'acc-3', toolkitSlug: 'slack', displayName: 'My Slack', status: 'active', providerConnectionId: 'c3', providerName: 'composio' },
+      { id: 'acc-4', toolkitSlug: 'github', displayName: 'My GH', status: 'expired', providerConnectionId: 'c4', providerName: 'composio' },
     ])
 
     await containerManager.ensureRunning('test-agent')
@@ -232,7 +234,7 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
   it('each account entry has { name, id } structure', async () => {
     setupAccountMocks([
-      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', composioConnectionId: 'c1' },
+      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
     ])
 
     await containerManager.ensureRunning('test-agent')
@@ -255,9 +257,9 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
   it('inactive accounts are excluded from metadata', async () => {
     setupAccountMocks([
-      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'active@gmail.com', status: 'active', composioConnectionId: 'c1' },
-      { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'inactive@gmail.com', status: 'inactive', composioConnectionId: 'c2' },
-      { id: 'acc-3', toolkitSlug: 'slack', displayName: 'expired-slack', status: 'expired', composioConnectionId: 'c3' },
+      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'active@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
+      { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'inactive@gmail.com', status: 'inactive', providerConnectionId: 'c2', providerName: 'composio' },
+      { id: 'acc-3', toolkitSlug: 'slack', displayName: 'expired-slack', status: 'expired', providerConnectionId: 'c3', providerName: 'composio' },
     ])
 
     await containerManager.ensureRunning('test-agent')

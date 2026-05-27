@@ -65,7 +65,7 @@ vi.mock('drizzle-orm', () => ({
 }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: vi.fn(() => false) }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: vi.fn() }))
-vi.mock('@shared/lib/composio/providers', () => ({ getProvider: vi.fn() }))
+vi.mock('@shared/lib/account-providers', () => ({ getProvider: vi.fn() }))
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: vi.fn(), getEffectiveModels: vi.fn(),
   getEffectiveAgentLimits: vi.fn(), getCustomEnvVars: vi.fn(), getSettings: vi.fn(),

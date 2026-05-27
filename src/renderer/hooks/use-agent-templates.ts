@@ -101,7 +101,7 @@ export function useImportAgentTemplate() {
   const { track } = useAnalyticsTracking()
 
   return useMutation<
-    ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> },
+    ApiAgent & { hasOnboarding?: boolean },
     Error,
     { file: File; mode?: 'template' | 'full'; onProgress?: (p: ImportProgress) => void }
   >({
@@ -175,7 +175,7 @@ export function useInstallAgentFromSkillset() {
   const { track } = useAnalyticsTracking()
 
   return useMutation<
-    ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> },
+    ApiAgent & { hasOnboarding?: boolean },
     Error,
     {
       skillsetId: string

@@ -1,0 +1,2 @@
+ALTER TABLE `connected_accounts` RENAME COLUMN `composio_connection_id` TO `provider_connection_id`;--> statement-breakpoint
+ALTER TABLE `connected_accounts` ADD `provider_name` text DEFAULT 'composio' NOT NULL;

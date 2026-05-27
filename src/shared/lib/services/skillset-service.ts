@@ -335,8 +335,8 @@ function summarizeSkillPackageDiff(
 // ============================================================================
 
 /**
- * Parse the full YAML frontmatter from a SKILL.md file,
- * including nested metadata (version, required_env_vars).
+ * Parse the YAML frontmatter from a SKILL.md file: top-level `name`
+ * and nested `metadata.version`.
  */
 export function parseSkillFrontmatter(content: string): SkillFrontmatterMetadata {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---/)
@@ -355,18 +355,6 @@ export function parseSkillFrontmatter(content: string): SkillFrontmatterMetadata
 
     if (metadata.version !== undefined) {
       result.version = String(metadata.version)
-    }
-
-    if (Array.isArray(metadata.required_env_vars)) {
-      result.required_env_vars = metadata.required_env_vars
-        .filter((v: unknown) => v && typeof v === 'object' && 'name' in (v as Record<string, unknown>))
-        .map((v: unknown) => {
-          const obj = v as Record<string, unknown>
-          return {
-            name: String(obj.name),
-            description: String(obj.description || ''),
-          }
-        })
     }
 
     return result
@@ -676,7 +664,6 @@ export async function removeSkillsetCache(ref: Pick<SkillsetRef, 'skillsetId' | 
 
 /**
  * Install a skill from a skillset to an agent's workspace.
- * Returns the required env vars (if any) so the UI can prompt the user.
  */
 export async function installSkillFromSkillset(
   agentSlug: string,
@@ -684,7 +671,7 @@ export async function installSkillFromSkillset(
   skillPath: string,
   skillName: string,
   skillVersion: string,
-): Promise<{ requiredEnvVars?: Array<{ name: string; description: string }> }> {
+): Promise<void> {
   const repoDir = getSkillsetRepoDirForRef(skillsetRef)
   if (!(await isCacheReady(repoDir, skillsetRef.provider))) {
     await ensureSkillsetCached(skillsetRef)
@@ -713,7 +700,6 @@ export async function installSkillFromSkillset(
   }
 
   const hash = await getSkillPackageHash(destDir)
-  const frontmatter = parseSkillFrontmatter(skillContent)
 
   // Write metadata file
   const metadata: InstalledSkillMetadata = {
@@ -741,8 +727,6 @@ export async function installSkillFromSkillset(
     skillContent,
     'utf-8'
   )
-
-  return { requiredEnvVars: frontmatter.required_env_vars }
 }
 
 /**
@@ -1159,16 +1143,6 @@ export async function getDiscoverableSkills(
       const dirName = skillPathToDirName(skill.path)
       if (installedDirs.has(dirName)) continue
 
-      // Try to get required_env_vars from the cached SKILL.md
-      let requiredEnvVars: Array<{ name: string; description: string }> | undefined
-      const repoDir = getSkillsetRepoDirForRef(ssRef)
-      const skillMdPath = path.join(repoDir, skill.path)
-      const content = await readFileOrNull(skillMdPath)
-      if (content) {
-        const meta = parseSkillFrontmatter(content)
-        requiredEnvVars = meta.required_env_vars
-      }
-
       discoverable.push({
         skillsetId: ss.id,
         skillsetName: ss.name,
@@ -1176,7 +1150,6 @@ export async function getDiscoverableSkills(
         description: skill.description,
         version: skill.version,
         path: skill.path,
-        requiredEnvVars,
       })
     }
   }
@@ -1781,7 +1754,7 @@ export async function validateSkillZip(zipBuffer: Buffer): Promise<SkillValidati
 export async function importSkillFromZip(
   agentSlug: string,
   zipBuffer: Buffer,
-): Promise<{ skillDir: string; skillName: string; requiredEnvVars?: Array<{ name: string; description: string }> }> {
+): Promise<{ skillDir: string; skillName: string }> {
   const validation = await validateSkillZip(zipBuffer)
   if (!validation.valid) {
     throw new Error(validation.error || 'Invalid skill package')
@@ -1852,7 +1825,6 @@ export async function importSkillFromZip(
     return {
       skillDir: dirName,
       skillName: frontmatter.name || getDisplayName(dirName),
-      requiredEnvVars: frontmatter.required_env_vars,
     }
   } finally {
     reader.close()

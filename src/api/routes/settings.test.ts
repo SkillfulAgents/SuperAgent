@@ -16,6 +16,10 @@ const mockGetEffectiveAgentLimits = vi.fn()
 const mockGetCustomEnvVars = vi.fn()
 const mockGetVoiceSettings = vi.fn()
 const mockGetBrowserbaseApiKeyStatus = vi.fn()
+const mockGetNangoApiKeyStatus = vi.fn()
+const mockGetAccountProviderUserId = vi.fn()
+const mockGetDefaultAccountProviderType = vi.fn()
+const mockGetNangoSecretKey = vi.fn()
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
@@ -29,6 +33,10 @@ vi.mock('@shared/lib/config/settings', () => ({
   getCustomEnvVars: (...args: unknown[]) => mockGetCustomEnvVars(...args),
   getVoiceSettings: (...args: unknown[]) => mockGetVoiceSettings(...args),
   getBrowserbaseApiKeyStatus: (...args: unknown[]) => mockGetBrowserbaseApiKeyStatus(...args),
+  getNangoApiKeyStatus: (...args: unknown[]) => mockGetNangoApiKeyStatus(...args),
+  getAccountProviderUserId: (...args: unknown[]) => mockGetAccountProviderUserId(...args),
+  getDefaultAccountProviderType: (...args: unknown[]) => mockGetDefaultAccountProviderType(...args),
+  getNangoSecretKey: (...args: unknown[]) => mockGetNangoSecretKey(...args),
 }))
 
 const mockHasRunningAgents = vi.fn()
@@ -166,6 +174,10 @@ function setupDefaults() {
   mockGetComposioApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetBrowserbaseApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetComposioUserId.mockReturnValue(undefined)
+  mockGetNangoApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
+  mockGetAccountProviderUserId.mockReturnValue(undefined)
+  mockGetDefaultAccountProviderType.mockReturnValue('composio')
+  mockGetNangoSecretKey.mockReturnValue(undefined)
   mockGetEffectiveModels.mockReturnValue({ summarizerModel: 'claude-3-haiku', agentModel: 'claude-sonnet-4-20250514', browserModel: 'claude-3-haiku' })
   mockGetEffectiveAgentLimits.mockReturnValue({ maxTurns: 100 })
   mockGetCustomEnvVars.mockReturnValue({ FOO: 'bar' })

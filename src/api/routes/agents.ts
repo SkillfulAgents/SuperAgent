@@ -56,7 +56,7 @@ import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServ
 import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
-import { getProvider } from '@shared/lib/composio/providers'
+import { getProvider } from '@shared/lib/account-providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
 import {
@@ -99,7 +99,6 @@ import {
   publishAgentToSkillset,
   refreshAgentTemplates,
   hasOnboardingSkill,
-  collectAgentRequiredEnvVars,
 } from '@shared/lib/services/agent-template-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
@@ -409,11 +408,8 @@ async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) 
   const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
   await createOwnerAcl(c, agent.slug)
   const hasOnboarding = await hasOnboardingSkill(agent.slug)
-  const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug, {
-    excludeExistingSecrets: importMode === 'full',
-  })
   logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name } })
-  return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
+  return c.json({ ...agent, hasOnboarding }, 201)
 }
 
 // GET /api/agents/discoverable-agents - List agents available from skillsets
@@ -458,9 +454,8 @@ agents.post('/install-from-skillset', async (c) => {
 
     await createOwnerAcl(c, agent.slug)
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
-    const requiredEnvVars = await collectAgentRequiredEnvVars(agent.slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name, skillsetId } })
-    return c.json({ ...agent, hasOnboarding, requiredEnvVars }, 201)
+    return c.json({ ...agent, hasOnboarding }, 201)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to install agent from skillset'
     console.error('Failed to install agent from skillset:', error)
@@ -1648,11 +1643,13 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
           messagePersister.setSlashCommands(sessionId, slashCommands)
         }
       }
+      const backgroundTasks = messagePersister.getActiveBackgroundTasks(sessionId)
       await stream.writeSSE({
         data: JSON.stringify({
           type: 'connected',
           isActive,
           slashCommands: slashCommands.length > 0 ? slashCommands : undefined,
+          backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
         }),
         event: 'message',
       })
@@ -3109,7 +3106,7 @@ agents.get('/:id/discoverable-skills', AgentRead(), async (c) => {
 agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
-    const { skillsetId, skillPath, skillName, skillVersion, envVars } = await c.req.json()
+    const { skillsetId, skillPath, skillName, skillVersion } = await c.req.json()
 
     if (!skillsetId || !skillPath) {
       return c.json({ error: 'skillsetId and skillPath are required' }, 400)
@@ -3120,7 +3117,7 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
       return c.json({ error: 'Skillset not found' }, 404)
     }
 
-    const result = await installSkillFromSkillset(
+    await installSkillFromSkillset(
       agentSlug,
       toSkillsetRef(config),
       skillPath,
@@ -3128,17 +3125,8 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
       skillVersion || '0.0.0',
     )
 
-    // If env vars were provided, save them as agent secrets
-    if (envVars && typeof envVars === 'object') {
-      for (const [envVar, value] of Object.entries(envVars)) {
-        if (value && typeof value === 'string') {
-          await setSecret(agentSlug, { key: envVar, envVar, value })
-        }
-      }
-    }
-
     logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillPath}`, action: 'created', details: { skillsetId, skillName: skillName || skillPath } })
-    return c.json({ installed: true, ...result })
+    return c.json({ installed: true })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to install skill'
     console.error('Failed to install skill:', error)

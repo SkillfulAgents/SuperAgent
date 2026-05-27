@@ -20,7 +20,8 @@ vi.mock('@renderer/hooks/use-connected-accounts', () => ({
           displayName: 'My GitHub Account',
           status: 'active',
           createdAt: new Date('2025-01-01').toISOString(),
-          composioConnectionId: 'conn-1',
+          providerConnectionId: 'conn-1',
+            providerName: 'composio',
           toolkitSlug: 'github',
         },
       ],
@@ -35,11 +36,15 @@ vi.mock('@renderer/hooks/use-connected-accounts', () => ({
   })),
 }))
 
-vi.mock('@shared/lib/composio/providers', () => ({
+vi.mock('@shared/lib/account-providers', () => ({
   getProvider: (slug: string) => ({
     slug,
     displayName: slug.charAt(0).toUpperCase() + slug.slice(1),
   }),
+}))
+
+vi.mock('@renderer/hooks/use-oauth-reconnect', () => ({
+  useOAuthReconnect: () => vi.fn(),
 }))
 
 vi.mock('@renderer/components/ui/policy-summary-pill', () => ({
@@ -71,7 +76,8 @@ describe('ConnectedAccountRequestItem', () => {
             displayName: 'My GitHub Account',
             status: 'active',
             createdAt: new Date('2025-01-01').toISOString(),
-            composioConnectionId: 'conn-1',
+            providerConnectionId: 'conn-1',
+            providerName: 'composio',
             toolkitSlug: 'github',
           },
         ],
@@ -162,7 +168,8 @@ describe('ConnectedAccountRequestItem', () => {
             displayName: 'My GitHub Account',
             status: 'active',
             createdAt: new Date('2025-01-01').toISOString(),
-            composioConnectionId: 'conn-1',
+            providerConnectionId: 'conn-1',
+            providerName: 'composio',
             toolkitSlug: 'github',
           },
           {
@@ -170,7 +177,8 @@ describe('ConnectedAccountRequestItem', () => {
             displayName: 'Work GitHub Account',
             status: 'active',
             createdAt: new Date('2025-02-01').toISOString(),
-            composioConnectionId: 'conn-2',
+            providerConnectionId: 'conn-2',
+            providerName: 'composio',
             toolkitSlug: 'github',
           },
         ],
@@ -187,6 +195,66 @@ describe('ConnectedAccountRequestItem', () => {
   it('shows add new account button', () => {
     renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
     expect(screen.getByText('Add New Account')).toBeInTheDocument()
+  })
+
+  it('does not auto-select expired accounts and shows reconnect button', () => {
+    vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({
+      data: {
+        accounts: [
+          {
+            id: 'acc-1',
+            displayName: 'Expired GitHub',
+            status: 'expired',
+            createdAt: new Date('2025-01-01').toISOString(),
+            providerConnectionId: 'conn-1',
+            providerName: 'composio',
+            toolkitSlug: 'github',
+          },
+        ],
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as any)
+
+    renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
+    // No checkbox for expired accounts — shows reconnect button instead
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.getAllByText('Reconnect').length).toBeGreaterThan(0)
+  })
+
+  it('shows checkbox for active and reconnect for expired in mixed list', async () => {
+    vi.mocked(useConnectedAccountsByToolkit).mockReturnValue({
+      data: {
+        accounts: [
+          {
+            id: 'acc-active',
+            displayName: 'Active GitHub',
+            status: 'active',
+            createdAt: new Date('2025-01-01').toISOString(),
+            providerConnectionId: 'conn-1',
+            providerName: 'composio',
+            toolkitSlug: 'github',
+          },
+          {
+            id: 'acc-expired',
+            displayName: 'Expired GitHub',
+            status: 'expired',
+            createdAt: new Date('2025-02-01').toISOString(),
+            providerConnectionId: 'conn-2',
+            providerName: 'composio',
+            toolkitSlug: 'github',
+          },
+        ],
+      },
+      isLoading: false,
+      refetch: vi.fn(),
+    } as any)
+
+    renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
+    // Active account gets a checkbox, expired gets reconnect button
+    const checkboxes = screen.getAllByRole('checkbox')
+    expect(checkboxes).toHaveLength(1)
+    expect(screen.getAllByText('Reconnect').length).toBeGreaterThan(0)
   })
 
   it('shows error on API failure', async () => {

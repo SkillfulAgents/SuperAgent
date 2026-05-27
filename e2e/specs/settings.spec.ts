@@ -64,7 +64,7 @@ test.describe('Settings Page', () => {
     await expect(page.locator('[data-testid="settings-nav-llm"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-runtime"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-browser"]')).toBeVisible()
-    await expect(page.locator('[data-testid="settings-nav-composio"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-nav-account-provider"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-voice"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-skillsets"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-admin"]')).toBeVisible()
@@ -282,10 +282,10 @@ test.describe('Settings persistence', () => {
 
   test('Composio tab: user ID save persists', async ({ page }) => {
     await openSettings(page)
-    await goToTab(page, 'composio')
+    await goToTab(page, 'account-provider')
 
     // Type a user ID
-    await page.locator('#composio-user-id').fill('test-user-123')
+    await page.locator('#provider-user-id').fill('test-user-123')
 
     // Save button should appear
     const saveBtn = page.getByRole('button', { name: 'Save User ID' })
@@ -301,7 +301,7 @@ test.describe('Settings persistence', () => {
     // Close, reopen, verify the badge is still there
     await closeSettings(page)
     await openSettings(page)
-    await goToTab(page, 'composio')
+    await goToTab(page, 'account-provider')
     await expect(page.getByText('Configured', { exact: true })).toBeVisible()
 
     // Clean up: remove user ID

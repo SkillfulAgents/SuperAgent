@@ -61,6 +61,8 @@ export interface IntegrationRowActionsProps {
    * by the row's Switch toggle.
    */
   hideRemoveFromAgent?: boolean
+  /** Account status for OAuth rows. Shows reconnect action when not active. */
+  accountStatus?: 'active' | 'expired' | 'revoked'
   /**
    * Rendering layout:
    *  - 'menu' (default): a single Settings icon button that opens a popover with all actions.
@@ -70,7 +72,7 @@ export interface IntegrationRowActionsProps {
   layout?: 'menu' | 'buttons'
 }
 
-export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agentSlug, hideRemoveFromAgent, layout = 'menu' }: IntegrationRowActionsProps) {
+export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agentSlug, hideRemoveFromAgent, accountStatus, layout = 'menu' }: IntegrationRowActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState(name)
@@ -186,6 +188,45 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
     }
   }
 
+  const [oauthReconnectPending, setOauthReconnectPending] = useState(false)
+
+  const runOAuthReconnect = async () => {
+    if (!toolkit) return
+    const popup = prepareOAuthPopup()
+    try {
+      setOauthReconnectPending(true)
+      const { apiFetch } = await import('@renderer/lib/api')
+      const res = await apiFetch('/api/connected-accounts/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          providerSlug: toolkit,
+          electron: !!window.electronAPI,
+          reconnectAccountId: id,
+        }),
+      })
+      if (!res.ok) {
+        popup.close()
+        const data = await res.json()
+        setActionError(data.error || 'Failed to initiate reconnection')
+        setOauthReconnectPending(false)
+        return
+      }
+      const data = await res.json()
+      if (data.redirectUrl) {
+        await popup.navigate(data.redirectUrl)
+        // Wait for callback — the page will reload/invalidate queries on completion
+      }
+      setOauthReconnectPending(false)
+      setMenuOpen(false)
+      queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
+    } catch (err) {
+      popup.close()
+      setOauthReconnectPending(false)
+      setActionError(err instanceof Error ? err.message : 'Reconnect failed')
+    }
+  }
+
   const openTools = () => {
     setMenuOpen(false)
     setToolsError(null)
@@ -259,6 +300,24 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
     <>
       {layout === 'buttons' ? (
         <div className="flex items-center gap-2">
+          {type === 'oauth' && accountStatus && accountStatus !== 'active' && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 text-amber-700 dark:text-amber-400"
+              onClick={runOAuthReconnect}
+              disabled={oauthReconnectPending}
+              data-testid={`integration-row-actions-reconnect-${type}-${id}`}
+            >
+              {oauthReconnectPending ? (
+                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+              )}
+              Reconnect
+            </Button>
+          )}
           <Button
             ref={triggerRef}
             type="button"
@@ -318,6 +377,17 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
             <Pencil className="h-3.5 w-3.5" />
             Rename
           </button>
+          {type === 'oauth' && accountStatus && accountStatus !== 'active' && (
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400 hover:bg-amber-500/10 transition-colors"
+              onClick={runOAuthReconnect}
+              disabled={oauthReconnectPending}
+            >
+              {oauthReconnectPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              Reconnect
+            </button>
+          )}
           {canEditScopes && (
             <button
               type="button"

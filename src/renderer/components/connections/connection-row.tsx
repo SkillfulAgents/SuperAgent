@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { IntegrationRow } from './integration-row'
 import { McpStatusPill } from './mcp-status-pill'
+import { AccountStatusBadge } from './account-status-badge'
 import { formatCompactDistance, safeDate } from './utils'
 import type { UnifiedRow } from './unified-rows'
 
@@ -21,6 +22,10 @@ interface ConnectionRowProps {
   onActivate?: () => void
   /** Accessible label for the row when interactive. */
   ariaLabel?: string
+  /** Called when the user clicks the status badge to reconnect. */
+  onReconnect?: () => void
+  /** Show spinner on the status badge while reconnecting. */
+  reconnecting?: boolean
 }
 
 export function ConnectionRow({
@@ -31,6 +36,8 @@ export function ConnectionRow({
   viewTransitionName,
   onActivate,
   ariaLabel,
+  onReconnect,
+  reconnecting,
 }: ConnectionRowProps) {
   return (
     <IntegrationRow
@@ -40,7 +47,12 @@ export function ConnectionRow({
       name={row.name}
       onActivate={onActivate}
       ariaLabel={ariaLabel}
-      nameBadge={<McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />}
+      nameBadge={
+        <>
+          <McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />
+          <AccountStatusBadge status={row.accountStatus} onReconnect={onReconnect} loading={reconnecting} />
+        </>
+      }
       subtitle={
         <>
           <span className="shrink-0">{row.type === 'oauth' ? 'API' : 'MCP'}</span>

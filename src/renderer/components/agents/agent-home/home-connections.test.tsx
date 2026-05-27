@@ -26,7 +26,8 @@ vi.mock('@renderer/context/selection-context', () => ({
 
 const ACCOUNT = {
   id: 'acc-1',
-  composioConnectionId: 'conn-1',
+  providerConnectionId: 'conn-1',
+            providerName: 'composio',
   toolkitSlug: 'github',
   displayName: 'My GitHub Account',
   status: 'active' as const,

@@ -81,11 +81,6 @@ name: supabase-query
 description: Query or modify data in the Datawizz Supabase (PostgreSQL) database. Use when you need to access operational data like workspaces, projects, endpoints, models, providers, prompts, datasets metadata, evaluators, evaluations, or plugins. Provides connection setup, Python code, and schema references.
 metadata:
   version: 1.0
-  required_env_vars:
-    - name: SUPABASE_URL
-      description: Supabase project URL (e.g. http://127.0.0.1:54321 for local)
-    - name: SUPABASE_SERVICE_KEY
-      description: Supabase service role key (bypasses RLS, for agent use)
 ---
 
 # Supabase Query Skill

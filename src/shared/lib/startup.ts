@@ -7,8 +7,10 @@ import { triggerManager } from './scheduler/trigger-manager'
 import { chatIntegrationManager } from './chat-integrations/chat-integration-manager'
 import { captureException } from './error-reporting'
 import { isPlatformComposioActive } from './composio/client'
+import { registerAllAccountProviders } from './account-providers/register'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
+import { accountSyncService } from './scheduler/account-sync-service'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
@@ -57,6 +59,9 @@ export async function initializeServices() {
 
   // Initialize server-side analytics version
   setServerAnalyticsVersion(APP_VERSION)
+
+  // Register account providers (Composio, Nango if configured)
+  registerAllAccountProviders()
 
   // Drop any skillset configs invalid for the current auth state (e.g. a
   // platform skillset left over from a previous org). Filesystem cleanup of
@@ -134,6 +139,11 @@ export async function initializeServices() {
   sessionAutoDeleteMonitor.start().catch((error) => {
     console.error('Failed to start session auto-delete monitor:', error)
   })
+
+  // Start account sync service (deferred — syncs OAuth account status with remote providers)
+  accountSyncService.start().catch((error) => {
+    console.error('Failed to start account sync service:', error)
+  })
 }
 
 /**
@@ -164,6 +174,7 @@ export async function shutdownServices() {
   triggerManager.stop()
   autoSleepMonitor.stop()
   sessionAutoDeleteMonitor.stop()
+  accountSyncService.stop()
   containerManager.stopStatusSync()
   containerManager.stopHealthMonitor()
   await containerManager.stopAll()

@@ -47,6 +47,8 @@ export interface UpdateSettingsParams {
     browserbaseProjectId?: string
     deepgramApiKey?: string
     openaiApiKey?: string
+    nangoSecretKey?: string
+    accountProviderUserId?: string
   }
   models?: Partial<ModelSettings>
   agentLimits?: Partial<AgentLimitsSettings>

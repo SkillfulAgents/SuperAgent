@@ -248,7 +248,6 @@ export interface ApiDiscoverableSkill {
   description: string
   version: string
   path: string
-  requiredEnvVars?: Array<{ name: string; description: string }>
 }
 
 /**
@@ -347,7 +346,8 @@ export interface ApiProvider {
  */
 export interface ApiConnectedAccount {
   id: string
-  composioConnectionId: string
+  providerConnectionId: string
+  providerName: string
   toolkitSlug: string
   displayName: string
   status: 'active' | 'revoked' | 'expired'

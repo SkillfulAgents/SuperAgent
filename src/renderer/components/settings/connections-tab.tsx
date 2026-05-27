@@ -14,6 +14,7 @@ import { ConnectionRow } from '@renderer/components/connections/connection-row'
 import { ConnectionAgentCount } from '@renderer/components/connections/connection-agent-count'
 import { ConnectionDetailPage } from '@renderer/components/connections/connection-detail-page'
 import { buildUnifiedRows, type UnifiedRow } from '@renderer/components/connections/unified-rows'
+import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 
 export function ConnectionsTab() {
   const { data: settings } = useUserSettings()
@@ -21,6 +22,7 @@ export function ConnectionsTab() {
   const { data: accountsData, isLoading: isLoadingAccounts } = useConnectedAccounts()
   const { data: mcpsData, isLoading: isLoadingMcps } = useRemoteMcps()
   const { data: triggerCounts } = useTriggerCountsPerAccount()
+  const { reconnect: oauthReconnect, pendingAccountId } = useOAuthReconnect()
 
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null)
 
@@ -63,6 +65,12 @@ export function ConnectionsTab() {
         row={row}
         onActivate={openDetail}
         ariaLabel={`Open ${row.name} connection details`}
+        onReconnect={
+          row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
+            ? () => oauthReconnect(row.id, row.toolkit!)
+            : undefined
+        }
+        reconnecting={pendingAccountId === row.id}
         subtitleExtra={
           <>
             <ConnectionAgentCount type={row.type} id={row.id} />

@@ -36,10 +36,10 @@ test.describe('Connections Page — Policy Modal After OAuth', () => {
 
     // 3. Create an account server-side (simulates what the OAuth callback
     //    endpoint does when Composio returns a successful connection)
-    const composioConnectionId = `e2e-policy-modal-${Date.now()}`
+    const providerConnectionId = `e2e-policy-modal-${Date.now()}`
     const res = await request.post(`${API}/api/connected-accounts`, {
       data: {
-        composioConnectionId,
+        providerConnectionId,
         toolkitSlug: 'slack',
         displayName: 'E2E Policy Modal Slack',
       },
@@ -84,10 +84,10 @@ test.describe('Connections Page — Policy Modal After OAuth', () => {
     await expect(dialog).toBeVisible()
 
     // Create account server-side
-    const composioConnectionId = `e2e-policy-modal-agent-${Date.now()}`
+    const providerConnectionId = `e2e-policy-modal-agent-${Date.now()}`
     const res = await request.post(`${API}/api/connected-accounts`, {
       data: {
-        composioConnectionId,
+        providerConnectionId,
         toolkitSlug: 'slack',
         displayName: 'E2E Policy Modal Agent Slack',
       },

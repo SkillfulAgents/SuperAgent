@@ -236,12 +236,15 @@ export async function getOrCreateAuthConfig(
 export interface ComposioConnection {
   id: string
   status: 'ACTIVE' | 'INITIATED' | 'INITIALIZING' | 'FAILED' | 'EXPIRED' | 'INACTIVE'
+  toolkitSlug?: string
+  createdAt?: string
 }
 
 // API response type for GET /connected_accounts/:id
 interface ConnectedAccountGetResponse {
   id: string
   status: string
+  created_at?: string
   toolkit: {
     slug: string
   }
@@ -258,35 +261,53 @@ interface ConnectedAccountGetResponse {
 
 interface ListConnectedAccountsResponse {
   items: ConnectedAccountGetResponse[]
+  next_cursor?: string
+  total_pages?: number
 }
 
 /**
  * List all connected accounts for the current user.
+ * Handles cursor-based pagination (Composio caps at 50/page).
  */
 export async function listConnections(
   toolkit?: string,
   userIdOverride?: string
 ): Promise<ComposioConnection[]> {
   const useLocal = shouldUseLocalComposioKey()
-  let endpoint = '/connected_accounts'
+  let baseEndpoint = '/connected_accounts?'
   if (useLocal || !getPlatformComposioToken()) {
     const userId = userIdOverride || getComposioUserId()
     if (!userId) {
       throw new ComposioApiError('Composio User ID is not configured', 401)
     }
-    endpoint += `?user_id=${encodeURIComponent(userId)}`
+    baseEndpoint += `user_ids=${encodeURIComponent(userId)}&`
   }
 
   if (toolkit) {
-    endpoint += endpoint.includes('?') ? '&' : '?'
-    endpoint += `toolkit_slug=${encodeURIComponent(toolkit)}`
+    baseEndpoint += `toolkit_slugs=${encodeURIComponent(toolkit)}&`
   }
 
-  const response = await composioFetch<ListConnectedAccountsResponse>(endpoint)
-  return (response.items || []).map((item) => ({
-    id: item.id,
-    status: item.status as ComposioConnection['status'],
-  }))
+  const all: ComposioConnection[] = []
+  let cursor: string | undefined
+
+  for (let page = 0; page < 20; page++) {
+    const endpoint = baseEndpoint + (cursor ? `cursor=${encodeURIComponent(cursor)}` : '')
+    const response = await composioFetch<ListConnectedAccountsResponse>(endpoint)
+
+    for (const item of response.items || []) {
+      all.push({
+        id: item.id,
+        status: item.status as ComposioConnection['status'],
+        toolkitSlug: item.toolkit?.slug,
+        createdAt: item.created_at,
+      })
+    }
+
+    if (!response.next_cursor) break
+    cursor = response.next_cursor
+  }
+
+  return all
 }
 
 interface InitiateConnectionResponse {

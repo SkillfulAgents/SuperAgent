@@ -10,10 +10,10 @@ test.describe('Policy Settings', () => {
   test.beforeAll(async ({ request }) => {
     // Unique per run so a retry (which re-runs beforeAll in a new worker) does
     // not collide with the previously-seeded row on the unique connectionId.
-    const composioConnectionId = `e2e-test-connection-${Date.now()}`
+    const providerConnectionId = `e2e-test-connection-${Date.now()}`
     const res = await request.post('/api/connected-accounts', {
       data: {
-        composioConnectionId,
+        providerConnectionId,
         toolkitSlug: 'slack',
         displayName: 'E2E Slack Account',
       },

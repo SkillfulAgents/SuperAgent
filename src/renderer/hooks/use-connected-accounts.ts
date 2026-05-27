@@ -2,11 +2,12 @@ import { apiFetch } from '@renderer/lib/api'
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import type { Provider } from '@shared/lib/composio/providers'
+import type { Provider } from '@shared/lib/account-providers/service-catalog'
 
 export interface ConnectedAccount {
   id: string
-  composioConnectionId: string
+  providerConnectionId: string
+  providerName: string
   toolkitSlug: string
   displayName: string
   status: 'active' | 'revoked' | 'expired'

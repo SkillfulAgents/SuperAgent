@@ -7,7 +7,8 @@ import type { RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
 function account(overrides: Partial<ConnectedAccount> = {}): ConnectedAccount {
   return {
     id: 'a1',
-    composioConnectionId: 'comp-1',
+    providerConnectionId: 'comp-1',
+    providerName: 'composio',
     toolkitSlug: 'slack',
     displayName: 'Slack',
     status: 'active',
@@ -102,6 +103,31 @@ describe('buildUnifiedRows', () => {
       allMcps: [mcp({ url: 'https://nowhere.example.com/mcp' })],
     })
     expect(rows[0].iconSlug).toBeUndefined()
+  })
+
+  it('propagates accountStatus from connected account to unified row', () => {
+    const rows = buildUnifiedRows({
+      allAccounts: [
+        account({ id: 'a-active', status: 'active' }),
+        account({ id: 'a-expired', status: 'expired' }),
+        account({ id: 'a-revoked', status: 'revoked' }),
+      ],
+      allMcps: [],
+    })
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r.accountStatus]))
+    expect(byId).toEqual({
+      'a-active': 'active',
+      'a-expired': 'expired',
+      'a-revoked': 'revoked',
+    })
+  })
+
+  it('does not set accountStatus on MCP rows', () => {
+    const rows = buildUnifiedRows({
+      allAccounts: [],
+      allMcps: [mcp({ id: 'm1' })],
+    })
+    expect(rows[0].accountStatus).toBeUndefined()
   })
 
   it('uses the toolkit slug as the OAuth row icon and exposes toolkit on the row', () => {

@@ -13,7 +13,9 @@ import {
   clearSettingsCache,
   getBrowserbaseApiKeyStatus,
   getComposioApiKeyStatus,
+  getNangoApiKeyStatus,
   getComposioUserId,
+  getAccountProviderUserId,
   getVoiceSettings,
   getEffectiveModels,
   getEffectiveAgentLimits,
@@ -52,6 +54,8 @@ const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
   'browserbaseProjectId',
   'deepgramApiKey',
   'openaiApiKey',
+  'nangoSecretKey',
+  'accountProviderUserId',
 ]
 
 /** Build the GlobalSettingsResponse shared by GET and PUT handlers. */
@@ -75,6 +79,7 @@ function buildSettingsResponse(
       platform: getLlmProvider('platform').getApiKeyStatus(),
       browserbase: getBrowserbaseApiKeyStatus(),
       composio: getComposioApiKeyStatus(),
+      nango: getNangoApiKeyStatus(),
       deepgram: getSttProvider('deepgram').getApiKeyStatus(),
       openai: getSttProvider('openai').getApiKeyStatus(),
     },
@@ -82,6 +87,7 @@ function buildSettingsResponse(
     agentLimits: getEffectiveAgentLimits(),
     customEnvVars: getCustomEnvVars(),
     composioUserId: getComposioUserId(),
+    accountProviderUserId: getAccountProviderUserId(),
     setupCompleted: !!appSettings.app?.setupCompleted,
     hostBrowserStatus: { providers: detectAllProviders() },
     runtimeReadiness: containerManager.getReadiness(),
@@ -214,6 +220,16 @@ settings.put('/', async (c) => {
     }
 
     updateSettings(newSettings)
+
+    // If account provider settings changed, re-register providers
+    if (body.apiKeys?.nangoSecretKey !== undefined || body.app?.accountProvider !== undefined) {
+      try {
+        const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')
+        await registerAllAccountProviders()
+      } catch (err) {
+        console.error('Failed to re-register account providers:', err)
+      }
+    }
 
     // If auth settings changed, reset the Better Auth singleton so it picks up new config
     if (body.auth !== undefined && isAuthMode()) {
@@ -462,6 +478,32 @@ settings.post('/validate-composio-key', async (c) => {
         return c.json({ valid: false, error: 'Invalid API key' })
       }
       return c.json({ valid: false, error: `Composio API error: ${response.status}` })
+    }
+
+    return c.json({ valid: true })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+// POST /api/settings/validate-nango-key - Validate a Nango secret key
+settings.post('/validate-nango-key', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'Secret key is required' }, 400)
+    }
+
+    const response = await fetch('https://api.nango.dev/integrations', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        return c.json({ valid: false, error: 'Invalid secret key' })
+      }
+      return c.json({ valid: false, error: `Nango API error: ${response.status}` })
     }
 
     return c.json({ valid: true })

@@ -40,7 +40,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
   const interruptSession = useInterruptSession()
-  const { isActive, slashCommands } = useMessageStream(sessionId, agentSlug)
+  const { isActive, slashCommands, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
   const isOffline = !isOnline
   const { track } = useAnalyticsTracking()
@@ -60,7 +60,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
       await sendMessage.mutateAsync({ sessionId, agentSlug, content, ...composerOptions.toRuntimeOptions() })
       track('message_sent')
     }, [onMessageSent, sendMessage, sessionId, agentSlug, track, composerOptions]),
-    submitDisabled: sendMessage.isPending || isActive || isOffline,
+    submitDisabled: sendMessage.isPending || (isActive && !isWaitingBackground) || isOffline,
     draftKey: `session:${sessionId}`,
   })
 
@@ -222,6 +222,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
             />
             <ComposerActionButton
               isActive={isActive}
+              isWaitingBackground={isWaitingBackground}
               canSubmit={composer.canSubmit}
               isSending={sendMessage.isPending || composer.isUploading}
               isInterrupting={interruptSession.isPending}

@@ -66,7 +66,8 @@ describe('agent-cleanup-service', () => {
   function insertConnectedAccount(id: string): void {
     testDb.insert(schema.connectedAccounts).values({
       id,
-      composioConnectionId: `composio-${id}`,
+      providerConnectionId: `composio-${id}`,
+      providerName: 'composio',
       toolkitSlug: 'gmail',
       displayName: `Account ${id}`,
       status: 'active',

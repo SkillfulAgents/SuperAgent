@@ -10,13 +10,14 @@ import { ConnectionRow } from '@renderer/components/connections/connection-row'
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
 import { ConnectionSuccessHeader } from '@renderer/components/connections/connection-success-header'
-import { getProvider } from '@shared/lib/composio/providers'
+import { getProvider } from '@shared/lib/account-providers/service-catalog'
 import {
   useConnectedAccounts,
   useAgentConnectedAccounts,
   useAssignAccountsToAgent,
   useRemoveAgentConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
+import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import {
   useRemoteMcps,
   useAgentRemoteMcps,
@@ -104,6 +105,7 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
   const removeAccount = useRemoveAgentConnectedAccount()
   const assignMcp = useAssignMcpToAgent()
   const removeMcp = useRemoveMcpFromAgent()
+  const { reconnect: oauthReconnect, pendingAccountId } = useOAuthReconnect()
 
   // Optimistic overrides keyed by row.key. Keeps the row visually in its new
   // section while the mutation is in-flight so the View Transition can animate
@@ -217,6 +219,10 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         key={row.key}
         row={row}
         viewTransitionName={`integration-${row.key}`}
+        onReconnect={row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
+          ? () => oauthReconnect(row.id, row.toolkit!)
+          : undefined}
+        reconnecting={pendingAccountId === row.id}
         right={
           <>
             <IntegrationRowActions
@@ -227,6 +233,7 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
               mcpTools={row.mcpTools}
               agentSlug={agentSlug}
               hideRemoveFromAgent
+              accountStatus={row.accountStatus}
             />
             {pending ? (
               <Loader2

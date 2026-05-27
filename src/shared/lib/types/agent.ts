@@ -152,6 +152,7 @@ export interface JsonlMessageEntry {
     stderr: string
     interrupted: boolean
     isImage: boolean
+    backgroundTaskId?: string
     // Subagent-specific (present only on Task tool results)
     agentId?: string
     status?: string

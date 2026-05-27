@@ -62,6 +62,7 @@ export function ConnectionDetailPage({ row, onBack }: ConnectionDetailPageProps)
             name={row.name}
             toolkit={row.toolkit}
             mcpTools={row.mcpTools}
+            accountStatus={row.accountStatus}
             layout="buttons"
           />
         </div>
