@@ -202,8 +202,12 @@ export function GlobalNotificationHandler() {
             // the prompt. For chattier types (chat-integration, etc.) we
             // keep the visibility-only gate to avoid notification spam
             // for users who keep the window in a side panel. (Review S4.)
+            // `notifyWhenUnfocused` opts the chattier types into the same
+            // focus-aware gate.
+            const notifyWhenUnfocused =
+              userSettingsRef.current?.notifications?.notifyWhenUnfocused === true
             const isAppActive =
-              notificationType === 'session_waiting'
+              notificationType === 'session_waiting' || notifyWhenUnfocused
                 ? isTabVisible && document.hasFocus()
                 : isTabVisible
 

@@ -48,7 +48,7 @@ vi.mock('@renderer/hooks/use-notifications', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-user-settings', () => ({
-  useUserSettings: () => ({ data: undefined }),
+  useUserSettings: vi.fn(() => ({ data: undefined })),
 }))
 
 vi.mock('@renderer/hooks/use-mount-warnings', () => ({
@@ -242,6 +242,92 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
       agentSlug: 'my-agent',
       title: 'Chat Integration Connected',
       body: 'Slack',
+    })
+
+    expect(showOSNotification).not.toHaveBeenCalled()
+  })
+
+  it('session_complete fires when notifyWhenUnfocused is on and window unfocused', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    const { useSelection } = await import('@renderer/context/selection-context')
+    vi.mocked(useSelection).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useSelection>)
+
+    const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
+    vi.mocked(useUserSettings).mockReturnValue({
+      data: {
+        notifications: {
+          enabled: true,
+          sessionComplete: true,
+          sessionWaiting: true,
+          sessionScheduled: true,
+          notifyWhenUnfocused: true,
+        },
+      },
+    } as unknown as ReturnType<typeof useUserSettings>)
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    simulateSSEMessage(es, {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    expect(showOSNotification).toHaveBeenCalled()
+  })
+
+  it('session_complete suppressed when notifyWhenUnfocused is off and viewing session', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    const { useSelection } = await import('@renderer/context/selection-context')
+    vi.mocked(useSelection).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useSelection>)
+
+    const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
+    vi.mocked(useUserSettings).mockReturnValue({
+      data: undefined,
+    } as unknown as ReturnType<typeof useUserSettings>)
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    simulateSSEMessage(es, {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
     })
 
     expect(showOSNotification).not.toHaveBeenCalled()

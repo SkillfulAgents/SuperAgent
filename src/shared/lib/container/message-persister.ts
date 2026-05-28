@@ -380,12 +380,6 @@ class MessagePersister {
     }
   }
 
-  // Check if a session has active SSE clients (someone is viewing it)
-  hasActiveViewers(sessionId: string): boolean {
-    const clients = this.sseClients.get(sessionId)
-    return (clients?.size ?? 0) > 0
-  }
-
   // Broadcast to global notification clients only (e.g., sidebar updates, Electron main process)
   // Does NOT broadcast to session-specific SSE clients — use broadcastToSSE for that.
   broadcastGlobal(data: unknown): void {
@@ -890,9 +884,12 @@ class MessagePersister {
             agentSlug: state.agentSlug,
             isActive: false,
           })
-          // Trigger session complete notification (only if no one is viewing the session)
-          // Skip for 'resume' exits — the session is pausing for a resume, not truly finished
-          if (content.subtype !== 'resume' && state.agentSlug && !this.hasActiveViewers(sessionId)) {
+          // Trigger session complete notification. Whether to *show* an OS
+          // notification (vs just creating the DB record) is the renderer's
+          // call — it knows about window focus, per-user viewing, and the
+          // `notifyWhenUnfocused` toggle. Skip for 'resume' exits — the
+          // session is pausing for a resume, not truly finished.
+          if (content.subtype !== 'resume' && state.agentSlug) {
             notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
               console.error('[MessagePersister] Failed to trigger session complete notification:', err)
             })
@@ -1503,8 +1500,9 @@ class MessagePersister {
         agentSlug,
       })
 
-      // Trigger waiting for input notification (only if no one is viewing the session)
-      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+      // Renderer's notification gate decides whether to show the OS popup
+      // based on focus / per-user viewing / `notifyWhenUnfocused` toggle.
+      if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'secret').catch((err) => {
           console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
         })
@@ -1545,8 +1543,8 @@ class MessagePersister {
         agentSlug,
       })
 
-      // Trigger waiting for input notification (only if no one is viewing the session)
-      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+      // Renderer-side gate handles suppression; see session_complete trigger.
+      if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'connected_account').catch((err) => {
           console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
         })
@@ -1971,8 +1969,8 @@ class MessagePersister {
         agentSlug,
       })
 
-      // Trigger waiting for input notification (only if no one is viewing the session)
-      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+      // Renderer-side gate handles suppression; see session_complete trigger.
+      if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'question').catch((err) => {
           console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
         })
@@ -2012,8 +2010,8 @@ class MessagePersister {
         agentSlug,
       })
 
-      // Trigger waiting for input notification (only if no one is viewing the session)
-      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+      // Renderer-side gate handles suppression; see session_complete trigger.
+      if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'file').catch((err) => {
           console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
         })
@@ -2055,8 +2053,8 @@ class MessagePersister {
         agentSlug,
       })
 
-      // Trigger waiting for input notification (only if no one is viewing the session)
-      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+      // Renderer-side gate handles suppression; see session_complete trigger.
+      if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'remote_mcp').catch((err) => {
           console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
         })
@@ -2095,7 +2093,8 @@ class MessagePersister {
         agentSlug,
       })
 
-      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+      // Renderer-side gate handles suppression; see session_complete trigger.
+      if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'browser_input').catch((err) => {
           console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
         })
@@ -2181,7 +2180,8 @@ class MessagePersister {
       // pill in the sidebar / tray) when the user actually has to respond.
       if (!autoApproved) {
         this.markSessionAwaitingInput(sessionId)
-        if (agentSlug && !this.hasActiveViewers(sessionId)) {
+        // Renderer-side gate handles suppression; see session_complete trigger.
+        if (agentSlug) {
           notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'script_run').catch((err) => {
             console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
           })
@@ -2280,7 +2280,8 @@ class MessagePersister {
         agentSlug,
       })
 
-      if (agentSlug && !this.hasActiveViewers(sessionId)) {
+      // Renderer-side gate handles suppression; see session_complete trigger.
+      if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'computer_use').catch((err) => {
           console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
         })
