@@ -1,0 +1,181 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]:
+            - generic [ref=e10]: SuperAgent
+            - button "Search" [ref=e11] [cursor=pointer]:
+              - img [ref=e12]
+          - list [ref=e16]:
+            - listitem [ref=e17]:
+              - button "Home" [ref=e18] [cursor=pointer]:
+                - img [ref=e19]
+                - generic [ref=e24]: Home
+            - listitem [ref=e25]:
+              - button "Notifications" [ref=e26] [cursor=pointer]:
+                - img [ref=e27]
+                - generic [ref=e30]: Notifications
+            - listitem [ref=e138]:
+              - button "Explore" [ref=e139] [cursor=pointer]:
+                - img [ref=e140]
+                - generic [ref=e143]: Explore
+            - listitem [ref=e31]:
+              - button "New Agent" [ref=e32] [cursor=pointer]:
+                - img [ref=e33]
+                - generic [ref=e34]: New Agent
+        - generic [ref=e35]:
+          - generic [ref=e36]: Your Agents
+          - list [ref=e38]:
+            - button "QA-20260528-122029-onnj idle Expand" [ref=e39] [cursor=pointer]:
+              - generic [ref=e40]:
+                - button "QA-20260528-122029-onnj idle" [ref=e41]:
+                  - generic [ref=e43]: QA-20260528-122029-onnj
+                  - img "idle" [ref=e44]:
+                    - img [ref=e45]
+                - button "Expand" [ref=e54]:
+                  - img [ref=e55]
+            - button "QA-20260528-122027-vidl idle Expand" [ref=e57] [cursor=pointer]:
+              - generic [ref=e58]:
+                - button "QA-20260528-122027-vidl idle" [ref=e59]:
+                  - generic [ref=e61]: QA-20260528-122027-vidl
+                  - img "idle" [ref=e62]:
+                    - img [ref=e63]
+                - button "Expand" [ref=e72]:
+                  - img [ref=e73]
+            - status [ref=e144]
+      - generic [ref=e76]:
+        - button "Settings" [ref=e77] [cursor=pointer]:
+          - img [ref=e78]
+          - generic [ref=e81]: Settings
+        - button "v0.3.33" [ref=e82] [cursor=pointer]:
+          - generic [ref=e83]: v0.3.33
+      - button "Toggle Sidebar" [ref=e84]
+    - main [ref=e85]:
+      - generic [ref=e145]:
+        - generic [ref=e146]:
+          - button "Toggle Sidebar" [ref=e147] [cursor=pointer]:
+            - img
+            - generic [ref=e148]: Toggle Sidebar
+          - button "QA-20260528-122029-onnj" [ref=e151] [cursor=pointer]
+          - generic [ref=e152]:
+            - generic [ref=e153]:
+              - img [ref=e154]
+              - generic [ref=e163]: idle
+            - button "Stop Agent" [ref=e165] [cursor=pointer]:
+              - img
+        - generic [ref=e167]:
+          - generic [ref=e168]:
+            - generic [ref=e169]:
+              - button "QA-20260528-122029-onnj" [ref=e170] [cursor=pointer]
+              - button "Agent settings" [ref=e171] [cursor=pointer]:
+                - img
+            - generic [ref=e173]:
+              - button "Expand input" [ref=e175] [cursor=pointer]:
+                - img
+              - textbox "How can I help? Press cmd+enter to send" [active] [ref=e177]: Open a browser and go to https://example.com. Tell me the page title.
+              - generic [ref=e178]:
+                - generic [ref=e179]:
+                  - button "Add files" [ref=e180] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 4.7 · High. Click to change." [ref=e181] [cursor=pointer]':
+                    - generic [ref=e182]:
+                      - text: Opus 4.7
+                      - generic [ref=e183]: · High
+                    - img
+                - generic [ref=e184]:
+                  - button "Set up voice input" [ref=e185] [cursor=pointer]:
+                    - img
+                  - button "Send message" [ref=e314] [cursor=pointer]:
+                    - img
+            - generic [ref=e189]:
+              - paragraph [ref=e190]: Other ways to get started
+              - generic [ref=e191]:
+                - button "Browse Templates — Opens the agent template marketplace" [ref=e192] [cursor=pointer]:
+                  - img [ref=e193]
+                  - generic [ref=e197]: Browse Templates
+                - button "Import an Agent — Import an agent from a .zip template file" [ref=e198] [cursor=pointer]:
+                  - img [ref=e199]
+                  - generic [ref=e201]: Import an Agent
+          - generic [ref=e202]:
+            - generic [ref=e204]:
+              - button "Triggers" [expanded] [ref=e205] [cursor=pointer]:
+                - generic [ref=e206]: Triggers
+                - img [ref=e207]
+              - generic [ref=e210]:
+                - paragraph [ref=e211]: No triggers yet
+                - paragraph [ref=e212]: Triggers fire your agent — on a schedule (crons) or in response to events (webhooks). Your agent will create them as needed.
+            - generic [ref=e214]:
+              - button "Connections" [expanded] [ref=e215] [cursor=pointer]:
+                - generic [ref=e216]: Connections
+                - img [ref=e217]
+              - generic [ref=e219]:
+                - generic [ref=e220]:
+                  - paragraph [ref=e221]: No connections yet
+                  - paragraph [ref=e222]: Connect APIs or MCP servers to give your agent access to external services like Gmail or Slack.
+                - generic [ref=e223]:
+                  - generic [ref=e233]: 70+
+                  - button "Add Connection" [ref=e235] [cursor=pointer]:
+                    - img
+                    - text: Add Connection
+            - generic [ref=e237]:
+              - button "Skills" [expanded] [ref=e238] [cursor=pointer]:
+                - generic [ref=e239]: Skills
+                - img [ref=e240]
+              - generic [ref=e242]:
+                - generic [ref=e243]:
+                  - paragraph [ref=e244]: No skills yet
+                  - paragraph [ref=e245]: Skills teach your agent how to do specific tasks, like triaging emails. Your agent builds skills for you as it works.
+                - button "Import" [ref=e247] [cursor=pointer]:
+                  - img
+                  - text: Import
+            - generic [ref=e249]:
+              - button "Remote Chat" [expanded] [ref=e250] [cursor=pointer]:
+                - generic [ref=e251]: Remote Chat
+                - img [ref=e252]
+              - generic [ref=e255]:
+                - paragraph [ref=e256]: Not configured yet
+                - paragraph [ref=e257]: Connect messaging to chat with this agent from anywhere.
+                - generic [ref=e258]:
+                  - button "Chat via Telegram" [ref=e259] [cursor=pointer]:
+                    - img [ref=e261]
+                    - generic [ref=e262]:
+                      - generic [ref=e263]: Chat via
+                      - generic [ref=e264]: Telegram
+                  - button "Chat via Slack" [ref=e265] [cursor=pointer]:
+                    - img [ref=e267]
+                    - generic [ref=e268]:
+                      - generic [ref=e269]: Chat via
+                      - generic [ref=e270]: Slack
+                  - button "Chat via iMessage" [ref=e271] [cursor=pointer]:
+                    - img [ref=e273]
+                    - generic [ref=e275]:
+                      - generic [ref=e276]: Chat via
+                      - generic [ref=e277]: iMessage
+            - generic [ref=e279]:
+              - button "Volumes" [expanded] [ref=e280] [cursor=pointer]:
+                - generic [ref=e281]: Volumes
+                - img [ref=e282]
+              - generic [ref=e284]:
+                - generic [ref=e285]:
+                  - paragraph [ref=e286]: No volumes yet
+                  - paragraph [ref=e287]: Mount a folder from your computer to give your agents direct read/write access to the files in it.
+                - button "Add Mount" [ref=e290] [cursor=pointer]:
+                  - img
+                  - text: Add Mount
+            - generic [ref=e292]:
+              - button "System Prompt" [ref=e293] [cursor=pointer]:
+                - generic [ref=e294]: System Prompt
+                - img [ref=e295]
+              - button "Copy Agent Path" [ref=e297] [cursor=pointer]:
+                - generic [ref=e298]: Copy Agent Path
+                - generic [ref=e299]:
+                  - img [ref=e300]
+                  - img [ref=e303]
+              - button "Secrets" [ref=e306] [cursor=pointer]:
+                - generic [ref=e307]: Secrets
+                - img [ref=e308]
+              - button "API Logs" [ref=e310] [cursor=pointer]:
+                - generic [ref=e311]: API Logs
+                - img [ref=e312]
+  - region "Notifications alt+T"
