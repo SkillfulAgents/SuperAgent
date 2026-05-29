@@ -65,6 +65,8 @@ vi.mock('./mock-container-client', () => ({
 const mockExecWithPath = vi.fn()
 const mockSpawnWithPath = vi.fn()
 vi.mock('./base-container-client', () => ({
+  BaseContainerClient: class {},
+  CONTAINER_INTERNAL_PORT: 3000,
   execWithPath: (...args: unknown[]) => mockExecWithPath(...args),
   spawnWithPath: (...args: unknown[]) => mockSpawnWithPath(...args),
   AGENT_CONTAINER_PATH: '/mock/agent-container',

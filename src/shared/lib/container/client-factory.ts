@@ -54,7 +54,7 @@ const ALL_RUNNERS: {
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
   { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), reconcileRuntimeState: () => LimaContainerClient.reconcileRuntimeState(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
   { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro() },
-  { name: 'kubernetes', cliCommand: 'kubectl', isEligible: () => KubernetesContainerClient.isEligible(), isAvailable: () => KubernetesContainerClient.isAvailable(), isRunning: () => KubernetesContainerClient.isRunning() },
+  { name: 'kubernetes', cliCommand: 'kubernetes', isEligible: () => KubernetesContainerClient.isEligible(), isAvailable: () => KubernetesContainerClient.isAvailable(), isRunning: () => KubernetesContainerClient.isRunning() },
 ]
 
 /**

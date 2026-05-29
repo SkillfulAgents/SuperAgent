@@ -39,6 +39,11 @@ const RUNTIME_INFO: Record<string, { name: string; description: string; installU
     description: 'Bundled lightweight container runtime using WSL2. No extra software needed — just works.',
     installUrl: 'https://learn.microsoft.com/en-us/windows/wsl/install',
   },
+  kubernetes: {
+    name: 'Gamut Cloud',
+    description: 'Managed Kubernetes runtime for cloud deployments. No local container setup needed.',
+    installUrl: '',
+  },
 }
 
 interface DockerSetupStepProps {
@@ -64,18 +69,19 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
       info: RUNTIME_INFO[r.runner] || { name: r.runner, description: '', installUrl: '' },
       effectivelyAvailable: r.available || ((r.runner === 'lima' || r.runner === 'wsl2') && isBuiltinStarting),
     }))
-    // Built-in runtime (lima/wsl2) should always appear first
+    // Cloud runtime and built-in local runtimes should appear before advanced options.
     return statuses.sort((a, b) => {
-      const aBuiltin = a.runner === 'lima' || a.runner === 'wsl2' ? 0 : 1
-      const bBuiltin = b.runner === 'lima' || b.runner === 'wsl2' ? 0 : 1
-      return aBuiltin - bBuiltin
+      const aPreferred = a.runner === 'kubernetes' || a.runner === 'lima' || a.runner === 'wsl2' ? 0 : 1
+      const bPreferred = b.runner === 'kubernetes' || b.runner === 'lima' || b.runner === 'wsl2' ? 0 : 1
+      return aPreferred - bPreferred
     })
   }, [settings?.runnerAvailability, isBuiltinStarting])
 
-  // Default selection: always prefer built-in runtime, then any available, then first in list
+  // Default selection: cloud runtime, then built-in runtime, then any available.
   const defaultRunner = useMemo(() => {
     return (
-      runtimeStatuses.find((r) => r.runner === 'lima' || r.runner === 'wsl2')
+      runtimeStatuses.find((r) => r.runner === 'kubernetes')
+      || runtimeStatuses.find((r) => r.runner === 'lima' || r.runner === 'wsl2')
       || runtimeStatuses.find((r) => r.effectivelyAvailable)
       || runtimeStatuses[0]
     )?.runner ?? null
@@ -90,8 +96,8 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
   // Report to parent whether the selected runtime is available and running
   const selectedRuntime = runtimeStatuses.find((r) => r.runner === effectiveSelected)
   useEffect(() => {
-    onCanProceedChange?.(selectedRuntime?.available ?? false)
-  }, [selectedRuntime?.available, onCanProceedChange])
+    onCanProceedChange?.(selectedRuntime?.effectivelyAvailable ?? false)
+  }, [selectedRuntime?.effectivelyAvailable, onCanProceedChange])
 
   const handleStartRunner = async (runner: string) => {
     try {
@@ -121,11 +127,11 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
 
       <div className="space-y-3">
         {runtimeStatuses.map((runtime) => {
-          const isBuiltin = runtime.runner === 'lima' || runtime.runner === 'wsl2'
-          if (!isBuiltin && !showMoreOptions) return null
+          const isPreferred = runtime.runner === 'kubernetes' || runtime.runner === 'lima' || runtime.runner === 'wsl2'
+          if (!isPreferred && !showMoreOptions) return null
 
           const isSelected = effectiveSelected === runtime.runner
-          const isStarting = isBuiltin && isBuiltinStarting && !runtime.available
+          const isStarting = (runtime.runner === 'lima' || runtime.runner === 'wsl2') && isBuiltinStarting && !runtime.available
 
           return (
             <div
@@ -142,7 +148,7 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-sm">{runtime.info.name}</span>
-                    {runtime.available && (
+                    {runtime.effectivelyAvailable && (
                       <span className="text-xs bg-green-500/10 text-green-600 dark:text-green-400 px-2 py-0.5 rounded-full flex items-center gap-1.5">
                         <span className="relative flex h-1.5 w-1.5">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
@@ -157,7 +163,7 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
                         Starting...
                       </span>
                     )}
-                    {!runtime.available && !isStarting && runtime.installed && !runtime.running && (
+                    {!runtime.effectivelyAvailable && !isStarting && runtime.installed && !runtime.running && (
                       <span className="text-xs bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 px-2 py-0.5 rounded-full flex items-center gap-1.5">
                         <span className="inline-flex rounded-full h-1.5 w-1.5 bg-yellow-500" />
                         Installed (not running)
@@ -170,7 +176,7 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-muted-foreground mt-1">{isBuiltin && 'Recommended option. '}{runtime.info.description}</p>
+                  <p className="text-xs text-muted-foreground mt-1">{isPreferred && 'Recommended option. '}{runtime.info.description}</p>
                 </div>
                 <div className={`mt-1 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
                   isSelected ? 'border-primary' : 'border-muted-foreground/40'
@@ -188,7 +194,7 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
                         onRefresh={() => refreshAvailability.mutate()}
                         isRefreshing={refreshAvailability.isPending}
                       />
-                    ) : runtime.available ? (
+                    ) : runtime.effectivelyAvailable ? (
                       null
                     ) : isStarting ? (
                       <p className="text-xs flex items-center gap-1.5">
