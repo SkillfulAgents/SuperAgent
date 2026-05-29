@@ -77,6 +77,23 @@ describe('decodeOrgIdFromToken', () => {
   })
 })
 
+describe('attribution.requiresActingMember', () => {
+  it('is true for an org-scoped JWT', () => {
+    mockGetPlatformAccessToken.mockReturnValue(ORG_TOKEN)
+    expect(attribution.requiresActingMember()).toBe(true)
+  })
+
+  it('is false for an opaque access key', () => {
+    mockGetPlatformAccessToken.mockReturnValue(ACCESS_KEY)
+    expect(attribution.requiresActingMember()).toBe(false)
+  })
+
+  it('is false when no platform token is configured', () => {
+    mockGetPlatformAccessToken.mockReturnValue(null)
+    expect(attribution.requiresActingMember()).toBe(false)
+  })
+})
+
 describe('attribution.fromCurrentRequest', () => {
   it('resolves the acting user from the request scope', async () => {
     await runWithRequestUser('user_request_xyz', () => {
