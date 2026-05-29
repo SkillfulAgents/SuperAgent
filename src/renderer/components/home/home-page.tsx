@@ -98,15 +98,16 @@ const statusTabBg = {
   awaiting_input: 'bg-orange-100 dark:bg-orange-900/40',
 } as const
 
-function StatusTab({ status, hasActiveSessions, hasSessionsAwaitingInput }: {
+function StatusTab({ status, runtime, hasActiveSessions, hasSessionsAwaitingInput }: {
   status: 'running' | 'stopped'
+  runtime?: 'local' | 'cloud'
   hasActiveSessions: boolean
   hasSessionsAwaitingInput: boolean
 }) {
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
   return (
     <div className={`absolute top-0 right-4 z-20 rounded-b-md px-2.5 py-1 ${statusTabBg[activityStatus]}`}>
-      <AgentStatus status={status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} size="sm" workingDotClassName="bg-foreground" />
+      <AgentStatus status={status} runtime={runtime} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} size="sm" workingDotClassName="bg-foreground" />
     </div>
   )
 }
@@ -162,6 +163,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
           {/* Status tab dropping from top-right */}
           <StatusTab
             status={agent.status}
+            runtime={agent.runtime}
             hasActiveSessions={agent.hasActiveSessions ?? false}
             hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
           />

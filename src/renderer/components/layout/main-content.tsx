@@ -267,7 +267,7 @@ export function MainContent() {
           )}
         </div>
         <div className="flex items-center gap-0 md:gap-2 shrink-0 app-no-drag">
-          {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />}
+          {agent && <AgentStatus status={agent.status} runtime={agent.runtime} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />}
           {!isViewOnly && (
             <>
               <Separator orientation="vertical" className="h-5 hidden md:block ml-2" />
