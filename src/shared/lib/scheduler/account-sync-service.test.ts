@@ -28,6 +28,7 @@ vi.mock('@shared/lib/db/schema', () => ({
 
 vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
+  and: (...conds: unknown[]) => ({ and: conds }),
 }))
 
 const mockListConnections = vi.fn()
@@ -50,6 +51,13 @@ vi.mock('@shared/lib/config/settings', () => ({
   getAccountProviderUserId: () => 'test-user',
 }))
 
+const mockRequiresActingMember = vi.fn(() => false)
+const mockRunWithRequestUser = vi.fn((_userId: string, fn: () => unknown) => fn())
+vi.mock('@shared/lib/platform-attribution', () => ({
+  attribution: { requiresActingMember: () => mockRequiresActingMember() },
+  runWithRequestUser: (userId: string, fn: () => unknown) => mockRunWithRequestUser(userId, fn),
+}))
+
 // Import after mocks
 const { accountSyncService } = await import('./account-sync-service')
 
@@ -58,6 +66,7 @@ describe('AccountSyncService', () => {
     vi.clearAllMocks()
     mockOnConflictDoNothing.mockResolvedValue(undefined)
     mockUpdateWhere.mockResolvedValue(undefined)
+    mockRequiresActingMember.mockReturnValue(false)
   })
 
   afterEach(() => {
@@ -209,6 +218,41 @@ describe('AccountSyncService', () => {
       await accountSyncService.syncAll()
 
       expect(mockListConnections).toHaveBeenCalledWith('test-user')
+    })
+  })
+
+  describe('syncAll — org-scoped (per-member) mode', () => {
+    it('reconciles each distinct owner under its own attribution', async () => {
+      mockRequiresActingMember.mockReturnValue(true)
+      // First where() call resolves distinct owners; subsequent calls are per-owner local accounts.
+      mockWhere
+        .mockResolvedValueOnce([{ userId: 'u1' }, { userId: 'u2' }, { userId: null }])
+        .mockResolvedValue([])
+      mockListConnections.mockResolvedValue([])
+
+      await accountSyncService.syncAll()
+
+      expect(mockRunWithRequestUser).toHaveBeenCalledTimes(2)
+      expect(mockRunWithRequestUser).toHaveBeenCalledWith('u1', expect.any(Function))
+      expect(mockRunWithRequestUser).toHaveBeenCalledWith('u2', expect.any(Function))
+    })
+
+    it('tags newly discovered connections with the owning member', async () => {
+      mockRequiresActingMember.mockReturnValue(true)
+      mockWhere
+        .mockResolvedValueOnce([{ userId: 'u1' }])
+        .mockResolvedValue([])
+      mockListConnections.mockResolvedValue([
+        { id: 'conn-new', status: 'ACTIVE', toolkitSlug: 'slack' },
+      ])
+      mockGetAccountDisplayName.mockResolvedValue('u1@slack.com')
+
+      await accountSyncService.syncAll()
+
+      expect(mockValues).toHaveBeenCalledWith(expect.objectContaining({
+        providerConnectionId: 'conn-new',
+        userId: 'u1',
+      }))
     })
   })
 })
