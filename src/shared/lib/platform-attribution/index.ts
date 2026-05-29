@@ -107,6 +107,14 @@ function fromCurrentRequest(): Attribution | null {
   return userId ? buildAttribution(getPlatformAccountIdForUserId(userId)) : null
 }
 
+// True when the active platform token is an org JWT, so every proxy call must
+// carry a per-request acting member. Opaque access keys and an unconfigured
+// token return false.
+function requiresActingMember(): boolean {
+  const token = getPlatformAccessToken()
+  return token !== null && decodeOrgIdFromToken(token) !== null
+}
+
 export const attribution = {
   fromCurrentRequest,
   fromUserId(userId: string): Attribution | null {
@@ -118,6 +126,7 @@ export const attribution = {
   current(): Attribution | null {
     return attributionContext.getStore()?.auth ?? fromCurrentRequest()
   },
+  requiresActingMember,
 } as const
 
 export { installPlatformFetchInterceptor } from './install-fetch-interceptor'
