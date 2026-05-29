@@ -2,7 +2,7 @@ import { errors as joseErrors } from 'jose'
 
 import { getSettings, updateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { PlatformAuthSettingsSchema } from '@shared/lib/types/skillset-schema'
+import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
@@ -69,6 +69,10 @@ export interface PlatformAuthStatus {
   orgId: string | null
   orgName: string | null
   role: string | null
+  /** Global platform user identity (Supabase auth UUID) — used for analytics. */
+  userId: string | null
+  /** Per-org membership id (sub_…) — used for request attribution. */
+  memberId: string | null
   createdAt: string | null
   updatedAt: string | null
   source: PlatformAuthSource
@@ -81,6 +85,64 @@ interface SavePlatformAuthInput {
   orgId?: string | null
   orgName?: string | null
   role?: string | null
+  userId?: string | null
+  memberId?: string | null
+}
+
+/**
+ * Raised when a token can't be validated against the platform. `status` is the
+ * HTTP status the API route should surface (400 = bad/revoked key, 5xx =
+ * transient). `message` is user-facing.
+ */
+export class PlatformTokenValidationError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+    this.name = 'PlatformTokenValidationError'
+  }
+}
+
+/**
+ * Validate a personal access key against the platform proxy and return its
+ * account identity. Used for manually-pasted keys (the OAuth flow already
+ * carries this metadata in the redirect). Throws PlatformTokenValidationError
+ * on an invalid/revoked key or an unreachable platform.
+ */
+async function fetchPlatformAccountInfo(token: string) {
+  const proxyBase = getPlatformProxyBaseUrl()
+  if (!proxyBase) {
+    throw new PlatformTokenValidationError('Platform proxy is not configured.', 500)
+  }
+
+  let res: Response
+  try {
+    res = await fetch(`${proxyBase}/v1/account`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  } catch (error) {
+    captureException(error, { tags: { area: 'platform-auth', op: 'account-introspect' } })
+    throw new PlatformTokenValidationError(
+      'Could not reach the platform to validate this key. Please try again.',
+      502,
+    )
+  }
+
+  if (res.status === 401 || res.status === 403 || res.status === 400) {
+    throw new PlatformTokenValidationError('This access key is invalid or has been revoked.', 400)
+  }
+  if (!res.ok) {
+    throw new PlatformTokenValidationError(
+      'Could not validate this access key right now. Please try again.',
+      502,
+    )
+  }
+
+  const data = await res.json().catch(() => null)
+  const parsed = PlatformAccountInfoSchema.safeParse(data)
+  if (!parsed.success) {
+    captureException(parsed.error, { tags: { area: 'platform-auth', op: 'account-parse' } })
+    throw new PlatformTokenValidationError('The platform returned an unexpected response.', 502)
+  }
+  return parsed.data
 }
 
 function buildTokenPreview(token: string): string {
@@ -110,6 +172,10 @@ function buildEnvManagedStatus(envToken: string, orgId: string | null): Platform
     orgId,
     orgName: null,
     role: null,
+    // Env-managed org tokens carry no per-user identity; attribution memberId
+    // for these comes from the Better Auth `authAccount` table, not here.
+    userId: null,
+    memberId: null,
     createdAt: null,
     updatedAt: null,
     source: 'env',
@@ -213,6 +279,8 @@ export function getPlatformAuthStatus(_userId?: string): PlatformAuthStatus {
       orgId: record.orgId,
       orgName: record.orgName,
       role: record.role,
+      userId: record.userId,
+      memberId: record.memberId,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
       source: 'settings',
@@ -227,6 +295,8 @@ export function getPlatformAuthStatus(_userId?: string): PlatformAuthStatus {
     orgId: null,
     orgName: null,
     role: null,
+    userId: null,
+    memberId: null,
     createdAt: null,
     updatedAt: null,
     source: null,
@@ -239,19 +309,39 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     throw new Error('Token is required')
   }
 
+  // Token-only saves (the manual "Add key" paste) arrive with no metadata.
+  // Validate the key against the platform and enrich it before persisting —
+  // this rejects bad keys with a clear message and fills the analytics/display
+  // fields the OAuth redirect would otherwise provide.
+  let enriched = input
+  if (!input.orgId && !input.userId && !input.memberId) {
+    const account = await fetchPlatformAccountInfo(trimmedToken)
+    enriched = {
+      ...input,
+      email: input.email ?? account.email,
+      orgId: account.orgId,
+      orgName: account.orgName,
+      role: account.role,
+      userId: account.userId,
+      memberId: account.memberId,
+    }
+  }
+
   const existing = readRecord()
-  const newOrgId = input.orgId?.trim() || null
+  const newOrgId = enriched.orgId?.trim() || null
   const orgChanged = existing?.orgId !== newOrgId
 
   const now = new Date().toISOString()
   const record: PlatformAuthRecord = PlatformAuthSettingsSchema.parse({
     token: trimmedToken,
     tokenPreview: buildTokenPreview(trimmedToken),
-    email: input.email?.trim() || null,
-    label: input.label?.trim() || null,
+    email: enriched.email?.trim() || null,
+    label: enriched.label?.trim() || null,
     orgId: newOrgId,
-    orgName: input.orgName?.trim() || null,
-    role: input.role?.trim() || null,
+    orgName: enriched.orgName?.trim() || null,
+    role: enriched.role?.trim() || null,
+    userId: enriched.userId?.trim() || null,
+    memberId: enriched.memberId?.trim() || null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   })
@@ -271,6 +361,18 @@ export function getPlatformAccessToken(_userId?: string): string | null {
   const envToken = process.env.PLATFORM_TOKEN?.trim()
   if (isAuthMode() && envToken) return envToken
   return readRecord()?.token ?? null
+}
+
+/**
+ * The per-org membership id (sub_…) for the settings-stored connection, if any.
+ *
+ * Used as an attribution fallback for org-scoped tokens stored in settings. The
+ * primary attribution source remains the Better Auth `authAccount` table (env /
+ * platform-OAuth path). Opaque `plat_sa_` access keys are already member-scoped
+ * server-side and do not use this.
+ */
+export function getStoredPlatformMemberId(): string | null {
+  return readRecord()?.memberId ?? null
 }
 
 async function clearPlatformAuth(): Promise<void> {

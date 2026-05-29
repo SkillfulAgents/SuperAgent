@@ -168,6 +168,10 @@ export interface PlatformAuthSettings {
   orgId: string | null
   orgName: string | null
   role: string | null
+  /** Global platform user identity (Supabase auth UUID) — used for analytics. */
+  userId: string | null
+  /** Per-org membership id (sub_…) — used for request attribution. */
+  memberId: string | null
   createdAt: string
   updatedAt: string
 }

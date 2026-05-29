@@ -1023,6 +1023,8 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const orgId = callbackUrl.searchParams.get('org_id')
       const orgName = callbackUrl.searchParams.get('org_name')
       const role = callbackUrl.searchParams.get('role')
+      const userId = callbackUrl.searchParams.get('user_id')
+      const memberId = callbackUrl.searchParams.get('member_id')
       const apiUrl = `http://localhost:${actualApiPort}/api/platform-auth/complete`
 
       fetch(apiUrl, {
@@ -1037,6 +1039,8 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
           orgId,
           orgName,
           role,
+          userId,
+          memberId,
         }),
       })
         .then(async (res) => {

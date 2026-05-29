@@ -11,7 +11,9 @@ import {
   getPlatformAuthStatus,
   savePlatformAuth,
   revokePlatformToken,
+  PlatformTokenValidationError,
 } from '@shared/lib/services/platform-auth-service'
+import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import { setErrorReportingUser } from '@shared/lib/error-reporting'
 
 const platformAuth = new Hono()
@@ -49,20 +51,32 @@ platformAuth.post('/complete', async (c) => {
     orgId?: string | null
     orgName?: string | null
     role?: string | null
+    userId?: string | null
+    memberId?: string | null
   }>()
 
   if (!body.token?.trim()) {
     return c.json({ error: 'Missing token' }, 400)
   }
 
-  const status = await savePlatformAuth(userId, {
-    token: body.token,
-    email: body.email,
-    label: body.label,
-    orgId: body.orgId,
-    orgName: body.orgName,
-    role: body.role,
-  })
+  let status
+  try {
+    status = await savePlatformAuth(userId, {
+      token: body.token,
+      email: body.email,
+      label: body.label,
+      orgId: body.orgId,
+      orgName: body.orgName,
+      role: body.role,
+      userId: body.userId,
+      memberId: body.memberId,
+    })
+  } catch (error) {
+    if (error instanceof PlatformTokenValidationError) {
+      return c.json({ error: error.message }, error.status as ContentfulStatusCode)
+    }
+    throw error
+  }
 
   // Update server-side error reporting identity so Sentry events are attributable
   setErrorReportingUser({

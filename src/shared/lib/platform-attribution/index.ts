@@ -4,7 +4,7 @@ import { and, desc, eq } from 'drizzle-orm'
 
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
 const PLATFORM_PROVIDER_ID = 'platform'
 
@@ -35,6 +35,15 @@ function getPlatformAccountIdForUserId(userId: string): string | null {
     .limit(1)
     .all()
   return rows[0]?.accountId ?? null
+}
+
+// The acting member for the current request: prefer the Better Auth
+// `authAccount` row (env / platform-OAuth path), then fall back to the
+// member id persisted with a settings-stored connection (single-connection
+// case). Opaque `plat_sa_` access keys are not org-scoped, so memberId is
+// unused for them — this only matters if an org-scoped token lives in settings.
+function resolveMemberIdForUserId(userId: string): string | null {
+  return getPlatformAccountIdForUserId(userId) ?? getStoredPlatformMemberId()
 }
 
 // Org JWTs carry the acting member as `<token>::<memberId>` (proxy splits
@@ -104,13 +113,13 @@ export function runWithAttribution<T>(
 
 function fromCurrentRequest(): Attribution | null {
   const userId = userContext.getStore()?.userId
-  return userId ? buildAttribution(getPlatformAccountIdForUserId(userId)) : null
+  return userId ? buildAttribution(resolveMemberIdForUserId(userId)) : null
 }
 
 export const attribution = {
   fromCurrentRequest,
   fromUserId(userId: string): Attribution | null {
-    return buildAttribution(getPlatformAccountIdForUserId(userId))
+    return buildAttribution(resolveMemberIdForUserId(userId))
   },
   fromResourceCreator(ownerUserId: string | null): Attribution | null {
     return ownerUserId ? buildAttribution(getPlatformAccountIdForUserId(ownerUserId)) : null

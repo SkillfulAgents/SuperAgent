@@ -94,6 +94,7 @@ describe('platform-auth-service', () => {
     delete process.env.SUPERAGENT_DATA_DIR
     delete process.env.AUTH_MODE
     delete process.env.PLATFORM_TOKEN
+    delete process.env.PLATFORM_PROXY_URL
     delete process.env.AUTH_PROVIDERS_JSON
     _setOidcJwksResolverForTest(null)
     _resetEnvManagedPlatformStatusForTest()
@@ -255,6 +256,93 @@ describe('platform-auth-service', () => {
     const onDisk = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
     expect(onDisk.platformAuth).toBeDefined()
     expect(onDisk.platformAuth.token).toBe('plat_superagent_token_1234567890abcdef')
+  })
+
+  it('persists and exposes platform userId and memberId', async () => {
+    const status = await savePlatformAuth('local', {
+      token: 'plat_superagent_token_1234567890abcdef',
+      userId: 'auth_user_uuid_123',
+      memberId: 'sub_member_456',
+    })
+
+    expect(status).toMatchObject({
+      userId: 'auth_user_uuid_123',
+      memberId: 'sub_member_456',
+    })
+    expect(getPlatformAuthStatus('local')).toMatchObject({
+      userId: 'auth_user_uuid_123',
+      memberId: 'sub_member_456',
+    })
+  })
+
+  it('defaults userId and memberId to null when metadata is provided without them', async () => {
+    // OAuth-path save (metadata present) from a platform that does not yet
+    // return user_id/member_id — no introspection, fields stay null.
+    await savePlatformAuth('local', {
+      token: 'plat_superagent_token_1234567890abcdef',
+      orgId: 'org_test_123',
+    })
+
+    expect(getPlatformAuthStatus('local')).toMatchObject({
+      userId: null,
+      memberId: null,
+    })
+  })
+
+  it('introspects and enriches a token-only (manual paste) save', async () => {
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_resolved',
+          orgName: 'Resolved Org',
+          role: 'admin',
+          userId: 'user_resolved',
+          email: 'resolved@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const status = await savePlatformAuth('local', {
+      token: 'plat_superagent_token_1234567890abcdef',
+    })
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://proxy.test/v1/account',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer plat_superagent_token_1234567890abcdef' },
+      }),
+    )
+    expect(status).toMatchObject({
+      email: 'resolved@example.com',
+      orgId: 'org_resolved',
+      orgName: 'Resolved Org',
+      role: 'admin',
+      userId: 'user_resolved',
+      memberId: 'sub_member_1',
+    })
+  })
+
+  it('rejects an invalid token-only save with a clear error', async () => {
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: 'Invalid or revoked access token' } }), {
+        status: 401,
+      }),
+    )
+
+    await expect(
+      savePlatformAuth('local', { token: 'plat_bad_token_000000000000000000000000' }),
+    ).rejects.toMatchObject({
+      name: 'PlatformTokenValidationError',
+      status: 400,
+      message: 'This access key is invalid or has been revoked.',
+    })
+
+    // Nothing should have been persisted for a rejected key.
+    expect(getPlatformAuthStatus('local').connected).toBe(false)
   })
 
   // Helpers for the org-switch / lifecycle tests below.
