@@ -1,4 +1,5 @@
 import { errors as joseErrors } from 'jose'
+import { eq, and, desc } from 'drizzle-orm'
 
 import { getSettings, updateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
@@ -8,6 +9,8 @@ import { captureException } from '@shared/lib/error-reporting'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
 import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
+import { db } from '@shared/lib/db'
+import { authAccount } from '@shared/lib/db/schema'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
@@ -241,9 +244,54 @@ function getEnvManagedStatus(): PlatformAuthStatus | null {
   return buildEnvManagedStatus(envToken, null)
 }
 
-export function getPlatformAuthStatus(_userId?: string): PlatformAuthStatus {
+const PLATFORM_USER_ID_CLAIM = 'https://platform.skillfulagents.dev/claims/user_id'
+
+/**
+ * Extract the platform user_id from a stored OIDC ID token. Returns null if
+ * the claim is absent (issuer not yet updated) or the token is malformed.
+ */
+function extractUserIdFromIdToken(idToken: string): string | null {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(idToken.split('.')[1], 'base64url').toString(),
+    )
+    const val = payload[PLATFORM_USER_ID_CLAIM]
+    return typeof val === 'string' ? val : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Look up the platform OIDC account for a Better Auth user and return the
+ * global platform user_id extracted from the stored ID token. Returns null
+ * if no platform account exists or the issuer hasn't emitted the claim yet.
+ */
+function getPlatformOidcUserId(betterAuthUserId: string): string | null {
+  const row = db
+    .select({ idToken: authAccount.idToken })
+    .from(authAccount)
+    .where(
+      and(
+        eq(authAccount.userId, betterAuthUserId),
+        eq(authAccount.providerId, PLATFORM_AUTH_PROVIDER_ID),
+      ),
+    )
+    .orderBy(desc(authAccount.createdAt))
+    .limit(1)
+    .get()
+  if (!row?.idToken) return null
+  return extractUserIdFromIdToken(row.idToken)
+}
+
+export function getPlatformAuthStatus(userId?: string): PlatformAuthStatus {
   const envManaged = getEnvManagedStatus()
-  if (envManaged) return envManaged
+  if (envManaged) {
+    if (!envManaged.userId && userId) {
+      return { ...envManaged, userId: getPlatformOidcUserId(userId) }
+    }
+    return envManaged
+  }
 
   const record = readRecord()
   if (record) {

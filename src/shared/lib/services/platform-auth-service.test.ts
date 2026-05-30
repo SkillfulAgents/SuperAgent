@@ -12,6 +12,23 @@ import {
   type JSONWebKeySet,
 } from 'jose'
 
+const mockDbGet = vi.fn()
+vi.mock('@shared/lib/db', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: () => ({
+              get: mockDbGet,
+            }),
+          }),
+        }),
+      }),
+    }),
+  },
+}))
+
 import { clearSettingsCache, getSettings, updateSettings } from '@shared/lib/config/settings'
 import { getAgentsDir } from '@shared/lib/utils/file-storage'
 import type { SkillsetConfig, InstalledSkillMetadata, InstalledAgentMetadata } from '@shared/lib/types/skillset'
@@ -87,6 +104,7 @@ describe('platform-auth-service', () => {
     clearSettingsCache()
     _setOidcJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOidcJwksResolverForTest>[0])
     _resetEnvManagedPlatformStatusForTest()
+    mockDbGet.mockReturnValue(null)
   })
 
   afterEach(() => {
@@ -414,6 +432,79 @@ describe('platform-auth-service', () => {
     const updated = await refreshStoredPlatformAccount()
     expect(updated).toBe(false)
     expect(getPlatformAuthStatus('local').updatedAt).toBe(before) // record not rewritten
+  })
+
+  // ---------------------------------------------------------------------------
+  // OIDC account enrichment for env-managed deployments
+  // ---------------------------------------------------------------------------
+
+  function makeIdToken(claims: Record<string, unknown>): string {
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url')
+    const payload = Buffer.from(JSON.stringify(claims)).toString('base64url')
+    return `${header}.${payload}.fake-signature`
+  }
+
+  it('env-managed status returns userId from OIDC id_token when user_id claim is present', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    await initEnvManagedPlatformStatus()
+
+    mockDbGet.mockReturnValue({
+      idToken: makeIdToken({
+        sub: 'sub_member_123',
+        'https://platform.skillfulagents.dev/claims/user_id': 'uuid-platform-user',
+      }),
+    })
+
+    const status = getPlatformAuthStatus('ba-user-id')
+    expect(status.userId).toBe('uuid-platform-user')
+    expect(status.source).toBe('env')
+  })
+
+  it('env-managed status returns userId: null when user_id claim is absent from id_token', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    await initEnvManagedPlatformStatus()
+
+    mockDbGet.mockReturnValue({
+      idToken: makeIdToken({ sub: 'sub_member_123' }),
+    })
+
+    const status = getPlatformAuthStatus('ba-user-id')
+    expect(status.userId).toBeNull()
+  })
+
+  it('env-managed status returns userId: null when no platform account exists', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    await initEnvManagedPlatformStatus()
+
+    mockDbGet.mockReturnValue(null)
+
+    const status = getPlatformAuthStatus('ba-user-id')
+    expect(status.userId).toBeNull()
+  })
+
+  it('env-managed status returns userId: null when no idToken is stored', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    await initEnvManagedPlatformStatus()
+
+    mockDbGet.mockReturnValue({ idToken: null })
+
+    const status = getPlatformAuthStatus('ba-user-id')
+    expect(status.userId).toBeNull()
+  })
+
+  it('env-managed status does not query account table when no userId is provided', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    await initEnvManagedPlatformStatus()
+
+    mockDbGet.mockClear()
+    const status = getPlatformAuthStatus()
+    expect(status.userId).toBeNull()
+    expect(mockDbGet).not.toHaveBeenCalled()
   })
 
   // Helpers for the org-switch / lifecycle tests below.
