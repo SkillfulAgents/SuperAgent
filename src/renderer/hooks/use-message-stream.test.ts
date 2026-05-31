@@ -149,6 +149,44 @@ describe('useMessageStream', () => {
     expect(result.current.activeStartTime).not.toBeNull()
   })
 
+  it('sets activeStartTime on connected when session is already active (page refresh recovery)', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    const before = Date.now()
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+      })
+    })
+
+    expect(result.current.isActive).toBe(true)
+    expect(result.current.activeStartTime).not.toBeNull()
+    expect(result.current.activeStartTime).toBeGreaterThanOrEqual(before)
+  })
+
+  it('does not set activeStartTime on connected when session is inactive', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: false,
+      })
+    })
+
+    expect(result.current.isActive).toBe(false)
+    expect(result.current.activeStartTime).toBeNull()
+  })
+
   it('handles streaming: stream_start → stream_delta → stream_end', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
