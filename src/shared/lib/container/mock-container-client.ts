@@ -1322,7 +1322,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
   }
 
-  async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean }> {
+  async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean; stopped: boolean }> {
     if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
       cleanupBrowserSessionFn(this.activeBrowserSessionId)
       this.activeBrowserSessionId = null
@@ -1332,7 +1332,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.sessionMessages.clear()
     this.streamCallbacks.clear()
     console.log(`[MockContainerClient] Stopped mock container for agent ${this.config.agentId}`)
-    return { forceStopUsed: false }
+    return { forceStopUsed: false, stopped: true }
   }
 
   stopSync(): void {

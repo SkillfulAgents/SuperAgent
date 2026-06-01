@@ -331,6 +331,49 @@ export class LimaContainerClient extends BaseContainerClient {
    */
 
   /**
+   * Probe the guest to learn WHY nerdctl stop + kill hung. The VM is likely
+   * CPU-pegged or containerd is wedged, so every probe goes through `limactl
+   * shell` (which SSHes into the guest) and is individually bounded — a probe
+   * timing out is itself a signal the guest is unresponsive. All best-effort.
+   */
+  protected async collectStopFailureDiagnostics(containerName: string): Promise<Record<string, unknown>> {
+    // Host/VM-level state (VM status, disk, host memory, limactl health).
+    const diag: Record<string, unknown> = { ...collectLimaDiagnostics() }
+
+    const probe = async (key: string, args: string, timeoutMs = 4000): Promise<void> => {
+      try {
+        const { stdout } = await Promise.race([
+          execLimactl(args),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('probe timed out')), timeoutMs)
+          ),
+        ])
+        diag[key] = stdout.trim().slice(0, 2000) || '(empty)'
+      } catch (e: any) {
+        diag[key] = `probe_failed: ${String(e?.message ?? e).slice(0, 200)}`
+      }
+    }
+
+    const sh = (cmd: string) => `shell ${LIMA_VM_NAME} -- sh -c "${cmd}"`
+
+    await Promise.all([
+      // Guest load and memory pressure — the prime suspects for a wedged VM.
+      probe('guest_loadavg', `shell ${LIMA_VM_NAME} -- cat /proc/loadavg`),
+      probe('guest_meminfo', sh("grep -E 'MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree' /proc/meminfo")),
+      probe('guest_uptime', `shell ${LIMA_VM_NAME} -- uptime`),
+      // Top processes by CPU (busybox top) — what's actually pegging the VM.
+      probe('guest_top', sh('top -bn1 2>/dev/null | head -20')),
+      // Container runtime state — is containerd alive, and what state is this
+      // container actually in (running / OOMKilled / dead / pid)?
+      probe('nerdctl_ps', sh("sudo nerdctl ps -a --format '{{.Names}}|{{.Status}}|{{.ID}}' 2>&1")),
+      probe('container_state', sh(`sudo nerdctl inspect ${containerName} --format '{{json .State}}' 2>&1`)),
+      probe('containerd_status', sh('rc-service containerd status 2>&1 || echo unknown')),
+    ])
+
+    return diag
+  }
+
+  /**
    * Force-stop by killing the Lima VM directly (QEMU process).
    * Called when nerdctl stop + kill both time out because the VM is unresponsive.
    */

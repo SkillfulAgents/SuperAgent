@@ -111,6 +111,10 @@ class AutoSleepMonitor {
             await containerManager.stopContainer(agentId, {
               stopTimeoutMs: 60_000,
               killTimeoutMs: 30_000,
+              // Never force-stop the shared VM from a background idle sweep — it
+              // would kill every running agent to reclaim one idle container. If
+              // stop+kill time out, leave it running and retry next cycle.
+              escalateToForceStop: false,
             })
           }
         } catch (error) {

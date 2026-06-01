@@ -99,7 +99,27 @@ describe('AutoSleepMonitor', () => {
     expect(mockStopContainer).toHaveBeenCalledWith('agent-1', {
       stopTimeoutMs: 60_000,
       killTimeoutMs: 30_000,
+      escalateToForceStop: false,
     })
+  })
+
+  it('never escalates to force-stopping the VM (escalateToForceStop: false)', async () => {
+    // Auto-sleep is a background sweep; force-stopping the shared Lima VM to
+    // reclaim one idle container would kill every running agent. The monitor
+    // must always opt out of escalation.
+    const now = Date.now()
+    mockGetRunningAgentIds.mockReturnValue(['agent-1'])
+    mockListSessions.mockResolvedValue([
+      makeSession('s1', new Date(now - THIRTY_MINUTES_MS - 1000)),
+    ])
+    mockGetContainerStartTime.mockReturnValue(now - THIRTY_MINUTES_MS - 1000)
+
+    await autoSleepMonitor.start()
+    await tick()
+
+    expect(mockStopContainer).toHaveBeenCalledTimes(1)
+    const [, options] = mockStopContainer.mock.calls[0]
+    expect(options).toMatchObject({ escalateToForceStop: false })
   })
 
   it('does not stop agent with recent session activity', async () => {

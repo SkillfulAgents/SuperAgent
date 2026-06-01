@@ -154,6 +154,9 @@ class ContainerManager {
     this.startingAgents.delete(agentId)
 
     let forceStopUsed = false
+    // Default true: if stop() throws, preserve prior behavior of marking the
+    // agent stopped. Only the explicit force-stop-disabled bail returns false.
+    let stopped = true
 
     try {
       // Stop the host browser before the container so it closes gracefully
@@ -167,27 +170,40 @@ class ContainerManager {
       const client = this.getClient(agentId)
       const result = await client.stop(options)
       forceStopUsed = result.forceStopUsed
+      // Only an explicit `false` (stop+kill timed out with force-stop disabled)
+      // means the container is still running; anything else counts as stopped.
+      stopped = result.stopped ?? true
     } finally {
       this.stoppingAgents.delete(agentId)
 
-      // Update cached status
-      this.markAsStopped(agentId)
+      if (!stopped) {
+        // stop+kill timed out and force-stop was disabled (auto-sleep): the
+        // container is still running. Leave cached status untouched so the UI
+        // and the next auto-sleep sweep see reality, and skip the stopped-side
+        // effects below.
+        console.warn(
+          `[ContainerManager] Stop incomplete for ${agentId}; container still running, will retry next cycle`
+        )
+      } else {
+        // Update cached status
+        this.markAsStopped(agentId)
 
-      // Mark all sessions for this agent as inactive
-      messagePersister.markAllSessionsInactiveForAgent(agentId)
+        // Mark all sessions for this agent as inactive
+        messagePersister.markAllSessionsInactiveForAgent(agentId)
 
-      // If this agent had grabbed a window, ungrab it so the halo disappears
-      if (computerUsePermissionManager.getGrabbedApp(agentId)) {
-        computerUsePermissionManager.clearGrabbedApp(agentId)
-        ungrabAC().catch(() => {})  // Best-effort, non-blocking
+        // If this agent had grabbed a window, ungrab it so the halo disappears
+        if (computerUsePermissionManager.getGrabbedApp(agentId)) {
+          computerUsePermissionManager.clearGrabbedApp(agentId)
+          ungrabAC().catch(() => {})  // Best-effort, non-blocking
+        }
+
+        // Broadcast status change so UI updates
+        messagePersister.broadcastGlobal({
+          type: 'agent_status_changed',
+          agentSlug: agentId,
+          status: 'stopped',
+        })
       }
-
-      // Broadcast status change so UI updates
-      messagePersister.broadcastGlobal({
-        type: 'agent_status_changed',
-        agentSlug: agentId,
-        status: 'stopped',
-      })
 
       // If we had to force-kill the VM (e.g., Lima QEMU process):
       // 1. Mark ALL other running containers as stopped — they died with the VM
