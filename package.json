@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.3.35-rc.3",
+  "version": "0.3.35",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "private": true,
