@@ -413,7 +413,12 @@ export class ClaudeCodeProcess extends EventEmitter {
           'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
           'EnterWorktree', 'ExitWorktree',
         ],
-        ...(this.maxThinkingTokens && { maxThinkingTokens: this.maxThinkingTokens }),
+        // Request summarized thinking so reasoning text streams to the UI. Without an
+        // explicit `display`, Opus 4.8/4.7 default to `omitted` — thinking_delta events
+        // arrive empty (only a signature), so the UI can show "Thinking" but no text.
+        thinking: this.maxThinkingTokens
+          ? { type: 'enabled', budgetTokens: this.maxThinkingTokens, display: 'summarized' }
+          : { type: 'adaptive', display: 'summarized' },
         ...(this.maxTurns && { maxTurns: this.maxTurns }),
         ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
         ...(this.effort && { effort: this.effort }),
