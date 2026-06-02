@@ -381,6 +381,15 @@ export function getAgentDir(slug: string): string {
  * ~/.superagent/agents/{slug}/workspace/
  */
 export function getAgentWorkspaceDir(slug: string): string {
+  const cloudWorkspaceRoot = process.env.GAMUT_CLOUD_WORKSPACE_ROOT
+  if (cloudWorkspaceRoot) {
+    return path.join(path.resolve(cloudWorkspaceRoot), slug)
+  }
+
+  return getLocalAgentWorkspaceDir(slug)
+}
+
+function getLocalAgentWorkspaceDir(slug: string): string {
   return path.join(getAgentDir(slug), 'workspace')
 }
 
@@ -389,7 +398,7 @@ export function getAgentWorkspaceDir(slug: string): string {
  * ~/.superagent/agents/{slug}/workspace/CLAUDE.md
  */
 export function getAgentClaudeMdPath(slug: string): string {
-  return path.join(getAgentWorkspaceDir(slug), 'CLAUDE.md')
+  return path.join(getLocalAgentWorkspaceDir(slug), 'CLAUDE.md')
 }
 
 /**

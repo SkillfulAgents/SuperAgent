@@ -5,6 +5,7 @@
  * Agents are stored as directories with CLAUDE.md files.
  */
 
+import path from 'path'
 import {
   getAgentsDir,
   getAgentDir,
@@ -54,6 +55,7 @@ function toApiAgent(
     createdAt: new Date(agent.frontmatter.createdAt),
     status,
     containerPort,
+    runtime: process.env.REMOTE_RUNTIME === 'kubernetes' || process.env.GAMUT_CLOUD_WORKSPACE_ROOT ? 'cloud' : 'local',
     ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
   }
 }
@@ -213,6 +215,9 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
 
   // Create CLAUDE.md
   const claudeMdPath = getAgentClaudeMdPath(slug)
+  // In cloud mode the workspace lives on /data while CLAUDE.md lives on the
+  // metadata PVC, so the parent of claudeMdPath is a separate directory.
+  await ensureDirectory(path.dirname(claudeMdPath))
   const frontmatter: AgentFrontmatter = {
     name,
     createdAt: new Date().toISOString(),
@@ -325,6 +330,7 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
 
   // Create a basic CLAUDE.md (may be overwritten by template)
   const claudeMdPath = getAgentClaudeMdPath(slug)
+  await ensureDirectory(path.dirname(claudeMdPath))
   const frontmatter: AgentFrontmatter = {
     name,
     createdAt: new Date().toISOString(),
