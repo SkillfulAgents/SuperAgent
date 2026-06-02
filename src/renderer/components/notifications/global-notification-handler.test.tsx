@@ -31,6 +31,10 @@ vi.mock('@renderer/lib/os-notifications', () => ({
   showOSNotification: vi.fn(),
 }))
 
+vi.mock('@renderer/lib/api', () => ({
+  apiFetch: vi.fn(() => Promise.resolve({ ok: true })),
+}))
+
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: vi.fn(() => ({ view: { kind: 'home' }, setAgent: vi.fn() })),
 }))
@@ -76,15 +80,41 @@ function simulateSSEMessage(es: MockEventSource, data: unknown) {
 describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
   let queryClient: QueryClient
 
-  beforeEach(() => {
+  beforeEach(async () => {
     MockEventSource.instances = []
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+
+    // Reset module-level mocks that individual tests override with
+    // `mockReturnValue`. vi.mock factories are NOT reset between tests, so
+    // without this an override (a selected session, `notifyWhenUnfocused`,
+    // etc.) leaks into later tests and makes them order-dependent.
+    const { useSelection } = await import('@renderer/context/selection-context')
+    const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
+    const { apiFetch } = await import('@renderer/lib/api')
+    vi.mocked(useSelection).mockReturnValue({
+      view: { kind: 'home' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useSelection>)
+    vi.mocked(useUserSettings).mockReturnValue({
+      data: undefined,
+    } as unknown as ReturnType<typeof useUserSettings>)
+    // restoreAllMocks (afterEach) wipes the factory implementation, so
+    // re-establish it: the handler does apiFetch(...).then(...) and a bare
+    // undefined return would throw.
+    vi.mocked(apiFetch).mockResolvedValue({ ok: true } as unknown as Response)
   })
 
   afterEach(() => {
     cleanup()
+    // Tests stub OS focus/visibility on `document`; undo so the next test
+    // starts from the real jsdom defaults instead of an inherited
+    // unfocused/visible state. restoreAllMocks restores the `hasFocus` spy;
+    // `visibilityState` is redefined as an own accessor, so delete it to fall
+    // back to the prototype getter.
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(document, 'visibilityState')
   })
 
   it('session_awaiting_input with review data invalidates proxy-reviews query', async () => {
@@ -331,6 +361,48 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     })
 
     expect(showOSNotification).not.toHaveBeenCalled()
+  })
+
+  it('marks the DB notification read (no popup) when actively viewing the focused session', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    const { apiFetch } = await import('@renderer/lib/api')
+    vi.mocked(showOSNotification).mockClear()
+    vi.mocked(apiFetch).mockClear()
+
+    // Window focused + visible, user is looking at sess-1.
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    const { useSelection } = await import('@renderer/context/selection-context')
+    vi.mocked(useSelection).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useSelection>)
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    simulateSSEMessage(es, {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      notificationId: 'notif-9',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    // No OS popup (the user is watching it live), but the backend-created
+    // record is marked read so the unread badge doesn't inflate.
+    expect(showOSNotification).not.toHaveBeenCalled()
+    expect(apiFetch).toHaveBeenCalledWith('/api/notifications/notif-9/read', { method: 'POST' })
   })
 
   it('also invalidates sessions query (for sidebar awaiting_input indicator)', () => {
