@@ -3,6 +3,7 @@
   "version": "0.3.35",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
+  "license": "MIT",
   "private": true,
   "main": "dist/main/index.js",
   "scripts": {
