@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can successfully execute browser commands (open browser, navigate to a URL, retrieve page title) and return accurate information about the page.",
+  "reason": "Browser use feature successfully executes browser tools - agent can open browser, navigate to URLs, retrieve page content and report findings",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded SuperAgent home page with agents list displayed",
-    "Found and clicked the \"QA-20260528-122029-onnj\" agent in the sidebar — Agent chat interface opened successfully",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message entered correctly in the text input box",
-    "Clicked the send button to submit the message — Message sent successfully, agent transitioned to \"working\" state",
-    "Waited up to 3 minutes for response with \"Example Domain\" text — Agent completed the task in 13 seconds and returned the response",
-    "Verified the response contains \"Example Domain\" — Agent response correctly states: \"The page title is \"Example Domain\".\" with all tool calls (ToolSearch, Open Browser, Browser MCP: Browser Get State, Close Browser) executing successfully as indicated by green checkmarks"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the Super Agent interface with sidebar listing agents",
+    "Found and clicked the \"QA-20260602-194539-8oyq\" agent in sidebar — Agent opened showing chat interface with message input field",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message was entered and visible in the text box",
+    "Clicked Send button to submit the message — Message was sent, agent status changed to \"working\", session \"Browser Page Title Lookup\" created",
+    "Waited up to 3 minutes for response — Agent completed work in 11 seconds",
+    "Verified response mentions \"Example Domain\" — Response clearly states \"The page title is 'Example Domain'\" and confirms \"Its title/main heading is 'Example Domain'\" after successfully loading the page"
   ],
   "bugs": [],
-  "durationMs": 91995,
-  "sessionId": "c0d4e055-37ee-4e3f-8572-7cf731c5e73d",
+  "durationMs": 115088,
+  "sessionId": "8771defa-a1a6-4d5a-b482-75728691f066",
   "cost": {
-    "inputTokens": 315,
-    "outputTokens": 9360,
-    "cacheCreationTokens": 122762,
-    "cacheReadTokens": 1104251,
+    "inputTokens": 396,
+    "outputTokens": 12707,
+    "cacheCreationTokens": 162880,
+    "cacheReadTokens": 1784641,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.310993
+    "totalCostUsd": 0.445995
   }
 }
