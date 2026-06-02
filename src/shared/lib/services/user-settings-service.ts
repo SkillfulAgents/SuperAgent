@@ -11,6 +11,7 @@ const notificationSettingsSchema = z.object({
   sessionComplete: z.boolean().default(true),
   sessionWaiting: z.boolean().default(true),
   sessionScheduled: z.boolean().default(true),
+  notifyWhenUnfocused: z.boolean().default(false),
 })
 
 export const userSettingsSchema = z.object({
@@ -20,6 +21,7 @@ export const userSettingsSchema = z.object({
     sessionComplete: true,
     sessionWaiting: true,
     sessionScheduled: true,
+    notifyWhenUnfocused: false,
   }),
   setupCompleted: z.boolean().default(false),
   showMenuBarIcon: z.boolean().default(true),
@@ -69,6 +71,7 @@ function seedFromAppSettings(): UserSettingsData {
           sessionComplete: appPrefs.notifications.sessionComplete ?? true,
           sessionWaiting: appPrefs.notifications.sessionWaiting ?? true,
           sessionScheduled: appPrefs.notifications.sessionScheduled ?? true,
+          notifyWhenUnfocused: appPrefs.notifications.notifyWhenUnfocused ?? false,
         }
       : undefined,
     setupCompleted: appPrefs.setupCompleted ?? false,

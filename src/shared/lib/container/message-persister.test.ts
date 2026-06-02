@@ -1323,15 +1323,17 @@ describe('MessagePersister', () => {
       expect(mcpRequests).toHaveLength(0)
     })
 
-    it('triggers notification when no active viewers', async () => {
+    // The persister always fires the trigger; the renderer's notification
+    // gate decides whether to actually show the OS popup (it knows focus,
+    // per-user viewing, and the `notifyWhenUnfocused` toggle). An SSE
+    // viewer being attached does NOT suppress the trigger here.
+    it('triggers notification regardless of whether viewers are attached', async () => {
       const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
 
       sseEvents.length = 0
       vi.mocked(notificationManager.triggerSessionWaitingInput).mockClear()
 
-      // Remove SSE client so there are no active viewers
-      sseCleanup()
-
+      // SSE client IS attached — trigger should still fire.
       simulateRemoteMcpToolUse('mcp-notify', {
         url: 'https://mcp.example.com/mcp',
       })
@@ -1341,25 +1343,6 @@ describe('MessagePersister', () => {
         AGENT_SLUG,
         'remote_mcp'
       )
-
-      // Re-attach SSE client for afterEach cleanup
-      const sse = collectSSEEvents(SESSION_ID)
-      sseEvents = sse.events
-      sseCleanup = sse.cleanup
-    })
-
-    it('does not trigger notification when there are active viewers', async () => {
-      const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
-
-      sseEvents.length = 0
-      vi.mocked(notificationManager.triggerSessionWaitingInput).mockClear()
-
-      // SSE client is attached (active viewer) — notification should NOT fire
-      simulateRemoteMcpToolUse('mcp-no-notify', {
-        url: 'https://mcp.example.com/mcp',
-      })
-
-      expect(notificationManager.triggerSessionWaitingInput).not.toHaveBeenCalled()
     })
 
     it('still broadcasts tool_use_ready alongside remote_mcp_request', () => {

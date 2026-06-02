@@ -162,11 +162,10 @@ export class ReviewManager {
       // session of this agent. The proxy call is agent-scoped (no sessionId
       // in the request), so we pick an active session — same attribution
       // heuristic the sidebar uses for its orange dot (agents.ts:
-      // isActive && hasAgentLevelReviews). Do NOT gate on hasActiveViewers
-      // here: an open SSE connection ≠ actively looking at the screen
-      // (the user can have the session open and be alt-tabbed away). The
-      // renderer-side gate (isAppActive && isViewingNotificationSession)
-      // is the only one that knows about real OS focus.
+      // isActive && hasAgentLevelReviews). Whether the OS popup actually
+      // shows is the renderer's call — it knows OS focus + per-user viewing
+      // + `notifyWhenUnfocused`. An open SSE connection ≠ actively looking
+      // at the screen.
       const targetSessionId = messagePersister.getActiveSessionIdsForAgent(details.agentSlug)[0]
       if (targetSessionId) {
         const kind = details.xAgent ? 'agent_action' : 'api_request'

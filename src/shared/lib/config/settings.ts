@@ -49,6 +49,7 @@ export interface NotificationSettings {
   sessionComplete: boolean
   sessionWaiting: boolean
   sessionScheduled: boolean
+  notifyWhenUnfocused?: boolean
 }
 
 export interface ModelSettings {

@@ -202,19 +202,28 @@ export function GlobalNotificationHandler() {
             // the prompt. For chattier types (chat-integration, etc.) we
             // keep the visibility-only gate to avoid notification spam
             // for users who keep the window in a side panel. (Review S4.)
+            // `notifyWhenUnfocused` opts the chattier types into the same
+            // focus-aware gate.
+            const notifyWhenUnfocused =
+              userSettingsRef.current?.notifications?.notifyWhenUnfocused === true
             const isAppActive =
-              notificationType === 'session_waiting'
+              notificationType === 'session_waiting' || notifyWhenUnfocused
                 ? isTabVisible && document.hasFocus()
                 : isTabVisible
+
+            // The user is actively watching this session right now when the app
+            // is active (focus-aware for actionable / opted-in types) AND this
+            // is the session on screen. The backend always creates the DB
+            // notification record; here we only decide whether to pop an OS
+            // notification on top of it.
+            const typeEnabled = isNotificationTypeEnabled(userSettingsRef.current, notificationType ?? '')
+            const suppressedByActiveView = isAppActive && isViewingNotificationSession
 
             // Show OS notification if:
             // 1. User has access to the notification's agent
             // 2. User's notification settings allow this type
             // 3. App not active OR not viewing the notification's session
-            if (
-              isNotificationTypeEnabled(userSettingsRef.current, notificationType ?? '') &&
-              (!isAppActive || !isViewingNotificationSession)
-            ) {
+            if (typeEnabled && !suppressedByActiveView) {
               const { title, body } = data as { title: string; body: string }
               // Validate actions at the SSE boundary. A malicious / buggy
               // broadcaster can't inject a 1000-button notification with
@@ -237,6 +246,22 @@ export function GlobalNotificationHandler() {
                 notificationId: data.notificationId ?? baseContext.notificationId,
               }
               showOSNotification(title, body, undefined, { actions, context })
+            } else if (suppressedByActiveView && typeof data.notificationId === 'string') {
+              // Popup suppressed because the user is actively viewing this
+              // focused session — but the backend still created the DB record.
+              // Mark it read here, otherwise the unread badge inflates for a
+              // session the user is watching live. main-content's auto-mark-read
+              // only fires on session open / tab refocus, not for notifications
+              // that arrive mid-view. (PR #175 follow-up.)
+              apiFetch(`/api/notifications/${data.notificationId}/read`, { method: 'POST' })
+                .then((res) => {
+                  if (res.ok) {
+                    queryClient.invalidateQueries({ queryKey: ['notifications'] })
+                  }
+                })
+                .catch(() => {
+                  // Best-effort: a stale notificationId is fine to silently ignore.
+                })
             }
             break
           }

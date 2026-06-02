@@ -22,6 +22,7 @@ export function NotificationsTab() {
     sessionComplete: boolean
     sessionWaiting: boolean
     sessionScheduled: boolean
+    notifyWhenUnfocused: boolean
   } | null>(null)
 
   // Browser notification permission state
@@ -41,6 +42,7 @@ export function NotificationsTab() {
     sessionComplete: true,
     sessionWaiting: true,
     sessionScheduled: true,
+    notifyWhenUnfocused: false,
   }
 
   const updateNotificationSetting = (key: string, value: boolean) => {
@@ -148,6 +150,28 @@ export function NotificationsTab() {
             id="notify-session-scheduled"
             checked={notificationSettings.sessionScheduled}
             onCheckedChange={(checked) => updateNotificationSetting('sessionScheduled', checked)}
+            disabled={isLoading || !notificationSettings.enabled}
+          />
+        </div>
+      </div>
+
+      {/* Behavior */}
+      <div className="border-t pt-4 space-y-4">
+        <h3 className="text-sm font-medium text-muted-foreground">Behavior</h3>
+
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5 pr-4">
+            <Label htmlFor="notify-when-unfocused">Notify when window isn&apos;t focused</Label>
+            <p className="text-xs text-muted-foreground">
+              Send notifications even while the session is open, as long as the SuperAgent
+              window is behind another app. Useful for long-running sessions you&apos;ve left
+              in the background.
+            </p>
+          </div>
+          <Switch
+            id="notify-when-unfocused"
+            checked={notificationSettings.notifyWhenUnfocused}
+            onCheckedChange={(checked) => updateNotificationSetting('notifyWhenUnfocused', checked)}
             disabled={isLoading || !notificationSettings.enabled}
           />
         </div>
