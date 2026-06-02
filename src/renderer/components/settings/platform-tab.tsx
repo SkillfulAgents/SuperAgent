@@ -1,11 +1,16 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { ArrowUpRight, BadgeX, Loader2 } from 'lucide-react'
+import { ArrowUpRight, BadgeX, Loader2, RefreshCw } from 'lucide-react'
 
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { Progress } from '@renderer/components/ui/progress'
+import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { RequestError } from '@renderer/components/messages/request-error'
 import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
+import { useBillingInfo } from '@renderer/hooks/use-billing-info'
+import { cn } from '@shared/lib/utils'
+import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
 
 interface PlatformTabProps {
   readOnly?: boolean
@@ -34,6 +39,168 @@ function SettingRow({ name, subtitle, right }: SettingRowProps) {
 }
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+
+const currencyFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+})
+
+function formatCents(cents: number): string {
+  return currencyFormatter.format(cents / 100)
+}
+
+function seatPercentRemaining(seat: NonNullable<ParsedPlatformBillingInfo['seat']>): number {
+  if (seat.startingBalanceCents <= 0) return 0
+  return Math.max(0, Math.min(100, (seat.balanceCents / seat.startingBalanceCents) * 100))
+}
+
+// Called only with a configured snapshot — the unconfigured case is handled by
+// a separate row before this runs.
+function subscriptionLabel(b: ParsedPlatformBillingInfo): string {
+  if (b.subscription.paymentStatus === 'past_due' || b.subscription.paymentStatus === 'payment_failed') {
+    return 'Past due'
+  }
+  switch (b.subscription.status) {
+    case 'active':
+      return b.seat ? 'Subscribed' : 'Active'
+    case 'cancellation_scheduled':
+      return 'Cancelling'
+    case 'cancelled':
+      return 'Cancelled'
+    default:
+      return 'Free'
+  }
+}
+
+const VALUE_CLASS = 'text-xs text-muted-foreground truncate max-w-[260px]'
+
+function PlatformBillingCard({
+  platformBaseUrl,
+  orgId,
+}: {
+  platformBaseUrl?: string | null
+  orgId?: string | null
+}) {
+  const { data, isLoading, isFetching, error, refetch } = useBillingInfo(true)
+  const billing = data?.billing
+
+  async function handleManageBilling() {
+    if (!platformBaseUrl || !orgId) return
+    const url = `${platformBaseUrl}/dashboard/organizations/${orgId}?tab=billing`
+    if (window.electronAPI?.openExternal) {
+      await window.electronAPI.openExternal(url)
+      return
+    }
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between px-1">
+        <h3 className="text-xs font-medium text-muted-foreground">Billing</h3>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 gap-1.5 text-xs"
+          onClick={() => void refetch()}
+          disabled={isFetching}
+        >
+          <RefreshCw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} />
+          Refresh
+        </Button>
+      </div>
+
+      <div className={CARD_CLASS}>
+        {isLoading ? (
+          <div className="flex items-center gap-2 py-6 px-4 text-xs text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading billing…
+          </div>
+        ) : billing && !billing.configured ? (
+          // Legacy / pre-billing org with no billing workspace yet.
+          <SettingRow
+            name="Subscription"
+            subtitle="No billing set up for this organization"
+            right={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void handleManageBilling()}
+                disabled={!platformBaseUrl || !orgId}
+              >
+                Set up
+              </Button>
+            }
+          />
+        ) : billing ? (
+          <>
+            <SettingRow
+              name="Subscription"
+              right={<span className={VALUE_CLASS}>{subscriptionLabel(billing)}</span>}
+            />
+            {billing.seat ? (
+              <SeatCreditsRow seat={billing.seat} />
+            ) : (
+              <SettingRow
+                name="Seat credits"
+                right={<span className={VALUE_CLASS}>Not subscribed</span>}
+              />
+            )}
+            <SettingRow
+              name="Organization credits"
+              subtitle="Shared pool used after your seat quota"
+              right={<span className={VALUE_CLASS}>{formatCents(billing.orgPool.poolBalanceCents)}</span>}
+            />
+            <SettingRow
+              name="Manage billing on the web"
+              right={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="group gap-0"
+                  onClick={() => void handleManageBilling()}
+                  disabled={!platformBaseUrl || !orgId}
+                >
+                  Manage
+                  <HoverArrow />
+                </Button>
+              }
+            />
+          </>
+        ) : (
+          <div className="py-6 px-4 text-xs text-muted-foreground">Billing information is unavailable.</div>
+        )}
+      </div>
+
+      {data?.stale && (
+        <p className="text-[11px] text-muted-foreground px-1">
+          Showing last known data
+          {data.lastRefreshedAt ? ` · updated ${formatTimestamp(data.lastRefreshedAt)}` : ''}
+        </p>
+      )}
+
+      {error && !billing && (
+        <RequestError message={error instanceof Error ? error.message : String(error)} />
+      )}
+    </div>
+  )
+}
+
+function SeatCreditsRow({ seat }: { seat: NonNullable<ParsedPlatformBillingInfo['seat']> }) {
+  const pct = seatPercentRemaining(seat)
+  return (
+    <div className="py-3 px-4 space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium">Seat credits</span>
+        <span className="text-xs text-muted-foreground">{Math.round(pct)}% remaining</span>
+      </div>
+      <Progress percent={pct} />
+      <div className="text-[11px] text-muted-foreground">
+        {formatCents(seat.balanceCents)} of {formatCents(seat.startingBalanceCents)}
+      </div>
+    </div>
+  )
+}
 
 function HoverArrow() {
   return (
@@ -260,6 +427,14 @@ export function PlatformTab({ readOnly = false }: PlatformTabProps) {
             }
           />
         </div>
+      )}
+
+      {isConnected && (
+        // Billing is non-critical display data — never let a glitch here take
+        // down the Account screen. Errors render a compact, retryable fallback.
+        <ErrorBoundary compact>
+          <PlatformBillingCard platformBaseUrl={data?.platformBaseUrl} orgId={data?.orgId} />
+        </ErrorBoundary>
       )}
 
       {isConnected ? (

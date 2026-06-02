@@ -51,7 +51,10 @@ export interface GenericOAuthProviderConfig {
   accessType: 'offline'
   requireIssuerValidation: true
   overrideUserInfo: true
+  mapProfileToUser?: (profile: Record<string, unknown>) => Record<string, unknown>
 }
+
+const PLATFORM_USER_ID_CLAIM = 'https://platform.skillfulagents.dev/claims/user_id'
 
 abstract class AuthProviderDefinition {
   constructor(protected readonly config: AuthProviderSettings) {}
@@ -115,6 +118,10 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
       accessType: 'offline',
       requireIssuerValidation: true,
       overrideUserInfo: true,
+      mapProfileToUser: (profile: Record<string, unknown>) => {
+        const val = profile[PLATFORM_USER_ID_CLAIM]
+        return val ? { id: String(val) } : {}
+      },
     }
   }
 }

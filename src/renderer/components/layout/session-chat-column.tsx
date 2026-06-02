@@ -5,6 +5,7 @@ import { PendingRequestStack } from '@renderer/components/messages/pending-reque
 import { renderPendingRequest, type RenderContext } from '@renderer/components/messages/pending-request-renderer'
 import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watcher'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -39,6 +40,7 @@ export function SessionChatColumn({
   onMessageSent,
 }: SessionChatColumnProps) {
   const { isActive } = useMessageStream(sessionId, agentSlug)
+  useFileDeliveryWatcher(sessionId, agentSlug)
   const { items: pendingRequestItems, count: pendingRequestCount } = usePendingRequests({
     sessionId,
     agentSlug,

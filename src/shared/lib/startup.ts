@@ -11,6 +11,7 @@ import { registerAllAccountProviders } from './account-providers/register'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { accountSyncService } from './scheduler/account-sync-service'
+import { platformService } from './services/platform-service'
 import { getActiveProvider, stopAllProviders } from '../../main/host-browser'
 import { listAgents } from './services/agent-service'
 import { isAuthMode } from './auth/mode'
@@ -144,6 +145,9 @@ export async function initializeServices() {
   accountSyncService.start().catch((error) => {
     console.error('Failed to start account sync service:', error)
   })
+
+  // Refreshes platform account + billing info when connected (no-op otherwise).
+  platformService.start()
 }
 
 /**
@@ -175,6 +179,7 @@ export async function shutdownServices() {
   autoSleepMonitor.stop()
   sessionAutoDeleteMonitor.stop()
   accountSyncService.stop()
+  platformService.stop()
   containerManager.stopStatusSync()
   containerManager.stopHealthMonitor()
   await containerManager.stopAll()

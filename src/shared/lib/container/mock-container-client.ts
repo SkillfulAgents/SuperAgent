@@ -1132,6 +1132,19 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         input: { url: 'http://localhost:9876/mcp', name: 'Test MCP', reason: 'Need access to test tools' },
       },
     ])],
+    // File delivery scenario for E2E tests
+    ['deliver file', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/report.md', description: 'Generated report' },
+      'File delivered successfully (size: 150 bytes)',
+      'I\'ve delivered the report for your review.'
+    )],
+    ['deliver image', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/chart.png', description: 'Sales chart' },
+      'File delivered successfully (size: 2048 bytes)',
+      'Here is the sales chart.'
+    )],
     // API error scenarios
     ['auth error', new ApiErrorScenario('authentication_failed', 'Invalid API key')],
     ['rate limit error', new ApiErrorScenario('rate_limit', 'Rate limit exceeded, please try again later')],

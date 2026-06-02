@@ -50,6 +50,7 @@ interface StreamingState {
   isStreaming: boolean
   currentToolUse: { id: string; name: string } | null
   currentToolInput: string // Accumulated partial JSON input for current tool
+  currentThinking?: boolean // True while an extended-thinking content block is streaming
   isActive: boolean // True from user message until result received
   isInterrupted: boolean // True after user interrupts, prevents race conditions
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
@@ -1243,7 +1244,7 @@ class MessagePersister {
   // Handle stream events for SSE broadcasting (not for persistence)
   private handleStreamEvent(
     sessionId: string,
-    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
+    event: { type: string; content_block?: { type: string; id?: string; name?: string }; delta?: { type: string; text?: string; partial_json?: string; thinking?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } },
     state: StreamingState
   ): void {
     switch (event.type) {
@@ -1251,6 +1252,7 @@ class MessagePersister {
         state.currentText = ''
         state.isStreaming = true
         state.currentToolUse = null
+        state.currentThinking = false
         this.broadcastToSSE(sessionId, { type: 'stream_start' })
         break
 
@@ -1268,6 +1270,12 @@ class MessagePersister {
             toolName: event.content_block.name,
             partialInput: '',
           })
+        } else if (event.content_block?.type === 'thinking') {
+          // Extended-thinking block started — UI flips "Working" to "Thinking".
+          // Reasoning text follows via thinking_delta (the agent requests
+          // `display: 'summarized'`; without it newer models omit the text).
+          state.currentThinking = true
+          this.broadcastToSSE(sessionId, { type: 'thinking_start' })
         }
         break
 
@@ -1277,6 +1285,12 @@ class MessagePersister {
           this.broadcastToSSE(sessionId, {
             type: 'stream_delta',
             text: event.delta.text,
+          })
+        } else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
+          // Stream summarized reasoning text so the UI can accumulate it for "View thinking"
+          this.broadcastToSSE(sessionId, {
+            type: 'thinking_delta',
+            text: event.delta.thinking,
           })
         } else if (event.delta?.type === 'input_json_delta') {
           // Tool input is being streamed - accumulate and broadcast
@@ -1292,6 +1306,11 @@ class MessagePersister {
         break
 
       case 'content_block_stop':
+        // Thinking block finished streaming — flip back to "Working"
+        if (state.currentThinking) {
+          state.currentThinking = false
+          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+        }
         // Tool use block finished streaming
         if (state.currentToolUse) {
           // Track agent-emitted user request blocks
@@ -1468,6 +1487,11 @@ class MessagePersister {
         state.isStreaming = false
         state.currentToolUse = null
         state.currentToolInput = ''
+        // Defensive: ensure thinking state is cleared if a stop was missed
+        if (state.currentThinking) {
+          state.currentThinking = false
+          this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+        }
         break
     }
   }

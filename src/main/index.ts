@@ -272,6 +272,14 @@ function processPendingProtocolUrls() {
 }
 
 function createWindow() {
+  // Idempotent: if a window already exists, focus it rather than creating a
+  // second (orphaned) one. Guards against multiple callers (startApp, activate,
+  // second-instance) racing during cold start.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.focus()
+    return
+  }
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -1023,6 +1031,8 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const orgId = callbackUrl.searchParams.get('org_id')
       const orgName = callbackUrl.searchParams.get('org_name')
       const role = callbackUrl.searchParams.get('role')
+      const userId = callbackUrl.searchParams.get('user_id')
+      const memberId = callbackUrl.searchParams.get('member_id')
       const apiUrl = `http://localhost:${actualApiPort}/api/platform-auth/complete`
 
       fetch(apiUrl, {
@@ -1037,6 +1047,8 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
           orgId,
           orgName,
           role,
+          userId,
+          memberId,
         }),
       })
         .then(async (res) => {
@@ -1273,20 +1285,33 @@ async function startApp() {
   })
 }
 
-startApp()
-
 // App lifecycle - handle activate separately
+// Show the main window, recreating it if it was closed (window stays in tray
+// after close on macOS/Windows, so `mainWindow` may be null/destroyed here).
+function showOrCreateMainWindow() {
+  // During the first instance's cold start the window doesn't exist yet, but
+  // startApp() will create and show it momentarily — don't race it. (A queued
+  // deep-link URL, if any, is handled separately by handleDeepLinkUrl.)
+  if (!app.isReady()) return
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    // Update tray, menu, and auto-updater with new window reference
+    updateTrayWindow(mainWindow)
+    updateAppMenuWindow(mainWindow)
+    updateAutoUpdaterWindow(mainWindow)
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
 app.whenReady().then(() => {
 
   app.on('activate', () => {
     // On macOS, re-create window when dock icon is clicked
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
-      // Update tray, menu, and auto-updater with new window reference
-      updateTrayWindow(mainWindow)
-      updateAppMenuWindow(mainWindow)
-      updateAutoUpdaterWindow(mainWindow)
-    }
+    showOrCreateMainWindow()
   })
 })
 
@@ -1298,21 +1323,34 @@ app.on('window-all-closed', () => {
   }
 })
 
-// Handle second instance (Windows/Linux deep links)
+// Single-instance handling (must run BEFORE startApp). When the app is already
+// running in the tray and the user re-launches it (e.g. from the Start menu), a
+// second process spawns. It MUST bail out immediately — if it falls through to
+// startApp() it boots its own API server and briefly shows a window before the
+// quit lands, which is the "ghost window" flash on re-launch.
 const gotTheLock = app.requestSingleInstanceLock()
 
 if (!gotTheLock) {
-  app.quit()
+  // Exit hard without running startApp() or the before-quit graceful-shutdown
+  // dance — this process never initialized anything, so there's nothing to clean
+  // up and nothing should ever become visible.
+  app.exit(0)
 } else {
   app.on('second-instance', (_event, commandLine) => {
+    // The re-launch landed here on the original instance. Surface its window —
+    // recreating it if it was closed to the tray — otherwise a plain re-launch
+    // does nothing visible.
+    showOrCreateMainWindow()
+
     // Handle protocol URLs on Windows/Linux
     const url = commandLine.find((arg) => arg.startsWith(`${PROTOCOL_SCHEME}://`))
     if (url) {
       handleDeepLinkUrl(url)
-      if (mainWindow?.isMinimized()) mainWindow.restore()
-      mainWindow?.focus()
     }
   })
+
+  // Only the instance that holds the lock boots the app.
+  startApp()
 }
 
 // Graceful shutdown handling

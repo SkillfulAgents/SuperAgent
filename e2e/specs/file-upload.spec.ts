@@ -119,7 +119,7 @@ test.describe('File & Folder Upload', () => {
     await expect(pills).toHaveCount(2, { timeout: 5000 })
   })
 
-  test('file pill renders as download link', async ({ page }) => {
+  test('file pill opens the preview pane when clicked', async ({ page }) => {
     const filePath = path.join(tmpDir, 'report.pdf')
     fs.writeFileSync(filePath, 'fake pdf content')
 
@@ -129,9 +129,15 @@ test.describe('File & Folder Upload', () => {
     await sessionPage.sendMessage('Check this report')
     await sessionPage.waitForUserMessageCount(2, 15000)
 
-    // Regular file pill should be an <a> link (not a <span> which is for folders)
+    // Regular file pill is a clickable button (folders render a non-interactive span).
     const pill = page.locator('.file-pill').first()
     await expect(pill).toBeVisible({ timeout: 5000 })
-    await expect(pill).toHaveAttribute('href', /.*/)
+    await expect(pill).toHaveAttribute('role', 'button')
+
+    // Clicking it opens the file preview pane with the file in a tab.
+    await pill.click()
+    const tabBar = page.getByTestId('file-tab-bar')
+    await expect(tabBar).toBeVisible({ timeout: 5000 })
+    await expect(tabBar).toContainText('report.pdf')
   })
 })

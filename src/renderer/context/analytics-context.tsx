@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useCallback, typ
 import type { AnalyticsInstance } from 'analytics'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { createAnalyticsInstance, getAnalyticsMetadata, hasActivePlugins } from '@renderer/lib/analytics'
 
 interface AnalyticsContextValue {
@@ -23,11 +24,16 @@ function getConfigKey(shareAnalytics: boolean, targets?: { type: string; config:
 export function AnalyticsProvider({ children }: { children: ReactNode }) {
   const { data: settings } = useSettings()
   const { user, isAuthMode } = useUser()
-  const identifiedRef = useRef(false)
+  const { data: platformStatus } = usePlatformAuthStatus()
+  // Tracks the last value we called identify() with, so a mid-session identity
+  // change (e.g. the platform connecting) re-identifies rather than sticking.
+  const identifiedAsRef = useRef<string | null>(null)
 
   const tenantId = settings?.tenantId
   const shareAnalytics = settings?.shareAnalytics ?? false
   const analyticsTargets = settings?.analyticsTargets
+  // Global platform user identity (Supabase auth UUID), present once connected.
+  const platformUserId = platformStatus?.connected ? platformStatus.userId : null
 
   // Rebuild analytics instance when config changes
   const instance = useMemo(() => {
@@ -44,20 +50,23 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
 
     currentInstance = createAnalyticsInstance(shareAnalytics, analyticsTargets)
     currentConfigKey = configKey
-    identifiedRef.current = false
+    identifiedAsRef.current = null
     return currentInstance
   }, [shareAnalytics, analyticsTargets])
 
-  // Build userId
+  // Build userId. The platform's global user id (one per human, stable across
+  // installs/devices) takes precedence when connected; otherwise fall back to
+  // the auth-mode composite, then the per-install tenantId.
   const userId = useMemo(() => {
     if (!tenantId) return null
+    if (platformUserId) return platformUserId
     if (isAuthMode && user?.id) return `${tenantId}:${user.id}`
     return tenantId
-  }, [tenantId, isAuthMode, user?.id])
+  }, [tenantId, platformUserId, isAuthMode, user?.id])
 
-  // Identify on instance creation or user change
+  // Identify on instance creation or whenever the resolved identity changes.
   useEffect(() => {
-    if (!instance || !userId || identifiedRef.current) return
+    if (!instance || !userId || identifiedAsRef.current === userId) return
     const metadata = getAnalyticsMetadata()
     instance.identify(userId, {
       ...metadata,
@@ -68,7 +77,7 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
       source: 'client',
       tenantId: tenantId!,
     })
-    identifiedRef.current = true
+    identifiedAsRef.current = userId
   }, [instance, userId, tenantId])
 
   const track = useCallback((event: string, properties?: Record<string, unknown>) => {

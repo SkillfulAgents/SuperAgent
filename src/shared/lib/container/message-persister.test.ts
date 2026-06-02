@@ -265,6 +265,52 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('extended-thinking stream events', () => {
+    it('broadcasts thinking_start, thinking_delta (summarized text), and thinking_stop', () => {
+      // With display:'summarized', thinking_delta carries text; signature_delta does not.
+      sseEvents.length = 0
+
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'thinking' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Let me ' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'consider.' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'signature_delta' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+
+      const starts = sseEvents.filter(e => e.type === 'thinking_start')
+      const deltas = sseEvents.filter(e => e.type === 'thinking_delta')
+      const stops = sseEvents.filter(e => e.type === 'thinking_stop')
+      expect(starts).toHaveLength(1)
+      expect(deltas.map(d => d.text)).toEqual(['Let me ', 'consider.'])
+      expect(stops).toHaveLength(1)
+    })
+
+    it('does not emit thinking_stop for a tool_use content_block_stop', () => {
+      sseEvents.length = 0
+
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 't1', name: 'Bash' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+
+      expect(sseEvents.filter(e => e.type === 'thinking_stop')).toHaveLength(0)
+    })
+  })
+
   describe('compaction status events', () => {
     it('broadcasts compact_start on early compacting status', () => {
       sseEvents.length = 0

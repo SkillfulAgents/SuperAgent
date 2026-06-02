@@ -100,6 +100,7 @@ const mockSelectionContext = {
 }
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => mockSelectionContext,
+  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
 vi.mock('@renderer/context/search-context', () => ({

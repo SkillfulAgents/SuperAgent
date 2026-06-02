@@ -11,7 +11,8 @@ import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat
 import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { NotificationsView } from '@renderer/components/notifications/notifications-view'
-import { BrowserDrawerPanel } from '@renderer/components/browser/browser-drawer-panel'
+import { TrayManager } from '@renderer/components/tray/tray-manager'
+import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Separator } from '@renderer/components/ui/separator'
@@ -67,7 +68,7 @@ export function MainContent() {
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
-  const { browserActive, isActive, contextUsage: streamContextUsage } = useMessageStream(sessionId ?? null, agentSlug ?? null)
+  const { browserActive, contextUsage: streamContextUsage } = useMessageStream(sessionId ?? null, agentSlug ?? null)
   const { canUseAgent, user, isAuthMode } = useUser()
   const isViewOnly = agentSlug ? !canUseAgent(agentSlug) : false
   const { warning: mountWarning, dismiss: dismissMountWarning } = useMountWarnings(agentSlug ?? null)
@@ -459,6 +460,7 @@ export function MainContent() {
         ) : view.kind === 'chat' ? (
           <ChatIntegrationView integrationId={view.integrationId} agentSlug={agentSlug} />
         ) : view.kind === 'session' ? (
+          <FilePreviewProvider>
           <div className="flex-1 flex flex-col min-h-0">
             <SessionSearchBar search={search} />
             <div className="relative flex-1 flex min-h-0">
@@ -474,10 +476,11 @@ export function MainContent() {
               onPendingMessageAppeared={handlePendingMessageAppeared}
               onMessageSent={handleMessageSent}
             />
-            {/* Browser drawer panel */}
-            <BrowserDrawerPanel agentSlug={agentSlug} sessionId={view.id} browserActive={browserActive} isActive={isActive} />
+            {/* Side tray (browser, file preview, etc.) */}
+            <TrayManager agentSlug={agentSlug} sessionId={view.id} browserActive={browserActive} />
           </div>
           </div>
+          </FilePreviewProvider>
         ) : (
           /* Show home page with large input when no session is selected */
           agent && (

@@ -69,10 +69,12 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
 
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({
+    view: { kind: 'home' },
     setAgent: vi.fn(),
     setView: vi.fn(),
     consumePendingDraft: vi.fn(() => null),
   }),
+  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
 const mockComposer = {

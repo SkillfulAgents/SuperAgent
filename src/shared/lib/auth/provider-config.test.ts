@@ -180,8 +180,32 @@ describe('getPublicAuthProviders', () => {
         accessType: 'offline',
         requireIssuerValidation: true,
         overrideUserInfo: true,
+        mapProfileToUser: expect.any(Function),
       },
     ])
+  })
+
+  it('mapProfileToUser extracts platform user_id claim as id', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
+    ])
+    const [config] = getGenericOAuthProviderConfigs()
+    expect(config.mapProfileToUser!({
+      sub: 'sub_member_123',
+      email: 'user@example.com',
+      'https://platform.skillfulagents.dev/claims/user_id': 'uuid-user-456',
+    })).toEqual({ id: 'uuid-user-456' })
+  })
+
+  it('mapProfileToUser returns empty object when user_id claim is absent', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
+    ])
+    const [config] = getGenericOAuthProviderConfigs()
+    expect(config.mapProfileToUser!({
+      sub: 'sub_member_123',
+      email: 'user@example.com',
+    })).toEqual({})
   })
 
   it('reports invalid AUTH_PROVIDERS_JSON to error reporting instead of silently dropping', () => {

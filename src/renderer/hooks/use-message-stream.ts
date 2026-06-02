@@ -161,6 +161,15 @@ const streamListeners = new Map<string, Set<() => void>>()
 // Slash commands per session (separate from streamStates to avoid touching 25+ set() calls)
 const sessionSlashCommands = new Map<string, SlashCommandInfo[]>()
 
+// Extended-thinking stream per session. Kept outside StreamState (like slash commands)
+// so the ~15 full state-rebuild sites don't have to thread it through. `isThinking`
+// drives the "Thinking" status; `text` accumulates the streamed (summarized) reasoning
+// for the "View thinking" panel. Text only arrives when the agent requests
+// `display: 'summarized'` (see agent-container/src/claude-code.ts).
+interface ThinkingState { text: string; isThinking: boolean }
+const EMPTY_THINKING: ThinkingState = { text: '', isThinking: false }
+const sessionThinking = new Map<string, ThinkingState>()
+
 // Stable empty Set so the hook return is referentially stable when nothing is auto-approved.
 const EMPTY_AUTO_APPROVED_SET: ReadonlySet<string> = new Set()
 
@@ -254,6 +263,8 @@ function getOrCreateEventSource(
       else if (data.type === 'session_active') {
         // Session became active - user sent a message
         if (data.sessionId && data.sessionId !== sessionId) return
+        // Reset thinking stream for the new turn
+        sessionThinking.delete(sessionId)
         streamStates.set(sessionId, {
           isActive: true,
           isStreaming: current?.isStreaming ?? false,
@@ -600,6 +611,20 @@ function getOrCreateEventSource(
             },
           })
         }
+      }
+      else if (data.type === 'thinking_start') {
+        // New thinking episode — reset text so the panel shows only the current block
+        sessionThinking.set(sessionId, { text: '', isThinking: true })
+      }
+      else if (data.type === 'thinking_delta') {
+        // Accumulate streamed (summarized) reasoning text for the "View thinking" panel
+        const t = sessionThinking.get(sessionId) ?? EMPTY_THINKING
+        sessionThinking.set(sessionId, { text: t.text + (data.text ?? ''), isThinking: true })
+      }
+      else if (data.type === 'thinking_stop') {
+        // Thinking block ended — flip back to "Working", keep accumulated text
+        const t = sessionThinking.get(sessionId)
+        if (t) sessionThinking.set(sessionId, { text: t.text, isThinking: false })
       }
       else if (data.type === 'secret_request') {
         // Agent is requesting a secret from the user
@@ -1179,6 +1204,7 @@ export function clearBrowserActive(sessionId: string): void {
 export function useMessageStream(sessionId: string | null, agentSlug: string | null) {
   const [state, setState] = useState<StreamState>(EMPTY_STREAM_STATE)
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
+  const [thinking, setThinking] = useState<ThinkingState>(EMPTY_THINKING)
   const [autoApprovedScriptRunIds, setAutoApprovedScriptRunIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
   const queryClient = useQueryClient()
 
@@ -1190,6 +1216,14 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         setState(globalState)
       }
       setSlashCommands(sessionSlashCommands.get(sessionId) ?? [])
+      // Mirror the thinking side-map into React state, preserving referential
+      // stability when nothing changed so consumers don't re-render needlessly.
+      const t = sessionThinking.get(sessionId)
+      setThinking((prev) => {
+        if (!t) return prev === EMPTY_THINKING ? prev : EMPTY_THINKING
+        if (prev.text === t.text && prev.isThinking === t.isThinking) return prev
+        return { text: t.text, isThinking: t.isThinking }
+      })
       const approved = sessionAutoApprovedScriptRunIds.get(sessionId)
       // Hand back a fresh snapshot when the contents changed so React re-renders consumers.
       setAutoApprovedScriptRunIds((prev) => {
@@ -1215,6 +1249,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
       // session row can get stuck in a "working" state after the stream finishes.
       setState(EMPTY_STREAM_STATE)
       setSlashCommands([])
+      setThinking(EMPTY_THINKING)
       return
     }
 
@@ -1244,5 +1279,5 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     }
   }, [sessionId, agentSlug, updateState, queryClient])
 
-  return { ...state, slashCommands, autoApprovedScriptRunIds }
+  return { ...state, slashCommands, autoApprovedScriptRunIds, isThinking: thinking.isThinking, thinkingText: thinking.text }
 }

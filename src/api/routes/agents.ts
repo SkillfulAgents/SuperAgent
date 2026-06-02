@@ -21,6 +21,7 @@ import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { guessMimeType } from '@shared/lib/utils/mime'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   listSessions,
@@ -3892,8 +3893,14 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     const webStream = Readable.toWeb(fileStream) as ReadableStream
 
     const encodedFilename = encodeURIComponent(filename)
-    c.header('Content-Disposition', `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
-    c.header('Content-Type', 'application/octet-stream')
+    const inline = new URL(c.req.url).searchParams.get('inline') === 'true'
+    if (inline) {
+      c.header('Content-Disposition', `inline; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
+      c.header('Content-Type', guessMimeType(filename))
+    } else {
+      c.header('Content-Disposition', `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
+      c.header('Content-Type', 'application/octet-stream')
+    }
     c.header('Content-Length', stat.size.toString())
 
     return c.body(webStream)
