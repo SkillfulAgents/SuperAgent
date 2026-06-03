@@ -1,9 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ContainerClient, StreamMessage } from './types'
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SchedMockFn = (...args: any[]) => any
+const mockListPendingScheduledTasks = vi.fn<SchedMockFn>(() => Promise.resolve([]))
+const mockGetScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(null))
+const mockCancelScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
+const mockPauseScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
+const mockResumeScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
+
 // Mock external dependencies before importing
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   createScheduledTask: vi.fn(),
+  listPendingScheduledTasks: (...args: unknown[]) => mockListPendingScheduledTasks(...args),
+  getScheduledTask: (...args: unknown[]) => mockGetScheduledTask(...args),
+  cancelScheduledTask: (...args: unknown[]) => mockCancelScheduledTask(...args),
+  pauseScheduledTask: (...args: unknown[]) => mockPauseScheduledTask(...args),
+  resumeScheduledTask: (...args: unknown[]) => mockResumeScheduledTask(...args),
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
@@ -2913,6 +2926,324 @@ describe('MessagePersister', () => {
         expect(resolveCall).toBeDefined()
         const body = JSON.parse(resolveCall![1].body)
         expect(body.value).toContain('No webhook triggers available')
+      })
+    })
+  })
+
+  // ============================================================================
+  // Scheduled task tool handling (list_scheduled_tasks / cancel_scheduled_task)
+  // ============================================================================
+
+  describe('scheduled task tool handling', () => {
+    function collectGlobalEvents(): { events: any[]; cleanup: () => void } {
+      const events: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((data) => {
+        events.push(data)
+      })
+      return { events, cleanup }
+    }
+
+    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: toolName },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    // Handlers are fire-and-forget via ;(async () => {...})() — let them settle.
+    async function flushHandlers() {
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+
+    beforeEach(() => {
+      mockContainerClientFetch.mockClear()
+      mockListPendingScheduledTasks.mockClear()
+      mockGetScheduledTask.mockClear()
+      mockCancelScheduledTask.mockClear()
+      mockPauseScheduledTask.mockClear()
+      mockResumeScheduledTask.mockClear()
+
+      mockContainerClientFetch.mockResolvedValue({ ok: true })
+      mockListPendingScheduledTasks.mockResolvedValue([])
+      mockGetScheduledTask.mockResolvedValue(null)
+      mockCancelScheduledTask.mockResolvedValue(true)
+      mockPauseScheduledTask.mockResolvedValue(true)
+      mockResumeScheduledTask.mockResolvedValue(true)
+    })
+
+    describe('list_scheduled_tasks', () => {
+      it('resolves with a formatted task list', async () => {
+        mockListPendingScheduledTasks.mockResolvedValue([
+          {
+            id: 'task_1', name: 'Daily report', scheduleType: 'cron',
+            scheduleExpression: '0 9 * * 1-5', status: 'pending',
+            nextExecutionAt: new Date('2026-06-04T09:00:00Z'), timezone: 'America/New_York',
+            prompt: 'Send the daily report',
+          },
+          {
+            id: 'task_2', name: null, scheduleType: 'at',
+            scheduleExpression: 'at tomorrow 9am', status: 'paused',
+            nextExecutionAt: new Date('2026-06-04T13:00:00Z'), timezone: null,
+            prompt: 'One-off reminder',
+          },
+        ])
+
+        simulateToolUse('mcp__user-input__list_scheduled_tasks', 'tool-sched-list-1', {})
+
+        await flushHandlers()
+
+        expect(mockListPendingScheduledTasks).toHaveBeenCalledWith(AGENT_SLUG)
+        const resolveCall = mockContainerClientFetch.mock.calls.find(
+          (c) => c[0] === '/inputs/tool-sched-list-1/resolve'
+        )
+        expect(resolveCall).toBeDefined()
+        const body = JSON.parse(resolveCall![1].body)
+        expect(body.value).toContain('task_1')
+        expect(body.value).toContain('Daily report')
+        expect(body.value).toContain('0 9 * * 1-5')
+        expect(body.value).toContain('America/New_York')
+        expect(body.value).toContain('[PAUSED]')
+      })
+
+      it('resolves with empty message when no tasks', async () => {
+        mockListPendingScheduledTasks.mockResolvedValue([])
+
+        simulateToolUse('mcp__user-input__list_scheduled_tasks', 'tool-sched-list-empty', {})
+
+        await flushHandlers()
+
+        const resolveCall = mockContainerClientFetch.mock.calls.find(
+          (c) => c[0] === '/inputs/tool-sched-list-empty/resolve'
+        )
+        expect(resolveCall).toBeDefined()
+        const body = JSON.parse(resolveCall![1].body)
+        expect(body.value).toContain('No scheduled tasks')
+      })
+    })
+
+    describe('cancel_scheduled_task', () => {
+      it('broadcasts scheduled_task_cancelled on success', async () => {
+        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+        sseEvents.length = 0
+        mockGetScheduledTask.mockResolvedValue({ id: 'task_existing', agentSlug: AGENT_SLUG })
+
+        simulateToolUse('mcp__user-input__cancel_scheduled_task', 'tool-sched-cancel-1', {
+          task_id: 'task_existing',
+        })
+
+        await flushHandlers()
+
+        expect(mockCancelScheduledTask).toHaveBeenCalledWith('task_existing')
+
+        const sseCancelled = sseEvents.filter(e => e.type === 'scheduled_task_cancelled')
+        expect(sseCancelled).toHaveLength(1)
+        expect(sseCancelled[0].taskId).toBe('task_existing')
+        expect(sseCancelled[0].agentSlug).toBe(AGENT_SLUG)
+
+        const globalCancelled = globalEvents.filter(e => e.type === 'scheduled_task_cancelled')
+        expect(globalCancelled).toHaveLength(1)
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-cancel-1/resolve',
+          expect.objectContaining({ method: 'POST' }),
+        )
+
+        globalCleanup()
+      })
+
+      it('rejects when task belongs to a different agent', async () => {
+        sseEvents.length = 0
+        mockGetScheduledTask.mockResolvedValue({ id: 'task_other', agentSlug: 'someone-else' })
+
+        simulateToolUse('mcp__user-input__cancel_scheduled_task', 'tool-sched-cancel-foreign', {
+          task_id: 'task_other',
+        })
+
+        await flushHandlers()
+
+        expect(mockCancelScheduledTask).not.toHaveBeenCalled()
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-cancel-foreign/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('not found'),
+          }),
+        )
+        const sseCancelled = sseEvents.filter(e => e.type === 'scheduled_task_cancelled')
+        expect(sseCancelled).toHaveLength(0)
+      })
+
+      it('rejects when the task cannot be cancelled (already executed/cancelled)', async () => {
+        mockGetScheduledTask.mockResolvedValue({ id: 'task_done', agentSlug: AGENT_SLUG })
+        mockCancelScheduledTask.mockResolvedValue(false)
+
+        simulateToolUse('mcp__user-input__cancel_scheduled_task', 'tool-sched-cancel-done', {
+          task_id: 'task_done',
+        })
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-cancel-done/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('could not be cancelled'),
+          }),
+        )
+      })
+
+      it('rejects when task_id is missing', async () => {
+        simulateToolUse('mcp__user-input__cancel_scheduled_task', 'tool-sched-cancel-noid', {})
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-cancel-noid/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('Missing required field'),
+          }),
+        )
+      })
+    })
+
+    describe('pause_scheduled_task', () => {
+      it('broadcasts scheduled_task_updated on success', async () => {
+        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+        sseEvents.length = 0
+        mockGetScheduledTask.mockResolvedValue({ id: 'task_cron', agentSlug: AGENT_SLUG })
+
+        simulateToolUse('mcp__user-input__pause_scheduled_task', 'tool-sched-pause-1', {
+          task_id: 'task_cron',
+        })
+
+        await flushHandlers()
+
+        expect(mockPauseScheduledTask).toHaveBeenCalledWith('task_cron')
+
+        const sseUpdated = sseEvents.filter(e => e.type === 'scheduled_task_updated')
+        expect(sseUpdated).toHaveLength(1)
+        expect(sseUpdated[0].taskId).toBe('task_cron')
+        expect(sseUpdated[0].agentSlug).toBe(AGENT_SLUG)
+
+        const globalUpdated = globalEvents.filter(e => e.type === 'scheduled_task_updated')
+        expect(globalUpdated).toHaveLength(1)
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-pause-1/resolve',
+          expect.objectContaining({ method: 'POST' }),
+        )
+
+        globalCleanup()
+      })
+
+      it('rejects when the task cannot be paused (not an active recurring task)', async () => {
+        sseEvents.length = 0
+        mockGetScheduledTask.mockResolvedValue({ id: 'task_at', agentSlug: AGENT_SLUG })
+        mockPauseScheduledTask.mockResolvedValue(false)
+
+        simulateToolUse('mcp__user-input__pause_scheduled_task', 'tool-sched-pause-bad', {
+          task_id: 'task_at',
+        })
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-pause-bad/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('could not be paused'),
+          }),
+        )
+        const sseUpdated = sseEvents.filter(e => e.type === 'scheduled_task_updated')
+        expect(sseUpdated).toHaveLength(0)
+      })
+
+      it('rejects when task belongs to a different agent', async () => {
+        mockGetScheduledTask.mockResolvedValue({ id: 'task_other', agentSlug: 'someone-else' })
+
+        simulateToolUse('mcp__user-input__pause_scheduled_task', 'tool-sched-pause-foreign', {
+          task_id: 'task_other',
+        })
+
+        await flushHandlers()
+
+        expect(mockPauseScheduledTask).not.toHaveBeenCalled()
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-pause-foreign/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('not found'),
+          }),
+        )
+      })
+    })
+
+    describe('resume_scheduled_task', () => {
+      it('broadcasts scheduled_task_updated on success', async () => {
+        const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+        sseEvents.length = 0
+        mockGetScheduledTask.mockResolvedValue({ id: 'task_paused', agentSlug: AGENT_SLUG })
+
+        simulateToolUse('mcp__user-input__resume_scheduled_task', 'tool-sched-resume-1', {
+          task_id: 'task_paused',
+        })
+
+        await flushHandlers()
+
+        expect(mockResumeScheduledTask).toHaveBeenCalledWith('task_paused')
+
+        const sseUpdated = sseEvents.filter(e => e.type === 'scheduled_task_updated')
+        expect(sseUpdated).toHaveLength(1)
+        expect(sseUpdated[0].taskId).toBe('task_paused')
+        expect(sseUpdated[0].agentSlug).toBe(AGENT_SLUG)
+
+        const globalUpdated = globalEvents.filter(e => e.type === 'scheduled_task_updated')
+        expect(globalUpdated).toHaveLength(1)
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-resume-1/resolve',
+          expect.objectContaining({ method: 'POST' }),
+        )
+
+        globalCleanup()
+      })
+
+      it('rejects when the task cannot be resumed (not paused)', async () => {
+        sseEvents.length = 0
+        mockGetScheduledTask.mockResolvedValue({ id: 'task_active', agentSlug: AGENT_SLUG })
+        mockResumeScheduledTask.mockResolvedValue(false)
+
+        simulateToolUse('mcp__user-input__resume_scheduled_task', 'tool-sched-resume-bad', {
+          task_id: 'task_active',
+        })
+
+        await flushHandlers()
+
+        expect(mockContainerClientFetch).toHaveBeenCalledWith(
+          '/inputs/tool-sched-resume-bad/reject',
+          expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('could not be resumed'),
+          }),
+        )
+        const sseUpdated = sseEvents.filter(e => e.type === 'scheduled_task_updated')
+        expect(sseUpdated).toHaveLength(0)
       })
     })
   })

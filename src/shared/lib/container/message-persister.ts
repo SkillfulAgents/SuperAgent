@@ -7,7 +7,14 @@ import type { RequestConnectedAccountInput } from '@shared/lib/tool-definitions/
 import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request-remote-mcp'
 import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
-import { createScheduledTask } from '@shared/lib/services/scheduled-task-service'
+import {
+  createScheduledTask,
+  listPendingScheduledTasks,
+  getScheduledTask,
+  cancelScheduledTask,
+  pauseScheduledTask,
+  resumeScheduledTask,
+} from '@shared/lib/services/scheduled-task-service'
 import {
   createWebhookTrigger,
   listActiveWebhookTriggers,
@@ -1396,6 +1403,48 @@ class MessagePersister {
             )
           }
 
+          // List scheduled tasks tool - blocking
+          if (state.currentToolUse.name === 'mcp__user-input__list_scheduled_tasks') {
+            this.handleListScheduledTasksTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
+          // Cancel scheduled task tool - blocking
+          if (state.currentToolUse.name === 'mcp__user-input__cancel_scheduled_task') {
+            this.handleCancelScheduledTaskTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
+          // Pause scheduled task tool - blocking
+          if (state.currentToolUse.name === 'mcp__user-input__pause_scheduled_task') {
+            this.handlePauseResumeScheduledTaskTool(
+              'pause',
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
+          // Resume scheduled task tool - blocking
+          if (state.currentToolUse.name === 'mcp__user-input__resume_scheduled_task') {
+            this.handlePauseResumeScheduledTaskTool(
+              'resume',
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           // Webhook trigger tools
           if (state.currentToolUse.name === 'mcp__user-input__get_available_triggers') {
             this.handleGetAvailableTriggersTool(
@@ -1700,6 +1749,185 @@ class MessagePersister {
         })
       } catch (error) {
         console.error('[MessagePersister] Error handling schedule task:', error)
+      }
+    })()
+  }
+
+  // Handle list_scheduled_tasks - blocking: read from SQLite and resolve
+  private handleListScheduledTasksTool(
+    _sessionId: string,
+    toolUseId: string,
+    _toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] list_scheduled_tasks missing agentSlug')
+          return
+        }
+
+        const tasks = await listPendingScheduledTasks(agentSlug)
+        const formatted = tasks.length === 0
+          ? 'No scheduled tasks on the schedule for this agent.'
+          : `Scheduled tasks:\n\n${tasks.map((t) => {
+              const kind = t.scheduleType === 'cron' ? 'recurring' : 'one-time'
+              const next = t.nextExecutionAt ? t.nextExecutionAt.toISOString() : 'unknown'
+              const status = t.status === 'paused' ? ' [PAUSED]' : ''
+              return `- **${t.name || 'Scheduled Task'}** (ID: ${t.id})${status}\n  Type: ${kind} (${t.scheduleExpression})\n  Next run: ${next}${t.timezone ? ` (${t.timezone})` : ''}\n  Prompt: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
+            }).join('\n\n')}`
+
+        await this.resolveContainerInput(agentSlug, toolUseId, formatted)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling list_scheduled_tasks:', error)
+        if (agentSlug) {
+          await this.rejectContainerInput(agentSlug, toolUseId, String(error)).catch(console.error)
+        }
+      }
+    })()
+  }
+
+  // Handle cancel_scheduled_task - blocking: cancel in SQLite, then resolve
+  private handleCancelScheduledTaskTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] cancel_scheduled_task missing agentSlug')
+          return
+        }
+
+        let input: { task_id: string }
+        try {
+          input = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        if (!input.task_id) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Missing required field: task_id')
+          return
+        }
+
+        // Verify the task exists and belongs to this agent before cancelling, so
+        // an agent can't cancel another agent's scheduled tasks by guessing IDs.
+        const task = await getScheduledTask(input.task_id)
+        if (!task || task.agentSlug !== agentSlug) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `Scheduled task ${input.task_id} not found`)
+          return
+        }
+
+        const cancelled = await cancelScheduledTask(input.task_id)
+        if (!cancelled) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `Scheduled task ${input.task_id} could not be cancelled — it may have already executed or been cancelled`)
+          return
+        }
+
+        // Broadcast so the scheduled task list updates in the UI
+        this.broadcastToSSE(sessionId, {
+          type: 'scheduled_task_cancelled',
+          toolUseId,
+          taskId: input.task_id,
+          agentSlug,
+        })
+
+        this.broadcastGlobal({
+          type: 'scheduled_task_cancelled',
+          taskId: input.task_id,
+          agentSlug,
+        })
+
+        await this.resolveContainerInput(agentSlug, toolUseId,
+          `Scheduled task ${input.task_id} has been cancelled. It will no longer execute.`)
+
+        console.log(`[MessagePersister] Scheduled task ${input.task_id} cancelled`)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling cancel_scheduled_task:', error)
+        if (agentSlug) {
+          const msg = error instanceof Error ? error.message : String(error)
+          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to cancel scheduled task: ${msg}`).catch(console.error)
+        }
+      }
+    })()
+  }
+
+  // Handle pause_scheduled_task / resume_scheduled_task - blocking: update SQLite, then resolve
+  private handlePauseResumeScheduledTaskTool(
+    action: 'pause' | 'resume',
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error(`[MessagePersister] ${action}_scheduled_task missing agentSlug`)
+          return
+        }
+
+        let input: { task_id: string }
+        try {
+          input = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        if (!input.task_id) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Missing required field: task_id')
+          return
+        }
+
+        // Verify the task exists and belongs to this agent before mutating it.
+        const task = await getScheduledTask(input.task_id)
+        if (!task || task.agentSlug !== agentSlug) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `Scheduled task ${input.task_id} not found`)
+          return
+        }
+
+        const ok = action === 'pause'
+          ? await pauseScheduledTask(input.task_id)
+          : await resumeScheduledTask(input.task_id)
+
+        if (!ok) {
+          const reason = action === 'pause'
+            ? `Scheduled task ${input.task_id} could not be paused — only active recurring tasks can be paused`
+            : `Scheduled task ${input.task_id} could not be resumed — only paused recurring tasks can be resumed`
+          await this.rejectContainerInput(agentSlug, toolUseId, reason)
+          return
+        }
+
+        // Broadcast so the scheduled task list updates in the UI
+        this.broadcastToSSE(sessionId, {
+          type: 'scheduled_task_updated',
+          toolUseId,
+          taskId: input.task_id,
+          agentSlug,
+        })
+
+        this.broadcastGlobal({
+          type: 'scheduled_task_updated',
+          taskId: input.task_id,
+          agentSlug,
+        })
+
+        const verb = action === 'pause' ? 'paused' : 'resumed'
+        await this.resolveContainerInput(agentSlug, toolUseId,
+          `Scheduled task ${input.task_id} has been ${verb}.${action === 'pause' ? ' It will not execute until resumed.' : ' Its next run was recomputed from the schedule.'}`)
+
+        console.log(`[MessagePersister] Scheduled task ${input.task_id} ${verb}`)
+      } catch (error) {
+        console.error(`[MessagePersister] Error handling ${action}_scheduled_task:`, error)
+        if (agentSlug) {
+          const msg = error instanceof Error ? error.message : String(error)
+          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to ${action} scheduled task: ${msg}`).catch(console.error)
+        }
       }
     })()
   }

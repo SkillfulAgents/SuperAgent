@@ -485,10 +485,18 @@ prompt: "Remind the user about their 3pm meeting with the design team"
 name: "Meeting Reminder"
 ```
 
+**Managing existing scheduled tasks:**
+You can also inspect and manage tasks you've already scheduled:
+- `mcp__user-input__list_scheduled_tasks` — List the tasks still on the schedule (pending or paused), with their IDs, schedules, next run times, and prompts. Call this first to get the task ID for the tools below.
+- `mcp__user-input__cancel_scheduled_task` — Cancel a task by ID so it no longer runs.
+- `mcp__user-input__pause_scheduled_task` — Pause an active recurring (cron) task; it stays on the schedule but won't execute until resumed.
+- `mcp__user-input__resume_scheduled_task` — Resume a paused recurring task; its next run is recomputed from the cron expression (missed runs are skipped).
+
 **Important:**
 - Scheduled tasks run in new sessions with full access to your skills and tools
-- Users can view and cancel scheduled tasks from the UI
+- You and the user can both view, cancel, pause, and resume scheduled tasks (you via the tools above, the user from the UI)
 - One-time tasks are removed after execution; recurring tasks continue until cancelled
+- Only pending or paused tasks can be cancelled; only recurring tasks can be paused/resumed
 
 ## Webhook Triggers
 

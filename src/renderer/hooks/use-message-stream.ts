@@ -829,8 +829,8 @@ function getOrCreateEventSource(
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
         queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
       }
-      else if (data.type === 'scheduled_task_created') {
-        // A scheduled task was created - invalidate scheduled tasks cache
+      else if (data.type === 'scheduled_task_created' || data.type === 'scheduled_task_cancelled' || data.type === 'scheduled_task_updated') {
+        // A scheduled task was created, cancelled, or updated - invalidate scheduled tasks cache
         const taskAgentSlug = (data as { agentSlug?: string }).agentSlug
         if (taskAgentSlug) {
           queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', taskAgentSlug] })
