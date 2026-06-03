@@ -142,13 +142,13 @@ describe('ComposerOptionsPopover', () => {
     expect(screen.getByTestId('effort-option-max')).toBeInTheDocument()
   })
 
-  it('auto-resets effort to High when switching from Opus+xhigh to Sonnet', async () => {
+  it('auto-resets effort to Medium when switching from Opus+xhigh to Sonnet', async () => {
     const user = userEvent.setup()
     render(<Harness initialModel="opus" initialEffort="xhigh" />)
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.7 · Extra High')
     await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('model-option-sonnet'))
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · High')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · Medium')
   })
 
   it('hides the Models section when composerModels is empty', async () => {

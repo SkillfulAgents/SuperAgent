@@ -156,7 +156,7 @@ describe('MessageInput', () => {
           sessionId: 's-1',
           agentSlug: 'agent-1',
           content: 'Hello world',
-          effort: 'high',
+          effort: 'medium',
         })
       )
     })
@@ -218,7 +218,7 @@ describe('MessageInput', () => {
           sessionId: 's-1',
           agentSlug: 'agent-1',
           content: 'Hello by button',
-          effort: 'high',
+          effort: 'medium',
         })
       )
     })
@@ -544,7 +544,7 @@ describe('MessageInput', () => {
           sessionId: 's-1',
           agentSlug: 'agent-1',
           content: 'Hello',
-          effort: 'high',
+          effort: 'medium',
         })
       )
     })

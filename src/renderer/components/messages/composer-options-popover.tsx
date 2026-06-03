@@ -22,8 +22,8 @@ const FAMILY_BLURB: Record<ComposerModelFamily, string> = {
 
 const EFFORT_META: Record<EffortLevel, { label: string; blurb: string }> = {
   low: { label: 'Low', blurb: 'Fastest. Minimal thinking, terse answers.' },
-  medium: { label: 'Medium', blurb: 'Balanced thinking and response depth.' },
-  high: { label: 'High', blurb: 'Default. Thorough planning and explanations.' },
+  medium: { label: 'Medium', blurb: 'Default. Balanced thinking and response depth.' },
+  high: { label: 'High', blurb: 'Thorough planning and explanations.' },
   xhigh: { label: 'Extra High', blurb: 'Deep reasoning for long-horizon work.' },
   max: { label: 'Max', blurb: 'Highest effort.' },
 }
@@ -45,7 +45,7 @@ function isEffortAllowed(level: EffortLevel, family: ComposerModelFamily | undef
 // Used so the trigger displays the right family when the model state is a
 // pinned ID (the user's "Default Model" setting stores pinned IDs while the
 // composer's `composerModels` are keyed by alias).
-function inferFamily(model: string | undefined): ComposerModelFamily | undefined {
+export function inferFamily(model: string | undefined): ComposerModelFamily | undefined {
   if (!model) return undefined
   if (model.includes('opus')) return 'opus'
   if (model.includes('sonnet')) return 'sonnet'
@@ -103,9 +103,11 @@ function OptionRow({ label, blurb, isSelected, onClick, testId }: OptionRowProps
 interface ComposerOptionsPopoverProps {
   state: ComposerOptionsState
   disabled?: boolean
+  /** Show the Effort section. Disable for model-only pickers (e.g. summarizer). */
+  includeEffort?: boolean
 }
 
-function ComposerOptionsPopoverImpl({ state, disabled }: ComposerOptionsPopoverProps) {
+function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: ComposerOptionsPopoverProps) {
   const { effort, setEffort, model, setModel, composerModels } = state
   const [open, setOpen] = useState(false)
 
@@ -120,13 +122,14 @@ function ComposerOptionsPopoverImpl({ state, disabled }: ComposerOptionsPopoverP
     ?? composerModels[0]
   const selectedFamily = selectedModel?.family
 
-  // Reset to High whenever the new family disallows the current effort. High
-  // is the universal default (no family restriction) so it's always safe.
+  // Reset to Medium whenever the new family disallows the current effort.
+  // Medium is the default effort and carries no family restriction, so it's
+  // always safe.
   useEffect(() => {
-    if (selectedFamily && !isEffortAllowed(effort, selectedFamily)) {
-      setEffort('high')
+    if (includeEffort && selectedFamily && !isEffortAllowed(effort, selectedFamily)) {
+      setEffort('medium')
     }
-  }, [selectedFamily, effort, setEffort])
+  }, [includeEffort, selectedFamily, effort, setEffort])
 
   const visibleEfforts = EFFORT_LEVELS.filter((level) =>
     selectedFamily ? isEffortAllowed(level, selectedFamily) : true
@@ -134,9 +137,9 @@ function ComposerOptionsPopoverImpl({ state, disabled }: ComposerOptionsPopoverP
 
   const effortLabel = EFFORT_META[effort].label
   const selectedModelLabel = selectedModel ? FAMILY_LABEL[selectedModel.family] : undefined
-  const triggerAriaLabel = selectedModelLabel
-    ? `${selectedModelLabel} · ${effortLabel}`
-    : effortLabel
+  const triggerAriaLabel = includeEffort
+    ? (selectedModelLabel ? `${selectedModelLabel} · ${effortLabel}` : effortLabel)
+    : (selectedModelLabel ?? 'Model')
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -147,14 +150,16 @@ function ComposerOptionsPopoverImpl({ state, disabled }: ComposerOptionsPopoverP
           size="sm"
           disabled={disabled}
           className="h-[34px] gap-1.5 px-2 text-xs font-medium"
-          aria-label={`Model and effort: ${triggerAriaLabel}. Click to change.`}
+          aria-label={`${includeEffort ? 'Model and effort' : 'Model'}: ${triggerAriaLabel}. Click to change.`}
           data-testid="composer-options-trigger"
         >
           <span>
             {selectedModelLabel}
-            <span className="text-muted-foreground">
-              {selectedModelLabel ? ' · ' : ''}{effortLabel}
-            </span>
+            {includeEffort && (
+              <span className="text-muted-foreground">
+                {selectedModelLabel ? ' · ' : ''}{effortLabel}
+              </span>
+            )}
           </span>
           <ChevronDown className="h-3.5 w-3.5" />
         </Button>
@@ -178,25 +183,29 @@ function ComposerOptionsPopoverImpl({ state, disabled }: ComposerOptionsPopoverP
                 />
               ))}
             </div>
-            <Separator className="my-2" />
+            {includeEffort && <Separator className="my-2" />}
           </>
         )}
-        <SectionHeader>Effort</SectionHeader>
-        <div className="flex flex-col gap-1">
-          {visibleEfforts.map((level) => (
-            <OptionRow
-              key={level}
-              label={EFFORT_META[level].label}
-              blurb={EFFORT_META[level].blurb}
-              isSelected={effort === level}
-              onClick={() => {
-                setEffort(level)
-                setOpen(false)
-              }}
-              testId={`effort-option-${level}`}
-            />
-          ))}
-        </div>
+        {includeEffort && (
+          <>
+            <SectionHeader>Effort</SectionHeader>
+            <div className="flex flex-col gap-1">
+              {visibleEfforts.map((level) => (
+                <OptionRow
+                  key={level}
+                  label={EFFORT_META[level].label}
+                  blurb={EFFORT_META[level].blurb}
+                  isSelected={effort === level}
+                  onClick={() => {
+                    setEffort(level)
+                    setOpen(false)
+                  }}
+                  testId={`effort-option-${level}`}
+                />
+              ))}
+            </div>
+          </>
+        )}
       </PopoverContent>
     </Popover>
   )

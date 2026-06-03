@@ -211,7 +211,7 @@ export function ProviderApiKeyInput({
       {validationResult && !validationResult.valid && (
         <RequestError
           message={validationResult.error || 'Invalid API key'}
-          className="mt-0 bg-destructive/10 px-2 text-destructive dark:bg-destructive/10 dark:text-destructive"
+          variant="compact"
         />
       )}
 

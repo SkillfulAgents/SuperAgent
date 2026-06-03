@@ -6,6 +6,7 @@ import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
+import type { EffortLevel } from '@shared/lib/container/types'
 
 export interface ContainerSettings {
   containerRunner: string
@@ -55,6 +56,8 @@ export interface ModelSettings {
   summarizerModel: string
   agentModel: string
   browserModel: string
+  /** Default reasoning effort seeded into the composer for new agent sessions. */
+  agentEffort?: EffortLevel
 }
 
 export interface AgentLimitsSettings {
@@ -298,6 +301,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     summarizerModel: 'claude-haiku-4-5',
     agentModel: 'claude-opus-4-7',
     browserModel: 'claude-sonnet-4-6',
+    agentEffort: 'medium',
   },
   enableToolSearch: true,
   skillsets: [DEFAULT_PUBLIC_SKILLSET],
@@ -573,6 +577,7 @@ export function getEffectiveModels(): ModelSettings {
     summarizerModel: settings.models?.summarizerModel || DEFAULT_SETTINGS.models!.summarizerModel,
     agentModel: settings.models?.agentModel || DEFAULT_SETTINGS.models!.agentModel,
     browserModel: settings.models?.browserModel || DEFAULT_SETTINGS.models!.browserModel,
+    agentEffort: settings.models?.agentEffort || DEFAULT_SETTINGS.models!.agentEffort,
   }
 }
 

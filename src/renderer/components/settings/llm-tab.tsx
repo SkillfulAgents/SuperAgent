@@ -1,18 +1,13 @@
 import type { ReactNode } from 'react'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/components/ui/select'
 import { Switch } from '@renderer/components/ui/switch'
 import { AlertTriangle, Lock } from 'lucide-react'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 import { BedrockCredentialsInput } from './bedrock-credentials-input'
+import { SettingsModelSelect } from './settings-model-select'
 import type { LlmProviderId } from '@shared/lib/config/settings'
+import type { EffortLevel } from '@shared/lib/container/types'
 
 const SIMPLE_PROVIDER_KEY_CONFIG: Record<string, {
   label: string
@@ -48,14 +43,20 @@ interface SettingRowProps {
   name: string
   subtitle?: ReactNode
   right: ReactNode
+  /** When set, the name renders as a <label> bound to the control with this id. */
+  htmlFor?: string
 }
 
-function SettingRow({ name, subtitle, right }: SettingRowProps) {
+function SettingRow({ name, subtitle, right, htmlFor }: SettingRowProps) {
   return (
     <div className="py-3 px-4">
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium truncate">{name}</div>
+          {htmlFor ? (
+            <label htmlFor={htmlFor} className="block text-xs font-medium truncate cursor-pointer">{name}</label>
+          ) : (
+            <div className="text-xs font-medium truncate">{name}</div>
+          )}
           {subtitle && (
             <div className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</div>
           )}
@@ -63,6 +64,50 @@ function SettingRow({ name, subtitle, right }: SettingRowProps) {
         <div className="flex items-center gap-2 shrink-0">{right}</div>
       </div>
     </div>
+  )
+}
+
+interface ModelEffortRowProps {
+  name: string
+  subtitle: string
+  model: string | undefined
+  /** Reasoning effort; only surfaced when `includeEffort` is true. */
+  effort?: EffortLevel
+  includeEffort?: boolean
+  emit?: 'model' | 'family'
+  disabled?: boolean
+  onModelChange: (model: string) => void
+  onEffortChange?: (effort: EffortLevel) => void
+}
+
+/** SettingRow wrapper around the shared settings model (+ effort) selector. */
+function ModelEffortRow({
+  name,
+  subtitle,
+  model,
+  effort,
+  includeEffort,
+  emit,
+  disabled,
+  onModelChange,
+  onEffortChange,
+}: ModelEffortRowProps) {
+  return (
+    <SettingRow
+      name={name}
+      subtitle={subtitle}
+      right={
+        <SettingsModelSelect
+          model={model}
+          onModelChange={onModelChange}
+          includeEffort={includeEffort}
+          effort={effort}
+          emit={emit}
+          onEffortChange={onEffortChange}
+          disabled={disabled}
+        />
+      }
+    />
   )
 }
 
@@ -96,10 +141,12 @@ function ProviderCard({
     >
       <button
         type="button"
+        role="radio"
         onClick={disabled ? undefined : onSelect}
         disabled={disabled}
         className="w-full flex items-start gap-3 px-4 py-3 text-left disabled:cursor-not-allowed"
-        aria-pressed={selected}
+        aria-checked={selected}
+        aria-disabled={disabled || undefined}
       >
         <div
           className={`mt-0.5 h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
@@ -131,7 +178,11 @@ function ProviderCard({
         }`}
       >
         <div className="overflow-hidden">
-          <div className="px-4 pb-6 pt-5 border-t border-border/50">{children}</div>
+          {/* Only mount when selected: a collapsed grid-rows-[0fr] still leaves
+              inputs in the DOM and keyboard tab order, so render conditionally. */}
+          {selected && (
+            <div className="px-4 pb-6 pt-5 border-t border-border/50">{children}</div>
+          )}
         </div>
       </div>
     </div>
@@ -151,10 +202,12 @@ export function LlmTab() {
     <div className="space-y-6">
       {/* Provider selection — radio cards, expanded card shows credentials + models */}
       <div className="space-y-3">
+        <div role="radiogroup" aria-label="LLM provider" className="space-y-3">
         {providerStatus.map((provider) => {
           const isSelected = activeProvider === provider.id
           const platformLocked = provider.id === 'platform' && !isPlatformConnected
           const modelOptions = provider.availableModels ?? []
+          const keyConfig = SIMPLE_PROVIDER_KEY_CONFIG[provider.id]
 
           return (
             <ProviderCard
@@ -179,83 +232,53 @@ export function LlmTab() {
                   disabled={isLoading}
                   showNotConfiguredAlert={false}
                 />
-              ) : (
+              ) : keyConfig ? (
                 <ProviderApiKeyInput
                   key={provider.id}
                   providerId={provider.id}
-                  label={SIMPLE_PROVIDER_KEY_CONFIG[provider.id]?.label ?? `${provider.name} API Key`}
-                  placeholder={SIMPLE_PROVIDER_KEY_CONFIG[provider.id]?.placeholder}
-                  envVarName={SIMPLE_PROVIDER_KEY_CONFIG[provider.id]?.envVarName}
-                  apiKeySettingsField={SIMPLE_PROVIDER_KEY_CONFIG[provider.id]?.apiKeySettingsField ?? ''}
+                  label={keyConfig.label}
+                  placeholder={keyConfig.placeholder}
+                  envVarName={keyConfig.envVarName}
+                  apiKeySettingsField={keyConfig.apiKeySettingsField}
                   disabled={isLoading}
                   showNotConfiguredAlert={false}
                 />
-              )}
+              ) : null}
 
               {/* Model selection lives inside the selected provider since available models are provider-specific */}
-              {isSelected && (
-                <div className="mt-6 -mx-4 -mb-6 border-t border-border/50">
-                  {modelOptions.length === 0 ? (
-                    <p className="px-4 py-3 text-[11px] text-muted-foreground">
-                      Configure credentials to load available models.
-                    </p>
-                  ) : (
-                    <div className="divide-y divide-border/50">
-                      <SettingRow
-                        name="Default model"
-                        subtitle="Used for new sessions when no per-message model is selected"
-                        right={
-                          <Select
-                            value={settings?.models?.agentModel ?? modelOptions[0]?.value ?? ''}
-                            onValueChange={(value) => {
-                              updateSettings.mutate({ models: { agentModel: value } })
-                            }}
-                            disabled={isLoading}
-                          >
-                            <SelectTrigger id="agent-model" className="w-[170px] h-8">
-                              <SelectValue placeholder="Select a model" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {modelOptions.map((model) => (
-                                <SelectItem key={model.value} value={model.value}>
-                                  {model.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        }
-                      />
-                      <SettingRow
-                        name="Summarizer model"
-                        subtitle="Used for session name generation and API key validation"
-                        right={
-                          <Select
-                            value={settings?.models?.summarizerModel ?? modelOptions[0]?.value ?? ''}
-                            onValueChange={(value) => {
-                              updateSettings.mutate({ models: { summarizerModel: value } })
-                            }}
-                            disabled={isLoading}
-                          >
-                            <SelectTrigger id="summarizer-model" className="w-[170px] h-8">
-                              <SelectValue placeholder="Select a model" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {modelOptions.map((model) => (
-                                <SelectItem key={model.value} value={model.value}>
-                                  {model.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        }
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
+              <div className="mt-6 -mx-4 -mb-6 border-t border-border/50">
+                {modelOptions.length === 0 ? (
+                  <p className="px-4 py-3 text-[11px] text-muted-foreground">
+                    Configure credentials to load available models.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-border/50">
+                    <ModelEffortRow
+                      name="Default model"
+                      subtitle="Model and effort new sessions start with, before any per-message override"
+                      model={settings?.models?.agentModel}
+                      effort={settings?.models?.agentEffort ?? 'medium'}
+                      includeEffort
+                      emit="family"
+                      disabled={isLoading}
+                      onModelChange={(model) => updateSettings.mutate({ models: { agentModel: model } })}
+                      onEffortChange={(effort) => updateSettings.mutate({ models: { agentEffort: effort } })}
+                    />
+                    <ModelEffortRow
+                      name="Summarizer model"
+                      subtitle="Used for session name generation and API key validation"
+                      model={settings?.models?.summarizerModel}
+                      includeEffort={false}
+                      disabled={isLoading}
+                      onModelChange={(model) => updateSettings.mutate({ models: { summarizerModel: model } })}
+                    />
+                  </div>
+                )}
+              </div>
             </ProviderCard>
           )
         })}
+        </div>
 
         {settings?.hasRunningAgents && (
           <div className="flex gap-2 rounded-md bg-yellow-500/10 px-2.5 py-2 text-[11px] text-yellow-700 dark:text-yellow-500/90 leading-relaxed">
@@ -271,6 +294,7 @@ export function LlmTab() {
         <div className={CARD_CLASS}>
           <SettingRow
             name="Tool search"
+            htmlFor="enable-tool-search"
             subtitle="Load tool definitions on demand to save ~15-20K tokens per turn. Disable only when debugging. Requires Sonnet/Opus 4+; ignored on Haiku."
             right={
               <Switch

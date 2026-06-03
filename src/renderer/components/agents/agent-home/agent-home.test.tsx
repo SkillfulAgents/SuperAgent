@@ -425,7 +425,7 @@ describe('AgentHome', () => {
       expect.objectContaining({
         agentSlug: 'test-agent',
         message: 'Hello agent',
-        effort: 'high',
+        effort: 'medium',
       })
     )
     expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'Hello agent')

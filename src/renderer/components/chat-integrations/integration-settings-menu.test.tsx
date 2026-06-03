@@ -63,9 +63,9 @@ describe('IntegrationModelEffort', () => {
     expect(screen.getByTestId('composer-options-trigger')).toBeInTheDocument()
   })
 
-  it('shows default effort (High) when integration has no effort set', () => {
+  it('shows default effort (Medium) when integration has no effort set', () => {
     render(<IntegrationModelEffort integration={makeIntegration()} />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('High')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Medium')
   })
 
   it('shows the integration model when set', () => {

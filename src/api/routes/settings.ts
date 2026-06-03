@@ -29,7 +29,7 @@ import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
-import { VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
+import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { db } from '@shared/lib/db'
@@ -148,6 +148,11 @@ settings.put('/', async (c) => {
     // Validate enableToolSearch if provided
     if (body.enableToolSearch !== undefined && typeof body.enableToolSearch !== 'boolean') {
       return c.json({ error: 'enableToolSearch must be a boolean' }, 400)
+    }
+
+    // Validate agentEffort if provided
+    if (body.models?.agentEffort !== undefined && !EFFORT_LEVELS.includes(body.models.agentEffort)) {
+      return c.json({ error: `agentEffort must be one of: ${EFFORT_LEVELS.join(', ')}` }, 400)
     }
 
     // Validate runtimeSettings if provided

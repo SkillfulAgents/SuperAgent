@@ -86,7 +86,7 @@ export function IntegrationModelEffort({ integration }: { integration: ChatInteg
   )
 
   const [model, setModelLocal] = useState<string | undefined>(integration.model ?? undefined)
-  const [effort, setEffortLocal] = useState<EffortLevel>((integration.effort as EffortLevel) ?? 'high')
+  const [effort, setEffortLocal] = useState<EffortLevel>((integration.effort as EffortLevel) ?? 'medium')
 
   const state: ComposerOptionsState = useMemo(() => ({
     effort,
