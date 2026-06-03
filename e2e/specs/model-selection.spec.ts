@@ -135,7 +135,7 @@ test.describe('Model selection', () => {
     expect(sendRecord.effort).toBe('low')
   })
 
-  test('switching from Opus+ExtraHigh to Sonnet auto-resets effort to High on the next send', async ({ page }, testInfo) => {
+  test('switching from Opus+ExtraHigh to Sonnet auto-resets effort to Medium on the next send', async ({ page }, testInfo) => {
     const tag = `${testInfo.workerIndex}-${Date.now()}`
     const initialMessage = `xhigh→sonnet auto-reset ${tag}`
 
@@ -149,12 +149,12 @@ test.describe('Model selection', () => {
     await page.locator('[data-testid="effort-option-xhigh"]').click()
 
     // Switch to Sonnet — popover's auto-reset effect should clamp effort back
-    // to High since Sonnet doesn't allow xhigh.
+    // to Medium (the default) since Sonnet doesn't allow xhigh.
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="model-option-sonnet"]').click()
 
-    // Trigger should now read "Sonnet · High" (effort was auto-reset).
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('High')
+    // Trigger should now read "Sonnet · Medium" (effort was auto-reset).
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Medium')
     await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Extra High')
 
     await page.locator('[data-testid="home-message-input"]').fill(initialMessage)
@@ -165,7 +165,7 @@ test.describe('Model selection', () => {
       (r) => r.type === 'createSession' && r.initialMessage === initialMessage
     )
     expect(record.model).toBe('sonnet')
-    expect(record.effort).toBe('high')
+    expect(record.effort).toBe('medium')
   })
 
   test('AgentHome trigger displays the family of the user pinned default model', async ({ page }, testInfo) => {
