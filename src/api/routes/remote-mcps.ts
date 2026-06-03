@@ -11,6 +11,7 @@ import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { validateHttpUrl, isPrivateHost, isLocalhostHost } from '@shared/lib/utils/url-safety'
+import { captureMessage } from '@shared/lib/error-reporting'
 
 function safeParseTools(json: string | null): McpToolInfo[] {
   if (!json) return []
@@ -117,6 +118,44 @@ async function discoverTools(url: string, accessToken?: string | null): Promise<
   })
 
   if (!initRes.ok) {
+    // TEMP DIAGNOSTIC (remove after debugging the Lifetimely 401): capture the
+    // resource server's own error reason and the token's claims (NOT the raw
+    // token — claims alone can't authenticate, so they're safe to log).
+    let body = ''
+    try { body = await initRes.text() } catch { /* ignore */ }
+    const wwwAuth = initRes.headers.get('WWW-Authenticate')
+    let claims: unknown = null
+    if (accessToken) {
+      const parts = accessToken.split('.')
+      if (parts.length === 3) {
+        try {
+          claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+        } catch { /* not a JWT */ }
+      }
+    }
+    const tokenType = accessToken ? (claims ? 'jwt' : 'opaque-or-unparsable') : 'none'
+    const diagnostic = {
+      url,
+      status: initRes.status,
+      wwwAuthenticate: wwwAuth,
+      body: body.slice(0, 1000),
+      tokenType,
+      tokenClaims: claims,
+    }
+    console.error('[mcp/discover] initialize failed', diagnostic)
+    captureMessage('MCP initialize failed during tool discovery', {
+      level: 'warning',
+      tags: {
+        area: 'remote-mcp',
+        op: 'discover-tools',
+        status: String(initRes.status),
+        tokenType,
+      },
+      extra: diagnostic,
+      // Group every occurrence into one Sentry issue regardless of which
+      // server/status, so it's easy to find while debugging.
+      fingerprint: ['mcp-discover-initialize-failed'],
+    })
     throw new Error(`Initialize failed: ${initRes.status}`)
   }
 

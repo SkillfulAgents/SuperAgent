@@ -1143,6 +1143,34 @@ describe('containerManager.stopContainer force stop recovery', () => {
     expect(mockClearRunnerAvailabilityCache).not.toHaveBeenCalled()
   })
 
+  it('leaves container running and skips recovery when stop bails (stopped: false)', async () => {
+    // Auto-sleep path: stop+kill timed out and force-stop was disabled, so the
+    // container is still alive. We must NOT mark it stopped, broadcast a stop,
+    // or trigger VM-restart recovery — the next sweep retries.
+    containerManager.getClient('stuck-agent')
+    containerManager.getClient('other-agent')
+    containerManager.updateCachedStatus('stuck-agent', 'running', 4001)
+    containerManager.updateCachedStatus('other-agent', 'running', 4002)
+
+    mockStop.mockResolvedValue({ forceStopUsed: false, stopped: false })
+
+    await containerManager.stopContainer('stuck-agent', { escalateToForceStop: false })
+
+    // Still running — status untouched
+    expect(containerManager.getCachedInfo('stuck-agent')).toEqual({ status: 'running', port: 4001 })
+    expect(containerManager.getCachedInfo('other-agent')).toEqual({ status: 'running', port: 4002 })
+
+    // No stopped broadcast for the stuck agent, no system_alert, no recovery
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const stoppedEvents = broadcasts.filter(
+      ([msg]: any) => msg.type === 'agent_status_changed' && msg.status === 'stopped'
+    )
+    expect(stoppedEvents).toHaveLength(0)
+    expect(broadcasts.filter(([msg]: any) => msg.type === 'system_alert')).toHaveLength(0)
+    expect(messagePersister.markAllSessionsInactiveForAgent).not.toHaveBeenCalledWith('stuck-agent')
+    expect(mockClearRunnerAvailabilityCache).not.toHaveBeenCalled()
+  })
+
   it('still cleans up even when stop() throws', async () => {
     containerManager.getClient('error-agent')
     containerManager.updateCachedStatus('error-agent', 'running', 4001)

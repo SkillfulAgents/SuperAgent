@@ -82,7 +82,13 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
 const mockDecodeOrgIdFromToken = vi.fn<(token: string) => string | null>(() => null)
 vi.mock('@shared/lib/platform-attribution', () => ({
   runWithOptionalUser: (_userId: string | null, fn: () => unknown) => fn(),
-  decodeOrgIdFromToken: (token: string) => mockDecodeOrgIdFromToken(token),
+  attribution: {
+    // Mirror the real impl, driven by the same mocks the tests already control.
+    requiresActingMember: () => {
+      const token = mockGetPlatformAccessToken()
+      return token !== null && mockDecodeOrgIdFromToken(token) !== null
+    },
+  },
 }))
 
 vi.mock('@shared/lib/db', () => ({

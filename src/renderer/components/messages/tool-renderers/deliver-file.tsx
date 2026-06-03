@@ -2,14 +2,9 @@ import { Download } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
-import { getApiBaseUrl } from '@renderer/lib/env'
+import { useFilePreview } from '@renderer/context/file-preview-context'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
 import { deliverFileDef, type DeliverFileInput } from '@shared/lib/tool-definitions/deliver-file'
-
-function getRelativePath(filePath: string): string {
-  // Strip /workspace/ prefix if present
-  return filePath.replace(/^\/workspace\//, '')
-}
 
 function getFilename(filePath: string): string {
   return filePath.split('/').pop() || filePath
@@ -17,12 +12,11 @@ function getFilename(filePath: string): string {
 
 function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) {
   const { filePath, description } = input as DeliverFileInput
+  const filePreview = useFilePreview()
 
-  const handleDownload = () => {
+  const handlePreview = () => {
     if (!filePath || !agentSlug) return
-    const relativePath = getRelativePath(filePath)
-    const baseUrl = getApiBaseUrl()
-    window.open(`${baseUrl}/api/agents/${agentSlug}/files/${relativePath}`, '_blank')
+    filePreview.openFile(filePath, agentSlug, description)
   }
 
   return (
@@ -38,13 +32,13 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
           </code>
           {!isError && agentSlug && (
             <Button
-              onClick={handleDownload}
+              onClick={handlePreview}
               size="sm"
               variant="outline"
               className="h-7"
             >
               <Download className="h-3 w-3 mr-1" />
-              Download
+              Preview
             </Button>
           )}
         </div>

@@ -24,8 +24,17 @@ export class PlatformSttProvider extends BaseSttProvider {
   async validateKey(platformToken: string): Promise<{ valid: boolean; error?: string }> {
     try {
       const base = getPlatformProxyBaseUrl()
-      const res = await fetch(`${base}/v1/deepgram/projects`, {
-        headers: { Authorization: `Bearer ${platformToken}` },
+      // Validate by attempting a short-lived Deepgram token grant — the data-plane
+      // endpoint the proxy actually exposes. (Previously probed GET
+      // /v1/deepgram/projects, a Deepgram Management-API path the proxy now
+      // restricts; a successful grant proves the platform token has STT access.)
+      const res = await fetch(`${base}/v1/deepgram/auth/grant`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${platformToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ttl_seconds: 60 }),
       })
       if (!res.ok) {
         if (res.status === 401 || res.status === 403) {

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useUpdateSettings } from '@renderer/hooks/use-settings'
 import {
   ChevronRight,
   ChevronLeft,
@@ -34,10 +35,11 @@ const PLATFORM_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] 
 ]
 
 interface GettingStartedWizardProps {
+  agentOnly?: boolean
   onClose: () => void
 }
 
-export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
+export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizardProps) {
   const [currentStep, setCurrentStep] = useState(0)
   const [welcomePath, setWelcomePath] = useState<'platform' | 'manual' | null>(null)
   const [composioCanProceed, setComposioCanProceed] = useState(false)
@@ -49,6 +51,7 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
   const isRestoringRef = useRef(false)
   const { data: userSettings } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
+  const updateGlobalSettings = useUpdateSettings()
 
   const steps = useMemo(() => {
     if (welcomePath === 'platform') return PLATFORM_STEPS
@@ -100,8 +103,10 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
   }, [currentStep, welcomePath]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFinish = async () => {
-    // Use null (not undefined) so it survives JSON serialization and actually clears the field
     await updateUserSettings.mutateAsync({ setupCompleted: true, onboardingProgress: null })
+    if (!agentOnly) {
+      await updateGlobalSettings.mutateAsync({ app: { setupCompleted: true } }).catch(() => {})
+    }
     onClose()
   }
 
@@ -136,7 +141,34 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
     setCurrentStep(0)
   }
 
-  const isAgentStep = activeStep?.id === 'agent'
+  const isAgentStep = agentOnly || activeStep?.id === 'agent'
+
+  if (agentOnly) {
+    return (
+      <div className="flex h-svh bg-background overflow-hidden" data-testid="wizard-container">
+        {isElectron() && <div className="absolute top-0 left-0 right-0 h-12 app-drag-region z-10" />}
+        <div className="relative flex flex-col h-svh w-full">
+          <div className="flex flex-1 min-h-0 flex-col py-10 w-full mx-auto max-w-[640px] justify-center">
+            <div className="w-full">
+              <div className="min-h-[320px]" data-testid="wizard-step-content">
+                <CreateAgentStep onAgentCreated={handleFinish} />
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end pb-10 w-full mx-auto max-w-[640px]">
+            <Button
+              variant="outline"
+              onClick={() => void handleFinish()}
+              data-testid="wizard-skip"
+            >
+              Skip
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-svh bg-background overflow-hidden" data-testid="wizard-container">

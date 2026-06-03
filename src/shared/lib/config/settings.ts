@@ -50,6 +50,7 @@ export interface NotificationSettings {
   sessionComplete: boolean
   sessionWaiting: boolean
   sessionScheduled: boolean
+  notifyWhenUnfocused?: boolean
 }
 
 export interface ModelSettings {
@@ -171,6 +172,10 @@ export interface PlatformAuthSettings {
   orgId: string | null
   orgName: string | null
   role: string | null
+  /** Global platform user identity (Supabase auth UUID) — used for analytics. */
+  userId: string | null
+  /** Per-org membership id (sub_…) — used for request attribution. */
+  memberId: string | null
   createdAt: string
   updatedAt: string
 }
@@ -299,7 +304,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   models: {
     summarizerModel: 'claude-haiku-4-5',
-    agentModel: 'claude-opus-4-7',
+    agentModel: 'claude-opus-4-8',
     browserModel: 'claude-sonnet-4-6',
     agentEffort: 'medium',
   },

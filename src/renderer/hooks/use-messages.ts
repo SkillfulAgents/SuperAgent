@@ -6,15 +6,31 @@ import type { EffortLevel } from '@shared/lib/container/types'
 // Re-export for convenience
 export type { ApiMessage, ApiMessageOrBoundary }
 
+/**
+ * Thrown when the session's JSONL transcript is absent (HTTP 404) — e.g. it was
+ * deleted by the CLI's retention cleanup while the metadata entry lingers in the
+ * nav. Distinct from a generic fetch failure so the UI can show a clear message.
+ */
+export class TranscriptNotFoundError extends Error {
+  constructor() {
+    super('Session transcript not found')
+    this.name = 'TranscriptNotFoundError'
+  }
+}
+
 export function useMessages(sessionId: string | null, agentSlug: string | null) {
   return useQuery<ApiMessageOrBoundary[]>({
     queryKey: ['messages', sessionId, agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/messages`)
+      if (res.status === 404) throw new TranscriptNotFoundError()
       if (!res.ok) throw new Error('Failed to fetch messages')
       return res.json()
     },
     enabled: !!sessionId && !!agentSlug,
+    // A missing transcript won't reappear — don't hammer it with retries.
+    retry: (failureCount, error) =>
+      !(error instanceof TranscriptNotFoundError) && failureCount < 3,
     // Refetch periodically to catch any messages we might have missed
     refetchInterval: 5000,
   })

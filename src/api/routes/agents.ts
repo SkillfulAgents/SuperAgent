@@ -21,6 +21,7 @@ import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { guessMimeType } from '@shared/lib/utils/mime'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   listSessions,
@@ -30,6 +31,7 @@ import {
   getSessionMessagesWithCompact,
   getSession,
   getSessionMetadata,
+  sessionExists,
   updateSessionMetadata,
   deleteSession,
   removeMessage,
@@ -1289,6 +1291,12 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
 
+    // No JSONL transcript on disk — e.g. it was deleted by the CLI's retention
+    // cleanup while the metadata entry lingers in the nav. Signal this distinctly
+    // from an empty (but present) transcript so the UI can show a clear message.
+    if (!(await sessionExists(agentSlug, sessionId))) {
+      return c.json({ error: 'Session transcript not found' }, 404)
+    }
 
     const messages = await getSessionMessagesWithCompact(agentSlug, sessionId)
     const filtered = messages.filter((m) => !('isMeta' in m && m.isMeta))
@@ -1588,15 +1596,18 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
 
+    messagePersister.unsubscribeFromSession(sessionId)
 
-    const session = await getSession(agentSlug, sessionId)
-
-    if (!session) {
+    // deleteSession removes the JSONL transcript and/or a lingering metadata
+    // entry. It returns false only when neither existed — i.e. the session is
+    // truly unknown. A dangling metadata-only session (transcript already
+    // deleted) still deletes successfully here. We intentionally do NOT gate on
+    // getSession(), which returns null when the JSONL is missing and would
+    // wrongly 404 exactly the dangling sessions we want to be able to remove.
+    const deleted = await deleteSession(agentSlug, sessionId)
+    if (!deleted) {
       return c.json({ error: 'Session not found' }, 404)
     }
-
-    messagePersister.unsubscribeFromSession(sessionId)
-    await deleteSession(agentSlug, sessionId)
 
     // Clean up message author records for this session
     if (isAuthMode()) {
@@ -3892,8 +3903,14 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     const webStream = Readable.toWeb(fileStream) as ReadableStream
 
     const encodedFilename = encodeURIComponent(filename)
-    c.header('Content-Disposition', `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
-    c.header('Content-Type', 'application/octet-stream')
+    const inline = new URL(c.req.url).searchParams.get('inline') === 'true'
+    if (inline) {
+      c.header('Content-Disposition', `inline; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
+      c.header('Content-Type', guessMimeType(filename))
+    } else {
+      c.header('Content-Disposition', `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
+      c.header('Content-Type', 'application/octet-stream')
+    }
     c.header('Content-Length', stat.size.toString())
 
     return c.body(webStream)

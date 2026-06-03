@@ -1,6 +1,6 @@
-import { Download, FolderIcon } from 'lucide-react'
+import { FolderIcon } from 'lucide-react'
 import { FileTypeIcon } from './file-type-icon'
-import { getApiBaseUrl } from '@renderer/lib/env'
+import { useFilePreview } from '@renderer/context/file-preview-context'
 
 interface FileDownloadPillProps {
   filePath: string
@@ -12,29 +12,21 @@ function getFilename(filePath: string): string {
   return filePath.split('/').pop() || filePath
 }
 
-function getRelativePath(filePath: string): string {
-  return filePath.replace(/^\/workspace\//, '')
-}
-
 function isFolder(filePath: string): boolean {
   return filePath.endsWith('/')
 }
 
 function getFolderName(filePath: string): string {
-  // "/workspace/uploads/folderName/" → "folderName"
   const trimmed = filePath.replace(/\/+$/, '')
   return trimmed.split('/').pop() || filePath
 }
 
 export function FileDownloadPill({ filePath, agentSlug, onClick }: FileDownloadPillProps) {
-  const baseUrl = getApiBaseUrl()
+  const filePreview = useFilePreview()
   const folder = isFolder(filePath)
   const displayName = folder ? getFolderName(filePath) : getFilename(filePath)
-  const downloadUrl = folder
-    ? undefined
-    : `${baseUrl}/api/agents/${agentSlug}/files/${getRelativePath(filePath)}`
 
-  const className = "file-pill inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted"
+  const className = "file-pill inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
 
   if (folder) {
     return (
@@ -45,17 +37,23 @@ export function FileDownloadPill({ filePath, agentSlug, onClick }: FileDownloadP
     )
   }
 
+  const handleClick = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onClick?.(e)
+    filePreview.openFile(filePath, agentSlug)
+  }
+
   return (
-    <a
-      href={downloadUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      onClick={onClick}
+    <span
+      role="button"
+      tabIndex={0}
+      onClick={handleClick}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(e as unknown as React.MouseEvent) } }}
       className={className}
     >
       <FileTypeIcon filename={displayName} size={14} />
       {displayName}
-      <Download className="h-3 w-3 download-icon" />
-    </a>
+    </span>
   )
 }

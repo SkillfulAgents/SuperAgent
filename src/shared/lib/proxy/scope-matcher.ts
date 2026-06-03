@@ -37,9 +37,12 @@ export function matchScopes(
   if (!normalizedPath || normalizedPath.trim() === '') return empty
   if (!normalizedPath.startsWith('/')) normalizedPath = '/' + normalizedPath
 
-  // Filter by method
+  // Filter by method. An entry with method "*" is method-agnostic and matches
+  // any HTTP verb — used for RPC-style APIs (e.g. Slack) where the path alone
+  // identifies the operation and the same scope applies whether the agent calls
+  // it via GET or POST.
   const methodMatches = provider.scopeMap.filter(
-    (entry) => entry.method === normalizedMethod
+    (entry) => entry.method === '*' || entry.method === normalizedMethod
   )
 
   // Glob-match each entry's pathPattern against the target path

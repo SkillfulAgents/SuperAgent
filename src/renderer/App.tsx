@@ -35,6 +35,7 @@ function AppContent() {
   useInsetRadius()
 
   const [wizardOpen, setWizardOpen] = useState(false)
+  const [wizardAgentOnly, setWizardAgentOnly] = useState(false)
   const { data: userSettings } = useUserSettings()
   const { data: globalSettings } = useSettings()
   const { isAuthMode, isAdmin, user } = useUser()
@@ -63,13 +64,26 @@ function AppContent() {
     }
   }, [user])
 
-  // Auto-open wizard on first launch (non-admin auth users skip — they can't configure the server)
   useEffect(() => {
-    if (userSettings && !userSettings.setupCompleted && !hasAutoOpened.current && (!isAuthMode || isAdmin)) {
+    if (hasAutoOpened.current) return
+    if (!userSettings || !globalSettings) return
+
+    if (userSettings.setupCompleted) return
+
+    if (!isAuthMode) {
       hasAutoOpened.current = true
+      setWizardAgentOnly(false)
+      setWizardOpen(true)
+    } else if (!globalSettings.setupCompleted && isAdmin) {
+      hasAutoOpened.current = true
+      setWizardAgentOnly(false)
+      setWizardOpen(true)
+    } else if (globalSettings.setupCompleted) {
+      hasAutoOpened.current = true
+      setWizardAgentOnly(true)
       setWizardOpen(true)
     }
-  }, [userSettings, isAuthMode, isAdmin])
+  }, [userSettings, globalSettings, isAuthMode, isAdmin])
 
   return (
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
@@ -78,7 +92,7 @@ function AppContent() {
           <WindowControls />
           <UpdateToastNotifier />
           {wizardOpen ? (
-            <GettingStartedWizard onClose={() => setWizardOpen(false)} />
+            <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
           ) : (
             <AppShell />
           )}

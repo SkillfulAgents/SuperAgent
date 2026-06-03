@@ -38,6 +38,34 @@ export function isUnsupportedInChat(event: UserRequestEvent): boolean {
 }
 
 /**
+ * Split a message into chunks that fit within a provider's max message length.
+ * Prefers splitting at paragraph boundaries (\n\n), then line boundaries (\n),
+ * falling back to a hard split at maxLength.
+ */
+export function splitChatMessage(text: string, maxLength: number): string[] {
+  if (text.length <= maxLength) return [text]
+
+  const chunks: string[] = []
+  let remaining = text
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining)
+      break
+    }
+    let splitAt = remaining.lastIndexOf('\n\n', maxLength)
+    if (splitAt === -1 || splitAt < maxLength / 2) {
+      splitAt = remaining.lastIndexOf('\n', maxLength)
+    }
+    if (splitAt === -1 || splitAt < maxLength / 2) {
+      splitAt = maxLength
+    }
+    chunks.push(remaining.slice(0, splitAt))
+    remaining = remaining.slice(splitAt).trimStart()
+  }
+  return chunks
+}
+
+/**
  * Plain-text user-facing message for an event the chat integration can't fulfill.
  * Connectors wrap this in their own formatting (Telegram HTML, Slack mrkdwn).
  */

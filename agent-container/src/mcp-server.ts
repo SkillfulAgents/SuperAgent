@@ -11,7 +11,13 @@ import { requestConnectedAccountTool } from './tools/request-connected-account'
 import { searchConnectedAccountServicesTool } from './tools/search-connected-account-services'
 import { requestRemoteMcpTool } from './tools/request-remote-mcp'
 import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
-import { scheduleTaskTool } from './tools/schedule-task'
+import {
+  scheduleTaskTool,
+  listScheduledTasksTool,
+  cancelScheduledTaskTool,
+  pauseScheduledTaskTool,
+  resumeScheduledTaskTool,
+} from './tools/schedule-task'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -60,7 +66,9 @@ export function createUserInputMcpServer() {
     version: '1.0.0',
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
-      requestRemoteMcpTool, searchRemoteMcpServicesTool, scheduleTaskTool,
+      requestRemoteMcpTool, searchRemoteMcpServicesTool,
+      scheduleTaskTool, listScheduledTasksTool, cancelScheduledTaskTool,
+      pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeWebhookTriggers ? [getAvailableTriggersTool, listTriggersTool, setupTriggerTool, cancelTriggerTool] : []),

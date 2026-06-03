@@ -7,9 +7,10 @@ import { createUserMessage, createAssistantMessage, createToolCall, createCompac
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 
 // Mock useMessages
-const mockMessagesData: { data: ApiMessageOrBoundary[] | undefined; isLoading: boolean } = {
+const mockMessagesData: { data: ApiMessageOrBoundary[] | undefined; isLoading: boolean; error: Error | null } = {
   data: undefined,
   isLoading: false,
+  error: null,
 }
 
 const mockDeleteMessage = vi.fn()
@@ -19,6 +20,13 @@ vi.mock('@renderer/hooks/use-messages', () => ({
   useMessages: () => mockMessagesData,
   useDeleteMessage: () => ({ mutate: mockDeleteMessage }),
   useDeleteToolCall: () => ({ mutate: mockDeleteToolCall }),
+  // Real class so `error instanceof TranscriptNotFoundError` works in the component.
+  TranscriptNotFoundError: class TranscriptNotFoundError extends Error {
+    constructor() {
+      super('Session transcript not found')
+      this.name = 'TranscriptNotFoundError'
+    }
+  },
 }))
 
 // Mock useMessageStream
@@ -766,12 +774,10 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
-    const link = screen.getByText('report.pdf')
-    expect(link).toBeInTheDocument()
-    expect(link.closest('a')).toHaveAttribute(
-      'href',
-      'http://test-api/api/agents/agent-1/files/output/report.pdf'
-    )
+    const pill = screen.getByText('report.pdf')
+    expect(pill).toBeInTheDocument()
+    // Delivered files render as a click-to-preview button, not a download link.
+    expect(pill.closest('[role="button"]')).toBeInTheDocument()
   })
 
   it('shows multiple delivered files from a single turn', () => {

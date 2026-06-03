@@ -82,12 +82,36 @@ export interface HealthCheckResult {
 export interface StopOptions {
   stopTimeoutMs?: number
   killTimeoutMs?: number
+  /**
+   * Whether to escalate to a runtime-level force-stop (e.g. killing the entire
+   * Lima VM) when both `stop` and `kill` time out. Defaults to true.
+   *
+   * Force-stop kills the shared VM, taking down ALL running agents. That is an
+   * acceptable last resort for user-initiated stops (a debug escape hatch — if
+   * a container won't die, you want the bigger hammer) and for app shutdown.
+   * It is NOT acceptable for the background auto-sleep sweep: reclaiming one
+   * idle container should never nuke everyone's active work. Auto-sleep passes
+   * `false`, in which case a stuck container is left running and retried on the
+   * next cycle.
+   */
+  escalateToForceStop?: boolean
+}
+
+export interface StopResult {
+  /** True if we had to force-stop the runtime (e.g. kill the Lima VM). */
+  forceStopUsed: boolean
+  /**
+   * True if the container was actually stopped (gracefully, killed, or via
+   * force-stop). False only when stop+kill timed out and force-stop was
+   * disabled — the container is still running and should be retried.
+   */
+  stopped: boolean
 }
 
 export interface ContainerClient {
   // Lifecycle management
   start(options?: StartOptions): Promise<void>
-  stop(options?: StopOptions): Promise<{ forceStopUsed: boolean }>
+  stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
 
   // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)

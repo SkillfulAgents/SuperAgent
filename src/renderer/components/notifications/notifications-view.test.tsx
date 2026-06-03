@@ -28,6 +28,7 @@ vi.mock('@renderer/context/selection-context', () => ({
     setView: mockSetView,
     setAgent: mockSetAgent,
   }),
+  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
 vi.mock('@renderer/hooks/use-notifications', () => ({

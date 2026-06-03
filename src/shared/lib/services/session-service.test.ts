@@ -530,6 +530,21 @@ describe('session-service', () => {
       )
       expect(metadata).toBeNull()
     })
+
+    it('deletes a dangling metadata-only session (no JSONL)', async () => {
+      // Metadata entry whose transcript was already removed (e.g. by the CLI's
+      // retention cleanup). Deletion must still clear the metadata.
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'dangling-session': { name: 'Dangling', createdAt: '2026-01-24T10:00:00.000Z' },
+      })
+
+      const result = await deleteSession('test-agent', 'dangling-session')
+
+      expect(result).toBe(true)
+      const metadata = await getSessionMetadata('test-agent', 'dangling-session')
+      expect(metadata).toBeNull()
+    })
   })
 
   describe('deleteSessionsBatch', () => {

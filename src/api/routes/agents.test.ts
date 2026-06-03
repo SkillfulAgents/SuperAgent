@@ -87,6 +87,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     hasSessionsAwaitingInputForAgent: vi.fn(() => false),
     isSubscribed: vi.fn(() => true),
     subscribeToSession: vi.fn(),
+    unsubscribeFromSession: vi.fn(),
     markSessionActive: vi.fn(),
     broadcastSessionEvent: vi.fn(),
   },
@@ -209,6 +210,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMessagesWithCompact: vi.fn(),
   getSession: vi.fn(),
   getSessionMetadata: vi.fn(),
+  sessionExists: vi.fn().mockResolvedValue(true),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   deleteSession: vi.fn(),
   removeMessage: vi.fn(),
@@ -361,7 +363,7 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, getSessionMessagesWithCompact, getSessionSummary } from '@shared/lib/services/session-service'
+import { listSessions, getSessionMessagesWithCompact, getSessionSummary, sessionExists, deleteSession, getSession } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -2075,6 +2077,16 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(getSessionMessagesWithCompact).mockResolvedValue([])
+    vi.mocked(sessionExists).mockResolvedValue(true)
+  })
+
+  it('returns 404 when the session transcript is missing', async () => {
+    vi.mocked(sessionExists).mockResolvedValue(false)
+
+    const res = await getReq(app, URL)
+    expect(res.status).toBe(404)
+    // Should not attempt to read messages for a missing transcript
+    expect(getSessionMessagesWithCompact).not.toHaveBeenCalled()
   })
 
   it('does not query messageAuthor in non-auth mode', async () => {
@@ -2155,6 +2167,45 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
 
     // No DB query since there are no user messages to look up
     expect(mockDbSelectFrom).not.toHaveBeenCalled()
+  })
+})
+
+describe('DELETE /:id/sessions/:sessionId', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+  })
+
+  it('returns 204 and deletes the session', async () => {
+    vi.mocked(deleteSession).mockResolvedValue(true)
+
+    const res = await deleteReq(app, URL)
+
+    expect(res.status).toBe(204)
+    expect(deleteSession).toHaveBeenCalledWith('test-agent', 'sess-1')
+  })
+
+  it('deletes a dangling session whose transcript JSONL is gone (no getSession gate)', async () => {
+    // getSession returns null when the JSONL is missing — the route must NOT
+    // gate on it, or dangling sessions become impossible to remove.
+    vi.mocked(getSession).mockResolvedValue(null)
+    vi.mocked(deleteSession).mockResolvedValue(true)
+
+    const res = await deleteReq(app, URL)
+
+    expect(res.status).toBe(204)
+  })
+
+  it('returns 404 only when nothing was deleted', async () => {
+    vi.mocked(deleteSession).mockResolvedValue(false)
+
+    const res = await deleteReq(app, URL)
+
+    expect(res.status).toBe(404)
   })
 })
 

@@ -413,7 +413,12 @@ export class ClaudeCodeProcess extends EventEmitter {
           'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
           'EnterWorktree', 'ExitWorktree',
         ],
-        ...(this.maxThinkingTokens && { maxThinkingTokens: this.maxThinkingTokens }),
+        // Request summarized thinking so reasoning text streams to the UI. Without an
+        // explicit `display`, Opus 4.8/4.7 default to `omitted` — thinking_delta events
+        // arrive empty (only a signature), so the UI can show "Thinking" but no text.
+        thinking: this.maxThinkingTokens
+          ? { type: 'enabled', budgetTokens: this.maxThinkingTokens, display: 'summarized' }
+          : { type: 'adaptive', display: 'summarized' },
         ...(this.maxTurns && { maxTurns: this.maxTurns }),
         ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
         ...(this.effort && { effort: this.effort }),
@@ -424,6 +429,10 @@ export class ClaudeCodeProcess extends EventEmitter {
           // vars, and anything else set on the container.
           ...process.env,
           ...this.customEnvVars,
+          // Emit `session_state_changed` system events (idle/running/requires_action).
+          // The host uses `idle` as a self-healing backstop to clear any background
+          // task whose per-task terminal signal was missed — see message-persister.ts.
+          CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
           // Explicit maxOutputTokens setting takes precedence over custom env var
           ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
         },

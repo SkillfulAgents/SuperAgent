@@ -89,7 +89,8 @@
     -webkit-user-select: none;
   }
   .prose, .prose *, [contenteditable], input, textarea, pre, code,
-  [role="alert"], [role="alert"] * {
+  [role="alert"], [role="alert"] *,
+  .textLayer, .textLayer * {
     user-select: text;
     -webkit-user-select: text;
   }

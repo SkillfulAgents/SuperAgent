@@ -30,6 +30,19 @@ describe('matchScopes', () => {
     expect(getResult.scopes).toContain('gmail.readonly')
   })
 
+  it('method-agnostic ("*"): slack GET /api/conversations.history matches the POST-or-GET RPC entry', () => {
+    // Slack is RPC-style: the path identifies the operation and the same scope
+    // applies whether the agent calls it via GET or POST. Both must resolve to
+    // the *:history scopes so the user gets a specific "Always allow" option
+    // instead of falling back to the broad "all slack requests" suggestion.
+    const get = matchScopes('slack', 'GET', '/api/conversations.history')
+    const post = matchScopes('slack', 'POST', '/api/conversations.history')
+    expect(get.matched).toBe(true)
+    expect(post.matched).toBe(true)
+    expect(get.scopes).toContain('channels:history')
+    expect(get.scopes.sort()).toEqual(post.scopes.sort())
+  })
+
   it('unknown endpoint: gmail GET /gmail/v1/unknown/path returns matched: false', () => {
     const result = matchScopes('gmail', 'GET', '/gmail/v1/unknown/path')
     expect(result.matched).toBe(false)

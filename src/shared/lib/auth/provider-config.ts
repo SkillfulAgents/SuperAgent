@@ -1,4 +1,5 @@
 import { captureException } from '@shared/lib/error-reporting'
+import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 import { z } from 'zod'
 
 // Shape of each entry in the AUTH_PROVIDERS_JSON env bundle. Provider
@@ -51,7 +52,10 @@ export interface GenericOAuthProviderConfig {
   accessType: 'offline'
   requireIssuerValidation: true
   overrideUserInfo: true
+  mapProfileToUser?: (profile: Record<string, unknown>) => Record<string, unknown>
 }
+
+const PLATFORM_ORG_ID_CLAIM = 'https://platform.skillfulagents.dev/claims/org_id'
 
 abstract class AuthProviderDefinition {
   constructor(protected readonly config: AuthProviderSettings) {}
@@ -115,6 +119,19 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
       accessType: 'offline',
       requireIssuerValidation: true,
       overrideUserInfo: true,
+      mapProfileToUser: (profile: Record<string, unknown>) => {
+        // org-pinned deployment: id_token org_id must match; throw aborts
+        // before Better Auth creates the user/account/session.
+        const deploymentOrg = decodeOrgIdFromToken(process.env.PLATFORM_TOKEN ?? '')
+        if (deploymentOrg) {
+          const tokenOrg = profile[PLATFORM_ORG_ID_CLAIM]
+          if (typeof tokenOrg !== 'string' || tokenOrg !== deploymentOrg) {
+            throw new Error('Account belongs to a different organization')
+          }
+        }
+        // Never override id: account.accountId must stay the OIDC sub.
+        return {}
+      },
     }
   }
 }

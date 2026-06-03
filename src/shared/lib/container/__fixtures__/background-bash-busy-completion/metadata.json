@@ -1,0 +1,9 @@
+{
+  "sessionId": "2b1d0dc9-8377-44b8-9f98-6a083b52fbf3",
+  "agentSlug": "background-bash-test",
+  "description": "Real SUPERAGENT_CAPTURE_DIR capture of the busy-completion bug. The agent backgrounds `sleep 20` (run_in_background), then immediately blocks on a ~35s foreground CPU busy-loop. The background task settles WHILE the agent is busy, so the SDK delivers its completion as a `task_updated` patch (task_id=bsyucgy9g, patch.status=completed) — NOT a matching `task_notification`. The only `task_notification` in the stream is for the foreground command (task_id=bekq0a9h9), a different id. Before the fix, the persister had no `task_updated` handler, so bsyucgy9g was never cleared and the session stayed pinned in session_waiting_background.",
+  "subagents": [],
+  "backgroundTaskId": "bsyucgy9g",
+  "foregroundTaskId": "bekq0a9h9",
+  "totalEntries": 53
+}

@@ -9,7 +9,7 @@ import type { ComposerModelFamily } from '@shared/lib/llm-provider'
 import type { ComposerOptionsState } from './composer-options'
 
 const FAMILY_LABEL: Record<ComposerModelFamily, string> = {
-  opus: 'Opus 4.7',
+  opus: 'Opus 4.8',
   sonnet: 'Sonnet 4.6',
   haiku: 'Haiku 4.5',
 }

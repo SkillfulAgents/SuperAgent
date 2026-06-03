@@ -466,7 +466,9 @@ describe('oauth', () => {
       expect(url.searchParams.get('code_challenge_method')).toBe('S256')
       expect(url.searchParams.get('code_challenge')).toBeTruthy()
       expect(url.searchParams.get('state')).toBe(result!.state)
-      expect(url.searchParams.has('resource')).toBe(false)
+      // RFC 8707: resource indicator must be sent on the authorization request
+      // so the AS binds the token audience to this MCP server.
+      expect(url.searchParams.get('resource')).toBe('https://mcp.example.com')
       // No scope when using existing client (scope only from fresh registration)
       expect(url.searchParams.has('scope')).toBe(false)
     })

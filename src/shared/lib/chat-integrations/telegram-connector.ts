@@ -10,7 +10,7 @@ import { Bot, type Context as GrammyContext } from 'grammy'
 import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -312,7 +312,7 @@ export class TelegramConnector extends ChatClientConnector {
     if (!this.bot) throw new Error('Bot not connected')
 
     const html = this.markdownToHtml(message.text || '(empty message)')
-    const chunks = this.splitMessage(html)
+    const chunks = splitChatMessage(html, MAX_MESSAGE_LENGTH)
 
     let lastMessageId = ''
     for (const chunk of chunks) {
@@ -340,7 +340,7 @@ export class TelegramConnector extends ChatClientConnector {
     if (!this.bot) throw new Error('Bot not connected')
 
     const truncated = text.length > MAX_MESSAGE_LENGTH
-      ? text.slice(0, MAX_MESSAGE_LENGTH - 20) + '\n\n... (truncated)'
+      ? text.slice(0, MAX_MESSAGE_LENGTH - 60) + '\n\n... (full response will appear when done)'
       : text
     const displayText = this.markdownToHtml(truncated || 'Thinking...')
 
@@ -368,14 +368,17 @@ export class TelegramConnector extends ChatClientConnector {
   async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void> {
     if (!this.bot) return
 
-    const truncated = finalText.length > MAX_MESSAGE_LENGTH
-      ? finalText.slice(0, MAX_MESSAGE_LENGTH - 20) + '\n\n... (truncated)'
-      : finalText
+    const html = this.markdownToHtml(finalText || '(empty response)')
+    const chunks = splitChatMessage(html, MAX_MESSAGE_LENGTH)
 
     try {
-      await this.bot.api.editMessageText(chatId, Number(messageId), this.markdownToHtml(truncated || '(empty response)'), {
+      await this.bot.api.editMessageText(chatId, Number(messageId), chunks[0], {
         parse_mode: 'HTML',
       })
+
+      for (let i = 1; i < chunks.length; i++) {
+        await this.bot.api.sendMessage(chatId, chunks[i], { parse_mode: 'HTML' })
+      }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
       if (!errMsg.includes('message is not modified')) {
@@ -573,27 +576,4 @@ export class TelegramConnector extends ChatClientConnector {
     return markdownToTelegramHtml(md)
   }
 
-  private splitMessage(text: string): string[] {
-    if (text.length <= MAX_MESSAGE_LENGTH) return [text]
-
-    const chunks: string[] = []
-    let remaining = text
-    while (remaining.length > 0) {
-      if (remaining.length <= MAX_MESSAGE_LENGTH) {
-        chunks.push(remaining)
-        break
-      }
-      // Try to split at paragraph boundary
-      let splitAt = remaining.lastIndexOf('\n\n', MAX_MESSAGE_LENGTH)
-      if (splitAt === -1 || splitAt < MAX_MESSAGE_LENGTH / 2) {
-        splitAt = remaining.lastIndexOf('\n', MAX_MESSAGE_LENGTH)
-      }
-      if (splitAt === -1 || splitAt < MAX_MESSAGE_LENGTH / 2) {
-        splitAt = MAX_MESSAGE_LENGTH
-      }
-      chunks.push(remaining.slice(0, splitAt))
-      remaining = remaining.slice(splitAt).trimStart()
-    }
-    return chunks
-  }
 }

@@ -288,6 +288,11 @@ export async function initiateOAuthFlow(
   authUrl.searchParams.set('code_challenge', codeChallenge)
   authUrl.searchParams.set('code_challenge_method', 'S256')
   authUrl.searchParams.set('state', state)
+  // RFC 8707: bind the token's audience to this MCP resource. Required by the
+  // MCP auth spec on both the authorization AND token requests — omitting it
+  // here lets the AS issue a token with the wrong audience, which the resource
+  // server then rejects on initialize (401).
+  authUrl.searchParams.set('resource', resource)
   // Use scope from client registration response if available
   if (registeredScope) {
     authUrl.searchParams.set('scope', registeredScope)
@@ -377,6 +382,11 @@ export async function initiateNewServerOAuth(
   authUrl.searchParams.set('code_challenge', codeChallenge)
   authUrl.searchParams.set('code_challenge_method', 'S256')
   authUrl.searchParams.set('state', state)
+  // RFC 8707: bind the token's audience to this MCP resource. Required by the
+  // MCP auth spec on both the authorization AND token requests — omitting it
+  // here lets the AS issue a token with the wrong audience, which the resource
+  // server then rejects on initialize (401).
+  authUrl.searchParams.set('resource', resource)
   // Use scope from client registration response if available
   if (registeredScope) {
     authUrl.searchParams.set('scope', registeredScope)

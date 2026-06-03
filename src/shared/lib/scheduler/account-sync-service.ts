@@ -1,11 +1,12 @@
 import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { getRegisteredProviders } from '@shared/lib/account-providers'
 import type { ProviderConnectionListItem } from '@shared/lib/account-providers'
 import type { BaseAccountProvider } from '@shared/lib/account-providers'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
+import { attribution, runWithRequestUser } from '@shared/lib/platform-attribution'
 
 type LocalStatus = 'active' | 'revoked' | 'expired'
 
@@ -87,6 +88,38 @@ class AccountSyncService {
   }
 
   private async syncProvider(provider: BaseAccountProvider): Promise<void> {
+    // Org-scoped tokens need per-member attribution; local/opaque-key has one
+    // implicit member, so a single global pass suffices.
+    if (!attribution.requiresActingMember()) {
+      await this.syncProviderForOwner(provider, null)
+      return
+    }
+
+    for (const ownerUserId of await this.distinctOwnerUserIds(provider.name)) {
+      try {
+        await runWithRequestUser(ownerUserId, () => this.syncProviderForOwner(provider, ownerUserId))
+      } catch (error) {
+        console.warn(`[AccountSync] Error syncing ${provider.name} for member ${ownerUserId}:`, error)
+      }
+    }
+  }
+
+  private async distinctOwnerUserIds(providerName: string): Promise<string[]> {
+    const rows = await db
+      .select({ userId: connectedAccounts.userId })
+      .from(connectedAccounts)
+      .where(eq(connectedAccounts.providerName, providerName))
+    const ids = new Set<string>()
+    for (const row of rows) {
+      if (row.userId) ids.add(row.userId)
+    }
+    return [...ids]
+  }
+
+  private async syncProviderForOwner(
+    provider: BaseAccountProvider,
+    ownerUserId: string | null,
+  ): Promise<void> {
     const userId = getAccountProviderUserId()
 
     let remoteConnections: ProviderConnectionListItem[]
@@ -100,7 +133,14 @@ class AccountSyncService {
     const localAccounts = await db
       .select()
       .from(connectedAccounts)
-      .where(eq(connectedAccounts.providerName, provider.name))
+      .where(
+        ownerUserId
+          ? and(
+              eq(connectedAccounts.providerName, provider.name),
+              eq(connectedAccounts.userId, ownerUserId),
+            )
+          : eq(connectedAccounts.providerName, provider.name),
+      )
 
     const remoteById = new Map(remoteConnections.map((c) => [c.id, c]))
     const localByConnectionId = new Map(localAccounts.map((a) => [a.providerConnectionId, a]))
@@ -166,6 +206,7 @@ class AccountSyncService {
           toolkitSlug: remote.toolkitSlug,
           displayName,
           status: 'active',
+          userId: ownerUserId,
           createdAt,
           updatedAt: new Date(),
         }).onConflictDoNothing()

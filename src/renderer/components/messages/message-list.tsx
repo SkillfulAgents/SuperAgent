@@ -1,5 +1,5 @@
 
-import { useMessages, useDeleteMessage, useDeleteToolCall } from '@renderer/hooks/use-messages'
+import { useMessages, useDeleteMessage, useDeleteToolCall, TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import { VoiceAgentFeedbackDialog } from './voice-agent-feedback-dialog'
@@ -12,7 +12,7 @@ import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
-import { ArrowDown, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
+import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
@@ -52,7 +52,7 @@ interface MessageListProps {
 
 export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingRequestCount = 0, onPendingMessageAppeared }: MessageListProps) {
   useRenderTracker('MessageList')
-  const { data: messages, isLoading } = useMessages(sessionId, agentSlug)
+  const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
   const { user } = useUser()
@@ -343,6 +343,21 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  // The transcript file is gone (e.g. removed by the CLI's retention cleanup)
+  // while the session still appears in the nav. Don't show this during the brief
+  // new-session window — the creating client has a pendingUserMessage then.
+  if (error instanceof TranscriptNotFoundError && !pendingUserMessage) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
+        <FileX2 className="h-8 w-8 text-muted-foreground" />
+        <p className="text-sm font-medium text-foreground">Session transcript not found</p>
+        <p className="max-w-sm text-xs text-muted-foreground">
+          This session&apos;s transcript is no longer available. You can remove it from the list.
+        </p>
       </div>
     )
   }

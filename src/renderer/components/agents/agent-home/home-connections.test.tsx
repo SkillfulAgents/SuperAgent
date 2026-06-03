@@ -18,10 +18,12 @@ vi.mock('@renderer/lib/api', () => ({
 // "Manage Connections" button — not part of the delete flow we care about.
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({
+    view: { kind: 'home' },
     setView: vi.fn(),
     setAgent: vi.fn(),
     consumePendingDraft: vi.fn(() => null),
   }),
+  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
 const ACCOUNT = {

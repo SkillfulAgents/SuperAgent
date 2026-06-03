@@ -15,6 +15,7 @@ import type {
   CreateSessionOptions,
   StartOptions,
   StopOptions,
+  StopResult,
   StreamMessage,
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
@@ -546,10 +547,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  async stop(options?: StopOptions): Promise<{ forceStopUsed: boolean }> {
+  async stop(options?: StopOptions): Promise<StopResult> {
     let forceStopUsed = false
     const stopTimeoutMs = options?.stopTimeoutMs ?? 10_000
     const killTimeoutMs = options?.killTimeoutMs ?? 5_000
+    const escalateToForceStop = options?.escalateToForceStop ?? true
 
     try {
       // Terminate all WebSocket connections immediately (no graceful close handshake)
@@ -586,12 +588,59 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         ])
 
         if (!killed) {
-          console.warn(`Container ${containerName} kill also timed out, attempting force stop`)
+          console.warn(
+            `Container ${containerName} kill also timed out` +
+              (escalateToForceStop
+                ? ', attempting force stop'
+                : ' (force-stop disabled — leaving container running, will retry)')
+          )
+
+          // Probe why stop+kill hung so we can learn the root cause. Best-effort
+          // and bounded — a probe timing out is itself a signal the runtime is
+          // wedged. Collected on EVERY occurrence (including auto-sleep bails),
+          // not just real escalations. Diagnostics are telemetry only and must
+          // never be load-bearing: if collection throws, degrade to a marker so
+          // the capture and the escalation/bail decision below still proceed.
+          let stopFailureDiagnostics: Record<string, unknown>
+          try {
+            stopFailureDiagnostics = await this.collectStopFailureDiagnostics(containerName)
+          } catch (diagError: any) {
+            stopFailureDiagnostics = {
+              diagnostics_collection_failed: String(diagError?.message ?? diagError).slice(0, 300),
+            }
+          }
           captureException(new Error(`Container stop escalated to forceStop: both stop and kill timed out`), {
-            tags: { component: 'container', operation: 'stop-escalation' },
-            extra: { containerName, agentId: this.config.agentId, runner: getSettings().container.containerRunner },
+            tags: {
+              component: 'container',
+              operation: 'stop-escalation',
+              // Distinguish deliberate escalations from auto-sleep bails so the
+              // two can be split/filtered in Sentry while sharing one issue.
+              escalation: escalateToForceStop ? 'forced' : 'skipped',
+            },
+            extra: {
+              containerName,
+              agentId: this.config.agentId,
+              runner: getSettings().container.containerRunner,
+              stopTimeoutMs,
+              killTimeoutMs,
+              escalateToForceStop,
+              ...stopFailureDiagnostics,
+            },
             level: 'warning',
           })
+
+          if (!escalateToForceStop) {
+            // Background auto-sleep: never kill the shared VM to reclaim one idle
+            // container. Leave it running (don't `rm` it — it's still alive) and
+            // let the next sweep retry.
+            addErrorBreadcrumb({
+              category: 'container',
+              message: 'Stop failed but force-stop disabled; leaving container running',
+              data: { containerName, agentId: this.config.agentId },
+            })
+            return { forceStopUsed: false, stopped: false }
+          }
+
           await this.forceStop()
           forceStopUsed = true
         }
@@ -606,7 +655,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       throw error
     }
 
-    return { forceStopUsed }
+    return { forceStopUsed, stopped: true }
+  }
+
+  /**
+   * Collect diagnostic data at the moment a stop fails (both `stop` and `kill`
+   * timed out). Attached to the Sentry report to surface why the runtime is
+   * unresponsive. Default is a no-op; VM-based runtimes override to probe the
+   * guest (load, memory, container/runtime state). Must be best-effort and
+   * bounded — the runtime is likely wedged when this runs.
+   */
+  protected async collectStopFailureDiagnostics(_containerName: string): Promise<Record<string, unknown>> {
+    return {}
   }
 
   /**

@@ -6,6 +6,7 @@ import { SessionPersistence } from './session-persistence';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import { releaseBrowserLock } from './browser-state';
+import { claudeSettingsSchema, SESSION_RETENTION_DAYS } from './claude-settings-schema';
 
 interface SessionData {
   session: Session;
@@ -33,6 +34,46 @@ export class SessionManager extends EventEmitter {
     const skillsDir = `${this.baseWorkingDirectory}/.claude/skills`;
     if (!fs.existsSync(skillsDir)) {
       fs.mkdirSync(skillsDir, { recursive: true });
+    }
+
+    this.ensureClaudeSettings();
+  }
+
+  /**
+   * Ensure `$CLAUDE_CONFIG_DIR/settings.json` pins the session-transcript
+   * retention period. The CLI reads its user settings.json from
+   * CLAUDE_CONFIG_DIR (`/workspace/.claude`), NOT from `~/.claude`, so the
+   * image-baked settings.json under /home/claude/.claude is never consulted.
+   * Without this, the CLI's default ~30-day cleanup deletes old session JSONL
+   * files on startup — they then linger in session-metadata.json (so they show
+   * in the nav) but fail to load because the transcript is gone.
+   *
+   * Merges into any existing settings.json rather than clobbering it, so other
+   * settings written by the CLI or a skill are preserved.
+   */
+  private ensureClaudeSettings(): void {
+    const settingsPath = `${this.baseWorkingDirectory}/.claude/settings.json`;
+    try {
+      let existing: Record<string, unknown> = {};
+      if (fs.existsSync(settingsPath)) {
+        existing = claudeSettingsSchema.parse(
+          JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
+        );
+      }
+
+      if (existing.cleanupPeriodDays === SESSION_RETENTION_DAYS) {
+        return; // Already correct — avoid a needless write on every startup.
+      }
+
+      const merged = claudeSettingsSchema.parse({
+        ...existing,
+        cleanupPeriodDays: SESSION_RETENTION_DAYS,
+      });
+      fs.writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
+    } catch (error) {
+      // Never let a settings-provisioning failure block the server from
+      // starting; worst case the CLI falls back to its default retention.
+      console.error('Failed to ensure Claude settings.json:', error);
     }
   }
 

@@ -30,6 +30,7 @@ import {
   JsonlSystemEntry,
   ContentBlock,
 } from '@shared/lib/types/agent'
+import { captureException } from '@shared/lib/error-reporting'
 
 // ============================================================================
 // Session Metadata (custom names, starred status)
@@ -395,22 +396,41 @@ export async function deleteSession(
   sessionId: string
 ): Promise<boolean> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const jsonlExisted = await fileExists(jsonlPath)
 
-  if (!(await fileExists(jsonlPath))) {
-    return false
+  if (jsonlExisted) {
+    try {
+      await fs.promises.unlink(jsonlPath)
+    } catch (error) {
+      // The file existed when we checked, so this is a genuine failure
+      // (permissions, lock, I/O error), not a benign "already gone". Report it
+      // and bail WITHOUT touching metadata — deleting the metadata while the
+      // JSONL remains would orphan the transcript (it would re-surface as an
+      // unnamed session in listings).
+      captureException(error, {
+        tags: { area: 'session-delete', op: 'unlink' },
+        extra: { agentSlug, sessionId },
+      })
+      throw error
+    }
+  } else {
+    // No transcript to remove — e.g. it was deleted by the CLI's retention
+    // cleanup while the metadata entry lingered. Skip the unlink (an unlink
+    // here would fail with ENOENT) and just clear the dangling metadata.
+    console.warn(
+      `deleteSession: no JSONL transcript for ${agentSlug}/${sessionId}; removing metadata only`
+    )
   }
 
-  // Remove JSONL file
-  await fs.promises.unlink(jsonlPath)
-
-  // Remove from metadata
+  // Remove from metadata regardless, so dangling entries can be cleared.
   const metadata = await readSessionMetadata(agentSlug)
-  if (metadata[sessionId]) {
+  const hadMetadata = metadata[sessionId] !== undefined
+  if (hadMetadata) {
     delete metadata[sessionId]
     await writeSessionMetadata(agentSlug, metadata)
   }
 
-  return true
+  return jsonlExisted || hadMetadata
 }
 
 /**

@@ -156,9 +156,13 @@ RUN useradd -m -s /bin/bash claude && \
       chown -R claude:claude /home/claude/.agent-browser; \
     fi
 
-# Copy skills and settings into the user's Claude config directory (after user creation)
+# Copy skills into the user's Claude config directory (after user creation).
+# NOTE: session-transcript retention (cleanupPeriodDays) is NOT set here. The
+# CLI reads its user settings.json from CLAUDE_CONFIG_DIR (/workspace/.claude),
+# not ~/.claude, so a settings.json baked in here would be ignored. The
+# SessionManager provisions /workspace/.claude/settings.json at runtime instead
+# (see agent-container/src/session-manager.ts:ensureClaudeSettings).
 COPY skills/ /home/claude/.claude/skills/
-COPY settings.json /home/claude/.claude/settings.json
 RUN chown -R claude:claude /home/claude/.claude
 
 # Switch to non-root user

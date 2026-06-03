@@ -26,11 +26,15 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     pendingSecretRequests, pendingConnectedAccountRequests, pendingQuestionRequests,
     pendingFileRequests, pendingRemoteMcpRequests, pendingBrowserInputRequests,
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
+    isThinking, thinkingText,
   } = useMessageStream(sessionId, agentSlug)
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
   const [showAllTodos, setShowAllTodos] = useState(false)
+
+  // Rough token estimate for the streamed reasoning (~4 chars/token). UI-only.
+  const thinkingTokens = thinkingText ? Math.ceil(thinkingText.length / 4) : 0
   const handleRevokeComputerUse = useCallback(async () => {
     setRevoking(true)
     setRevokeError(false)
@@ -194,7 +198,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       ? 'Compacting...'
       : apiRetry
         ? `Retrying... (attempt ${apiRetry.attempt}${apiRetry.maxRetries ? `/${apiRetry.maxRetries}` : ''})`
-        : (activeItem?.activeForm || 'Working...')
+        : isThinking
+          ? 'Thinking...'
+          : (activeItem?.activeForm || 'Working...')
 
   return (
     <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
@@ -212,6 +218,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             )}></span>
           </span>
           <span className="text-sm font-medium">{statusText}</span>
+          {isThinking && thinkingTokens > 0 && (
+            <span className="text-xs text-muted-foreground tabular-nums">~{thinkingTokens.toLocaleString()} tokens</span>
+          )}
           {computerUseApp && (
             <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
               {computerUseAppIcon ? (
@@ -237,6 +246,17 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>
           )}
         </div>
+
+        {/* Streamed (summarized) reasoning — shown only while actively thinking, removed
+            once the agent flips back to "Working". Clipped to ~4 lines and bottom-aligned
+            (justify-end + overflow-hidden) so the latest streamed text stays visible. */}
+        {isThinking && thinkingText && (
+          <div className="mt-2 flex max-h-20 flex-col justify-end overflow-hidden rounded bg-muted p-2">
+            <pre className="whitespace-pre-wrap text-xs text-muted-foreground select-text">
+              {thinkingText}
+            </pre>
+          </div>
+        )}
 
         {/* Active subagents */}
         {subagentItems.length > 0 && (

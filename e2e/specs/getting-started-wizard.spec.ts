@@ -38,9 +38,9 @@ test.describe('Getting Started Wizard', () => {
     await request.put('http://localhost:3000/api/user-settings', {
       data: { setupCompleted: true },
     })
-    // Clean up mock API key
+    // Restore global setupCompleted and clean up mock API key
     await request.put('http://localhost:3000/api/settings', {
-      data: { apiKeys: { anthropicApiKey: '' } },
+      data: { app: { setupCompleted: true }, apiKeys: { anthropicApiKey: '' } },
     })
   })
 
@@ -100,7 +100,6 @@ test.describe('Getting Started Wizard', () => {
     // Welcome screen (no Back button)
     await wizardPage.expectStep(0)
     await expect(page.getByRole('heading', { name: 'Build your agent workforce' })).toBeVisible()
-    await expect(page.locator('[data-testid="wizard-platform-login"]')).toBeVisible()
     await expect(page.locator('[data-testid="wizard-manual-setup"]')).toBeVisible()
     await expect(page.locator('[data-testid="wizard-back"]')).not.toBeVisible()
 

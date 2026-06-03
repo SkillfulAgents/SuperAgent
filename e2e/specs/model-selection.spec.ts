@@ -170,7 +170,7 @@ test.describe('Model selection', () => {
 
   test('AgentHome trigger displays the family of the user pinned default model', async ({ page }, testInfo) => {
     // Regression: settings stores `agentModel` as a pinned ID
-    // ('claude-opus-4-7') while composer's `composerModels` are keyed by
+    // (e.g. 'claude-opus-4-8') while composer's `composerModels` are keyed by
     // family alias. When AgentHome falls back to settings (i.e. the agent
     // already has at least one session, so isFirstSession is false), the
     // popover trigger must still resolve to the right family — otherwise the
@@ -182,9 +182,11 @@ test.describe('Model selection', () => {
     // next visit — that's what triggers the settings-fallback codepath.
     await agentPage.createAgent(`First message ${tag}`)
 
-    // We're back on agent-home. With the default `agentModel:
-    // "claude-opus-4-7"` setting, the trigger must show Opus, not Sonnet.
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Opus 4.7')
+    // We're back on agent-home. With the default Opus `agentModel` setting,
+    // the trigger must show the Opus family, not Sonnet. Assert family-shape
+    // (not the exact version) so the test stays robust to future agentModel
+    // default bumps — same reasoning as the wire-model check below.
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Opus')
     await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Sonnet')
 
     // Send a message without touching the popover — assert the wire model
