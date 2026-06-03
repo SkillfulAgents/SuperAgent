@@ -594,9 +594,12 @@ class MessagePersister {
 
     const content = message.content
 
-    // Detect background task completion from system messages BEFORE the sidechain
-    // filter. The SDK delivers task completions as system events with task_id and
-    // status fields, not as user messages.
+    // Detect background task completion from `task_notification` system messages
+    // BEFORE the sidechain filter. This is the idle/wake path: when a backgrounded
+    // task settles while the agent is idle, the SDK wakes it with a `task_notification`
+    // carrying this task's id + status. The busy path (task settles while a foreground
+    // tool is in flight) is handled separately via `task_updated` in the system switch
+    // below — that path does NOT emit a matching `task_notification`.
     if (content.type === 'system' && state.activeBackgroundTasks.size > 0) {
       const taskId = content.task_id as string | undefined
       if (taskId && content.status && state.activeBackgroundTasks.has(taskId)) {
@@ -819,6 +822,51 @@ class MessagePersister {
             usage: content.usage,
             lastToolName: content.last_tool_name,
           })
+        } else if (content.subtype === 'task_updated') {
+          // Background task state change. When a backgrounded Bash command completes
+          // while the agent is still busy (a foreground tool was in flight when it
+          // settled), the SDK delivers the completion as a `task_updated` patch — NOT
+          // an in-band `task_notification` (that only fires on the idle/wake path, and
+          // even then carries the *currently returning* task's id, not necessarily this
+          // one). Without this branch the task is never removed from
+          // activeBackgroundTasks, so the result handler keeps re-emitting
+          // `session_waiting_background` and the session is pinned "working" forever.
+          // See the background-bash-busy-completion replay fixture.
+          const taskId = content.task_id as string | undefined
+          const status = (content.patch as { status?: string } | undefined)?.status
+          if (
+            taskId &&
+            (status === 'completed' || status === 'failed' || status === 'killed') &&
+            state.activeBackgroundTasks.has(taskId)
+          ) {
+            state.activeBackgroundTasks.delete(taskId)
+            this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
+            this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+          }
+        } else if (content.subtype === 'session_state_changed') {
+          // Self-healing backstop. `idle` is the SDK's authoritative "session fully
+          // settled" state — background work keeps the session non-idle (the runtime
+          // distinguishes "done" from "paused waiting for background work"), so reaching
+          // `idle` while we still track background tasks means a per-task terminal signal
+          // (task_notification / task_updated) was missed. Clearing the phantoms here
+          // prevents the result handler from pinning the session in
+          // `session_waiting_background` forever — the original failure mode. No-op in
+          // healthy flows (tasks are already cleared by the time idle arrives). Emitted
+          // via CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS (set in agent-container claude-code.ts).
+          if (content.state === 'idle' && state.activeBackgroundTasks.size > 0) {
+            for (const taskId of [...state.activeBackgroundTasks.keys()]) {
+              state.activeBackgroundTasks.delete(taskId)
+              this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
+              this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+            }
+            // If we were only staying active to wait on those (now-cleared) phantom
+            // tasks, finalize idle the same way the result handler would.
+            if (state.isActive && !state.isStreaming) {
+              state.isActive = false
+              this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
+              this.broadcastGlobal({ type: 'session_idle', sessionId, agentSlug: state.agentSlug, isActive: false })
+            }
+          }
         } else if (content.subtype === 'memory_recall') {
           // Memory recall — agent is reading memory files
           this.broadcastToSSE(sessionId, {

@@ -394,9 +394,15 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'background_task_completed') {
         if (current) {
+          const backgroundTasks = current.backgroundTasks.filter(t => t.taskId !== data.taskId)
           streamStates.set(sessionId, {
             ...current,
-            backgroundTasks: current.backgroundTasks.filter(t => t.taskId !== data.taskId),
+            backgroundTasks,
+            // Clear the "waiting on background" flag once the last task is gone. This
+            // flag drives the composer's stop button + submit-enabled logic and is
+            // otherwise only reset by session_idle/session_active — so if the final
+            // task clears without a follow-up idle, the composer would stay pinned.
+            isWaitingBackground: current.isWaitingBackground && backgroundTasks.length > 0,
           })
         }
       }

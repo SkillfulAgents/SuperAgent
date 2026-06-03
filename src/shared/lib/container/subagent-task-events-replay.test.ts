@@ -85,6 +85,10 @@ interface FixtureMeta {
   subagents: SubagentMeta[]
   taskProgressCount?: number
   totalEntries: number
+  // Background-Bash fixtures: the explicitly-backgrounded task and the foreground
+  // task whose `task_notification` must NOT be mistaken for it.
+  backgroundTaskId?: string
+  foregroundTaskId?: string
 }
 
 async function loadFixture(fixtureName: string): Promise<{
@@ -370,6 +374,41 @@ describe('subagent task_started / task_progress replay harness', () => {
       const completedEvents = sseEvents.filter((e) => e['type'] === 'subagent_completed')
       expect(completedEvents).toHaveLength(1)
       expect(completedEvents[0]['agentId']).toBe(meta.subagents[0].agentId)
+    })
+  })
+
+  // Real capture of the background-Bash "busy completion" bug. The background task
+  // settles while the agent is blocked on a foreground tool, so its completion arrives
+  // as a `task_updated` patch (not a matching `task_notification`). Regression guard:
+  // the persister must clear it and let the session go idle instead of getting stuck.
+  describe('background Bash busy-completion (real capture)', () => {
+    it('clears the background task via task_updated and reaches idle (not stuck waiting)', async () => {
+      const { meta, sseEvents } = await replayFixture('background-bash-busy-completion')
+      const bgId = meta.backgroundTaskId!
+
+      // The background task was registered on start.
+      const started = sseEvents.filter((e) => e['type'] === 'background_task_started')
+      expect(started.map((e) => e['taskId'])).toContain(bgId)
+
+      // It must be cleared — this is the bug: before the fix, the busy-path
+      // `task_updated{status:completed}` for bgId was ignored and nothing cleared it.
+      const completed = sseEvents.filter((e) => e['type'] === 'background_task_completed')
+      expect(completed.map((e) => e['taskId'])).toContain(bgId)
+
+      // The session must end idle, NOT pinned waiting on a phantom background task.
+      expect(sseEvents.some((e) => e['type'] === 'session_idle')).toBe(true)
+      expect(sseEvents.some((e) => e['type'] === 'session_waiting_background')).toBe(false)
+    })
+
+    it('does not mistake the foreground task_notification for the background task', async () => {
+      const { meta, sseEvents } = await replayFixture('background-bash-busy-completion')
+      const fgId = meta.foregroundTaskId!
+
+      // The only `task_notification` in this capture is for the foreground command
+      // (a different id), which was never a tracked background task — so it must not
+      // produce a background_task_completed for the foreground id.
+      const completed = sseEvents.filter((e) => e['type'] === 'background_task_completed')
+      expect(completed.map((e) => e['taskId'])).not.toContain(fgId)
     })
   })
 })

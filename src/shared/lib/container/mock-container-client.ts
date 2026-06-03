@@ -830,20 +830,21 @@ export class BackgroundBashScenario implements MockScenario {
       })
     }, firstResultDelay)
 
-    // After delay, task-notification arrives (background command finished)
-    // The SDK delivers this as a system message with task_id and status fields.
+    // After delay, the background command finishes. The SDK delivers the completion
+    // as a `task_updated` state patch (the busy-path shape: the task settled while
+    // the agent had moved on, so there is no in-band `task_notification` carrying this
+    // task's id — only a state change). The persister clears the task from this.
+    // See message-persister.ts `task_updated` handling and the
+    // background-bash-busy-completion replay fixture.
     const notificationDelay = firstResultDelay + this.delayMs
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
         type: 'system',
         content: {
           type: 'system',
-          subtype: 'task_completed',
+          subtype: 'task_updated',
           task_id: bgTaskId,
-          tool_use_id: toolId,
-          status: 'completed',
-          output_file: `/tmp/tasks/${bgTaskId}.output`,
-          summary: 'Background command completed (exit code 0)',
+          patch: { status: 'completed', end_time: Date.now() },
           session_id: sessionId,
         },
       })

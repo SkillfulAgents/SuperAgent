@@ -3138,6 +3138,113 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
     })
 
+    it('clears background task on task_updated completed (busy-completion path) and goes idle', () => {
+      // Regression: when a backgrounded task settles while the agent is still busy
+      // (a foreground tool was in flight), the SDK delivers the completion as a
+      // `task_updated` patch rather than a matching `task_notification`. The persister
+      // must clear it from that signal or the session stays pinned in
+      // session_waiting_background forever. See background-bash-busy-completion fixture.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-busy' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+
+      // Agent turn ends with the bg task still pending → stays active.
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      sseEvents.length = 0
+
+      // Busy-path completion: a `task_updated` patch, NOT a `task_notification`.
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'bg-busy',
+        patch: { status: 'completed', end_time: Date.now() },
+      })
+
+      const completedEvents = sseEvents.filter(e => e.type === 'background_task_completed')
+      expect(completedEvents).toHaveLength(1)
+      expect(completedEvents[0].taskId).toBe('bg-busy')
+
+      // Next result should now go idle rather than re-emit session_waiting_background.
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
+    })
+
+    it('ignores task_updated for non-terminal status or untracked task', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-x' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      sseEvents.length = 0
+
+      // Non-terminal status → no clear.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_updated', task_id: 'bg-x', patch: { status: 'running' },
+      })
+      // Terminal status but unknown task id → no clear.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_updated', task_id: 'bg-unknown', patch: { status: 'completed' },
+      })
+
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-x')
+    })
+
+    it('backstop: session_state_changed idle clears phantom tasks and finalizes idle', () => {
+      // Simulate a MISSED per-task terminal signal: a tracked bg task that never got a
+      // task_updated/task_notification. When the SDK reports the session fully settled
+      // (state:idle), the backstop must clear it so the session isn't pinned forever.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-phantom' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      // Turn ends with the task still tracked → session stays active (waiting).
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      sseEvents.length = 0
+
+      // SDK reports the session settled while we still (wrongly) track the task.
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toContain('bg-phantom')
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('backstop: session_state_changed idle is a no-op with no pending tasks (no spurious idle)', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+    })
+
+    it('backstop: session_state_changed running does not clear pending tasks', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-keep' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-keep')
+    })
+
     it('tracks multiple concurrent background tasks', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
 

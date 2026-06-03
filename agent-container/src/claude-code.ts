@@ -429,6 +429,10 @@ export class ClaudeCodeProcess extends EventEmitter {
           // vars, and anything else set on the container.
           ...process.env,
           ...this.customEnvVars,
+          // Emit `session_state_changed` system events (idle/running/requires_action).
+          // The host uses `idle` as a self-healing backstop to clear any background
+          // task whose per-task terminal signal was missed — see message-persister.ts.
+          CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
           // Explicit maxOutputTokens setting takes precedence over custom env var
           ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
         },

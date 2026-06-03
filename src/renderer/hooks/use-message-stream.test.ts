@@ -2353,6 +2353,60 @@ describe('useMessageStream', () => {
     expect(result.current.isActive).toBe(true)
   })
 
+  it('clears isWaitingBackground when the last background task completes', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-1', startedAt: 1000 })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_waiting_background', backgroundTaskCount: 1 })
+    })
+    expect(result.current.isWaitingBackground).toBe(true)
+
+    // Last task completes — flag must clear even without a follow-up session_idle.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_completed', taskId: 'bg-1' })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([])
+    expect(result.current.isWaitingBackground).toBe(false)
+  })
+
+  it('keeps isWaitingBackground while other background tasks remain', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-1', startedAt: 1000 })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-2', startedAt: 1100 })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_waiting_background', backgroundTaskCount: 2 })
+    })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_completed', taskId: 'bg-1' })
+    })
+
+    // One task still running → still waiting.
+    expect(result.current.backgroundTasks).toHaveLength(1)
+    expect(result.current.isWaitingBackground).toBe(true)
+  })
+
   it('clears isWaitingBackground on session_active', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
