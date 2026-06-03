@@ -7,10 +7,18 @@ vi.mock('@shared/lib/error-reporting', () => ({
 
 import { getGenericOAuthProviderConfigs, getPublicAuthProviders } from './provider-config'
 
+// Build an unsigned org access JWT (header.payload.sig) carrying { orgId } so
+// decodeOrgIdFromToken(process.env.PLATFORM_TOKEN) resolves the deployment org.
+function makeOrgToken(orgId: string): string {
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
+  return `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ orgId })}.sig`
+}
+
 describe('getPublicAuthProviders', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     delete process.env.AUTH_PROVIDERS_JSON
+    delete process.env.PLATFORM_TOKEN
   })
 
   it('returns enabled providers with readiness details', () => {
@@ -185,7 +193,7 @@ describe('getPublicAuthProviders', () => {
     ])
   })
 
-  it('mapProfileToUser extracts platform user_id claim as id', () => {
+  it('mapProfileToUser never overrides id, so account.accountId stays the OIDC sub', () => {
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
     ])
@@ -194,18 +202,60 @@ describe('getPublicAuthProviders', () => {
       sub: 'sub_member_123',
       email: 'user@example.com',
       'https://platform.skillfulagents.dev/claims/user_id': 'uuid-user-456',
-    })).toEqual({ id: 'uuid-user-456' })
+    })).toEqual({})
   })
 
-  it('mapProfileToUser returns empty object when user_id claim is absent', () => {
+  it('mapProfileToUser rejects an id_token whose org_id differs from the deployment org', () => {
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
     ])
+    process.env.PLATFORM_TOKEN = makeOrgToken('org_AAA')
     const [config] = getGenericOAuthProviderConfigs()
-    expect(config.mapProfileToUser!({
-      sub: 'sub_member_123',
-      email: 'user@example.com',
-    })).toEqual({})
+    expect(() =>
+      config.mapProfileToUser!({
+        sub: 'sub_member_123',
+        'https://platform.skillfulagents.dev/claims/org_id': 'org_BBB',
+      }),
+    ).toThrow(/different organization/i)
+  })
+
+  it('mapProfileToUser passes when the id_token org_id matches the deployment org', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
+    ])
+    process.env.PLATFORM_TOKEN = makeOrgToken('org_AAA')
+    const [config] = getGenericOAuthProviderConfigs()
+    expect(
+      config.mapProfileToUser!({
+        sub: 'sub_member_123',
+        'https://platform.skillfulagents.dev/claims/org_id': 'org_AAA',
+      }),
+    ).toEqual({})
+  })
+
+  it('mapProfileToUser rejects an id_token with no org_id claim on an org-pinned deployment', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
+    ])
+    process.env.PLATFORM_TOKEN = makeOrgToken('org_AAA')
+    const [config] = getGenericOAuthProviderConfigs()
+    expect(() =>
+      config.mapProfileToUser!({ sub: 'sub_member_123', email: 'user@example.com' }),
+    ).toThrow(/different organization/i)
+  })
+
+  it('mapProfileToUser skips the org check when no PLATFORM_TOKEN is configured', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
+    ])
+    delete process.env.PLATFORM_TOKEN
+    const [config] = getGenericOAuthProviderConfigs()
+    expect(
+      config.mapProfileToUser!({
+        sub: 'sub_member_123',
+        'https://platform.skillfulagents.dev/claims/org_id': 'org_BBB',
+      }),
+    ).toEqual({})
   })
 
   it('reports invalid AUTH_PROVIDERS_JSON to error reporting instead of silently dropping', () => {

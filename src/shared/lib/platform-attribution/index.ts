@@ -5,26 +5,12 @@ import { and, desc, eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
+
+// Re-export so existing consumers keep importing from here.
+export { decodeOrgIdFromToken }
 
 const PLATFORM_PROVIDER_ID = 'platform'
-
-/** Unverified `orgId` claim, or null for opaque access keys. Used only for routing. */
-export function decodeOrgIdFromToken(token: string): string | null {
-  const segments = token.split('.')
-  if (segments.length !== 3) return null
-  try {
-    const claims = JSON.parse(decodeBase64Url(segments[1])) as { orgId?: unknown }
-    return typeof claims.orgId === 'string' && claims.orgId.length > 0 ? claims.orgId : null
-  } catch {
-    return null
-  }
-}
-
-function decodeBase64Url(value: string): string {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
-  const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4)
-  return Buffer.from(padded, 'base64').toString('utf8')
-}
 
 function getPlatformAccountIdForUserId(userId: string): string | null {
   const rows = db
