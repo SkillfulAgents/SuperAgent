@@ -12,7 +12,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { runWithOptionalUser, decodeOrgIdFromToken } from '@shared/lib/platform-attribution'
+import { runWithOptionalUser, attribution } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
@@ -127,8 +127,7 @@ class TriggerManager {
       // `${token}::local` bearer.
       let memberIds = getDistinctPlatformMemberIdsForActiveTriggers()
       if (memberIds.length === 0) {
-        const token = getPlatformAccessToken()
-        if (!token || decodeOrgIdFromToken(token)) return
+        if (attribution.requiresActingMember() || !getPlatformAccessToken()) return
         memberIds = ['local']
       }
 
