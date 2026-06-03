@@ -1,13 +1,13 @@
 import { useCallback, useState, type ReactNode } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
-import { Tabs, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from '@renderer/components/ui/tooltip'
+import { cn } from '@shared/lib/utils/cn'
 import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
@@ -137,38 +137,45 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
             subtitle="Choose light or dark theme, or follow your system setting"
             right={
               <TooltipProvider delayDuration={0}>
-                <Tabs
-                  value={userSettings?.theme ?? 'system'}
-                  onValueChange={(value) => {
-                    updateUserSettings.mutate({ theme: value as 'system' | 'light' | 'dark' })
-                  }}
+                {/* Single-select segmented control. Intentionally NOT Radix Tabs:
+                    a theme picker has no tab panels, so TabsTrigger's aria-controls
+                    would dangle (critical aria-valid-attr-value violation). */}
+                <div
+                  role="radiogroup"
+                  aria-label="Appearance"
+                  className="inline-flex h-8 items-center justify-center rounded-lg bg-muted p-0.5 text-muted-foreground"
                 >
-                  <TabsList className="h-8 p-0.5">
-                    {(
-                      [
-                        { value: 'system', label: 'System', Icon: Monitor },
-                        { value: 'light', label: 'Light', Icon: Sun },
-                        { value: 'dark', label: 'Dark', Icon: Moon },
-                      ] as const
-                    ).map(({ value, label, Icon }) => (
+                  {(
+                    [
+                      { value: 'system', label: 'System', Icon: Monitor },
+                      { value: 'light', label: 'Light', Icon: Sun },
+                      { value: 'dark', label: 'Dark', Icon: Moon },
+                    ] as const
+                  ).map(({ value, label, Icon }) => {
+                    const selected = (userSettings?.theme ?? 'system') === value
+                    return (
                       <Tooltip key={value}>
                         <TooltipTrigger asChild>
-                          <span className="inline-flex">
-                            <TabsTrigger
-                              value={value}
-                              className="h-7 w-8 px-0"
-                              disabled={isUserSettingsLoading}
-                              aria-label={`${label} theme`}
-                            >
-                              <Icon className="h-3.5 w-3.5" />
-                            </TabsTrigger>
-                          </span>
+                          <button
+                            type="button"
+                            role="radio"
+                            aria-checked={selected}
+                            aria-label={`${label} theme`}
+                            disabled={isUserSettingsLoading}
+                            onClick={() => updateUserSettings.mutate({ theme: value })}
+                            className={cn(
+                              'inline-flex h-7 w-8 items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+                              selected && 'bg-background text-foreground shadow',
+                            )}
+                          >
+                            <Icon className="h-3.5 w-3.5" />
+                          </button>
                         </TooltipTrigger>
                         <TooltipContent>{label}</TooltipContent>
                       </Tooltip>
-                    ))}
-                  </TabsList>
-                </Tabs>
+                    )
+                  })}
+                </div>
               </TooltipProvider>
             }
           />
