@@ -205,6 +205,52 @@ describe('getPublicAuthProviders', () => {
     })).toEqual({})
   })
 
+  // Attribution invariant guard. The proxy attributes org-scoped requests as
+  // `<token>::<memberId>`, where memberId is read verbatim from better-auth
+  // `authAccount.accountId` (see platform-attribution/index.ts). better-auth
+  // sets accountId to the OIDC `sub`, and the platform issuer sets `sub` = the
+  // member id (`sub_…`), NOT the platform user id (a Supabase UUID). Mapping the
+  // user_id claim into the better-auth identity silently retargets every
+  // org-scoped request to the wrong member. This test fails loudly if that
+  // benign-looking member-id → user-id switch is ever reintroduced.
+  it('keeps the member id (OIDC sub) as the account identity and never adopts the platform user id', () => {
+    const MEMBER_ID = 'sub_member_123'
+    const PLATFORM_USER_ID = 'uuid-user-456'
+    const USER_ID_CLAIM = 'https://platform.skillfulagents.dev/claims/user_id'
+
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
+    ])
+    delete process.env.PLATFORM_TOKEN
+
+    const [config] = getGenericOAuthProviderConfigs()
+    const mapped = config.mapProfileToUser!({
+      sub: MEMBER_ID,
+      email: 'user@example.com',
+      [USER_ID_CLAIM]: PLATFORM_USER_ID,
+    }) as Record<string, unknown>
+
+    const leakedFields = Object.entries(mapped)
+      .filter(([, value]) => value === PLATFORM_USER_ID)
+      .map(([key]) => key)
+    expect(
+      leakedFields,
+      `mapProfileToUser leaked the platform user_id (${PLATFORM_USER_ID}) into [${leakedFields.join(
+        ', ',
+      )}]. Attribution reads better-auth authAccount.accountId (the OIDC sub) as the acting member id, ` +
+        `so the account identity MUST stay the member id (${MEMBER_ID}), not the platform user id. ` +
+        `Do not map the user_id claim into the better-auth user — see platform-attribution/index.ts.`,
+    ).toEqual([])
+
+    // An overridden `id` would repoint the better-auth user away from the sub.
+    if ('id' in mapped) {
+      expect(
+        mapped.id,
+        'mapProfileToUser set `id` to a non-member value. If `id` is set at all it must be the member id (the OIDC sub).',
+      ).toBe(MEMBER_ID)
+    }
+  })
+
   it('mapProfileToUser rejects an id_token whose org_id differs from the deployment org', () => {
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
       { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'c' },
