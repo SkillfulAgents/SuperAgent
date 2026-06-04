@@ -69,7 +69,6 @@ registerUpdateHandlers()
 import { serve } from '@hono/node-server'
 import api from '../api'
 import { initializeServices, shutdownServices } from '@shared/lib/startup'
-import { findAvailablePort } from './find-port'
 import { setupServerHandlers } from '@shared/lib/startup'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
@@ -86,6 +85,10 @@ if (process.platform === 'darwin') {
 
 // Use a more exotic default port to avoid conflicts
 const DEFAULT_API_PORT = 47891
+// How many sequential ports to try when the preferred one is taken. The bind is
+// done atomically (no probe-then-bind TOCTOU gap), advancing one port per
+// EADDRINUSE until a port is claimed or this many attempts are exhausted.
+const MAX_PORT_BIND_ATTEMPTS = 10
 let actualApiPort: number = DEFAULT_API_PORT
 let mainWindow: BrowserWindow | null = null
 const dashboardWindows: Map<string, BrowserWindow> = new Map()
@@ -1237,62 +1240,112 @@ function stopNotificationListener(): void {
   }
 }
 
+// Bind the API server, advancing to the next port on a port-in-use race and
+// retrying atomically. Unlike a probe-then-bind approach there's no TOCTOU gap:
+// the real server claims the port, and an EADDRINUSE surfaces on the server's
+// 'error' event rather than escaping to the uncaughtException handler (which
+// would otherwise quit the app on a transient port collision). Resolves with the
+// actually-bound port; setupServerHandlers runs against the surviving instance.
+function bindApiServer(startPort: number): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const attempt = (port: number, attemptsLeft: number) => {
+      let settled = false
+
+      // serve() creates the server and calls listen() synchronously, returning
+      // the underlying http.Server. The EADDRINUSE 'error' fires asynchronously,
+      // so attaching the listener right after serve() returns is in time.
+      const server = serve({ fetch: api.fetch, port, hostname: '0.0.0.0' }, (info) => {
+        if (settled) return
+        settled = true
+        server.off('error', onError)
+
+        // Record the port everyone else reads (createAppMenu, createTray, the
+        // renderer base URL, etc.). A stale value here points the UI at a dead
+        // server, so update both the module state and process.env.PORT.
+        actualApiPort = info.port
+        process.env.PORT = String(info.port)
+        apiServer = server
+        console.log(`API server running on http://localhost:${info.port}`)
+
+        resolve(info.port)
+      })
+
+      const onError = (error: NodeJS.ErrnoException) => {
+        if (settled) return
+        settled = true
+
+        // Discard the failed instance before retrying so we never leak a
+        // half-bound server (and re-run setupServerHandlers on the new one).
+        server.close()
+
+        if (error.code === 'EADDRINUSE' && attemptsLeft > 1) {
+          console.warn(`Port ${port} in use, trying ${port + 1}`)
+          attempt(port + 1, attemptsLeft - 1)
+          return
+        }
+
+        reject(error)
+      }
+
+      server.once('error', onError)
+
+      // Set up server-level handlers (WebSocket proxies, etc.) on this instance.
+      // A retry creates a fresh server, so these are wired per attempt.
+      setupServerHandlers(server)
+    }
+
+    attempt(startPort, MAX_PORT_BIND_ATTEMPTS)
+  })
+}
+
 // Start the API server and app
 async function startApp() {
-  // Find an available port
+  // Bind the API server, retrying on a port race until a port is claimed.
+  let boundPort: number
   try {
-    actualApiPort = await findAvailablePort(DEFAULT_API_PORT)
-    process.env.PORT = String(actualApiPort)
-    console.log(`Found available port: ${actualApiPort}`)
+    boundPort = await bindApiServer(DEFAULT_API_PORT)
   } catch (error) {
-    console.error('Failed to find available port:', error)
+    console.error('Failed to bind API server:', error)
     app.quit()
     return
   }
 
-  // Start the API server
-  apiServer = serve({ fetch: api.fetch, port: actualApiPort, hostname: '0.0.0.0' }, () => {
-    console.log(`API server running on http://localhost:${actualApiPort}`)
-
-    // Initialize all background services
-    initializeServices().catch((error) => {
-      console.error('Failed to initialize services:', error)
-    })
-
-    // Reconnect chat integrations after system sleep
-    powerMonitor.on('resume', () => {
-      chatIntegrationManager.reconnectAll().catch((err) => {
-        console.error('Failed to reconnect chat integrations after resume:', err)
-      })
-    })
-
-    // Start listening for notifications (for when window is closed)
-    startNotificationListener()
-
-    // Mark API as ready and process any queued dashboard deep links
-    apiReady = true
-    for (const link of pendingDashboardLinks) {
-      openDashboardWindow(link.agentSlug, link.dashboardSlug)
-    }
-    pendingDashboardLinks.length = 0
-    processPendingProtocolUrls()
+  // Initialize all background services
+  initializeServices().catch((error) => {
+    console.error('Failed to initialize services:', error)
   })
 
-  // Set up server-level handlers (WebSocket proxies, etc.)
-  setupServerHandlers(apiServer)
+  // Reconnect chat integrations after system sleep
+  powerMonitor.on('resume', () => {
+    chatIntegrationManager.reconnectAll().catch((err) => {
+      console.error('Failed to reconnect chat integrations after resume:', err)
+    })
+  })
 
-  // Wait for app to be ready, then create window
+  // Start listening for notifications (for when window is closed)
+  startNotificationListener()
+
+  // Mark API as ready and process any queued dashboard deep links
+  apiReady = true
+  for (const link of pendingDashboardLinks) {
+    openDashboardWindow(link.agentSlug, link.dashboardSlug)
+  }
+  pendingDashboardLinks.length = 0
+  processPendingProtocolUrls()
+
+  // Wait for app to be ready, then create window. Window/menu/tray creation is
+  // deferred until here so they're never built against a port that never bound.
   await app.whenReady()
 
   createWindow()
 
   // Create the application menu (macOS menu bar)
-  createAppMenu(mainWindow, actualApiPort)
+  createAppMenu(mainWindow, boundPort)
 
   // Create system tray if enabled in settings
   const settings = getSettings()
   if (settings.app?.showMenuBarIcon !== false) {
-    createTray(mainWindow, actualApiPort)
+    createTray(mainWindow, boundPort)
   }
 
   // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)
