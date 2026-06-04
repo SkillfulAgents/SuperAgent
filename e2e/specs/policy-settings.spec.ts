@@ -59,6 +59,8 @@ test.describe('Policy Settings', () => {
     await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
 
     // Find the chat:write scope row and set it to "allow"
+    // The Write group is an accordion collapsed by default — expand it first.
+    await page.locator('[data-testid="scope-group-toggle-write"]').click()
     const chatWriteRow = page.locator('[data-testid="scope-row-chat:write"]')
     await expect(chatWriteRow).toBeVisible({ timeout: 5000 })
 
@@ -98,6 +100,8 @@ test.describe('Policy Settings', () => {
     await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
 
     // The chat:write scope should still have allow active (from previous test)
+    // The Write group is an accordion collapsed by default — expand it first.
+    await page.locator('[data-testid="scope-group-toggle-write"]').click()
     const chatWriteRow = page.locator('[data-testid="scope-row-chat:write"]')
     await expect(chatWriteRow).toBeVisible({ timeout: 5000 })
     const allowToggle = chatWriteRow.locator('[data-testid="policy-toggle-allow"]')
@@ -119,6 +123,8 @@ test.describe('Policy Settings', () => {
     await pill.click()
     await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
 
+    // The Write group is an accordion collapsed by default — expand it first.
+    await page.locator('[data-testid="scope-group-toggle-write"]').click()
     const chatWriteRow = page.locator('[data-testid="scope-row-chat:write"]')
     await expect(chatWriteRow).toBeVisible({ timeout: 5000 })
 
@@ -154,6 +160,8 @@ test.describe('Policy Settings', () => {
     await pill.click()
     await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
 
+    // The Write group is an accordion collapsed by default — expand it first.
+    await page.locator('[data-testid="scope-group-toggle-write"]').click()
     const chatWriteRow = page.locator('[data-testid="scope-row-chat:write"]')
     await expect(chatWriteRow).toBeVisible({ timeout: 5000 })
 

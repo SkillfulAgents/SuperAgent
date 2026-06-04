@@ -1,5 +1,6 @@
 import { SCOPE_MAPS, type ScopeMapEntry } from './scope-maps'
-import { SCOPE_DESCRIPTIONS } from './scope-descriptions'
+import { getScopeDescription } from './scope-metadata'
+import { ACCOUNT_DEFAULT_SCOPE, isLabelDefaultKey } from './policy-sentinels'
 
 export interface ScopeMatchResult {
   matched: boolean
@@ -18,29 +19,19 @@ export interface ScopeMatchResult {
 }
 
 /**
- * Account- and risk-group-level scope sentinels that are legal API scope
- * policy keys for any toolkit:
- *  - '*'            account default (applies to every scope)
- *  - '*read'        all read-risk scopes for the toolkit
- *  - '*write'       all write-risk scopes
- *  - '*destructive' all destructive-risk scopes
- *
- * The in-session "Allow all <label>" action routes the risk-group sentinels
- * through the proxy-review /always endpoint, so they are expected input.
- */
-export const API_SCOPE_SENTINELS = ['*', '*read', '*write', '*destructive'] as const
-
-/**
  * Is `scope` a legal API scope policy key for `toolkit`?
  *
- * True for the shared sentinels (valid on any toolkit) or a scope the toolkit
- * actually declares in its scope map. Used to reject garbage or smuggled
- * scopes before they are persisted as a policy. An unknown toolkit has no
- * known scope set, so only sentinels are accepted for it.
+ * True for the reserved policy sentinels — the account default ('*') and the
+ * per-risk-label defaults ('*read'/'*write'/'*destructive'), which are valid on
+ * any toolkit (the in-session "Allow all <label>" action routes them through
+ * the proxy-review /always endpoint) — or a scope the toolkit actually declares
+ * in its scope map. Used to reject garbage or smuggled scopes before they are
+ * persisted as a policy. An unknown toolkit has no known scope set, so only
+ * sentinels are accepted for it.
  */
 export function isValidApiScope(toolkit: string | undefined, scope: unknown): boolean {
   if (typeof scope !== 'string' || scope.length === 0) return false
-  if ((API_SCOPE_SENTINELS as readonly string[]).includes(scope)) return true
+  if (scope === ACCOUNT_DEFAULT_SCOPE || isLabelDefaultKey(scope)) return true
   if (!toolkit) return false
   const provider = SCOPE_MAPS[toolkit]
   if (!provider) return false
@@ -98,7 +89,6 @@ export function matchScopes(
   // Collect union of scopes and descriptions
   const scopeSet = new Set<string>()
   const descriptions: Record<string, string> = {}
-  const providerScopeDescriptions = SCOPE_DESCRIPTIONS[toolkit] ?? {}
 
   for (const { entry } of bestMatches) {
     for (const scope of entry.sufficientScopes) {
@@ -107,7 +97,7 @@ export function matchScopes(
       // Prefer the curated per-scope description; fall back to the
       // matched endpoint description so we don't regress on scopes
       // that are not yet curated.
-      const curated = providerScopeDescriptions[scope]
+      const curated = getScopeDescription(toolkit, scope)
       if (curated) {
         descriptions[scope] = curated
       } else if (entry.description) {

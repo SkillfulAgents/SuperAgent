@@ -1,6 +1,5 @@
-import { MessageList } from '@renderer/components/messages/message-list'
 import { MessageInput } from '@renderer/components/messages/message-input'
-import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
+import { SessionThread } from '@renderer/components/messages/session-thread'
 import { PendingRequestStack } from '@renderer/components/messages/pending-request-stack'
 import { renderPendingRequest, type RenderContext } from '@renderer/components/messages/pending-request-renderer'
 import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
@@ -39,7 +38,7 @@ export function SessionChatColumn({
   onPendingMessageAppeared,
   onMessageSent,
 }: SessionChatColumnProps) {
-  const { isActive } = useMessageStream(sessionId, agentSlug)
+  const { isActive, browserActive } = useMessageStream(sessionId, agentSlug)
   useFileDeliveryWatcher(sessionId, agentSlug)
   const { items: pendingRequestItems, count: pendingRequestCount } = usePendingRequests({
     sessionId,
@@ -50,18 +49,16 @@ export function SessionChatColumn({
   const renderCtx: RenderContext = { sessionId, agentSlug, readOnly: isViewOnly }
 
   return (
-    <div className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0">
-      <MessageList
-        key={sessionId}
-        sessionId={sessionId}
-        agentSlug={agentSlug}
-        pendingUserMessage={pendingUserMessage}
-        pendingRequestCount={pendingRequestCount}
-        onPendingMessageAppeared={onPendingMessageAppeared}
-      />
-      <div className="bg-background max-w-[740px] mx-auto w-full">
-        <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
-        {pendingRequestCount > 0 ? (
+    <SessionThread
+      sessionId={sessionId}
+      agentSlug={agentSlug}
+      browserActive={browserActive}
+      pendingUserMessage={pendingUserMessage}
+      pendingRequestCount={pendingRequestCount}
+      onPendingMessageAppeared={onPendingMessageAppeared}
+      footerClassName="bg-background max-w-[740px] mx-auto w-full"
+      footer={
+        pendingRequestCount > 0 ? (
           <div className="px-4 pb-4" data-testid="pending-request-slot">
             <PendingRequestStack>
               {pendingRequestItems.map((d) => renderPendingRequest(d, renderCtx))}
@@ -109,8 +106,8 @@ export function SessionChatColumn({
               </span>
             </div>
           </>
-        )}
-      </div>
-    </div>
+        )
+      }
+    />
   )
 }

@@ -2,6 +2,8 @@ import { db } from '@shared/lib/db'
 import { apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
+import { getScopeLabel } from './scope-metadata'
+import { labelDefaultKey } from './policy-sentinels'
 import type { ScopeMatchResult } from './scope-matcher'
 
 export type PolicyDecision = 'allow' | 'review' | 'block'
@@ -11,7 +13,11 @@ export interface PolicyResult {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   endpointDescription?: string
-  resolvedFrom: 'scope_policy' | 'account_default' | 'global_default'
+  resolvedFrom:
+    | 'scope_policy'
+    | 'account_label_default'
+    | 'account_default'
+    | 'global_default'
 }
 
 // Higher = more permissive
@@ -28,14 +34,21 @@ function mostPermissive(a: PolicyDecision, b: PolicyDecision): PolicyDecision {
 /**
  * Resolve the policy decision for an API proxy request.
  *
- * Resolution:
- * 1. For each matched scope, look up explicit policy → account default → global default
- * 2. Return the most permissive decision across all matched scopes
+ * Resolution per scope (most specific wins):
+ * 1. explicit scope policy
+ * 2. account label default ('*read'/'*write'/'*destructive' — by the scope's risk label)
+ * 3. account-wide default ('*')
+ * 4. global default (user settings)
+ * Then return the most permissive decision across all matched scopes.
+ *
+ * `toolkit` is needed to look up each scope's risk label. It is optional so the
+ * label tier is simply skipped when unknown (preserves legacy behavior).
  */
 export async function resolveApiPolicy(
   accountId: string,
   matchResult: ScopeMatchResult,
-  userId: string
+  userId: string,
+  toolkit?: string
 ): Promise<PolicyResult> {
   // Fetch all policies for this account
   const rows = db
@@ -76,12 +89,17 @@ export async function resolveApiPolicy(
 
   for (const scope of matchResult.scopes) {
     const explicit = policyMap.get(scope)
+    const label = toolkit ? getScopeLabel(toolkit, scope) : undefined
+    const labelDefault = label ? policyMap.get(labelDefaultKey(label)) : undefined
     let scopeDecision: PolicyDecision
     let scopeFrom: PolicyResult['resolvedFrom']
 
     if (explicit) {
       scopeDecision = explicit
       scopeFrom = 'scope_policy'
+    } else if (labelDefault) {
+      scopeDecision = labelDefault
+      scopeFrom = 'account_label_default'
     } else if (accountDefault) {
       scopeDecision = accountDefault
       scopeFrom = 'account_default'

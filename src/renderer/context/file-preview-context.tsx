@@ -42,9 +42,11 @@ function getDisplayName(filePath: string): string {
 
 let commentIdCounter = 0
 
-export function FilePreviewProvider({ children }: { children: ReactNode }) {
+export function FilePreviewProvider({ children, sessionId: sessionIdProp }: { children: ReactNode; sessionId?: string | null }) {
   const { view } = useSelection()
-  const sessionId = view.kind === 'session' ? view.id : null
+  // Views that own a session (e.g. chat integrations) can pass it explicitly so
+  // state clears when switching sessions; otherwise derive from the active selection.
+  const sessionId = sessionIdProp !== undefined ? sessionIdProp : (view.kind === 'session' ? view.id : null)
 
   const [openFiles, setOpenFiles] = useState<FileTab[]>([])
   const [activeFileIndex, setActiveFileIndex] = useState(0)

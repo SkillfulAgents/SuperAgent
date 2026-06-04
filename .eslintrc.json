@@ -1,4 +1,5 @@
 {
+  "root": true,
   "ignorePatterns": ["src/api/llm-sdk-bundle.ts"],
   "env": {
     "browser": true,

@@ -278,6 +278,8 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
     getPendingReviewsForAgent: (slug: string) => mockGetPendingReviewsForAgent(slug),
     submitDecision: vi.fn(),
     resolveMatchingPending: vi.fn(),
+    resolveMatchingPendingByLabel: vi.fn(),
+    resolveMatchingXAgentByOperation: vi.fn(),
   },
 }))
 

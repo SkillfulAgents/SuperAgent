@@ -382,6 +382,9 @@ describe('validateAgentTemplate', () => {
   // Size limits
   // --------------------------------------------------------------------------
 
+  // Each case below builds and zlib-compresses ~500MB in memory, which can run
+  // right up against the 5s default test timeout under `vitest --coverage` on
+  // CI runners (a pre-existing flake). Give these the headroom they need.
   describe('total size limits', () => {
     it('rejects template exceeding 500MB uncompressed', async () => {
       const largeContent = 'x'.repeat(10 * 1024 * 1024)
@@ -395,7 +398,7 @@ describe('validateAgentTemplate', () => {
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
       expect(result.error).toContain('500MB')
-    })
+    }, 30_000)
 
     it('accepts template at exactly the uncompressed size limit', async () => {
       const chunkContent = 'a'.repeat(10 * 1024 * 1024)
@@ -411,7 +414,7 @@ describe('validateAgentTemplate', () => {
       files['data-last.bin'] = 'b'.repeat(remaining)
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
-    })
+    }, 30_000)
 
     it('rejects template at exactly one byte over the limit', async () => {
       const chunkContent = 'a'.repeat(10 * 1024 * 1024)
@@ -427,7 +430,7 @@ describe('validateAgentTemplate', () => {
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-    })
+    }, 30_000)
 
     it('rejects when multiple small files sum to over the limit', async () => {
       const files: Record<string, string> = {
@@ -441,7 +444,7 @@ describe('validateAgentTemplate', () => {
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-    })
+    }, 30_000)
   })
 
   // --------------------------------------------------------------------------

@@ -7,8 +7,9 @@ import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
@@ -57,6 +58,78 @@ function extractText(node: ReactNode): string {
   return ''
 }
 
+const REMARK_PLUGINS = [remarkGfm]
+
+// Hoisted to a stable module-level reference. The memoized <MarkdownBlock> below
+// must NOT be handed a fresh `components`/`remarkPlugins` object each render, or
+// its memo would never bail and every settled streaming block would re-parse.
+const MARKDOWN_COMPONENTS: Components = {
+  // Style code blocks
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+  code: ({ children, className }) => {
+    const isInline = !className
+    return isInline ? (
+      <code className={cn(
+        'rounded px-1.5 py-0.5 text-sm font-medium',
+        'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
+      )}>
+        {children}
+      </code>
+    ) : (
+      <code className={cn(className, 'text-foreground')}>{children}</code>
+    )
+  },
+  // Style tables with borders and horizontal scroll
+  table: ({ children }) => (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-sm">
+        {children}
+      </table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className={cn(
+      'border-b-2 px-3 py-1.5 text-left font-semibold',
+      'border-border'
+    )}>
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className={cn(
+      'border-b px-3 py-1.5',
+      'border-border'
+    )}>
+      {children}
+    </td>
+  ),
+  // Ensure links open in new tab
+  a: ({ children, href }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(
+        'hover:underline',
+        'text-blue-500'
+      )}
+    >
+      {children}
+    </a>
+  ),
+}
+
+// A single markdown block. Memoized so that, while a response streams, each
+// already-settled block parses exactly once even though later deltas keep
+// re-rendering the parent MessageItem. See split-streaming-markdown.ts.
+const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
+      {text}
+    </ReactMarkdown>
+  )
+})
+
 interface MessageItemProps {
   message: ApiMessage
   isStreaming?: boolean
@@ -82,6 +155,11 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const toolCalls = message.toolCalls || []
 
   const isSlashCommand = isUser && hasText && text.startsWith('/')
+
+  // While streaming, pre-split the markdown into fence-safe blocks so each
+  // settled block parses once; only the small trailing block re-parses per
+  // delta (O(N) instead of O(N^2)). Persisted messages render as one document.
+  const streamingSplit = isStreaming && text ? splitStreamingMarkdown(text) : null
 
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
   const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
@@ -155,66 +233,16 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 <div dir="auto" className={cn(
                   'prose prose-sm max-w-none min-w-0 break-words font-medium dark:prose-invert'
                 )}>
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      // Style code blocks
-                      pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-                      code: ({ children, className }) => {
-                        const isInline = !className
-                        return isInline ? (
-                          <code className={cn(
-                            'rounded px-1.5 py-0.5 text-sm font-medium',
-                            'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
-                          )}>
-                            {children}
-                          </code>
-                        ) : (
-                          <code className={cn(className, 'text-foreground')}>{children}</code>
-                        )
-                      },
-                      // Style tables with borders and horizontal scroll
-                      table: ({ children }) => (
-                        <div className="overflow-x-auto">
-                          <table className="w-full border-collapse text-sm">
-                            {children}
-                          </table>
-                        </div>
-                      ),
-                      th: ({ children }) => (
-                        <th className={cn(
-                          'border-b-2 px-3 py-1.5 text-left font-semibold',
-                          'border-border'
-                        )}>
-                          {children}
-                        </th>
-                      ),
-                      td: ({ children }) => (
-                        <td className={cn(
-                          'border-b px-3 py-1.5',
-                          'border-border'
-                        )}>
-                          {children}
-                        </td>
-                      ),
-                      // Ensure links open in new tab
-                      a: ({ children, href }) => (
-                        <a
-                          href={href}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={cn(
-                            'hover:underline',
-                            'text-blue-500'
-                          )}
-                        >
-                          {children}
-                        </a>
-                      ),
-                    }}
-                  >
-                    {text}
-                  </ReactMarkdown>
+                  {streamingSplit ? (
+                    <>
+                      {streamingSplit.settled.map((block, i) => (
+                        <MarkdownBlock key={i} text={block} />
+                      ))}
+                      {streamingSplit.tail && <MarkdownBlock text={streamingSplit.tail} />}
+                    </>
+                  ) : (
+                    <MarkdownBlock text={text} />
+                  )}
                   {isStreaming && (
                     <span className="inline-block w-2 h-4 bg-current ml-0.5 animate-pulse" />
                   )}

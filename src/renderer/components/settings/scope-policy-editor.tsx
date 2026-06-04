@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import { Loader2, Search, AlertCircle } from 'lucide-react'
+import { Loader2, Search, AlertCircle, Eye, Pencil, Trash2, ChevronRight } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import {
@@ -19,15 +19,48 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { SCOPE_MAPS } from '@shared/lib/proxy/scope-maps'
-import { SCOPE_DESCRIPTIONS } from '@shared/lib/proxy/scope-descriptions'
+import { getScopeDescription, getScopeLabel, type ScopeLabel } from '@shared/lib/proxy/scope-metadata'
+import {
+  isLabelDefaultKey,
+  labelDefaultKey,
+  LABEL_DEFAULT_BASELINE,
+} from '@shared/lib/proxy/policy-sentinels'
 import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@renderer/components/ui/collapsible'
+import { cn } from '@shared/lib/utils/cn'
 
 type PolicyDecision = 'allow' | 'review' | 'block' | 'default'
 
 interface ScopePolicy {
   scope: string
   decision: PolicyDecision
+}
+
+const LABEL_GROUPS: Array<{
+  key: ScopeLabel
+  title: string
+  hint: string
+  Icon: typeof Eye
+}> = [
+  { key: 'read', title: 'Read', hint: 'View-only access', Icon: Eye },
+  { key: 'write', title: 'Write', hint: 'Create, update, edit, delete items', Icon: Pencil },
+  {
+    key: 'destructive',
+    title: 'Destructive',
+    hint: 'Irreversible deletion or admin/governance',
+    Icon: Trash2,
+  },
+]
+
+const emptyLabelDefaults: Record<ScopeLabel, PolicyDecision> = {
+  read: 'default',
+  write: 'default',
+  destructive: 'default',
 }
 
 interface ScopePolicyEditorProps {
@@ -49,11 +82,15 @@ export function ScopePolicyEditor({
   const queryClient = useQueryClient()
   const [policies, setPolicies] = useState<ScopePolicy[]>([])
   const [accountDefault, setAccountDefault] = useState<PolicyDecision>('default')
+  const [labelDefaults, setLabelDefaults] =
+    useState<Record<ScopeLabel, PolicyDecision>>(emptyLabelDefaults)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [textFilter, setTextFilter] = useState('')
   const [decisionFilter, setDecisionFilter] = useState<'all' | PolicyDecision>('all')
+  // Risk-label groups are accordions, collapsed by default.
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
 
   // Get scopes from the scope map for this toolkit
   const provider = SCOPE_MAPS[toolkit]
@@ -70,11 +107,10 @@ export function ScopePolicyEditor({
   // For each scope, prefer the curated description; otherwise borrow the
   // first endpoint description that mentions this scope.
   const scopeDescriptions = useMemo(() => {
-    const curated = SCOPE_DESCRIPTIONS[toolkit] ?? {}
     const descs: Record<string, string> = {}
     for (const scope of allScopes) {
       const desc =
-        curated[scope] ??
+        getScopeDescription(toolkit, scope) ??
         provider?.scopeMap.find(
           (e) => e.description && e.sufficientScopes.includes(scope),
         )?.description
@@ -90,23 +126,40 @@ export function ScopePolicyEditor({
     setFetchError(null)
     setTextFilter('')
     setDecisionFilter('all')
+    setOpenGroups({})
     apiFetch(`/api/policies/scope/${accountId}`)
       .then((res) => res.json())
       .then((data) => {
+        const allPolicies: Array<{ scope: string; decision: string }> = data.policies || []
         const existing = new Map<string, PolicyDecision>()
-        for (const p of data.policies || []) {
+        for (const p of allPolicies) {
           existing.set(p.scope, p.decision as PolicyDecision)
         }
         setAccountDefault(existing.get('*') ?? 'default')
+        // For a brand-new (unconfigured) account, pre-fill the recommended baseline
+        // so the user sees a sensible starting point — but it is only written if they
+        // Save. Once the account has ANY saved policy, an absent label row means the
+        // user left that group on "default" (inherit), so we honor that instead.
+        const untouched = allPolicies.length === 0
+        const labelDefaultFor = (key: ScopeLabel): PolicyDecision =>
+          existing.get(labelDefaultKey(key)) ??
+          (untouched ? LABEL_DEFAULT_BASELINE[key] : 'default')
+        setLabelDefaults({
+          read: labelDefaultFor('read'),
+          write: labelDefaultFor('write'),
+          destructive: labelDefaultFor('destructive'),
+        })
         // Start with scopes from the static scope map
         const scopeSet = new Set(allScopes)
         const scopePolicies: ScopePolicy[] = allScopes.map((scope) => ({
           scope,
           decision: existing.get(scope) ?? 'default',
         }))
-        // Merge in any DB-stored scopes not in the static map (e.g. set via session review prompt)
+        // Merge in any DB-stored scopes not in the static map (e.g. set via session review prompt).
+        // Skip the account '*' default and the '*read'/'*write'/'*destructive' label-default
+        // sentinels — those are surfaced as group-level controls, not per-scope rows.
         for (const [scope, decision] of existing) {
-          if (scope !== '*' && !scopeSet.has(scope)) {
+          if (scope !== '*' && !isLabelDefaultKey(scope) && !scopeSet.has(scope)) {
             scopePolicies.push({ scope, decision })
           }
         }
@@ -137,12 +190,49 @@ export function ScopePolicyEditor({
     })
   }, [policies, textFilter, decisionFilter, scopeDescriptions])
 
+  // Group the (filtered) per-scope rows by their risk label.
+  const groupedPolicies = useMemo(() => {
+    const groups: Record<ScopeLabel | 'other', ScopePolicy[]> = {
+      read: [],
+      write: [],
+      destructive: [],
+      other: [],
+    }
+    for (const p of filteredPolicies) {
+      const label = getScopeLabel(toolkit, p.scope)
+      groups[label ?? 'other'].push(p)
+    }
+    return groups
+  }, [filteredPolicies, toolkit])
+
+  const setLabelDefault = (label: ScopeLabel, decision: PolicyDecision) =>
+    setLabelDefaults((prev) => ({ ...prev, [label]: decision }))
+
+  const setOpenGroup = (key: string, open: boolean) =>
+    setOpenGroups((prev) => ({ ...prev, [key]: open }))
+
+  // When the user is filtering, reveal matching groups regardless of collapse state.
+  const filtering = textFilter.trim() !== '' || decisionFilter !== 'all'
+
+  const resetToRecommended = () =>
+    setLabelDefaults({
+      read: LABEL_DEFAULT_BASELINE.read,
+      write: LABEL_DEFAULT_BASELINE.write,
+      destructive: LABEL_DEFAULT_BASELINE.destructive,
+    })
+
   const handleSave = async () => {
     setSaving(true)
     try {
       const batch: Array<{ scope: string; decision: 'allow' | 'review' | 'block' }> = []
       if (accountDefault !== 'default') {
         batch.push({ scope: '*', decision: accountDefault as 'allow' | 'review' | 'block' })
+      }
+      for (const g of LABEL_GROUPS) {
+        const d = labelDefaults[g.key]
+        if (d !== 'default') {
+          batch.push({ scope: labelDefaultKey(g.key), decision: d as 'allow' | 'review' | 'block' })
+        }
       }
       for (const p of policies) {
         if (p.decision !== 'default') {
@@ -170,6 +260,26 @@ export function ScopePolicyEditor({
     )
   }
 
+  const renderRow = (p: ScopePolicy) => (
+    <div
+      key={p.scope}
+      data-testid={`scope-row-${p.scope}`}
+      className="flex items-center justify-between rounded border px-2 py-1.5"
+    >
+      <div className="flex-1 min-w-0 mr-2">
+        <span className="text-xs font-mono font-medium">
+          <HighlightMatch text={p.scope} query={textFilter} />
+        </span>
+        {scopeDescriptions[p.scope] && (
+          <p className="text-xs text-muted-foreground truncate">
+            <HighlightMatch text={scopeDescriptions[p.scope]} query={textFilter} />
+          </p>
+        )}
+      </div>
+      <PolicyDecisionToggle value={p.decision} onChange={(v) => updateScopePolicy(p.scope, v)} />
+    </div>
+  )
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
@@ -196,7 +306,7 @@ export function ScopePolicyEditor({
               <div>
                 <span className="text-sm font-medium">Account Default</span>
                 <p className="text-xs text-muted-foreground">
-                  Applies to scopes without an explicit policy
+                  Fallback for scopes without a per-scope or risk-level policy
                 </p>
               </div>
               <PolicyDecisionToggle
@@ -236,8 +346,19 @@ export function ScopePolicyEditor({
               </div>
             )}
 
-            {/* Per-scope policies */}
-            <div className="flex-1 overflow-y-auto">
+            {allScopes.length > 0 && (
+              <button
+                type="button"
+                onClick={resetToRecommended}
+                data-testid="reset-recommended-defaults"
+                className="self-start text-xs text-muted-foreground hover:text-foreground hover:underline underline-offset-2"
+              >
+                Reset risk-level defaults to recommended
+              </button>
+            )}
+
+            {/* Per-scope policies, grouped by risk label */}
+            <div className="flex-1 overflow-y-auto space-y-3">
               {allScopes.length === 0 ? (
                 <p className="text-sm text-muted-foreground py-4 text-center">
                   No scopes defined for this API.
@@ -247,30 +368,86 @@ export function ScopePolicyEditor({
                   No scopes match your filters.
                 </p>
               ) : (
-                <div className="space-y-1">
-                  {filteredPolicies.map((p) => (
-                    <div
-                      key={p.scope}
-                      data-testid={`scope-row-${p.scope}`}
-                      className="flex items-center justify-between rounded border px-2 py-1.5"
+                <>
+                  {LABEL_GROUPS.map((g) => {
+                    const rows = groupedPolicies[g.key]
+                    if (rows.length === 0) return null
+                    const Icon = g.Icon
+                    // Collapsed by default; a filter reveals matches, but an explicit
+                    // collapse/expand by the user (sets openGroups[key]) always wins —
+                    // so the trigger never feels "dead" while filtering.
+                    const isOpen = openGroups[g.key] ?? filtering
+                    return (
+                      <Collapsible
+                        key={g.key}
+                        open={isOpen}
+                        onOpenChange={(o) => setOpenGroup(g.key, o)}
+                        data-testid={`scope-group-${g.key}`}
+                        className="space-y-1"
+                      >
+                        <div
+                          data-testid={`group-default-${g.key}`}
+                          className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1.5"
+                        >
+                          <CollapsibleTrigger
+                            data-testid={`scope-group-toggle-${g.key}`}
+                            className="flex flex-1 items-center gap-1.5 min-w-0 text-left"
+                          >
+                            <ChevronRight
+                              className={cn(
+                                'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+                                isOpen && 'rotate-90',
+                              )}
+                            />
+                            <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            <span className="text-xs font-semibold">{g.title}</span>
+                            <span className="text-xs text-muted-foreground tabular-nums">
+                              ({rows.length})
+                            </span>
+                            <span className="text-xs text-muted-foreground truncate">· {g.hint}</span>
+                          </CollapsibleTrigger>
+                          <PolicyDecisionToggle
+                            value={labelDefaults[g.key]}
+                            onChange={(v) => setLabelDefault(g.key, v)}
+                          />
+                        </div>
+                        <CollapsibleContent className="space-y-1 pl-1">
+                          {rows.map(renderRow)}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )
+                  })}
+                  {groupedPolicies.other.length > 0 && (
+                    <Collapsible
+                      open={openGroups.other ?? filtering}
+                      onOpenChange={(o) => setOpenGroup('other', o)}
+                      data-testid="scope-group-other"
+                      className="space-y-1"
                     >
-                      <div className="flex-1 min-w-0 mr-2">
-                        <span className="text-xs font-mono font-medium">
-                          <HighlightMatch text={p.scope} query={textFilter} />
+                      <CollapsibleTrigger
+                        data-testid="scope-group-toggle-other"
+                        className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left"
+                      >
+                        <ChevronRight
+                          className={cn(
+                            'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+                            (openGroups.other ?? filtering) && 'rotate-90',
+                          )}
+                        />
+                        <span className="text-xs font-semibold">Other</span>
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          ({groupedPolicies.other.length})
                         </span>
-                        {scopeDescriptions[p.scope] && (
-                          <p className="text-xs text-muted-foreground truncate">
-                            <HighlightMatch text={scopeDescriptions[p.scope]} query={textFilter} />
-                          </p>
-                        )}
-                      </div>
-                      <PolicyDecisionToggle
-                        value={p.decision}
-                        onChange={(v) => updateScopePolicy(p.scope, v)}
-                      />
-                    </div>
-                  ))}
-                </div>
+                        <span className="text-xs text-muted-foreground truncate">
+                          · uses the account default
+                        </span>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent className="space-y-1 pl-1">
+                        {groupedPolicies.other.map(renderRow)}
+                      </CollapsibleContent>
+                    </Collapsible>
+                  )}
+                </>
               )}
             </div>
           </>

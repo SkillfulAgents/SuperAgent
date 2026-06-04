@@ -8,8 +8,8 @@
 import { useState } from 'react'
 import { MessageCircle, MoreVertical, Loader2, ExternalLink, RotateCcw, AlertTriangle } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import { MessageList } from '@renderer/components/messages/message-list'
-import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
+import { SessionThread } from '@renderer/components/messages/session-thread'
+import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -177,6 +177,7 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
         const isArchived = activeSession?.archivedAt != null
 
         return (
+          <FilePreviewProvider sessionId={activeSessionId}>
           <div className="flex-1 min-h-0 flex flex-col">
             {/* Session selector + read-only banner */}
             <div className="shrink-0 border-b bg-muted/50 px-4 py-2">
@@ -242,24 +243,20 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
                 <AlertDescription>{clearError}</AlertDescription>
               </Alert>
             )}
-            {/* Chat column — grid pins the footer at the bottom */}
-            <div className="flex-1 min-w-0 min-h-0 grid grid-rows-[1fr_auto]">
-              <MessageList
-                key={activeSessionId}
-                sessionId={activeSessionId}
-                agentSlug={agentSlug}
-              />
-              <div className="bg-background">
-                <AgentActivityIndicator sessionId={activeSessionId} agentSlug={agentSlug} />
+            <SessionThread
+              sessionId={activeSessionId}
+              agentSlug={agentSlug}
+              footer={
                 <div className="px-4 py-3 border-t">
                   <div className="flex items-center gap-2 rounded-md border border-dashed bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
                     <MessageCircle className="h-4 w-4 shrink-0" />
                     Send messages from {providerName} to chat with this agent
                   </div>
                 </div>
-              </div>
-            </div>
+              }
+            />
           </div>
+          </FilePreviewProvider>
         )
       })()}
 
