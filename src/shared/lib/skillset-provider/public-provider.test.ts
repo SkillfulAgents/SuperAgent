@@ -295,4 +295,43 @@ describe('PublicSkillsetProvider.refreshCache', () => {
     expect(JSON.parse(await fs.promises.readFile(path.join(destDir, 'index.json'), 'utf-8'))).toEqual({ fresh: true })
     expect(await provider.isCacheReady(destDir)).toBe(true)
   })
+
+  it('preserves the existing cache when the swap rename fails (ELECTRON-4G)', async () => {
+    const destDir = path.join(tmpDir, 'cache')
+    await fs.promises.mkdir(destDir, { recursive: true })
+    await fs.promises.writeFile(path.join(destDir, 'old-file.txt'), 'stale')
+    await fs.promises.writeFile(path.join(destDir, '.skillset-cache-meta.json'), '{}')
+
+    mockFetchResponse(await buildTestZip({ 'index.json': '{"fresh":true}' }))
+
+    // Simulate a persistent Windows EPERM lock on every rename so even the
+    // copy-fallback's source rename + the swap-in both fail. cp also fails so
+    // the new cache can't be installed — the old one must be restored intact.
+    const realRename = fs.promises.rename
+    const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      // Allow renaming the freshly-populated tmp dir during populateCache, but
+      // block the atomic swap moves (which target/originate the real cacheDir).
+      if (String(from) === destDir || String(to) === destDir) {
+        const e = new Error('EPERM: operation not permitted, rename') as NodeJS.ErrnoException
+        e.code = 'EPERM'
+        throw e
+      }
+      return realRename(from, to)
+    })
+    const cpSpy = vi.spyOn(fs.promises, 'cp').mockRejectedValue(
+      Object.assign(new Error('EPERM: operation not permitted, copyfile'), { code: 'EPERM' }),
+    )
+
+    await expect(
+      provider.refreshCache(destDir, makeRef('https://github.com/Org/repo')),
+    ).rejects.toThrow(/EPERM/)
+
+    // The old cache must still be there and usable — not destroyed.
+    expect(fs.existsSync(path.join(destDir, 'old-file.txt'))).toBe(true)
+    expect(await fs.promises.readFile(path.join(destDir, 'old-file.txt'), 'utf-8')).toBe('stale')
+    expect(await provider.isCacheReady(destDir)).toBe(true)
+
+    renameSpy.mockRestore()
+    cpSpy.mockRestore()
+  })
 })

@@ -4,6 +4,7 @@ import { ensureDirectory } from '@shared/lib/utils/file-storage'
 import { openZipFromBuffer, detectZipPrefix } from '@shared/lib/utils/zip'
 import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
 import { withRetry, NonRetryableError } from '@shared/lib/utils/retry'
+import { atomicSwapCacheDir } from './atomic-cache-swap'
 import {
   BaseSkillsetProvider,
   type SkillsetPublishInput,
@@ -46,12 +47,13 @@ export class PublicSkillsetProvider extends BaseSkillsetProvider {
     const tmpDir = cacheDir + '.tmp-' + Date.now()
     try {
       await this.populateCache(tmpDir, ref)
-      await fs.promises.rm(cacheDir, { recursive: true, force: true })
-      await fs.promises.rename(tmpDir, cacheDir)
     } catch (err) {
       await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
       throw err
     }
+    // Swap atomically so a failed rename (Windows EPERM/EBUSY) can never leave
+    // the user with a destroyed cache instead of a working one.
+    await atomicSwapCacheDir(cacheDir, tmpDir)
   }
 
   override async publishUpdate(_input: SkillsetPublishInput): Promise<SkillsetPublishResult> {
