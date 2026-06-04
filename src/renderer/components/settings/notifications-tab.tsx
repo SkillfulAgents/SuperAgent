@@ -163,7 +163,7 @@ export function NotificationsTab() {
           <div className="space-y-0.5 pr-4">
             <Label htmlFor="notify-when-unfocused">Notify when window isn&apos;t focused</Label>
             <p className="text-xs text-muted-foreground">
-              Send notifications even while the session is open, as long as the SuperAgent
+              Send notifications even while the session is open, as long as the Gamut
               window is behind another app. Useful for long-running sessions you&apos;ve left
               in the background.
             </p>

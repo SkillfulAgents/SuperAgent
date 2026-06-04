@@ -83,7 +83,7 @@ export function parseEnvFile(content: string): Map<string, { value: string; comm
  */
 export function serializeEnvFile(secrets: AgentSecret[]): string {
   const lines: string[] = [
-    '# Superagent Secrets',
+    '# Gamut Secrets',
     '# Format: ENV_VAR=value  # Display Name',
     '',
   ]
@@ -206,7 +206,7 @@ export async function deleteSecret(agentSlug: string, envVar: string): Promise<b
 
   if (filtered.length === 0) {
     // No secrets left, could delete file or leave empty
-    await writeFile(envPath, '# Superagent Secrets\n', { mode: 0o666 })
+    await writeFile(envPath, '# Gamut Secrets\n', { mode: 0o666 })
   } else {
     const content = serializeEnvFile(filtered)
     await writeFile(envPath, content, { mode: 0o666 })

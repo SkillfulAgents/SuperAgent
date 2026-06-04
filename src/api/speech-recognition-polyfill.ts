@@ -294,7 +294,7 @@ const POLYFILL_SOURCE = /* js */ `(function () {
       this._speechDetected = false;
       var self = this;
 
-      // Absolute path intentional — reaches the Superagent API, not the dashboard's own server
+      // Absolute path intentional — reaches the Gamut API, not the dashboard's own server
       fetch("/api/stt/token")
         .then(function (res) {
           if (!res.ok) {

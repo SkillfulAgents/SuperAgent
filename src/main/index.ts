@@ -210,7 +210,7 @@ function openDashboardWindow(agentSlug: string, dashboardSlug: string) {
   const win = new BrowserWindow({
     width: 1000,
     height: 700,
-    title: 'SuperAgent Dashboard',
+    title: 'Gamut Dashboard',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -1044,7 +1044,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       }
 
       const email = callbackUrl.searchParams.get('email')
-      const label = callbackUrl.searchParams.get('label') || 'SuperAgent'
+      const label = callbackUrl.searchParams.get('label') || 'Gamut'
       const orgId = callbackUrl.searchParams.get('org_id')
       const orgName = callbackUrl.searchParams.get('org_name')
       const role = callbackUrl.searchParams.get('role')

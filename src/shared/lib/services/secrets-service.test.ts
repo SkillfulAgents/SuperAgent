@@ -138,7 +138,7 @@ describe('serializeEnvFile', () => {
     const secrets = [{ key: 'KEY', envVar: 'KEY', value: 'value' }]
     const result = serializeEnvFile(secrets)
 
-    expect(result).toContain('# Superagent Secrets')
+    expect(result).toContain('# Gamut Secrets')
     expect(result).toContain('# Format: ENV_VAR=value  # Display Name')
   })
 
@@ -181,7 +181,7 @@ describe('serializeEnvFile', () => {
   it('handles empty secrets array', () => {
     const result = serializeEnvFile([])
 
-    expect(result).toContain('# Superagent Secrets')
+    expect(result).toContain('# Gamut Secrets')
     expect(result.split('\n').filter((l) => l && !l.startsWith('#')).length).toBe(0)
   })
 })

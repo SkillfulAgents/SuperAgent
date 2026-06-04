@@ -93,7 +93,7 @@ function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string 
 }
 
 /**
- * Generates the full system prompt from the SuperAgent prompt plus dynamic
+ * Generates the full system prompt from the Gamut prompt plus dynamic
  * sections (connected accounts, env vars, user instructions).
  */
 function generateSystemPrompt(

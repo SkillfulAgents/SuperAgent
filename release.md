@@ -2,7 +2,7 @@
 
 ## Overview
 
-Superagent uses a tag-based release process. Pushing a `v*` tag triggers the release pipeline which builds and publishes all three components:
+Gamut uses a tag-based release process. Pushing a `v*` tag triggers the release pipeline which builds and publishes all three components:
 
 1. **Electron desktop app** (macOS DMG + ZIP) — attached to a GitHub Release
 2. **App container** (`ghcr.io/skillfulagents/superagent`) — pushed to GHCR

@@ -294,7 +294,7 @@ function SetupForm({
                     size="sm"
                     className="h-7 px-2 text-xs"
                     onClick={async () => {
-                      await navigator.clipboard.writeText(generateSlackManifest(integrationName.trim() || 'SuperAgent Bot'))
+                      await navigator.clipboard.writeText(generateSlackManifest(integrationName.trim() || 'Gamut Bot'))
                       setManifestCopied(true)
                       setTimeout(() => setManifestCopied(false), 2000)
                     }}
@@ -312,7 +312,7 @@ function SetupForm({
                 </div>
                 {manifestPreview && (
                   <pre className="mt-2 text-2xs leading-relaxed bg-background border rounded-md p-2 overflow-x-auto max-h-40 select-all">
-                    {generateSlackManifest(integrationName.trim() || 'SuperAgent Bot')}
+                    {generateSlackManifest(integrationName.trim() || 'Gamut Bot')}
                   </pre>
                 )}
               </li>

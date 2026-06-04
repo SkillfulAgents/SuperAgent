@@ -492,7 +492,7 @@ async function ensureWSL2ReadyImpl(isRetry: boolean): Promise<void> {
   }
 
   if (!distroExists) {
-    console.log('Creating WSL2 distro for Superagent...')
+    console.log('Creating WSL2 distro for Gamut...')
     addErrorBreadcrumb({ category: 'wsl2', message: 'Creating new WSL2 distro' })
     try {
       await createWSL2Distro()

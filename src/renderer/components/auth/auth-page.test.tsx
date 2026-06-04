@@ -90,7 +90,7 @@ describe('AuthPage', () => {
       expect(screen.getByTestId('auth-provider-platform')).toBeInTheDocument()
     })
 
-    expect(screen.getByText('SuperAgent')).toBeInTheDocument()
+    expect(screen.getByText('Gamut')).toBeInTheDocument()
     expect(screen.getByText('Continue with SSO')).toBeInTheDocument()
     expect(screen.getByText('or')).toBeInTheDocument()
 

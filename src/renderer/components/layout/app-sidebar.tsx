@@ -864,7 +864,7 @@ export function AppSidebar() {
               )}
               style={{ marginTop: showHeaderBar ? '-8px' : '8px' }}
             >
-              <span>SuperAgent</span>
+              <span>Gamut</span>
               {isWindowsElectron && (
                 <button
                   className="app-no-drag p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"

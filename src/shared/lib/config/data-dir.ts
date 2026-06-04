@@ -3,7 +3,7 @@ import fs from 'fs'
 import os from 'os'
 
 /**
- * Get the data directory for Superagent.
+ * Get the data directory for Gamut.
  *
  * The data directory contains:
  * - The SQLite database (superagent.db)

@@ -1,10 +1,10 @@
-# Super Agent
+# Gamut
 
-Super Agent is an open-source application that allows users to run sophisticated, code based AI agents. The one thing AI models are already pretty good at is agentically writing code. Thankfully, many general purpose tasks can be reduced into code wrriting tasks. Super Agent leverages this with general purpose code based agents.
+Gamut is an open-source application that allows users to run sophisticated, code based AI agents. The one thing AI models are already pretty good at is agentically writing code. Thankfully, many general purpose tasks can be reduced into code wrriting tasks. Gamut leverages this with general purpose code based agents.
 
-The agents are powered by Claude Code itself, running in headless mode inside a docker container where it can run wild. The docker container exposes an API that the Super Agent can send messages to and get responses from, including a websocket interface for streaming responses.
+The agents are powered by Claude Code itself, running in headless mode inside a docker container where it can run wild. The docker container exposes an API that the Gamut can send messages to and get responses from, including a websocket interface for streaming responses.
 
-The Super Agent application itself is a NextJS application that provides a user interface for managing agents, creating new agents, and running them. It uses a SQLite database to store agent configurations, message histories, and other data.
+The Gamut application itself is a NextJS application that provides a user interface for managing agents, creating new agents, and running them. It uses a SQLite database to store agent configurations, message histories, and other data.
 
 ## Architecture
 

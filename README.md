@@ -1,9 +1,9 @@
 <p align="center">
   <img src="build/icon.png" height="128">
-  <h1 align="center">SuperAgent - AI Agent Platform</h1>
+  <h1 align="center">Gamut - AI Agent Platform</h1>
 </p>
 
-SuperAgent is a super app for building and running personal agents. You can create custom agents, let them develop the skills they need to do task for you, and have them run automatocally in the background for you.
+Gamut is a super app for building and running personal agents. You can create custom agents, let them develop the skills they need to do task for you, and have them run automatocally in the background for you.
 
 | Windows | Mac |
 |:-------:|:---:|
@@ -11,7 +11,7 @@ SuperAgent is a super app for building and running personal agents. You can crea
 
 **Features:**
 
-- **Containerized Agents** - SuperAgents spins up a containerized sandbox per agent - keeping your computer secure. 
+- **Containerized Agents** - Gamut spins up a containerized sandbox per agent - keeping your computer secure. 
 - **Connected Accounts** - easily connect 100s of accounts your agent can use.
 - **Secure Integrations** - API calls are proxied outside your agent and the agent never sees Auth Tokens, keeping your account secure and giving you an audit trail of agent actions.
 - **Recurring and Scheduled Tasks** - agents can schedule recurring tasks and future work so they can serve you autonomously in the background.
@@ -21,19 +21,19 @@ SuperAgent is a super app for building and running personal agents. You can crea
 
 **Run as:**
 
-- **Web App** - you can run super agent in server mode and access it via the web. Great if you have a computer that can run it 24/7
-- **Desktop App** - you can download and run superagent locally in your machine as a desktop app.
+- **Web App** - you can run Gamut in server mode and access it via the web. Great if you have a computer that can run it 24/7
+- **Desktop App** - you can download and run Gamut locally in your machine as a desktop app.
 
 ## Pre-Reqs
 
-To get strated with Superagent, you need:
+To get strated with Gamut, you need:
 
-1. **A container runtime** -> this is where SuperAgent will run it’s agent containers. Our recommendations:
+1. **A container runtime** -> this is where Gamut will run it’s agent containers. Our recommendations:
   1. [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/)
   2. [OrbStack](https://orbstack.dev/download)
   3. [Podman](https://podman.io/get-started)
 2. **An Anthropic API Key** -> we currently only support Anthropic models, more coming soon. Get your API key from the [Anthropic Console](https://platform.claude.com/settings/keys).
-3. **[Optional] A Composio API key** -> SuperAgent uses Composio to generate OAuth Tokens for you for different acocunts. You can get one on [Composio](https://platform.composio.dev).
+3. **[Optional] A Composio API key** -> Gamut uses Composio to generate OAuth Tokens for you for different acocunts. You can get one on [Composio](https://platform.composio.dev).
 
 
 # Getting Started
@@ -43,7 +43,7 @@ Download the latest release from the links above, or visit the [releases page](h
 
 ## Running with Docker
 
-You can run Superagent in a Docker container using Docker-outside-of-Docker (DooD) to spawn agent containers.
+You can run Gamut in a Docker container using Docker-outside-of-Docker (DooD) to spawn agent containers.
 
 ### Using the published image
 
@@ -113,7 +113,7 @@ The image is published to `ghcr.io/iddogino/superagent` on every push to main an
 
 ## Auth Mode (Multi-User)
 
-Superagent can run in **auth mode** for multi-user deployments with role-based access control. When enabled, users sign up and sign in with email/password, and agents are isolated per user via ACLs.
+Gamut can run in **auth mode** for multi-user deployments with role-based access control. When enabled, users sign up and sign in with email/password, and agents are isolated per user via ACLs.
 
 ### How it works
 
@@ -186,14 +186,14 @@ The runtime variables (`TRUSTED_ORIGINS`, `BETTER_AUTH_SECRET`, etc.) are passed
 
 ### Optional: Composio OAuth setup
 
-If you connect accounts through Composio (Slack/Gmail/GitHub, etc.), make sure token masking is disabled in your Composio project settings, otherwise SuperAgent cannot read usable access tokens and proxy calls may fail.
+If you connect accounts through Composio (Slack/Gmail/GitHub, etc.), make sure token masking is disabled in your Composio project settings, otherwise Gamut cannot read usable access tokens and proxy calls may fail.
 
 In the Composio dashboard, go to:
 - `Project Settings`
 - `Project Configuration`
 - Disable `Mask Connected Account Secrets`
 
-After changing this setting, reconnect the account in SuperAgent.
+After changing this setting, reconnect the account in Gamut.
 
 Create a `.env.local` file in the project root:
 

@@ -545,7 +545,7 @@ async function ensureLimaReadyImpl(): Promise<void> {
   }
 
   if (!vmExists) {
-    console.log('Creating Lima VM for Superagent...')
+    console.log('Creating Lima VM for Gamut...')
     addErrorBreadcrumb({ category: 'lima', message: 'Creating new Lima VM', data: { explicitMemory } })
     try {
       await createLimaVm()
@@ -649,7 +649,7 @@ async function createLimaVm(): Promise<void> {
   }
 
   const lines = [
-    '# Lima VM for Superagent container runtime',
+    '# Lima VM for Gamut container runtime',
     'vmType: vz',
     'mountType: virtiofs',
     'mounts:',

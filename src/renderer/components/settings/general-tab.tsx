@@ -242,7 +242,7 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
             />
             <SettingRow
               name="Share Anonymous Analytics"
-              subtitle="Help improve Superagent by sharing anonymous usage data"
+              subtitle="Help improve Gamut by sharing anonymous usage data"
               htmlFor="share-analytics"
               right={
                 <Switch

@@ -111,9 +111,9 @@ async function buildAppMenu(): Promise<void> {
   const template: Electron.MenuItemConstructorOptions[] = [
     // App menu (macOS only — on macOS, the first menu becomes the "app" menu)
     ...(isMac ? [{
-      label: 'SuperAgent',
+      label: 'Gamut',
       submenu: [
-        { role: 'about' as const, label: 'About SuperAgent' },
+        { role: 'about' as const, label: 'About Gamut' },
         { type: 'separator' as const },
         {
           label: 'Settings...',

@@ -4163,7 +4163,7 @@ agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
     const loadingEl = document.getElementById('loading');
 
     function setTitle(name) {
-      document.title = (name || artifactSlug) + ' \\u2014 SuperAgent';
+      document.title = (name || artifactSlug) + ' \\u2014 Gamut';
     }
 
     async function fetchDashboardName() {
