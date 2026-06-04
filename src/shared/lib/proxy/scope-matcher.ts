@@ -1,5 +1,5 @@
 import { SCOPE_MAPS, type ScopeMapEntry } from './scope-maps'
-import { SCOPE_DESCRIPTIONS } from './scope-descriptions'
+import { getScopeDescription } from './scope-metadata'
 
 export interface ScopeMatchResult {
   matched: boolean
@@ -65,7 +65,6 @@ export function matchScopes(
   // Collect union of scopes and descriptions
   const scopeSet = new Set<string>()
   const descriptions: Record<string, string> = {}
-  const providerScopeDescriptions = SCOPE_DESCRIPTIONS[toolkit] ?? {}
 
   for (const { entry } of bestMatches) {
     for (const scope of entry.sufficientScopes) {
@@ -74,7 +73,7 @@ export function matchScopes(
       // Prefer the curated per-scope description; fall back to the
       // matched endpoint description so we don't regress on scopes
       // that are not yet curated.
-      const curated = providerScopeDescriptions[scope]
+      const curated = getScopeDescription(toolkit, scope)
       if (curated) {
         descriptions[scope] = curated
       } else if (entry.description) {
