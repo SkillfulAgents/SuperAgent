@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { broadcastReview } from './review-broadcast'
+import { getScopeLabel, type ScopeLabel } from './scope-metadata'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 
@@ -230,6 +231,35 @@ export class ReviewManager {
           decision,
         })
       }
+    }
+  }
+
+  /**
+   * Resolve every pending API review for `agentSlug` whose matched scopes include
+   * one carrying the given risk label. Used when the user picks "Allow all <label>"
+   * — the saved policy is a label sentinel ('*read'/'*write'/'*destructive') that
+   * `resolveMatchingPending` (exact scope match) can't catch, so sibling same-label
+   * prompts would otherwise sit until they time out.
+   */
+  resolveMatchingPendingByLabel(
+    agentSlug: string,
+    label: ScopeLabel,
+    decision: 'allow' | 'deny',
+  ): void {
+    for (const [id, review] of this.pending) {
+      if (review.details.agentSlug !== agentSlug) continue
+      const hasLabel = review.details.matchedScopes.some(
+        (s) => getScopeLabel(review.details.toolkit, s) === label,
+      )
+      if (!hasLabel) continue
+      clearTimeout(review.timer)
+      this.pending.delete(id)
+      review.resolve(decision)
+      broadcastReview(agentSlug, {
+        type: 'proxy_review_resolved',
+        reviewId: id,
+        decision,
+      })
     }
   }
 
