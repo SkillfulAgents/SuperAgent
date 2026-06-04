@@ -3,7 +3,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
-import { captureException } from '@shared/lib/error-reporting'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 export interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -39,6 +39,27 @@ async function getAutoUpdater() {
 function semverGt(a: string, b: string): boolean {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   return require('semver').gt(a, b)
+}
+
+/**
+ * True for the benign "channel file (latest-mac.yml) is missing" failure.
+ *
+ * This happens when the newest release on the feed has no mac artifacts yet —
+ * e.g. a stable user with allowPrereleaseUpdates picks the newest rc whose
+ * release published before its mac assets (latest-mac.yml) finished uploading,
+ * or a stable release seen mid-publish. electron-updater surfaces it as
+ * ERR_UPDATER_CHANNEL_FILE_NOT_FOUND / an HTTP 404 on latest-mac.yml. There's
+ * nothing the user can do and it self-heals once the assets land, so we treat
+ * it as "no update available" rather than reporting it to Sentry.
+ */
+function isChannelFileNotFoundError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const code = (err as { code?: unknown }).code
+  if (code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') return true
+  const statusCode = (err as { statusCode?: unknown }).statusCode
+  if (statusCode === 404) return true
+  const message = err instanceof Error ? err.message : String(err)
+  return /Cannot find .*latest-mac\.yml.*404/.test(message)
 }
 
 function sendStatusToRenderer() {
@@ -156,6 +177,18 @@ async function runUpdateCheckBody() {
       setStatus({ state: 'not-available' })
     }
   } catch (err) {
+    // A missing channel file (latest-mac.yml 404) is benign and self-healing —
+    // don't report it to Sentry and don't flip the UI to an error state.
+    if (isChannelFileNotFoundError(err)) {
+      addErrorBreadcrumb({
+        category: 'auto-updater',
+        message: 'Update channel file not yet available (latest-mac.yml 404)',
+        level: 'info',
+        data: { currentVersion: app.getVersion(), operation: 'check' },
+      })
+      setStatus({ state: 'not-available' })
+      return
+    }
     captureException(err, {
       tags: { component: 'auto-updater', operation: 'check' },
       extra: { currentVersion: app.getVersion(), userVisible: runIsUserVisible },
@@ -289,6 +322,19 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
 
     autoUpdater.on('error', (err: Error) => {
       if (suppressErrors) return
+      // checkForUpdates both emits 'error' AND rejects, so a channel-file 404 is
+      // seen here too — treat it as benign (no Sentry, no error UI), mirroring
+      // the catch in runUpdateCheckBody.
+      if (isChannelFileNotFoundError(err)) {
+        addErrorBreadcrumb({
+          category: 'auto-updater',
+          message: 'Update channel file not yet available (latest-mac.yml 404)',
+          level: 'info',
+          data: { currentVersion: app.getVersion(), operation: 'runtime' },
+        })
+        setStatus({ state: 'not-available' })
+        return
+      }
       const isTransientNetworkError = /net::ERR_(NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|CONNECTION_TIMED_OUT|CONNECTION_REFUSED|CONNECTION_RESET)\b/.test(err.message)
       if (!isTransientNetworkError) {
         captureException(err, {
