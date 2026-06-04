@@ -72,6 +72,7 @@ interface StreamingState {
   pendingComputerUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> // Pending computer use requests awaiting user approval (keyed by toolUseId)
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
   activeBackgroundTasks: Map<string, { startedAt: number }> // Background Bash commands still running (keyed by task ID)
+  pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
 }
 
 // Lazy import to break circular dependency: container-manager -> message-persister
@@ -162,6 +163,7 @@ class MessagePersister {
       pendingComputerUseRequests: new Map(),
       lastApiErrorCode: null,
       activeBackgroundTasks: priorBackgroundTasks,
+      pendingDeliverFiles: new Map(),
     })
 
     // Store container client for reconnection checks
@@ -496,6 +498,7 @@ class MessagePersister {
         pendingComputerUseRequests: new Map(),
         lastApiErrorCode: null,
         activeBackgroundTasks: new Map(),
+        pendingDeliverFiles: new Map(),
       }
       this.streamingStates.set(sessionId, state)
       if (this.capture && agentSlug) {
@@ -1537,6 +1540,23 @@ class MessagePersister {
               state.currentToolUse.name !== 'mcp__user-input__request_script_run')
           ) {
             this.markSessionAwaitingInput(sessionId)
+          }
+
+          // Track deliver_file tool calls so the matching tool_result can be
+          // correlated. We deliver the file to chat clients off the tool RESULT
+          // (which validates the file exists in-container) rather than off the
+          // streamed input, so a path that doesn't exist never reaches host-side
+          // delivery. Keyed by tool_use ID; resolved in handleToolResults.
+          if (state.currentToolUse.name === 'mcp__user-input__deliver_file') {
+            try {
+              const parsed = JSON.parse(state.currentToolInput)
+              if (parsed && typeof parsed.filePath === 'string') {
+                state.pendingDeliverFiles.set(state.currentToolUse.id, {
+                  filePath: parsed.filePath,
+                  description: typeof parsed.description === 'string' ? parsed.description : undefined,
+                })
+              }
+            } catch { /* partial or invalid JSON — nothing to deliver */ }
           }
 
           // Track Task/Agent tool for subagent correlation
@@ -2761,6 +2781,7 @@ class MessagePersister {
     try {
       const messageContent = content.message?.content || []
 
+      const state = this.streamingStates.get(sessionId)
       for (const block of messageContent) {
         if (block.type === 'tool_result' && block.tool_use_id) {
           // Broadcast update to SSE clients
@@ -2770,6 +2791,22 @@ class MessagePersister {
             result: block.content,
             isError: block.is_error || false,
           })
+
+          // If this is the result of a tracked deliver_file call, surface a
+          // dedicated event so chat integrations deliver the file only now that
+          // the in-container tool has validated it exists (isError === false).
+          const pendingDeliver = state?.pendingDeliverFiles.get(block.tool_use_id)
+          if (pendingDeliver) {
+            state!.pendingDeliverFiles.delete(block.tool_use_id)
+            this.broadcastToSSE(sessionId, {
+              type: 'tool_result_ready',
+              toolName: 'mcp__user-input__deliver_file',
+              toolUseId: block.tool_use_id,
+              filePath: pendingDeliver.filePath,
+              description: pendingDeliver.description,
+              isError: block.is_error || false,
+            })
+          }
         }
       }
     } catch (error) {

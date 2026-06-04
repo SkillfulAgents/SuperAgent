@@ -1231,22 +1231,10 @@ export async function processSSEEvent(
     case 'tool_use_ready': {
       const toolName = data.toolName as string
 
-      // Handle file delivery — send the file to the chat client
-      if (toolName === 'mcp__user-input__deliver_file') {
-        try {
-          const toolInput = JSON.parse(managed.currentToolInput || '{}')
-          const filePath = toolInput.filePath as string | undefined
-          const description = toolInput.description as string | undefined
-          if (filePath) {
-            await sendDeliveredFile(managed, filePath, description)
-          }
-        } catch (err) {
-          console.error('[ChatIntegrationManager] Failed to deliver file:', err)
-          reportError(err, 'deliver-file', { integrationId: managed.integration.id, provider: managed.integration.provider })
-        }
-        managed.currentToolInput = ''
-        break
-      }
+      // Note: deliver_file is handled off its tool_result (see 'tool_result_ready'
+      // below), not off the streamed input — so we never read a host-side path
+      // before the in-container tool has validated the file exists. It falls
+      // through to isUserRequestTool() here, which just resets the tool input.
 
       if (isUserRequestTool(toolName)) {
         managed.currentToolInput = ''
@@ -1271,6 +1259,27 @@ export async function processSSEEvent(
         }
       }
       managed.currentToolInput = ''
+      break
+    }
+
+    case 'tool_result_ready': {
+      // Fired once the in-container tool has returned its result. Currently only
+      // deliver_file acts on it: deliver the file to the chat client, but only if
+      // the tool validated the file exists (isError === false). On an error
+      // result we skip host delivery — the agent's text already covers the user.
+      const toolName = data.toolName as string
+      if (toolName === 'mcp__user-input__deliver_file' && !data.isError) {
+        const filePath = data.filePath as string | undefined
+        const description = data.description as string | undefined
+        if (filePath) {
+          try {
+            await sendDeliveredFile(managed, filePath, description)
+          } catch (err) {
+            console.error('[ChatIntegrationManager] Failed to deliver file:', err)
+            reportError(err, 'deliver-file', { integrationId: managed.integration.id, provider: managed.integration.provider })
+          }
+        }
+      }
       break
     }
 
@@ -1369,7 +1378,12 @@ async function sendDeliveredFile(
     await managed.connector.sendFile(managed.chatId, fileData, filename, description)
   } catch (err) {
     console.error('[ChatIntegrationManager] Failed to send delivered file:', err)
-    reportError(err, 'send-delivered-file', { integrationId: managed.integration.id, provider: managed.integration.provider, filePath })
+    // ENOENT is benign: the file isn't host-visible (e.g. a not-yet-flushed
+    // write across the VM file-share). The text fallback below still reaches the
+    // user, so don't page Sentry — log everything else at 'warning'.
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      reportError(err, 'send-delivered-file', { integrationId: managed.integration.id, provider: managed.integration.provider, filePath }, 'warning')
+    }
     // Fall back to a text message with the file path
     await managed.connector.sendMessage(managed.chatId, {
       text: `📎 File ready: \`${filePath}\`${description ? ` — ${description}` : ''}\n(File delivery to chat not available — download from the UI)`,
