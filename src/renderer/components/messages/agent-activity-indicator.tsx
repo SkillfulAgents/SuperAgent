@@ -99,39 +99,16 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     return items
   }, [messages, activeSubagents, completedSubagents])
 
-  // Show error if present
-  if (error) {
-    const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
-    return (
-      <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-        {isProviderError ? (
-          <ProviderErrorCard message={error} data-testid="provider-error-card" />
-        ) : (
-          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-destructive" />
-              <span className="text-sm font-medium text-destructive">Error</span>
-            </div>
-            <p className="mt-1 text-sm text-destructive/90">{error}</p>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Send another message to retry.
-            </p>
-          </div>
-        )}
-      </div>
-    )
-  }
+  // Derive the todo/task list from TaskCreate/TaskUpdate (newer SDK) or fall back
+  // to TodoWrite (older SDK). Memoized on [messages] so it doesn't re-scan the
+  // whole transcript on every per-delta re-render driven by useMessageStream —
+  // only when the persisted message list actually changes.
+  const { todos, activeItem } = useMemo<{ todos: Todo[] | null; activeItem: Todo | null }>(() => {
+    if (!messages) return { todos: null, activeItem: null }
 
-  // Don't render if not active
-  if (!isActive) {
-    return null
-  }
+    let list: Todo[] | null = null
+    let current: Todo | null = null
 
-  // Build todo list from TaskCreate/TaskUpdate or fall back to TodoWrite
-  let todos: Todo[] | null = null
-  let activeItem: Todo | null = null
-
-  if (messages) {
     // Try TaskCreate/TaskUpdate first (newer SDK format)
     const taskMap = new Map<string, Todo>()
     let taskCounter = 0
@@ -162,12 +139,12 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     }
 
     if (taskMap.size > 0) {
-      todos = Array.from(taskMap.values())
-      activeItem = todos.find((t) => t.status === 'in_progress') || null
+      list = Array.from(taskMap.values())
+      current = list.find((t) => t.status === 'in_progress') || null
     }
 
     // Fall back to TodoWrite (older SDK format)
-    if (!todos) {
+    if (!list) {
       for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i]
         if (message.type === 'compact_boundary' || message.type === 'memory_recall') continue
@@ -178,8 +155,8 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             try {
               const input = toolCall.input as { todos?: Todo[] }
               if (input?.todos && Array.isArray(input.todos)) {
-                todos = input.todos
-                activeItem = todos.find((t) => t.status === 'in_progress') || null
+                list = input.todos
+                current = list.find((t) => t.status === 'in_progress') || null
                 break
               }
             } catch {
@@ -187,9 +164,39 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             }
           }
         }
-        if (todos) break
+        if (list) break
       }
     }
+
+    return { todos: list, activeItem: current }
+  }, [messages])
+
+  // Show error if present
+  if (error) {
+    const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
+    return (
+      <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
+        {isProviderError ? (
+          <ProviderErrorCard message={error} data-testid="provider-error-card" />
+        ) : (
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-destructive" />
+              <span className="text-sm font-medium text-destructive">Error</span>
+            </div>
+            <p className="mt-1 text-sm text-destructive/90">{error}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Send another message to retry.
+            </p>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Don't render if not active
+  if (!isActive) {
+    return null
   }
 
   const statusText = isAwaitingInput
