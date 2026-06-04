@@ -264,8 +264,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
   const isStreamingMessagePersisted = useMemo(() => {
     if (!streamingMessage || !messages?.length) return false
 
-    // Find the last assistant message
-    const lastAssistantMessage = [...messages].reverse().find((m): m is ApiMessage => m.type === 'assistant')
+    // Find the last assistant message (backward scan; avoids copying and
+    // reversing the whole array on every streaming delta).
+    let lastAssistantMessage: ApiMessage | undefined
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'assistant') {
+        lastAssistantMessage = messages[i] as ApiMessage
+        break
+      }
+    }
     if (!lastAssistantMessage) return false
 
     // Check if the persisted message text contains the streaming content

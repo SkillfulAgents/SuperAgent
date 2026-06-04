@@ -31,8 +31,13 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
     // A missing transcript won't reappear — don't hammer it with retries.
     retry: (failureCount, error) =>
       !(error instanceof TranscriptNotFoundError) && failureCount < 3,
-    // Refetch periodically to catch any messages we might have missed
-    refetchInterval: 5000,
+    // Safety-net poll for any messages the SSE stream missed. The stream
+    // (use-message-stream) is the primary, near-instant path; this only
+    // backstops out-of-band edits / a silently-stalled SSE.
+    // TODO: conservative first step down from the original 5s. Once we've
+    // confirmed nothing relies on tight polling, this can be raised further
+    // (e.g. 30s) or gated on SSE-connection health.
+    refetchInterval: 15000,
   })
 }
 

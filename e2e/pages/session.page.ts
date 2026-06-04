@@ -413,9 +413,17 @@ export class SessionPage {
 
   async alwaysAllowScope(scope: string) {
     const container = this.page.locator('[data-testid="proxy-review-request"]').first()
-    // Open the Allow popover, then click the "Always allow <scope>" button
+    // Open the Allow popover, expand the per-scope disclosure, then click "Always allow <scope>"
     await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
+    await this.page.locator('[data-testid="proxy-review-specific-scope-toggle"]').click()
     await this.page.locator(`[data-testid="proxy-review-always-allow-${scope}"]`).click()
+  }
+
+  async alwaysAllowLabelGroup(label: 'read' | 'write' | 'destructive') {
+    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+    // Open the Allow popover, then click the minimal risk-group "Allow all <label>" option
+    await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
+    await this.page.locator(`[data-testid="proxy-review-allow-label-${label}"]`).click()
   }
 
   async alwaysDenyScope(scope: string) {

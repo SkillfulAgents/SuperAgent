@@ -78,6 +78,8 @@ import {
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
+import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
   deletePoliciesForAgent,
   listPoliciesForCaller,
@@ -4517,6 +4519,14 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   // Pass slug so submitDecision rejects cross-agent attempts (see B1).
   reviewManager.submitDecision(reviewId, body.decision, slug)
   reviewManager.resolveMatchingPending(slug, body.scope, body.decision)
+
+  // "Allow all <label>" saves a label sentinel ('*read'/'*write'/'*destructive'),
+  // which the exact-scope sweep above can't match. Sweep sibling pending API
+  // reviews whose matched scopes carry the same risk label so they resolve now
+  // instead of timing out.
+  if (isLabelDefaultKey(body.scope)) {
+    reviewManager.resolveMatchingPendingByLabel(slug, body.scope.slice(1) as ScopeLabel, body.decision)
+  }
 
   // For x-agent "always allow for all agents" (targetSlug=null on read/invoke),
   // the per-scope match above only resolves prompts for the same exact target.

@@ -122,6 +122,89 @@ describe('MessageItem', () => {
     })
   })
 
+  describe('streaming markdown splitting', () => {
+    it('renders every block of a multi-block streaming message', () => {
+      const text = '# Heading\n\nSome text\n\n```js\nconsole.log("hi")\n```\n\nMore text'
+      const msg = createAssistantMessage({ content: { text } })
+      render(<MessageItem message={msg} isStreaming />)
+      expect(screen.getByText('Heading')).toBeInTheDocument()
+      expect(screen.getByText('Some text')).toBeInTheDocument()
+      expect(screen.getByText('console.log("hi")')).toBeInTheDocument()
+      expect(screen.getByText('More text')).toBeInTheDocument()
+    })
+
+    it('keeps an in-progress code fence (with an internal blank line) intact while streaming', () => {
+      // Unterminated fence whose body contains a blank line. A naive \n\n split
+      // would freeze a broken open fence, leaving `const y = 2` outside the code
+      // block. The fence-aware split keeps the whole fence in the tail.
+      const text = 'Intro paragraph\n\n```js\nconst x = 1\n\nconst y = 2'
+      const msg = createAssistantMessage({ content: { text } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+      expect(screen.getByText('Intro paragraph')).toBeInTheDocument()
+      const pres = container.querySelectorAll('pre')
+      expect(pres.length).toBe(1)
+      // Both lines live inside the SAME code block — the discriminating check.
+      expect(pres[0].textContent).toContain('const x = 1')
+      expect(pres[0].textContent).toContain('const y = 2')
+    })
+
+    it('renders the same text (whitespace-insensitive) while streaming as a single-document parse', () => {
+      const text =
+        '# Title\n\nFirst paragraph with **bold**.\n\n- a\n- b\n\n```ts\nconst n = 1\n```\n\nClosing line.'
+      const msg = createAssistantMessage({ content: { text } })
+      // Per-block rendering adds invisible whitespace text nodes between block
+      // elements (block-level CSS margins handle real spacing), so we compare
+      // visible characters ignoring whitespace: nothing dropped, added, or reordered.
+      const norm = (s: string | null) => (s ?? '').replace(/\s+/g, '')
+
+      const streamed = render(<MessageItem message={msg} isStreaming />)
+      const streamedText = norm(streamed.container.textContent)
+      streamed.unmount()
+
+      const whole = render(<MessageItem message={msg} />)
+      expect(norm(whole.container.textContent)).toBe(streamedText)
+    })
+
+    // The split's accepted trade-off: cross-block markdown constructs (reference-
+    // style links, loose lists) render differently MID-STREAM, then self-heal the
+    // instant the message persists and re-renders as one document. These tests pin
+    // BOTH the transient artifact AND the self-heal, since the self-heal is what
+    // makes the artifact acceptable.
+    it('reference-style link is literal while streaming, resolves once persisted', () => {
+      const text = 'See [the docs][1] for details.\n\n[1]: https://example.com'
+      const msg = createAssistantMessage({ content: { text } })
+
+      // Streaming: usage and its later definition land in separate blocks, so the
+      // link cannot resolve — it shows as literal bracket text, no anchor.
+      const streamed = render(<MessageItem message={msg} isStreaming />)
+      expect(streamed.container.querySelectorAll('a')).toHaveLength(0)
+      expect(streamed.container.textContent).toContain('[the docs][1]')
+      streamed.unmount()
+
+      // Persisted (whole-document parse): the reference resolves to a real link.
+      const whole = render(<MessageItem message={msg} />)
+      const link = whole.container.querySelector('a')
+      expect(link).not.toBeNull()
+      expect(link).toHaveAttribute('href', 'https://example.com')
+      expect(whole.container.textContent).not.toContain('[the docs][1]')
+    })
+
+    it('loose list splits into separate lists while streaming, collapses to one when persisted', () => {
+      const text = '1. a\n\n2. b\n\n3. c'
+      const msg = createAssistantMessage({ content: { text } })
+
+      // Streaming: blank-separated items settle into separate blocks -> separate <ol>.
+      const streamed = render(<MessageItem message={msg} isStreaming />)
+      expect(streamed.container.querySelectorAll('ol').length).toBeGreaterThan(1)
+      streamed.unmount()
+
+      // Persisted: one continuous list.
+      const whole = render(<MessageItem message={msg} />)
+      expect(whole.container.querySelectorAll('ol')).toHaveLength(1)
+      expect(whole.container.querySelectorAll('li')).toHaveLength(3)
+    })
+  })
+
   describe('tool calls', () => {
     it('renders tool calls below assistant message', () => {
       const msg = createAssistantMessage({

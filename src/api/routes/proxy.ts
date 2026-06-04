@@ -177,7 +177,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
   try {
     const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath)
     const userId = account.userId ?? 'local'
-    policyResult = await resolveApiPolicy(accountId, matchResult, userId)
+    policyResult = await resolveApiPolicy(accountId, matchResult, userId, account.toolkitSlug)
   } catch (policyError) {
     console.error('[proxy] Policy enforcement failed, defaulting to review:', policyError)
     policyResult = { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string>, resolvedFrom: 'global_default' as const }

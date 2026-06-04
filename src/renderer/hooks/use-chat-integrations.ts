@@ -95,7 +95,12 @@ export function useChatIntegrationSessions(integrationId: string | null) {
       return res.json()
     },
     enabled: !!integrationId,
-    refetchInterval: 10_000, // Poll for new sessions (new users DMing the bot)
+    // Poll for new sessions (new users DMing the bot) — these have no SSE
+    // fallback, so keep polling, just less aggressively, and not while backgrounded.
+    // TODO: conservative first step down from the original 10s; can be raised
+    // further (e.g. 60s) once we've confirmed new-session latency is acceptable.
+    refetchInterval: 20_000,
+    refetchIntervalInBackground: false,
   })
 }
 

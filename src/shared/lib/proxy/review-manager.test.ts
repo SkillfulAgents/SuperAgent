@@ -67,6 +67,37 @@ describe('ReviewManager', () => {
     expect(result).toBe(false)
   })
 
+  it('resolveMatchingPendingByLabel resolves sibling reviews sharing the risk label', async () => {
+    // Two write-labelled requests (gmail.send, gmail.compose) + one read (gmail.readonly).
+    const send = manager.requestReview({
+      agentSlug: 'agent-1', accountId: 'acc-1', toolkit: 'gmail', method: 'POST',
+      targetPath: '/gmail/v1/users/me/messages/send', matchedScopes: ['gmail.send'], scopeDescriptions: {},
+    })
+    const compose = manager.requestReview({
+      agentSlug: 'agent-1', accountId: 'acc-1', toolkit: 'gmail', method: 'POST',
+      targetPath: '/gmail/v1/users/me/drafts', matchedScopes: ['gmail.compose'], scopeDescriptions: {},
+    })
+    const read = manager.requestReview({
+      agentSlug: 'agent-1', accountId: 'acc-1', toolkit: 'gmail', method: 'GET',
+      targetPath: '/gmail/v1/users/me/messages', matchedScopes: ['gmail.readonly'], scopeDescriptions: {},
+    })
+    expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(3)
+
+    // "Allow all write" → both write reviews resolve; the read review is untouched.
+    manager.resolveMatchingPendingByLabel('agent-1', 'write', 'allow')
+    await expect(send).resolves.toBe('allow')
+    await expect(compose).resolves.toBe('allow')
+    expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(1)
+
+    // does not cross agents
+    manager.resolveMatchingPendingByLabel('other-agent', 'read', 'allow')
+    expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(1)
+
+    // resolve the lingering read review so afterEach's rejectAll doesn't reject it
+    manager.submitDecision(manager.getPendingReviewsForAgent('agent-1')[0].id, 'allow')
+    await expect(read).resolves.toBe('allow')
+  })
+
   it('submitDecision returns true for valid reviewId', async () => {
     const promise = manager.requestReview({
       agentSlug: 'agent-1',
