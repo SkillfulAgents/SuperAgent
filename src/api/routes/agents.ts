@@ -78,6 +78,7 @@ import {
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
@@ -4468,7 +4469,22 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
       await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision)
     } else if (body.reviewType === 'mcp') {
       // MCP tool review — save to mcpToolPolicies
-      // accountId is actually the mcpId for MCP reviews
+      // accountId is actually the mcpId for MCP reviews.
+      // Verify MCP-server ownership before persisting, mirroring the API-scope
+      // branch below: AgentUser() only proves a role on the URL agent, so
+      // without this an authenticated user could write a policy onto an MCP
+      // server owned by someone else by passing its mcpId here.
+      if (body.accountId && isAuthMode()) {
+        const [mcpServer] = await db
+          .select({ userId: remoteMcpServers.userId })
+          .from(remoteMcpServers)
+          .where(eq(remoteMcpServers.id, body.accountId))
+          .limit(1)
+        if (mcpServer && mcpServer.userId !== getCurrentUserId(c)) {
+          return c.json({ error: 'Forbidden: you do not own this MCP server' }, 403)
+        }
+      }
+
       await db.insert(mcpToolPolicies).values({
         id: randomUUID(),
         mcpId: body.accountId,
@@ -4481,18 +4497,30 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
         set: { decision: policyDecision, updatedAt: now },
       })
     } else {
-      // API scope review — save to apiScopePolicies
-      // Verify account ownership before saving policy
-      if (body.accountId && isAuthMode()) {
-        const userId = getCurrentUserId(c)
+      // API scope review — save to apiScopePolicies.
+      // Look up the account once: we need its owner (to enforce the auth-mode
+      // ownership check) and its toolkit (to validate the scope below).
+      let toolkitSlug: string | undefined
+      if (body.accountId) {
         const [acct] = await db
-          .select({ userId: connectedAccounts.userId })
+          .select({ userId: connectedAccounts.userId, toolkitSlug: connectedAccounts.toolkitSlug })
           .from(connectedAccounts)
           .where(eq(connectedAccounts.id, body.accountId))
           .limit(1)
-        if (acct && acct.userId !== userId) {
+        if (isAuthMode() && acct && acct.userId !== getCurrentUserId(c)) {
           return c.json({ error: 'Forbidden: you do not own this account' }, 403)
         }
+        toolkitSlug = acct?.toolkitSlug
+      }
+
+      // Validate the scope against the toolkit's known scope set ∪ sentinels.
+      // The in-session "Allow all <label>" action legitimately sends the
+      // '*read'/'*write'/'*destructive' risk-group sentinels, so allow those
+      // (and the '*' account default) explicitly and reject everything else —
+      // a buggy or malicious client must not persist a garbage or smuggled
+      // scope (e.g. a sentinel the per-group editor framing never intended).
+      if (!isValidApiScope(toolkitSlug, body.scope)) {
+        return c.json({ error: `Invalid scope: ${JSON.stringify(body.scope)}` }, 400)
       }
 
       await db.insert(apiScopePolicies).values({

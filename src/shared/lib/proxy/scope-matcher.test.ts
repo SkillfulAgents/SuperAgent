@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchScopes } from './scope-matcher'
+import { matchScopes, isValidApiScope } from './scope-matcher'
 
 describe('matchScopes', () => {
   it('exact match: gmail GET /gmail/v1/users/me/messages returns correct scopes', () => {
@@ -147,5 +147,40 @@ describe('matchScopes', () => {
   it('endpointDescription: undefined for unmatched requests', () => {
     const result = matchScopes('gmail', 'GET', '/gmail/v1/unknown/path')
     expect(result.endpointDescription).toBeUndefined()
+  })
+})
+
+describe('isValidApiScope', () => {
+  it('accepts a real scope declared by the toolkit', () => {
+    expect(isValidApiScope('gmail', 'gmail.readonly')).toBe(true)
+  })
+
+  it('rejects a scope not in the toolkit scope set', () => {
+    expect(isValidApiScope('gmail', 'gmail:read')).toBe(false)
+    expect(isValidApiScope('gmail', 'not-a-real-scope')).toBe(false)
+  })
+
+  it('does not leak scopes across toolkits', () => {
+    // A real gmail scope is not valid for a different toolkit.
+    expect(isValidApiScope('slack', 'gmail.readonly')).toBe(false)
+  })
+
+  it.each(['*', '*read', '*write', '*destructive'])('accepts the %s sentinel on any toolkit', (sentinel) => {
+    expect(isValidApiScope('gmail', sentinel)).toBe(true)
+    // Sentinels are valid even when the toolkit is unknown.
+    expect(isValidApiScope('totally-unknown-toolkit', sentinel)).toBe(true)
+    expect(isValidApiScope(undefined, sentinel)).toBe(true)
+  })
+
+  it('rejects non-sentinel scopes for an unknown or missing toolkit', () => {
+    expect(isValidApiScope('totally-unknown-toolkit', 'gmail.readonly')).toBe(false)
+    expect(isValidApiScope(undefined, 'gmail.readonly')).toBe(false)
+  })
+
+  it('rejects empty or non-string scopes', () => {
+    expect(isValidApiScope('gmail', '')).toBe(false)
+    expect(isValidApiScope('gmail', null as unknown as string)).toBe(false)
+    expect(isValidApiScope('gmail', undefined as unknown as string)).toBe(false)
+    expect(isValidApiScope('gmail', 123 as unknown as string)).toBe(false)
   })
 })

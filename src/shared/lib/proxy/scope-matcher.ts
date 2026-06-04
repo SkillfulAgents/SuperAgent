@@ -1,5 +1,6 @@
 import { SCOPE_MAPS, type ScopeMapEntry } from './scope-maps'
 import { getScopeDescription } from './scope-metadata'
+import { ACCOUNT_DEFAULT_SCOPE, isLabelDefaultKey } from './policy-sentinels'
 
 export interface ScopeMatchResult {
   matched: boolean
@@ -15,6 +16,29 @@ export interface ScopeMatchResult {
    * not a broader scope-level summary that may be alarming.
    */
   endpointDescription?: string
+}
+
+/**
+ * Is `scope` a legal API scope policy key for `toolkit`?
+ *
+ * True for the reserved policy sentinels — the account default ('*') and the
+ * per-risk-label defaults ('*read'/'*write'/'*destructive'), which are valid on
+ * any toolkit (the in-session "Allow all <label>" action routes them through
+ * the proxy-review /always endpoint) — or a scope the toolkit actually declares
+ * in its scope map. Used to reject garbage or smuggled scopes before they are
+ * persisted as a policy. An unknown toolkit has no known scope set, so only
+ * sentinels are accepted for it.
+ */
+export function isValidApiScope(toolkit: string | undefined, scope: unknown): boolean {
+  if (typeof scope !== 'string' || scope.length === 0) return false
+  if (scope === ACCOUNT_DEFAULT_SCOPE || isLabelDefaultKey(scope)) return true
+  if (!toolkit) return false
+  const provider = SCOPE_MAPS[toolkit]
+  if (!provider) return false
+  const all = Array.isArray(provider.allScopes)
+    ? provider.allScopes
+    : Object.values(provider.allScopes).flat()
+  return all.includes(scope)
 }
 
 /**

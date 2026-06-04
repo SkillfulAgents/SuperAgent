@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
 // ============================================================================
@@ -161,7 +161,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   connectedAccounts: { id: 'id', toolkitSlug: 'toolkit_slug', userId: 'user_id' },
   agentConnectedAccounts: { id: 'id', agentSlug: 'agent_slug', connectedAccountId: 'connected_account_id' },
   proxyAuditLog: { agentSlug: 'agent_slug', createdAt: 'created_at' },
-  remoteMcpServers: {},
+  remoteMcpServers: { id: 'id', userId: 'user_id' },
   agentRemoteMcps: {},
   mcpAuditLog: { agentSlug: 'agent_slug', createdAt: 'created_at' },
   agentAcl: { id: 'id', userId: 'user_id', agentSlug: 'agent_slug', role: 'role' },
@@ -278,6 +278,8 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
     getPendingReviewsForAgent: (slug: string) => mockGetPendingReviewsForAgent(slug),
     submitDecision: vi.fn(),
     resolveMatchingPending: vi.fn(),
+    resolveMatchingPendingByLabel: vi.fn(),
+    resolveMatchingXAgentByOperation: vi.fn(),
   },
 }))
 
@@ -2549,6 +2551,19 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     mockDbInsertValues.mockReset()
     mockDbInsertTable.mockReset()
     mockDbOnConflictDoUpdate.mockReset()
+    mockDbSelectFrom.mockReset()
+    // Default account/MCP lookup: a row owned by the test user. The API-scope
+    // branch reads this to enforce ownership and validate the scope; the MCP
+    // branch reads it to enforce MCP-server ownership.
+    mockDbSelectFrom.mockReturnValue({
+      where: () => ({ limit: () => Promise.resolve([{ userId: 'test-user-id', toolkitSlug: 'gmail' }]) }),
+    })
+    // Default to local/single-user mode; auth-mode tests opt in explicitly.
+    mockIsAuthMode.mockReturnValue(false)
+  })
+
+  afterEach(() => {
+    mockIsAuthMode.mockReturnValue(false)
   })
 
   it('saves to mcpToolPolicies when reviewType is mcp', async () => {
@@ -2577,7 +2592,7 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
   it('saves to apiScopePolicies when reviewType is api', async () => {
     const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
       decision: 'allow',
-      scope: 'gmail:read',
+      scope: 'gmail.readonly',
       accountId: 'account-123',
       reviewType: 'api',
     })
@@ -2589,11 +2604,41 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     expect(mockDbInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({
         accountId: 'account-123',
-        scope: 'gmail:read',
+        scope: 'gmail.readonly',
         decision: 'allow',
       })
     )
   })
+
+  it('rejects an API scope not in the toolkit scope set', async () => {
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: 'not-a-real-scope',
+      accountId: 'account-123',
+      reviewType: 'api',
+    })
+
+    expect(res.status).toBe(400)
+    // Nothing should be persisted for an invalid scope
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it.each(['*', '*read', '*write', '*destructive'])(
+    'accepts the %s risk-group sentinel for an API scope policy',
+    async (scope) => {
+      const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+        decision: 'allow',
+        scope,
+        accountId: 'account-123',
+        reviewType: 'api',
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockDbInsertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ accountId: 'account-123', scope, decision: 'allow' })
+      )
+    }
+  )
 
   it('saves to apiScopePolicies when reviewType is omitted (backwards compat)', async () => {
     const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
@@ -2657,6 +2702,111 @@ describe('POST /api/agents/:id/proxy-review/:reviewId/always', () => {
     })
 
     expect(res.status).toBe(400)
+  })
+
+  it('rejects an MCP policy on a server the user does not own (auth mode)', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    // MCP-ownership lookup returns a server owned by someone else.
+    mockDbSelectFrom.mockReturnValueOnce({
+      where: () => ({ limit: () => Promise.resolve([{ userId: 'someone-else' }]) }),
+    })
+
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: 'some_tool',
+      accountId: 'mcp-server-123',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(403)
+    // Must not persist a policy onto an MCP server the caller doesn't own.
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('allows an MCP policy on a server the user owns (auth mode)', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    // MCP-ownership lookup returns a server owned by the test user.
+    mockDbSelectFrom.mockReturnValueOnce({
+      where: () => ({ limit: () => Promise.resolve([{ userId: 'test-user-id' }]) }),
+    })
+
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: 'some_tool',
+      accountId: 'mcp-server-123',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ mcpId: 'mcp-server-123', toolName: 'some_tool', decision: 'allow' })
+    )
+  })
+
+  it('persists an MCP policy when the server is not found (auth mode, no owner to mismatch)', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    // Ownership lookup finds no such MCP server — the `&&` short-circuit means
+    // there is no owner to mismatch, so the upsert proceeds (mirrors the API
+    // branch). A dangling mcpId is a harmless dead row, not an auth bypass.
+    mockDbSelectFrom.mockReturnValueOnce({
+      where: () => ({ limit: () => Promise.resolve([]) }),
+    })
+
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: 'some_tool',
+      accountId: 'mcp-server-unknown',
+      reviewType: 'mcp',
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ mcpId: 'mcp-server-unknown', toolName: 'some_tool' })
+    )
+  })
+
+  it('rejects an API policy on an account the user does not own (auth mode)', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    // Account lookup returns an account owned by someone else.
+    mockDbSelectFrom.mockReturnValueOnce({
+      where: () => ({ limit: () => Promise.resolve([{ userId: 'someone-else', toolkitSlug: 'gmail' }]) }),
+    })
+
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: 'gmail.readonly',
+      accountId: 'account-123',
+      reviewType: 'api',
+    })
+
+    expect(res.status).toBe(403)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('maps a deny decision to a block policy for an API scope', async () => {
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'deny',
+      scope: 'gmail.readonly',
+      accountId: 'account-123',
+      reviewType: 'api',
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockDbInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: 'account-123', scope: 'gmail.readonly', decision: 'block' })
+    )
+  })
+
+  it('rejects a concrete API scope when accountId is missing (no toolkit to validate against)', async () => {
+    const res = await postJson(app, '/api/agents/my-agent/proxy-review/review-1/always', {
+      decision: 'allow',
+      scope: 'gmail.readonly',
+      accountId: '',
+      reviewType: 'api',
+    })
+
+    expect(res.status).toBe(400)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 })
 
