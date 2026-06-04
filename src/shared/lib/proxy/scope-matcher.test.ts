@@ -110,7 +110,7 @@ describe('matchScopes', () => {
     expect(result.scopes).toEqual([])
   })
 
-  it('descriptions: prefers curated SCOPE_DESCRIPTIONS over endpoint description', () => {
+  it('descriptions: prefers curated SCOPE_METADATA over endpoint description', () => {
     // gmail.readonly is curated; the curated description is scope-level
     // ("View your email messages…"), not the endpoint-level "Lists the messages
     // in the user's mailbox." that scope-maps.ts has on this entry.
@@ -126,9 +126,9 @@ describe('matchScopes', () => {
   })
 
   it('descriptions: falls back to endpoint description for uncurated scopes', () => {
-    // Use a provider/scope that exists but isn't in SCOPE_DESCRIPTIONS — we
+    // Use a provider/scope that exists but isn't in SCOPE_METADATA — we
     // cover all 40 providers, so any fallback should be impossible. Verify the
-    // mechanism: if scope-descriptions ever loses an entry, the endpoint
+    // mechanism: if scope-metadata ever loses an entry, the endpoint
     // description still appears. Simulate by checking that EVERY description
     // is a non-empty string, and that the format is plausible.
     const result = matchScopes('gmail', 'GET', '/gmail/v1/users/me/profile')

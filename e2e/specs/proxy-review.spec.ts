@@ -85,6 +85,23 @@ test.describe('Proxy Review Requests', () => {
     await sessionPage.waitForInputEnabled(15000)
     await sessionPage.expectAssistantMessage('approved by user')
   })
+
+  test('proxy review: allow all requests for the minimal risk group', async ({ page }) => {
+    await sessionPage.sendMessage('proxy review')
+
+    await sessionPage.waitForProxyReviewRequest()
+
+    // chat.postMessage is satisfied by chat:write (a "write"-labelled scope), so the
+    // minimal group offered is "write". Allowing it should approve and persist '*write'.
+    await sessionPage.alwaysAllowLabelGroup('write')
+
+    // Review prompt should disappear
+    await expect(sessionPage.getProxyReviewRequests()).toHaveCount(0, { timeout: 10000 })
+
+    // Session should complete with approval message
+    await sessionPage.waitForInputEnabled(15000)
+    await sessionPage.expectAssistantMessage('approved by user')
+  })
 })
 
 test.describe('X-Agent Review Requests', () => {
