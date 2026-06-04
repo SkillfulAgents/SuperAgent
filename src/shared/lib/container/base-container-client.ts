@@ -186,6 +186,15 @@ export const CONTAINER_INTERNAL_PORT = 3000
 const BASE_PORT = 4000
 
 /**
+ * Error thrown by ensureImageExists() when an image build fails, carrying the
+ * captured stderr tail and exit code so start()'s catch can surface them to Sentry.
+ */
+interface ImageBuildError extends Error {
+  imageBuildStderr?: string
+  imageBuildExitCode?: number | null
+}
+
+/**
  * Parse a memory value string (e.g., "231.2MiB", "1.5GiB", "512MB") to bytes.
  */
 export function parseMemoryValue(value: string): number {
@@ -538,6 +547,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             agentId: this.config.agentId,
             containerName: this.getContainerName(),
             runner: getSettings().container.containerRunner,
+            image: getSettings().container.agentImage,
+            // Surface image-build diagnostics when start() failed during
+            // ensureImageExists() (otherwise these are undefined).
+            imageBuildExitCode: error.imageBuildExitCode,
+            imageBuildStderr: error.imageBuildStderr,
           },
         })
       }
@@ -1133,19 +1147,35 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     } catch {
       console.log(`Building container image ${image}...`)
 
+      // Pipe (not inherit) stdout/stderr so we can capture the build output —
+      // a bare exit code is undiagnosable in Sentry. Mirrors buildImage() in
+      // client-factory.ts.
       const buildProcess = spawnWithPath(
         runner,
-        ['build', '-t', image, AGENT_CONTAINER_PATH],
-        { stdio: 'inherit' }
+        ['build', '-t', image, AGENT_CONTAINER_PATH]
       )
+
+      const stderrChunks: string[] = []
+      buildProcess.stdout?.on('data', (data: Buffer) => process.stdout.write(data))
+      buildProcess.stderr?.on('data', (data: Buffer) => {
+        stderrChunks.push(data.toString())
+        process.stderr.write(data)
+      })
 
       await new Promise<void>((resolve, reject) => {
         buildProcess.on('close', (code) => {
-          if (code === 0) {
+          const stderr = stderrChunks.join('').trim()
+          // Treat an "already exists" image as success — a concurrent build
+          // (e.g. ensureImageReady racing the start path) may have created it.
+          if (code === 0 || /already exists/i.test(stderr)) {
             console.log(`Container image ${image} built successfully`)
             resolve()
           } else {
-            reject(new Error(`Container build failed with code ${code}`))
+            const detail = stderr ? `: ${stderr.slice(-500)}` : ''
+            const error = new Error(`Container build failed with code ${code}${detail}`) as ImageBuildError
+            error.imageBuildExitCode = code
+            error.imageBuildStderr = stderr.slice(-2000)
+            reject(error)
           }
         })
         buildProcess.on('error', reject)
