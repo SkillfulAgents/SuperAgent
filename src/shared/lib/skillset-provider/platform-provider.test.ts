@@ -315,6 +315,40 @@ describe('PlatformSkillsetProvider archive cache (no-git path)', () => {
       .toEqual({ fresh: true })
     expect(await provider.isCacheReady(destDir)).toBe(true)
   })
+
+  it('refreshCache preserves the existing cache when the swap fails (ELECTRON-4G)', async () => {
+    const destDir = path.join(tmpDir, 'cache')
+    await fs.promises.mkdir(destDir, { recursive: true })
+    await fs.promises.writeFile(path.join(destDir, 'stale.txt'), 'old')
+    await fs.promises.writeFile(path.join(destDir, '.skillset-cache-meta.json'), '{}')
+
+    mockArchiveFetch(await buildTarGz({ 'index.json': '{"fresh":true}' }))
+
+    // Persistent Windows EPERM lock on the swap moves, plus a failing copy
+    // fallback, so the new cache can't be installed. The old cache must be
+    // restored intact rather than left destroyed.
+    const realRename = fs.promises.rename
+    const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (String(from) === destDir || String(to) === destDir) {
+        const e = new Error('EPERM: operation not permitted, rename') as NodeJS.ErrnoException
+        e.code = 'EPERM'
+        throw e
+      }
+      return realRename(from, to)
+    })
+    const cpSpy = vi.spyOn(fs.promises, 'cp').mockRejectedValue(
+      Object.assign(new Error('EPERM: operation not permitted, copyfile'), { code: 'EPERM' }),
+    )
+
+    await expect(provider.refreshCache(destDir, makeRef())).rejects.toThrow(/EPERM/)
+
+    expect(fs.existsSync(path.join(destDir, 'stale.txt'))).toBe(true)
+    expect(await fs.promises.readFile(path.join(destDir, 'stale.txt'), 'utf-8')).toBe('old')
+    expect(await provider.isCacheReady(destDir)).toBe(true)
+
+    renameSpy.mockRestore()
+    cpSpy.mockRestore()
+  })
 })
 
 describe('PlatformSkillsetProvider.getQueueItemStatuses', () => {

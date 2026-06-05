@@ -435,3 +435,55 @@ describe('LimaContainerClient.isRunning', () => {
     expect(await LimaContainerClient.isRunning()).toBe(true)
   })
 })
+
+// ============================================================================
+// extractInaccessibleMountPath — EPERM-on-stat for cloud-synced bind mounts
+// ============================================================================
+
+describe('LimaContainerClient.extractInaccessibleMountPath', () => {
+  // The base class is mocked above, so the subclass method runs standalone.
+  const client = new LimaContainerClient({ agentId: 'test-agent' } as any) as any
+
+  it('parses the host path from a quoted "failed to stat ... operation not permitted" error', () => {
+    const stderr =
+      'failed to mount: failed to stat "/Users/x/Library/CloudStorage/Dropbox/foo": operation not permitted'
+    expect(client.extractInaccessibleMountPath(new Error(stderr))).toBe(
+      '/Users/x/Library/CloudStorage/Dropbox/foo'
+    )
+  })
+
+  it('parses an iCloud Mobile Documents path', () => {
+    const stderr =
+      'stat "/Users/x/Library/Mobile Documents/com~apple~CloudDocs/proj": operation not permitted'
+    expect(client.extractInaccessibleMountPath({ stderr })).toBe(
+      '/Users/x/Library/Mobile Documents/com~apple~CloudDocs/proj'
+    )
+  })
+
+  // The REAL on-the-wire format: nerdctl logs via logrus, which wraps the
+  // message in msg="..." and escapes the inner quotes around the path as \".
+  // (Captured from a live `nerdctl run -v <denied-path>` against the Lima VM.)
+  // Without unescaping, the parser would return `\"<path>\"` and the mount-drop
+  // filter would never match — so the inaccessible mount would never be dropped.
+  it('parses the host path from logrus-escaped (\\") nerdctl stderr', () => {
+    const stderr =
+      'time="2026-06-04T18:17:11-07:00" level=fatal msg="failed to stat \\"/Users/x/Library/Mail\\": stat /Users/x/Library/Mail: operation not permitted"'
+    expect(client.extractInaccessibleMountPath({ stderr })).toBe('/Users/x/Library/Mail')
+  })
+
+  it('parses a logrus-escaped path that contains spaces (iCloud Mobile Documents)', () => {
+    const stderr =
+      'level=fatal msg="failed to stat \\"/Users/x/Library/Mobile Documents/com~apple~CloudDocs\\": operation not permitted"'
+    expect(client.extractInaccessibleMountPath({ stderr })).toBe(
+      '/Users/x/Library/Mobile Documents/com~apple~CloudDocs'
+    )
+  })
+
+  it('returns null when the error is not an EPERM-on-mount', () => {
+    expect(client.extractInaccessibleMountPath(new Error('no such image: foo'))).toBe(null)
+  })
+
+  it('returns null for permission errors without a parseable path', () => {
+    expect(client.extractInaccessibleMountPath(new Error('operation not permitted'))).toBe(null)
+  })
+})

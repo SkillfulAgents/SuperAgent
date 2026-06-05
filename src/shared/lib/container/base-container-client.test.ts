@@ -1,9 +1,23 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient } from './base-container-client'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
+
+/** Minimal concrete subclass to exercise protected run-error classification. */
+class TestContainerClient extends BaseContainerClient {
+  protected getRunnerCommand(): string {
+    return 'docker'
+  }
+  // Expose protected predicates for testing.
+  public testIsPortConflictError(error: unknown): boolean {
+    return this.isPortConflictError(error)
+  }
+  public testExtractInaccessibleMountPath(error: unknown): string | null {
+    return this.extractInaccessibleMountPath(error)
+  }
+}
 
 describe('writeEnvFile', () => {
   const cleanups: (() => void)[] = []
@@ -627,5 +641,79 @@ describe('subscribeToStream failure handling', () => {
 
     expect(errors).toHaveLength(1)
     expect((errors[0] as Error).message).toContain('Container is not running')
+  })
+})
+
+// ============================================================================
+// run-error classification (port races, inaccessible mounts)
+// ============================================================================
+
+describe('BaseContainerClient.isPortConflictError', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  it('matches docker "port is already allocated"', () => {
+    expect(client.testIsPortConflictError(new Error('Error: port is already allocated'))).toBe(true)
+  })
+
+  it('matches "address already in use"', () => {
+    expect(client.testIsPortConflictError(new Error('listen tcp 0.0.0.0:4000: bind: address already in use'))).toBe(true)
+  })
+
+  it('matches docker "Bind for ... failed"', () => {
+    expect(client.testIsPortConflictError(new Error('Bind for 0.0.0.0:4000 failed: port is already allocated'))).toBe(true)
+  })
+
+  it('reads from a .stderr property', () => {
+    expect(client.testIsPortConflictError({ stderr: 'failed to bind host port for 0.0.0.0:4000' })).toBe(true)
+  })
+
+  it('does not match unrelated errors', () => {
+    expect(client.testIsPortConflictError(new Error('no such image'))).toBe(false)
+  })
+
+  it('base extractInaccessibleMountPath returns null (no VM filesystem)', () => {
+    expect(client.testExtractInaccessibleMountPath(new Error('operation not permitted'))).toBe(null)
+  })
+})
+
+// ============================================================================
+// isHealthy — the /health probe must be bounded (it gates the request hot path
+// via ensureRunning's stale-cache liveness check; an unresponsive port-forward
+// would otherwise hang the caller indefinitely).
+// ============================================================================
+
+describe('BaseContainerClient.isHealthy', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('passes an AbortSignal to the /health fetch (bounded probe)', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true }) as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.isHealthy(4001)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4001/health',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+  })
+
+  it('returns true when the probe responds ok', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true }) as Response))
+    await expect(client.isHealthy(4001)).resolves.toBe(true)
+  })
+
+  it('returns false (not throw) when the probe aborts/times out', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new DOMException('The operation was aborted', 'AbortError')
+    }))
+    await expect(client.isHealthy(4001)).resolves.toBe(false)
+  })
+
+  it('returns false when no port is known', async () => {
+    await expect(client.isHealthy(0)).resolves.toBe(false)
   })
 })

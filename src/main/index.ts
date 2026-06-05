@@ -69,8 +69,8 @@ registerUpdateHandlers()
 import { serve } from '@hono/node-server'
 import api from '../api'
 import { initializeServices, shutdownServices } from '@shared/lib/startup'
-import { findAvailablePort } from './find-port'
 import { setupServerHandlers } from '@shared/lib/startup'
+import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
@@ -875,14 +875,10 @@ ipcMain.handle('create-dock-shortcut', (_event, { agentSlug, dashboardSlug, dash
 ipcMain.handle('set-native-theme', (_event, theme: string) => {
   nativeTheme.themeSource = theme as 'system' | 'light' | 'dark'
 
-  // Update Windows title bar overlay symbol color to match theme
-  if (process.platform === 'win32' && mainWindow) {
-    const isDark = nativeTheme.shouldUseDarkColors
-    mainWindow.setTitleBarOverlay({
-      symbolColor: isDark ? '#cccccc' : '#333333',
-      color: '#00000000',
-    })
-  }
+  // Windows uses titleBarStyle: 'hidden' WITHOUT a native overlay (see window
+  // creation above) and draws its own title-bar buttons in the renderer, which
+  // recolor via CSS. Calling setTitleBarOverlay here would throw
+  // "Titlebar overlay is not enabled", so there is nothing native to recolor.
 })
 
 // IPC handler for popping up the full app menu at a position (Windows custom title bar)
@@ -1239,60 +1235,67 @@ function stopNotificationListener(): void {
 
 // Start the API server and app
 async function startApp() {
-  // Find an available port
+  // Bind the API server atomically, retrying on a port race until a port is
+  // claimed (no probe-then-bind TOCTOU gap; an EADDRINUSE retries instead of
+  // crashing the app via uncaughtException). See bindServerWithRetry.
+  let boundPort: number
   try {
-    actualApiPort = await findAvailablePort(DEFAULT_API_PORT)
-    process.env.PORT = String(actualApiPort)
-    console.log(`Found available port: ${actualApiPort}`)
+    const bound = await bindServerWithRetry(api.fetch, {
+      startPort: DEFAULT_API_PORT,
+      hostname: '0.0.0.0',
+    })
+    apiServer = bound.server
+    // Record the port everyone else reads (createAppMenu, createTray, the
+    // renderer base URL, etc.). A stale value here points the UI at a dead
+    // server, so update both the module state and process.env.PORT.
+    actualApiPort = bound.port
+    process.env.PORT = String(bound.port)
+    boundPort = bound.port
+    // Wire server-level handlers (WebSocket proxies, etc.) on the bound server.
+    setupServerHandlers(bound.server)
+    console.log(`API server running on http://localhost:${bound.port}`)
   } catch (error) {
-    console.error('Failed to find available port:', error)
+    console.error('Failed to bind API server:', error)
     app.quit()
     return
   }
 
-  // Start the API server
-  apiServer = serve({ fetch: api.fetch, port: actualApiPort, hostname: '0.0.0.0' }, () => {
-    console.log(`API server running on http://localhost:${actualApiPort}`)
-
-    // Initialize all background services
-    initializeServices().catch((error) => {
-      console.error('Failed to initialize services:', error)
-    })
-
-    // Reconnect chat integrations after system sleep
-    powerMonitor.on('resume', () => {
-      chatIntegrationManager.reconnectAll().catch((err) => {
-        console.error('Failed to reconnect chat integrations after resume:', err)
-      })
-    })
-
-    // Start listening for notifications (for when window is closed)
-    startNotificationListener()
-
-    // Mark API as ready and process any queued dashboard deep links
-    apiReady = true
-    for (const link of pendingDashboardLinks) {
-      openDashboardWindow(link.agentSlug, link.dashboardSlug)
-    }
-    pendingDashboardLinks.length = 0
-    processPendingProtocolUrls()
+  // Initialize all background services
+  initializeServices().catch((error) => {
+    console.error('Failed to initialize services:', error)
   })
 
-  // Set up server-level handlers (WebSocket proxies, etc.)
-  setupServerHandlers(apiServer)
+  // Reconnect chat integrations after system sleep
+  powerMonitor.on('resume', () => {
+    chatIntegrationManager.reconnectAll().catch((err) => {
+      console.error('Failed to reconnect chat integrations after resume:', err)
+    })
+  })
 
-  // Wait for app to be ready, then create window
+  // Start listening for notifications (for when window is closed)
+  startNotificationListener()
+
+  // Mark API as ready and process any queued dashboard deep links
+  apiReady = true
+  for (const link of pendingDashboardLinks) {
+    openDashboardWindow(link.agentSlug, link.dashboardSlug)
+  }
+  pendingDashboardLinks.length = 0
+  processPendingProtocolUrls()
+
+  // Wait for app to be ready, then create window. Window/menu/tray creation is
+  // deferred until here so they're never built against a port that never bound.
   await app.whenReady()
 
   createWindow()
 
   // Create the application menu (macOS menu bar)
-  createAppMenu(mainWindow, actualApiPort)
+  createAppMenu(mainWindow, boundPort)
 
   // Create system tray if enabled in settings
   const settings = getSettings()
   if (settings.app?.showMenuBarIcon !== false) {
-    createTray(mainWindow, actualApiPort)
+    createTray(mainWindow, boundPort)
   }
 
   // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)

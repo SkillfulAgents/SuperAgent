@@ -4,6 +4,8 @@ import { useQueryClient, useQuery } from '@tanstack/react-query'
 interface MountWarning {
   agentSlug: string
   missingMounts: { folderName: string; hostPath: string }[]
+  /** Optional extra context (e.g. macOS cloud-storage hint) shown in the banner. */
+  hint?: string
 }
 
 const QUERY_KEY_PREFIX = 'mount-warnings'

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { app, ipcMain, powerMonitor } from 'electron'
 import { getSettings } from '@shared/lib/config/settings'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
+import { captureException } from '@shared/lib/error-reporting'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const semver = require('semver')
 
@@ -26,6 +27,11 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: vi.fn(() => ({ allowPrereleaseUpdates: false })),
+}))
+
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: vi.fn(),
+  addErrorBreadcrumb: vi.fn(),
 }))
 
 // `mockAutoUpdater.channel` mimics electron-updater's real setter, which
@@ -492,6 +498,101 @@ describe('silent background checks', () => {
     // No check ran — status stays at the initial 'idle'.
     expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled()
     expect(getStatus()).toMatchObject({ state: 'idle' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Benign "channel file not found" (latest-mac.yml 404) filtering
+//
+// electron-updater's checkForUpdates BOTH emits an 'error' event AND rejects,
+// so the same 404 is seen twice: once in the on('error') handler and once in
+// runUpdateCheckBody's catch. Neither path may report it to Sentry — it's
+// benign and self-heals once the mac assets finish uploading (ELECTRON-1N /
+// ELECTRON-3S). A silent background check stays quiet at 'not-available'; a
+// manual check shows an honest "try again shortly" message (still no Sentry)
+// rather than a misleading "you're up to date".
+// ---------------------------------------------------------------------------
+
+const CHANNEL_FILE_PENDING_MESSAGE =
+  'Could not check for updates right now — the latest release may still be publishing. Please try again shortly.'
+
+describe('channel file not found (latest-mac.yml 404)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    mockAutoUpdater.allowPrerelease = false
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
+    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
+    vi.mocked(app.getVersion).mockReturnValue('0.2.5')
+    await boot()
+  })
+
+  it('manual check: ERR_UPDATER_CHANNEL_FILE_NOT_FOUND is not reported to Sentry and shows a soft retry message', async () => {
+    mockAutoUpdater.checkForUpdates.mockImplementation(async () => {
+      const err: any = new Error('Cannot find latest-mac.yml in the latest release artifacts ...: HttpError: 404')
+      err.code = 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
+      events['error']?.(err)
+      throw err
+    })
+
+    await handlers['check-for-updates']()
+
+    // Benign: never reported to Sentry...
+    expect(captureException).not.toHaveBeenCalled()
+    // ...but a user who actively checked gets an honest "couldn't verify" message
+    // rather than a misleading "no update available", and NOT the raw 404 text.
+    expect(getStatus()).toMatchObject({ state: 'error', error: CHANNEL_FILE_PENDING_MESSAGE })
+    expect(getStatus().error).not.toMatch(/404/)
+  })
+
+  it('manual check: a 404 message without the code is still treated as benign', async () => {
+    mockAutoUpdater.checkForUpdates.mockImplementation(async () => {
+      const err: any = new Error(
+        'HttpError: 404 \n"Cannot find latest-mac.yml in the latest release artifacts (https://github.com/.../latest-mac.yml): HttpError: 404"',
+      )
+      err.statusCode = 404
+      events['error']?.(err)
+      throw err
+    })
+
+    await handlers['check-for-updates']()
+
+    expect(captureException).not.toHaveBeenCalled()
+    expect(getStatus()).toMatchObject({ state: 'error', error: CHANNEL_FILE_PENDING_MESSAGE })
+  })
+
+  it('silent check: a channel-file 404 stays quiet (no capture, not error)', async () => {
+    setupReleases({ currentVersion: '0.2.5', latestRC: null, latestStable: '0.2.5' })
+    await handlers['check-for-updates']()
+    expect(getStatus()).toMatchObject({ state: 'not-available' })
+    vi.mocked(captureException).mockClear()
+
+    mockAutoUpdater.checkForUpdates.mockImplementation(async () => {
+      const err: any = new Error('Cannot find latest-mac.yml in the latest release artifacts ...: HttpError: 404')
+      err.code = 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
+      events['error']?.(err)
+      throw err
+    })
+
+    await powerEvents.resume?.()
+    for (let i = 0; i < 50; i++) await Promise.resolve()
+
+    expect(captureException).not.toHaveBeenCalled()
+    expect(getStatus().state).not.toBe('error')
+  })
+
+  it('a genuine non-404 error is still captured and surfaced', async () => {
+    mockAutoUpdater.checkForUpdates.mockImplementation(async () => {
+      const err = new Error('Some real failure')
+      events['error']?.(err)
+      throw err
+    })
+
+    await handlers['check-for-updates']()
+
+    expect(captureException).toHaveBeenCalled()
+    expect(getStatus()).toMatchObject({ state: 'error' })
   })
 })
 

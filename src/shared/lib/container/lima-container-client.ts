@@ -275,11 +275,51 @@ export class LimaContainerClient extends BaseContainerClient {
   }
 
   /**
+   * Parse the host path of a bind mount the Lima VM can't access. The VM helper
+   * (a separate process) is denied by macOS TCC + File Provider when nerdctl /
+   * containerd stats a cloud-synced mount (iCloud Drive, Dropbox, …), failing
+   * with EPERM ("operation not permitted") rather than ENOENT — even though the
+   * Electron app itself can read the path. start() uses this to drop that one
+   * mount and retry without it instead of aborting the whole container.
+   *
+   * Example stderr (nerdctl logs via logrus, which wraps the message in
+   * msg="..." and escapes the inner quotes as \"):
+   *   level=fatal msg="failed to stat \"/Users/x/Library/Mail\": stat
+   *   /Users/x/Library/Mail: operation not permitted"
+   */
+  protected extractInaccessibleMountPath(error: any): string | null {
+    const raw = error?.message || error?.stderr || String(error)
+    if (!/operation not permitted/i.test(raw)) return null
+    // nerdctl/containerd log via logrus, which escapes the inner quotes around
+    // the path as \". Unescape first — otherwise the captured path keeps its \"
+    // artifacts and the mount-drop filter (volumes.filter(v => v.includes(path)))
+    // never matches, so the inaccessible mount is never dropped.
+    const msg = raw.replace(/\\"/g, '"')
+    // Pull the host path out of `stat "<path>"` (handles spaces) / `stat <path>:`.
+    const m =
+      msg.match(/(?:failed to )?stat(?:\s+host\s+path)?\s+"([^"]+)"/i) ||
+      msg.match(/(?:failed to )?stat(?:\s+host\s+path)?\s+([^\s:"]+)/i)
+    return m ? m[1] : null
+  }
+
+  /**
    * Handle run errors by provisioning the Lima VM if needed.
    */
   protected async handleRunError(error: any): Promise<boolean> {
     const msg = error.message || error.stderr || String(error)
     addErrorBreadcrumb({ category: 'lima', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
+
+    // An inaccessible cloud-synced mount (EPERM-on-stat) is handled by start()
+    // dropping that mount and retrying — it must NOT trigger VM reprovisioning
+    // here, and it isn't a VM fault worth an error-level capture.
+    if (this.extractInaccessibleMountPath(error)) {
+      captureMessage('Container run failed: inaccessible bind mount (cloud-synced path)', {
+        level: 'warning',
+        tags: { component: 'lima', operation: 'mount-inaccessible' },
+        extra: { originalError: msg, agentId: this.config.agentId },
+      })
+      return false
+    }
 
     const isKnownVmIssue =
       msg.includes('ENOENT') ||

@@ -396,6 +396,7 @@ export function MainContent() {
             <AlertTriangle className="h-3 w-3 shrink-0" />
             <span className="flex-1">
               Some mounted folders were not found and have been skipped: {mountWarning.missingMounts.map((m) => m.folderName).join(', ')}
+              {mountWarning.hint ? ` — ${mountWarning.hint}` : ''}
             </span>
             <button
               onClick={dismissMountWarning}

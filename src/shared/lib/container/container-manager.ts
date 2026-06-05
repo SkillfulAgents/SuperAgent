@@ -633,8 +633,29 @@ class ContainerManager {
         client.buildVolumeFlag(m.hostPath, m.containerPath)
       )
 
-      // Start container (user secrets are in .env file in workspace)
-      await client.start({ envVars, additionalVolumes })
+      // Start container (user secrets are in .env file in workspace).
+      // If a mount turns out to be inaccessible to the container runtime at run
+      // time (e.g. a cloud-synced folder the Lima VM helper is denied — passes
+      // the host health check but fails EPERM-on-stat inside the VM), start()
+      // drops that one mount and the container still comes up. Surface the same
+      // mount-health warning banner with a macOS-specific hint instead of
+      // failing the whole agent.
+      await client.start({
+        envVars,
+        additionalVolumes,
+        onMountDropped: (hostPath) => {
+          const dropped = healthyMounts.find((m) => m.hostPath === hostPath)
+          console.warn(`[ContainerManager] Mount inaccessible to runtime, dropped for ${agentId}: ${hostPath}`)
+          messagePersister.broadcastGlobal({
+            type: 'mount_health_warning',
+            agentSlug: agentId,
+            missingMounts: [{ folderName: dropped?.folderName ?? hostPath, hostPath }],
+            hint: process.platform === 'darwin'
+              ? 'This folder is in iCloud Drive or a cloud-synced location, which can’t be shared into the agent sandbox. Move it to a regular local folder.'
+              : undefined,
+          })
+        },
+      })
 
       // Get actual port from runtime and update cache directly
       // (can't use syncAgentStatus here — it's guarded against updates during startup)

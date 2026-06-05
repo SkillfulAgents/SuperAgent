@@ -61,6 +61,13 @@ export interface CreateSessionOptions {
 export interface StartOptions {
   envVars?: Record<string, string>
   additionalVolumes?: string[] // Extra -v flag values for bind mounts
+  /**
+   * Called when a bind mount is dropped at run time because the container
+   * runtime can't access it (e.g. a cloud-synced folder the Lima VM helper is
+   * denied). Receives the host path so the caller can warn the user. The
+   * container is still started without that one mount.
+   */
+  onMountDropped?: (hostPath: string) => void
 }
 
 // Container resource usage stats

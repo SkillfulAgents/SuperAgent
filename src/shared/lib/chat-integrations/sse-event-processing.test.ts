@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-integration-manager'
 import { MockChatClientConnector } from './mock-connector'
 import type { ChatIntegration } from '@shared/lib/db/schema'
@@ -1039,5 +1039,94 @@ describe('no-streaming connector (iMessage-style)', () => {
 
     const mock = managed.connector as MockChatClientConnector
     expect(mock.typingIndicators.length).toBe(1)
+  })
+})
+
+// ── deliver_file (tool_result_ready) ──────────────────────────────────────
+// Files are delivered off the tool RESULT (which validates existence in the
+// container), not the streamed input — see ELECTRON-39.
+describe('deliver_file delivery', () => {
+  const DELIVER = 'mcp__user-input__deliver_file'
+  let workspaceDir: string
+  let managed: ManagedConnector
+  let prevDataDir: string | undefined
+
+  beforeEach(async () => {
+    const os = await import('os')
+    const fs = await import('fs')
+    const path = await import('path')
+    prevDataDir = process.env.SUPERAGENT_DATA_DIR
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-deliver-'))
+    process.env.SUPERAGENT_DATA_DIR = dataDir
+    managed = createManagedConnector()
+    // getAgentWorkspaceDir resolves to {dataDir}/agents/{agentSlug}/workspace
+    workspaceDir = path.join(dataDir, 'agents', managed.integration.agentSlug, 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = prevDataDir
+  })
+
+  it('does NOT deliver the file on tool_use_ready (streamed input)', async () => {
+    await processEvents(managed, [
+      { type: 'tool_use_start', toolId: 't1', toolName: DELIVER },
+      { type: 'tool_use_streaming', partialInput: '{"filePath":"/workspace/out.txt"}' },
+      { type: 'tool_use_ready', toolId: 't1', toolName: DELIVER },
+    ])
+    const mock = getMock(managed)
+    expect(mock.sentFiles.length).toBe(0)
+    expect(mock.sentMessages.length).toBe(0)
+  })
+
+  it('delivers the file on a successful tool_result_ready', async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    fs.writeFileSync(path.join(workspaceDir, 'out.txt'), 'hello')
+
+    await processSSEEvent(managed, {
+      type: 'tool_result_ready',
+      toolName: DELIVER,
+      toolUseId: 't1',
+      filePath: '/workspace/out.txt',
+      description: 'a report',
+      isError: false,
+    })
+
+    const mock = getMock(managed)
+    expect(mock.sentFiles.length).toBe(1)
+    expect(mock.sentFiles[0].filename).toBe('out.txt')
+    expect(mock.sentFiles[0].caption).toBe('a report')
+  })
+
+  it('does NOT deliver when the tool_result is an error', async () => {
+    await processSSEEvent(managed, {
+      type: 'tool_result_ready',
+      toolName: DELIVER,
+      toolUseId: 't1',
+      filePath: '/workspace/missing.txt',
+      isError: true,
+    })
+
+    const mock = getMock(managed)
+    expect(mock.sentFiles.length).toBe(0)
+    expect(mock.sentMessages.length).toBe(0)
+  })
+
+  it('falls back to a text message (no throw) when a success result points at a missing host file', async () => {
+    // Success result but the file isn't host-visible (benign ENOENT) — graceful fallback.
+    await processSSEEvent(managed, {
+      type: 'tool_result_ready',
+      toolName: DELIVER,
+      toolUseId: 't1',
+      filePath: '/workspace/not-on-host.txt',
+      isError: false,
+    })
+
+    const mock = getMock(managed)
+    expect(mock.sentFiles.length).toBe(0)
+    expect(mock.sentMessages.length).toBe(1)
+    expect(mock.sentMessages[0].message.text).toContain('not-on-host.txt')
   })
 })

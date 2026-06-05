@@ -332,10 +332,11 @@ export function GlobalNotificationHandler() {
           }
 
           case 'mount_health_warning': {
-            // Some mounted folders are missing — show banner in agent view
+            // Some mounted folders are missing or inaccessible — show banner in agent view
             setMountWarning(queryClient, {
               agentSlug: data.agentSlug,
               missingMounts: data.missingMounts,
+              hint: data.hint,
             })
             break
           }
