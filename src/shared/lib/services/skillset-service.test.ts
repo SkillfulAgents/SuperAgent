@@ -249,7 +249,14 @@ describe('skillset-service', () => {
   const SKILL_MD_PLAIN = `# Test Skill\nSome instructions for the agent.`
 
   function mockExecFileAsNoOp() {
-    mockExecFile.mockReturnValue({ stdout: '', stderr: '' })
+    mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+      // Resolve a default branch so gitPull exercises its real fetch/reset
+      // path instead of bailing out on an unresolved origin/HEAD.
+      if (cmd === 'git' && args[0] === 'symbolic-ref') {
+        return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+      }
+      return { stdout: '', stderr: '' }
+    })
   }
 
   function setupPublishMocks() {
@@ -717,6 +724,98 @@ Instructions here`
         'utf-8',
       )
       expect(onDiskSkill).toBe(localContent)
+    })
+
+    it('gitPull resolves origin/HEAD via set-head and refreshes via fetch+reset FETCH_HEAD', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+      await createSkillDir('test-agent', 'test-skill', skillContent, meta)
+      await createSkillsetCache(config.id, index, { [meta.skillPath]: skillContent })
+
+      const calls: string[][] = []
+      let setHeadDone = false
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        calls.push([cmd, ...args])
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          // Symref is missing until `set-head --auto` runs (shallow clone).
+          if (!setHeadDone) {
+            throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+          }
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          setHeadDone = true
+          return { stdout: '', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+
+      const cmdline = calls.map((c) => c.join(' '))
+      expect(cmdline).toContain('git remote set-head origin --auto')
+      expect(cmdline).toContain('git checkout main')
+      expect(cmdline).toContain('git fetch --depth 1 origin main')
+      expect(cmdline).toContain('git reset --hard FETCH_HEAD')
+      // No brittle hardcoded master fallback and no full-history reset by name.
+      expect(cmdline).not.toContain('git checkout master')
+      expect(cmdline.some((c) => c.startsWith('git reset --hard origin/'))).toBe(false)
+    })
+
+    it('gitPull swallows expected drift errors from fetch+reset without throwing', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+      await createSkillDir('test-agent', 'test-skill', skillContent, meta)
+      await createSkillsetCache(config.id, index, { [meta.skillPath]: skillContent })
+
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'fetch') {
+          // The kind of benign drift seen on shallow single-branch caches.
+          throw new Error("fatal: couldn't find remote ref main: no such ref was fetched")
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      // Refresh must not throw and metadata must remain intact (up-to-date).
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      const updated = await readMetadata('test-agent', 'test-skill')
+      expect(updated.originalContentHash).toBe(hashTestSkillPackage({ 'SKILL.md': skillContent }))
+    })
+
+    it('gitPull reports unexpected fetch errors to Sentry', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+      await createSkillDir('test-agent', 'test-skill', skillContent, meta)
+      await createSkillsetCache(config.id, index, { [meta.skillPath]: skillContent })
+
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'fetch') {
+          throw new Error('fatal: unable to access remote: Connection timed out')
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      // Unexpected errors are surfaced (captured + rethrown) but refreshAgentSkills
+      // catches per-skillset so the overall call still resolves.
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
     })
   })
 

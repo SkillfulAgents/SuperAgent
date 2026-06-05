@@ -46,6 +46,11 @@ const execFileAsync = promisify(execFile)
 const GIT_ENV = {
   ...process.env,
   GIT_TERMINAL_PROMPT: '0',
+  // Force the C locale so git emits English error messages. We pattern-match
+  // a handful of benign git errors (see isExpectedGitDriftError) to suppress
+  // Sentry noise; a translated locale would defeat that matching.
+  LC_ALL: 'C',
+  LANG: 'C',
 }
 
 // ============================================================================
@@ -417,61 +422,107 @@ async function gitClone(url: string, dest: string): Promise<void> {
   }
 }
 
-async function gitPull(repoDir: string): Promise<void> {
-  // Ensure we're on the default branch before pulling.
-  // After a PR flow the repo may be left on a detached HEAD or stale branch.
-  try {
-    const { stdout: headRef } = await execFileAsync(
-      'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
-      { cwd: repoDir, timeout: 5000, env: GIT_ENV },
-    )
-    const defaultBranch = headRef.trim().replace('refs/remotes/origin/', '')
-    await execFileAsync('git', ['checkout', defaultBranch], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
-    })
-  } catch {
-    // Fallback: try main, then master
+/**
+ * Benign git errors that show up on shallow single-branch caches that have
+ * been left in a drifted state by the PR/fork flow (e.g. a hardcoded
+ * `checkout master` on a main-only repo, or a stale `branch.<name>.merge`
+ * config). These are recovered from in `gitPull` and are not actionable, so
+ * we log them rather than reporting to Sentry (ELECTRON-H, ELECTRON-C).
+ */
+function isExpectedGitDriftError(msg: string): boolean {
+  return /pathspec '.*' did not match|no such ref was fetched|Your configuration specifies to merge|unknown revision/i.test(msg)
+}
+
+/**
+ * Resolve the repo's real default branch from its origin remote. Falls back to
+ * `set-head --auto` (which queries the remote's HEAD) when the local
+ * `refs/remotes/origin/HEAD` symref is missing — common on shallow clones.
+ * Returns null if it can't be determined.
+ */
+async function resolveDefaultBranch(repoDir: string): Promise<string | null> {
+  const readSymref = async (): Promise<string | null> => {
     try {
-      await execFileAsync('git', ['checkout', 'main'], {
-        cwd: repoDir, timeout: 10000, env: GIT_ENV,
-      })
+      const { stdout } = await execFileAsync(
+        'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+        { cwd: repoDir, timeout: 5000, env: GIT_ENV },
+      )
+      const branch = stdout.trim().replace('refs/remotes/origin/', '')
+      return branch || null
     } catch {
-      await execFileAsync('git', ['checkout', 'master'], {
-        cwd: repoDir, timeout: 10000, env: GIT_ENV,
-      }).catch((err) => {
-        console.warn(`[gitPull] Could not check out default branch in ${repoDir}:`, err)
-        captureException(err, { tags: { area: 'skillset-git', op: 'checkout-default' }, extra: { repoDir } })
-      })
+      return null
     }
   }
 
-  await execFileAsync('git', ['fetch', 'origin'], {
-    cwd: repoDir, timeout: 30000, env: GIT_ENV,
-  })
+  const existing = await readSymref()
+  if (existing) return existing
 
-  // Hard-reset to origin so we always get the latest upstream content,
-  // even if the local branch drifted (e.g. leftover PR branch commits).
+  // The symref isn't set locally — ask the remote for its HEAD once, then
+  // re-read. `set-head --auto` is a no-op if it can't reach the remote.
   try {
-    const { stdout: branch } = await execFileAsync(
-      'git', ['rev-parse', '--abbrev-ref', 'HEAD'],
-      { cwd: repoDir, timeout: 5000, env: GIT_ENV },
-    )
-    await execFileAsync('git', ['reset', '--hard', `origin/${branch.trim()}`], {
+    await execFileAsync('git', ['remote', 'set-head', 'origin', '--auto'], {
       cwd: repoDir, timeout: 10000, env: GIT_ENV,
     })
-  } catch (resetError) {
-    // Fallback to normal pull if reset fails (e.g. branch isn't tracked
-    // upstream). Surface both failures so intermittent breakage is visible.
-    console.warn(`[gitPull] reset --hard failed in ${repoDir}, falling back to git pull:`, resetError)
-    captureException(resetError, { tags: { area: 'skillset-git', op: 'reset-hard' }, extra: { repoDir } })
-    try {
-      await execFileAsync('git', ['pull'], {
-        cwd: repoDir, timeout: 30000, env: GIT_ENV,
-      })
-    } catch (pullError) {
-      captureException(pullError, { tags: { area: 'skillset-git', op: 'pull-fallback' }, extra: { repoDir } })
-      throw pullError
+  } catch {
+    // Ignore — readSymref below will return null and the caller handles it.
+  }
+  return readSymref()
+}
+
+async function gitPull(repoDir: string): Promise<void> {
+  // Resolve the repo's real default branch instead of guessing main/master.
+  // After a PR flow the repo may be left on a detached HEAD, a stale branch,
+  // or with a drifted branch.<name>.merge config.
+  const defaultBranch = await resolveDefaultBranch(repoDir)
+
+  if (!defaultBranch) {
+    // Without a known default branch we can't deterministically refresh. This
+    // happens on caches whose origin/HEAD can't be resolved (offline, etc.).
+    const msg = `[gitPull] Could not resolve default branch in ${repoDir}`
+    console.warn(msg)
+    captureException(new Error(msg), {
+      tags: { area: 'skillset-git', op: 'resolve-default-branch' },
+      extra: { repoDir },
+    })
+    return
+  }
+
+  try {
+    await execFileAsync('git', ['checkout', defaultBranch], {
+      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // The default branch may not exist locally yet (shallow clone); the
+    // fetch + reset below recreates it from FETCH_HEAD, so this is benign.
+    if (isExpectedGitDriftError(msg)) {
+      console.warn(`[gitPull] checkout ${defaultBranch} failed (recoverable) in ${repoDir}:`, msg)
+    } else {
+      console.warn(`[gitPull] Could not check out default branch in ${repoDir}:`, err)
+      captureException(err, { tags: { area: 'skillset-git', op: 'checkout-default' }, extra: { repoDir } })
     }
+  }
+
+  // Fetch the default branch shallowly and hard-reset to it. This always
+  // pulls the latest upstream content while sidestepping both a missing
+  // origin/<branch> tracking ref and a stale branch.<name>.merge config that
+  // would break `reset --hard origin/<branch>` / `git pull`.
+  try {
+    await execFileAsync('git', ['fetch', '--depth', '1', 'origin', defaultBranch], {
+      cwd: repoDir, timeout: 30000, env: GIT_ENV,
+    })
+    await execFileAsync('git', ['reset', '--hard', 'FETCH_HEAD'], {
+      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+    })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    if (isExpectedGitDriftError(msg)) {
+      // Expected drift on shallow single-branch caches — already handled, no
+      // user-facing impact, so don't report to Sentry.
+      console.warn(`[gitPull] fetch/reset drift (recoverable) in ${repoDir}:`, msg)
+      return
+    }
+    captureException(error, { tags: { area: 'skillset-git', op: 'fetch-reset' }, extra: { repoDir } })
+    throw error
   }
 }
 
@@ -987,7 +1038,10 @@ export async function refreshAgentSkills(
       await refreshSkillset(toSkillsetRefFromConfig(ss))
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
-      captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
+      const msg = error instanceof Error ? error.message : String(error)
+      if (!isExpectedGitDriftError(msg)) {
+        captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
+      }
     }
   }
 
@@ -1043,7 +1097,10 @@ export async function refreshAgentSkills(
           try {
             await refreshSkillset(toSkillsetRefFromMeta(meta))
           } catch (error) {
-            captureException(error, { tags: { area: 'skillset-refresh', op: 'queue-merged-pull' }, extra: { skillsetId: meta.skillsetId } })
+            const msg = error instanceof Error ? error.message : String(error)
+            if (!isExpectedGitDriftError(msg)) {
+              captureException(error, { tags: { area: 'skillset-refresh', op: 'queue-merged-pull' }, extra: { skillsetId: meta.skillsetId } })
+            }
           }
           const mergedFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
           if (mergedFiles) {
