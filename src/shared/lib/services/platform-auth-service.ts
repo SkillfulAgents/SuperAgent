@@ -327,6 +327,58 @@ export function getPlatformAuthStatus(userId?: string): PlatformAuthStatus {
   }
 }
 
+// The org JWT carries only `orgId`, so email/orgName/role come from a
+// `/v1/account` introspect. `updatedAt` stays null: env connections have no
+// "last changed" anchor, so the introspect time would be meaningless.
+interface EnrichedEnvAccount {
+  email: string | null
+  orgName: string | null
+  role: string | null
+}
+
+async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvAccount | null> {
+  const token = getPlatformAccessToken()
+  if (!token) return null
+  try {
+    // Dynamic import breaks the module cycle (platform-attribution imports this
+    // service for the token + stored member id).
+    const { runWithRequestUser } = await import('@shared/lib/platform-attribution')
+    const account = await runWithRequestUser(userId, () =>
+      fetchPlatformJson({
+        path: '/v1/account',
+        token,
+        schema: PlatformAccountInfoSchema,
+        area: 'platform-auth',
+        mapStatusError: (status) => ({ message: 'Account introspection failed', status }),
+      }),
+    )
+    return { email: account.email, orgName: account.orgName, role: account.role }
+  } catch (error) {
+    captureException(error, { tags: { area: 'platform-auth', op: 'introspect-env-account' } })
+    return null
+  }
+}
+
+/**
+ * Like {@link getPlatformAuthStatus}, but for env-managed (org-JWT) connections
+ * fills email/orgName/role by introspecting the acting member's account.
+ * Opaque-key (settings) and disconnected statuses are returned as-is.
+ */
+export async function getEnrichedPlatformAuthStatus(userId?: string): Promise<PlatformAuthStatus> {
+  const base = getPlatformAuthStatus(userId)
+  if (base.source !== 'env' || !base.connected || !userId) return base
+
+  const account = await introspectEnvManagedAccount(userId)
+  if (!account) return base
+
+  return {
+    ...base,
+    email: account.email,
+    orgName: account.orgName,
+    role: account.role,
+  }
+}
+
 export async function savePlatformAuth(_userId: string, input: SavePlatformAuthInput): Promise<PlatformAuthStatus> {
   const trimmedToken = input.token.trim()
   if (!trimmedToken) {

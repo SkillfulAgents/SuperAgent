@@ -9,6 +9,7 @@ import {
 } from '@shared/lib/services/platform-device-service'
 import {
   getPlatformAuthStatus,
+  getEnrichedPlatformAuthStatus,
   savePlatformAuth,
   revokePlatformToken,
 } from '@shared/lib/services/platform-auth-service'
@@ -21,10 +22,10 @@ const platformAuth = new Hono()
 
 platformAuth.use('*', Authenticated())
 
-platformAuth.get('/', (c) => {
+platformAuth.get('/', async (c) => {
   const userId = getCurrentUserId(c)
   return c.json({
-    ...getPlatformAuthStatus(userId),
+    ...(await getEnrichedPlatformAuthStatus(userId)),
     platformBaseUrl: getPlatformBaseUrl(),
   })
 })
