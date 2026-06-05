@@ -4,37 +4,154 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
-// ============================================================================
-// Security regression guardrails for the agent workspace file download route.
+// ---------------------------------------------------------------------------
+// Security guardrail repro tests.
 //
-// Unlike agents.test.ts (which mocks `fs` wholesale), this suite exercises the
-// route against the REAL filesystem so that the actual path resolution and
-// containment check are validated end to end. `getAgentWorkspaceDir` is pointed
-// at a throwaway temp dir that stands in for the agents data root, so that
-// getAgentWorkspaceDir(slug) === <agentDataRoot>/<slug>. That layout lets us
-// reproduce the sibling-prefix traversal: workspace "agent" and sibling
-// "agent-victim" share the "agent" path prefix.
-// ============================================================================
+// This file collects focused regression tests for security fixes. Each suite
+// reproduces a specific vulnerability and asserts the guardrail that closes it:
+//
+//   - SUP-198: connected-account reconnect ownership (AUTH_MODE). A user must
+//     not be able to reconnect (take over) an account owned by another user by
+//     supplying a `reconnectAccountId` they happen to know.
+//   - SUP-200: agent workspace file-download containment. A `..`-encoded path
+//     must not be able to escape the workspace into a sibling agent directory
+//     that merely shares the workspace path prefix.
+//
+// The mock preamble is shared across both suites. `vi.mock` is module-scoped
+// and hoisted, so a module can only be mocked once per file — the blocks below
+// satisfy the union of what both routers import. The agent download route never
+// touches the db, so the SUP-198 db mock serves both suites unchanged.
+// ---------------------------------------------------------------------------
 
-// Real temp dir acting as the agents data root. Each test gets a fresh one.
-let agentDataRoot = ''
+// --- SUP-198 db harness -----------------------------------------------------
+// The db mock is driven by `selectQueue`: each terminal `.limit()` of a select
+// chain shifts the next pre-seeded result. `updateWhereCalls` records every
+// `db.update(...).set(...).where(...)` so we can assert no write happened.
+let selectQueue: unknown[][] = []
+const updateWhereCalls: unknown[][] = []
 
-// ============================================================================
-// Mocks — must be declared before importing the router. We deliberately do NOT
-// mock `fs` or `stream`; everything else mirrors agents.test.ts so the heavy
-// dependency graph (db, container manager, services, …) imports cleanly.
-// ============================================================================
+const mockDbSelectLimit = vi.fn(() => Promise.resolve(selectQueue.shift() ?? []))
+const mockDbUpdateWhere = vi.fn((...args: unknown[]) => {
+  updateWhereCalls.push(args)
+  return Promise.resolve(undefined)
+})
+const mockDbInsertValues = vi.fn().mockResolvedValue(undefined)
+const mockDbDeleteWhere = vi.fn().mockResolvedValue(undefined)
 
-// Auth middleware — passthrough.
-const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+vi.mock('@shared/lib/db', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => mockDbSelectLimit(),
+          orderBy: () => ({ $dynamic: () => ({ where: () => mockDbSelectLimit() }) }),
+        }),
+        orderBy: () => ({ $dynamic: () => ({ where: () => mockDbSelectLimit() }) }),
+      }),
+    }),
+    insert: () => ({ values: (...vArgs: unknown[]) => mockDbInsertValues(...vArgs) }),
+    update: () => ({
+      set: () => ({ where: (...wArgs: unknown[]) => mockDbUpdateWhere(...wArgs) }),
+    }),
+    delete: () => ({ where: (...wArgs: unknown[]) => mockDbDeleteWhere(...wArgs) }),
+  },
+}))
+
+// Schema: detailed connectedAccounts (used by connected-accounts.ts) plus the
+// other tables imported by agents.ts (unused by these suites, so stubbed).
+vi.mock('@shared/lib/db/schema', () => ({
+  connectedAccounts: {
+    id: 'id',
+    providerConnectionId: 'provider_connection_id',
+    providerName: 'provider_name',
+    userId: 'user_id',
+  },
+  agentConnectedAccounts: {},
+  proxyAuditLog: {}, remoteMcpServers: {}, agentRemoteMcps: {}, mcpAuditLog: {},
+  agentAcl: {}, user: {}, messageAuthor: {}, apiScopePolicies: {}, mcpToolPolicies: {},
+}))
+
+vi.mock('drizzle-orm', () => ({
+  eq: (col: string, val: string) => ({ col, val }),
+  desc: (col: string) => ({ desc: col }),
+  and: (...args: unknown[]) => args,
+  inArray: (col: string, vals: string[]) => ({ col, vals }),
+  count: () => 'count_fn',
+  like: (col: string, val: string) => ({ col, val }),
+  or: (...args: unknown[]) => args,
+}))
+
+const mockProvider = {
+  name: 'composio',
+  initiateConnection: vi.fn(),
+  getConnection: vi.fn(),
+  deleteConnection: vi.fn(),
+  getAccountDisplayName: vi.fn(),
+}
+
+vi.mock('@shared/lib/account-providers', () => ({
+  getDefaultAccountProvider: () => mockProvider,
+  getAccountProviderByName: () => mockProvider,
+  isValidProviderName: (name: string) => ['composio', 'nango'].includes(name),
+  isProviderSupported: () => true,
+  getProvider: (slug: string) => ({ slug, displayName: slug.charAt(0).toUpperCase() + slug.slice(1) }),
+}))
+
+// Acting (attacker) user. The victim rows seeded into `selectQueue` are owned by
+// a different user, so ownership checks must reject the reconnect.
+const ACTING_USER_ID = 'attacker-user'
+
+vi.mock('@shared/lib/auth/config', () => ({
+  getAppBaseUrlFromRequest: () => 'http://localhost:3000',
+  getCurrentUserId: () => ACTING_USER_ID,
+}))
+
+vi.mock('@shared/lib/auth/mode', () => ({
+  isAuthMode: () => true,
+}))
+
+vi.mock('@shared/lib/config/settings', () => ({
+  getAccountProviderUserId: () => 'test-user',
+  getEffectiveAnthropicApiKey: () => 'test-key',
+  getEffectiveModels: () => ({ summarizerModel: 'claude-3-haiku' }),
+  getEffectiveAgentLimits: () => ({}),
+  getCustomEnvVars: () => ({}),
+  getSettings: () => ({ container: {}, skillsets: [] }),
+  VALID_SCRIPT_TYPES: [],
+}))
+
+// Auth middleware — passthrough for both routers' middlewares.
+const mockAuthUser = { id: ACTING_USER_ID, name: 'Test User', email: 'test@example.com' }
 vi.mock('../middleware/auth', () => ({
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  OwnsAccount: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  IsAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  Or: (..._mw: unknown[]) => async (_c: unknown, next: () => Promise<void>) => next(),
 }))
 
-// Container manager
+vi.mock('@shared/lib/analytics/server-analytics', () => ({
+  trackServerEvent: vi.fn(),
+}))
+
+vi.mock('@shared/lib/services/audit-log-service', () => ({
+  logAuditEvent: vi.fn(),
+}))
+
+vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
+  countActiveTriggersPerAccount: vi.fn().mockResolvedValue({}),
+  listWebhookTriggers: vi.fn(),
+  listActiveWebhookTriggers: vi.fn(),
+  listCancelledWebhookTriggers: vi.fn(),
+}))
+
+// --- agents.ts (SUP-200) dependency mocks -----------------------------------
+// We deliberately do NOT mock `fs` or `stream`: the SUP-200 suite exercises the
+// download route against the REAL filesystem so the actual path resolution and
+// containment check are validated end to end.
+
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     getClient: () => ({ fetch: vi.fn(), sendMessage: vi.fn(), start: vi.fn(), stop: vi.fn() }),
@@ -63,40 +180,6 @@ vi.mock('@shared/lib/container/message-persister', () => ({
   },
 }))
 
-// DB
-vi.mock('@shared/lib/db', () => ({
-  db: {
-    select: () => ({ from: () => ({ where: () => ({ limit: () => [] }) }) }),
-    insert: () => ({ values: () => ({ onConflictDoUpdate: vi.fn() }) }),
-    delete: () => ({ where: vi.fn() }),
-    update: () => ({ set: vi.fn() }),
-    transaction: (cb: (...a: unknown[]) => unknown) => cb({
-      select: () => ({ from: () => ({ where: () => ({ limit: () => ({ all: () => [] }) }) }) }),
-      update: () => ({ set: () => ({ where: () => ({ run: vi.fn() }) }) }),
-      delete: () => ({ where: () => ({ run: vi.fn() }) }),
-    }),
-  },
-}))
-
-vi.mock('@shared/lib/db/schema', () => ({
-  connectedAccounts: {}, agentConnectedAccounts: {}, proxyAuditLog: {}, remoteMcpServers: {},
-  agentRemoteMcps: {}, mcpAuditLog: {}, agentAcl: {}, user: {}, messageAuthor: {},
-  apiScopePolicies: {}, mcpToolPolicies: {},
-}))
-
-vi.mock('drizzle-orm', () => ({
-  eq: (col: string, val: string) => ({ col, val }),
-  and: (...args: unknown[]) => args,
-  inArray: (col: string, vals: string[]) => ({ col, vals }),
-  desc: (col: string) => ({ col }),
-  count: () => 'count_fn',
-  like: (col: string, val: string) => ({ col, val }),
-  or: (...args: unknown[]) => args,
-}))
-
-vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
-vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => 'test-user-id' }))
-
 // agentExists gates `/:id/*` routes — must resolve true so the request reaches
 // the download handler.
 vi.mock('@shared/lib/services/agent-service', () => ({
@@ -123,8 +206,6 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listPendingScheduledTasksByAgents: vi.fn(() => Promise.resolve(new Map())),
   listCancelledScheduledTasks: vi.fn(),
 }))
-
-vi.mock('@shared/lib/account-providers', () => ({ getProvider: vi.fn() }))
 
 vi.mock('@shared/lib/services/skillset-service', () => ({
   getAgentSkillsWithStatus: vi.fn(), getDiscoverableSkills: vi.fn(), installSkillFromSkillset: vi.fn(),
@@ -177,18 +258,12 @@ vi.mock('@shared/lib/utils/message-transform', () => ({
   transformMessages: vi.fn(), resolveInterruptedSubagents: vi.fn(),
 }))
 
-vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveAnthropicApiKey: () => 'test-key',
-  getEffectiveModels: () => ({ summarizerModel: 'claude-3-haiku' }),
-  getEffectiveAgentLimits: () => ({}), getCustomEnvVars: () => ({}),
-  getSettings: () => ({ container: {}, skillsets: [] }),
-}))
-
 vi.mock('@shared/lib/proxy/token-store', () => ({ revokeProxyToken: vi.fn(), validateProxyToken: vi.fn() }))
 
-// Point getAgentWorkspaceDir at our temp data root so getAgentWorkspaceDir(slug)
-// === <agentDataRoot>/<slug>. All other exports are stubbed (the download route
-// only needs getAgentWorkspaceDir; the rest exist so the module imports).
+// Real temp dir acting as the agents data root. Each SUP-200 test gets a fresh
+// one so getAgentWorkspaceDir(slug) === <agentDataRoot>/<slug>; that layout lets
+// us reproduce the sibling-prefix traversal (workspace "agent" vs "agent-victim").
+let agentDataRoot = ''
 const mockGetAgentWorkspaceDir = vi.fn((slug: string) => path.join(agentDataRoot, slug))
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getSessionJsonlPath: vi.fn(), readFileOrNull: vi.fn(), writeFile: vi.fn(),
@@ -202,12 +277,19 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
 vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
 vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 
-// Import the agents router after all mocks are set up.
+// Import routers after all mocks are set up.
+import connectedAccountsRouter from './connected-accounts'
 import agents from './agents'
 
-// ============================================================================
+// ---------------------------------------------------------------------------
 // Helpers
-// ============================================================================
+// ---------------------------------------------------------------------------
+
+function appWithConnectedAccounts() {
+  const app = new Hono()
+  app.route('/api/connected-accounts', connectedAccountsRouter)
+  return app
+}
 
 function appWithAgents() {
   const app = new Hono()
@@ -215,11 +297,66 @@ function appWithAgents() {
   return app
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
+function expectClientError(status: number) {
+  expect(status).toBeGreaterThanOrEqual(400)
+  expect(status).toBeLessThan(500)
+}
 
-describe('GET /api/agents/:id/files/* — workspace containment', () => {
+// ---------------------------------------------------------------------------
+// SUP-198
+// ---------------------------------------------------------------------------
+
+describe('SUP-198: connected account reconnect ownership (AUTH_MODE)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    selectQueue = []
+    updateWhereCalls.length = 0
+    // Defaults so /complete reaches the reconnect branch (active connection).
+    mockProvider.getConnection.mockResolvedValue({ id: 'attacker-new-connection', status: 'ACTIVE' })
+    mockProvider.getAccountDisplayName.mockResolvedValue('Attacker GitHub')
+    mockProvider.deleteConnection.mockResolvedValue(undefined)
+  })
+
+  it('rejects initiating reconnect for another user connected account by id', async () => {
+    selectQueue = [[{ id: 'victim-account-id', providerConnectionId: 'victim-old-connection', userId: 'victim-user' }]]
+
+    const res = await appWithConnectedAccounts().request('http://localhost/api/connected-accounts/initiate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        providerSlug: 'github',
+        reconnectAccountId: 'victim-account-id',
+      }),
+    })
+
+    expectClientError(res.status)
+    expect(mockProvider.initiateConnection).not.toHaveBeenCalled()
+  })
+
+  it('rejects reconnecting another user connected account by id', async () => {
+    selectQueue = [[{ providerConnectionId: 'victim-old-connection', userId: 'victim-user' }]]
+
+    const res = await appWithConnectedAccounts().request('http://localhost/api/connected-accounts/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        connectionId: 'attacker-new-connection',
+        toolkit: 'github',
+        providerName: 'composio',
+        reconnectAccountId: 'victim-account-id',
+      }),
+    })
+
+    expectClientError(res.status)
+    expect(updateWhereCalls).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SUP-200
+// ---------------------------------------------------------------------------
+
+describe('SUP-200: GET /api/agents/:id/files/* — workspace containment', () => {
   beforeEach(() => {
     agentDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sup200-'))
   })
