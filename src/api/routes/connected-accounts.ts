@@ -123,14 +123,16 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       return c.json({ error: 'Missing required field: providerSlug' }, 400)
     }
 
-    // If reconnecting, verify the account exists and belongs to this user
+    // If reconnecting, verify the account exists and belongs to this user.
+    // In auth mode, scope ownership to the acting user so a user cannot take
+    // over another user's connected account by guessing its id (SUP-198).
     if (reconnectAccountId) {
       const [existing] = await db
         .select()
         .from(connectedAccounts)
         .where(eq(connectedAccounts.id, reconnectAccountId))
         .limit(1)
-      if (!existing) {
+      if (!existing || (isAuthMode() && existing.userId !== getCurrentUserId(c))) {
         return c.json({ error: 'Account not found' }, 404)
       }
     }
@@ -236,12 +238,22 @@ connectedAccountsRouter.post('/complete', async (c) => {
     let id: string
 
     if (reconnectAccountId) {
-      // Look up old connection ID before updating so we can clean it up remotely
+      // Look up old connection ID (and owner) before updating so we can clean it
+      // up remotely and verify ownership.
       const [oldRecord] = await db
-        .select({ providerConnectionId: connectedAccounts.providerConnectionId })
+        .select({
+          providerConnectionId: connectedAccounts.providerConnectionId,
+          userId: connectedAccounts.userId,
+        })
         .from(connectedAccounts)
         .where(eq(connectedAccounts.id, reconnectAccountId))
         .limit(1)
+
+      // The account must exist and, in auth mode, be owned by the acting user.
+      // Otherwise a user could overwrite another user's connection (SUP-198).
+      if (!oldRecord || (isAuthMode() && oldRecord.userId !== getCurrentUserId(c))) {
+        return c.json({ error: 'Account not found' }, 404)
+      }
 
       // Reconnecting: update existing record to preserve agent mappings and scope policies
       await db.update(connectedAccounts)
@@ -354,10 +366,21 @@ connectedAccountsRouter.get('/callback', async (c) => {
 
     if (reconnectAccountId) {
       const [oldRecord] = await db
-        .select({ providerConnectionId: connectedAccounts.providerConnectionId })
+        .select({
+          providerConnectionId: connectedAccounts.providerConnectionId,
+          userId: connectedAccounts.userId,
+        })
         .from(connectedAccounts)
         .where(eq(connectedAccounts.id, reconnectAccountId))
         .limit(1)
+
+      // The account must exist and, in auth mode, be owned by the acting user.
+      // Otherwise a user could overwrite another user's connection (SUP-198).
+      if (!oldRecord || (isAuthMode() && oldRecord.userId !== getCurrentUserId(c))) {
+        return c.html(
+          generateCallbackHtml({ success: false, error: 'Account not found' })
+        )
+      }
 
       await db.update(connectedAccounts)
         .set({
