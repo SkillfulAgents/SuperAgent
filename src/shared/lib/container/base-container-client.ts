@@ -184,6 +184,9 @@ export function isConnectionError(err: Error): boolean {
 export const AGENT_CONTAINER_PATH = './agent-container'
 export const CONTAINER_INTERNAL_PORT = 3000
 const BASE_PORT = 4000
+// Max time for a single /health probe (isHealthy). Kept short because it gates
+// the request hot path via ensureRunning's stale-cache liveness check.
+const HEALTH_PROBE_TIMEOUT_MS = 2000
 
 /**
  * Error thrown by ensureImageExists() when an image build fails, carrying the
@@ -846,9 +849,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = knownPort ?? (await this.getInfo()).port
     if (!port) return false
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/health`)
+      // Bound the probe: this runs on the request hot path (ensureRunning's
+      // stale-cache liveness check), and a container that died with its port
+      // forward left half-open would accept the TCP connect but never respond,
+      // hanging the fetch — and the caller — indefinitely without this.
+      const response = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+      })
       return response.ok
     } catch {
+      // Includes AbortError on timeout — treat an unresponsive probe as unhealthy.
       return false
     }
   }

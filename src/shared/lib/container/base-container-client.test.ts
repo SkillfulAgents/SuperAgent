@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -614,5 +614,47 @@ describe('BaseContainerClient.isPortConflictError', () => {
 
   it('base extractInaccessibleMountPath returns null (no VM filesystem)', () => {
     expect(client.testExtractInaccessibleMountPath(new Error('operation not permitted'))).toBe(null)
+  })
+})
+
+// ============================================================================
+// isHealthy — the /health probe must be bounded (it gates the request hot path
+// via ensureRunning's stale-cache liveness check; an unresponsive port-forward
+// would otherwise hang the caller indefinitely).
+// ============================================================================
+
+describe('BaseContainerClient.isHealthy', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('passes an AbortSignal to the /health fetch (bounded probe)', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true }) as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.isHealthy(4001)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4001/health',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+  })
+
+  it('returns true when the probe responds ok', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true }) as Response))
+    await expect(client.isHealthy(4001)).resolves.toBe(true)
+  })
+
+  it('returns false (not throw) when the probe aborts/times out', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new DOMException('The operation was aborted', 'AbortError')
+    }))
+    await expect(client.isHealthy(4001)).resolves.toBe(false)
+  })
+
+  it('returns false when no port is known', async () => {
+    await expect(client.isHealthy(0)).resolves.toBe(false)
   })
 })
