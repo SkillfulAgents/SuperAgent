@@ -73,6 +73,25 @@ function setStatus(status: UpdateStatus) {
   sendStatusToRenderer()
 }
 
+// Shown on a manual check when the channel file is missing (latest-mac.yml 404).
+// A user who actively asked deserves an honest "couldn't verify, retry" rather
+// than a false "you're up to date" — there may be a newer release mid-publish.
+const CHANNEL_FILE_PENDING_MESSAGE =
+  'Could not check for updates right now — the latest release may still be publishing. Please try again shortly.'
+
+/**
+ * Apply the benign channel-file-404 status. A silent background check stays
+ * quiet at 'not-available'; a user-initiated check gets the honest, non-Sentry
+ * "try again shortly" message instead of a misleading "no update available".
+ */
+function setChannelFilePendingStatus() {
+  if (runIsUserVisible) {
+    setStatus({ state: 'error', error: CHANNEL_FILE_PENDING_MESSAGE })
+  } else {
+    setStatus({ state: 'not-available' })
+  }
+}
+
 /**
  * Core update-check routine, shared by manual IPC checks and the scheduled
  * background checks. When `silent` is true, errors and the dev-mode-not-ready
@@ -178,7 +197,8 @@ async function runUpdateCheckBody() {
     }
   } catch (err) {
     // A missing channel file (latest-mac.yml 404) is benign and self-healing —
-    // don't report it to Sentry and don't flip the UI to an error state.
+    // never report it to Sentry. Silent checks stay quiet; a manual check gets a
+    // soft "try again shortly" message rather than a misleading "up to date".
     if (isChannelFileNotFoundError(err)) {
       addErrorBreadcrumb({
         category: 'auto-updater',
@@ -186,7 +206,7 @@ async function runUpdateCheckBody() {
         level: 'info',
         data: { currentVersion: app.getVersion(), operation: 'check' },
       })
-      setStatus({ state: 'not-available' })
+      setChannelFilePendingStatus()
       return
     }
     captureException(err, {
@@ -323,8 +343,8 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     autoUpdater.on('error', (err: Error) => {
       if (suppressErrors) return
       // checkForUpdates both emits 'error' AND rejects, so a channel-file 404 is
-      // seen here too — treat it as benign (no Sentry, no error UI), mirroring
-      // the catch in runUpdateCheckBody.
+      // seen here too — treat it as benign (no Sentry), mirroring the catch in
+      // runUpdateCheckBody: quiet for silent checks, soft retry for manual ones.
       if (isChannelFileNotFoundError(err)) {
         addErrorBreadcrumb({
           category: 'auto-updater',
@@ -332,7 +352,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
           level: 'info',
           data: { currentVersion: app.getVersion(), operation: 'runtime' },
         })
-        setStatus({ state: 'not-available' })
+        setChannelFilePendingStatus()
         return
       }
       const isTransientNetworkError = /net::ERR_(NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|CONNECTION_TIMED_OUT|CONNECTION_REFUSED|CONNECTION_RESET)\b/.test(err.message)

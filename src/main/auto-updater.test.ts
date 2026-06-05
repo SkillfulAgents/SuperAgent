@@ -506,10 +506,15 @@ describe('silent background checks', () => {
 //
 // electron-updater's checkForUpdates BOTH emits an 'error' event AND rejects,
 // so the same 404 is seen twice: once in the on('error') handler and once in
-// runUpdateCheckBody's catch. Neither path may report it to Sentry or flip the
-// UI to 'error' — it's benign and self-heals once the mac assets finish
-// uploading (ELECTRON-1N / ELECTRON-3S).
+// runUpdateCheckBody's catch. Neither path may report it to Sentry — it's
+// benign and self-heals once the mac assets finish uploading (ELECTRON-1N /
+// ELECTRON-3S). A silent background check stays quiet at 'not-available'; a
+// manual check shows an honest "try again shortly" message (still no Sentry)
+// rather than a misleading "you're up to date".
 // ---------------------------------------------------------------------------
+
+const CHANNEL_FILE_PENDING_MESSAGE =
+  'Could not check for updates right now — the latest release may still be publishing. Please try again shortly.'
 
 describe('channel file not found (latest-mac.yml 404)', () => {
   beforeEach(async () => {
@@ -523,7 +528,7 @@ describe('channel file not found (latest-mac.yml 404)', () => {
     await boot()
   })
 
-  it('manual check: ERR_UPDATER_CHANNEL_FILE_NOT_FOUND is benign (no capture, not error)', async () => {
+  it('manual check: ERR_UPDATER_CHANNEL_FILE_NOT_FOUND is not reported to Sentry and shows a soft retry message', async () => {
     mockAutoUpdater.checkForUpdates.mockImplementation(async () => {
       const err: any = new Error('Cannot find latest-mac.yml in the latest release artifacts ...: HttpError: 404')
       err.code = 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
@@ -533,9 +538,12 @@ describe('channel file not found (latest-mac.yml 404)', () => {
 
     await handlers['check-for-updates']()
 
+    // Benign: never reported to Sentry...
     expect(captureException).not.toHaveBeenCalled()
-    expect(getStatus().state).not.toBe('error')
-    expect(getStatus()).toMatchObject({ state: 'not-available' })
+    // ...but a user who actively checked gets an honest "couldn't verify" message
+    // rather than a misleading "no update available", and NOT the raw 404 text.
+    expect(getStatus()).toMatchObject({ state: 'error', error: CHANNEL_FILE_PENDING_MESSAGE })
+    expect(getStatus().error).not.toMatch(/404/)
   })
 
   it('manual check: a 404 message without the code is still treated as benign', async () => {
@@ -551,7 +559,7 @@ describe('channel file not found (latest-mac.yml 404)', () => {
     await handlers['check-for-updates']()
 
     expect(captureException).not.toHaveBeenCalled()
-    expect(getStatus().state).not.toBe('error')
+    expect(getStatus()).toMatchObject({ state: 'error', error: CHANNEL_FILE_PENDING_MESSAGE })
   })
 
   it('silent check: a channel-file 404 stays quiet (no capture, not error)', async () => {
