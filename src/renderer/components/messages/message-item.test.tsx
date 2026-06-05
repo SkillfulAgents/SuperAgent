@@ -33,6 +33,13 @@ vi.mock('@renderer/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children: React.ReactNode }) => <span data-testid="tooltip-content">{children}</span>,
 }))
 
+// Mock the platform billing card — its usePlatformBillingUrl hook uses React Query,
+// which these tests don't provide. Default to no billing error (returns null).
+vi.mock('./insufficient-balance-card', () => ({
+  usePlatformBillingUrl: () => null,
+  InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
+}))
+
 describe('MessageItem', () => {
   describe('user messages', () => {
     it('renders with user data-testid', () => {

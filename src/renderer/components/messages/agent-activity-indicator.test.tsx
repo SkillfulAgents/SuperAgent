@@ -47,6 +47,13 @@ vi.mock('@shared/lib/utils', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
 
+// Mock the platform billing card — its usePlatformBillingUrl hook uses React Query,
+// which these tests don't provide. Default to no billing error (returns null).
+vi.mock('./insufficient-balance-card', () => ({
+  usePlatformBillingUrl: () => null,
+  InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
+}))
+
 describe('AgentActivityIndicator', () => {
   beforeEach(() => {
     // Reset to defaults
