@@ -75,21 +75,25 @@ describe('MessageErrorBoundary', () => {
     spy.mockRestore()
   })
 
-  // End-to-end: a real MessageItem containing a tool call that crashes the
-  // renderer (AskUserQuestion with a stringified `questions` arg — the exact bug
-  // this branch does NOT fix) must degrade to the inline error box, not take the
-  // thread down. The healthy text in the same message still renders.
+  // End-to-end: a real MessageItem whose tool call throws during render must
+  // degrade to the inline error box, not take the thread down. We use a Bash
+  // call with a non-string `command` — getSummary does `command.split()`, which
+  // throws on anything but a string. This vector is deliberately independent of
+  // any single tool's input coercion: a tool-specific malformed arg (e.g. a
+  // stringified AskUserQuestion `questions`) is one a fix could legitimately stop
+  // throwing on, which would silently neuter this test. The healthy text in the
+  // same message still renders.
   it('contains a crashing tool call inside a real MessageItem', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const message = {
       id: 'assistant-1',
       type: 'assistant',
-      content: { text: 'Here is my question:' },
+      content: { text: 'Running a command:' },
       toolCalls: [
         {
           id: 'toolu_bad',
-          name: 'AskUserQuestion',
-          input: { questions: '[{"question":"Pick one","options":[{"label":"A"}]}]' },
+          name: 'Bash',
+          input: { command: 12345 },
         },
       ],
       createdAt: new Date(),
@@ -98,7 +102,7 @@ describe('MessageErrorBoundary', () => {
     render(<MessageItem message={message} sessionId="s1" agentSlug="agent" isSessionActive={false} />)
 
     expect(screen.getByText('Failed to display this tool call')).toBeInTheDocument()
-    expect(screen.getByText('Here is my question:')).toBeInTheDocument()
+    expect(screen.getByText('Running a command:')).toBeInTheDocument()
     expect(captureRendererException).toHaveBeenCalledTimes(1)
     spy.mockRestore()
   })
