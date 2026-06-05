@@ -69,6 +69,10 @@ interface StreamingState {
   activeSubagents: Map<string, SubagentStreamingState>
   slashCommands: SlashCommandInfo[] // Available slash commands from SDK
   isAwaitingInput: boolean // True when session is waiting for user input (e.g., secret, file, question)
+  // TODO: computer-use and the other input requests are tracked in two separate maps with
+  // divergent clearing rules (this one is cleared only via explicit route calls; pendingInputRequests
+  // below is cleared on tool_result + turn boundaries — so e.g. interrupt clears one but not the
+  // other). Unify into a single store + single SSE replay loop. Tracked: SUP-213 (sibling of SUP-163).
   pendingComputerUseRequests: Map<string, { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; agentSlug?: string }> // Pending computer use requests awaiting user approval (keyed by toolUseId)
   // Pending user-input request broadcasts (secret/connected_account/question/file/remote_mcp/
   // script_run/browser_input), keyed by toolUseId. These are one-shot SSE events, so a client
