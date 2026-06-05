@@ -3905,8 +3905,12 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     const workspaceDir = getAgentWorkspaceDir(agentSlug)
     const fullPath = path.resolve(workspaceDir, filePath)
 
-    // Security: ensure path doesn't escape workspace
-    if (!fullPath.startsWith(workspaceDir)) {
+    // Security: ensure path doesn't escape workspace. A bare startsWith() check
+    // is unsafe because a sibling directory can share the workspace path prefix
+    // (e.g. workspace "agent" vs sibling "agent-victim"), so use path.relative
+    // to confirm the resolved path is genuinely contained within the workspace.
+    const relativePath = path.relative(workspaceDir, fullPath)
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
       return c.json({ error: 'Invalid path' }, 400)
     }
 
