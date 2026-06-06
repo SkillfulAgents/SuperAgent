@@ -97,7 +97,10 @@ export const verification = sqliteTable('verification', {
 // Connected accounts - app-level OAuth connections via pluggable providers (Composio, Nango, …)
 export const connectedAccounts = sqliteTable('connected_accounts', {
   id: text('id').primaryKey(),
-  providerConnectionId: text('provider_connection_id').notNull().unique(),
+  // Uniqueness is scoped to (provider_name, provider_connection_id) — see the
+  // composite uniqueIndex below. Two different providers (e.g. composio, nango)
+  // may legitimately return the same opaque connection id (SUP-222).
+  providerConnectionId: text('provider_connection_id').notNull(),
   providerName: text('provider_name').notNull().default('composio'),
   toolkitSlug: text('toolkit_slug').notNull(), // e.g., 'gmail', 'slack', 'github'
   displayName: text('display_name').notNull(), // User-friendly label
@@ -109,6 +112,11 @@ export const connectedAccounts = sqliteTable('connected_accounts', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   userIdIdx: index('connected_accounts_userId_idx').on(table.userId),
+  // Provider connection IDs are unique per provider, not globally (SUP-222).
+  providerConnUnique: uniqueIndex('connected_accounts_provider_conn_unique').on(
+    table.providerName,
+    table.providerConnectionId
+  ),
 }))
 
 // Agent connected accounts - junction table for agent-to-account mappings
