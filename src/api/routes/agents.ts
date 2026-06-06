@@ -413,7 +413,7 @@ async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) 
   const importMode = mode === 'full' ? 'full' : 'template'
 
   const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
-  await createOwnerAcl(c, agent.slug)
+  await createOwnerAclOrRollback(c, agent.slug)
   const hasOnboarding = await hasOnboardingSkill(agent.slug)
   logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name } })
   return c.json({ ...agent, hasOnboarding }, 201)
@@ -459,7 +459,7 @@ agents.post('/install-from-skillset', async (c) => {
       agentVersion || '0.0.0',
     )
 
-    await createOwnerAcl(c, agent.slug)
+    await createOwnerAclOrRollback(c, agent.slug)
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name, skillsetId } })
     return c.json({ ...agent, hasOnboarding }, 201)
@@ -576,6 +576,26 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
   })
 }
 
+// Insert the owner ACL for a just-created agent, rolling back the on-disk
+// workspace if the ACL write fails. Agent creation writes the workspace
+// (directory + CLAUDE.md) before the ACL row exists; without this, a transient
+// ACL insert failure would return 500 but leave an orphaned agent directory
+// with no owner ACL (SUP-207). The cleanup is best-effort and guarded so a
+// failed rollback never masks the original error. In non-auth mode
+// createOwnerAcl is a no-op, so this never rolls back there.
+async function createOwnerAclOrRollback(c: Context, agentSlug: string) {
+  try {
+    await createOwnerAcl(c, agentSlug)
+  } catch (error) {
+    try {
+      await deleteAgent(agentSlug)
+    } catch (cleanupError) {
+      console.error(`Failed to roll back orphaned agent workspace "${agentSlug}" after owner ACL insert failed:`, cleanupError)
+    }
+    throw error
+  }
+}
+
 // Create LLM client using the active provider
 function getLlmClient(): Anthropic {
   return getConfiguredLlmClient()
@@ -670,7 +690,7 @@ agents.post('/', async (c) => {
       description: description?.trim(),
     })
 
-    await createOwnerAcl(c, agent.slug)
+    await createOwnerAclOrRollback(c, agent.slug)
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'created', details: { name: name.trim() } })
     return c.json(agent, 201)
