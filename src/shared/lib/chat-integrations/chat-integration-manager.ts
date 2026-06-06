@@ -32,7 +32,7 @@ import {
   resolveActiveSession,
   getLastDisplayName,
 } from '@shared/lib/services/chat-integration-session-service'
-import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
+import { assertPathWithinDir, isPathWithinDir } from '@shared/lib/utils/path-safety'
 import type { EffortLevel } from '@shared/lib/container/types'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -1448,8 +1448,10 @@ async function sendDeliveredFile(
   const workspaceDir = getAgentWorkspaceDir(managed.integration.agentSlug)
   const fullPath = path.resolve(workspaceDir, relativePath)
 
-  // Security: ensure path doesn't escape workspace
-  if (!fullPath.startsWith(path.resolve(workspaceDir))) {
+  // Security: ensure path doesn't escape workspace. A bare startsWith() check is
+  // unsafe — a sibling workspace sharing the path prefix (agent vs agent-victim)
+  // would pass — so use prefix-safe isPathWithinDir (path.relative based).
+  if (!isPathWithinDir(workspaceDir, fullPath)) {
     console.error('[ChatIntegrationManager] deliver_file path escapes workspace:', filePath)
     reportError(new Error('Path traversal attempt in deliver_file'), 'deliver-file-security', { filePath, agentSlug: managed.integration.agentSlug }, 'warning')
     return
