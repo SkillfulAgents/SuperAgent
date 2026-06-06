@@ -1,3 +1,5 @@
+import { buildDashboardViewPath } from '@shared/lib/dashboard-url'
+
 // Cache for the API base URL (fetched once from Electron main process)
 let cachedApiBaseUrl: string | null = null
 let apiUrlPromise: Promise<string> | null = null
@@ -83,7 +85,7 @@ export function openDashboardExternal(agentSlug: string, dashboardSlug: string, 
     window.electronAPI.openDashboardWindow(agentSlug, dashboardSlug, dashboardName)
   } else {
     const baseUrl = getApiBaseUrl()
-    const url = `${baseUrl}/api/agents/${agentSlug}/artifacts/${dashboardSlug}/view`
+    const url = `${baseUrl}${buildDashboardViewPath(agentSlug, dashboardSlug)}`
     window.open(url, '_blank')
   }
 }
