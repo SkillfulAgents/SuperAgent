@@ -91,14 +91,18 @@ export function getAuth() {
           create: {
             after: async (createdUser) => {
               try {
-                // Atomic: only promote if this is the sole user in the table
+                // Atomic: only promote if this is the sole real user in the
+                // table. Exclude the reserved 'local' sentinel (SUP-220), which
+                // backs non-auth-mode user_settings and must not count as a user
+                // — otherwise the first real admin would never be promoted on a
+                // DB that was previously used in non-auth mode.
                 const result = db
                   .update(schema.user)
                   .set({ role: 'admin' })
                   .where(
                     and(
                       eq(schema.user.id, createdUser.id),
-                      sql`(SELECT count(*) FROM user) = 1`
+                      sql`(SELECT count(*) FROM user WHERE id != 'local') = 1`
                     )
                   )
                   .run()

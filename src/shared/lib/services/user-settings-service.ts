@@ -1,8 +1,21 @@
 import { z } from 'zod'
 import { eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { userSettings } from '@shared/lib/db/schema'
+import { userSettings, user } from '@shared/lib/db/schema'
 import { getSettings } from '@shared/lib/config/settings'
+
+// In non-auth mode user settings are stored under the 'local' sentinel, which
+// has no Better Auth `user` row. user_settings carries a FK to user (SUP-220),
+// so the 'local' settings row needs a backing user. Seed a reserved 'local'
+// user before writing. Only ever runs for the sentinel — in auth mode the
+// userId is always a real, FK-backed user, so this is a no-op there.
+function ensureLocalSentinelUser(userId: string): void {
+  if (userId !== 'local') return
+  db.insert(user)
+    .values({ id: 'local', name: 'Local', email: 'local@superagent.invalid' })
+    .onConflictDoNothing()
+    .run()
+}
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
@@ -106,6 +119,7 @@ export function getUserSettings(userId: string): UserSettingsData {
   const initial = userId === 'local' ? seedFromAppSettings() : getDefaultUserSettings()
 
   // Persist the initial settings so future reads come from DB
+  ensureLocalSentinelUser(userId)
   db.insert(userSettings)
     .values({
       userId,
@@ -139,6 +153,7 @@ export function updateUserSettings(
   const validated = userSettingsSchema.parse(merged)
   const json = JSON.stringify(validated)
 
+  ensureLocalSentinelUser(userId)
   db.insert(userSettings)
     .values({
       userId,
