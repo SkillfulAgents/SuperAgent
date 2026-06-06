@@ -46,15 +46,27 @@ class TaskScheduler {
     this.isRunning = true
     console.log('[TaskScheduler] Starting scheduler...')
 
-    // Execute overdue tasks immediately on startup
-    await this.executeOverdueTasks()
+    try {
+      // Execute overdue tasks immediately on startup
+      await this.executeOverdueTasks()
 
-    // Start periodic polling
-    this.intervalId = setInterval(() => {
-      this.executeOverdueTasks().catch((error) => {
-        console.error('[TaskScheduler] Error in polling cycle:', error)
-      })
-    }, this.pollIntervalMs)
+      // Start periodic polling
+      this.intervalId = setInterval(() => {
+        this.executeOverdueTasks().catch((error) => {
+          console.error('[TaskScheduler] Error in polling cycle:', error)
+        })
+      }, this.pollIntervalMs)
+    } catch (error) {
+      // A transient failure in the initial scan (e.g. a SQLite hiccup in
+      // getDueTasks) must not wedge the scheduler. Roll back so isActive()
+      // reports false and a later start() can install the polling loop.
+      if (this.intervalId) {
+        clearInterval(this.intervalId)
+        this.intervalId = null
+      }
+      this.isRunning = false
+      throw error
+    }
 
     console.log(
       `[TaskScheduler] Scheduler started, polling every ${this.pollIntervalMs / 1000}s`
