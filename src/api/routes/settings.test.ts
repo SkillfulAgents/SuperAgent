@@ -593,6 +593,28 @@ describe('settings route', () => {
       expect(saved.customEnvVars).toEqual({ NEW_VAR: 'value' })
     })
 
+    // SUP-210: reject customEnvVars that try to override reserved runtime vars.
+    it('rejects customEnvVars containing a reserved runtime key (400)', async () => {
+      const res = await putSettings({
+        customEnvVars: { PROXY_TOKEN: 'attacker', MY_OK: 'fine' },
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('PROXY_TOKEN')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('accepts customEnvVars with only non-reserved keys (200)', async () => {
+      const res = await putSettings({
+        customEnvVars: { MY_OK: 'fine', ANOTHER: 'x' },
+      })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.customEnvVars).toEqual({ MY_OK: 'fine', ANOTHER: 'x' })
+    })
+
     it('merges auth settings with existing', async () => {
       const res = await putSettings({
         auth: { signupMode: 'closed' as const },

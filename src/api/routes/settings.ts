@@ -30,6 +30,7 @@ import { getSttProvider } from '@shared/lib/stt'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
+import { customEnvVarsSchema } from '@shared/lib/container/reserved-env-vars'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { db } from '@shared/lib/db'
@@ -160,6 +161,16 @@ settings.put('/', async (c) => {
       const limaSettings = body.container.runtimeSettings.lima
       if (limaSettings?.vmMemory && !VALID_LIMA_VM_MEMORY_OPTIONS.includes(limaSettings.vmMemory)) {
         return c.json({ error: `Invalid VM memory setting. Must be one of: ${VALID_LIMA_VM_MEMORY_OPTIONS.join(', ')}` }, 400)
+      }
+    }
+
+    // Validate customEnvVars at the write boundary (defense-in-depth for
+    // SUP-210): reject payloads that try to set reserved runtime env vars so
+    // they never reach persisted settings.
+    if (body.customEnvVars !== undefined) {
+      const parsed = customEnvVarsSchema.safeParse(body.customEnvVars)
+      if (!parsed.success) {
+        return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid customEnvVars' }, 400)
       }
     }
 
