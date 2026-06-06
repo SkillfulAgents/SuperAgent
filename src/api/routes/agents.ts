@@ -40,13 +40,14 @@ import {
 import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory } from '@shared/lib/utils/file-storage'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import {
-  listSecrets,
+  listUserSecrets,
   getSecret,
   setSecret,
   deleteSecret,
   keyToEnvVar,
   getSecretEnvVars,
 } from '@shared/lib/services/secrets-service'
+import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import {
   listScheduledTasks,
   listPendingScheduledTasks,
@@ -2670,8 +2671,10 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
 
-
-    const secrets = await listSecrets(slug)
+    // Only user-managed secrets — reserved runtime vars (e.g. CONNECTED_ACCOUNTS)
+    // that the container writes into the same .env are system-managed and must
+    // not surface as user-editable secrets (SUP-239 bug 3).
+    const secrets = await listUserSecrets(slug)
     const response = secrets.map((secret) => ({
       id: secret.envVar,
       key: secret.key,
@@ -2703,6 +2706,17 @@ agents.post('/:id/secrets', AgentUser(), async (c) => {
 
 
     const envVar = keyToEnvVar(key.trim())
+
+    // A secret is just an env var injected into the container, so it must obey
+    // the same reserved-runtime-var rule as global custom env vars (SUP-210 /
+    // SUP-239 bug 2): reject names that would clobber required runtime wiring.
+    if (isReservedEnvVar(envVar)) {
+      return c.json(
+        { error: `"${envVar}" is a reserved runtime variable and cannot be used as a secret` },
+        400
+      )
+    }
+
     const existing = await getSecret(slug, envVar)
 
     await setSecret(slug, {
@@ -2736,6 +2750,14 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
     const newKey = key?.trim() || existing.key
     const newEnvVar = keyToEnvVar(newKey)
     const newValue = value !== undefined ? value : existing.value
+
+    // Renaming a secret onto a reserved runtime var is blocked too (SUP-239 bug 2).
+    if (isReservedEnvVar(newEnvVar)) {
+      return c.json(
+        { error: `"${newEnvVar}" is a reserved runtime variable and cannot be used as a secret` },
+        400
+      )
+    }
 
     if (newEnvVar !== envVar) {
       await deleteSecret(slug, envVar)

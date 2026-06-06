@@ -11,6 +11,7 @@ import {
   useDeleteSecret,
   type ApiSecretDisplay,
 } from '@renderer/hooks/use-secrets'
+import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 
 // Convert a display key to an environment variable name (preview)
 function keyToEnvVar(key: string): string {
@@ -133,6 +134,9 @@ function AddSecretForm({ agentSlug, existingEnvVars, onAdd }: AddSecretFormProps
 
   const envVarPreview = key ? keyToEnvVar(key) : ''
   const isDuplicate = envVarPreview && existingEnvVars.includes(envVarPreview)
+  // A secret is injected as an env var, so reserved runtime vars are blocked
+  // here too — the server rejects them, this gives instant feedback (SUP-239).
+  const isReserved = !!envVarPreview && isReservedEnvVar(envVarPreview)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -145,6 +149,11 @@ function AddSecretForm({ agentSlug, existingEnvVars, onAdd }: AddSecretFormProps
 
     if (isDuplicate) {
       setError(`A secret with env var name "${envVarPreview}" already exists`)
+      return
+    }
+
+    if (isReserved) {
+      setError(`"${envVarPreview}" is a reserved runtime variable and cannot be used as a secret`)
       return
     }
 
@@ -173,9 +182,10 @@ function AddSecretForm({ agentSlug, existingEnvVars, onAdd }: AddSecretFormProps
             placeholder="e.g., My API Key"
           />
           {envVarPreview && (
-            <div className={`text-xs font-mono ${isDuplicate ? 'text-destructive' : 'text-muted-foreground'}`}>
+            <div className={`text-xs font-mono ${isDuplicate || isReserved ? 'text-destructive' : 'text-muted-foreground'}`}>
               Env var: {envVarPreview}
               {isDuplicate && ' (duplicate)'}
+              {isReserved && ' (reserved)'}
             </div>
           )}
         </div>
@@ -210,7 +220,7 @@ function AddSecretForm({ agentSlug, existingEnvVars, onAdd }: AddSecretFormProps
       <Button
         type="submit"
         size="sm"
-        disabled={!key.trim() || !value || isDuplicate || createSecret.isPending}
+        disabled={!key.trim() || !value || isDuplicate || isReserved || createSecret.isPending}
       >
         <Plus className="h-4 w-4 mr-1" />
         {createSecret.isPending ? 'Adding...' : 'Add Secret'}

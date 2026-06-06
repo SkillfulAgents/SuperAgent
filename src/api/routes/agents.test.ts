@@ -220,6 +220,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
 
 vi.mock('@shared/lib/services/secrets-service', () => ({
   listSecrets: vi.fn(),
+  listUserSecrets: vi.fn(),
   getSecret: vi.fn(),
   setSecret: vi.fn(),
   deleteSecret: vi.fn(),
@@ -371,6 +372,7 @@ import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@s
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { listUserSecrets, setSecret, getSecret, keyToEnvVar } from '@shared/lib/services/secrets-service'
 
 // ============================================================================
 // Test Helpers
@@ -2989,5 +2991,100 @@ describe('POST /api/agents/:id/skills/import-zip', () => {
 
     const body = await res.json()
     expect(body.error).toBe('SKILL.md not found in package')
+  })
+})
+
+// ============================================================================
+// Secrets routes — reserved-env-var enforcement (SUP-239 bugs 2 & 3)
+// ============================================================================
+
+describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  describe('GET /:id/secrets (bug 3 — reserved runtime vars are not user secrets)', () => {
+    it('surfaces exactly what listUserSecrets returns (filtered upstream)', async () => {
+      // The container writes CONNECTED_ACCOUNTS into the same .env; listUserSecrets
+      // strips it, and the route must use that filtered list — never listSecrets.
+      vi.mocked(listUserSecrets).mockResolvedValue([
+        { envVar: 'GITHUB_TOKEN', value: 'x', key: 'GitHub Token' },
+      ])
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets')
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([
+        { id: 'GITHUB_TOKEN', key: 'GitHub Token', envVar: 'GITHUB_TOKEN', hasValue: true },
+      ])
+      expect(listUserSecrets).toHaveBeenCalledWith('my-agent')
+    })
+  })
+
+  describe('POST /:id/secrets (bug 2 — reject reserved names)', () => {
+    it('rejects a reserved env var (CONNECTED_ACCOUNTS) with 400 and never writes', async () => {
+      vi.mocked(keyToEnvVar).mockReturnValue('CONNECTED_ACCOUNTS')
+
+      const res = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: 'Connected Accounts',
+        value: 'spoofed',
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('CONNECTED_ACCOUNTS')
+      expect(body.error).toContain('reserved')
+      expect(setSecret).not.toHaveBeenCalled()
+    })
+
+    it('rejects another reserved name (PROXY_TOKEN)', async () => {
+      vi.mocked(keyToEnvVar).mockReturnValue('PROXY_TOKEN')
+
+      const res = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: 'proxy token',
+        value: 'x',
+      })
+
+      expect(res.status).toBe(400)
+      expect(setSecret).not.toHaveBeenCalled()
+    })
+
+    it('allows a non-reserved secret through to setSecret', async () => {
+      vi.mocked(keyToEnvVar).mockReturnValue('MY_API_KEY')
+      vi.mocked(getSecret).mockResolvedValue(null)
+      vi.mocked(setSecret).mockResolvedValue(undefined)
+
+      const res = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: 'My API Key',
+        value: 'k',
+      })
+
+      expect(res.status).toBe(201)
+      expect(setSecret).toHaveBeenCalledWith('my-agent', {
+        key: 'My API Key',
+        envVar: 'MY_API_KEY',
+        value: 'k',
+      })
+    })
+  })
+
+  describe('PUT /:id/secrets/:secretId (bug 2 — reject renaming onto reserved)', () => {
+    it('rejects renaming a secret onto a reserved env var with 400 and never writes', async () => {
+      vi.mocked(getSecret).mockResolvedValue({ envVar: 'MY_API_KEY', value: 'k', key: 'My API Key' })
+      vi.mocked(keyToEnvVar).mockReturnValue('REMOTE_MCPS')
+
+      const res = await app.request('http://localhost/api/agents/my-agent/secrets/MY_API_KEY', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'Remote MCPs', value: 'k' }),
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('REMOTE_MCPS')
+      expect(setSecret).not.toHaveBeenCalled()
+    })
   })
 })
