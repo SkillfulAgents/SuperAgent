@@ -327,6 +327,19 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Host-internal bridge IP a host-side service must bind to so this runner's
+   * containers can reach it via host.docker.internal, or null when containers
+   * reach the host's loopback directly. Default null — Docker Desktop and other
+   * loopback-forwarding runtimes need no bridge bind. Runners that route
+   * containers through a real gateway interface (Lima, WSL2, native Docker
+   * bridge) override this so a host CDP proxy can bind that single interface
+   * instead of 0.0.0.0 (SUP-217).
+   */
+  getHostBridgeIp(): string | null {
+    return null
+  }
+
+  /**
    * Returns a suffix to append to volume mount specifications (e.g., ':U' for Podman).
    * Subclasses can override this for runtime-specific volume options.
    */

@@ -304,7 +304,14 @@ export class WSL2ContainerClient extends BaseContainerClient {
    * nerdctl's `host-gateway` resolves to the container bridge gateway (inside WSL2),
    * NOT the Windows host, so we must resolve the actual IP.
    */
-  protected getAdditionalRunFlags(): string {
+  /**
+   * The Windows host IP as seen from inside the WSL2 distro — its default-route
+   * gateway (the host side of the vEthernet (WSL) adapter). Containers reach the
+   * host here via host.docker.internal, and it is a real host interface, NOT
+   * loopback — so a host-side proxy exposing the loopback CDP port must bind this
+   * IP, never 0.0.0.0 (SUP-217). Returns null if it can't be detected.
+   */
+  getHostBridgeIp(): string | null {
     try {
       const output = execSync(
         `wsl -d ${WSL2_DISTRO_NAME} -- ip route show default`,
@@ -312,12 +319,18 @@ export class WSL2ContainerClient extends BaseContainerClient {
       ).toString().trim()
       // Output: "default via 172.22.192.1 dev eth0 ..."
       const match = output.match(/via\s+([\d.]+)/)
-      if (match) {
-        console.log(`WSL2 host IP detected: ${match[1]}`)
-        return `--add-host host.docker.internal:${match[1]}`
-      }
+      if (match) return match[1]
     } catch (e) {
       console.warn('Failed to detect host IP for WSL2 distro:', e)
+    }
+    return null
+  }
+
+  protected getAdditionalRunFlags(): string {
+    const ip = this.getHostBridgeIp()
+    if (ip) {
+      console.log(`WSL2 host IP detected: ${ip}`)
+      return `--add-host host.docker.internal:${ip}`
     }
     // Fallback: host-gateway may still work in some configurations
     return '--add-host host.docker.internal:host-gateway'

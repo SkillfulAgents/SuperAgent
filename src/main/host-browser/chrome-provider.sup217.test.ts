@@ -76,15 +76,25 @@ const h = vi.hoisted(() => {
   const spawnMock = vi.fn((_cmd: string, _args: string[]) => makeChild(4321))
   const execSyncMock = vi.fn(() => 'default via 172.22.192.1 dev eth0')
 
+  // The active container runner's host-bridge IP, as ChromeProvider reads it via
+  // containerManager.getClient().getHostBridgeIp(). null = a loopback-forwarding
+  // runner (Docker Desktop); a string = a runner that routes containers through a
+  // real bridge gateway (Lima, WSL2, native Docker/Podman).
+  let hostBridgeIp: string | null = null
+  const getHostBridgeIp = vi.fn(() => hostBridgeIp)
+  function setHostBridgeIp(ip: string | null) { hostBridgeIp = ip }
+
   function reset() {
     listenCalls.length = 0
+    hostBridgeIp = null
+    getHostBridgeIp.mockClear()
     spawnMock.mockClear().mockImplementation((_cmd: string, _args: string[]) => makeChild(4321))
     execSyncMock.mockClear().mockImplementation(() => 'default via 172.22.192.1 dev eth0')
     createServer.mockClear()
     connect.mockClear()
   }
 
-  return { listenCalls, createServer, connect, netMock, spawnMock, execSyncMock, reset }
+  return { listenCalls, createServer, connect, netMock, spawnMock, execSyncMock, getHostBridgeIp, setHostBridgeIp, reset }
 })
 
 vi.mock('child_process', () => ({ spawn: h.spawnMock, execSync: h.execSyncMock }))
@@ -124,10 +134,13 @@ vi.mock('@shared/lib/error-reporting', () => ({
   addErrorBreadcrumb: () => {},
 }))
 
-// The fix imports the WSL2 distro-name constant to reuse the gateway-IP
-// detection pattern. Stub it so the heavy container-client module isn't loaded.
-vi.mock('@shared/lib/container/wsl2-container-client', () => ({
-  WSL2_DISTRO_NAME: 'superagent',
+// ChromeProvider asks the active container runner how its containers reach the
+// host (getHostBridgeIp), and runs the CDP proxy bound to that IP. Mock the
+// manager so each test controls that answer without loading container-manager.
+vi.mock('@shared/lib/container/container-manager', () => ({
+  containerManager: {
+    getClient: () => ({ getHostBridgeIp: h.getHostBridgeIp }),
+  },
 }))
 
 import { ChromeProvider } from './chrome-provider'
@@ -163,8 +176,9 @@ describe('ChromeProvider CDP bind address (SUP-217)', () => {
     setPlatform(originalPlatform)
   })
 
-  it('linux: binds Chrome CDP to loopback, never 0.0.0.0', async () => {
+  it('always binds Chrome CDP to loopback, never 0.0.0.0', async () => {
     setPlatform('linux')
+    h.setHostBridgeIp(null)
 
     await provider.launch('agent1')
 
@@ -172,22 +186,57 @@ describe('ChromeProvider CDP bind address (SUP-217)', () => {
     expect(args, 'Chrome should have been spawned with debugging args').not.toBeNull()
     // The vulnerability: CDP advertised on every interface.
     expect(args).not.toContain('--remote-debugging-address=0.0.0.0')
-    // The guardrail: loopback-only (proxy forwards to the container).
+    // The guardrail: loopback-only (a proxy, when needed, forwards to it).
     expect(args).toContain('--remote-debugging-address=127.0.0.1')
   })
 
-  it('win32: forwarding proxy is never bound to 0.0.0.0', async () => {
-    setPlatform('win32')
+  it('loopback-forwarding runner (no bridge IP, e.g. Docker Desktop): no proxy, only loopback binds', async () => {
+    // host.docker.internal forwards to the host loopback, so the container reaches
+    // Chrome's 127.0.0.1 port directly — nothing is bound to a broader interface.
+    setPlatform('linux')
+    h.setHostBridgeIp(null)
 
     await provider.launch('agent1')
 
     const hosts = h.listenCalls.map((c) => c.host)
-    // The proxy must have actually been created and bound to something.
-    expect(hosts.length).toBeGreaterThan(0)
-    // The vulnerability: proxy listener on all interfaces.
+    expect(hosts.length).toBeGreaterThan(0) // findFreePort binds loopback
+    expect(hosts.every((host) => host === '127.0.0.1')).toBe(true)
+    expect(hosts).not.toContain('0.0.0.0')
+  })
+
+  it('bridged runner (Lima / native Docker / Podman): proxy binds the runner bridge IP, never 0.0.0.0', async () => {
+    // Lima (the majority runner) routes containers to the macOS host via the VM
+    // gateway (e.g. 192.168.64.1), NOT loopback. The CDP proxy must bind exactly
+    // that host-internal interface so the container can reach it — never 0.0.0.0.
+    // (Proxy selection is platform-independent; linux spawns cleanly in-harness.)
+    setPlatform('linux')
+    h.setHostBridgeIp('192.168.64.1')
+
+    await provider.launch('agent1')
+
+    const hosts = h.listenCalls.map((c) => c.host)
+    expect(hosts).toContain('192.168.64.1') // proxy bound to the runner's bridge IP
     expect(hosts).not.toContain('0.0.0.0')
 
-    // Chrome's own CDP arg must also be loopback, not all-interfaces.
+    const args = getChromeArgs()
+    expect(args).not.toBeNull()
+    expect(args).not.toContain('--remote-debugging-address=0.0.0.0')
+    expect(args).toContain('--remote-debugging-address=127.0.0.1')
+  })
+
+  it('win32 (WSL2): proxy binds the gateway IP, never 0.0.0.0; Chrome arg loopback', async () => {
+    // On Windows Chrome ignores --remote-debugging-address and always binds
+    // loopback, so the proxy is required; it must bind the WSL2 gateway IP.
+    setPlatform('win32')
+    h.setHostBridgeIp('172.22.192.1')
+
+    await provider.launch('agent1')
+
+    const hosts = h.listenCalls.map((c) => c.host)
+    expect(hosts.length).toBeGreaterThan(0)
+    expect(hosts).toContain('172.22.192.1')
+    expect(hosts).not.toContain('0.0.0.0')
+
     const args = getChromeArgs()
     expect(args).not.toBeNull()
     expect(args).not.toContain('--remote-debugging-address=0.0.0.0')
