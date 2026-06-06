@@ -38,9 +38,10 @@ export function useOAuthReconnect() {
 
       if (window.electronAPI) {
         await new Promise<void>((resolve) => {
-          window.electronAPI!.onOAuthCallback(async (params) => {
+          const unsubscribe = window.electronAPI!.onOAuthCallback(async (params) => {
             if (params.toolkit && params.toolkit !== toolkit) return
-            window.electronAPI?.removeOAuthCallback()
+            // Remove only this reconnect listener; other OAuth subscribers stay.
+            unsubscribe?.()
             if (params.connectionId && params.toolkit) {
               await apiFetch('/api/connected-accounts/complete', {
                 method: 'POST',

@@ -166,7 +166,7 @@ function ApisPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
     }
 
     if (window.electronAPI) {
-      window.electronAPI.onOAuthCallback(async (params) => {
+      const unsubscribe = window.electronAPI.onOAuthCallback(async (params) => {
         if (params.error || params.status === 'failed') {
           handleComplete(false)
           return
@@ -194,7 +194,7 @@ function ApisPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
           handleComplete(false)
         }
       })
-      return () => { window.electronAPI?.removeOAuthCallback() }
+      return () => { unsubscribe?.() }
     }
 
     const handleMessage = (event: MessageEvent) => {

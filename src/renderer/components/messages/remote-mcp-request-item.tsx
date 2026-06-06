@@ -179,12 +179,12 @@ export function RemoteMcpRequestItem({
   useEffect(() => {
     if (!window.electronAPI || status !== 'oauth_pending') return
 
-    window.electronAPI.onMcpOAuthCallback((params) => {
+    const unsubscribe = window.electronAPI.onMcpOAuthCallback((params) => {
       handleOAuthComplete(params.success, params.error ?? undefined)
     })
 
     return () => {
-      window.electronAPI?.removeMcpOAuthCallback()
+      unsubscribe?.()
     }
   }, [status, handleOAuthComplete])
 

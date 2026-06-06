@@ -40,12 +40,12 @@ export function DialogProvider({
   useEffect(() => {
     if (!window.electronAPI) return
 
-    window.electronAPI.onOpenSettings?.(() => {
+    const unsubscribe = window.electronAPI.onOpenSettings?.(() => {
       setSettingsOpenRaw(true)
     })
 
     return () => {
-      window.electronAPI?.removeOpenSettings?.()
+      unsubscribe?.()
     }
   }, [])
 

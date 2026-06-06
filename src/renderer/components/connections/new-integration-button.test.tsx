@@ -71,8 +71,10 @@ afterEach(() => {
 
 describe('NewIntegrationButton — post-OAuth policy editor', () => {
   it('opens ScopePolicyEditor after Electron IPC OAuth callback', async () => {
+    const unsubscribe = vi.fn()
     window.electronAPI = {
-      onOAuthCallback: vi.fn((cb: any) => { capturedOAuthCallback = cb }),
+      // onOAuthCallback now returns a per-listener unsubscribe (SUP-215).
+      onOAuthCallback: vi.fn((cb: any) => { capturedOAuthCallback = cb; return unsubscribe }),
       removeOAuthCallback: vi.fn(),
       openExternal: vi.fn(),
     } as any
