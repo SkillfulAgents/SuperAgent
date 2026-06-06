@@ -27,6 +27,7 @@ import {
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { withRetry } from '@shared/lib/utils/retry'
+import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   readIndexJson,
   ensureSkillsetCached,
@@ -483,7 +484,9 @@ export async function importAgentFromTemplate(
       }
 
       const destPath = path.resolve(workspaceDir, entryName)
-      if (!destPath.startsWith(workspaceDir)) continue
+      // Defense-in-depth: validateEntries already rejects `..`/absolute entries
+      // upfront, but confirm genuine containment here too (prefix-safe).
+      if (!isPathWithinDir(workspaceDir, destPath)) continue
 
       await ensureDirectory(path.dirname(destPath))
       const bytesWritten = await reader.extractEntry(

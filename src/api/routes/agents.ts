@@ -116,6 +116,7 @@ import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -3599,7 +3600,7 @@ agents.get('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
     const skillDir = path.join(getAgentWorkspaceDir(agentSlug), '.claude', 'skills', dir)
     const resolved = path.resolve(skillDir, filePath)
 
-    if (!resolved.startsWith(skillDir + path.sep) && resolved !== skillDir) {
+    if (!isPathWithinDir(skillDir, resolved)) {
       return c.json({ error: 'Invalid file path' }, 400)
     }
 
@@ -3631,7 +3632,7 @@ agents.put('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
     const skillDir = path.join(getAgentWorkspaceDir(agentSlug), '.claude', 'skills', dir)
     const resolved = path.resolve(skillDir, filePath)
 
-    if (!resolved.startsWith(skillDir + path.sep) && resolved !== skillDir) {
+    if (!isPathWithinDir(skillDir, resolved)) {
       return c.json({ error: 'Invalid file path' }, 400)
     }
 
@@ -3738,7 +3739,7 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
   const fullPath = path.resolve(workspaceDir, uploadPath)
 
   // Security: ensure path doesn't escape the uploads directory
-  if (!fullPath.startsWith(path.resolve(workspaceDir, 'uploads'))) {
+  if (!isPathWithinDir(path.resolve(workspaceDir, 'uploads'), fullPath)) {
     throw new Error('Invalid file path')
   }
 
@@ -3814,7 +3815,7 @@ async function handleFolderUpload(agentSlug: string, sourcePath: string) {
   const destPath = path.resolve(workspaceDir, 'uploads', folderName)
 
   // Security: ensure dest doesn't escape uploads directory
-  if (!destPath.startsWith(path.resolve(workspaceDir, 'uploads'))) {
+  if (!isPathWithinDir(path.resolve(workspaceDir, 'uploads'), destPath)) {
     throw new Error('Invalid path')
   }
 
@@ -3946,10 +3947,9 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
 
     // Security: ensure path doesn't escape workspace. A bare startsWith() check
     // is unsafe because a sibling directory can share the workspace path prefix
-    // (e.g. workspace "agent" vs sibling "agent-victim"), so use path.relative
-    // to confirm the resolved path is genuinely contained within the workspace.
-    const relativePath = path.relative(workspaceDir, fullPath)
-    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    // (e.g. workspace "agent" vs sibling "agent-victim"), so confirm genuine
+    // containment via isPathWithinDir (path.relative based).
+    if (!isPathWithinDir(workspaceDir, fullPath)) {
       return c.json({ error: 'Invalid path' }, 400)
     }
 
@@ -4160,7 +4160,7 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
   const screenshotPath = path.join(artifactsDir, artifactSlug, 'screenshot.png')
   // Belt-and-suspenders path traversal guard: slug cannot escape artifactsDir.
   const resolved = path.resolve(screenshotPath)
-  if (!resolved.startsWith(path.resolve(artifactsDir) + path.sep)) {
+  if (!isPathWithinDir(artifactsDir, resolved)) {
     return c.json({ error: 'Invalid artifact slug' }, 400)
   }
 
