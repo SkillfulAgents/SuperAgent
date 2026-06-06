@@ -19,6 +19,9 @@ import * as path from 'path'
 //   - SUP-201: deployment-global platform-auth mutation (AUTH_MODE). An
 //     ordinary user must not be able to overwrite or revoke the shared platform
 //     credential via the `/complete` / `/revoke` endpoints.
+//   - SUP-199: remote MCP assignment ownership (AUTH_MODE). A user with access
+//     to any agent must not be able to attach another user's remote MCP (and its
+//     stored bearer/OAuth credentials) by supplying an `mcpId` they do not own.
 //
 // The mock preamble is shared across the suites. `vi.mock` is module-scoped and
 // hoisted, so a module can only be mocked once per file — the blocks below
@@ -27,9 +30,12 @@ import * as path from 'path'
 // ---------------------------------------------------------------------------
 
 // --- SUP-198 db harness -----------------------------------------------------
-// The db mock is driven by `selectQueue`: each terminal `.limit()` of a select
-// chain shifts the next pre-seeded result. `updateWhereCalls` records every
-// `db.update(...).set(...).where(...)` so we can assert no write happened.
+// The db mock is driven by `selectQueue`: each terminal of a select chain shifts
+// the next pre-seeded result. A terminal is either `.limit()` (SUP-198) or an
+// awaited `.where()` (SUP-199, whose ownership lookups have no `.limit()`), so
+// the `.where()` result is both chainable and a thenable. `updateWhereCalls`
+// records every `db.update(...).set(...).where(...)` so we can assert no write
+// happened; `mockDbInsertValues` records every `db.insert(...).values(...)`.
 let selectQueue: unknown[][] = []
 const updateWhereCalls: unknown[][] = []
 
@@ -48,11 +54,23 @@ vi.mock('@shared/lib/db', () => ({
         where: () => ({
           limit: () => mockDbSelectLimit(),
           orderBy: () => ({ $dynamic: () => ({ where: () => mockDbSelectLimit() }) }),
+          // Awaited directly (terminal `.where()` with no `.limit()`).
+          then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) => mockDbSelectLimit().then(onF, onR),
         }),
         orderBy: () => ({ $dynamic: () => ({ where: () => mockDbSelectLimit() }) }),
       }),
     }),
-    insert: () => ({ values: (...vArgs: unknown[]) => mockDbInsertValues(...vArgs) }),
+    insert: () => ({
+      values: (...vArgs: unknown[]) => {
+        mockDbInsertValues(...vArgs)
+        const settled = Promise.resolve(undefined)
+        // Awaitable both directly and via `.onConflictDoNothing()`.
+        return {
+          onConflictDoNothing: () => settled,
+          then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) => settled.then(onF, onR),
+        }
+      },
+    }),
     update: () => ({
       set: () => ({ where: (...wArgs: unknown[]) => mockDbUpdateWhere(...wArgs) }),
     }),
@@ -500,5 +518,91 @@ describe('platform auth: deployment-global mutation guard (SUP-201)', () => {
     })
     expect(revoke.status).toBe(200)
     expect(mockRevokePlatformToken).toHaveBeenCalledOnce()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SUP-199
+// ---------------------------------------------------------------------------
+//
+// `POST /api/agents/:id/remote-mcps` and
+// `POST /api/agents/:id/sessions/:sessionId/provide-remote-mcp` only proved the
+// caller had `AgentUser()` access to the target agent — not that the requested
+// `mcpIds` belong to the acting user. In auth mode a user with access to any
+// agent could attach another user's remote MCP by id, after which the agent's
+// mcp-proxy token would use the victim MCP's stored bearer/OAuth credentials.
+//
+// Both routes now resolve the requested ids scoped to the acting user before
+// inserting any `agent_remote_mcps` mapping. The ownership filter is gated on
+// `isAuthMode()`, so single-user (non-auth) installs are unaffected.
+//
+// Harness note: `selectQueue` feeds the route's ownership lookup first, then its
+// existing-mappings lookup. `mockDbInsertValues` records mapping inserts.
+
+describe('SUP-199: remote MCP assignment ownership (AUTH_MODE)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    selectQueue = []
+    mockIsAuthMode.mockReturnValue(true)
+  })
+
+  it('rejects attaching another user remote MCP id to an agent', async () => {
+    // Ownership lookup returns nothing → the acting user owns no requested MCP.
+    selectQueue = [[]]
+
+    const res = await appWithAgents().request('http://localhost/api/agents/attacker-agent/remote-mcps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpIds: ['victim-mcp-id'] }),
+    })
+
+    expectClientError(res.status)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('rejects providing another user remote MCP id at runtime approval', async () => {
+    selectQueue = [[]]
+
+    const res = await appWithAgents().request('http://localhost/api/agents/attacker-agent/sessions/sess-1/provide-remote-mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolUseId: 'tu-1', remoteMcpId: 'victim-mcp-id' }),
+    })
+
+    expectClientError(res.status)
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('allows attaching a remote MCP the acting user owns', async () => {
+    // 1) ownership lookup → owned; 2) existing-mappings lookup → none.
+    selectQueue = [[{ id: 'my-mcp-id' }], []]
+
+    const res = await appWithAgents().request('http://localhost/api/agents/my-agent/remote-mcps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpIds: ['my-mcp-id'] }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockDbInsertValues).toHaveBeenCalledTimes(1)
+    expect(mockDbInsertValues).toHaveBeenCalledWith([
+      expect.objectContaining({ agentSlug: 'my-agent', remoteMcpId: 'my-mcp-id' }),
+    ])
+  })
+
+  it('does not gate on ownership when auth mode is disabled', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    // Ownership lookup is skipped entirely in non-auth mode, so the only select
+    // is the existing-mappings lookup → none assigned yet.
+    selectQueue = [[]]
+
+    const res = await appWithAgents().request('http://localhost/api/agents/my-agent/remote-mcps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mcpIds: ['shared-mcp-id'] }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockDbInsertValues).toHaveBeenCalledTimes(1)
   })
 })

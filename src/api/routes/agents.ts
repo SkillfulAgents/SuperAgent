@@ -2898,16 +2898,37 @@ agents.post('/:id/remote-mcps', AgentUser(), async (c) => {
       return c.json({ error: 'mcpIds array is required' }, 400)
     }
 
+    // In auth mode, the caller may only attach remote MCPs they own. Without this,
+    // a user with access to any agent could attach another user's remote MCP
+    // (and its stored bearer/OAuth credentials) by ID. See SUP-199.
+    let validMcpIds = body.mcpIds
+    if (isAuthMode()) {
+      const userId = getCurrentUserId(c)
+      const ownedMcps = await db
+        .select({ id: remoteMcpServers.id })
+        .from(remoteMcpServers)
+        .where(and(
+          inArray(remoteMcpServers.id, body.mcpIds),
+          eq(remoteMcpServers.userId, userId)
+        ))
+      const ownedMcpIds = new Set(ownedMcps.map((m) => m.id))
+      validMcpIds = body.mcpIds.filter((id) => ownedMcpIds.has(id))
+
+      if (validMcpIds.length === 0) {
+        return c.json({ error: 'No valid remote MCPs found' }, 400)
+      }
+    }
+
     // Check which MCPs are already assigned to avoid phantom audit events
     const existingMappings = await db
       .select({ remoteMcpId: agentRemoteMcps.remoteMcpId })
       .from(agentRemoteMcps)
       .where(eq(agentRemoteMcps.agentSlug, slug))
     const alreadyAssigned = new Set(existingMappings.map(m => m.remoteMcpId))
-    const newMcpIds = body.mcpIds.filter(id => !alreadyAssigned.has(id))
+    const newMcpIds = validMcpIds.filter(id => !alreadyAssigned.has(id))
 
     const now = new Date()
-    const values = body.mcpIds.map((mcpId) => ({
+    const values = validMcpIds.map((mcpId) => ({
       id: crypto.randomUUID(),
       agentSlug: slug,
       remoteMcpId: mcpId,
@@ -2974,6 +2995,24 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
     }
     if (!body.decline && requestedMcpIds.length === 0) {
       return c.json({ error: 'remoteMcpId or remoteMcpIds is required when not declining' }, 400)
+    }
+
+    // In auth mode, only allow providing remote MCPs the caller owns before
+    // mapping them to the agent. Otherwise a user could approve another user's
+    // remote MCP (and its stored credentials) for the agent's proxy. See SUP-199.
+    if (!body.decline && isAuthMode()) {
+      const userId = getCurrentUserId(c)
+      const ownedMcps = await db
+        .select({ id: remoteMcpServers.id })
+        .from(remoteMcpServers)
+        .where(and(
+          inArray(remoteMcpServers.id, requestedMcpIds),
+          eq(remoteMcpServers.userId, userId)
+        ))
+      const ownedMcpIds = new Set(ownedMcps.map((m) => m.id))
+      if (requestedMcpIds.some((mcpId) => !ownedMcpIds.has(mcpId))) {
+        return c.json({ error: 'One or more remote MCPs are not owned by the current user' }, 403)
+      }
     }
 
     const client = containerManager.getClient(slug)
