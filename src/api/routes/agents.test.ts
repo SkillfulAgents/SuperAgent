@@ -265,6 +265,7 @@ vi.mock('@shared/lib/services/chat-integration-service', () => ({
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
+  deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -368,6 +369,7 @@ import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-servi
 import { listSessions, getSessionMessagesWithCompact, getSessionSummary, sessionExists, deleteSession, getSession } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 
 // ============================================================================
@@ -2189,6 +2191,18 @@ describe('DELETE /:id/sessions/:sessionId', () => {
 
     expect(res.status).toBe(204)
     expect(deleteSession).toHaveBeenCalledWith('test-agent', 'sess-1')
+  })
+
+  it('cleans up notification rows for the deleted session (both modes)', async () => {
+    // SUP-228: deleting a session must not leave stale notification history
+    // pointing at it. Notifications exist in non-auth mode too, so this runs
+    // even with auth mode off.
+    vi.mocked(deleteSession).mockResolvedValue(true)
+
+    const res = await deleteReq(app, URL)
+
+    expect(res.status).toBe(204)
+    expect(deleteNotificationsBySessionIds).toHaveBeenCalledWith(['sess-1'])
   })
 
   it('deletes a dangling session whose transcript JSONL is gone (no getSession gate)', async () => {

@@ -77,7 +77,7 @@ import {
   SKILL_MAX_COMPRESSED_SIZE,
 } from '@shared/lib/services/skillset-service'
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
-import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
@@ -1614,10 +1614,15 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    // Clean up message author records for this session
+    // Clean up message author records for this session (auth mode only).
     if (isAuthMode()) {
       await db.delete(messageAuthor).where(eq(messageAuthor.sessionId, sessionId))
     }
+
+    // Clean up notification rows for this session in BOTH modes (notifications
+    // are stored regardless of auth mode; userId is nullable), so deleting a
+    // session never leaves stale notification history pointing at it.
+    await deleteNotificationsBySessionIds([sessionId])
 
     return c.body(null, 204)
   } catch (error) {

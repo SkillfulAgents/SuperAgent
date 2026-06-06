@@ -16,7 +16,7 @@ const mockIsAuthMode = vi.fn(() => false)
 const mockIsSessionActive = vi.fn((_id: string) => false)
 const mockUnsubscribeFromSession = vi.fn()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockDbDelete = vi.fn((..._args: any[]) => ({ where: vi.fn() }))
+const mockDbDelete = vi.fn((..._args: any[]) => ({ where: vi.fn(() => ({ changes: 0 })) }))
 
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgents: () => mockListAgents(),
@@ -53,7 +53,9 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
-  messageAuthor: { sessionId: 'session_id' },
+  messageAuthor: { sessionId: 'message_author_session_id' },
+  notifications: { sessionId: 'notifications_session_id' },
+  agentAcl: { agentSlug: 'agent_acl_slug', userId: 'agent_acl_user_id' },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -307,7 +309,7 @@ describe('SessionAutoDeleteMonitor', () => {
     expect(mockUnsubscribeFromSession).not.toHaveBeenCalledWith('failed')
   })
 
-  it('does not clean DB records when not in auth mode', async () => {
+  it('cleans notifications but not messageAuthor when not in auth mode', async () => {
     const now = Date.now()
     const old = makeSession('old', new Date(now - 60 * 86_400_000))
 
@@ -320,7 +322,11 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    expect(mockDbDelete).not.toHaveBeenCalled()
+    // Notification cleanup is unconditional (notifications exist in both modes);
+    // messageAuthor cleanup stays gated on auth mode.
+    const deletedTables = mockDbDelete.mock.calls.map((call) => call[0])
+    expect(deletedTables).toContainEqual({ sessionId: 'notifications_session_id' })
+    expect(deletedTables).not.toContainEqual({ sessionId: 'message_author_session_id' })
   })
 
   // --------------------------------------------------------------------------
