@@ -15,6 +15,7 @@ import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -123,9 +124,11 @@ const MARKDOWN_COMPONENTS: Components = {
 // A single markdown block. Memoized so that, while a response streams, each
 // already-settled block parses exactly once even though later deltas keep
 // re-rendering the parent MessageItem. See split-streaming-markdown.ts.
-const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+// Exported so the agent-markdown link/scheme handling can be tested directly
+// (SUP-238) without standing up a full MessageItem.
+export const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
   return (
-    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={markdownUrlTransform}>
       {text}
     </ReactMarkdown>
   )

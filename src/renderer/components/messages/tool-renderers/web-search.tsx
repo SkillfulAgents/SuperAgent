@@ -2,6 +2,7 @@
 import { Globe } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { webSearchDef } from '@shared/lib/tool-definitions/web-search'
 import type { ToolRenderer, ToolRendererProps } from './types'
 
@@ -93,7 +94,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
       {/* Markdown content */}
       {markdown && (
         <div className="prose prose-sm max-w-none dark:prose-invert">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
             {markdown}
           </ReactMarkdown>
         </div>
