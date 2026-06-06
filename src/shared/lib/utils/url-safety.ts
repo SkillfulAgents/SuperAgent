@@ -81,6 +81,38 @@ export function validateHttpUrl(url: string): URL {
   return parsed
 }
 
+/**
+ * SSRF host policy for remote-MCP server and OAuth-discovery URLs.
+ *
+ * Runs validateHttpUrl + isPrivateHost, with a localhost exception that is
+ * allowed only inside Electron (`process.type === 'browser'`) or under the
+ * E2E mock — users may legitimately run an MCP server on localhost there, but
+ * other private/loopback addresses are always rejected.
+ *
+ * This is the single source of truth shared by the remote-MCP entry guard
+ * (validateMcpServerUrl) AND the OAuth metadata discovery path
+ * (discoverOAuthMetadata), so the two cannot drift: every server-supplied
+ * metadata URL the discovery flow follows is held to the same policy.
+ *
+ * Returns the parsed URL on success; throws on rejection so callers can fail
+ * closed without ever issuing the fetch.
+ */
+export function validateMcpDiscoveryUrl(url: string): URL {
+  const parsed = validateHttpUrl(url)
+  if (isPrivateHost(parsed.hostname)) {
+    // In Electron (or under the E2E mock) allow localhost MCP servers since
+    // users may be running them locally, but still block other private hosts.
+    const isElectron = process.type === 'browser'
+    if ((isElectron || process.env.E2E_MOCK) && isLocalhostHost(parsed.hostname)) {
+      return parsed
+    }
+    throw new Error(
+      `URL must not point to a private or loopback address: ${parsed.hostname}`,
+    )
+  }
+  return parsed
+}
+
 export interface SafeCloneUrlOptions {
   /**
    * If provided, the URL's origin (scheme://host[:port]) must start with one
