@@ -14,27 +14,23 @@ describe('SUP-214: safeOpenExternal scheme allowlist', () => {
     openExternal.mockClear()
   })
 
-  describe('allowed web schemes reach shell.openExternal', () => {
-    it('opens https URLs', async () => {
-      const ok = await safeOpenExternal('https://example.com')
-      expect(ok).toBe(true)
-      expect(openExternal).toHaveBeenCalledTimes(1)
-      expect(openExternal).toHaveBeenCalledWith('https://example.com')
-    })
-
-    it('opens http URLs (allowlisted for OAuth / localhost redirects)', async () => {
-      const ok = await safeOpenExternal('http://localhost:3000/oauth/callback')
-      expect(ok).toBe(true)
-      expect(openExternal).toHaveBeenCalledTimes(1)
-      expect(openExternal).toHaveBeenCalledWith('http://localhost:3000/oauth/callback')
-    })
-
-    it('opens mailto URLs (allowlisted)', async () => {
-      const ok = await safeOpenExternal('mailto:hello@example.com')
-      expect(ok).toBe(true)
-      expect(openExternal).toHaveBeenCalledTimes(1)
-      expect(openExternal).toHaveBeenCalledWith('mailto:hello@example.com')
-    })
+  describe('allowed schemes reach shell.openExternal (popup path)', () => {
+    // http/https + the user-confirmed communication composers (mailto/sms/tel).
+    const allowed = [
+      'https://example.com',
+      'http://localhost:3000/oauth/callback', // OAuth / localhost redirects
+      'mailto:hello@example.com',
+      'sms:+15551234&body=hi', // composer; user still confirms send
+      'tel:+15551234', // dialer; user still confirms call
+    ]
+    for (const url of allowed) {
+      it(`opens ${url}`, async () => {
+        const ok = await safeOpenExternal(url)
+        expect(ok).toBe(true)
+        expect(openExternal).toHaveBeenCalledTimes(1)
+        expect(openExternal).toHaveBeenCalledWith(url)
+      })
+    }
   })
 
   describe('unsafe schemes are rejected and never reach shell.openExternal', () => {
@@ -45,10 +41,8 @@ describe('SUP-214: safeOpenExternal scheme allowlist', () => {
       'myapp://do-something-privileged',
       'vbscript:msgbox(1)',
       'ftp://example.com/payload',
-      // The OS deep-links are intentionally NOT allowed from the strict (popup)
-      // path — only first-party app UI may open them (see safeOpenExternalFromApp).
-      'sms:+15551234&body=hi',
-      'tel:+15551234',
+      // x-apple.systempreferences: is first-party-only (app UI). The popup path
+      // rejects it even though safeOpenExternalFromApp allows it.
       'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
     ]
     for (const url of unsafe) {
@@ -109,16 +103,19 @@ describe('SUP-214: safeOpenExternal scheme allowlist', () => {
   })
 
   describe('isSafeExternalUrl mirrors the Zod-validated allowlist', () => {
-    it('returns true only for allowlisted web schemes', () => {
+    it('returns true for the popup-allowlisted schemes (web + communication composers)', () => {
       expect(isSafeExternalUrl('https://example.com')).toBe(true)
       expect(isSafeExternalUrl('http://example.com')).toBe(true)
       expect(isSafeExternalUrl('mailto:hi@example.com')).toBe(true)
+      expect(isSafeExternalUrl('sms:+15551234')).toBe(true)
+      expect(isSafeExternalUrl('tel:+15551234')).toBe(true)
     })
 
-    it('returns false for unsafe schemes and garbage', () => {
+    it('returns false for unsafe schemes, app-only schemes, and garbage', () => {
       expect(isSafeExternalUrl('file:///etc/passwd')).toBe(false)
       expect(isSafeExternalUrl('javascript:alert(1)')).toBe(false)
       expect(isSafeExternalUrl('myapp://x')).toBe(false)
+      expect(isSafeExternalUrl('x-apple.systempreferences:com.apple.x')).toBe(false) // app-only
       expect(isSafeExternalUrl('')).toBe(false)
       expect(isSafeExternalUrl(null)).toBe(false)
       expect(isSafeExternalUrl(undefined)).toBe(false)
