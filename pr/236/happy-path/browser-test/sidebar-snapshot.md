@@ -1,0 +1,81 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]:
+            - generic [ref=e10]: SuperAgent
+            - button "Search" [ref=e11] [cursor=pointer]:
+              - img [ref=e12]
+          - list [ref=e16]:
+            - listitem [ref=e17]:
+              - button "Home" [ref=e18] [cursor=pointer]:
+                - img [ref=e19]
+                - generic [ref=e24]: Home
+            - listitem [ref=e25]:
+              - button "Notifications" [ref=e26] [cursor=pointer]:
+                - img [ref=e27]
+                - generic [ref=e30]: Notifications
+            - listitem [ref=e79]:
+              - button "Explore" [ref=e80] [cursor=pointer]:
+                - img [ref=e81]
+                - generic [ref=e84]: Explore
+            - listitem [ref=e31]:
+              - button "New Agent" [ref=e32] [cursor=pointer]:
+                - img [ref=e33]
+                - generic [ref=e34]: New Agent
+        - generic [ref=e35]:
+          - generic [ref=e36]: Your Agents
+          - list [ref=e38]:
+            - button "QA-20260606-023545-fttn idle Expand" [ref=e85] [cursor=pointer]:
+              - generic [ref=e86]:
+                - button "QA-20260606-023545-fttn idle" [ref=e87]:
+                  - generic [ref=e89]: QA-20260606-023545-fttn
+                  - img "idle" [ref=e90]:
+                    - img [ref=e91]
+                - button "Expand" [ref=e100]:
+                  - img [ref=e101]
+            - button "QA-20260606-023544-m7h5 idle Expand" [ref=e103] [cursor=pointer]:
+              - generic [ref=e104]:
+                - button "QA-20260606-023544-m7h5 idle" [ref=e105]:
+                  - generic [ref=e107]: QA-20260606-023544-m7h5
+                  - img "idle" [ref=e108]:
+                    - img [ref=e109]
+                - button "Expand" [ref=e118]:
+                  - img [ref=e119]
+            - status [ref=e121]
+      - generic [ref=e49]:
+        - button "Settings" [ref=e50] [cursor=pointer]:
+          - img [ref=e51]
+          - generic [ref=e54]: Settings
+        - button "v0.3.38" [ref=e55] [cursor=pointer]:
+          - generic [ref=e56]: v0.3.38
+      - button "Toggle Sidebar" [ref=e57]
+    - main [ref=e58]:
+      - generic [ref=e59]:
+        - generic [ref=e60]:
+          - button "Toggle Sidebar" [ref=e61] [cursor=pointer]:
+            - img
+            - generic [ref=e62]: Toggle Sidebar
+          - button "Search agents and sessions... Ctrl+K" [ref=e64] [cursor=pointer]:
+            - img [ref=e65]
+            - generic [ref=e68]: Search agents and sessions...
+            - generic [ref=e69]: Ctrl+K
+        - generic [ref=e72]:
+          - generic [ref=e73]:
+            - heading "Your Agents" [level=2] [ref=e74]
+            - button "New Agent" [ref=e75] [cursor=pointer]:
+              - img
+              - text: New Agent
+          - generic [ref=e76]:
+            - button "idle QA-20260606-023545-fttn" [ref=e123] [cursor=pointer]:
+              - generic [ref=e125]:
+                - img [ref=e126]
+                - generic [ref=e135]: idle
+              - generic [ref=e138]: QA-20260606-023545-fttn
+            - button "idle QA-20260606-023544-m7h5" [ref=e140] [cursor=pointer]:
+              - generic [ref=e142]:
+                - img [ref=e143]
+                - generic [ref=e152]: idle
+              - generic [ref=e155]: QA-20260606-023544-m7h5
+  - region "Notifications alt+T"
