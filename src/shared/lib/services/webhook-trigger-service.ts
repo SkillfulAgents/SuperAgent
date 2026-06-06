@@ -379,6 +379,36 @@ export async function cancelWebhookTriggerWithCleanup(triggerId: string): Promis
   return true
 }
 
+/**
+ * Cancel every active/paused webhook trigger bound to a connected account and
+ * clean up each one's upstream Composio subscription.
+ *
+ * Used when a connected account is deleted: the trigger rows reference the
+ * account by id with no DB-level FK/cascade, so without this they would be left
+ * status='active' and keep feeding `getActiveComposioTriggerIds()` (and thus the
+ * live upstream subscription) even though the account/auth is gone (SUP-221).
+ *
+ * Must be invoked BEFORE the account row is deleted, while the account/auth is
+ * still present, so cancelWebhookTriggerWithCleanup can tear down the upstream
+ * Composio subscription when no sibling active trigger shares the
+ * composioTriggerId.
+ */
+export async function cancelTriggersForConnectedAccount(connectedAccountId: string): Promise<void> {
+  const triggers = await db
+    .select({ id: webhookTriggers.id })
+    .from(webhookTriggers)
+    .where(
+      and(
+        eq(webhookTriggers.connectedAccountId, connectedAccountId),
+        inArray(webhookTriggers.status, ['active', 'paused'])
+      )
+    )
+
+  for (const { id } of triggers) {
+    await cancelWebhookTriggerWithCleanup(id)
+  }
+}
+
 export async function updateComposioTriggerId(
   triggerId: string,
   composioTriggerId: string

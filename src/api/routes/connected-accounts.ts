@@ -16,7 +16,7 @@ import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { countActiveTriggersPerAccount } from '@shared/lib/services/webhook-trigger-service'
+import { countActiveTriggersPerAccount, cancelTriggersForConnectedAccount } from '@shared/lib/services/webhook-trigger-service'
 
 const connectedAccountsRouter = new Hono()
 
@@ -544,6 +544,12 @@ connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =
     if (!existing) {
       return c.json({ error: 'Connected account not found' }, 404)
     }
+
+    // Cancel any webhook triggers bound to this account FIRST, while the account
+    // and its auth are still present, so the upstream Composio subscription is
+    // torn down too. Otherwise the trigger rows (no DB-level FK/cascade) would be
+    // orphaned status='active' and keep feeding the live subscription (SUP-221).
+    await cancelTriggersForConnectedAccount(id)
 
     try {
       const accountProvider = getAccountProviderByName(existing.providerName)
