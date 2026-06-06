@@ -295,14 +295,20 @@ export async function deleteAgent(slug: string): Promise<boolean> {
     return false
   }
 
-  // Stop container if running
-  try {
-    await containerManager.stopContainer(slug)
-  } catch {
-    // Ignore errors if container isn't running
-  }
+  // Stop the container before removing the workspace.
+  //
+  // stopContainer is idempotent for already-stopped/missing containers: the
+  // underlying client silently ignores benign "no such container" cases and
+  // resolves without throwing. Therefore any rejection here signals a GENUINE
+  // runtime failure (e.g. a wedged VM or an unexpected stop error), in which
+  // case the container may still be running or be in an unknown stop state.
+  //
+  // We must NOT delete the host workspace in that situation. Let the error
+  // propagate so the API/UI surfaces the failure and the workspace is
+  // preserved; removeDirectory runs strictly after a successful stop.
+  await containerManager.stopContainer(slug)
 
-  // Remove directory
+  // Remove directory only after the container has been confirmed stopped.
   await removeDirectory(agentDir)
 
   return true
