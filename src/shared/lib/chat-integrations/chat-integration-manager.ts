@@ -117,6 +117,17 @@ export interface ManagedConnector {
   pendingToolMessages: Array<{ messageId: string; text: string }>
 }
 
+/**
+ * A serialized message-queue entry: the tail promise of the per-(integration,
+ * chat) chain plus an explicit `settled` flag flipped by a `.finally` once the
+ * chain resolves. We track settledness with this flag because native Promise
+ * state cannot be inspected synchronously — see cleanupResolvedQueues.
+ */
+interface QueueEntry {
+  promise: Promise<void>
+  settled: boolean
+}
+
 // ── Manager ─────────────────────────────────────────────────────────────
 
 class ChatIntegrationManager {
@@ -130,7 +141,7 @@ class ChatIntegrationManager {
   private globalNotificationUnsubscribe: (() => void) | null = null
   private disconnectedSince: Map<string, number> = new Map()
   private consecutiveFailures: Map<string, number> = new Map()
-  private messageQueues: Map<string, Promise<void>> = new Map()
+  private messageQueues: Map<string, QueueEntry> = new Map()
   private lastSessionTouch: Map<string, number> = new Map()
 
   // ── Lifecycle ───────────────────────────────────────────────────────
@@ -475,14 +486,16 @@ class ChatIntegrationManager {
 
   private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown): void {
     const queueKey = `sse:${integrationId}:${chatId}`
-    const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
-    const next = current.then(() =>
+    const current = this.messageQueues.get(queueKey)?.promise ?? Promise.resolve()
+    const entry: QueueEntry = { promise: Promise.resolve(), settled: false }
+    entry.promise = current.then(() =>
       this.handleSSEEvent(integrationId, chatId, event).catch((err) => {
         console.error(`[ChatIntegrationManager] Error handling SSE event:`, err)
         reportError(err, 'sse-event', { integrationId, chatId, eventType: (event as any)?.type })
       })
     )
-    this.messageQueues.set(queueKey, next)
+    this.markSettledWhenDone(queueKey, entry)
+    this.messageQueues.set(queueKey, entry)
   }
 
   // ── Health monitoring ───────────────────────────────────────────────
@@ -536,15 +549,34 @@ class ChatIntegrationManager {
     }
   }
 
-  /** Remove resolved entries from the message queue map to prevent unbounded growth. */
+  /**
+   * Flip a queue entry's `settled` flag once its chain resolves, and self-evict
+   * it if the map still holds this exact entry. A newer enqueue replaces the map
+   * value with a fresh, unsettled entry (chained off this one), which must NOT be
+   * evicted — hence the identity check. Native Promise state cannot be inspected
+   * synchronously, so we record settledness explicitly here rather than trying to
+   * read it in cleanupResolvedQueues.
+   */
+  private markSettledWhenDone(queueKey: string, entry: QueueEntry): void {
+    void entry.promise.finally(() => {
+      entry.settled = true
+      // Only evict if a newer enqueue hasn't already replaced this entry.
+      if (this.messageQueues.get(queueKey) === entry) {
+        this.messageQueues.delete(queueKey)
+      }
+    })
+  }
+
+  /**
+   * Periodic backstop sweep: remove queue entries whose chain has already
+   * settled. Settledness is tracked via the explicit `entry.settled` flag (set in
+   * markSettledWhenDone) because there is no synchronous native Promise-state API.
+   * Each map value is, by definition, the current entry for its key, so a newer
+   * in-flight entry (settled === false) is never evicted.
+   */
   private cleanupResolvedQueues(): void {
-    const settled = Promise.resolve()
-    for (const [key, promise] of this.messageQueues) {
-      // If the promise is already resolved, the .then fires synchronously in microtask
-      let isSettled = false
-      promise.then(() => { isSettled = true }, () => { isSettled = true })
-      // Check synchronously — if it resolved, the microtask already ran
-      if (promise === settled || isSettled) {
+    for (const [key, entry] of this.messageQueues) {
+      if (entry.settled) {
         this.messageQueues.delete(key)
       }
     }
@@ -554,14 +586,16 @@ class ChatIntegrationManager {
 
   private enqueueMessage(integrationId: string, message: IncomingMessage): void {
     const queueKey = `${integrationId}:${message.chatId}`
-    const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
-    const next = current.then(() =>
+    const current = this.messageQueues.get(queueKey)?.promise ?? Promise.resolve()
+    const entry: QueueEntry = { promise: Promise.resolve(), settled: false }
+    entry.promise = current.then(() =>
       this.handleIncomingMessage(integrationId, message).catch((err) => {
         console.error(`[ChatIntegrationManager] Error handling incoming message:`, err)
         reportError(err, 'incoming-message', { integrationId, chatId: message.chatId })
       })
     )
-    this.messageQueues.set(queueKey, next)
+    this.markSettledWhenDone(queueKey, entry)
+    this.messageQueues.set(queueKey, entry)
   }
 
   // ── Incoming message handling ─────────────────────────────────────
