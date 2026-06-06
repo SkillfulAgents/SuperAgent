@@ -58,6 +58,7 @@ import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServ
 import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
+import { ownerScope } from '@shared/lib/auth/ownership'
 import { getProvider } from '@shared/lib/account-providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
@@ -1933,13 +1934,12 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
     }
 
     // Get the selected accounts (scoped to user in auth mode)
-    const userId = getCurrentUserId(c)
     const accounts = await db
       .select()
       .from(connectedAccounts)
       .where(and(
         inArray(connectedAccounts.id, accountIds),
-        isAuthMode() ? eq(connectedAccounts.userId, userId) : undefined
+        ownerScope(c, connectedAccounts.userId)
       ))
 
     if (accounts.length === 0) {
@@ -2764,13 +2764,12 @@ agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
     }
 
     // Verify ownership of accounts in auth mode
-    const userId = getCurrentUserId(c)
     const ownedAccounts = await db
       .select()
       .from(connectedAccounts)
       .where(and(
         inArray(connectedAccounts.id, accountIds),
-        isAuthMode() ? eq(connectedAccounts.userId, userId) : undefined
+        ownerScope(c, connectedAccounts.userId)
       ))
     const ownedAccountIds = new Set(ownedAccounts.map(a => a.id))
     const validAccountIds = accountIds.filter(id => ownedAccountIds.has(id))

@@ -11,6 +11,7 @@ import {
 } from '@shared/lib/account-providers'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { isOwnedByCaller } from '@shared/lib/auth/ownership'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -132,7 +133,7 @@ connectedAccountsRouter.post('/initiate', async (c) => {
         .from(connectedAccounts)
         .where(eq(connectedAccounts.id, reconnectAccountId))
         .limit(1)
-      if (!existing || (isAuthMode() && existing.userId !== getCurrentUserId(c))) {
+      if (!existing || !isOwnedByCaller(c, existing)) {
         return c.json({ error: 'Account not found' }, 404)
       }
     }
@@ -251,7 +252,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
 
       // The account must exist and, in auth mode, be owned by the acting user.
       // Otherwise a user could overwrite another user's connection (SUP-198).
-      if (!oldRecord || (isAuthMode() && oldRecord.userId !== getCurrentUserId(c))) {
+      if (!oldRecord || !isOwnedByCaller(c, oldRecord)) {
         return c.json({ error: 'Account not found' }, 404)
       }
 
@@ -376,7 +377,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
 
       // The account must exist and, in auth mode, be owned by the acting user.
       // Otherwise a user could overwrite another user's connection (SUP-198).
-      if (!oldRecord || (isAuthMode() && oldRecord.userId !== getCurrentUserId(c))) {
+      if (!oldRecord || !isOwnedByCaller(c, oldRecord)) {
         return c.html(
           generateCallbackHtml({ success: false, error: 'Account not found' })
         )
