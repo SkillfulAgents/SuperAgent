@@ -728,29 +728,43 @@ agents.put('/:id', AgentAdmin(), async (c) => {
 agents.delete('/:id', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
-    const agentBeforeDelete = await getAgent(slug)
-    const deleted = await deleteAgent(slug)
 
-    if (!deleted) {
+    // Existence check up front so we never start the destructive flow for a
+    // missing agent. We rely on getAgent (not deleteAgent's return value)
+    // because the irreversible workspace removal is deferred to the last step.
+    const agentBeforeDelete = await getAgent(slug)
+    if (!agentBeforeDelete) {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
+    // Stop/forget the running container before tearing anything down.
     containerManager.removeClient(slug)
 
-    // Clean up proxy token
+    // Clean up proxy token (best-effort — a revoked token is harmless on its own).
     try {
       await revokeProxyToken(slug)
     } catch (error) {
       console.error('Failed to revoke proxy token:', error)
     }
 
-    // Clean up x-agent invoke policies referencing this agent (caller or target)
+    // Clean up x-agent invoke policies referencing this agent (caller or target).
     await deletePoliciesForAgent(slug)
 
-    // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.)
+    // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.).
+    // This runs BEFORE the irreversible workspace removal: if any peripheral
+    // cleanup throws, the route returns 500 with the workspace still intact, so
+    // the delete is safely retryable instead of leaving orphaned rows pointing
+    // at a workspace that no longer exists (SUP-208).
     await cleanupAgentData(slug)
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete?.frontmatter.name } })
+    // Irreversible: remove the agent workspace directory. Done LAST so it only
+    // happens once every peripheral cleanup above has succeeded.
+    const deleted = await deleteAgent(slug)
+    if (!deleted) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete.frontmatter.name } })
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to delete agent:', error)
