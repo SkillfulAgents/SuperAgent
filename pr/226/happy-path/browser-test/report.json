@@ -1,24 +1,17 @@
 {
   "storyId": "browser-test",
-  "passed": true,
-  "reason": "Browser-use feature allows the agent to open a browser, navigate to https://example.com, retrieve the page title, and report it back with tool call visibility.",
-  "steps": [
-    "Navigate to http://localhost:47891 — Application loaded successfully showing \"Your Agents\" page with the target agent listed.",
-    "Click on \"QA-20260606-200500-0nvj\" agent in main content area — Agent page opened, displaying chat interface with message input field and configuration panels.",
-    "Type message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message appeared in the textbox correctly.",
-    "Click \"Send message\" button — Message was sent, agent status changed to \"working\", and a new session \"Browser Page Title Retrieval\" was created in the sidebar.",
-    "Wait for agent response (10+ seconds) — Agent completed the task in approximately 20 seconds.",
-    "Verify response contains \"Example Domain\" — Response clearly states \"The page title is \\\"Example Domain\\\".\" The agent successfully:"
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: played the Example Domain page\n- The agent properly handled the browser navigation request\n- The response included the correct page title\n\nAll test requirements have been met. The agent successfully used browser capabilities to navigate to the specified URL and retrieve the page title as requested.\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 111505,
-  "sessionId": "f638ae0c-e92a-4b62-ae63-37321cdd983b",
+  "durationMs": 99435,
+  "sessionId": "745fa016-089c-4ebe-826b-924a44bbc28b",
   "cost": {
-    "inputTokens": 411,
-    "outputTokens": 14697,
-    "cacheCreationTokens": 78398,
-    "cacheReadTokens": 1389219,
+    "inputTokens": 400,
+    "outputTokens": 11876,
+    "cacheCreationTokens": 61772,
+    "cacheReadTokens": 1256236,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.310815
+    "totalCostUsd": 0.262619
   }
 }
