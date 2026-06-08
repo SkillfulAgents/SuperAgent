@@ -184,7 +184,16 @@ export const notifications = sqliteTable('notifications', {
   title: text('title').notNull(),
   body: text('body').notNull(),
   isRead: integer('is_read', { mode: 'boolean' }).notNull().default(false),
-  userId: text('user_id').references(() => user.id, { onDelete: 'set null' }), // Owner in auth mode, null in non-auth mode
+  // NOTE: notifications are intentionally agent/session-scoped, NOT per-user.
+  // Read state is shared across everyone with access to the agent (a teammate
+  // acknowledging a "session waiting"/"session complete" item clears it for the
+  // team). There is deliberately no per-user owner column here: cross-agent
+  // isolation is enforced by getAccessibleAgentSlugs() in the service layer and
+  // by HasNotificationAccess on the by-id routes. A previously-speculative
+  // `user_id` column was dropped (SUP-227, never wired up — always NULL). Do not
+  // re-add a per-user owner unless a *targeted* notification type lands (e.g. an
+  // @-mention or per-approver request), which needs a recipient + split read
+  // state, not a single shared isRead bit.
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   readAt: integer('read_at', { mode: 'timestamp_ms' }),
 }, (table) => ({

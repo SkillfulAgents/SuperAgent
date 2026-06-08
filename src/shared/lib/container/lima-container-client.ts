@@ -230,11 +230,13 @@ export class LimaContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Add --add-host so containers can reach the macOS host via host.docker.internal.
-   * Lima/nerdctl doesn't set this up automatically like Docker Desktop does.
-   * The host IP is the VM's default gateway (VZ NAT routes to the macOS host).
+   * The macOS host IP as seen from inside the Lima VM — the VM's default-route
+   * gateway, which VZ NAT routes to the host. Containers reach the host here via
+   * host.docker.internal, and it is a real host interface (the vmnet host side),
+   * NOT loopback — so a host-side proxy exposing the loopback CDP port must bind
+   * this IP, never 0.0.0.0 (SUP-217). Returns null if it can't be detected.
    */
-  protected getAdditionalRunFlags(): string {
+  getHostBridgeIp(): string | null {
     try {
       const limaHome = getLimaHome()
       const limactl = getLimactlPath()
@@ -244,12 +246,22 @@ export class LimaContainerClient extends BaseContainerClient {
       ).toString().trim()
       // Output: "default via 192.168.64.1 dev enp0s1 ..."
       const match = output.match(/via\s+([\d.]+)/)
-      if (match) {
-        console.log(`Lima host IP detected: ${match[1]}`)
-        return `--add-host host.docker.internal:${match[1]}`
-      }
+      if (match) return match[1]
     } catch (e) {
       console.warn('Failed to detect host IP for Lima VM:', e)
+    }
+    return null
+  }
+
+  /**
+   * Add --add-host so containers can reach the macOS host via host.docker.internal.
+   * Lima/nerdctl doesn't set this up automatically like Docker Desktop does.
+   */
+  protected getAdditionalRunFlags(): string {
+    const ip = this.getHostBridgeIp()
+    if (ip) {
+      console.log(`Lima host IP detected: ${ip}`)
+      return `--add-host host.docker.internal:${ip}`
     }
     return ''
   }

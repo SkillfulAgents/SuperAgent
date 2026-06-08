@@ -22,6 +22,7 @@ import {
   getWebhookTriggersByComposioId,
   markTriggerFired,
   markTriggerFailed,
+  resolvePlatformMemberForCandidates,
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -263,8 +264,17 @@ class TriggerManager {
     trigger: WebhookTrigger,
     events: WebhookEvent[]
   ): Promise<void> {
-    // Attribute to trigger creator; fall back to the connected_account owner.
-    const ownerUserId = trigger.createdByUserId ?? resolveConnectedAccountOwner(trigger.connectedAccountId)
+    // Attribute to the same user the poller claimed events under: prefer the
+    // trigger creator, but fall back to the connected_account owner when the
+    // creator has no platform member (SUP-226). If neither resolves to a
+    // platform member (e.g. opaque-key / single-user mode), keep the prior
+    // best-effort attribution (creator, else owner).
+    const candidates = [
+      trigger.createdByUserId,
+      resolveConnectedAccountOwner(trigger.connectedAccountId),
+    ]
+    const resolved = resolvePlatformMemberForCandidates(candidates)
+    const ownerUserId = resolved?.userId ?? candidates.find((c) => c) ?? null
     return runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
   }
 

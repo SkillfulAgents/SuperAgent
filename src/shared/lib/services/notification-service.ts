@@ -323,6 +323,27 @@ export async function deleteNotification(notificationId: string): Promise<boolea
 }
 
 /**
+ * Delete all notifications for the given session IDs.
+ *
+ * Used by session retention cleanup (SessionAutoDeleteMonitor) and manual
+ * session deletion so that notification history does not retain rows pointing
+ * at sessions that no longer exist. Notifications are stored in BOTH auth and
+ * non-auth modes (userId is nullable), so callers should invoke this
+ * unconditionally — not gated on auth mode.
+ *
+ * No-op (returns 0) when the input list is empty.
+ */
+export async function deleteNotificationsBySessionIds(sessionIds: string[]): Promise<number> {
+  if (sessionIds.length === 0) return 0
+
+  const result = await db
+    .delete(notifications)
+    .where(inArray(notifications.sessionId, sessionIds))
+
+  return result.changes ?? 0
+}
+
+/**
  * Delete old notifications (older than specified days)
  */
 export async function deleteOldNotifications(olderThanDays: number = 30): Promise<number> {

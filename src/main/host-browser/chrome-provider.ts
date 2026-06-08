@@ -5,8 +5,29 @@ import net from 'net'
 import os from 'os'
 import { getDataDir, getAgentDownloadsDir } from '@shared/lib/config/data-dir'
 import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
+import { containerManager } from '@shared/lib/container/container-manager'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+
+// Chrome's DevTools Protocol has no auth token: any host/process that can reach
+// the CDP port gets full remote control of the dedicated browser profile (read
+// pages, cookies/session, drive navigation). So CDP must never bind to all
+// interfaces (0.0.0.0). We bind it to loopback and, for runners whose containers
+// reach the host through a real bridge interface rather than the host loopback
+// (e.g. socket_vmnet Lima, WSL2/nerdctl, native Docker bridge), forward to it via
+// a proxy bound to that single host-internal interface — never the LAN.
+// Loopback-forwarding runners (Docker Desktop, user-mode Lima, rootless Podman)
+// need no proxy.
+const CDP_LOOPBACK_ADDRESS = '127.0.0.1'
+
+/** True if `ip` is assigned to a local network interface (i.e. bindable by this host). */
+function isLocalInterfaceAddress(ip: string): boolean {
+  const interfaces = os.networkInterfaces()
+  for (const addrs of Object.values(interfaces)) {
+    if (addrs?.some((addr) => addr.address === ip)) return true
+  }
+  return false
+}
 
 interface BrowserCandidate {
   browser: string
@@ -298,7 +319,7 @@ export class ChromeProvider implements HostBrowserProvider {
 
     const chromeArgs = [
       `--remote-debugging-port=${port}`,
-      '--remote-debugging-address=0.0.0.0',
+      `--remote-debugging-address=${CDP_LOOPBACK_ADDRESS}`,
       '--no-first-run',
       '--no-default-browser-check',
       `--user-data-dir=${userDataDir}`,
@@ -448,27 +469,51 @@ export class ChromeProvider implements HostBrowserProvider {
       })
     }
 
-    // Chrome on Windows ignores --remote-debugging-address=0.0.0.0 and always
-    // binds its CDP port to 127.0.0.1. This means containers running inside WSL2
-    // (via nerdctl) cannot reach Chrome directly — only Docker Desktop's special
-    // networking layer makes host 127.0.0.1 ports accessible from containers.
-    // To work around this, we run a lightweight TCP proxy on 0.0.0.0 that forwards
-    // to Chrome's 127.0.0.1 CDP port, making it reachable from any network interface.
+    // Expose Chrome's loopback CDP port to the agent container. Some runners
+    // route containers to the host through a real bridge-gateway interface
+    // (Lima vmnet, WSL2/nerdctl, native Docker/Podman bridge) rather than the
+    // host's loopback, so those containers cannot reach 127.0.0.1 on the host.
+    // For them we run a lightweight TCP proxy that forwards to Chrome's loopback
+    // CDP port. (On Windows, Chrome also always binds CDP to 127.0.0.1 and
+    // ignores --remote-debugging-address, so the proxy is required there too.)
+    //
+    // SECURITY: the proxy binds ONLY that single host-internal bridge interface,
+    // never 0.0.0.0 — CDP is unauthenticated, so an all-interfaces bind would
+    // hand full browser control to anything on the LAN. Loopback-forwarding
+    // runners (Docker Desktop) report no bridge IP, so we skip the proxy and the
+    // container reaches Chrome's loopback port directly.
     let proxyPort: number | null = null
     let proxyServer: net.Server | null = null
-    if (process.platform === 'win32') {
-      proxyPort = await this.findFreePort()
-      proxyServer = net.createServer((client) => {
-        const target = net.connect(port, '127.0.0.1')
-        client.pipe(target)
-        target.pipe(client)
-        client.on('error', () => target.destroy())
-        target.on('error', () => client.destroy())
-      })
-      await new Promise<void>((resolve, reject) => {
-        proxyServer!.listen(proxyPort!, '0.0.0.0', () => resolve())
-        proxyServer!.on('error', reject)
-      })
+    let proxyHost: string | null = null
+    const bridgeIp = this.getHostBridgeIp(instanceId)
+    if (bridgeIp) {
+      try {
+        proxyPort = await this.findFreePort()
+        proxyHost = bridgeIp
+        proxyServer = net.createServer((client) => {
+          const target = net.connect(port, CDP_LOOPBACK_ADDRESS)
+          client.pipe(target)
+          target.pipe(client)
+          client.on('error', () => target.destroy())
+          target.on('error', () => client.destroy())
+        })
+        await new Promise<void>((resolve, reject) => {
+          proxyServer!.listen(proxyPort!, proxyHost!, () => resolve())
+          proxyServer!.on('error', reject)
+        })
+      } catch (err) {
+        // Chrome is already spawned but the instance isn't registered yet, so the
+        // normal stop()/exit cleanup can't reach it. Tear down the half-open proxy
+        // and the orphaned browser before failing the launch. Killing Chrome makes
+        // earlyExitPromise reject, but the launch race that would consume it hasn't
+        // started — attach a no-op catch so that rejection isn't left unhandled.
+        earlyExitPromise.catch(() => {})
+        proxyServer?.close()
+        this.killSpawnedChrome(browserProcess, chromePid)
+        throw new Error(
+          `Failed to bind host-browser CDP proxy on ${bridgeIp}: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
     }
 
     const instance: BrowserInstance = {
@@ -539,7 +584,7 @@ export class ChromeProvider implements HostBrowserProvider {
           profileId,
           spawnArgs: [
             `--remote-debugging-port=${port}`,
-            '--remote-debugging-address=0.0.0.0',
+            `--remote-debugging-address=${CDP_LOOPBACK_ADDRESS}`,
             `--user-data-dir=${userDataDir}`,
           ],
           ...diagnostics,
@@ -565,7 +610,7 @@ export class ChromeProvider implements HostBrowserProvider {
 
     const exposedPort = proxyPort ?? port
 
-    console.log(`[ChromeProvider] Chrome CDP on port ${port}${proxyPort ? `, proxy on 0.0.0.0:${proxyPort}` : ''} for instance ${instanceId} (pid ${chromePid})`)
+    console.log(`[ChromeProvider] Chrome CDP on ${CDP_LOOPBACK_ADDRESS}:${port}${proxyPort ? `, proxy on ${proxyHost}:${proxyPort}` : ''} for instance ${instanceId} (pid ${chromePid})`)
     return { port: exposedPort, downloadDir }
   }
 
@@ -682,6 +727,53 @@ export class ChromeProvider implements HostBrowserProvider {
       if (!(await this.pidAlive(pid))) return
       await new Promise((r) => setTimeout(r, 100))
     }
+  }
+
+  /**
+   * The host interface IP to bind the CDP forwarding proxy to, or null to skip
+   * the proxy and let the container reach Chrome's loopback CDP port directly.
+   *
+   * The active runner reports the gateway its containers use to reach the host
+   * (this same value feeds `--add-host host.docker.internal`). But we can only
+   * bind a proxy there if that gateway is an address THIS host actually has an
+   * interface for:
+   *   - socket_vmnet/shared bridges, WSL2's vEthernet, docker0 → a real, bindable
+   *     host interface that does NOT forward loopback → bind the proxy there.
+   *   - Lima's user-mode / VZ-NAT networking (the bundled default) → the gateway
+   *     (e.g. 192.168.5.2) is virtual (gvproxy/VZ framework, not a host interface),
+   *     so binding it throws EADDRNOTAVAIL. It also needs no proxy: that mode
+   *     forwards the gateway to the host's loopback, so the container reaches
+   *     Chrome's 127.0.0.1 CDP directly — exactly how it already reaches
+   *     HOST_APP_URL. Like Docker Desktop, return null here.
+   */
+  /** Best-effort teardown of a Chrome that was spawned but not yet registered
+   *  (e.g. the CDP proxy failed to bind), so it isn't orphaned. */
+  private killSpawnedChrome(proc: ChildProcess | null, pid: number): void {
+    try {
+      if (proc && !proc.killed) proc.kill()
+      else if (pid > 0) process.kill(pid)
+    } catch {
+      /* already gone */
+    }
+  }
+
+  private getHostBridgeIp(instanceId: string): string | null {
+    let ip: string | null = null
+    try {
+      ip = containerManager.getClient(instanceId).getHostBridgeIp()
+    } catch (error) {
+      console.warn('[ChromeProvider] Could not resolve host bridge IP for CDP proxy:', error)
+      return null
+    }
+    if (!ip) return null
+    if (!isLocalInterfaceAddress(ip)) {
+      console.log(
+        `[ChromeProvider] CDP: bridge IP ${ip} is not a bindable host interface ` +
+        `(user-mode networking forwards it to host loopback); using loopback-direct, no proxy`
+      )
+      return null
+    }
+    return ip
   }
 
   private async findFreePort(): Promise<number> {

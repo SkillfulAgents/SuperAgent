@@ -14,7 +14,7 @@
 
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
-import { and, eq, isNull, or } from 'drizzle-orm'
+import { and, desc, eq, isNull, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
 
@@ -72,6 +72,10 @@ export function getPolicy(
         targetMatch(targetSlug),
       ),
     )
+    // Defense-in-depth: SQLite treats NULL targets as distinct in the unique
+    // index, so a pre-existing duplicate global row could otherwise be resolved
+    // non-deterministically. Order by updatedAt so the latest write always wins.
+    .orderBy(desc(xAgentPolicies.updatedAt))
     .limit(1)
     .all()
   return rows[0] ?? null
@@ -219,14 +223,35 @@ export function replacePoliciesForCaller(
   policies: ReplacePoliciesForCallerInput['policies'],
 ): void {
   const now = new Date()
+
+  // Dedupe the payload before inserting. The (caller, target, operation) unique
+  // index already rejects duplicate NON-null target rows, but SQLite treats NULL
+  // as distinct, so two global entries like (alice, NULL, 'list') would both
+  // persist and getPolicy/evaluate would resolve them non-deterministically
+  // (limit(1)). Collapse global (null-target) entries per operation with
+  // last-write-wins — later payload entries overwrite earlier ones — mirroring
+  // the upsert semantics setPolicy uses for the same NULL-distinct case. Non-null
+  // duplicates are intentionally left to the unique index (a client sending two
+  // conflicting specific-target rows is an error and rolls back the transaction).
+  const globalByOp = new Map<XAgentOperation, ReplacePoliciesForCallerInput['policies'][number]>()
+  const specific: ReplacePoliciesForCallerInput['policies'] = []
+  for (const p of policies) {
+    // Skip the implicit-default 'review' state — it's the default if no row exists,
+    // so storing it adds no value and just bloats the table.
+    if (p.decision === 'review') continue
+    if (p.targetSlug === null) {
+      globalByOp.set(p.operation, p)
+    } else {
+      specific.push(p)
+    }
+  }
+  const toInsert = [...specific, ...globalByOp.values()]
+
   db.transaction(() => {
     db.delete(xAgentPolicies)
       .where(eq(xAgentPolicies.callerAgentSlug, callerSlug))
       .run()
-    for (const p of policies) {
-      // Skip the implicit-default 'review' state — it's the default if no row exists,
-      // so storing it adds no value and just bloats the table.
-      if (p.decision === 'review') continue
+    for (const p of toInsert) {
       db.insert(xAgentPolicies)
         .values({
           id: randomUUID(),

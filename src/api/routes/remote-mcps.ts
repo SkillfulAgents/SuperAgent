@@ -10,7 +10,7 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { validateHttpUrl, isPrivateHost, isLocalhostHost } from '@shared/lib/utils/url-safety'
+import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import { captureMessage } from '@shared/lib/error-reporting'
 
 function safeParseTools(json: string | null): McpToolInfo[] {
@@ -45,17 +45,11 @@ function escapeHtml(str: string): string {
     .replace(/'/g, '&#039;')
 }
 
+// Entry-path SSRF guard for the user-supplied MCP server URL. Delegates to the
+// shared policy so it cannot drift from the OAuth-discovery checks, which must
+// reject the same private/loopback hosts on every server-supplied metadata URL.
 function validateMcpServerUrl(url: string): URL {
-  const parsed = validateHttpUrl(url)
-  if (isPrivateHost(parsed.hostname)) {
-    // in electron - allow localhost MCP servers since users may be running them locally, but still block other private addresses
-    const isElectron = process.type === 'browser'
-    if ((isElectron || process.env.E2E_MOCK) && isLocalhostHost(parsed.hostname)) {
-      return parsed
-    }
-    throw new Error(`MCP server URL must not point to a private or loopback address: ${parsed.hostname}`)
-  }
-  return parsed
+  return validateMcpDiscoveryUrl(url)
 }
 
 const remoteMcps = new Hono()

@@ -1,7 +1,5 @@
 import * as fs from 'fs'
-import * as os from 'os'
-import * as path from 'path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createUploadFilePayload,
   guessMimeType,
@@ -10,13 +8,8 @@ import {
   validateUploadVerification,
 } from './browser-upload'
 
-let tmpDir: string | null = null
-
 afterEach(() => {
-  if (tmpDir) {
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-    tmpDir = null
-  }
+  vi.restoreAllMocks()
 })
 
 describe('browser upload helpers', () => {
@@ -47,8 +40,8 @@ describe('browser upload helpers', () => {
     expect(resolveUploadPath('uploads/file.txt')).toBe('/workspace/uploads/file.txt')
   })
 
-  it('keeps absolute upload paths unchanged', () => {
-    expect(resolveUploadPath('/tmp/file.txt')).toBe('/tmp/file.txt')
+  it('rejects absolute upload paths outside the workspace', () => {
+    expect(() => resolveUploadPath('/tmp/file.txt')).toThrow()
   })
 
   it('guesses common mime types', () => {
@@ -58,9 +51,15 @@ describe('browser upload helpers', () => {
   })
 
   it('creates a Playwright file payload with the real file bytes', async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'browser-upload-test-'))
-    const filePath = path.join(tmpDir, 'upload.txt')
-    fs.writeFileSync(filePath, 'hello upload')
+    // Path confinement (SUP-203) requires the upload to live under /workspace,
+    // so mock fs rather than writing to os.tmpdir() (which is now rejected).
+    const filePath = '/workspace/uploads/upload.txt'
+    const fileBytes = Buffer.from('hello upload')
+    const statSpy = vi.spyOn(fs.promises, 'stat').mockResolvedValue({
+      isFile: () => true,
+      size: fileBytes.length,
+    } as unknown as fs.Stats)
+    const readFileSpy = vi.spyOn(fs.promises, 'readFile').mockResolvedValue(fileBytes)
 
     const payload = await createUploadFilePayload(filePath)
 
@@ -69,6 +68,8 @@ describe('browser upload helpers', () => {
     expect(payload.size).toBe(12)
     expect(payload.buffer.toString('utf8')).toBe('hello upload')
     expect(payload.resolvedPath).toBe(filePath)
+    expect(statSpy).toHaveBeenCalledWith(filePath)
+    expect(readFileSpy).toHaveBeenCalledWith(filePath)
   })
 
   it('accepts matching upload verification', () => {

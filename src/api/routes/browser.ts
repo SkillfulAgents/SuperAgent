@@ -1,18 +1,49 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { getActiveProvider, setOnExternalClose } from '../../main/host-browser'
 import { getSettings } from '@shared/lib/config/settings'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { IsAgent } from '../middleware/auth'
+import { hostBrowserRequestSchema } from './browser-schema'
 
 const browser = new Hono()
+
+/**
+ * Resolve the agent a host-browser request may act on, bound to the IsAgent
+ * proxy token (SUP-216). The token uniquely identifies the agent, so the
+ * effective instanceId/agentId is ALWAYS the token's slug — never the raw
+ * body.agentId. If the body carries a different agentId, the request is a
+ * cross-agent attempt and is rejected with 403.
+ */
+async function resolveTokenBoundAgentId(
+  c: Context,
+): Promise<{ agentId: string } | { error: Response }> {
+  const tokenAgentId = c.get('agentSlug' as never) as string | undefined
+  if (!tokenAgentId) {
+    // IsAgent() should always stash this; fail closed if it did not.
+    return { error: c.json({ error: 'Unauthorized' }, 401) }
+  }
+
+  const raw = await c.req.json().catch(() => ({}))
+  const parsed = hostBrowserRequestSchema.safeParse(raw)
+  if (!parsed.success) {
+    return { error: c.json({ error: 'Invalid request body' }, 400) }
+  }
+
+  if (parsed.data.agentId && parsed.data.agentId !== tokenAgentId) {
+    return { error: c.json({ error: 'Forbidden: agentId does not match token agent' }, 403) }
+  }
+
+  return { agentId: tokenAgentId }
+}
 
 // POST /api/browser/launch-host-browser - Launch browser on host for CDP connection
 browser.post('/launch-host-browser', IsAgent(), async (c) => {
   try {
-    const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
-    // Fall back to 'default' for backward compat with containers that don't send agentId yet
-    const agentId = body.agentId || 'default'
+    const resolved = await resolveTokenBoundAgentId(c)
+    if ('error' in resolved) return resolved.error
+    const agentId = resolved.agentId
 
     const provider = getActiveProvider()
     if (!provider) {
@@ -40,9 +71,9 @@ browser.post('/launch-host-browser', IsAgent(), async (c) => {
 // POST /api/browser/stop-host-browser - Stop the host browser process for a specific agent
 browser.post('/stop-host-browser', IsAgent(), async (c) => {
   try {
-    const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
-    // Fall back to 'default' for backward compat with containers that don't send agentId yet
-    const agentId = body.agentId || 'default'
+    const resolved = await resolveTokenBoundAgentId(c)
+    if ('error' in resolved) return resolved.error
+    const agentId = resolved.agentId
 
     const provider = getActiveProvider()
     if (provider) {
@@ -59,8 +90,9 @@ browser.post('/stop-host-browser', IsAgent(), async (c) => {
 // POST /api/browser/debug-info - Get fresh debug/screencast connection info for an active browser session
 browser.post('/debug-info', IsAgent(), async (c) => {
   try {
-    const body = await c.req.json<{ agentId?: string }>().catch(() => ({} as { agentId?: string }))
-    const agentId = body.agentId || 'default'
+    const resolved = await resolveTokenBoundAgentId(c)
+    if ('error' in resolved) return resolved.error
+    const agentId = resolved.agentId
 
     const provider = getActiveProvider()
     if (!provider?.getDebugInfo) {

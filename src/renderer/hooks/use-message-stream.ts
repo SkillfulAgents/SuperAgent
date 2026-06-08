@@ -4,6 +4,7 @@ import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
+import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 
 interface SecretRequest {
   toolUseId: string
@@ -184,6 +185,69 @@ const sessionAutoApprovedScriptRunIds = new Map<string, Set<string>>()
 const eventSources = new Map<string, EventSource>()
 const refCounts = new Map<string, number>()
 
+// Sessions with an in-flight post-idle reconcile loop, so overlapping
+// session_idle events don't spawn duplicate loops for the same session.
+const reconcilingIdleSessions = new Set<string>()
+
+// Does the last persisted assistant message in the messages cache match the
+// just-streamed text? Mirrors MessageList's `isStreamingMessagePersisted` so we
+// stop reconciling at exactly the point the UI considers the turn finalized.
+function lastPersistedAssistantMatches(
+  queryClient: QueryClient,
+  sessionId: string,
+  expectedText: string
+): boolean {
+  const entries = queryClient.getQueriesData<ApiMessageOrBoundary[]>({
+    queryKey: ['messages', sessionId],
+  })
+  for (const [, data] of entries) {
+    if (!Array.isArray(data)) continue
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (data[i].type === 'assistant') {
+        const content = (data[i] as ApiMessage).content as { text?: string } | undefined
+        const persisted = content?.text?.trim() || ''
+        if (!persisted) return false
+        return persisted.startsWith(expectedText) || expectedText.startsWith(persisted)
+      }
+    }
+  }
+  return false
+}
+
+// The session_idle SSE event can arrive before the final assistant line is
+// durably readable in the JSONL transcript (it's written across the container
+// boundary), so the immediate invalidate's refetch may come back without it.
+// No further SSE event follows, so without this the UI would only reconcile on
+// the slow safety-net poll (useMessages, 15s) — the regression where a turn's
+// "Worked for Xs" line takes seconds to appear. Refetch a few times with short
+// backoff until the persisted tail matches the streamed text, then stop.
+// Bounded and self-terminating; the background poll remains the ultimate backstop.
+async function reconcileMessagesAfterIdle(
+  sessionId: string,
+  queryClient: QueryClient,
+  streamingText: string | null
+): Promise<void> {
+  const expected = streamingText?.trim()
+  // Nothing streamed (e.g. a tool-only or interrupted turn) — no text to match
+  // against, so the handler's immediate invalidate is all we can do.
+  if (!expected) return
+  if (reconcilingIdleSessions.has(sessionId)) return
+  reconcilingIdleSessions.add(sessionId)
+  try {
+    // ~1.5s total across 3 tries — long enough to beat the write/read race,
+    // short enough that a genuine mismatch falls through to the poll quickly.
+    for (const delay of [250, 500, 750]) {
+      if (lastPersistedAssistantMatches(queryClient, sessionId, expected)) return
+      await new Promise((resolve) => setTimeout(resolve, delay))
+      // refetchType defaults to 'active': refetches the mounted messages query
+      // (the session being viewed) and resolves once the cache is updated.
+      await queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+    }
+  } finally {
+    reconcilingIdleSessions.delete(sessionId)
+  }
+}
+
 function getOrCreateEventSource(
   sessionId: string,
   agentSlug: string,
@@ -348,6 +412,11 @@ function getOrCreateEventSource(
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        // The immediate invalidate above can refetch before the final assistant
+        // line is durably readable in the JSONL transcript. Beat that race with a
+        // short bounded reconcile so the turn's "Worked for Xs" line appears
+        // promptly instead of waiting for the next safety-net poll.
+        void reconcileMessagesAfterIdle(sessionId, queryClient, current?.streamingMessage ?? null)
       }
       // Agent turn ended but background tasks are still running — allow sending messages
       else if (data.type === 'session_waiting_background') {

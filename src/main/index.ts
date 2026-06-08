@@ -37,6 +37,7 @@ import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
+import { safeOpenExternal, safeOpenExternalFromApp } from './safe-open-external'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
 // Setting app.name before getPath('userData') changes the resolved directory.
@@ -359,8 +360,10 @@ function createWindow() {
       mainWindow?.webContents.downloadURL(url)
       return { action: 'deny' }
     }
-    // For other URLs (OAuth, external links), open in system browser
-    shell.openExternal(url)
+    // For other URLs (OAuth, external links), open in system browser — but only
+    // after scheme validation so a popup can't ask the OS shell to launch
+    // file:/javascript:/custom-protocol handlers (SUP-214).
+    void safeOpenExternal(url)
     return { action: 'deny' }
   })
 
@@ -443,9 +446,15 @@ ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
 })
 
-// IPC handler for opening URLs in system browser
+// IPC handler for opening URLs in system browser. Renderer-supplied strings are
+// scheme-validated before reaching the OS shell so a hostile/agent-controlled URL
+// can't launch local apps or privileged handlers (file:/javascript:/custom) (SUP-214).
+// First-party app UI also opens well-defined OS deep-links here (sms:/tel: for the
+// iMessage setup link, x-apple.systempreferences: for the computer-use permission
+// helper), so this path uses the slightly broader app allowlist; the popup handler
+// above stays strict (web-only) since it fires for untrusted content.
 ipcMain.handle('open-external', async (_event, url: string) => {
-  await shell.openExternal(url)
+  await safeOpenExternalFromApp(url)
 })
 
 // IPC handler for launching an elevated PowerShell window (Windows only)

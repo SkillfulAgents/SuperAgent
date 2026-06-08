@@ -390,7 +390,12 @@ export async function updateScheduleExpression(
   scheduleExpression: string
 ): Promise<boolean> {
   const task = await getScheduledTask(taskId)
-  if (!task || task.status !== 'pending' || task.scheduleType !== 'cron') return false
+  if (
+    !task ||
+    (task.status !== 'pending' && task.status !== 'paused') ||
+    task.scheduleType !== 'cron'
+  )
+    return false
 
   const tz = task.timezone || undefined
   const nextExecutionAt = getNextCronTime(scheduleExpression, tz)
