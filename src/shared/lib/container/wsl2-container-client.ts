@@ -297,14 +297,6 @@ export class WSL2ContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Add --add-host so containers can reach the Windows host via host.docker.internal.
-   * We detect the Windows host IP from inside the WSL2 distro using its default gateway,
-   * similar to how Lima detects the macOS host IP.
-   *
-   * nerdctl's `host-gateway` resolves to the container bridge gateway (inside WSL2),
-   * NOT the Windows host, so we must resolve the actual IP.
-   */
-  /**
    * The Windows host IP as seen from inside the WSL2 distro — its default-route
    * gateway (the host side of the vEthernet (WSL) adapter). Containers reach the
    * host here via host.docker.internal, and it is a real host interface, NOT
@@ -326,6 +318,11 @@ export class WSL2ContainerClient extends BaseContainerClient {
     return null
   }
 
+  /**
+   * Map host.docker.internal to the detected Windows-host gateway IP. nerdctl's
+   * `host-gateway` resolves to the in-WSL2 bridge, not the Windows host, so we
+   * pass the resolved IP; fall back to the host-gateway literal if undetectable.
+   */
   protected getAdditionalRunFlags(): string {
     const ip = this.getHostBridgeIp()
     if (ip) {

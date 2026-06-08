@@ -19,17 +19,28 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // hoisted above the imports) and by the tests.
 const h = vi.hoisted(() => {
   const listenCalls: Array<{ port: unknown; host: unknown }> = []
+  const killedPids: number[] = []
+  let failProxyListen = false
+  let proxyCloseCount = 0
 
-  function makeServer() {
+  // isProxy distinguishes the CDP forwarding proxy (created with a connection
+  // listener) from findFreePort's throwaway server (created with no args).
+  function makeServer(isProxy: boolean) {
+    const handlers: Record<string, (...a: unknown[]) => void> = {}
     const server: Record<string, unknown> = {
       listen: (port: unknown, host: unknown, cb?: unknown) => {
         listenCalls.push({ port, host })
-        if (typeof cb === 'function') (cb as () => void)()
+        if (isProxy && failProxyListen) {
+          queueMicrotask(() => handlers.error?.(Object.assign(new Error('EADDRNOTAVAIL'), { code: 'EADDRNOTAVAIL' })))
+        } else if (typeof cb === 'function') {
+          (cb as () => void)()
+        }
         return server
       },
-      on: () => server,
+      on: (ev: string, cb: (...a: unknown[]) => void) => { handlers[ev] = cb; return server },
       address: () => ({ port: 9999 }),
       close: (cb?: unknown) => {
+        if (isProxy) proxyCloseCount++
         if (typeof cb === 'function') (cb as () => void)()
         return server
       },
@@ -49,6 +60,9 @@ const h = vi.hoisted(() => {
       },
       kill() {
         this.killed = true
+        killedPids.push(pid)
+        // Simulate process exit so stop()'s exit-wait resolves promptly (no 5s timeout).
+        queueMicrotask(() => (handlers.exit || []).forEach((cb) => cb(0, null)))
         return true
       },
     }
@@ -69,7 +83,7 @@ const h = vi.hoisted(() => {
     destroy() {}
   }
 
-  const createServer = vi.fn((_listener?: unknown) => makeServer())
+  const createServer = vi.fn((listener?: unknown) => makeServer(typeof listener === 'function'))
   const connect = vi.fn(() => ({ pipe: () => {}, on: () => {}, destroy: () => {} }))
   const netMock = { createServer, connect, Socket }
 
@@ -100,6 +114,9 @@ const h = vi.hoisted(() => {
 
   function reset() {
     listenCalls.length = 0
+    killedPids.length = 0
+    failProxyListen = false
+    proxyCloseCount = 0
     hostBridgeIp = null
     localIps = []
     getHostBridgeIp.mockClear()
@@ -109,7 +126,13 @@ const h = vi.hoisted(() => {
     connect.mockClear()
   }
 
-  return { listenCalls, createServer, connect, netMock, spawnMock, execSyncMock, getHostBridgeIp, setHostBridgeIp, networkInterfaces, setLocalIps, reset }
+  return {
+    listenCalls, createServer, connect, netMock, spawnMock, execSyncMock,
+    getHostBridgeIp, setHostBridgeIp, networkInterfaces, setLocalIps, reset,
+    killedPids,
+    setFailProxyListen: (v: boolean) => { failProxyListen = v },
+    getProxyCloseCount: () => proxyCloseCount,
+  }
 })
 
 vi.mock('child_process', () => ({ spawn: h.spawnMock, execSync: h.execSyncMock }))
@@ -288,5 +311,43 @@ describe('ChromeProvider CDP bind address (SUP-217)', () => {
     const args = getChromeArgs()
     expect(args).not.toBeNull()
     expect(args).not.toContain('--remote-debugging-address=0.0.0.0')
+    expect(args).toContain('--remote-debugging-address=127.0.0.1')
+  })
+
+  it('falls back to loopback-direct (no proxy) if the runner bridge-IP lookup throws', async () => {
+    // getHostBridgeIp() wraps containerManager.getClient().getHostBridgeIp() in try/catch;
+    // a throwing runner must degrade to loopback-direct, never crash or bind 0.0.0.0.
+    setPlatform('linux')
+    h.getHostBridgeIp.mockImplementationOnce(() => { throw new Error('runner unavailable') })
+
+    await expect(provider.launch('agent1')).resolves.toBeTruthy()
+
+    const hosts = h.listenCalls.map((c) => c.host)
+    expect(hosts.every((host) => host === '127.0.0.1')).toBe(true)
+    expect(hosts).not.toContain('0.0.0.0')
+  })
+
+  it('kills the spawned Chrome and fails the launch if the proxy bind fails (no orphan)', async () => {
+    // A bindable bridge IP can still fail to listen (port race, interface down). Chrome
+    // is already spawned but not yet registered, so the orphan guard must tear it down.
+    setPlatform('linux')
+    h.setHostBridgeIp('192.168.105.1')
+    h.setLocalIps(['192.168.105.1'])
+    h.setFailProxyListen(true)
+
+    await expect(provider.launch('agent1')).rejects.toThrow(/CDP proxy/i)
+    expect(h.killedPids).toContain(4321) // the spawned Chrome was killed, not orphaned
+  })
+
+  it('closes the CDP proxy server on stop() for a bridged runner', async () => {
+    setPlatform('linux')
+    h.setHostBridgeIp('192.168.105.1')
+    h.setLocalIps(['192.168.105.1'])
+
+    await provider.launch('agent1')
+    expect(h.getProxyCloseCount()).toBe(0)
+
+    await provider.stop('agent1')
+    expect(h.getProxyCloseCount()).toBeGreaterThan(0)
   })
 })
