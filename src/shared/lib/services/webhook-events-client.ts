@@ -8,7 +8,7 @@
 import { decodeOrgIdFromToken } from '@shared/lib/platform-attribution'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { getActiveComposioTriggerIds } from '@shared/lib/services/webhook-trigger-service'
+import { getSubscribedComposioTriggerIds } from '@shared/lib/services/webhook-trigger-service'
 
 // ============================================================================
 // Types
@@ -70,11 +70,13 @@ async function webhookEventsFetch<T>(
   return response.json()
 }
 
-// Always scope by local trigger_ids
+// Always scope by local trigger_ids. Includes paused triggers (still subscribed
+// upstream) so paused-period events are claimed and acked/discarded rather than
+// piling up pending and firing a session on resume (SUP-225).
 export async function pollAndClaimEvents(memberId: string): Promise<PollResult> {
   return webhookEventsFetch<PollResult>('/poll', memberId, {
     method: 'POST',
-    body: JSON.stringify({ trigger_ids: getActiveComposioTriggerIds() }),
+    body: JSON.stringify({ trigger_ids: getSubscribedComposioTriggerIds() }),
   })
 }
 

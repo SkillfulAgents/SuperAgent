@@ -46,11 +46,17 @@ const mockGetWebhookTriggersByComposioId = vi.fn()
 const mockMarkTriggerFired = vi.fn().mockResolvedValue(undefined)
 const mockMarkTriggerFailed = vi.fn().mockResolvedValue(undefined)
 const mockGetDistinctMemberIds = vi.fn(() => ['sub_test_member'])
+const mockResolvePlatformMemberForCandidates =
+  vi.fn<(candidates: Array<string | null | undefined>) => { userId: string; memberId: string } | null>(
+    () => null,
+  )
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getDistinctPlatformMemberIdsForActiveTriggers: () => mockGetDistinctMemberIds(),
   getWebhookTriggersByComposioId: (...args: unknown[]) => mockGetWebhookTriggersByComposioId(...args),
   markTriggerFired: (...args: unknown[]) => mockMarkTriggerFired(...args),
   markTriggerFailed: (...args: unknown[]) => mockMarkTriggerFailed(...args),
+  resolvePlatformMemberForCandidates: (...args: [Array<string | null | undefined>]) =>
+    mockResolvePlatformMemberForCandidates(...args),
 }))
 
 vi.mock('@shared/lib/services/session-service', () => ({
@@ -80,8 +86,12 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
 }))
 
 const mockDecodeOrgIdFromToken = vi.fn<(token: string) => string | null>(() => null)
+const mockRunWithOptionalUser = vi.fn(
+  (_userId: string | null | undefined, fn: () => unknown) => fn(),
+)
 vi.mock('@shared/lib/platform-attribution', () => ({
-  runWithOptionalUser: (_userId: string | null, fn: () => unknown) => fn(),
+  runWithOptionalUser: (userId: string | null | undefined, fn: () => unknown) =>
+    mockRunWithOptionalUser(userId, fn),
   attribution: {
     // Mirror the real impl, driven by the same mocks the tests already control.
     requiresActingMember: () => {
@@ -126,6 +136,7 @@ describe('TriggerManager', () => {
     mockGetDistinctMemberIds.mockReturnValue(['sub_test_member'])
     mockGetPlatformAccessToken.mockReturnValue('opaque_test_token')
     mockDecodeOrgIdFromToken.mockReturnValue(null)
+    mockResolvePlatformMemberForCandidates.mockReturnValue(null)
   })
 
   describe('start', () => {
@@ -269,6 +280,48 @@ describe('TriggerManager', () => {
 
       triggerManager.stop()
       mockAgentExists.mockResolvedValue(true) // restore for other tests
+    })
+
+    // SUP-226: runtime attribution must select the same user the poller claimed
+    // under — the connected-account owner when the creator has no platform
+    // member — so the session's proxy calls carry the correct acting member.
+    it('attributes the session to the connected-account owner when the creator lacks a platform member', async () => {
+      const trigger = {
+        id: 'trigger_1',
+        agentSlug: 'test-agent',
+        composioTriggerId: 'ti_abc',
+        connectedAccountId: 'ca_owned',
+        triggerType: 'GMAIL_NEW_EMAIL',
+        prompt: 'Handle this email',
+        status: 'active',
+        fireCount: 0,
+        createdByUserId: 'creator_user',
+      }
+
+      mockPollAndClaimEvents.mockResolvedValue({
+        events: [
+          { id: 'whe_1', composio_trigger_id: 'ti_abc', trigger_type: 'GMAIL', payload: {}, created_at: '' },
+        ],
+        realtime: null,
+      })
+      mockGetWebhookTriggersByComposioId.mockResolvedValue([trigger])
+      // Creator has no platform member; resolution falls back to the owner.
+      mockResolvePlatformMemberForCandidates.mockReturnValue({
+        userId: 'owner_user',
+        memberId: 'sub_owner_member',
+      })
+
+      await triggerManager.start()
+
+      expect(mockResolvePlatformMemberForCandidates).toHaveBeenCalledWith([
+        'creator_user',
+        // resolveConnectedAccountOwner is read through the db mock (returns null here).
+        null,
+      ])
+      expect(mockRunWithOptionalUser).toHaveBeenCalledWith('owner_user', expect.any(Function))
+      expect(mockCreateSession).toHaveBeenCalledTimes(1)
+
+      triggerManager.stop()
     })
   })
 
