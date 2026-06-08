@@ -15,6 +15,7 @@ import type { ApiAgent } from '@shared/lib/types/api'
 export function useRenameUntitledAgent() {
   const queryClient = useQueryClient()
   return useMutation<ApiAgent | null, Error, { slug: string; prompt: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ slug, prompt }) => {
       const name = await deriveAgentName(prompt)
       if (!name) return null

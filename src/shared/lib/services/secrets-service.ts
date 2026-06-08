@@ -14,6 +14,7 @@ import {
   fileExists,
 } from '@shared/lib/utils/file-storage'
 import { AgentSecret } from '@shared/lib/types/agent'
+import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 
 // ============================================================================
 // .env File Parsing
@@ -153,6 +154,24 @@ export async function listSecrets(agentSlug: string): Promise<AgentSecret[]> {
   }
 
   return secrets
+}
+
+/**
+ * List the user-managed secrets for an agent — the subset of the agent .env
+ * that users actually own and edit via the Secrets UI.
+ *
+ * The agent's /workspace/.env doubles as the container runtime env file: the
+ * container's POST /env handler (server.ts updateEnvFile) writes reserved
+ * runtime vars such as CONNECTED_ACCOUNTS into it so uv/python scripts can read
+ * them. Those are system-managed (see RESERVED_ENV_VAR_KEYS / SUP-210) and must
+ * not surface as user-editable secrets (SUP-239 bug 3).
+ *
+ * listSecrets() stays unfiltered for runtime consumers (getSecretEnvVars), which
+ * legitimately need every var passed to the session.
+ */
+export async function listUserSecrets(agentSlug: string): Promise<AgentSecret[]> {
+  const secrets = await listSecrets(agentSlug)
+  return secrets.filter((s) => !isReservedEnvVar(s.envVar))
 }
 
 /**

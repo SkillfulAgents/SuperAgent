@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Loader2, AlertCircle } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { useRef } from 'react'
 import { useTextSelection } from '../comments/use-text-selection'
 import { CommentOverlay } from '../comments/comment-overlay'
@@ -40,6 +41,7 @@ export function MarkdownRenderer({ url, filePath }: MarkdownRendererProps) {
         <div className="prose prose-sm max-w-none min-w-0 break-words dark:prose-invert">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
+            urlTransform={markdownUrlTransform}
             components={{
               pre: ({ children }) => (
                 <pre className="rounded-lg p-3 text-sm overflow-x-auto bg-black/[0.03] dark:bg-white/[0.06]">

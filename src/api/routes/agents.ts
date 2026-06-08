@@ -15,6 +15,7 @@ import {
   updateAgent,
   deleteAgent,
   agentExists,
+  AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
@@ -40,13 +41,14 @@ import {
 import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory } from '@shared/lib/utils/file-storage'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import {
-  listSecrets,
+  listUserSecrets,
   getSecret,
   setSecret,
   deleteSecret,
   keyToEnvVar,
   getSecretEnvVars,
 } from '@shared/lib/services/secrets-service'
+import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
 import {
   listScheduledTasks,
   listPendingScheduledTasks,
@@ -77,7 +79,7 @@ import {
   SKILL_MAX_COMPRESSED_SIZE,
 } from '@shared/lib/services/skillset-service'
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
-import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
@@ -121,6 +123,7 @@ import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
 import { Readable } from 'stream'
 import pLimit from 'p-limit'
@@ -413,7 +416,7 @@ async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) 
   const importMode = mode === 'full' ? 'full' : 'template'
 
   const agent = await importAgentFromTemplate(zipBuffer, nameOverride || undefined, importMode)
-  await createOwnerAcl(c, agent.slug)
+  await createOwnerAclOrRollback(c, agent.slug)
   const hasOnboarding = await hasOnboardingSkill(agent.slug)
   logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name } })
   return c.json({ ...agent, hasOnboarding }, 201)
@@ -459,7 +462,7 @@ agents.post('/install-from-skillset', async (c) => {
       agentVersion || '0.0.0',
     )
 
-    await createOwnerAcl(c, agent.slug)
+    await createOwnerAclOrRollback(c, agent.slug)
     const hasOnboarding = await hasOnboardingSkill(agent.slug)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'imported', details: { name: agent.name, skillsetId } })
     return c.json({ ...agent, hasOnboarding }, 201)
@@ -576,6 +579,44 @@ async function createOwnerAcl(c: Context, agentSlug: string) {
   })
 }
 
+// Insert the owner ACL for a just-created agent, rolling back the on-disk
+// workspace if the ACL write fails. Agent creation writes the workspace
+// (directory + CLAUDE.md) before the ACL row exists; without this, a transient
+// ACL insert failure would return 500 but leave an orphaned agent directory
+// with no owner ACL (SUP-207). The cleanup is best-effort and guarded so a
+// failed rollback never masks the original error. In non-auth mode
+// createOwnerAcl is a no-op, so this never rolls back there.
+async function createOwnerAclOrRollback(c: Context, agentSlug: string) {
+  try {
+    await createOwnerAcl(c, agentSlug)
+  } catch (error) {
+    const userId = getCurrentUserId(c)
+    let rolledBack = true
+    try {
+      await deleteAgent(agentSlug)
+    } catch (cleanupError) {
+      // Rollback failed: the agent workspace is now orphaned (exists on disk with
+      // no owner ACL). This is the worst case and needs operator attention, so
+      // report it as a distinct error (the original ACL failure is reported below).
+      rolledBack = false
+      console.error(`Failed to roll back orphaned agent workspace "${agentSlug}" after owner ACL insert failed:`, cleanupError)
+      captureException(cleanupError, {
+        tags: { component: 'agents', operation: 'owner-acl-rollback' },
+        extra: { agentSlug, userId, originalError: error instanceof Error ? error.message : String(error) },
+        level: 'error',
+      })
+    }
+    // Report the ACL insert failure itself. A clean rollback is a recovered
+    // failure (warning); a failed rollback left an orphan behind (error).
+    captureException(error, {
+      tags: { component: 'agents', operation: 'owner-acl-insert' },
+      extra: { agentSlug, userId, rolledBack },
+      level: rolledBack ? 'warning' : 'error',
+    })
+    throw error
+  }
+}
+
 // Create LLM client using the active provider
 function getLlmClient(): Anthropic {
   return getConfiguredLlmClient()
@@ -670,7 +711,7 @@ agents.post('/', async (c) => {
       description: description?.trim(),
     })
 
-    await createOwnerAcl(c, agent.slug)
+    await createOwnerAclOrRollback(c, agent.slug)
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'created', details: { name: name.trim() } })
     return c.json(agent, 201)
@@ -728,31 +769,57 @@ agents.put('/:id', AgentAdmin(), async (c) => {
 agents.delete('/:id', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
-    const agentBeforeDelete = await getAgent(slug)
-    const deleted = await deleteAgent(slug)
 
-    if (!deleted) {
+    // Existence check up front so we never start the destructive flow for a
+    // missing agent. We rely on getAgent (not deleteAgent's return value)
+    // because the irreversible workspace removal is deferred to the last step.
+    const agentBeforeDelete = await getAgent(slug)
+    if (!agentBeforeDelete) {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
+    // Stop/forget the running container before tearing anything down.
     containerManager.removeClient(slug)
 
-    // Clean up proxy token
+    // Clean up proxy token (best-effort — a revoked token is harmless on its own).
     try {
       await revokeProxyToken(slug)
     } catch (error) {
       console.error('Failed to revoke proxy token:', error)
     }
 
-    // Clean up x-agent invoke policies referencing this agent (caller or target)
+    // Clean up x-agent invoke policies referencing this agent (caller or target).
     await deletePoliciesForAgent(slug)
 
-    // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.)
+    // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.).
+    // This runs BEFORE the irreversible workspace removal: if any peripheral
+    // cleanup throws, the route returns 500 with the workspace still intact, so
+    // the delete is safely retryable instead of leaving orphaned rows pointing
+    // at a workspace that no longer exists (SUP-208).
     await cleanupAgentData(slug)
 
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete?.frontmatter.name } })
+    // Irreversible: remove the agent workspace directory. Done LAST so it only
+    // happens once every peripheral cleanup above has succeeded.
+    const deleted = await deleteAgent(slug)
+    if (!deleted) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'deleted', details: { name: agentBeforeDelete.frontmatter.name } })
     return c.body(null, 204)
   } catch (error) {
+    if (error instanceof AgentContainerStopError) {
+      // SUP-209: the container couldn't be stopped, so deleteAgent aborted
+      // before removing the workspace. The agent is preserved and the delete is
+      // retryable — surface an actionable 409 instead of a generic 500. (The
+      // peripheral cleanup above has already run; a retry once the container
+      // un-wedges completes the deletion.)
+      console.error('Agent deletion aborted — container stop failed:', error)
+      return c.json(
+        { error: "Couldn't stop the agent's container, so it wasn't deleted. It may be busy — please try again in a moment." },
+        409
+      )
+    }
     console.error('Failed to delete agent:', error)
     return c.json({ error: 'Failed to delete agent' }, 500)
   }
@@ -1614,10 +1681,15 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
       return c.json({ error: 'Session not found' }, 404)
     }
 
-    // Clean up message author records for this session
+    // Clean up message author records for this session (auth mode only).
     if (isAuthMode()) {
       await db.delete(messageAuthor).where(eq(messageAuthor.sessionId, sessionId))
     }
+
+    // Clean up notification rows for this session in BOTH modes (notifications
+    // are stored regardless of auth mode; userId is nullable), so deleting a
+    // session never leaves stale notification history pointing at it.
+    await deleteNotificationsBySessionIds([sessionId])
 
     return c.body(null, 204)
   } catch (error) {
@@ -2612,8 +2684,10 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
   try {
     const slug = c.req.param('id')
 
-
-    const secrets = await listSecrets(slug)
+    // Only user-managed secrets — reserved runtime vars (e.g. CONNECTED_ACCOUNTS)
+    // that the container writes into the same .env are system-managed and must
+    // not surface as user-editable secrets (SUP-239 bug 3).
+    const secrets = await listUserSecrets(slug)
     const response = secrets.map((secret) => ({
       id: secret.envVar,
       key: secret.key,
@@ -2645,6 +2719,17 @@ agents.post('/:id/secrets', AgentUser(), async (c) => {
 
 
     const envVar = keyToEnvVar(key.trim())
+
+    // A secret is just an env var injected into the container, so it must obey
+    // the same reserved-runtime-var rule as global custom env vars (SUP-210 /
+    // SUP-239 bug 2): reject names that would clobber required runtime wiring.
+    if (isReservedEnvVar(envVar)) {
+      return c.json(
+        { error: `"${envVar}" is a reserved runtime variable and cannot be used as a secret` },
+        400
+      )
+    }
+
     const existing = await getSecret(slug, envVar)
 
     await setSecret(slug, {
@@ -2678,6 +2763,14 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
     const newKey = key?.trim() || existing.key
     const newEnvVar = keyToEnvVar(newKey)
     const newValue = value !== undefined ? value : existing.value
+
+    // Renaming a secret onto a reserved runtime var is blocked too (SUP-239 bug 2).
+    if (isReservedEnvVar(newEnvVar)) {
+      return c.json(
+        { error: `"${newEnvVar}" is a reserved runtime variable and cannot be used as a secret` },
+        400
+      )
+    }
 
     if (newEnvVar !== envVar) {
       await deleteSecret(slug, envVar)

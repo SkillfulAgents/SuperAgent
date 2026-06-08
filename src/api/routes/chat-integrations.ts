@@ -370,9 +370,16 @@ chatIntegrationsRouter.get('/:integrationId/sessions', IntegrationAgentRole('vie
 // DELETE /api/chat-integrations/:integrationId/sessions/:sessionId - Clear a chat session
 chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', IntegrationAgentRole('user'), async (c) => {
   try {
+    const integrationId = c.req.param('integrationId')
     const sessionId = c.req.param('sessionId')
     const session = getChatIntegrationSessionById(sessionId)
-    if (!session) {
+    // Scope the session to the authorized integration. `IntegrationAgentRole`
+    // only authorizes :integrationId; the session is loaded by primary key, so
+    // we must verify it belongs to that integration before mutating it.
+    // Otherwise a user with access to one integration could clear/archive a
+    // session belonging to another integration/agent (BOLA — SUP-202/SUP-229).
+    // Return 404 (not 403) so foreign session IDs are not enumerable.
+    if (!session || session.integrationId !== integrationId) {
       return c.json({ error: 'Session not found' }, 404)
     }
     // Notify the manager to clean up SSE subscriptions

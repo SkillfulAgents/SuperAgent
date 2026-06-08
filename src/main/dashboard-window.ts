@@ -1,5 +1,6 @@
-import { BrowserWindow, shell, type WebContents } from 'electron'
+import { BrowserWindow, type WebContents } from 'electron'
 import { buildDashboardViewUrl } from '@shared/lib/dashboard-url'
+import { safeOpenExternal } from './safe-open-external'
 
 // Open dashboard popouts keyed by `${agentSlug}/${dashboardSlug}`. The raw join
 // is fine as a dedup key — only the loaded URL needs per-segment encoding.
@@ -10,9 +11,10 @@ const dashboardWindows: Map<string, BrowserWindow> = new Map()
  *
  * Applied to both the main window and the agent-generated dashboard popouts so
  * untrusted dashboard content cannot spawn arbitrary child windows via
- * window.open(). File-download URLs are streamed via downloadURL; everything
- * else is handed to the system browser. The popup itself is always denied
- * (SUP-219).
+ * window.open(). File-download URLs are streamed via downloadURL; other URLs go
+ * to the system browser via safeOpenExternal, which scheme-validates first so a
+ * popup can't ask the OS shell to launch file:/javascript:/custom-protocol
+ * handlers (SUP-214). The popup itself is always denied (SUP-219).
  */
 export function installPopupHandler(webContents: WebContents) {
   webContents.setWindowOpenHandler(({ url }) => {
@@ -21,8 +23,9 @@ export function installPopupHandler(webContents: WebContents) {
       webContents.downloadURL(url)
       return { action: 'deny' }
     }
-    // For other URLs (OAuth, external links), open in the system browser
-    shell.openExternal(url)
+    // For other URLs (OAuth, external links), open in the system browser after
+    // scheme validation (SUP-214). Fire-and-forget; the popup is denied either way.
+    void safeOpenExternal(url)
     return { action: 'deny' }
   })
 }

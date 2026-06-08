@@ -21,6 +21,7 @@ export function useValidateSkillset() {
     Error,
     string
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (url: string) => {
       const res = await apiFetch('/api/skillsets/validate', {
         method: 'POST',
@@ -36,6 +37,7 @@ export function useAddSkillset() {
   const queryClient = useQueryClient()
 
   return useMutation<ApiSkillsetConfig, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (url: string) => {
       const res = await apiFetch('/api/skillsets', {
         method: 'POST',

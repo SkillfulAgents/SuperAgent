@@ -124,6 +124,13 @@ export interface ContainerClient {
   // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)
   buildVolumeFlag(hostPath: string, containerPath: string): string
 
+  // Host-internal bridge IP that a host-side service must bind to so THIS runner's
+  // containers can reach it via host.docker.internal, or null when containers reach
+  // the host's loopback directly (e.g. Docker Desktop forwards loopback). Used to
+  // forward an unauthenticated host CDP port to the container without ever binding
+  // it on 0.0.0.0 (SUP-217).
+  getHostBridgeIp(): string | null
+
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead
   getInfoFromRuntime(): Promise<ContainerInfo>

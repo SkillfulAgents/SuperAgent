@@ -147,6 +147,24 @@ describe('RuntimeTab', () => {
     })
   })
 
+  it('rejects a reserved env var: shows the error, does not save, and does not keep the row (SUP-239 bug 1)', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<RuntimeTab />)
+
+    await user.click(screen.getByRole('button', { name: 'Add Variable' }))
+    await user.type(screen.getByLabelText('Variable Name'), 'PROXY_BASE_URL')
+    await user.type(screen.getByLabelText('Value'), 'evil')
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Add Variable' }))
+
+    // The reserved-runtime-var error is surfaced…
+    expect(await screen.findByText(/reserved runtime variable/i)).toBeInTheDocument()
+    // …the value is never sent to the server (client-side guard)…
+    expect(mockUpdateSettings.mutateAsync).not.toHaveBeenCalled()
+    // …and the rejected row does not linger as if it had been saved.
+    expect(screen.queryByDisplayValue('PROXY_BASE_URL')).not.toBeInTheDocument()
+  })
+
   it('saves edited custom env vars with the full current draft', async () => {
     const user = userEvent.setup()
     mockSettings.data.customEnvVars = {

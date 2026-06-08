@@ -31,6 +31,30 @@ function lookupPlatformMemberId(userId: string): string | null {
   return rows[0]?.accountId ?? null
 }
 
+/**
+ * Resolve the platform member ID for an ordered list of candidate user IDs,
+ * preferring earlier candidates. Returns the first candidate that resolves to a
+ * platform `authAccount` row (and the user ID it resolved from), or null if none
+ * do. Null/duplicate candidates are skipped.
+ *
+ * Used by both the poller (which member to claim events under) and runtime
+ * attribution (which user to run the session as) so the two never diverge: the
+ * trigger creator is preferred, but the connected-account owner is a fallback
+ * when the creator has no platform member (SUP-226).
+ */
+export function resolvePlatformMemberForCandidates(
+  candidates: Array<string | null | undefined>,
+): { userId: string; memberId: string } | null {
+  const seen = new Set<string>()
+  for (const userId of candidates) {
+    if (!userId || seen.has(userId)) continue
+    seen.add(userId)
+    const memberId = lookupPlatformMemberId(userId)
+    if (memberId) return { userId, memberId }
+  }
+  return null
+}
+
 /** Distinct member IDs of active/paused trigger owners; used by TriggerManager to poll per-member. */
 export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
   const rows = db
@@ -45,10 +69,11 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
 
   const ids = new Set<string>()
   for (const row of rows) {
-    const userId = row.createdByUserId ?? row.ownerUserId
-    if (!userId) continue
-    const memberId = lookupPlatformMemberId(userId)
-    if (memberId) ids.add(memberId)
+    // Prefer the creator, but fall back to the connected-account owner when the
+    // creator has no platform member — otherwise the trigger is silently dropped
+    // from the poll set even though the owner could claim its events (SUP-226).
+    const resolved = resolvePlatformMemberForCandidates([row.createdByUserId, row.ownerUserId])
+    if (resolved) ids.add(resolved.memberId)
   }
   return [...ids]
 }
@@ -66,6 +91,29 @@ export function getActiveComposioTriggerIds(): string[] {
     )
     .all()
     .map((r) => r.composioTriggerId!)
+}
+
+/**
+ * Distinct composio trigger IDs that still hold an upstream subscription
+ * (status IN 'active'/'paused'), mirroring countActiveTriggersForComposioId /
+ * listActiveWebhookTriggers. Used to scope the platform poll so paused-period
+ * events are still claimed: TriggerManager finds no *active* local trigger and
+ * acks/discards them, instead of letting them accumulate pending and fire a
+ * session on resume (SUP-225).
+ */
+export function getSubscribedComposioTriggerIds(): string[] {
+  const ids = db
+    .selectDistinct({ composioTriggerId: webhookTriggers.composioTriggerId })
+    .from(webhookTriggers)
+    .where(
+      and(
+        inArray(webhookTriggers.status, ['active', 'paused']),
+        isNotNull(webhookTriggers.composioTriggerId),
+      ),
+    )
+    .all()
+    .map((r) => r.composioTriggerId!)
+  return ids
 }
 
 export type { WebhookTrigger, NewWebhookTrigger }
@@ -377,6 +425,36 @@ export async function cancelWebhookTriggerWithCleanup(triggerId: string): Promis
   }
 
   return true
+}
+
+/**
+ * Cancel every active/paused webhook trigger bound to a connected account and
+ * clean up each one's upstream Composio subscription.
+ *
+ * Used when a connected account is deleted: the trigger rows reference the
+ * account by id with no DB-level FK/cascade, so without this they would be left
+ * status='active' and keep feeding `getActiveComposioTriggerIds()` (and thus the
+ * live upstream subscription) even though the account/auth is gone (SUP-221).
+ *
+ * Must be invoked BEFORE the account row is deleted, while the account/auth is
+ * still present, so cancelWebhookTriggerWithCleanup can tear down the upstream
+ * Composio subscription when no sibling active trigger shares the
+ * composioTriggerId.
+ */
+export async function cancelTriggersForConnectedAccount(connectedAccountId: string): Promise<void> {
+  const triggers = await db
+    .select({ id: webhookTriggers.id })
+    .from(webhookTriggers)
+    .where(
+      and(
+        eq(webhookTriggers.connectedAccountId, connectedAccountId),
+        inArray(webhookTriggers.status, ['active', 'paused'])
+      )
+    )
+
+  for (const { id } of triggers) {
+    await cancelWebhookTriggerWithCleanup(id)
+  }
 }
 
 export async function updateComposioTriggerId(

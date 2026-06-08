@@ -74,6 +74,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
 
   // Invite user
   const inviteUser = useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ userId, role }: { userId: string; role: AgentRole }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/access`, {
         method: 'POST',
@@ -99,6 +100,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
 
   // Change role
   const changeRole = useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ userId, role }: { userId: string; role: AgentRole }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/access/${userId}`, {
         method: 'PATCH',
@@ -120,6 +122,7 @@ export function AccessTab({ agentSlug }: AccessTabProps) {
 
   // Remove access
   const removeAccess = useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (userId: string) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/access/${userId}`, {
         method: 'DELETE',

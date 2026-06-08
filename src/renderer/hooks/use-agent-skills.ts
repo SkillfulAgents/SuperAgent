@@ -157,6 +157,7 @@ export function useCreateSkillPR() {
     Error,
     { agentSlug: string; skillDir: string; title: string; body: string; newVersion?: string }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, skillDir, title, body, newVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}/create-pr`, {
         method: 'POST',
@@ -221,6 +222,7 @@ export function usePublishSkill() {
       newVersion?: string
     }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, skillDir, skillsetId, title, body, newVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}/publish`, {
         method: 'POST',
@@ -242,6 +244,7 @@ export function usePublishSkill() {
 
 export function useExportSkill() {
   return useMutation<void, Error, { agentSlug: string; skillDir: string; skillName: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, skillDir, skillName }) => {
       const res = await apiFetch(
         `/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}/export`,
@@ -264,6 +267,7 @@ export function useImportSkillZip() {
     Error,
     { agentSlug: string; file: File }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, file }) => {
       const formData = new FormData()
       formData.append('file', file)

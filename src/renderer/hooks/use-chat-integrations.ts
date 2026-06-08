@@ -110,6 +110,7 @@ export function useCreateChatIntegration() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (params: {
       agentSlug: string
       provider: ChatProvider
@@ -155,6 +156,7 @@ export function useUpdateChatIntegration() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({
       id,
       ...params
@@ -209,6 +211,7 @@ export function useClearChatSession() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ integrationId, sessionId }: { integrationId: string; sessionId: string }) => {
       const res = await apiFetch(`/api/chat-integrations/${integrationId}/sessions/${sessionId}`, {
         method: 'DELETE',
@@ -227,6 +230,7 @@ export function useClearChatSession() {
 
 export function useTestChatIntegrationCredentials() {
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (params: {
       provider: ChatProvider
       config: Record<string, unknown>

@@ -22,6 +22,7 @@ import { useSettings, useUpdateSettings, useStartRunner, useRestartRunner, useRe
 import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw, Plus, X } from 'lucide-react'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { DEFAULT_LIMA_VM_MEMORY, VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
+import { findReservedEnvVarKeys } from '@shared/lib/container/reserved-env-vars'
 import { getDefaultAgentImage } from '@shared/lib/config/version'
 
 const CPU_LIMIT_OPTIONS = [1, 2, 4, 6, 8]
@@ -246,11 +247,29 @@ export function RuntimeTab() {
   }
 
   const persistCustomEnvVars = async (updated: Record<string, string>) => {
+    // Remember the last-good draft so a rejected save can be rolled back instead
+    // of leaving the bad value on screen as if it had saved (SUP-239 bug 1).
+    const previous = customEnvVarsDraft
     setCustomEnvVarsDraft(updated)
+
+    // Mirror the server-side reserved-runtime-var guard (SUP-210) client-side so
+    // the rejection is instant and the offending row never lingers.
+    const reserved = findReservedEnvVarKeys(updated)
+    if (reserved.length > 0) {
+      setCustomEnvVarsDraft(previous)
+      setCustomEnvError(
+        `customEnvVars may not override reserved runtime variables: ${reserved.join(', ')}`
+      )
+      return
+    }
+
     setCustomEnvError(null)
     try {
       await updateSettings.mutateAsync({ customEnvVars: updated })
     } catch (error) {
+      // The server did not persist (e.g. 400) — revert so the draft reflects
+      // what is actually saved rather than the rejected value.
+      setCustomEnvVarsDraft(previous)
       const message =
         error && typeof error === 'object' && 'error' in error && typeof error.error === 'string'
           ? error.error

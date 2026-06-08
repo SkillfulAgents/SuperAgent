@@ -18,15 +18,20 @@ import { isPlatformComposioActive } from '@shared/lib/composio/client'
 export async function cleanupAgentData(agentSlug: string): Promise<void> {
   await cleanupWebhookTriggers(agentSlug)
 
-  db.delete(chatIntegrations).where(eq(chatIntegrations.agentSlug, agentSlug)).run()
-  db.delete(scheduledTasks).where(eq(scheduledTasks.agentSlug, agentSlug)).run()
-  db.delete(notifications).where(eq(notifications.agentSlug, agentSlug)).run()
-  db.delete(agentConnectedAccounts).where(eq(agentConnectedAccounts.agentSlug, agentSlug)).run()
-  db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.agentSlug, agentSlug)).run()
-  db.delete(proxyAuditLog).where(eq(proxyAuditLog.agentSlug, agentSlug)).run()
-  db.delete(mcpAuditLog).where(eq(mcpAuditLog.agentSlug, agentSlug)).run()
-  db.delete(agentAcl).where(eq(agentAcl.agentSlug, agentSlug)).run()
-  db.delete(messageAuthor).where(eq(messageAuthor.agentSlug, agentSlug)).run()
+  // Delete all peripheral rows in a single transaction so the cleanup is atomic:
+  // either every row referencing this agent is removed or none is, never a
+  // half-cleaned state (SUP-208).
+  db.transaction(() => {
+    db.delete(chatIntegrations).where(eq(chatIntegrations.agentSlug, agentSlug)).run()
+    db.delete(scheduledTasks).where(eq(scheduledTasks.agentSlug, agentSlug)).run()
+    db.delete(notifications).where(eq(notifications.agentSlug, agentSlug)).run()
+    db.delete(agentConnectedAccounts).where(eq(agentConnectedAccounts.agentSlug, agentSlug)).run()
+    db.delete(agentRemoteMcps).where(eq(agentRemoteMcps.agentSlug, agentSlug)).run()
+    db.delete(proxyAuditLog).where(eq(proxyAuditLog.agentSlug, agentSlug)).run()
+    db.delete(mcpAuditLog).where(eq(mcpAuditLog.agentSlug, agentSlug)).run()
+    db.delete(agentAcl).where(eq(agentAcl.agentSlug, agentSlug)).run()
+    db.delete(messageAuthor).where(eq(messageAuthor.agentSlug, agentSlug)).run()
+  })
 }
 
 async function cleanupWebhookTriggers(agentSlug: string): Promise<void> {

@@ -105,6 +105,7 @@ export function useImportAgentTemplate() {
     Error,
     { file: File; mode?: 'template' | 'full'; onProgress?: (p: ImportProgress) => void }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ file, mode, onProgress }) => {
       if (file.size <= CHUNK_SIZE) {
         // Small file — single request (existing behavior)
@@ -184,6 +185,7 @@ export function useInstallAgentFromSkillset() {
       agentVersion: string
     }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ skillsetId, agentPath, agentName, agentVersion }) => {
       const res = await apiFetch('/api/agents/install-from-skillset', {
         method: 'POST',
@@ -275,6 +277,7 @@ export function useRefreshAgentTemplateStatus() {
     Error,
     { agentSlug: string }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh`, {
         method: 'POST',
@@ -356,6 +359,7 @@ export function useCreateAgentTemplatePR() {
     Error,
     { agentSlug: string; title: string; body: string; newVersion?: string }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, title, body, newVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-create-pr`, {
         method: 'POST',
@@ -417,6 +421,7 @@ export function usePublishAgentTemplate() {
       newVersion?: string
     }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, skillsetId, title, body, newVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-publish`, {
         method: 'POST',

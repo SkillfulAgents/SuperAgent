@@ -25,8 +25,8 @@ type FakeWindow = {
 // BrowserWindow is mocked as a constructor that records the created window and
 // exposes a webContents stub with spies for setWindowOpenHandler / downloadURL.
 // `vi.hoisted` keeps the shared state in scope for the hoisted `vi.mock` factory.
-const { openExternal, createdWindows } = vi.hoisted(() => ({
-  openExternal: vi.fn(),
+const { safeOpenExternal, createdWindows } = vi.hoisted(() => ({
+  safeOpenExternal: vi.fn(),
   createdWindows: [] as FakeWindow[],
 }))
 
@@ -48,11 +48,14 @@ vi.mock('electron', () => {
     createdWindows.push(win)
     return win
   })
-  return {
-    BrowserWindow,
-    shell: { openExternal },
-  }
+  return { BrowserWindow }
 })
+
+// installPopupHandler routes external URLs through safeOpenExternal (the
+// scheme-validated opener, SUP-214), not electron's shell directly.
+vi.mock('./safe-open-external', () => ({
+  safeOpenExternal: (...args: unknown[]) => safeOpenExternal(...args),
+}))
 
 import { openDashboardWindow, closeAllDashboardWindows } from './dashboard-window'
 
@@ -61,7 +64,7 @@ beforeEach(() => {
   // from a clean slate and actually creates a fresh window.
   closeAllDashboardWindows()
   createdWindows.length = 0
-  openExternal.mockClear()
+  safeOpenExternal.mockClear()
 })
 
 describe('openDashboardWindow popup policy (SUP-219)', () => {
@@ -74,7 +77,7 @@ describe('openDashboardWindow popup policy (SUP-219)', () => {
     expect(win.webContents.setWindowOpenHandler).toHaveBeenCalledTimes(1)
   })
 
-  it('denies external popups and routes them through the system browser', () => {
+  it('denies external popups and routes them through the scheme-validated opener', () => {
     openDashboardWindow('agent-one', 'sales', 3838)
     const win = createdWindows[0]
     const handler = win.webContents.setWindowOpenHandler.mock.calls[0][0] as (arg: {
@@ -84,7 +87,8 @@ describe('openDashboardWindow popup policy (SUP-219)', () => {
     const result = handler({ url: 'https://example.com/evil' })
 
     expect(result).toEqual({ action: 'deny' })
-    expect(openExternal).toHaveBeenCalledWith('https://example.com/evil')
+    // Routed through safeOpenExternal (SUP-214 scheme allowlist), not raw shell.
+    expect(safeOpenExternal).toHaveBeenCalledWith('https://example.com/evil')
     expect(win.webContents.downloadURL).not.toHaveBeenCalled()
   })
 
@@ -100,6 +104,6 @@ describe('openDashboardWindow popup policy (SUP-219)', () => {
 
     expect(result).toEqual({ action: 'deny' })
     expect(win.webContents.downloadURL).toHaveBeenCalledWith(fileUrl)
-    expect(openExternal).not.toHaveBeenCalled()
+    expect(safeOpenExternal).not.toHaveBeenCalled()
   })
 })

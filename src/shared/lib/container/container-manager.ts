@@ -20,6 +20,7 @@ import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/li
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { mergeCustomEnvVars } from './reserved-env-vars'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -608,10 +609,11 @@ class ContainerManager {
         envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
       }
 
-      // Inject user-defined custom env vars (set in global settings)
-      if (settings.customEnvVars) {
-        Object.assign(envVars, settings.customEnvVars)
-      }
+      // Inject user-defined custom env vars (set in global settings). Reserved
+      // runtime keys are skipped so custom config can never clobber required
+      // wiring (proxy auth, agent identity, connected accounts, etc.). See
+      // SUP-210 / reserved-env-vars.ts.
+      mergeCustomEnvVars(envVars, settings.customEnvVars)
 
       envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
