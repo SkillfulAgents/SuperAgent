@@ -1325,6 +1325,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return `"${hostPath}:${containerPath}"`
   }
 
+  // No real host networking in mock mode — report loopback-direct (no proxy).
+  getHostBridgeIp(): string | null {
+    return null
+  }
+
   // Lifecycle management
 
   async start(_options?: StartOptions): Promise<void> {

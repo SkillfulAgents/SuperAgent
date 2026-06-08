@@ -89,8 +89,28 @@ export function parseBrowserUploadRequest(rawBody: unknown):
   }
 }
 
+const WORKSPACE_ROOT = '/workspace'
+
+/**
+ * Resolve a user-supplied upload path and confine it to the workspace root.
+ *
+ * `path.resolve` handles both relative inputs (joined under /workspace) and
+ * absolute inputs (left as-is). Containment is then checked via `path.relative`
+ * (not a bare `startsWith` prefix, which a sibling dir like `/workspace-evil`
+ * would pass). Any path that escapes /workspace — an absolute path elsewhere
+ * (`/etc/passwd`) or a `../` traversal — is rejected so the browser-upload flow
+ * cannot read arbitrary container files. Pure path math: no filesystem access,
+ * so it stays unit-testable without a real /workspace.
+ */
 export function resolveUploadPath(filePath: string): string {
-  return path.isAbsolute(filePath) ? filePath : path.resolve('/workspace', filePath)
+  const resolved = path.resolve(WORKSPACE_ROOT, filePath)
+  const relative = path.relative(WORKSPACE_ROOT, resolved)
+  const withinWorkspace =
+    relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+  if (!withinWorkspace) {
+    throw new Error(`Upload path is outside the workspace: ${filePath}`)
+  }
+  return resolved
 }
 
 export function guessMimeType(filePath: string): string {
@@ -151,7 +171,17 @@ export async function runBrowserUpload(
     return { success: false, status: 400, body: { error: 'Browser is not active' } }
   }
 
-  const file = await createUploadFilePayload(body.filePath)
+  let file: BrowserUploadFilePayload
+  try {
+    file = await createUploadFilePayload(body.filePath)
+  } catch (error) {
+    return {
+      success: false,
+      status: 400,
+      body: { error: error instanceof Error ? error.message : String(error) },
+    }
+  }
+
   const verification = (await uploadToFileInput({
     connectionUrl: options.getConnectionUrl(),
     activeTargetUrl: await options.getActiveTargetUrl(),

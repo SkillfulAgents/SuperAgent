@@ -411,7 +411,7 @@ scheduledTasksRouter.patch('/:taskId/schedule', TaskAgentRole('user'), async (c)
 
     const updated = await updateScheduleExpression(task.id, body.scheduleExpression.trim())
     if (!updated) {
-      return c.json({ error: 'Task not found or not pending' }, 404)
+      return c.json({ error: 'Task not found or not editable' }, 404)
     }
 
     const refreshed = await getScheduledTask(task.id)

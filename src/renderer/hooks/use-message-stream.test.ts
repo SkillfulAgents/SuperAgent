@@ -767,6 +767,102 @@ describe('useMessageStream', () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
   })
 
+  // The session_idle SSE can arrive before the final assistant line is durably
+  // readable in the JSONL transcript, so the handler's immediate invalidate may
+  // refetch stale data. A bounded reconcile loop refetches a few more times until
+  // the persisted tail matches the streamed text, so finalization (the "Worked
+  // for Xs" line) doesn't wait for the slow safety-net poll.
+  const countMessageInvalidations = (spy: ReturnType<typeof vi.spyOn>): number =>
+    spy.mock.calls.filter((call: unknown[]) => {
+      const key = (call[0] as { queryKey?: unknown[] } | undefined)?.queryKey
+      return Array.isArray(key) && key[0] === 'messages' && key[1] === 'session-1'
+    }).length
+
+  it('reconciles messages after session_idle when the transcript lags, then stops', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'Final answer' })
+      })
+
+      // Persisted transcript does NOT yet contain the final assistant line.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], [
+        { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+      ])
+
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
+      // Immediate invalidate from the handler.
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // First backoff tick: still no match → an extra refetch fires.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBeGreaterThan(1)
+
+      // Drain well past the reconcile window — it must self-terminate (bounded:
+      // 1 immediate + at most 3 reconcile attempts).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBeLessThanOrEqual(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not reconcile after session_idle when the persisted message already matches', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'Final answer' })
+      })
+
+      // Transcript already has the final assistant line (no write/read race).
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], [
+        { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+        { id: 'a1', type: 'assistant', content: { text: 'Final answer' }, toolCalls: [], createdAt: '2026-01-01T00:00:01Z' },
+      ])
+
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
+
+      // Only the handler's immediate invalidate — the reconcile sees a match and bails.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('invalidates messages and sessions queries on session_error', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()

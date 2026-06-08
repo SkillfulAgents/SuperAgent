@@ -64,9 +64,34 @@ const isWindows = process.platform === 'win32'
 /**
  * Wrap a value in the platform-appropriate shell quotes.
  * On Unix, single quotes; on Windows cmd.exe, double quotes.
+ *
+ * NOTE: this is a naive wrapper — it does NOT escape quote characters embedded
+ * in `value`. It is safe only for known-literal arguments (e.g. Go template
+ * format strings like `{{json .}}`). For user-controlled values that are
+ * interpolated into a command string and run through a real shell, use
+ * shellEscape() instead.
  */
 export function shellQuote(value: string): string {
   return isWindows ? `"${value}"` : `'${value}'`
+}
+
+/**
+ * Shell-escape a user-controlled value so it survives interpolation into a
+ * command string executed by a real shell (child_process.exec → /bin/sh -c on
+ * Unix). Unlike shellQuote(), this escapes embedded quote characters so the
+ * value can never break out of its quoted region and re-enable expansion.
+ *
+ * On Unix: wrap in single quotes and rewrite each embedded `'` as `'\''`
+ * (close-quote, escaped-quote, reopen-quote). Inside single quotes nothing —
+ * not `$(...)`, backticks, nor `$VAR` — is special, so the value is inert.
+ * On Windows cmd.exe: wrap in double quotes and escape embedded `"` (a path
+ * cannot legally contain `"`, so this is belt-and-suspenders).
+ */
+export function shellEscape(value: string): string {
+  if (isWindows) {
+    return `"${value.replace(/"/g, '\\"')}"`
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
 /**
@@ -302,6 +327,19 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Host-internal bridge IP a host-side service must bind to so this runner's
+   * containers can reach it via host.docker.internal, or null when containers
+   * reach the host's loopback directly. Default null — Docker Desktop and other
+   * loopback-forwarding runtimes need no bridge bind. Runners that route
+   * containers through a real gateway interface (Lima, WSL2, native Docker
+   * bridge) override this so a host CDP proxy can bind that single interface
+   * instead of 0.0.0.0 (SUP-217).
+   */
+  getHostBridgeIp(): string | null {
+    return null
+  }
+
+  /**
    * Returns a suffix to append to volume mount specifications (e.g., ':U' for Podman).
    * Subclasses can override this for runtime-specific volume options.
    */
@@ -323,7 +361,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * Encapsulates hostPathForRuntime() + getVolumeMountSuffix().
    */
   public buildVolumeFlag(hostPath: string, containerPath: string): string {
-    return `"${this.hostPathForRuntime(hostPath)}:${containerPath}${this.getVolumeMountSuffix()}"`
+    // hostPath is user-controlled (a selected mount). shellEscape() (not raw
+    // double quotes) so a path like `/tmp/a$(...)` can't trigger command
+    // substitution when start() runs the joined command through a real shell.
+    return shellEscape(`${this.hostPathForRuntime(hostPath)}:${containerPath}${this.getVolumeMountSuffix()}`)
   }
 
   /**
@@ -543,7 +584,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           runner, 'run', '-d',
           '--name', containerName,
           '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
-          '-v', `"${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}"`,
+          '-v', shellEscape(`${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}`),
           ...volumes.flatMap(v => ['-v', v]),
           resourceFlags,
           additionalFlags,
@@ -631,6 +672,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             containerLogs: logs,
           },
         })
+        // Stop + remove the just-created-but-unhealthy container. Otherwise it
+        // stays process-alive, and the next start() short-circuits on the
+        // running-status early return (getInfoFromRuntime derives 'running'
+        // from inspect's State.Running, not /health), caching a container that
+        // never became healthy. Best-effort/silent so an already-gone container
+        // is harmless and cleanup failure never masks the health error. Logs
+        // were already captured above, before this removes the container.
+        await execWithPathSilent(`${runner} stop ${containerName}`)
+        await execWithPathSilent(`${runner} rm ${containerName}`)
         throw healthError
       }
 
