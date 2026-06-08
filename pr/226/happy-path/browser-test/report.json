@@ -1,17 +1,23 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: played the Example Domain page\n- The agent properly handled the browser navigation request\n- The response included the correct page title\n\nAll test requirements have been met. The agent successfully used browser capabilities to navigate to the specified URL and retrieve the page title as requested.\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Verified that the agent can open a browser, navigate to https://example.com, and report the page title as \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the SuperAgent home page with a list of agents in the sidebar",
+    "Clicked on the \"QA-20260608-190244-e882\" agent in the sidebar — The agent chat interface opened, showing the agent name and an input textbox for sending messages",
+    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — The message was successfully sent and appeared in the chat, agent status changed to \"working\"",
+    "Waited for the agent response (up to 3 minutes) — The agent completed work within 11 seconds and returned the result",
+    "Verified the response mentions \"Example Domain\" — The response clearly states: \"The page title is \"Example Domain\".\" and \"Done — the page at https://example.com has the title \"Example Domain\". Browser closed.\""
+  ],
   "bugs": [],
-  "durationMs": 99435,
-  "sessionId": "745fa016-089c-4ebe-826b-924a44bbc28b",
+  "durationMs": 69912,
+  "sessionId": "63e7e340-7644-40eb-a81c-33f2dfa5dbd5",
   "cost": {
-    "inputTokens": 400,
-    "outputTokens": 11876,
-    "cacheCreationTokens": 61772,
-    "cacheReadTokens": 1256236,
+    "inputTokens": 369,
+    "outputTokens": 11327,
+    "cacheCreationTokens": 74108,
+    "cacheReadTokens": 1190510,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.262619
+    "totalCostUsd": 0.26869
   }
 }
