@@ -37,6 +37,7 @@ export function useCreateAgent() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (data: { name: string; description?: string }) => {
       const res = await apiFetch('/api/agents', {
         method: 'POST',
@@ -62,6 +63,7 @@ export function useDeleteAgent() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (slug: string) => {
       const res = await apiFetch(`/api/agents/${slug}`, { method: 'DELETE' })
       if (!res.ok) {
@@ -125,6 +127,7 @@ export function useStartAgent() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (slug: string) => {
       const res = await apiFetch(`/api/agents/${slug}/start`, { method: 'POST' })
       if (!res.ok) {

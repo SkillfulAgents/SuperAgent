@@ -59,6 +59,7 @@ export function useUpdateWebhookTriggerPrompt() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ triggerId, prompt }: { triggerId: string; agentSlug: string; prompt: string }) => {
       const res = await apiFetch(`/api/webhook-triggers/${triggerId}/prompt`, {
         method: 'PATCH',

@@ -63,6 +63,7 @@ export function usePlatformAuthStatus() {
 
 function useInitiatePlatformLogin() {
   return useMutation<{ loginUrl: string; platformBaseUrl: string }, Error>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async () => {
       const res = await apiFetch('/api/platform-auth/initiate', {
         method: 'POST',
@@ -78,6 +79,7 @@ function useInitiatePlatformLogin() {
 
 function useRevokePlatformToken() {
   return useMutation<{ success: boolean }, Error, { clearLocal?: boolean } | undefined>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (options) => {
       const res = await apiFetch('/api/platform-auth/revoke', {
         method: 'POST',
@@ -140,6 +142,7 @@ export function useSavePlatformAccessKey() {
   const applyPlatformDefaults = useApplyPlatformDefaults()
 
   return useMutation<unknown, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (token: string) => {
       const res = await apiFetch('/api/platform-auth/complete', {
         method: 'POST',

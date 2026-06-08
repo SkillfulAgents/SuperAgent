@@ -61,6 +61,7 @@ export function useAddRemoteMcp() {
     Error,
     { name: string; url: string; authType?: string; accessToken?: string }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (data) => {
       const res = await apiFetch('/api/remote-mcps', {
         method: 'POST',
@@ -86,6 +87,7 @@ export function useRenameRemoteMcp() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, { mcpId: string; name: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ mcpId, name }) => {
       const res = await apiFetch(`/api/remote-mcps/${mcpId}`, {
         method: 'PATCH',
@@ -112,6 +114,7 @@ export function useDeleteRemoteMcp() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (id) => {
       const res = await apiFetch(`/api/remote-mcps/${id}`, {
         method: 'DELETE',
@@ -137,6 +140,7 @@ export function useAssignMcpToAgent() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, { agentSlug: string; mcpIds: string[] }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, mcpIds }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/remote-mcps`, {
         method: 'POST',
@@ -164,6 +168,7 @@ export function useRemoveMcpFromAgent() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, { agentSlug: string; mcpId: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, mcpId }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/remote-mcps/${mcpId}`, {
         method: 'DELETE',
@@ -206,6 +211,7 @@ export function useDiscoverMcpTools() {
     Error,
     string
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (mcpId) => {
       const res = await apiFetch(`/api/remote-mcps/${mcpId}/discover-tools`, {
         method: 'POST',
@@ -230,6 +236,7 @@ export function useTestMcpConnection() {
   const queryClient = useQueryClient()
 
   return useMutation<{ success: boolean; error?: string; needsAuth?: boolean }, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (mcpId) => {
       const res = await apiFetch(`/api/remote-mcps/${mcpId}/test-connection`, {
         method: 'POST',
@@ -263,6 +270,7 @@ export function useInvalidateRemoteMcps() {
  */
 export function useInitiateMcpOAuth() {
   return useMutation<{ redirectUrl: string; state: string }, Error, { mcpId?: string; name?: string; url?: string; electron?: boolean; clientName?: string; clientId?: string; clientSecret?: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (data) => {
       const res = await apiFetch('/api/remote-mcps/initiate-oauth', {
         method: 'POST',
