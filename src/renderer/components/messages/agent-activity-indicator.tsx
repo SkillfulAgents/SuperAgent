@@ -4,6 +4,7 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { apiFetch } from '@renderer/lib/api'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils'
 import { AlertTriangle, Monitor, X } from 'lucide-react'
@@ -32,6 +33,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
   const [showAllTodos, setShowAllTodos] = useState(false)
+
+  // Non-null only for a platform billing 402 the workspace can act on (see hook).
+  const billingUrl = usePlatformBillingUrl(error ?? '')
 
   // Rough token estimate for the streamed reasoning (~4 chars/token). UI-only.
   const thinkingTokens = thinkingText ? Math.ceil(thinkingText.length / 4) : 0
@@ -176,7 +180,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
     return (
       <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-        {isProviderError ? (
+        {billingUrl ? (
+          <InsufficientBalanceCard billingUrl={billingUrl} data-testid="insufficient-balance-card" />
+        ) : isProviderError ? (
           <ProviderErrorCard message={error} data-testid="provider-error-card" />
         ) : (
           <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">

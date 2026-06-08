@@ -2,6 +2,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { useState, useCallback, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
@@ -167,6 +168,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
   const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
+  const billingUrl = usePlatformBillingUrl(rawText ?? '')
+  const showBillingCard = isAssistant && !!message.apiError && !!billingUrl
 
   // Don't render assistant messages that have no text and no tool calls
   // (and aren't streaming). These are transient empty entries from partially-
@@ -227,13 +230,18 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 </div>
               )}
 
+              {/* Actionable platform billing error */}
+              {hasText && !isSlashCommand && showBillingCard && (
+                <InsufficientBalanceCard billingUrl={billingUrl!} />
+              )}
+
               {/* LLM provider error display */}
-              {hasText && !isSlashCommand && isProviderErrorMessage && (
+              {hasText && !isSlashCommand && !showBillingCard && isProviderErrorMessage && (
                 <ProviderErrorCard message={text} />
               )}
 
               {/* Text content */}
-              {hasText && !isSlashCommand && !isProviderErrorMessage && (
+              {hasText && !isSlashCommand && !showBillingCard && !isProviderErrorMessage && (
                 <div dir="auto" className={cn(
                   'prose prose-sm max-w-none min-w-0 break-words font-medium dark:prose-invert'
                 )}>
