@@ -197,12 +197,14 @@ export async function deletePoliciesForAgent(agentSlug: string): Promise<void> {
  * Used by the per-agent policy editor UI.
  *
  * Decision semantics:
- *  - 'allow' / 'block' → persisted as a row.
- *  - 'review' → NOT persisted (treated as the implicit default for absent rows).
- *    This is intentional: storing a 'review' row adds no behavior and just bloats
- *    the table. Round-tripping {operation, target, decision: 'review'} through
- *    PUT then GET will see the row disappear — clients should treat the absence
- *    of a row as 'review' and render it that way.
+ *  - 'allow' / 'block' / 'review' → all persisted as a row.
+ *    'review' is the implicit default for an absent row, but it is still stored
+ *    when set explicitly: a per-target 'review' is a meaningful OVERRIDE of a
+ *    global 'allow'/'block' (evaluate() resolves most-specific-first), and the
+ *    editor relies on the row's presence to render the toggle as active.
+ *  - To clear a setting back to the inherited default, omit the row entirely.
+ *    The editor sends 'default' for that, which the API layer drops before
+ *    calling here, so an absent row still resolves to 'review' in evaluate().
  */
 export const replacePoliciesForCallerInputSchema = z.object({
   policies: z
@@ -210,7 +212,6 @@ export const replacePoliciesForCallerInputSchema = z.object({
       z.object({
         operation: xAgentOperationSchema,
         targetSlug: z.string().nullable(),
-        // 'review' is accepted but not persisted (see docstring above).
         decision: xAgentDecisionSchema,
       }),
     )
@@ -236,9 +237,6 @@ export function replacePoliciesForCaller(
   const globalByOp = new Map<XAgentOperation, ReplacePoliciesForCallerInput['policies'][number]>()
   const specific: ReplacePoliciesForCallerInput['policies'] = []
   for (const p of policies) {
-    // Skip the implicit-default 'review' state — it's the default if no row exists,
-    // so storing it adds no value and just bloats the table.
-    if (p.decision === 'review') continue
     if (p.targetSlug === null) {
       globalByOp.set(p.operation, p)
     } else {

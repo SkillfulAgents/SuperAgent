@@ -206,14 +206,26 @@ describe('x-agent-policy-service', () => {
       expect(byTarget['invoke:bob']).toBe('block')
     })
 
-    it('skips rows with decision=review (treated as default/no-row)', async () => {
+    it('persists decision=review rows (a per-target review overrides a global allow/block)', async () => {
       replacePoliciesForCaller('alice', [
         { operation: 'invoke', targetSlug: 'bob', decision: 'allow' },
         { operation: 'read', targetSlug: 'bob', decision: 'review' },
       ])
       const rows = listPoliciesForCaller('alice')
-      expect(rows).toHaveLength(1)
-      expect(rows[0].operation).toBe('invoke')
+      expect(rows).toHaveLength(2)
+      const byOp = Object.fromEntries(rows.map((r) => [r.operation, r.decision]))
+      expect(byOp.invoke).toBe('allow')
+      expect(byOp.read).toBe('review')
+    })
+
+    it('a stored per-target review overrides a global allow in evaluate', async () => {
+      replacePoliciesForCaller('alice', [
+        { operation: 'read', targetSlug: null, decision: 'allow' },
+        { operation: 'read', targetSlug: 'bob', decision: 'review' },
+      ])
+      // Global says allow-all, but bob is explicitly pinned back to review.
+      expect(evaluate('alice', 'read', 'bob')).toBe('review')
+      expect(evaluate('alice', 'read', 'carol')).toBe('allow')
     })
 
     it('does not affect other callers', async () => {
