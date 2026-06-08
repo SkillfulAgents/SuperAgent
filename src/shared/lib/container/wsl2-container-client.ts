@@ -297,14 +297,13 @@ export class WSL2ContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Add --add-host so containers can reach the Windows host via host.docker.internal.
-   * We detect the Windows host IP from inside the WSL2 distro using its default gateway,
-   * similar to how Lima detects the macOS host IP.
-   *
-   * nerdctl's `host-gateway` resolves to the container bridge gateway (inside WSL2),
-   * NOT the Windows host, so we must resolve the actual IP.
+   * The Windows host IP as seen from inside the WSL2 distro — its default-route
+   * gateway (the host side of the vEthernet (WSL) adapter). Containers reach the
+   * host here via host.docker.internal, and it is a real host interface, NOT
+   * loopback — so a host-side proxy exposing the loopback CDP port must bind this
+   * IP, never 0.0.0.0 (SUP-217). Returns null if it can't be detected.
    */
-  protected getAdditionalRunFlags(): string {
+  getHostBridgeIp(): string | null {
     try {
       const output = execSync(
         `wsl -d ${WSL2_DISTRO_NAME} -- ip route show default`,
@@ -312,12 +311,23 @@ export class WSL2ContainerClient extends BaseContainerClient {
       ).toString().trim()
       // Output: "default via 172.22.192.1 dev eth0 ..."
       const match = output.match(/via\s+([\d.]+)/)
-      if (match) {
-        console.log(`WSL2 host IP detected: ${match[1]}`)
-        return `--add-host host.docker.internal:${match[1]}`
-      }
+      if (match) return match[1]
     } catch (e) {
       console.warn('Failed to detect host IP for WSL2 distro:', e)
+    }
+    return null
+  }
+
+  /**
+   * Map host.docker.internal to the detected Windows-host gateway IP. nerdctl's
+   * `host-gateway` resolves to the in-WSL2 bridge, not the Windows host, so we
+   * pass the resolved IP; fall back to the host-gateway literal if undetectable.
+   */
+  protected getAdditionalRunFlags(): string {
+    const ip = this.getHostBridgeIp()
+    if (ip) {
+      console.log(`WSL2 host IP detected: ${ip}`)
+      return `--add-host host.docker.internal:${ip}`
     }
     // Fallback: host-gateway may still work in some configurations
     return '--add-host host.docker.internal:host-gateway'
