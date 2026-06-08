@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { renderWithProviders } from '@renderer/test/test-utils'
 
 const captureRendererException = vi.fn()
 vi.mock('@renderer/lib/error-reporting', () => ({
@@ -99,7 +100,10 @@ describe('MessageErrorBoundary', () => {
       createdAt: new Date(),
     } as unknown as ApiMessage
 
-    render(<MessageItem message={message} sessionId="s1" agentSlug="agent" isSessionActive={false} />)
+    // A real MessageItem now depends on a QueryClient (the insufficient-balance
+    // billing hook calls usePlatformAuthStatus); render under the app providers
+    // so the crash under test is the tool call itself, not a missing provider.
+    renderWithProviders(<MessageItem message={message} sessionId="s1" agentSlug="agent" isSessionActive={false} />)
 
     expect(screen.getByText('Failed to display this tool call')).toBeInTheDocument()
     expect(screen.getByText('Running a command:')).toBeInTheDocument()
