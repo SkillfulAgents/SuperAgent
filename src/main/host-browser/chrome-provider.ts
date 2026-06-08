@@ -18,6 +18,15 @@ import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reportin
 // bridge interface that runner uses — never the LAN.
 const CDP_LOOPBACK_ADDRESS = '127.0.0.1'
 
+/** True if `ip` is assigned to a local network interface (i.e. bindable by this host). */
+function isLocalInterfaceAddress(ip: string): boolean {
+  const interfaces = os.networkInterfaces()
+  for (const addrs of Object.values(interfaces)) {
+    if (addrs?.some((addr) => addr.address === ip)) return true
+  }
+  return false
+}
+
 interface BrowserCandidate {
   browser: string
   paths: string[]
@@ -705,19 +714,39 @@ export class ChromeProvider implements HostBrowserProvider {
   }
 
   /**
-   * The host-internal bridge IP the agent container reaches the host through, or
-   * null when the container can reach the host's loopback directly (e.g. Docker
-   * Desktop). Delegated to the active container runner, which alone knows how its
-   * containers route to the host. When non-null we forward the loopback CDP port
-   * via a proxy bound to that single interface — never 0.0.0.0 (SUP-217).
+   * The host interface IP to bind the CDP forwarding proxy to, or null to skip
+   * the proxy and let the container reach Chrome's loopback CDP port directly.
+   *
+   * The active runner reports the gateway its containers use to reach the host
+   * (this same value feeds `--add-host host.docker.internal`). But we can only
+   * bind a proxy there if that gateway is an address THIS host actually has an
+   * interface for:
+   *   - socket_vmnet/shared bridges, WSL2's vEthernet, docker0 → a real, bindable
+   *     host interface that does NOT forward loopback → bind the proxy there.
+   *   - Lima's user-mode / VZ-NAT networking (the bundled default) → the gateway
+   *     (e.g. 192.168.5.2) is virtual (gvproxy/VZ framework, not a host interface),
+   *     so binding it throws EADDRNOTAVAIL. It also needs no proxy: that mode
+   *     forwards the gateway to the host's loopback, so the container reaches
+   *     Chrome's 127.0.0.1 CDP directly — exactly how it already reaches
+   *     HOST_APP_URL. Like Docker Desktop, return null here.
    */
   private getHostBridgeIp(instanceId: string): string | null {
+    let ip: string | null = null
     try {
-      return containerManager.getClient(instanceId).getHostBridgeIp()
+      ip = containerManager.getClient(instanceId).getHostBridgeIp()
     } catch (error) {
       console.warn('[ChromeProvider] Could not resolve host bridge IP for CDP proxy:', error)
       return null
     }
+    if (!ip) return null
+    if (!isLocalInterfaceAddress(ip)) {
+      console.log(
+        `[ChromeProvider] CDP: bridge IP ${ip} is not a bindable host interface ` +
+        `(user-mode networking forwards it to host loopback); using loopback-direct, no proxy`
+      )
+      return null
+    }
+    return ip
   }
 
   private async findFreePort(): Promise<number> {

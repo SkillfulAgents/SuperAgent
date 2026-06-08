@@ -84,9 +84,24 @@ const h = vi.hoisted(() => {
   const getHostBridgeIp = vi.fn(() => hostBridgeIp)
   function setHostBridgeIp(ip: string | null) { hostBridgeIp = ip }
 
+  // Which IPs this host "has" as local interfaces — controls whether ChromeProvider
+  // treats a reported bridge IP as bindable (run the proxy) or virtual (skip the
+  // proxy, loopback-direct). A virtual user-mode gateway (e.g. Lima 192.168.5.2) is
+  // NOT in this set, so binding it would throw EADDRNOTAVAIL.
+  let localIps: string[] = []
+  function setLocalIps(ips: string[]) { localIps = ips }
+  function networkInterfaces() {
+    return {
+      test0: localIps.map((address) => ({
+        address, family: 'IPv4', internal: false, netmask: '255.255.255.0', mac: '00:00:00:00:00:00', cidr: null,
+      })),
+    }
+  }
+
   function reset() {
     listenCalls.length = 0
     hostBridgeIp = null
+    localIps = []
     getHostBridgeIp.mockClear()
     spawnMock.mockClear().mockImplementation((_cmd: string, _args: string[]) => makeChild(4321))
     execSyncMock.mockClear().mockImplementation(() => 'default via 172.22.192.1 dev eth0')
@@ -94,10 +109,19 @@ const h = vi.hoisted(() => {
     connect.mockClear()
   }
 
-  return { listenCalls, createServer, connect, netMock, spawnMock, execSyncMock, getHostBridgeIp, setHostBridgeIp, reset }
+  return { listenCalls, createServer, connect, netMock, spawnMock, execSyncMock, getHostBridgeIp, setHostBridgeIp, networkInterfaces, setLocalIps, reset }
 })
 
 vi.mock('child_process', () => ({ spawn: h.spawnMock, execSync: h.execSyncMock }))
+
+// ChromeProvider only binds the proxy to a bridge IP that is an actual local
+// interface; otherwise it falls back to loopback-direct. Control the interface
+// list per test, preserving the rest of `os`.
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>()
+  const networkInterfaces = () => h.networkInterfaces()
+  return { ...actual, networkInterfaces, default: { ...actual, networkInterfaces } }
+})
 
 vi.mock('net', () => ({ default: h.netMock, ...h.netMock }))
 
@@ -204,18 +228,19 @@ describe('ChromeProvider CDP bind address (SUP-217)', () => {
     expect(hosts).not.toContain('0.0.0.0')
   })
 
-  it('bridged runner (Lima / native Docker / Podman): proxy binds the runner bridge IP, never 0.0.0.0', async () => {
-    // Lima (the majority runner) routes containers to the macOS host via the VM
-    // gateway (e.g. 192.168.64.1), NOT loopback. The CDP proxy must bind exactly
-    // that host-internal interface so the container can reach it — never 0.0.0.0.
-    // (Proxy selection is platform-independent; linux spawns cleanly in-harness.)
+  it('bridged runner with a real host interface (socket_vmnet / docker0): proxy binds that IP, never 0.0.0.0', async () => {
+    // A shared bridge gateway (e.g. socket_vmnet 192.168.105.1, or docker0) is an
+    // actual host interface and does NOT forward loopback, so the CDP proxy must
+    // bind exactly that host-internal IP — never 0.0.0.0. (Proxy selection is
+    // platform-independent; linux spawns cleanly in-harness.)
     setPlatform('linux')
-    h.setHostBridgeIp('192.168.64.1')
+    h.setHostBridgeIp('192.168.105.1')
+    h.setLocalIps(['192.168.105.1']) // it IS a bindable host interface
 
     await provider.launch('agent1')
 
     const hosts = h.listenCalls.map((c) => c.host)
-    expect(hosts).toContain('192.168.64.1') // proxy bound to the runner's bridge IP
+    expect(hosts).toContain('192.168.105.1') // proxy bound to the runner's bridge IP
     expect(hosts).not.toContain('0.0.0.0')
 
     const args = getChromeArgs()
@@ -224,11 +249,34 @@ describe('ChromeProvider CDP bind address (SUP-217)', () => {
     expect(args).toContain('--remote-debugging-address=127.0.0.1')
   })
 
+  it('Lima user-mode / VZ-NAT virtual gateway (not a host interface): no proxy, loopback-direct — never tries to bind it', async () => {
+    // Regression for EADDRNOTAVAIL: the bundled Lima (vmType: vz, no networks) uses
+    // user-mode networking whose gateway (e.g. 192.168.5.2) is virtual — NOT a host
+    // interface — so binding a proxy there throws. It also needs no proxy: that mode
+    // forwards the gateway to the host loopback, so the container reaches Chrome's
+    // 127.0.0.1 directly. We must detect the gateway isn't bindable and skip the proxy.
+    setPlatform('linux')
+    h.setHostBridgeIp('192.168.5.2')
+    h.setLocalIps([]) // 192.168.5.2 is NOT a local interface (virtual gateway)
+
+    await provider.launch('agent1')
+
+    const hosts = h.listenCalls.map((c) => c.host)
+    // Never attempt to bind the virtual gateway (that was the EADDRNOTAVAIL crash)…
+    expect(hosts).not.toContain('192.168.5.2')
+    expect(hosts).not.toContain('0.0.0.0')
+    // …only the loopback findFreePort bind remains; Chrome stays on loopback.
+    expect(hosts.every((host) => host === '127.0.0.1')).toBe(true)
+    const args = getChromeArgs()
+    expect(args).toContain('--remote-debugging-address=127.0.0.1')
+  })
+
   it('win32 (WSL2): proxy binds the gateway IP, never 0.0.0.0; Chrome arg loopback', async () => {
     // On Windows Chrome ignores --remote-debugging-address and always binds
     // loopback, so the proxy is required; it must bind the WSL2 gateway IP.
     setPlatform('win32')
     h.setHostBridgeIp('172.22.192.1')
+    h.setLocalIps(['172.22.192.1']) // WSL2's vEthernet adapter is a real host interface
 
     await provider.launch('agent1')
 
