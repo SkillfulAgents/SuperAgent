@@ -565,6 +565,50 @@ describe('platform-auth-service', () => {
     })
   })
 
+  it('memoizes introspection per user within the TTL (second read does not re-fetch)', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    await getEnrichedPlatformAuthStatus('ba-user')
+    const second = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(second).toMatchObject({ email: 'owner@example.com', orgName: 'Acme Inc', role: 'owner' })
+  })
+
+  it('caches a failed introspection so it is not retried within the TTL', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: 'nope' } }), { status: 401 }),
+    )
+
+    await getEnrichedPlatformAuthStatus('ba-user')
+    const second = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(second).toMatchObject({ source: 'env', email: null, orgName: null, role: null })
+  })
+
   it('does not introspect for settings-stored (opaque key) connections', async () => {
     await savePlatformAuth('local', {
       token: 'plat_superagent_token_1234567890abcdef',

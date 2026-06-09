@@ -39,6 +39,10 @@ export function usePlatformAuthStatus() {
   const queryClient = useQueryClient()
   const query = useQuery<PlatformAuthStatus>({
     queryKey: ['platform-auth'],
+    // Matches the server-side introspection TTL: the status only changes via
+    // connect/revoke (which invalidate this key explicitly), so remounts within
+    // the window shouldn't re-hit the endpoint.
+    staleTime: 5 * 60 * 1000,
     queryFn: async () => {
       const res = await apiFetch('/api/platform-auth')
       if (!res.ok) {

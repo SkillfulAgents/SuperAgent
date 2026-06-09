@@ -152,6 +152,9 @@ function buildEnvManagedStatus(envToken: string, orgId: string | null): Platform
 
 // Verifies PLATFORM_TOKEN against the issuer JWKS at startup; warns on failure.
 export async function initEnvManagedPlatformStatus(): Promise<void> {
+  // The env token (and so the org the introspect resolves against) may have
+  // changed since the cache was filled.
+  enrichedAccountCache.clear()
   if (!isAuthMode()) {
     cachedEnvManagedStatus = null
     return
@@ -186,6 +189,7 @@ export async function initEnvManagedPlatformStatus(): Promise<void> {
 
 export function _resetEnvManagedPlatformStatusForTest(): void {
   cachedEnvManagedStatus = undefined
+  enrichedAccountCache.clear()
 }
 
 function readRecord(): PlatformAuthRecord | null {
@@ -336,6 +340,16 @@ interface EnrichedEnvAccount {
   role: string | null
 }
 
+// Introspection is memoized per user: the Account screen re-fetches the status
+// on every mount/focus, and the membership it reflects changes rarely.
+// Failures are cached too, so a proxy without `/v1/account` org-JWT support
+// doesn't cost a failing round-trip (and a Sentry event) per page view.
+const ENRICHED_ACCOUNT_TTL_MS = 5 * 60 * 1000
+const enrichedAccountCache = new Map<
+  string,
+  { account: EnrichedEnvAccount | null; expiresAt: number }
+>()
+
 async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvAccount | null> {
   const token = getPlatformAccessToken()
   if (!token) return null
@@ -368,7 +382,16 @@ export async function getEnrichedPlatformAuthStatus(userId?: string): Promise<Pl
   const base = getPlatformAuthStatus(userId)
   if (base.source !== 'env' || !base.connected || !userId) return base
 
-  const account = await introspectEnvManagedAccount(userId)
+  let entry = enrichedAccountCache.get(userId)
+  if (!entry || entry.expiresAt <= Date.now()) {
+    entry = {
+      account: await introspectEnvManagedAccount(userId),
+      expiresAt: Date.now() + ENRICHED_ACCOUNT_TTL_MS,
+    }
+    enrichedAccountCache.set(userId, entry)
+  }
+
+  const { account } = entry
   if (!account) return base
 
   return {
