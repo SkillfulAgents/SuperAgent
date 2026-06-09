@@ -1,3 +1,7 @@
+import { formatDistanceStrict } from 'date-fns'
+import { enUS } from 'date-fns/locale'
+import type { Locale } from 'date-fns'
+
 // MCP `mappedAt` can be a numeric-string epoch in ms; OAuth `createdAt` is
 // an ISO string. The numeric branch only protects the MCP case.
 export function safeDate(value: string | number): Date {
@@ -6,24 +10,36 @@ export function safeDate(value: string | number): Date {
   return Number.isFinite(num) ? new Date(num) : new Date(value)
 }
 
+// `formatDistanceStrict` only ever emits the exact-unit tokens (xSeconds,
+// xMinutes, ...) — never the "about"/"almost" variants.
+const COMPACT_UNITS: Record<string, string> = {
+  xMinutes: 'm',
+  xHours: 'h',
+  xDays: 'd',
+  xMonths: 'mo',
+  xYears: 'y',
+}
+
+const compactDistanceLocale: Locale = {
+  ...enUS,
+  formatDistance: (token, count, options) => {
+    if (token === 'xSeconds') return 'just now'
+    const unit = COMPACT_UNITS[token]
+    if (!unit) return enUS.formatDistance(token, count, options)
+    return options?.addSuffix ? `${count}${unit} ago` : `${count}${unit}`
+  },
+}
+
 /**
- * Compact relative timestamp — e.g. "5m", "3h", "2d", "4w", "6mo", "2y".
- * Designed for dense row metadata where "5 minutes ago" is too long.
+ * Compact relative timestamp — "just now", "5m ago", "3h ago", "2d ago",
+ * "2mo ago", "1y ago". Designed for dense row metadata where
+ * "5 minutes ago" is too long. Unit boundaries come from date-fns
+ * `formatDistanceStrict`, which has no weeks tier (10 days → "10d ago").
+ * Returns '' for invalid dates (`safeDate` can produce one).
  */
 export function formatCompactDistance(date: Date, now: Date = new Date()): string {
-  const diffMs = Math.max(0, now.getTime() - date.getTime())
-  const sec = Math.floor(diffMs / 1000)
-  if (sec < 60) return 'just now'
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m ago`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h ago`
-  const day = Math.floor(hr / 24)
-  if (day < 7) return `${day}d ago`
-  const week = Math.floor(day / 7)
-  if (week < 5) return `${week}w ago`
-  const month = Math.floor(day / 30)
-  if (month < 12) return `${month}mo ago`
-  const year = Math.floor(day / 365)
-  return `${year}y ago`
+  if (Number.isNaN(date.getTime())) return ''
+  // Clamp future dates (clock skew) to "just now" rather than "in 5m".
+  const past = date.getTime() > now.getTime() ? now : date
+  return formatDistanceStrict(past, now, { addSuffix: true, locale: compactDistanceLocale })
 }
