@@ -14,7 +14,7 @@
 
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
-import { and, eq, isNull, or } from 'drizzle-orm'
+import { and, desc, eq, isNull, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
 
@@ -72,6 +72,10 @@ export function getPolicy(
         targetMatch(targetSlug),
       ),
     )
+    // Defense-in-depth: SQLite treats NULL targets as distinct in the unique
+    // index, so a pre-existing duplicate global row could otherwise be resolved
+    // non-deterministically. Order by updatedAt so the latest write always wins.
+    .orderBy(desc(xAgentPolicies.updatedAt))
     .limit(1)
     .all()
   return rows[0] ?? null
@@ -193,12 +197,14 @@ export async function deletePoliciesForAgent(agentSlug: string): Promise<void> {
  * Used by the per-agent policy editor UI.
  *
  * Decision semantics:
- *  - 'allow' / 'block' → persisted as a row.
- *  - 'review' → NOT persisted (treated as the implicit default for absent rows).
- *    This is intentional: storing a 'review' row adds no behavior and just bloats
- *    the table. Round-tripping {operation, target, decision: 'review'} through
- *    PUT then GET will see the row disappear — clients should treat the absence
- *    of a row as 'review' and render it that way.
+ *  - 'allow' / 'block' / 'review' → all persisted as a row.
+ *    'review' is the implicit default for an absent row, but it is still stored
+ *    when set explicitly: a per-target 'review' is a meaningful OVERRIDE of a
+ *    global 'allow'/'block' (evaluate() resolves most-specific-first), and the
+ *    editor relies on the row's presence to render the toggle as active.
+ *  - To clear a setting back to the inherited default, omit the row entirely.
+ *    The editor sends 'default' for that, which the API layer drops before
+ *    calling here, so an absent row still resolves to 'review' in evaluate().
  */
 export const replacePoliciesForCallerInputSchema = z.object({
   policies: z
@@ -206,7 +212,6 @@ export const replacePoliciesForCallerInputSchema = z.object({
       z.object({
         operation: xAgentOperationSchema,
         targetSlug: z.string().nullable(),
-        // 'review' is accepted but not persisted (see docstring above).
         decision: xAgentDecisionSchema,
       }),
     )
@@ -219,14 +224,32 @@ export function replacePoliciesForCaller(
   policies: ReplacePoliciesForCallerInput['policies'],
 ): void {
   const now = new Date()
+
+  // Dedupe the payload before inserting. The (caller, target, operation) unique
+  // index already rejects duplicate NON-null target rows, but SQLite treats NULL
+  // as distinct, so two global entries like (alice, NULL, 'list') would both
+  // persist and getPolicy/evaluate would resolve them non-deterministically
+  // (limit(1)). Collapse global (null-target) entries per operation with
+  // last-write-wins — later payload entries overwrite earlier ones — mirroring
+  // the upsert semantics setPolicy uses for the same NULL-distinct case. Non-null
+  // duplicates are intentionally left to the unique index (a client sending two
+  // conflicting specific-target rows is an error and rolls back the transaction).
+  const globalByOp = new Map<XAgentOperation, ReplacePoliciesForCallerInput['policies'][number]>()
+  const specific: ReplacePoliciesForCallerInput['policies'] = []
+  for (const p of policies) {
+    if (p.targetSlug === null) {
+      globalByOp.set(p.operation, p)
+    } else {
+      specific.push(p)
+    }
+  }
+  const toInsert = [...specific, ...globalByOp.values()]
+
   db.transaction(() => {
     db.delete(xAgentPolicies)
       .where(eq(xAgentPolicies.callerAgentSlug, callerSlug))
       .run()
-    for (const p of policies) {
-      // Skip the implicit-default 'review' state — it's the default if no row exists,
-      // so storing it adds no value and just bloats the table.
-      if (p.decision === 'review') continue
+    for (const p of toInsert) {
       db.insert(xAgentPolicies)
         .values({
           id: randomUUID(),

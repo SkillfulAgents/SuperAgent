@@ -44,6 +44,7 @@ export function useSaveSkillFile() {
     Error,
     { agentSlug: string; skillDir: string; filePath: string; content: string }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, skillDir, filePath, content }) => {
       const res = await apiFetch(
         `/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}/files/content`,

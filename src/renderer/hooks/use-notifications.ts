@@ -47,6 +47,7 @@ export function useMarkNotificationRead() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (notificationId: string) => {
       const res = await apiFetch(`/api/notifications/${notificationId}/read`, {
         method: 'POST',
@@ -67,6 +68,7 @@ export function useMarkAllNotificationsRead() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async () => {
       const res = await apiFetch('/api/notifications/read-all', {
         method: 'POST',
@@ -87,6 +89,7 @@ export function useMarkSessionNotificationsRead() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (sessionId: string) => {
       const res = await apiFetch(`/api/notifications/read-by-session/${sessionId}`, {
         method: 'POST',

@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
+import type { MiddlewareHandler } from 'hono'
 
 import { Authenticated } from '../middleware/auth'
+import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { buildPlatformLoginUrl, getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 import {
@@ -21,6 +23,27 @@ import { setErrorReportingUser } from '@shared/lib/error-reporting'
 const platformAuth = new Hono()
 
 platformAuth.use('*', Authenticated())
+
+// SUP-201: In AUTH_MODE platform credentials are deployment-managed (the
+// `PLATFORM_TOKEN` env var) and the settings-backed connection is a single
+// deployment-global record. `savePlatformAuth`/`revokePlatformToken` write and
+// clear that shared record while ignoring the caller, so guarding these routes
+// with only `Authenticated()` let any logged-in user overwrite or wipe the
+// workspace-wide platform identity (breaking everyone's platform-backed flows).
+// The UI already renders platform auth read-only in auth mode ("managed by this
+// deployment"); mirror that on the API by rejecting the mutating endpoints
+// outright. Connection changes are made via the deployment environment bundle.
+// Auth mode is web-only (Electron's OAuth `/complete` caller is never in auth
+// mode), so this does not affect the local/desktop connect flow.
+const rejectMutationInAuthMode: MiddlewareHandler = async (c, next) => {
+  if (isAuthMode()) {
+    return c.json(
+      { error: 'Platform access is managed by this deployment and cannot be changed here.' },
+      403,
+    )
+  }
+  return next()
+}
 
 platformAuth.get('/', async (c) => {
   const userId = getCurrentUserId(c)
@@ -74,7 +97,7 @@ platformAuth.post('/initiate', (c) => {
   })
 })
 
-platformAuth.post('/complete', async (c) => {
+platformAuth.post('/complete', rejectMutationInAuthMode, async (c) => {
   const userId = getCurrentUserId(c)
   const body = await c.req.json<{
     token?: string
@@ -119,7 +142,7 @@ platformAuth.post('/complete', async (c) => {
   return c.json(status)
 })
 
-platformAuth.post('/revoke', async (c) => {
+platformAuth.post('/revoke', rejectMutationInAuthMode, async (c) => {
   const body = await c.req.json<{ clearLocal?: boolean }>().catch(() => ({} as { clearLocal?: boolean }))
   const success = await revokePlatformToken({ clearLocal: body.clearLocal })
 

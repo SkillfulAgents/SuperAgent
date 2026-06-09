@@ -150,6 +150,7 @@ export function useRunScheduledTaskNow() {
  */
 export function useDescribeSchedule() {
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ taskId }: { taskId: string }) => {
       const res = await apiFetch(`/api/scheduled-tasks/${taskId}/describe-schedule`, {
         method: 'POST',
@@ -165,6 +166,7 @@ export function useDescribeSchedule() {
  */
 export function useParseSchedule() {
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ taskId, description }: { taskId: string; description: string }) => {
       const res = await apiFetch(`/api/scheduled-tasks/${taskId}/parse-schedule`, {
         method: 'POST',
@@ -187,6 +189,7 @@ export function useUpdateScheduledTaskPrompt() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ taskId, prompt }: { taskId: string; agentSlug: string; prompt: string }) => {
       const res = await apiFetch(`/api/scheduled-tasks/${taskId}/prompt`, {
         method: 'PATCH',

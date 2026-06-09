@@ -83,6 +83,7 @@ export function XAgentPoliciesTab({ agentSlug }: XAgentPoliciesTabProps) {
 
   // Single mutation: build the full policy set with the change applied, PUT it.
   const savePolicies = useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (params: {
       operation: Operation
       targetSlug: string | null

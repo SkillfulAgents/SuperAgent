@@ -19,6 +19,7 @@ export function useUpdateUserSettings() {
   const queryClient = useQueryClient()
 
   return useMutation<UserSettingsData, Error, Partial<UserSettingsData>>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (data) => {
       const res = await apiFetch('/api/user-settings', {
         method: 'PUT',

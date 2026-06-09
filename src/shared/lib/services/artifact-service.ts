@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 
 const ARTIFACT_SCREENSHOT_FILENAME = 'screenshot.png'
 
@@ -87,7 +88,7 @@ export async function renameArtifactOnFilesystem(
   // Ensure the path is within the expected artifacts directory
   const artifactsDir = path.join(workspaceDir, 'artifacts')
   const resolved = path.resolve(artifactDir)
-  if (!resolved.startsWith(path.resolve(artifactsDir) + path.sep)) {
+  if (!isPathWithinDir(artifactsDir, resolved)) {
     throw new Error('Invalid artifact slug')
   }
 
@@ -116,7 +117,7 @@ export async function deleteArtifactFromFilesystem(
   // Ensure the path is within the expected artifacts directory
   const artifactsDir = path.join(workspaceDir, 'artifacts')
   const resolved = path.resolve(artifactDir)
-  if (!resolved.startsWith(path.resolve(artifactsDir) + path.sep)) {
+  if (!isPathWithinDir(artifactsDir, resolved)) {
     throw new Error('Invalid artifact slug')
   }
 

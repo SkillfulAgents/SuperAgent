@@ -31,6 +31,14 @@ let runIsUserVisible = false
 const INITIAL_CHECK_DELAY_MS = 30_000
 const RECURRING_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
 
+// Hard ceiling on a single check. electron-updater can hang silently — no
+// 'error' event, no resolution — on flaky networks (e.g. a check fired right
+// after macOS wakes from sleep, before wifi reconnects). The 'checking-for-update'
+// event has already painted the UI to 'checking' (a disabled spinner) by then, so
+// without this backstop the button sticks there forever. 25s is well past a
+// healthy check (~1-3s) but short enough not to strand the user.
+const CHECK_TIMEOUT_MS = 25_000
+
 async function getAutoUpdater() {
   const mod = await import('electron-updater')
   return mod.autoUpdater ?? (mod as any).default?.autoUpdater
@@ -105,9 +113,33 @@ async function runUpdateCheck({ silent }: { silent: boolean }): Promise<void> {
   }
   runIsUserVisible = !silent
   runningCheck = (async () => {
+    let watchdog: NodeJS.Timeout | undefined
     try {
-      await runUpdateCheckBody()
+      // runUpdateCheckBody handles its own errors internally, so the only thing
+      // that rejects the race is the watchdog — i.e. a genuine hang where the
+      // updater never fired a terminal event. Reset the stuck 'checking' UI then.
+      await Promise.race([
+        runUpdateCheckBody(),
+        new Promise<never>((_, reject) => {
+          watchdog = setTimeout(
+            () => reject(new Error('Timed out checking for updates')),
+            CHECK_TIMEOUT_MS,
+          )
+        }),
+      ])
+    } catch (err) {
+      // Only clobber if we're still stuck on 'checking'; if the body already
+      // landed a terminal state the race resolved and we never get here.
+      if (currentStatus.state === 'checking') {
+        if (runIsUserVisible) {
+          const message = err instanceof Error ? err.message : String(err)
+          setStatus({ state: 'error', error: message })
+        } else {
+          setStatus({ state: 'idle' })
+        }
+      }
     } finally {
+      if (watchdog) clearTimeout(watchdog)
       runningCheck = null
     }
   })()
@@ -216,6 +248,11 @@ async function runUpdateCheckBody() {
     if (runIsUserVisible) {
       const message = err instanceof Error ? err.message : String(err)
       setStatus({ state: 'error', error: message })
+    } else if (currentStatus.state === 'checking') {
+      // Silent check failed — clear the spinner the 'checking-for-update' event
+      // painted, without surfacing an error the user never asked for. Back to
+      // 'idle' ("could not verify"), not 'not-available' (a false "up to date").
+      setStatus({ state: 'idle' })
     }
   }
 }
@@ -367,9 +404,14 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
           level: 'warning',
         })
       }
-      // Errors during a purely silent background check should not flip the UI
-      // to error state — the user never asked for the check.
-      if (runningCheck && !runIsUserVisible) return
+      // Errors during a purely silent background check should not flip the UI to
+      // an alarming error state — the user never asked for the check. But the
+      // 'checking-for-update' event already painted 'checking', so we still have
+      // to clear that spinner or the button sticks on it (see runUpdateCheckBody).
+      if (runningCheck && !runIsUserVisible) {
+        if (currentStatus.state === 'checking') setStatus({ state: 'idle' })
+        return
+      }
       setStatus({ state: 'error', error: err.message })
     })
 

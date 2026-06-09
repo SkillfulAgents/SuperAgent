@@ -81,6 +81,7 @@ export function useInitiateConnection() {
   const { track } = useAnalyticsTracking()
 
   return useMutation<InitiateConnectionResponse, Error, { providerSlug: string; electron?: boolean; location?: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ providerSlug, electron }) => {
       const res = await apiFetch('/api/connected-accounts/initiate', {
         method: 'POST',
@@ -108,6 +109,7 @@ export function useDeleteConnectedAccount() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (accountId) => {
       const res = await apiFetch(`/api/connected-accounts/${accountId}`, {
         method: 'DELETE',
@@ -134,6 +136,7 @@ export function useRenameConnectedAccount() {
   const queryClient = useQueryClient()
 
   return useMutation<ConnectedAccount, Error, { accountId: string; displayName: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ accountId, displayName }) => {
       const res = await apiFetch(`/api/connected-accounts/${accountId}`, {
         method: 'PATCH',
@@ -163,6 +166,7 @@ export function useAssignAccountsToAgent() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, { agentSlug: string; accountIds: string[] }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, accountIds }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts`, {
         method: 'POST',
@@ -191,6 +195,7 @@ export function useRemoveAgentConnectedAccount() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, { agentSlug: string; accountId: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, accountId }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts/${accountId}`, {
         method: 'DELETE',

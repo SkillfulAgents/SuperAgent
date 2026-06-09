@@ -3,6 +3,7 @@ import fs from 'fs'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
 import { openZipFromBuffer, detectZipPrefix } from '@shared/lib/utils/zip'
 import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
+import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { withRetry, NonRetryableError } from '@shared/lib/utils/retry'
 import { atomicSwapCacheDir } from './atomic-cache-swap'
 import {
@@ -138,7 +139,7 @@ async function downloadAndExtract(
       if (entryName.startsWith('__MACOSX/')) continue
 
       const destPath = path.resolve(destDir, entryName)
-      if (!destPath.startsWith(path.resolve(destDir) + path.sep)) continue
+      if (!isPathWithinDir(destDir, destPath)) continue
 
       await ensureDirectory(path.dirname(destPath))
       const bytesWritten = await reader.extractEntry(

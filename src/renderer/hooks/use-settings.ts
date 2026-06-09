@@ -133,6 +133,7 @@ export function useRefreshAvailability() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async () => {
       const res = await apiFetch('/api/settings/refresh-availability', {
         method: 'POST',
@@ -150,6 +151,7 @@ export function useStartRunner() {
   const queryClient = useQueryClient()
 
   return useMutation<StartRunnerResponse, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (runner) => {
       const res = await apiFetch('/api/settings/start-runner', {
         method: 'POST',
@@ -178,6 +180,7 @@ export function useRestartRunner() {
   const queryClient = useQueryClient()
 
   return useMutation<StartRunnerResponse, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (runner) => {
       // Immediately invalidate so the next poll sees the runner as stopped
       queryClient.invalidateQueries({ queryKey: ['settings'] })

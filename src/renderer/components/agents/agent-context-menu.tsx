@@ -1,5 +1,6 @@
 
 import { useState, useCallback } from 'react'
+import { toast } from 'sonner'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -73,6 +74,7 @@ export function AgentContextMenu({
       handleAgentDeleted(agent.slug)
     } catch (error) {
       console.error('Failed to delete agent:', error)
+      toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
     } finally {
       setIsDeleting(false)
     }

@@ -10,6 +10,7 @@ import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 
 interface SubAgentBlockProps {
   toolCall: ApiToolCall
@@ -245,7 +246,7 @@ export function SubAgentBlock({
             {visibleItems.map((item) =>
               item.kind === 'text' ? (
                 <div key={item.key} className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
                     {item.text}
                   </ReactMarkdown>
                 </div>
@@ -262,7 +263,7 @@ export function SubAgentBlock({
             {/* Streaming text from subagent (not yet persisted) */}
             {subagentStreamingMessage && !isStreamingMessagePersisted && (
               <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
                   {subagentStreamingMessage}
                 </ReactMarkdown>
               </div>
@@ -279,7 +280,7 @@ export function SubAgentBlock({
             {/* Result summary from tool_result (available immediately, no JSONL refetch needed) */}
             {resultText && !isResultInFlatItems && !isRunning && (
               <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
                   {resultText}
                 </ReactMarkdown>
               </div>

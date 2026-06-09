@@ -16,6 +16,7 @@ import { getDataDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { withRetry } from '@shared/lib/utils/retry'
+import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   getAgentWorkspaceDir,
   readFileOrNull,
@@ -1868,7 +1869,9 @@ export async function importSkillFromZip(
       if (baseName === '.skillset-metadata.json' || baseName === '.skillset-original.md') continue
 
       const destPath = path.resolve(destDir, entryName)
-      if (!destPath.startsWith(destDir)) continue
+      // Defense-in-depth: validateSkillZip already rejects `..`/absolute entries
+      // upfront, but confirm genuine containment here too (prefix-safe).
+      if (!isPathWithinDir(destDir, destPath)) continue
 
       await ensureDirectory(path.dirname(destPath))
       const bytesWritten = await reader.extractEntry(

@@ -36,7 +36,7 @@ import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
 import { authEnforcementMiddleware, getAuthSettings } from './middleware/auth-enforcement'
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
-import { LocalModeAuth } from './middleware/local-mode-auth'
+import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 
 const app = new Hono()
 
@@ -57,11 +57,9 @@ if (!isAuthMode()) {
   const localModeAuth = LocalModeAuth()
 
   app.use('/api/*', async (c, next) => {
-    const path = c.req.path
-    // Container endpoints: protected by IsAgent() bearer tokens
-    if (path.startsWith('/api/proxy/') ||
-        path.startsWith('/api/mcp-proxy/') ||
-        path.startsWith('/api/browser/')) {
+    // Container endpoints: protected by per-agent bearer tokens, and reached
+    // from a non-loopback container IP — they must skip the localhost check.
+    if (isContainerFacingPath(c.req.path)) {
       return next()
     }
     return localModeAuth(c, next)

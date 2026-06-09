@@ -3,6 +3,7 @@ import os from 'os'
 import fs from 'fs'
 import crypto from 'crypto'
 import { getAgentDir } from '@shared/lib/utils/file-storage'
+import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
 import { agentMountsSchema } from './mount-schema'
 
@@ -46,9 +47,7 @@ function getCloudStoragePrefixes(): string[] {
 export function isCloudStoragePath(hostPath: string): boolean {
   if (process.platform !== 'darwin') return false
   const normalized = path.resolve(hostPath)
-  return getCloudStoragePrefixes().some(
-    (prefix) => normalized === prefix || normalized.startsWith(prefix + path.sep)
-  )
+  return getCloudStoragePrefixes().some((prefix) => isPathWithinDir(prefix, normalized))
 }
 
 /** User-facing message shown when a cloud-synced folder is rejected as a mount. */

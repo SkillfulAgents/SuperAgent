@@ -37,6 +37,7 @@ export function useCreateAgent() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (data: { name: string; description?: string }) => {
       const res = await apiFetch('/api/agents', {
         method: 'POST',
@@ -62,9 +63,18 @@ export function useDeleteAgent() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (slug: string) => {
       const res = await apiFetch(`/api/agents/${slug}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to delete agent')
+      if (!res.ok) {
+        // Surface the server's message (e.g. the SUP-209 "container is busy" 409)
+        // so the UI can explain why the delete failed, not a generic string.
+        const message = await res
+          .json()
+          .then((d) => (d && typeof d.error === 'string' ? d.error : null))
+          .catch(() => null)
+        throw new Error(message ?? 'Failed to delete agent')
+      }
       // 204 No Content - no body to parse
     },
     onSuccess: () => {
@@ -117,6 +127,7 @@ export function useStartAgent() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (slug: string) => {
       const res = await apiFetch(`/api/agents/${slug}/start`, { method: 'POST' })
       if (!res.ok) {

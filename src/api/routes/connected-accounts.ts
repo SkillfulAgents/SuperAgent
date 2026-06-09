@@ -11,11 +11,12 @@ import {
 } from '@shared/lib/account-providers'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { isOwnedByCaller } from '@shared/lib/auth/ownership'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { countActiveTriggersPerAccount } from '@shared/lib/services/webhook-trigger-service'
+import { countActiveTriggersPerAccount, cancelTriggersForConnectedAccount } from '@shared/lib/services/webhook-trigger-service'
 
 const connectedAccountsRouter = new Hono()
 
@@ -123,14 +124,16 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       return c.json({ error: 'Missing required field: providerSlug' }, 400)
     }
 
-    // If reconnecting, verify the account exists and belongs to this user
+    // If reconnecting, verify the account exists and belongs to this user.
+    // In auth mode, scope ownership to the acting user so a user cannot take
+    // over another user's connected account by guessing its id (SUP-198).
     if (reconnectAccountId) {
       const [existing] = await db
         .select()
         .from(connectedAccounts)
         .where(eq(connectedAccounts.id, reconnectAccountId))
         .limit(1)
-      if (!existing) {
+      if (!existing || !isOwnedByCaller(c, existing)) {
         return c.json({ error: 'Account not found' }, 404)
       }
     }
@@ -236,12 +239,22 @@ connectedAccountsRouter.post('/complete', async (c) => {
     let id: string
 
     if (reconnectAccountId) {
-      // Look up old connection ID before updating so we can clean it up remotely
+      // Look up old connection ID (and owner) before updating so we can clean it
+      // up remotely and verify ownership.
       const [oldRecord] = await db
-        .select({ providerConnectionId: connectedAccounts.providerConnectionId })
+        .select({
+          providerConnectionId: connectedAccounts.providerConnectionId,
+          userId: connectedAccounts.userId,
+        })
         .from(connectedAccounts)
         .where(eq(connectedAccounts.id, reconnectAccountId))
         .limit(1)
+
+      // The account must exist and, in auth mode, be owned by the acting user.
+      // Otherwise a user could overwrite another user's connection (SUP-198).
+      if (!oldRecord || !isOwnedByCaller(c, oldRecord)) {
+        return c.json({ error: 'Account not found' }, 404)
+      }
 
       // Reconnecting: update existing record to preserve agent mappings and scope policies
       await db.update(connectedAccounts)
@@ -354,10 +367,21 @@ connectedAccountsRouter.get('/callback', async (c) => {
 
     if (reconnectAccountId) {
       const [oldRecord] = await db
-        .select({ providerConnectionId: connectedAccounts.providerConnectionId })
+        .select({
+          providerConnectionId: connectedAccounts.providerConnectionId,
+          userId: connectedAccounts.userId,
+        })
         .from(connectedAccounts)
         .where(eq(connectedAccounts.id, reconnectAccountId))
         .limit(1)
+
+      // The account must exist and, in auth mode, be owned by the acting user.
+      // Otherwise a user could overwrite another user's connection (SUP-198).
+      if (!oldRecord || !isOwnedByCaller(c, oldRecord)) {
+        return c.html(
+          generateCallbackHtml({ success: false, error: 'Account not found' })
+        )
+      }
 
       await db.update(connectedAccounts)
         .set({
@@ -520,6 +544,12 @@ connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =
     if (!existing) {
       return c.json({ error: 'Connected account not found' }, 404)
     }
+
+    // Cancel any webhook triggers bound to this account FIRST, while the account
+    // and its auth are still present, so the upstream Composio subscription is
+    // torn down too. Otherwise the trigger rows (no DB-level FK/cascade) would be
+    // orphaned status='active' and keep feeding the live subscription (SUP-221).
+    await cancelTriggersForConnectedAccount(id)
 
     try {
       const accountProvider = getAccountProviderByName(existing.providerName)

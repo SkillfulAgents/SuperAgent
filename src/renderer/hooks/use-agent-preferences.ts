@@ -21,6 +21,7 @@ type AgentPreferencesUpdate = {
 export function useUpdateAgentPreferences(agentSlug: string) {
   const queryClient = useQueryClient()
   return useMutation<AgentPreferences, Error, AgentPreferencesUpdate>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (data) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/preferences`, {
         method: 'PUT',

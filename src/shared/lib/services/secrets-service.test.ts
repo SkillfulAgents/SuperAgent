@@ -7,6 +7,7 @@ import {
   serializeEnvFile,
   keyToEnvVar,
   listSecrets,
+  listUserSecrets,
   getSecret,
   setSecret,
   deleteSecret,
@@ -274,6 +275,50 @@ describe('secrets service integration', () => {
         value: 'ghp_xxxxxxxxxxxxxxxxxxxx',
         key: 'GitHub Token',
       })
+    })
+  })
+
+  describe('listUserSecrets (SUP-239 bug 3)', () => {
+    const envPathFor = () =>
+      path.join(testDir, 'agents', 'test-agent', 'workspace', '.env')
+
+    it('omits reserved runtime env vars but keeps user secrets', async () => {
+      // CONNECTED_ACCOUNTS / PROXY_TOKEN are written into the same .env by the
+      // container runtime; they are reserved (SUP-210) and must not show as
+      // user-editable secrets.
+      await fs.promises.writeFile(
+        envPathFor(),
+        [
+          'GITHUB_TOKEN=ghp_x  # GitHub Token',
+          'CONNECTED_ACCOUNTS=systemvalue',
+          'PROXY_TOKEN=systemtoken',
+          'MY_API_KEY=k',
+        ].join('\n')
+      )
+
+      // listSecrets stays unfiltered — runtime consumers (getSecretEnvVars) need
+      // every var passed to the session.
+      const all = await listSecrets('test-agent')
+      expect(all.map((s) => s.envVar).sort()).toEqual(
+        ['CONNECTED_ACCOUNTS', 'GITHUB_TOKEN', 'MY_API_KEY', 'PROXY_TOKEN'].sort()
+      )
+
+      // listUserSecrets drops the reserved runtime vars.
+      const userSecrets = await listUserSecrets('test-agent')
+      expect(userSecrets.map((s) => s.envVar).sort()).toEqual(['GITHUB_TOKEN', 'MY_API_KEY'].sort())
+      expect(userSecrets.some((s) => s.envVar === 'CONNECTED_ACCOUNTS')).toBe(false)
+      expect(userSecrets.some((s) => s.envVar === 'PROXY_TOKEN')).toBe(false)
+    })
+
+    it('returns all secrets when none are reserved', async () => {
+      await fs.promises.writeFile(envPathFor(), 'FOO=1\nBAR=2')
+      const userSecrets = await listUserSecrets('test-agent')
+      expect(userSecrets.map((s) => s.envVar).sort()).toEqual(['BAR', 'FOO'])
+    })
+
+    it('returns empty array when no .env file exists', async () => {
+      const userSecrets = await listUserSecrets('test-agent')
+      expect(userSecrets).toEqual([])
     })
   })
 

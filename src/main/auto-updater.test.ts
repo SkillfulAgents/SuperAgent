@@ -475,6 +475,23 @@ describe('silent background checks', () => {
     expect(getStatus().state).not.toBe('error')
   })
 
+  it('silent check error clears the checking spinner back to idle (not stuck)', async () => {
+    // Reproduces the stuck-spinner bug: a silent check fires 'checking-for-update'
+    // (which is NOT silent-aware, so it paints the disabled spinner), then fails.
+    // The terminal error is suppressed for silent checks, so without the reset the
+    // UI sticks on 'checking' forever. It must land back on 'idle' instead.
+    mockAutoUpdater.checkForUpdates.mockImplementation(async () => {
+      events['checking-for-update']?.() // electron-updater paints 'checking'
+      events['error']?.(new Error('Network blip'))
+      throw new Error('Network blip')
+    })
+
+    await powerEvents.resume?.()
+    for (let i = 0; i < 50; i++) await Promise.resolve()
+
+    expect(getStatus()).toMatchObject({ state: 'idle' })
+  })
+
   it('errors during a manual check still surface', async () => {
     mockAutoUpdater.checkForUpdates.mockImplementation(async () => {
       events['error']?.(new Error('Network down'))
@@ -662,5 +679,69 @@ describe('concurrent check coalescing', () => {
     await Promise.all([silentRun, manualRun])
 
     expect(getStatus()).toMatchObject({ state: 'error' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Watchdog: electron-updater can hang with no terminal event (e.g. a check
+// fired right after wake-from-sleep, before wifi reconnects). 'checking-for-update'
+// has already painted the disabled spinner, so without a hard timeout the button
+// sticks there forever. The watchdog resets the stuck UI after CHECK_TIMEOUT_MS.
+// ---------------------------------------------------------------------------
+
+describe('check timeout (watchdog)', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    mockAutoUpdater.allowPrerelease = false
+    mockAutoUpdater.allowDowngrade = false
+    _mockChannel = undefined
+    vi.mocked(getSettings).mockReturnValue({ app: {} } as any)
+    vi.mocked(getUserSettings).mockReturnValue({ allowPrereleaseUpdates: false } as any)
+    vi.mocked(app.getVersion).mockReturnValue('0.2.5')
+    await boot()
+  })
+
+  it('a hung silent check resets to idle once the timeout fires', async () => {
+    vi.useFakeTimers()
+    try {
+      // Paints 'checking' then never resolves and never fires a terminal event.
+      mockAutoUpdater.checkForUpdates.mockImplementation(
+        () => new Promise(() => { events['checking-for-update']?.() }),
+      )
+
+      const run = powerEvents.resume?.() // silent
+      await vi.advanceTimersByTimeAsync(0) // let the check start + paint 'checking'
+      expect(getStatus()).toMatchObject({ state: 'checking' })
+
+      await vi.advanceTimersByTimeAsync(26_000) // past CHECK_TIMEOUT_MS (25s)
+      await run
+
+      // Silent check the user never asked for → quiet reset, no error noise.
+      expect(getStatus()).toMatchObject({ state: 'idle' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a hung manual check surfaces a timeout error', async () => {
+    vi.useFakeTimers()
+    try {
+      mockAutoUpdater.checkForUpdates.mockImplementation(
+        () => new Promise(() => { events['checking-for-update']?.() }),
+      )
+
+      const run = handlers['check-for-updates']() // manual / user-visible
+      await vi.advanceTimersByTimeAsync(0)
+      expect(getStatus()).toMatchObject({ state: 'checking' })
+
+      await vi.advanceTimersByTimeAsync(26_000)
+      await run
+
+      // A user who actively clicked deserves to know the check failed.
+      expect(getStatus()).toMatchObject({ state: 'error' })
+      expect(getStatus().error).toMatch(/timed out/i)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

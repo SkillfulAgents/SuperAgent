@@ -5,6 +5,7 @@ import {
   deleteSessionsBatch,
 } from '@shared/lib/services/session-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getSettings } from '@shared/lib/config/settings'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -125,6 +126,19 @@ class SessionAutoDeleteMonitor {
           error
         )
       }
+    }
+
+    // Remove notification rows for the deleted sessions. Notifications exist in
+    // both auth and non-auth modes (userId is nullable), so this runs
+    // unconditionally. Use `deletedIds` (not `toDelete`) so failed filesystem
+    // deletions never wipe DB state for a session that still exists on disk.
+    try {
+      await deleteNotificationsBySessionIds(deletedIds)
+    } catch (error) {
+      console.error(
+        `[SessionAutoDeleteMonitor] Failed to clean notification records for ${agentSlug}:`,
+        error
+      )
     }
 
     console.log(
