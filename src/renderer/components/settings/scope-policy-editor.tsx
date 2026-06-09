@@ -63,22 +63,28 @@ const emptyLabelDefaults: Record<ScopeLabel, PolicyDecision> = {
   destructive: 'default',
 }
 
-interface ScopePolicyEditorProps {
+interface ScopePolicyEditorBodyProps {
   accountId: string
   toolkit: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  /** Optional custom header to replace the default title. */
-  header?: React.ReactNode
+  /** Called after a successful save. */
+  onSaved?: () => void
+  /** Called when the user clicks Cancel. */
+  onCancel?: () => void
+  /** Hide the bottom action bar (Save/Cancel). When true, the parent is responsible for triggering save. */
+  hideActions?: boolean
 }
 
-export function ScopePolicyEditor({
+/**
+ * Inline body of the scope policy editor — the same content as the Dialog
+ * version, just without the Dialog frame. Reused on the connection detail page.
+ */
+export function ScopePolicyEditorBody({
   accountId,
   toolkit,
-  open,
-  onOpenChange,
-  header,
-}: ScopePolicyEditorProps) {
+  onSaved,
+  onCancel,
+  hideActions,
+}: ScopePolicyEditorBodyProps) {
   const queryClient = useQueryClient()
   const [policies, setPolicies] = useState<ScopePolicy[]>([])
   const [accountDefault, setAccountDefault] = useState<PolicyDecision>('default')
@@ -121,7 +127,6 @@ export function ScopePolicyEditor({
 
   // Fetch existing policies
   useEffect(() => {
-    if (!open) return
     setLoading(true)
     setFetchError(null)
     setTextFilter('')
@@ -172,7 +177,7 @@ export function ScopePolicyEditor({
         setPolicies(allScopes.map((scope) => ({ scope, decision: 'default' })))
         setLoading(false)
       })
-  }, [open, accountId, allScopes])
+  }, [accountId, allScopes])
 
   // Filtered policies
   const filteredPolicies = useMemo(() => {
@@ -246,7 +251,7 @@ export function ScopePolicyEditor({
         body: JSON.stringify({ policies: batch }),
       })
       queryClient.invalidateQueries({ queryKey: ['scope-policies', accountId] })
-      onOpenChange(false)
+      onSaved?.()
     } catch (error) {
       console.error('Failed to save policies:', error)
     } finally {
@@ -280,6 +285,205 @@ export function ScopePolicyEditor({
     </div>
   )
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-3 min-h-0 flex-1">
+      {fetchError && (
+        <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 rounded-md px-2 py-1.5">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          {fetchError}
+        </div>
+      )}
+
+      {/* Account default */}
+      <div className="flex items-center justify-between rounded-md border p-2">
+        <div>
+          <span className="text-sm font-medium">Account Default</span>
+          <p className="text-xs text-muted-foreground">
+            Fallback for scopes without a per-scope or risk-level policy
+          </p>
+        </div>
+        <PolicyDecisionToggle
+          value={accountDefault}
+          onChange={(v) => setAccountDefault(v)}
+          size="md"
+        />
+      </div>
+
+      {/* Filters */}
+      {allScopes.length > 0 && (
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              placeholder="Filter scopes..."
+              value={textFilter}
+              onChange={(e) => setTextFilter(e.target.value)}
+              className="h-8 text-xs pl-7"
+            />
+          </div>
+          <Select
+            value={decisionFilter}
+            onValueChange={(v) => setDecisionFilter(v as 'all' | PolicyDecision)}
+          >
+            <SelectTrigger className="w-[100px] h-8 text-xs shrink-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="allow">Allow</SelectItem>
+              <SelectItem value="review">Review</SelectItem>
+              <SelectItem value="block">Block</SelectItem>
+              <SelectItem value="default">Default</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {allScopes.length > 0 && (
+        <button
+          type="button"
+          onClick={resetToRecommended}
+          data-testid="reset-recommended-defaults"
+          className="self-start text-xs text-muted-foreground hover:text-foreground hover:underline underline-offset-2"
+        >
+          Reset risk-level defaults to recommended
+        </button>
+      )}
+
+      {/* Per-scope policies, grouped by risk label */}
+      <div className="flex-1 overflow-y-auto min-h-0 space-y-3">
+        {allScopes.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center">
+            No scopes defined for this API.
+          </p>
+        ) : filteredPolicies.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center">
+            No scopes match your filters.
+          </p>
+        ) : (
+          <>
+            {LABEL_GROUPS.map((g) => {
+              const rows = groupedPolicies[g.key]
+              if (rows.length === 0) return null
+              const Icon = g.Icon
+              // Collapsed by default; a filter reveals matches, but an explicit
+              // collapse/expand by the user (sets openGroups[key]) always wins —
+              // so the trigger never feels "dead" while filtering.
+              const isOpen = openGroups[g.key] ?? filtering
+              return (
+                <Collapsible
+                  key={g.key}
+                  open={isOpen}
+                  onOpenChange={(o) => setOpenGroup(g.key, o)}
+                  data-testid={`scope-group-${g.key}`}
+                  className="space-y-1"
+                >
+                  <div
+                    data-testid={`group-default-${g.key}`}
+                    className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1.5"
+                  >
+                    <CollapsibleTrigger
+                      data-testid={`scope-group-toggle-${g.key}`}
+                      className="flex flex-1 items-center gap-1.5 min-w-0 text-left"
+                    >
+                      <ChevronRight
+                        className={cn(
+                          'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+                          isOpen && 'rotate-90',
+                        )}
+                      />
+                      <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="text-xs font-semibold">{g.title}</span>
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        ({rows.length})
+                      </span>
+                      <span className="text-xs text-muted-foreground truncate">· {g.hint}</span>
+                    </CollapsibleTrigger>
+                    <PolicyDecisionToggle
+                      value={labelDefaults[g.key]}
+                      onChange={(v) => setLabelDefault(g.key, v)}
+                    />
+                  </div>
+                  <CollapsibleContent className="space-y-1 pl-1">
+                    {rows.map(renderRow)}
+                  </CollapsibleContent>
+                </Collapsible>
+              )
+            })}
+            {groupedPolicies.other.length > 0 && (
+              <Collapsible
+                open={openGroups.other ?? filtering}
+                onOpenChange={(o) => setOpenGroup('other', o)}
+                data-testid="scope-group-other"
+                className="space-y-1"
+              >
+                <CollapsibleTrigger
+                  data-testid="scope-group-toggle-other"
+                  className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left"
+                >
+                  <ChevronRight
+                    className={cn(
+                      'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+                      (openGroups.other ?? filtering) && 'rotate-90',
+                    )}
+                  />
+                  <span className="text-xs font-semibold">Other</span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    ({groupedPolicies.other.length})
+                  </span>
+                  <span className="text-xs text-muted-foreground truncate">
+                    · uses the account default
+                  </span>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="space-y-1 pl-1">
+                  {groupedPolicies.other.map(renderRow)}
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+          </>
+        )}
+      </div>
+      {!hideActions && (
+        <div className="flex justify-end gap-2 pt-2 border-t">
+          {onCancel && (
+            <Button variant="outline" size="sm" onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
+          <Button data-testid="scope-policy-save" size="sm" onClick={handleSave} disabled={saving}>
+            {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
+            Save Policies
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface ScopePolicyEditorProps {
+  accountId: string
+  toolkit: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  /** Optional custom header to replace the default title. */
+  header?: React.ReactNode
+}
+
+export function ScopePolicyEditor({
+  accountId,
+  toolkit,
+  open,
+  onOpenChange,
+  header,
+}: ScopePolicyEditorProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
@@ -287,181 +491,12 @@ export function ScopePolicyEditor({
           {header ?? <DialogTitle className="capitalize">{toolkit} Scope Policies</DialogTitle>}
           <DialogDescription className="sr-only">Configure per-scope access policies for {toolkit}</DialogDescription>
         </DialogHeader>
-
-        {loading ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-          </div>
-        ) : (
-          <>
-            {fetchError && (
-              <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 rounded-md px-2 py-1.5">
-                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                {fetchError}
-              </div>
-            )}
-
-            {/* Account default */}
-            <div className="flex items-center justify-between rounded-md border p-2">
-              <div>
-                <span className="text-sm font-medium">Account Default</span>
-                <p className="text-xs text-muted-foreground">
-                  Fallback for scopes without a per-scope or risk-level policy
-                </p>
-              </div>
-              <PolicyDecisionToggle
-                value={accountDefault}
-                onChange={(v) => setAccountDefault(v)}
-                size="md"
-              />
-            </div>
-
-            {/* Filters */}
-            {allScopes.length > 0 && (
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                  <Input
-                    placeholder="Filter scopes..."
-                    value={textFilter}
-                    onChange={(e) => setTextFilter(e.target.value)}
-                    className="h-8 text-xs pl-7"
-                  />
-                </div>
-                <Select
-                  value={decisionFilter}
-                  onValueChange={(v) => setDecisionFilter(v as 'all' | PolicyDecision)}
-                >
-                  <SelectTrigger className="w-[100px] h-8 text-xs shrink-0">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="allow">Allow</SelectItem>
-                    <SelectItem value="review">Review</SelectItem>
-                    <SelectItem value="block">Block</SelectItem>
-                    <SelectItem value="default">Default</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-
-            {allScopes.length > 0 && (
-              <button
-                type="button"
-                onClick={resetToRecommended}
-                data-testid="reset-recommended-defaults"
-                className="self-start text-xs text-muted-foreground hover:text-foreground hover:underline underline-offset-2"
-              >
-                Reset risk-level defaults to recommended
-              </button>
-            )}
-
-            {/* Per-scope policies, grouped by risk label */}
-            <div className="flex-1 overflow-y-auto space-y-3">
-              {allScopes.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4 text-center">
-                  No scopes defined for this API.
-                </p>
-              ) : filteredPolicies.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4 text-center">
-                  No scopes match your filters.
-                </p>
-              ) : (
-                <>
-                  {LABEL_GROUPS.map((g) => {
-                    const rows = groupedPolicies[g.key]
-                    if (rows.length === 0) return null
-                    const Icon = g.Icon
-                    // Collapsed by default; a filter reveals matches, but an explicit
-                    // collapse/expand by the user (sets openGroups[key]) always wins —
-                    // so the trigger never feels "dead" while filtering.
-                    const isOpen = openGroups[g.key] ?? filtering
-                    return (
-                      <Collapsible
-                        key={g.key}
-                        open={isOpen}
-                        onOpenChange={(o) => setOpenGroup(g.key, o)}
-                        data-testid={`scope-group-${g.key}`}
-                        className="space-y-1"
-                      >
-                        <div
-                          data-testid={`group-default-${g.key}`}
-                          className="flex items-center justify-between rounded-md bg-muted/40 px-2 py-1.5"
-                        >
-                          <CollapsibleTrigger
-                            data-testid={`scope-group-toggle-${g.key}`}
-                            className="flex flex-1 items-center gap-1.5 min-w-0 text-left"
-                          >
-                            <ChevronRight
-                              className={cn(
-                                'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
-                                isOpen && 'rotate-90',
-                              )}
-                            />
-                            <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                            <span className="text-xs font-semibold">{g.title}</span>
-                            <span className="text-xs text-muted-foreground tabular-nums">
-                              ({rows.length})
-                            </span>
-                            <span className="text-xs text-muted-foreground truncate">· {g.hint}</span>
-                          </CollapsibleTrigger>
-                          <PolicyDecisionToggle
-                            value={labelDefaults[g.key]}
-                            onChange={(v) => setLabelDefault(g.key, v)}
-                          />
-                        </div>
-                        <CollapsibleContent className="space-y-1 pl-1">
-                          {rows.map(renderRow)}
-                        </CollapsibleContent>
-                      </Collapsible>
-                    )
-                  })}
-                  {groupedPolicies.other.length > 0 && (
-                    <Collapsible
-                      open={openGroups.other ?? filtering}
-                      onOpenChange={(o) => setOpenGroup('other', o)}
-                      data-testid="scope-group-other"
-                      className="space-y-1"
-                    >
-                      <CollapsibleTrigger
-                        data-testid="scope-group-toggle-other"
-                        className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left"
-                      >
-                        <ChevronRight
-                          className={cn(
-                            'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
-                            (openGroups.other ?? filtering) && 'rotate-90',
-                          )}
-                        />
-                        <span className="text-xs font-semibold">Other</span>
-                        <span className="text-xs text-muted-foreground tabular-nums">
-                          ({groupedPolicies.other.length})
-                        </span>
-                        <span className="text-xs text-muted-foreground truncate">
-                          · uses the account default
-                        </span>
-                      </CollapsibleTrigger>
-                      <CollapsibleContent className="space-y-1 pl-1">
-                        {groupedPolicies.other.map(renderRow)}
-                      </CollapsibleContent>
-                    </Collapsible>
-                  )}
-                </>
-              )}
-            </div>
-          </>
-        )}
-
-        <div className="flex justify-end gap-2 pt-2 border-t">
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button data-testid="scope-policy-save" size="sm" onClick={handleSave} disabled={saving || loading}>
-            {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
-            Save Policies
-          </Button>
-        </div>
+        <ScopePolicyEditorBody
+          accountId={accountId}
+          toolkit={toolkit}
+          onSaved={() => onOpenChange(false)}
+          onCancel={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   )
