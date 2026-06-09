@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Loader2 } from 'lucide-react'
+import type { ApiAgent } from '@renderer/hooks/use-agents'
 import {
   Dialog,
   DialogContent,
@@ -21,15 +22,23 @@ import {
   useRemoveMcpFromAgent,
 } from '@renderer/hooks/use-remote-mcps'
 
-interface ConnectionAgentsDialogProps {
+interface ConnectionAgentsListProps {
   type: 'oauth' | 'mcp'
   id: string
   name: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
+  /**
+   * Split agents into two sectioned lists ("Agents With Access" / "Agents
+   * Without Access") instead of one flat list — matches the per-agent
+   * connections page pattern. Defaults to false for the dialog.
+   */
+  sectioned?: boolean
 }
 
-export function ConnectionAgentsDialog({ type, id, name, open, onOpenChange }: ConnectionAgentsDialogProps) {
+/**
+ * Inline list of agents that can use a given connection — same content as the
+ * Dialog version. Toggles auto-save on change. Reused on the detail page.
+ */
+export function ConnectionAgentsList({ type, id, name, sectioned = false }: ConnectionAgentsListProps) {
   const { isAuthMode, rolesReady, canAdminAgent } = useUser()
   const { data: agents, isLoading: agentsLoading } = useAgents()
 
@@ -44,10 +53,6 @@ export function ConnectionAgentsDialog({ type, id, name, open, onOpenChange }: C
   const removeMcp = useRemoveMcpFromAgent()
 
   const [overrides, setOverrides] = useState<Record<string, boolean>>({})
-
-  useEffect(() => {
-    if (!open) setOverrides({})
-  }, [open])
 
   const grantedSet = useMemo(
     () => new Set(data?.agentSlugs ?? []),
@@ -113,6 +118,102 @@ export function ConnectionAgentsDialog({ type, id, name, open, onOpenChange }: C
     }
   }
 
+  if (agentsLoading || isLoading) {
+    return (
+      <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading agents...
+      </div>
+    )
+  }
+
+  if (visibleAgents.length === 0) {
+    return (
+      <p className="py-6 text-center text-sm text-muted-foreground">
+        No agents available.
+      </p>
+    )
+  }
+
+  const renderAgentRow = (agent: ApiAgent) => {
+    const granted = overrides[agent.slug] ?? grantedSet.has(agent.slug)
+    const pending = isPending(agent.slug)
+    return (
+      <li key={agent.slug} className="flex items-center gap-3 px-3 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium truncate">{agent.name}</div>
+          <div className="text-[11px] text-muted-foreground truncate">{agent.slug}</div>
+        </div>
+        {pending ? (
+          <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+        ) : (
+          <Switch
+            checked={granted}
+            onCheckedChange={(next) => { void handleToggle(agent.slug, next) }}
+            aria-label={`${granted ? 'Revoke' : 'Grant'} ${name} access for ${agent.name}`}
+            data-testid={`connection-agent-toggle-${type}-${id}-${agent.slug}`}
+          />
+        )}
+      </li>
+    )
+  }
+
+  if (sectioned) {
+    // Partition on confirmed server state, not the optimistic override, so a
+    // row doesn't jump sections out from under the user's cursor mid-toggle —
+    // it moves once the mutation persists and the agents query refetches.
+    const grantedAgents = visibleAgents.filter((a) => grantedSet.has(a.slug))
+    const notGrantedAgents = visibleAgents.filter((a) => !grantedSet.has(a.slug))
+
+    return (
+      <div className="space-y-6">
+        <div className="space-y-1.5">
+          <p className="text-xs font-normal text-muted-foreground px-1">
+            Agents With Access
+          </p>
+          {grantedAgents.length > 0 ? (
+            <ul className="rounded-xl border bg-background divide-y divide-border/50 overflow-hidden">
+              {grantedAgents.map((agent) => renderAgentRow(agent))}
+            </ul>
+          ) : (
+            <div className="rounded-xl border border-dashed bg-background px-4 py-6 text-center">
+              <p className="text-xs text-muted-foreground">
+                No agents have access yet. Grant one below.
+              </p>
+            </div>
+          )}
+        </div>
+        {notGrantedAgents.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs font-normal text-muted-foreground px-1">
+              Agents Without Access
+            </p>
+            <ul className="rounded-xl border bg-background divide-y divide-border/50 overflow-hidden">
+              {notGrantedAgents.map((agent) => renderAgentRow(agent))}
+            </ul>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <ul className="divide-y divide-border/50">
+      {visibleAgents.map((agent) => renderAgentRow(agent))}
+    </ul>
+  )
+}
+
+interface ConnectionAgentsDialogProps {
+  type: 'oauth' | 'mcp'
+  id: string
+  name: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
+
+export function ConnectionAgentsDialog({ type, id, name, open, onOpenChange }: ConnectionAgentsDialogProps) {
+  const { isAuthMode } = useUser()
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -127,44 +228,9 @@ export function ConnectionAgentsDialog({ type, id, name, open, onOpenChange }: C
             {isAuthMode ? ' Only agents you own are shown.' : ''}
           </DialogDescription>
         </DialogHeader>
-
-        {agentsLoading || isLoading ? (
-          <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading agents...
-          </div>
-        ) : visibleAgents.length === 0 ? (
-          <p className="py-6 text-center text-sm text-muted-foreground">
-            No agents available.
-          </p>
-        ) : (
-          <div className="max-h-[50vh] overflow-y-auto -mx-2">
-            <ul className="divide-y divide-border/50">
-              {visibleAgents.map((agent) => {
-                const granted = overrides[agent.slug] ?? grantedSet.has(agent.slug)
-                const pending = isPending(agent.slug)
-                return (
-                  <li key={agent.slug} className="flex items-center gap-3 px-3 py-2.5">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-xs font-medium truncate">{agent.name}</div>
-                      <div className="text-[11px] text-muted-foreground truncate">{agent.slug}</div>
-                    </div>
-                    {pending ? (
-                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                    ) : (
-                      <Switch
-                        checked={granted}
-                        onCheckedChange={(next) => { void handleToggle(agent.slug, next) }}
-                        aria-label={`${granted ? 'Revoke' : 'Grant'} ${name} access for ${agent.name}`}
-                        data-testid={`connection-agent-toggle-${type}-${id}-${agent.slug}`}
-                      />
-                    )}
-                  </li>
-                )
-              })}
-            </ul>
-          </div>
-        )}
+        <div className="max-h-[50vh] overflow-y-auto -mx-2">
+          <ConnectionAgentsList type={type} id={id} name={name} />
+        </div>
       </DialogContent>
     </Dialog>
   )
