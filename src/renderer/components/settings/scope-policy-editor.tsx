@@ -63,6 +63,17 @@ const emptyLabelDefaults: Record<ScopeLabel, PolicyDecision> = {
   destructive: 'default',
 }
 
+/**
+ * Stable string form of the non-default policy entries, used to detect whether
+ * the editor has unsaved changes. Defaults are dropped (they're never written)
+ * and entries are sorted so order doesn't affect the comparison.
+ */
+function serializePolicies(entries: Iterable<readonly [string, string]>): string {
+  return JSON.stringify(
+    [...entries].filter(([, decision]) => decision !== 'default').sort(([a], [b]) => a.localeCompare(b)),
+  )
+}
+
 interface ScopePolicyEditorBodyProps {
   accountId: string
   toolkit: string
@@ -93,6 +104,8 @@ export function ScopePolicyEditorBody({
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  // Snapshot of the persisted (non-default) policies, for dirty detection.
+  const [savedSnapshot, setSavedSnapshot] = useState('')
   const [textFilter, setTextFilter] = useState('')
   const [decisionFilter, setDecisionFilter] = useState<'all' | PolicyDecision>('all')
   // Risk-label groups are accordions, collapsed by default.
@@ -169,12 +182,17 @@ export function ScopePolicyEditorBody({
           }
         }
         setPolicies(scopePolicies)
+        // Persisted baseline for dirty detection. Note: an untouched account
+        // has no saved rows, so the pre-filled baseline above reads as "dirty"
+        // — Save stays enabled so the recommended defaults can be persisted.
+        setSavedSnapshot(serializePolicies(existing))
         setLoading(false)
       })
       .catch((err) => {
         console.error('Failed to fetch scope policies:', err)
         setFetchError('Failed to load policies. Showing defaults.')
         setPolicies(allScopes.map((scope) => ({ scope, decision: 'default' })))
+        setSavedSnapshot('[]')
         setLoading(false)
       })
   }, [accountId, allScopes])
@@ -226,24 +244,34 @@ export function ScopePolicyEditorBody({
       destructive: LABEL_DEFAULT_BASELINE.destructive,
     })
 
+  // The non-default policies that a Save would write, keyed by scope.
+  const currentBatch = useMemo(() => {
+    const batch = new Map<string, 'allow' | 'review' | 'block'>()
+    if (accountDefault !== 'default') {
+      batch.set('*', accountDefault as 'allow' | 'review' | 'block')
+    }
+    for (const g of LABEL_GROUPS) {
+      const d = labelDefaults[g.key]
+      if (d !== 'default') {
+        batch.set(labelDefaultKey(g.key), d as 'allow' | 'review' | 'block')
+      }
+    }
+    for (const p of policies) {
+      if (p.decision !== 'default') {
+        batch.set(p.scope, p.decision as 'allow' | 'review' | 'block')
+      }
+    }
+    return batch
+  }, [accountDefault, labelDefaults, policies])
+
+  const currentSnapshot = useMemo(() => serializePolicies(currentBatch), [currentBatch])
+  // Save is only meaningful when the editor differs from what's persisted.
+  const isDirty = currentSnapshot !== savedSnapshot
+
   const handleSave = async () => {
     setSaving(true)
     try {
-      const batch: Array<{ scope: string; decision: 'allow' | 'review' | 'block' }> = []
-      if (accountDefault !== 'default') {
-        batch.push({ scope: '*', decision: accountDefault as 'allow' | 'review' | 'block' })
-      }
-      for (const g of LABEL_GROUPS) {
-        const d = labelDefaults[g.key]
-        if (d !== 'default') {
-          batch.push({ scope: labelDefaultKey(g.key), decision: d as 'allow' | 'review' | 'block' })
-        }
-      }
-      for (const p of policies) {
-        if (p.decision !== 'default') {
-          batch.push({ scope: p.scope, decision: p.decision as 'allow' | 'review' | 'block' })
-        }
-      }
+      const batch = [...currentBatch.entries()].map(([scope, decision]) => ({ scope, decision }))
 
       await apiFetch(`/api/policies/scope/${accountId}`, {
         method: 'PUT',
@@ -251,6 +279,7 @@ export function ScopePolicyEditorBody({
         body: JSON.stringify({ policies: batch }),
       })
       queryClient.invalidateQueries({ queryKey: ['scope-policies', accountId] })
+      setSavedSnapshot(currentSnapshot)
       onSaved?.()
     } catch (error) {
       console.error('Failed to save policies:', error)
@@ -452,13 +481,13 @@ export function ScopePolicyEditorBody({
         )}
       </div>
       {!hideActions && (
-        <div className="flex justify-end gap-2 pt-2 border-t">
+        <div className="flex justify-end gap-2 pt-2">
           {onCancel && (
             <Button variant="outline" size="sm" onClick={onCancel}>
               Cancel
             </Button>
           )}
-          <Button data-testid="scope-policy-save" size="sm" onClick={handleSave} disabled={saving}>
+          <Button data-testid="scope-policy-save" size="sm" onClick={handleSave} disabled={saving || !isDirty}>
             {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
             Save Policies
           </Button>

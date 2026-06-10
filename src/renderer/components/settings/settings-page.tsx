@@ -34,6 +34,50 @@ export interface SettingsPageSectionGroup {
   sections: SettingsPageSection[]
 }
 
+/**
+ * Lets the active section suppress the default SettingsPage header (title +
+ * actions) — useful when the section is showing a sub-view that wants to own
+ * its own header (e.g. a detail page with a back button).
+ */
+const SettingsPageHeaderContext = React.createContext<
+  ((hidden: boolean) => void) | null
+>(null)
+
+/**
+ * Call from inside a section to hide the SettingsPage's PageTitle + actions
+ * for as long as the component is mounted with `hidden === true`.
+ */
+export function useHideSettingsHeader(hidden: boolean): void {
+  const setHidden = React.useContext(SettingsPageHeaderContext)
+  React.useEffect(() => {
+    if (!setHidden) return
+    setHidden(hidden)
+    return () => setHidden(false)
+  }, [setHidden, hidden])
+}
+
+/**
+ * Lets the active section drop the default 720px content cap and use the full
+ * inset width — for sub-views (like the connection detail page) that lay out
+ * their own wide, centered content.
+ */
+const SettingsPageContentWidthContext = React.createContext<
+  ((fullWidth: boolean) => void) | null
+>(null)
+
+/**
+ * Call from inside a section to make the SettingsPage content area full-width
+ * for as long as the component is mounted with `fullWidth === true`.
+ */
+export function useFullWidthSettingsContent(fullWidth: boolean): void {
+  const setFullWidth = React.useContext(SettingsPageContentWidthContext)
+  React.useEffect(() => {
+    if (!setFullWidth) return
+    setFullWidth(fullWidth)
+    return () => setFullWidth(false)
+  }, [setFullWidth, fullWidth])
+}
+
 interface SettingsPageProps {
   groups: SettingsPageSectionGroup[]
   initialSection?: string
@@ -96,6 +140,15 @@ function SettingsPageContent({
   const activeSection = allSections.find((s) => s.id === active)
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !isFullScreen
+
+  const [headerHidden, setHeaderHidden] = React.useState(false)
+  const [contentFullWidth, setContentFullWidth] = React.useState(false)
+  // Reset header visibility / width override whenever the active section changes
+  // so a setting from one section doesn't leak into the next.
+  React.useEffect(() => {
+    setHeaderHidden(false)
+    setContentFullWidth(false)
+  }, [active])
 
   if (isMobile) {
     if (mobileView === 'menu') {
@@ -199,12 +252,18 @@ function SettingsPageContent({
       </Sidebar>
       <SidebarInset className="min-w-0">
         <div className="h-12 shrink-0 app-drag-region" />
-        <SettingsPageContainer>
-          <PageTitle
-            title={activeSection?.label ?? 'Settings'}
-            actions={activeSection?.headerActions}
-          />
-          {activeSection?.render()}
+        <SettingsPageContainer fullWidth={contentFullWidth}>
+          {!headerHidden && (
+            <PageTitle
+              title={activeSection?.label ?? 'Settings'}
+              actions={activeSection?.headerActions}
+            />
+          )}
+          <SettingsPageHeaderContext.Provider value={setHeaderHidden}>
+            <SettingsPageContentWidthContext.Provider value={setContentFullWidth}>
+              {activeSection?.render()}
+            </SettingsPageContentWidthContext.Provider>
+          </SettingsPageHeaderContext.Provider>
         </SettingsPageContainer>
       </SidebarInset>
     </>

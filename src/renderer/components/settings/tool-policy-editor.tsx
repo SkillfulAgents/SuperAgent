@@ -28,6 +28,17 @@ interface ToolPolicy {
   decision: PolicyDecision
 }
 
+/**
+ * Stable string form of the non-default policy entries, used to detect whether
+ * the editor has unsaved changes. Defaults are dropped (they're never written)
+ * and entries are sorted so order doesn't affect the comparison.
+ */
+function serializePolicies(entries: Iterable<readonly [string, string]>): string {
+  return JSON.stringify(
+    [...entries].filter(([, decision]) => decision !== 'default').sort(([a], [b]) => a.localeCompare(b)),
+  )
+}
+
 interface ToolPolicyEditorBodyProps {
   mcpId: string
   tools: Array<{ name: string; description?: string }>
@@ -53,6 +64,8 @@ export function ToolPolicyEditorBody({
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
+  // Snapshot of the persisted (non-default) policies, for dirty detection.
+  const [savedSnapshot, setSavedSnapshot] = useState('')
   const [textFilter, setTextFilter] = useState('')
   const [decisionFilter, setDecisionFilter] = useState<'all' | PolicyDecision>('all')
 
@@ -75,12 +88,14 @@ export function ToolPolicyEditorBody({
           decision: existing.get(tool.name) ?? 'default',
         }))
         setPolicies(toolPolicies)
+        setSavedSnapshot(serializePolicies(existing))
         setLoading(false)
       })
       .catch((err) => {
         console.error('Failed to fetch tool policies:', err)
         setFetchError('Failed to load policies. Showing defaults.')
         setPolicies(tools.map((tool) => ({ toolName: tool.name, decision: 'default' })))
+        setSavedSnapshot('[]')
         setLoading(false)
       })
   }, [mcpId, tools])
@@ -100,18 +115,28 @@ export function ToolPolicyEditorBody({
     })
   }, [policies, textFilter, decisionFilter, tools])
 
+  // The non-default policies that a Save would write, keyed by tool name.
+  const currentBatch = useMemo(() => {
+    const batch = new Map<string, 'allow' | 'review' | 'block'>()
+    if (mcpDefault !== 'default') {
+      batch.set('*', mcpDefault as 'allow' | 'review' | 'block')
+    }
+    for (const p of policies) {
+      if (p.decision !== 'default') {
+        batch.set(p.toolName, p.decision as 'allow' | 'review' | 'block')
+      }
+    }
+    return batch
+  }, [mcpDefault, policies])
+
+  const currentSnapshot = useMemo(() => serializePolicies(currentBatch), [currentBatch])
+  // Save is only meaningful when the editor differs from what's persisted.
+  const isDirty = currentSnapshot !== savedSnapshot
+
   const handleSave = async () => {
     setSaving(true)
     try {
-      const batch: Array<{ toolName: string; decision: 'allow' | 'review' | 'block' }> = []
-      if (mcpDefault !== 'default') {
-        batch.push({ toolName: '*', decision: mcpDefault as 'allow' | 'review' | 'block' })
-      }
-      for (const p of policies) {
-        if (p.decision !== 'default') {
-          batch.push({ toolName: p.toolName, decision: p.decision as 'allow' | 'review' | 'block' })
-        }
-      }
+      const batch = [...currentBatch.entries()].map(([toolName, decision]) => ({ toolName, decision }))
 
       await apiFetch(`/api/policies/tool/${mcpId}`, {
         method: 'PUT',
@@ -119,6 +144,7 @@ export function ToolPolicyEditorBody({
         body: JSON.stringify({ policies: batch }),
       })
       queryClient.invalidateQueries({ queryKey: ['tool-policies', mcpId] })
+      setSavedSnapshot(currentSnapshot)
       onSaved?.()
     } catch (error) {
       console.error('Failed to save policies:', error)
@@ -212,6 +238,7 @@ export function ToolPolicyEditorBody({
               return (
                 <div
                   key={p.toolName}
+                  data-testid={`tool-row-${p.toolName}`}
                   className="flex items-center justify-between rounded border px-2 py-1.5"
                 >
                   <div className="flex-1 min-w-0 mr-2">
@@ -236,13 +263,13 @@ export function ToolPolicyEditorBody({
       </div>
 
       {!hideActions && (
-        <div className="flex justify-end gap-2 pt-2 border-t">
+        <div className="flex justify-end gap-2 pt-2">
           {onCancel && (
             <Button variant="outline" size="sm" onClick={onCancel}>
               Cancel
             </Button>
           )}
-          <Button size="sm" onClick={handleSave} disabled={saving}>
+          <Button data-testid="tool-policy-save" size="sm" onClick={handleSave} disabled={saving || !isDirty}>
             {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
             Save Policies
           </Button>

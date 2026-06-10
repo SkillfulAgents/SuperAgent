@@ -9,7 +9,11 @@ interface ConnectionRowProps {
   row: UnifiedRow
   /** Right-side slot — pills, actions, switch, etc. */
   right: ReactNode
-  /** Optional trailing item appended after the timestamp (e.g. trigger count). */
+  /**
+   * Optional trailing items appended after the timestamp (e.g. agent count,
+   * trigger count). Items render their own leading `·` separators so that
+   * async items can mount late without leaving a dangling dot.
+   */
   subtitleExtra?: ReactNode
   /**
    * Optional content right-justified at the end of the subtitle row (no `·`
@@ -66,12 +70,7 @@ export function ConnectionRow({
           <span className="whitespace-nowrap shrink-0 tabular-nums">
             {formatCompactDistance(safeDate(row.date))}
           </span>
-          {subtitleExtra && (
-            <>
-              <span className="shrink-0">·</span>
-              {subtitleExtra}
-            </>
-          )}
+          {subtitleExtra}
           {subtitleTrailing && (
             <span className="ml-auto shrink-0 pl-2">{subtitleTrailing}</span>
           )}

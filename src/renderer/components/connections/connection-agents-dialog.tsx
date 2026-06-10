@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { flushSync } from 'react-dom'
 import { Loader2 } from 'lucide-react'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { startViewTransition } from '@renderer/lib/view-transition'
 import {
   Dialog,
   DialogContent,
@@ -94,7 +96,16 @@ export function ConnectionAgentsList({ type, id, name, sectioned = false }: Conn
   }
 
   const handleToggle = async (slug: string, next: boolean) => {
-    setOverrides((prev) => ({ ...prev, [slug]: next }))
+    // Optimistically flip the agent into its new section. In the sectioned
+    // layout, wrap it in a View Transition (flushSync so the optimistic state
+    // hits the DOM before the "before" snapshot) so the row animates between
+    // With/Without Access — matching the per-agent connections list.
+    const applyOverride = () => setOverrides((prev) => ({ ...prev, [slug]: next }))
+    if (sectioned) {
+      startViewTransition(() => flushSync(applyOverride))
+    } else {
+      applyOverride()
+    }
     try {
       if (type === 'oauth') {
         if (next) {
@@ -139,7 +150,12 @@ export function ConnectionAgentsList({ type, id, name, sectioned = false }: Conn
     const granted = overrides[agent.slug] ?? grantedSet.has(agent.slug)
     const pending = isPending(agent.slug)
     return (
-      <li key={agent.slug} className="flex items-center gap-3 px-3 py-2.5">
+      <li
+        key={agent.slug}
+        className="flex items-center gap-3 px-3 py-2.5"
+        // Stable name so the View Transition can pair the row across sections.
+        style={sectioned ? ({ viewTransitionName: `connection-agent-${agent.slug}` } as CSSProperties) : undefined}
+      >
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium truncate">{agent.name}</div>
           <div className="text-[11px] text-muted-foreground truncate">{agent.slug}</div>
@@ -159,11 +175,12 @@ export function ConnectionAgentsList({ type, id, name, sectioned = false }: Conn
   }
 
   if (sectioned) {
-    // Partition on confirmed server state, not the optimistic override, so a
-    // row doesn't jump sections out from under the user's cursor mid-toggle —
-    // it moves once the mutation persists and the agents query refetches.
-    const grantedAgents = visibleAgents.filter((a) => grantedSet.has(a.slug))
-    const notGrantedAgents = visibleAgents.filter((a) => !grantedSet.has(a.slug))
+    // Partition on the optimistic grant state so a toggled agent moves to its
+    // new section immediately; the View Transition in handleToggle animates the
+    // move, and the override clears once the mutation persists.
+    const isGranted = (slug: string) => overrides[slug] ?? grantedSet.has(slug)
+    const grantedAgents = visibleAgents.filter((a) => isGranted(a.slug))
+    const notGrantedAgents = visibleAgents.filter((a) => !isGranted(a.slug))
 
     return (
       <div className="space-y-6">

@@ -70,4 +70,47 @@ describe('ScopePolicyEditor', () => {
     // Only the three baseline label rows — no account '*' default, no per-scope rows.
     expect(byScope).toEqual({ '*read': 'allow', '*write': 'review', '*destructive': 'block' })
   })
+
+  it('disables Save for a configured account until a change is made', async () => {
+    // Already configured → the form matches what's persisted, so nothing to save.
+    policiesFixture = [{ scope: 'gmail.send', decision: 'block' }]
+    renderWithProviders(
+      <ScopePolicyEditor accountId="acc-4" toolkit="gmail" open onOpenChange={() => {}} />,
+    )
+    await waitFor(() => expect(screen.getByTestId('group-default-read')).toBeInTheDocument())
+
+    expect(screen.getByTestId('scope-policy-save')).toBeDisabled()
+
+    // Flip a risk-level default — now the editor differs from what's persisted.
+    groupToggle('read', 'allow').click()
+    await waitFor(() => expect(screen.getByTestId('scope-policy-save')).toBeEnabled())
+  })
+
+  it('keeps Save enabled for an untouched account (unsaved baseline)', async () => {
+    // No saved rows, but the recommended baseline is pre-filled and not yet
+    // persisted — so there genuinely is something to save.
+    policiesFixture = []
+    renderWithProviders(
+      <ScopePolicyEditor accountId="acc-5" toolkit="gmail" open onOpenChange={() => {}} />,
+    )
+    await waitFor(() => expect(screen.getByTestId('group-default-read')).toBeInTheDocument())
+
+    expect(screen.getByTestId('scope-policy-save')).toBeEnabled()
+  })
+
+  it('re-disables Save after a successful save', async () => {
+    policiesFixture = [{ scope: 'gmail.send', decision: 'block' }]
+    renderWithProviders(
+      <ScopePolicyEditor accountId="acc-6" toolkit="gmail" open onOpenChange={() => {}} />,
+    )
+    await waitFor(() => expect(screen.getByTestId('group-default-read')).toBeInTheDocument())
+
+    groupToggle('read', 'allow').click()
+    await waitFor(() => expect(screen.getByTestId('scope-policy-save')).toBeEnabled())
+
+    screen.getByTestId('scope-policy-save').click()
+    await waitFor(() => expect(lastPutBody).not.toBeNull())
+    // The just-saved state is now the persisted baseline → nothing left to save.
+    await waitFor(() => expect(screen.getByTestId('scope-policy-save')).toBeDisabled())
+  })
 })

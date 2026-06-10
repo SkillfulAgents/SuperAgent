@@ -18,12 +18,24 @@ export function ConnectionAgentCount({ type, id }: ConnectionAgentCountProps) {
   // Render nothing until the query resolves so rows don't flash "Not in use".
   if (!data) return null
   const count = data.agentSlugs.length
+  // The leading `·` lives inside the component so the subtitle row shows no
+  // dangling separator while the query is still loading (null above).
   if (count === 0) {
-    return <span className="whitespace-nowrap shrink-0">Not in use</span>
+    return (
+      <>
+        <span className="shrink-0">·</span>
+        <span data-testid={`connection-agent-count-${type}-${id}`} className="whitespace-nowrap shrink-0">
+          Not in use
+        </span>
+      </>
+    )
   }
   return (
-    <span className="whitespace-nowrap shrink-0 tabular-nums">
-      Used by {count} {count === 1 ? 'agent' : 'agents'}
-    </span>
+    <>
+      <span className="shrink-0">·</span>
+      <span data-testid={`connection-agent-count-${type}-${id}`} className="whitespace-nowrap shrink-0 tabular-nums">
+        Used by {count} {count === 1 ? 'agent' : 'agents'}
+      </span>
+    </>
   )
 }

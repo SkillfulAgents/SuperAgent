@@ -1,9 +1,25 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 
 // web-chromium's request fixture has no baseURL configured, so use an absolute
 // API base (matches connections-page-policy-modal.spec.ts).
 const API = 'http://localhost:3000'
+
+/**
+ * Opens Global Settings → Connections and clicks through to the detail page
+ * for the named connection. The scope policy editor renders inline there
+ * (the per-row policy pill + dialog were removed in the connections redesign).
+ */
+async function openConnectionDetail(page: Page, name: string) {
+  await page.locator('[data-testid="settings-button"]').click()
+  await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+  await page.locator('[data-testid="settings-nav-connections"]').click()
+
+  const row = page.getByRole('button', { name: `Open ${name} connection details` })
+  await expect(row).toBeVisible({ timeout: 5000 })
+  await row.click()
+  await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible()
+}
 
 test.describe('Scope Policy Editor — risk-label grouping', () => {
   test('groups scopes by risk label and pre-fills the recommended defaults', async ({ page, request }) => {
@@ -29,18 +45,8 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
 
-    // Settings → Connections → open the policy editor via the pill
-    await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-connections"]').click()
-
-    const pill = page.locator(`[data-testid="policy-pill-${account.id}"]`)
-    await expect(pill).toBeVisible({ timeout: 5000 })
-    // No persisted policies → pill stays "Protected", not "Custom".
-    await expect(pill).not.toContainText('Custom')
-    await pill.click()
-
-    await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
+    // Settings → Connections → open the inline editor via the connection row.
+    await openConnectionDetail(page, 'E2E Grouping Slack')
 
     // The three risk-label groups render (Slack has read/write/destructive scopes).
     await expect(page.locator('[data-testid="scope-group-read"]')).toBeVisible()
@@ -57,6 +63,10 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
     await expect(
       page.locator('[data-testid="group-default-destructive"] [data-testid="policy-toggle-block"]'),
     ).toHaveAttribute('data-active', 'true')
+
+    // Still display-only — nothing persisted until Save.
+    const after = await (await request.get(`${API}/api/policies/scope/${account.id}`)).json()
+    expect(after.policies).toHaveLength(0)
   })
 
   test('changing a group default persists and is reflected on reopen', async ({ page, request }) => {
@@ -74,14 +84,8 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
 
-    // Open settings → Connections and the policy editor via the pill.
-    await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-connections"]').click()
-    const pill = page.locator(`[data-testid="policy-pill-${account.id}"]`)
-    await expect(pill).toBeVisible({ timeout: 5000 })
-    await pill.click()
-    await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
+    // Settings → Connections → open the inline editor via the connection row.
+    await openConnectionDetail(page, 'E2E Grouping Persist Slack')
 
     const destAllow = () =>
       page.locator('[data-testid="group-default-destructive"] [data-testid="policy-toggle-allow"]')
@@ -91,16 +95,25 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
     await destAllow().click()
     await expect(destAllow()).toHaveAttribute('data-active', 'true')
 
+    // Save — the inline editor stays on screen; verify persistence via API.
     await page.locator('[data-testid="scope-policy-save"]').click()
-    await expect(page.getByText('Scope Policies')).not.toBeVisible({ timeout: 5000 })
+    await expect
+      .poll(async () => {
+        const body = await (await request.get(`${API}/api/policies/scope/${account.id}`)).json()
+        return (body.policies as Array<{ scope: string; decision: string }>).find(
+          (p) => p.scope === '*destructive',
+        )?.decision
+      }, { timeout: 5000 })
+      .toBe('allow')
 
-    // Deviating from the baseline now marks the account "Custom".
-    await expect(pill).toContainText('Custom', { timeout: 5000 })
-
-    // Reopen via the pill (we're still on the connections tab — the app shell,
-    // and its settings button, is unmounted while settings is open).
-    await pill.click()
-    await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
-    await expect(destAllow()).toHaveAttribute('data-active', 'true')
+    // Reopen the editor by going back to the list and into the row again —
+    // remounting the inline editor refetches the persisted policies.
+    await page.locator('[data-testid="connection-detail-back"]').click()
+    const row = page.getByRole('button', {
+      name: 'Open E2E Grouping Persist Slack connection details',
+    })
+    await expect(row).toBeVisible({ timeout: 5000 })
+    await row.click()
+    await expect(destAllow()).toHaveAttribute('data-active', 'true', { timeout: 5000 })
   })
 })
