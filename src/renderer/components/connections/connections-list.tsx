@@ -31,15 +31,18 @@ interface ConnectionsListProps {
   agentSlug: string
   /** Key of the row whose detail page is shown instead of the list. */
   detailRowKey: string | null
+  /** Breadcrumb label for the detail page's Back button. */
+  detailBackLabel?: string
   onDetailRowKeyChange: (key: string | null) => void
 }
 
-export function ConnectionsList({ agentSlug, detailRowKey, onDetailRowKeyChange }: ConnectionsListProps) {
+export function ConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetailRowKeyChange }: ConnectionsListProps) {
   return (
     <div className="flex flex-col gap-4">
       <AllConnectionsList
         agentSlug={agentSlug}
         detailRowKey={detailRowKey}
+        detailBackLabel={detailBackLabel}
         onDetailRowKeyChange={onDetailRowKeyChange}
       />
     </div>
@@ -101,10 +104,11 @@ export function NewIntegrationButton() {
 interface AllConnectionsListProps {
   agentSlug: string
   detailRowKey: string | null
+  detailBackLabel?: string
   onDetailRowKeyChange: (key: string | null) => void
 }
 
-function AllConnectionsList({ agentSlug, detailRowKey, onDetailRowKeyChange }: AllConnectionsListProps) {
+function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetailRowKeyChange }: AllConnectionsListProps) {
   const { data: allAccountsData, isLoading: isLoadingAllAccounts } = useConnectedAccounts()
   const { data: agentAccountsData, isLoading: isLoadingAgentAccounts } = useAgentConnectedAccounts(agentSlug)
   const { data: allMcpsData, isLoading: isLoadingAllMcps } = useRemoteMcps()
@@ -233,7 +237,11 @@ function AllConnectionsList({ agentSlug, detailRowKey, onDetailRowKeyChange }: A
 
   if (selectedRow) {
     return (
-      <ConnectionDetailPage row={selectedRow} onBack={() => onDetailRowKeyChange(null)} />
+      <ConnectionDetailPage
+        row={selectedRow}
+        backLabel={detailBackLabel}
+        onBack={() => onDetailRowKeyChange(null)}
+      />
     )
   }
 
