@@ -100,10 +100,12 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
               onActivate={() => setView({ kind: 'connections', detailRowKey: conn.id })}
               ariaLabel={`Open ${conn.name} connection details`}
               right={
-                <ChevronRight
-                  className="h-4 w-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                <span
                   aria-hidden="true"
-                />
+                  className="flex justify-center overflow-hidden w-0 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:opacity-100"
+                >
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </span>
               }
             />
           ))}

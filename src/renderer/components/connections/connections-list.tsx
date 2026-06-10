@@ -260,10 +260,13 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
         reconnecting={pendingAccountId === row.id}
         right={
           <>
-            <ChevronRight
-              className="h-4 w-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
+            {/* Slides in on row hover/focus; -ml-2 swallows the flex gap while hidden. */}
+            <span
               aria-hidden="true"
-            />
+              className="flex justify-center overflow-hidden w-0 -ml-2 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:ml-0 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:ml-0 group-focus-visible:opacity-100"
+            >
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+            </span>
             {pending ? (
               <Loader2
                 className="h-4 w-4 animate-spin text-muted-foreground"
