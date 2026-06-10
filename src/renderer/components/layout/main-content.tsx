@@ -38,6 +38,10 @@ import { useRenderTracker } from '@renderer/lib/perf'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
 import { useSessionSearch } from '@renderer/hooks/use-session-search'
 import { SessionSearchBar } from '@renderer/components/messages/session-search-bar'
+import type { PendingMessage } from '@renderer/components/messages/pending-message'
+
+// Stable empty array so a session without pending messages doesn't re-render consumers.
+const EMPTY_PENDING_MESSAGES: PendingMessage[] = []
 
 export function MainContent() {
   useRenderTracker('MainContent')
@@ -52,8 +56,10 @@ export function MainContent() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
-  // Pending user messages per session — survives navigation between sessions
-  const pendingMessagesRef = useRef(new Map<string, { text: string; sentAt: number; sender?: { id: string; name: string; email: string } }>())
+  // Pending user messages per session — survives navigation between sessions.
+  // Multiple entries per session: the user can queue messages while the agent
+  // is working; each is removed individually when it materializes (by uuid).
+  const pendingMessagesRef = useRef(new Map<string, PendingMessage[]>())
   const [, forceUpdate] = useState(0)
   const { data: agent } = useAgent(agentSlug)
   const { data: sessions } = useSessions(agentSlug)
@@ -123,33 +129,44 @@ export function MainContent() {
     window.electronAPI?.setSidebarCollapsed(sidebarState === 'collapsed' && !isFullScreen)
   }, [sidebarState, isFullScreen])
 
-  const pendingUserMessage = sessionId ? (pendingMessagesRef.current.get(sessionId) ?? null) : null
+  const pendingUserMessages = sessionId ? (pendingMessagesRef.current.get(sessionId) ?? EMPTY_PENDING_MESSAGES) : EMPTY_PENDING_MESSAGES
 
-  const handleMessageSent = useCallback((content: string) => {
+  const handleMessageSent = useCallback((content: string, uuid: string, queued: boolean) => {
     if (sessionId) {
-      pendingMessagesRef.current.set(sessionId, {
+      const existing = pendingMessagesRef.current.get(sessionId) ?? []
+      pendingMessagesRef.current.set(sessionId, [...existing, {
+        uuid,
         text: content,
         sentAt: Date.now(),
+        queued,
         sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
-      })
+      }])
       forceUpdate((n) => n + 1)
     }
   }, [sessionId, isAuthMode, user])
 
-  const handlePendingMessageAppeared = useCallback(() => {
+  const handlePendingMessageAppeared = useCallback((uuid: string) => {
     if (sessionId) {
-      pendingMessagesRef.current.delete(sessionId)
+      const existing = pendingMessagesRef.current.get(sessionId)
+      if (!existing?.some((m) => m.uuid === uuid)) return
+      const remaining = existing.filter((m) => m.uuid !== uuid)
+      if (remaining.length > 0) {
+        pendingMessagesRef.current.set(sessionId, remaining)
+      } else {
+        pendingMessagesRef.current.delete(sessionId)
+      }
       forceUpdate((n) => n + 1)
     }
   }, [sessionId])
 
   // Callback for AgentHome when a new session is created with initial message
-  const handleSessionCreated = useCallback((newSessionId: string, initialMessage: string) => {
-    pendingMessagesRef.current.set(newSessionId, {
+  const handleSessionCreated = useCallback((newSessionId: string, initialMessage: string, messageUuid: string) => {
+    pendingMessagesRef.current.set(newSessionId, [{
+      uuid: messageUuid,
       text: initialMessage,
       sentAt: Date.now(),
       sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
-    })
+    }])
     setView({ kind: 'session', id: newSessionId })
   }, [setView, isAuthMode, user])
 
@@ -466,13 +483,14 @@ export function MainContent() {
               <SessionChatColumn
                 sessionId={view.id}
                 agentSlug={agentSlug}
-                pendingUserMessage={pendingUserMessage}
+                pendingUserMessages={pendingUserMessages}
                 isViewOnly={isViewOnly}
                 contextPercent={contextPercent}
                 effort={session?.effort}
                 model={session?.model}
                 onPendingMessageAppeared={handlePendingMessageAppeared}
                 onMessageSent={handleMessageSent}
+                onMessageFailed={handlePendingMessageAppeared}
               />
             </div>
           </FilePreviewProvider>

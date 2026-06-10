@@ -44,7 +44,7 @@ const INTRO_ANIMATION_MS = 2200
 
 interface AgentHomeProps {
   agent: ApiAgent
-  onSessionCreated: (sessionId: string, initialMessage: string) => void
+  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string) => void
   onOpenSettings?: (tab?: string) => void
 }
 
@@ -173,12 +173,16 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     onSubmit: useCallback(async (content: string) => {
       const shouldRename =
         agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && !nameAssignedRef.current
+      // Client-generated uuid travels into the session JSONL so the optimistic
+      // pending copy is materialized by exact id match.
+      const messageUuid = crypto.randomUUID()
       const session = await createSession.mutateAsync({
         agentSlug: agent.slug,
         message: content,
+        messageUuid,
         ...composerOptions.toRuntimeOptions(),
       })
-      onSessionCreated(session.id, content)
+      onSessionCreated(session.id, content, messageUuid)
       // Fire rename after the session is created + navigated — the mutation
       // survives AgentHome unmounting since the queryClient is app-scoped.
       if (shouldRename) {

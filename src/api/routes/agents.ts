@@ -1277,10 +1277,12 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const agentLimits = getEffectiveAgentLimits()
     const customEnvVars = getCustomEnvVars()
 
-    // In auth mode, generate a UUID for the initial message author attribution
-    let initialMessageUuid: string | undefined
+    // Client-supplied uuid for the initial message (optimistic-UI ghost
+    // matching); in auth mode it doubles as the author-attribution id.
+    const clientMessageUuid = z.string().uuid().safeParse(body.messageUuid)
+    let initialMessageUuid: string | undefined = clientMessageUuid.success ? clientMessageUuid.data : undefined
     if (isAuthMode()) {
-      initialMessageUuid = randomUUID()
+      initialMessageUuid = initialMessageUuid ?? randomUUID()
     }
 
     const sessionModel = runtimeOptions.model ?? getEffectiveModels().agentModel
@@ -1309,7 +1311,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         sessionId,
         agentSlug: slug,
         userId,
-      })
+      }).onConflictDoNothing()
     }
 
     await registerSession(slug, sessionId, 'New Session')
@@ -1534,19 +1536,29 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
     }
 
+    // Captured before markSessionActive: a message sent while the agent is
+    // mid-turn is queued by the agent loop rather than starting a new turn.
+    const wasQueued = messagePersister.isSessionActive(sessionId)
+
     messagePersister.markSessionActive(sessionId, agentSlug)
 
-    // In auth mode, generate a UUID and record the sender for message attribution
-    let messageUuid: string | undefined
+    // Client-supplied message uuid (optimistic-UI ghost matching). The uuid is
+    // forwarded to the container, becomes the JSONL entry id, and so lets the
+    // client materialize its pending copy by exact id match.
+    const clientUuid = z.string().uuid().safeParse(body.uuid)
+    let messageUuid: string | undefined = clientUuid.success ? clientUuid.data : undefined
+
+    // In auth mode, record the sender for message attribution
     if (isAuthMode()) {
       const userId = getCurrentUserId(c)
-      messageUuid = randomUUID()
+      messageUuid = messageUuid ?? randomUUID()
+      // onConflictDoNothing: a client retry of a failed send may resend the same uuid
       await db.insert(messageAuthor).values({
         id: messageUuid,
         sessionId,
         agentSlug,
         userId,
-      })
+      }).onConflictDoNothing()
     }
 
     // Broadcast user message to other SSE viewers (auth mode shared agents)
@@ -1556,6 +1568,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         type: 'user_message',
         content: content.trim(),
         sender: { id: user.id, name: user.name },
+        uuid: messageUuid,
+        queued: wasQueued,
       })
     }
 

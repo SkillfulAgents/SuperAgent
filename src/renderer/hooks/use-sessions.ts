@@ -37,12 +37,13 @@ export function useCreateSession() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; message: string; effort?: EffortLevel; model?: string }) => {
+    mutationFn: async (data: { agentSlug: string; message: string; messageUuid?: string; effort?: EffortLevel; model?: string }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: data.message,
+          ...(data.messageUuid ? { messageUuid: data.messageUuid } : {}),
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.model ? { model: data.model } : {}),
         }),

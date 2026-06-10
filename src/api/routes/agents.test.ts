@@ -137,6 +137,7 @@ const mockDbDeleteWhere = vi.fn()
 const mockDbUpdateSet = vi.fn()
 
 const mockDbOnConflictDoUpdate = vi.fn()
+const mockDbOnConflictDoNothing = vi.fn()
 const mockDbInsertTable = vi.fn()
 
 vi.mock('@shared/lib/db', () => ({
@@ -147,7 +148,10 @@ vi.mock('@shared/lib/db', () => ({
       return {
         values: (...args: unknown[]) => {
           mockDbInsertValues(...args)
-          return { onConflictDoUpdate: (...cargs: unknown[]) => mockDbOnConflictDoUpdate(...cargs) }
+          return {
+            onConflictDoUpdate: (...cargs: unknown[]) => mockDbOnConflictDoUpdate(...cargs),
+            onConflictDoNothing: (...cargs: unknown[]) => mockDbOnConflictDoNothing(...cargs),
+          }
         },
       }
     },
@@ -2027,6 +2031,38 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, {})
   })
 
+  it('passes a client-supplied uuid through to sendMessage in non-auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    const uuid = '123e4567-e89b-12d3-a456-426614174000'
+
+    const res = await postJson(app, URL, { content: 'hello', uuid })
+    expect(res.status).toBe(201)
+
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', uuid, {})
+    // Still no author record outside auth mode
+    expect(mockDbInsertValues).not.toHaveBeenCalled()
+  })
+
+  it('uses the client-supplied uuid for the messageAuthor record in auth mode', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    const uuid = '123e4567-e89b-12d3-a456-426614174000'
+
+    const res = await postJson(app, URL, { content: 'hello', uuid })
+    expect(res.status).toBe(201)
+
+    expect(mockDbInsertValues.mock.calls[0][0].id).toBe(uuid)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', uuid, {})
+  })
+
+  it('ignores a malformed client uuid', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, { content: 'hello', uuid: 'not-a-uuid' })
+    expect(res.status).toBe(201)
+
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, {})
+  })
+
   // ---- Runtime options forwarding ----
 
   it('forwards effort to sendMessage when present in body', async () => {
@@ -2252,7 +2288,22 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
       type: 'user_message',
       content: 'hello everyone',
       sender: { id: 'test-user-id', name: 'Test User' },
+      uuid: expect.any(String),
+      queued: false,
     })
+  })
+
+  it('broadcasts queued=true when the session is already active (mid-turn send)', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+
+    const res = await postJson(app, URL, { content: 'queued message' })
+    expect(res.status).toBe(201)
+
+    expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('sess-1', expect.objectContaining({
+      type: 'user_message',
+      queued: true,
+    }))
   })
 
   it('does not broadcast user_message in non-auth mode', async () => {

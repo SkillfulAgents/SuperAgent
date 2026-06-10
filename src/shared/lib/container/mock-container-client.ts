@@ -134,6 +134,61 @@ export class SimpleTextResponseScenario implements MockScenario {
 }
 
 /**
+ * Slow scenario for message-queueing E2E tests: holds the session in the
+ * working state long enough for the test to send mid-turn messages, which the
+ * mock records as queued_command attachments (mirroring the real CLI's
+ * steering behavior — see the busy path in sendMessage).
+ */
+export class SlowWorkScenario implements MockScenario {
+  constructor(private durationMs = 5000) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      // Echo on the stream so the host broadcasts messages_updated and the
+      // frontend materializes the turn-starting ghost while still working
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: { type: 'user', message: { content: [{ type: 'text', text: userMessage }] } },
+      })
+    }, 10)
+
+    // Open a streaming text block so the UI shows live activity for the
+    // whole window
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Working on the slow task...' } } },
+      })
+    }, 50)
+
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Finished the slow work.' }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, this.durationMs)
+  }
+}
+
+/**
  * API error scenario - simulates an LLM provider error (e.g., auth failure, rate limit).
  * Emits an assistant message with the SDK error code, then a result with error subtype.
  */
@@ -938,6 +993,8 @@ if (process.env.E2E_MOCK === 'true' && process.env.E2E_CHROMIUM_PATH) {
 export class MockContainerClient extends EventEmitter implements ContainerClient {
   // Global scenario registry - tests can register scenarios by message pattern
   static scenarios = new Map<string, MockScenario>([
+    // Slow response window for message-queueing tests (send mid-turn → queued)
+    ['work slowly', new SlowWorkScenario()],
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',
@@ -1242,6 +1299,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.config = config
   }
 
+  // Uuids supplied with sendMessage/createSession, consumed by writeJsonlEntry
+  // when the scenario echoes the user message into the JSONL.
+  private pendingUserMessageUuids = new Map<string, Array<{ uuid: string; content: string }>>()
+
+  // Sessions with a scenario currently running (between scenario start and its
+  // 'result' event). Messages sent while busy take the queued/steering path,
+  // mirroring the real CLI.
+  private busySessions = new Set<string>()
+
   getAgentId(): string {
     return this.config.agentId
   }
@@ -1265,6 +1331,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       const dir = path.dirname(jsonlPath)
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true })
+      }
+
+      // User-message echoes adopt the uuid supplied with the send (mirrors the
+      // real CLI persisting the SDKUserMessage uuid), so optimistic-UI ghost
+      // matching by id works in E2E mock mode. Matched by content so tool
+      // results / task notifications (also type 'user') don't consume uuids.
+      if (!entry.uuid && entry.type === 'user') {
+        const queue = this.pendingUserMessageUuids.get(containerSessionId)
+        const content = (entry.message as { content?: unknown } | undefined)?.content
+        const idx = queue?.findIndex((q) => q.content === content) ?? -1
+        if (queue && idx >= 0) {
+          entry.uuid = queue[idx].uuid
+          queue.splice(idx, 1)
+        }
       }
 
       // Ensure uuid/parentUuid/sessionId so entries conform to JsonlMessageEntry
@@ -1307,6 +1387,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
    * Emit a stream message to all subscribers of a session
    */
   emitStreamMessage(sessionId: string, content: { type: string; content: unknown }): void {
+    // A scenario's result ends the turn — messages sent after this take the
+    // normal (turn-starting) path again
+    if (content.type === 'result') {
+      this.busySessions.delete(sessionId)
+    }
     const callbacks = this.streamCallbacks.get(sessionId)
     if (callbacks) {
       const message: StreamMessage = {
@@ -1519,6 +1604,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // If there's an initial message, process it after a longer delay
     // to ensure the caller has time to subscribe to the stream
     if (options.initialMessage) {
+      if (options.initialMessageUuid) {
+        this.pendingUserMessageUuids.set(sessionId, [
+          { uuid: options.initialMessageUuid, content: options.initialMessage },
+        ])
+      }
       // Store user message
       const userMessage = {
         role: 'user',
@@ -1544,7 +1634,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           }
         }
 
-        // Execute the scenario
+        // Execute the scenario (session is busy until the scenario's 'result')
+        this.busySessions.add(sessionId)
         scenario.execute(sessionId, this, options.initialMessage!)
       }, 100)  // Brief delay to ensure subscription is set up
     }
@@ -1561,13 +1652,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.sessions.delete(sessionId)
     this.sessionMessages.delete(sessionId)
     this.streamCallbacks.delete(sessionId)
+    this.pendingUserMessageUuids.delete(sessionId)
+    this.busySessions.delete(sessionId)
     console.log(`[MockContainerClient] Deleted session ${sessionId}`)
     return existed
   }
 
   // Message operations
 
-  async sendMessage(sessionId: string, content: string, _uuid?: string, options?: RuntimeOptions): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void> {
     // Record for E2E test assertions
     MockContainerClient.lastSendMessageCall = {
       sessionId,
@@ -1609,6 +1702,37 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       return
     }
 
+    // Mid-turn send — mirror the real CLI's steering behavior: no user entry
+    // is written; after a short pickup delay the message lands in the JSONL
+    // as a queued_command attachment with a CLI-generated source_uuid (the
+    // client uuid is NOT preserved), followed by assistant output whose
+    // stream message triggers the refetch that materializes the ghost.
+    if (this.busySessions.has(sessionId)) {
+      setTimeout(() => {
+        this.writeJsonlEntry(sessionId, {
+          type: 'attachment',
+          timestamp: new Date().toISOString(),
+          attachment: {
+            type: 'queued_command',
+            prompt: [{ type: 'text', text: content }],
+            source_uuid: randomUUID(),
+            commandMode: 'prompt',
+          },
+        })
+        const ackContent = [{ type: 'text', text: `Adjusting based on: ${content}` }]
+        this.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { content: ackContent },
+          timestamp: new Date().toISOString(),
+        })
+        this.emitStreamMessage(sessionId, {
+          type: 'assistant',
+          content: { type: 'assistant', message: { content: ackContent } },
+        })
+      }, 400)
+      return
+    }
+
     // Store user message
     const userMessage = {
       role: 'user',
@@ -1616,6 +1740,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       timestamp: new Date().toISOString(),
     }
     this.sessionMessages.get(sessionId)?.push(userMessage)
+
+    // Remember the uuid so the scenario's JSONL echo of this message gets it
+    if (uuid) {
+      const queue = this.pendingUserMessageUuids.get(sessionId) ?? []
+      queue.push({ uuid, content })
+      this.pendingUserMessageUuids.set(sessionId, queue)
+    }
 
     // Emit user message to stream
     this.emitStreamMessage(sessionId, {
@@ -1632,7 +1763,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       }
     }
 
-    // Execute the scenario
+    // Execute the scenario (session is busy until the scenario's 'result')
+    this.busySessions.add(sessionId)
     scenario.execute(sessionId, this, content)
   }
 

@@ -491,6 +491,59 @@ describe('session-service', () => {
         'file1.txt\nfile2.txt\nREADME.md'
       )
     })
+
+    it('converts queued_command attachments (mid-turn messages) into user entries', async () => {
+      const entries = [
+        ...SAMPLE_JSONL_ENTRIES,
+        {
+          type: 'attachment',
+          uuid: 'attachment-entry-uuid',
+          parentUuid: null,
+          sessionId: 'test-session',
+          timestamp: '2025-01-01T00:01:00.000Z',
+          attachment: {
+            type: 'queued_command',
+            prompt: [{ type: 'text', text: 'Queued mid-turn message' }],
+            source_uuid: 'queue-source-uuid',
+            commandMode: 'prompt',
+          },
+        },
+        // Task notifications and meta queued commands are system-injected, not user-typed
+        {
+          type: 'attachment',
+          uuid: 'notification-uuid',
+          timestamp: '2025-01-01T00:02:00.000Z',
+          attachment: {
+            type: 'queued_command',
+            prompt: '<task-notification>done</task-notification>',
+            commandMode: 'task-notification',
+          },
+        },
+        {
+          type: 'attachment',
+          uuid: 'meta-uuid',
+          timestamp: '2025-01-01T00:03:00.000Z',
+          attachment: {
+            type: 'queued_command',
+            prompt: 'injected context',
+            source_uuid: 'meta-source-uuid',
+            commandMode: 'prompt',
+            isMeta: true,
+          },
+        },
+      ]
+      await createSessionFile('test-agent', 'queued-session', entries)
+
+      const messages = await getSessionMessages('test-agent', 'queued-session')
+
+      expect(messages.length).toBe(5)
+      const queued = messages[4]
+      expect(queued.type).toBe('user')
+      // Uses source_uuid (the id the SDK replays this message under on resume)
+      expect(queued.uuid).toBe('queue-source-uuid')
+      expect(queued.timestamp).toBe('2025-01-01T00:01:00.000Z')
+      expect(queued.message.content).toEqual([{ type: 'text', text: 'Queued mid-turn message' }])
+    })
   })
 
   describe('deleteSession', () => {

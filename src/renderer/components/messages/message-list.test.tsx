@@ -39,14 +39,18 @@ const mockStreamState = {
   activeSubagents: [] as any[],
   completedSubagents: null as Set<string> | null,
   typingUser: null as { id: string; name?: string } | null,
-  peerUserMessage: null as { content: string; sender: { id: string; name?: string; email?: string } } | null,
+  peerUserMessages: [] as Array<{ uuid: string; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
 }
 
 const mockClearCompacting = vi.fn()
+const mockRemovePeerUserMessage = vi.fn()
+const mockClearPeerUserMessages = vi.fn()
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
   clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
+  removePeerUserMessage: (...args: unknown[]) => mockRemovePeerUserMessage(...args),
+  clearPeerUserMessages: (...args: unknown[]) => mockClearPeerUserMessages(...args),
 }))
 
 // Mock useUser — default no user, override per test
@@ -92,7 +96,9 @@ vi.mock('@renderer/lib/env', () => ({
 
 // Mock child components that are complex
 vi.mock('./tool-call-item', () => ({
-  ToolCallItem: ({ toolCall }: any) => <div data-testid={`tool-call-${toolCall.name}`}>{toolCall.name}</div>,
+  ToolCallItem: ({ toolCall, isSessionActive }: any) => (
+    <div data-testid={`tool-call-${toolCall.name}`} data-running={isSessionActive ? 'true' : 'false'}>{toolCall.name}</div>
+  ),
   StreamingToolCallItem: ({ name }: any) => <div data-testid="streaming-tool-call">{name}</div>,
 }))
 
@@ -127,7 +133,7 @@ describe('MessageList', () => {
       activeSubagents: [],
       completedSubagents: null,
       typingUser: null,
-      peerUserMessage: null,
+      peerUserMessages: [],
     })
   })
 
@@ -169,10 +175,30 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'Sending...', sentAt: Date.now() }}
+        pendingUserMessages={[{ uuid: 'pm-1', text: 'Sending...', sentAt: Date.now() }]}
       />
     )
     expect(screen.getByText('Sending...')).toBeInTheDocument()
+  })
+
+  it('shows queued ghost messages with a Queued label', () => {
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[
+          { uuid: 'pm-1', text: 'First queued', sentAt: Date.now(), queued: true },
+          { uuid: 'pm-2', text: 'Second queued', sentAt: Date.now(), queued: true },
+        ]}
+      />
+    )
+    expect(screen.getByText('First queued')).toBeInTheDocument()
+    expect(screen.getByText('Second queued')).toBeInTheDocument()
+    expect(screen.getAllByTestId('queued-user-message')).toHaveLength(2)
+    expect(screen.getAllByText('Queued')).toHaveLength(2)
   })
 
   it('shows streaming message when not persisted', () => {
@@ -413,12 +439,13 @@ describe('MessageList', () => {
 
   // ---- Pending message detection ----
 
-  it('calls onPendingMessageAppeared when pending message found in server messages', () => {
+  it('calls onPendingMessageAppeared when a message with the pending uuid is fetched', () => {
     const onAppeared = vi.fn()
     const sentAt = new Date('2025-01-01T00:00:00Z').getTime()
 
     mockMessagesData.data = [
       createUserMessage({
+        id: 'uuid-1',
         content: { text: 'My message' },
         createdAt: new Date('2025-01-01T00:00:01Z'),
       }),
@@ -428,35 +455,184 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'My message', sentAt }}
+        pendingUserMessages={[{ uuid: 'uuid-1', text: 'My message', sentAt }]}
         onPendingMessageAppeared={onAppeared}
       />
     )
 
-    expect(onAppeared).toHaveBeenCalled()
+    expect(onAppeared).toHaveBeenCalledWith('uuid-1')
   })
 
-  it('does not call onPendingMessageAppeared when text does not match', () => {
+  it('falls back to text+time matching when the uuid differs (queued/steering messages)', () => {
+    // The CLI re-ids messages sent mid-turn (queued_command attachments), so
+    // the persisted copy never carries the client uuid — text fallback must fire.
     const onAppeared = vi.fn()
     const sentAt = new Date('2025-01-01T00:00:00Z').getTime()
 
     mockMessagesData.data = [
       createUserMessage({
-        content: { text: 'Different message' },
+        id: 'cli-generated-uuid',
+        content: { text: 'My message' },
         createdAt: new Date('2025-01-01T00:00:01Z'),
       }),
     ]
+    mockStreamState.isActive = true
 
     renderWithProviders(
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'My message', sentAt }}
+        pendingUserMessages={[{ uuid: 'uuid-1', text: 'My message', sentAt, queued: true }]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    expect(onAppeared).toHaveBeenCalledWith('uuid-1')
+  })
+
+  it('does not call onPendingMessageAppeared when neither uuid nor text matches', () => {
+    const onAppeared = vi.fn()
+    const sentAt = new Date('2025-01-01T00:00:00Z').getTime()
+
+    mockMessagesData.data = [
+      createUserMessage({
+        id: 'other-uuid',
+        content: { text: 'Different message' },
+        createdAt: new Date('2025-01-01T00:00:01Z'),
+      }),
+    ]
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ uuid: 'uuid-1', text: 'My message', sentAt, queued: true }]}
         onPendingMessageAppeared={onAppeared}
       />
     )
 
     expect(onAppeared).not.toHaveBeenCalled()
+  })
+
+  // ---- Queued (mid-turn) message rendering & turn boundaries ----
+
+  it('renders queued ghosts below streaming content and tools', () => {
+    mockMessagesData.data = [createUserMessage({ content: { text: 'Start' } })]
+    mockStreamState.isActive = true
+    mockStreamState.isStreaming = true
+    mockStreamState.streamingMessage = 'Working on it...'
+    mockStreamState.streamingToolUses = [{ id: 'tc-x', name: 'StreamingBash', partialInput: '' }]
+
+    const { container } = renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ uuid: 'q1', text: 'Queued msg', sentAt: Date.now(), queued: true }]}
+      />
+    )
+
+    const text = container.textContent || ''
+    expect(text.indexOf('Working on it...')).toBeLessThan(text.indexOf('Queued msg'))
+    expect(text.indexOf('StreamingBash')).toBeLessThan(text.indexOf('Queued msg'))
+  })
+
+  it('does not close the turn at a persisted queued message (no elapsed divider mid-turn)', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Start' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
+      createAssistantMessage({ content: { text: 'Searching' }, createdAt: new Date('2025-01-01T00:00:09Z') }),
+      createUserMessage({ content: { text: 'Steer' }, createdAt: new Date('2025-01-01T00:00:10Z'), queued: true }),
+      createAssistantMessage({ content: { text: 'Continuing' }, createdAt: new Date('2025-01-01T00:00:20Z') }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.queryByText(/Worked for/)).not.toBeInTheDocument()
+  })
+
+  it('attributes the whole turn duration across steering segments once idle', () => {
+    mockStreamState.isActive = false
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Start' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
+      createAssistantMessage({ content: { text: 'Searching' }, createdAt: new Date('2025-01-01T00:00:09Z') }),
+      createUserMessage({ content: { text: 'Steer' }, createdAt: new Date('2025-01-01T00:00:10Z'), queued: true }),
+      createAssistantMessage({ content: { text: 'Continuing' }, createdAt: new Date('2025-01-01T00:00:20Z') }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    // One elapsed entry, from the turn-starting message to the final assistant message
+    expect(screen.getByText('Worked for 20s')).toBeInTheDocument()
+    expect(screen.queryByText('Worked for 9s')).not.toBeInTheDocument()
+  })
+
+  it('keeps tools running when a persisted queued message follows them', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Start' } }),
+      createAssistantMessage({
+        id: 'a1',
+        content: { text: '' },
+        toolCalls: [createToolCall({ id: 'tc-1', name: 'Bash', result: undefined })],
+      }),
+      createUserMessage({ content: { text: 'Steer' }, queued: true }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    // The queued message doesn't end the turn, so the unfinished tool is still running
+    expect(screen.getByTestId('tool-call-Bash').getAttribute('data-running')).toBe('true')
+  })
+
+  it('one persisted copy clears at most one of two identical queued ghosts', () => {
+    const onAppeared = vi.fn()
+    const sentAt = Date.now()
+
+    mockMessagesData.data = [
+      createUserMessage({ id: 'cli-uuid-1', content: { text: 'Do it' }, createdAt: new Date() }),
+    ]
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[
+          { uuid: 'uuid-1', text: 'Do it', sentAt, queued: true },
+          { uuid: 'uuid-2', text: 'Do it', sentAt, queued: true },
+        ]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    expect(onAppeared).toHaveBeenCalledWith('uuid-1')
+    expect(onAppeared).not.toHaveBeenCalledWith('uuid-2')
+  })
+
+  it('materializes only the matched message when several are queued', () => {
+    const onAppeared = vi.fn()
+    const sentAt = Date.now()
+
+    mockMessagesData.data = [
+      createUserMessage({ id: 'uuid-1', content: { text: 'First' } }),
+    ]
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[
+          { uuid: 'uuid-1', text: 'First', sentAt, queued: true },
+          { uuid: 'uuid-2', text: 'Second', sentAt, queued: true },
+        ]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    expect(onAppeared).toHaveBeenCalledWith('uuid-1')
+    expect(onAppeared).not.toHaveBeenCalledWith('uuid-2')
   })
 
   // ---- isStreamingMessagePersisted edge cases ----
@@ -550,11 +726,11 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'Follow up', sentAt: Date.now() }}
+        pendingUserMessages={[{ uuid: 'pm-1', text: 'Follow up', sentAt: Date.now() }]}
       />
     )
 
-    // Even though isActive=true, pendingUserMessage closes the previous turn
+    // Even though isActive=true, the pending message closes the previous turn
     expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
   })
 
@@ -585,7 +761,7 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'Follow up', sentAt: Date.now() }}
+        pendingUserMessages={[{ uuid: 'pm-1', text: 'Follow up', sentAt: Date.now() }]}
       />
     )
 
@@ -662,11 +838,11 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'New message', sentAt: Date.now() }}
+        pendingUserMessages={[{ uuid: 'pm-1', text: 'New message', sentAt: Date.now() }]}
       />
     )
 
-    // The tool call renders, but since pendingUserMessage exists,
+    // The tool call renders, but since a turn-starting pending message exists,
     // canHaveRunningToolCalls is empty → tool is not considered running
     expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
   })
@@ -739,7 +915,7 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'Waiting...', sentAt: Date.now() }}
+        pendingUserMessages={[{ uuid: 'pm-1', text: 'Waiting...', sentAt: Date.now() }]}
       />
     )
     // Should show pending message, not spinner
@@ -842,11 +1018,11 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'Now do X', sentAt: Date.now() }}
+        pendingUserMessages={[{ uuid: 'pm-1', text: 'Now do X', sentAt: Date.now() }]}
       />
     )
 
-    // Even though isActive=true, pendingUserMessage keeps the previous turn closed
+    // Even though isActive=true, the pending message keeps the previous turn closed
     expect(screen.getByText('report.pdf')).toBeInTheDocument()
   })
 
@@ -1020,7 +1196,7 @@ describe('MessageList', () => {
       mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
       mockMessagesData.data = []
       Object.assign(mockStreamState, {
-        peerUserMessage: { content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice Baker' } },
+        peerUserMessages: [{ uuid: 'peer-1', content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice Baker' } }],
       })
 
       renderWithProviders(
@@ -1030,11 +1206,28 @@ describe('MessageList', () => {
       expect(screen.getByText('Hello from peer')).toBeInTheDocument()
     })
 
+    it('renders queued peer messages as ghosts with a Queued label', () => {
+      mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
+      mockMessagesData.data = []
+      Object.assign(mockStreamState, {
+        peerUserMessages: [
+          { uuid: 'peer-1', content: 'Queued peer message', sender: { id: 'other-user', name: 'Alice' }, queued: true },
+        ],
+      })
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      expect(screen.getByText('Queued peer message')).toBeInTheDocument()
+      expect(screen.getByText('Queued')).toBeInTheDocument()
+    })
+
     it('does not render peer message if sender is the current user', () => {
       mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
       mockMessagesData.data = []
       Object.assign(mockStreamState, {
-        peerUserMessage: { content: 'My own message', sender: { id: 'me', name: 'Me' } },
+        peerUserMessages: [{ uuid: 'peer-own', content: 'My own message', sender: { id: 'me', name: 'Me' } }],
       })
 
       renderWithProviders(
@@ -1044,13 +1237,13 @@ describe('MessageList', () => {
       expect(screen.queryByText('My own message')).not.toBeInTheDocument()
     })
 
-    it('does not render peer message if already in fetched messages (dedup)', () => {
+    it('does not render peer message if already in fetched messages (dedup by uuid)', () => {
       mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
       mockMessagesData.data = [
-        createUserMessage({ content: { text: 'Hello from peer' } }),
+        createUserMessage({ id: 'peer-1', content: { text: 'Hello from peer' } }),
       ]
       Object.assign(mockStreamState, {
-        peerUserMessage: { content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice' } },
+        peerUserMessages: [{ uuid: 'peer-1', content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice' } }],
       })
 
       renderWithProviders(
@@ -1060,6 +1253,8 @@ describe('MessageList', () => {
       // Only one instance — from fetched messages, not the optimistic peer copy
       const matches = screen.getAllByText('Hello from peer')
       expect(matches).toHaveLength(1)
+      // The persisted copy also prunes the stream-state entry
+      expect(mockRemovePeerUserMessage).toHaveBeenCalledWith('s-1', 'peer-1')
     })
   })
 
@@ -1196,7 +1391,7 @@ describe('MessageList', () => {
       mockMessagesData.data = []
       Object.assign(mockStreamState, {
         typingUser: { id: 'other-user', name: 'Alice Baker' },
-        peerUserMessage: { content: 'Done typing', sender: { id: 'other-user', name: 'Alice Baker' } },
+        peerUserMessages: [{ uuid: 'peer-1', content: 'Done typing', sender: { id: 'other-user', name: 'Alice Baker' } }],
       })
 
       renderWithProviders(

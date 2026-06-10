@@ -20,14 +20,17 @@ import type { EffortLevel } from '@shared/lib/container/types'
 interface MessageInputProps {
   sessionId: string
   agentSlug: string
-  onMessageSent?: (content: string) => void
+  /** Called right before the POST so the caller can show the optimistic copy. `queued` is true when the agent is mid-turn. */
+  onMessageSent?: (content: string, uuid: string, queued: boolean) => void
+  /** Called when the POST fails, so the caller can drop the optimistic copy. */
+  onMessageFailed?: (uuid: string) => void
   /** Effort level last used on this session; seeds the composer selector. Defaults to 'high' when absent. */
   initialEffort?: EffortLevel
   /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
   initialModel?: string
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffort, initialModel }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageFailed, initialEffort, initialModel }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -56,11 +59,27 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
       [uploadFolder, sessionId, agentSlug]
     ),
     onSubmit: useCallback(async (content: string) => {
-      onMessageSent?.(content)
-      await sendMessage.mutateAsync({ sessionId, agentSlug, content, ...composerOptions.toRuntimeOptions() })
+      const uuid = crypto.randomUUID()
+      // Mid-turn sends are queued by the agent loop (SDK streaming input) and
+      // picked up after the current step. They must not carry model/effort —
+      // a parameter change would interrupt/restart the in-flight query.
+      const queued = isActive && !isWaitingBackground
+      onMessageSent?.(content, uuid, queued)
+      try {
+        await sendMessage.mutateAsync({
+          sessionId,
+          agentSlug,
+          content,
+          uuid,
+          ...(queued ? {} : composerOptions.toRuntimeOptions()),
+        })
+      } catch (error) {
+        onMessageFailed?.(uuid)
+        throw error
+      }
       track('message_sent')
-    }, [onMessageSent, sendMessage, sessionId, agentSlug, track, composerOptions]),
-    submitDisabled: sendMessage.isPending || (isActive && !isWaitingBackground) || isOffline,
+    }, [onMessageSent, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
+    submitDisabled: sendMessage.isPending || isOffline,
     draftKey: `session:${sessionId}`,
   })
 
@@ -210,7 +229,9 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
               onRecentFileAttach={(file) => composer.addFiles([{ file }])}
               disabled={isDisabled}
             />
-            <ComposerOptions state={composerOptions} disabled={isDisabled} />
+            {/* Model/effort are locked while the agent works — changing them
+                mid-turn would interrupt the running query. */}
+            <ComposerOptions state={composerOptions} disabled={isDisabled || isActive} />
           </>
         )}
         rightActions={(

@@ -28,6 +28,7 @@ import {
   JsonlEntry,
   JsonlMessageEntry,
   JsonlSystemEntry,
+  JsonlAttachmentEntry,
   ContentBlock,
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
@@ -134,6 +135,42 @@ export async function isSessionRegistered(
  */
 function isMessageEntry(entry: JsonlEntry): entry is JsonlMessageEntry {
   return entry.type === 'user' || entry.type === 'assistant'
+}
+
+/**
+ * Convert a `queued_command` attachment entry into a synthetic user message
+ * entry. The CLI records user messages that arrive mid-turn (queued/steering
+ * input) this way instead of as regular `user` entries, so without this
+ * conversion queued messages would be invisible in the transcript even though
+ * the agent acted on them. Returns the entry unchanged when it isn't a
+ * user-typed queued command (task notifications, meta/system injections).
+ */
+function normalizeQueuedCommandEntry(entry: JsonlEntry): JsonlEntry {
+  if (entry.type !== 'attachment') return entry
+  const { attachment } = entry as JsonlAttachmentEntry
+  if (
+    !attachment ||
+    attachment.type !== 'queued_command' ||
+    attachment.commandMode !== 'prompt' ||
+    attachment.isMeta ||
+    attachment.prompt === undefined
+  ) {
+    return entry
+  }
+  return {
+    type: 'user',
+    // source_uuid is the CLI's queue-entry id; prefer it since it's also the
+    // uuid the SDK uses when replaying this message on session resume.
+    uuid: attachment.source_uuid ?? entry.uuid,
+    parentUuid: entry.parentUuid ?? null,
+    sessionId: entry.sessionId ?? '',
+    timestamp: entry.timestamp,
+    message: {
+      role: 'user',
+      content: attachment.prompt,
+    },
+    isQueuedCommand: true,
+  } satisfies JsonlMessageEntry
 }
 
 /**
@@ -354,7 +391,7 @@ export async function getSessionMessages(
   }
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  return entries.filter(isMessageEntry)
+  return entries.map(normalizeQueuedCommandEntry).filter(isMessageEntry)
 }
 
 /**
@@ -385,7 +422,7 @@ export async function getSessionMessagesWithCompact(
   }
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  return entries.filter(isMessageOrSystemDisplayEntry)
+  return entries.map(normalizeQueuedCommandEntry).filter(isMessageOrSystemDisplayEntry)
 }
 
 /**

@@ -2,12 +2,7 @@ import { type ReactNode } from 'react'
 import { MessageList } from '@renderer/components/messages/message-list'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
-
-interface PendingMessage {
-  text: string
-  sentAt: number
-  sender?: { id: string; name: string; email: string }
-}
+import type { PendingMessage } from '@renderer/components/messages/pending-message'
 
 interface SessionThreadProps {
   sessionId: string
@@ -19,9 +14,9 @@ interface SessionThreadProps {
   /** Whether the browser tray tab is available (interactive session view only). */
   browserActive?: boolean
   // MessageList passthrough — supplied by the interactive session view, omitted when read-only.
-  pendingUserMessage?: PendingMessage | null
+  pendingUserMessages?: PendingMessage[]
   pendingRequestCount?: number
-  onPendingMessageAppeared?: () => void
+  onPendingMessageAppeared?: (uuid: string) => void
 }
 
 /**
@@ -39,7 +34,7 @@ export function SessionThread({
   footer,
   footerClassName = 'bg-background',
   browserActive = false,
-  pendingUserMessage,
+  pendingUserMessages,
   pendingRequestCount,
   onPendingMessageAppeared,
 }: SessionThreadProps) {
@@ -51,7 +46,7 @@ export function SessionThread({
           key={sessionId}
           sessionId={sessionId}
           agentSlug={agentSlug}
-          pendingUserMessage={pendingUserMessage}
+          pendingUserMessages={pendingUserMessages}
           pendingRequestCount={pendingRequestCount}
           onPendingMessageAppeared={onPendingMessageAppeared}
         />

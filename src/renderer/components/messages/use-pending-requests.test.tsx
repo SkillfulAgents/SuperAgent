@@ -395,7 +395,7 @@ describe('usePendingRequests', () => {
     expect(result.current.count).toBe(0)
   })
 
-  it('pendingUserMessage causes message-based extraction to skip (as if user moved on)', () => {
+  it('pending user messages cause message-based extraction to skip (as if user moved on)', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [
       createAssistantMessage({
@@ -414,7 +414,7 @@ describe('usePendingRequests', () => {
     const { result } = renderHook(() =>
       usePendingRequests({
         ...defaultArgs,
-        pendingUserMessage: { text: 'New input', sentAt: Date.now() },
+        pendingUserMessages: [{ uuid: 'pm-1', text: 'New input', sentAt: Date.now() }],
       }),
     )
 

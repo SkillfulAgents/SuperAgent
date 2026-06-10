@@ -18,7 +18,11 @@ export function ComposerActionButton({
   isInterrupting,
   onInterrupt,
 }: ComposerActionButtonProps) {
-  if (isWaitingBackground) {
+  // While the agent works (or background tasks linger) show Stop alongside
+  // Send — messages sent mid-turn are queued and picked up by the agent loop.
+  if (isActive || isWaitingBackground) {
+    const stopLabel = isWaitingBackground ? 'Stop background processes' : 'Stop the agent'
+    const sendLabel = isWaitingBackground ? 'Send message' : 'Queue message'
     return (
       <div className="flex items-center gap-2">
         <Button
@@ -28,8 +32,8 @@ export function ComposerActionButton({
           className="h-[34px] w-[34px]"
           onClick={onInterrupt}
           disabled={isInterrupting}
-          aria-label="Stop background processes"
-          title="Stop background processes"
+          aria-label={stopLabel}
+          title={stopLabel}
           data-testid="stop-button"
         >
           {isInterrupting ? (
@@ -43,8 +47,8 @@ export function ComposerActionButton({
           size="icon"
           className="h-[34px] w-[34px]"
           disabled={!canSubmit || isSending}
-          aria-label="Send message"
-          title="Send message"
+          aria-label={sendLabel}
+          title={sendLabel}
           data-testid="send-button"
         >
           {isSending ? (
@@ -54,28 +58,6 @@ export function ComposerActionButton({
           )}
         </Button>
       </div>
-    )
-  }
-
-  if (isActive) {
-    return (
-      <Button
-        type="button"
-        size="icon"
-        variant="outline"
-        className="h-[34px] w-[34px]"
-        onClick={onInterrupt}
-        disabled={isInterrupting}
-        aria-label="Stop the agent"
-        title="Stop the agent"
-        data-testid="stop-button"
-      >
-        {isInterrupting ? (
-          <Loader2 className="h-4 w-4 animate-spin" />
-        ) : (
-          <Square className="h-3.5 w-3.5 fill-current" />
-        )}
-      </Button>
     )
   }
 

@@ -427,10 +427,13 @@ describe('AgentHome', () => {
       expect.objectContaining({
         agentSlug: 'test-agent',
         message: 'Hello agent',
+        messageUuid: expect.any(String),
         effort: 'medium',
       })
     )
-    expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'Hello agent')
+    // The uuid passed to onSessionCreated matches the one sent to the server
+    const sentUuid = mockCreateSession.mutateAsync.mock.calls[0][0].messageUuid
+    expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'Hello agent', sentUuid)
   })
 
   // --- Attachment picker ---
