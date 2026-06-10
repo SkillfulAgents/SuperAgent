@@ -1,8 +1,7 @@
 import { useRef, useState } from 'react'
-import { ArrowUpRight, Check, Pencil, RefreshCw, Settings, Shield, Trash2, Wrench, X, Loader2, LogOut } from 'lucide-react'
+import { ArrowUpRight, Check, Pencil, RefreshCw, Trash2, Wrench, X, Loader2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,22 +22,18 @@ import {
 } from '@renderer/components/ui/dialog'
 import {
   useDeleteConnectedAccount,
-  useRemoveAgentConnectedAccount,
   useRenameConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
 import {
   useDeleteRemoteMcp,
   useDiscoverMcpTools,
   useInitiateMcpOAuth,
-  useRemoveMcpFromAgent,
   useRenameRemoteMcp,
   useTestMcpConnection,
   useInvalidateRemoteMcps,
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
-import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
-import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
 import { useQueryClient } from '@tanstack/react-query'
 
 export interface IntegrationRowActionsProps {
@@ -47,54 +42,35 @@ export interface IntegrationRowActionsProps {
   name: string
   /** Composio toolkit slug. Required for `type === 'oauth'`. */
   toolkit?: string
-  /** Tool catalog, used by the MCP scope editor. Required for `type === 'mcp'`. */
+  /** Tool catalog, listed in the MCP "Tools" dialog. */
   mcpTools?: Array<{ name: string; description?: string }>
-  /**
-   * When provided, scopes the Delete copy to "Delete for all agents" to make
-   * the global blast radius explicit. Combined with `hideRemoveFromAgent` on
-   * surfaces that already expose per-agent access via a toggle.
-   */
-  agentSlug?: string
-  /**
-   * Hides the "Remove from agent" menu item even when `agentSlug` is set.
-   * Used on the connections list where per-agent access is already controlled
-   * by the row's Switch toggle.
-   */
-  hideRemoveFromAgent?: boolean
-  /** Account status for OAuth rows. Shows reconnect action when not active. */
+  /** Account status for OAuth rows. Shows the Reconnect button when not active. */
   accountStatus?: 'active' | 'expired' | 'revoked'
-  /**
-   * Rendering layout:
-   *  - 'menu' (default): a single Settings icon button that opens a popover with all actions.
-   *  - 'buttons': two inline outline buttons (Rename + Delete). Used on the
-   *    connection detail page where actions are surfaced directly in the header.
-   */
-  layout?: 'menu' | 'buttons'
 }
 
-export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agentSlug, hideRemoveFromAgent, accountStatus, layout = 'menu' }: IntegrationRowActionsProps) {
-  const [menuOpen, setMenuOpen] = useState(false)
+/**
+ * Inline action buttons for the connection detail page header: Rename and
+ * Delete, plus Reconnect for expired OAuth accounts and Test connection /
+ * Tools for MCP servers. Per-agent access and scope/tool policies are managed
+ * on the detail page itself, so there are no actions for them here.
+ */
+export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, accountStatus }: IntegrationRowActionsProps) {
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState(name)
-  const [scopesOpen, setScopesOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
-  const [removeFromAgentOpen, setRemoveFromAgentOpen] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [mcpStatus, setMcpStatus] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
   const [toolsError, setToolsError] = useState<string | null>(null)
   const [oauthPending, setOauthPending] = useState(false)
 
-  // Trigger ref so we can restore focus to the menu button after closing a
-  // dialog that unmounted the Popover (Radix otherwise loses the anchor).
+  // Rename-button ref so dialogs can restore focus to the header after closing.
   const triggerRef = useRef<HTMLButtonElement | null>(null)
 
   const renameAccount = useRenameConnectedAccount()
   const renameMcp = useRenameRemoteMcp()
   const deleteAccount = useDeleteConnectedAccount()
   const deleteMcp = useDeleteRemoteMcp()
-  const removeAccountFromAgent = useRemoveAgentConnectedAccount()
-  const removeMcpFromAgent = useRemoveMcpFromAgent()
   const testMcpConnection = useTestMcpConnection()
   const discoverMcpTools = useDiscoverMcpTools()
   const initiateMcpOAuth = useInitiateMcpOAuth()
@@ -103,8 +79,6 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
 
   const renamePending = type === 'oauth' ? renameAccount.isPending : renameMcp.isPending
   const deletePending = type === 'oauth' ? deleteAccount.isPending : deleteMcp.isPending
-  const removeFromAgentPending =
-    type === 'oauth' ? removeAccountFromAgent.isPending : removeMcpFromAgent.isPending
 
   useMcpOAuthListener(oauthPending, ({ success, error }) => {
     setOauthPending(false)
@@ -123,27 +97,14 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
   }
 
   const openRename = () => {
-    setMenuOpen(false)
     setRenameValue(name)
     setActionError(null)
     setRenameOpen(true)
   }
 
-  const openScopes = () => {
-    setMenuOpen(false)
-    setScopesOpen(true)
-  }
-
   const openDelete = () => {
-    setMenuOpen(false)
     setActionError(null)
     setDeleteOpen(true)
-  }
-
-  const openRemoveFromAgent = () => {
-    setMenuOpen(false)
-    setActionError(null)
-    setRemoveFromAgentOpen(true)
   }
 
   const runTestConnection = async () => {
@@ -218,7 +179,6 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
         // Wait for callback — the page will reload/invalidate queries on completion
       }
       setOauthReconnectPending(false)
-      setMenuOpen(false)
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
     } catch (err) {
       popup.close()
@@ -228,7 +188,6 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
   }
 
   const openTools = () => {
-    setMenuOpen(false)
     setToolsError(null)
     setToolsOpen(true)
   }
@@ -275,205 +234,112 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
     }
   }
 
-  const submitRemoveFromAgent = async () => {
-    if (!agentSlug) return
-    setActionError(null)
-    try {
-      if (type === 'oauth') {
-        await removeAccountFromAgent.mutateAsync({ agentSlug, accountId: id })
-      } else {
-        await removeMcpFromAgent.mutateAsync({ agentSlug, mcpId: id })
-      }
-      setRemoveFromAgentOpen(false)
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Remove failed')
-    }
-  }
-
-  // The MCP scope editor needs the tool catalog. If missing, hide the option.
-  const canEditScopes =
-    type === 'oauth' ? !!toolkit : Array.isArray(mcpTools) && mcpTools.length > 0
-
   const connectionNoun = type === 'oauth' ? 'API connection' : 'MCP server'
+  const mcpActionPending =
+    testMcpConnection.isPending ||
+    discoverMcpTools.isPending ||
+    initiateMcpOAuth.isPending ||
+    oauthPending
 
   return (
     <>
-      {layout === 'buttons' ? (
-        <div className="flex items-center gap-2">
-          {type === 'oauth' && accountStatus && accountStatus !== 'active' && (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-8 text-amber-700 dark:text-amber-400"
-              onClick={(e) => { e.stopPropagation(); void runOAuthReconnect() }}
-              disabled={oauthReconnectPending}
-              data-testid={`integration-row-actions-reconnect-${type}-${id}`}
-            >
-              {oauthReconnectPending ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-              ) : (
-                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-              )}
-              Reconnect
-            </Button>
-          )}
+      <div className="flex items-center gap-2">
+        {type === 'oauth' && accountStatus && accountStatus !== 'active' && (
           <Button
-            ref={triggerRef}
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 text-amber-700 dark:text-amber-400"
+            onClick={(e) => { e.stopPropagation(); void runOAuthReconnect() }}
+            disabled={oauthReconnectPending}
+            data-testid={`integration-row-actions-reconnect-${type}-${id}`}
+          >
+            {oauthReconnectPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            Reconnect
+          </Button>
+        )}
+        {type === 'mcp' && (
+          <Button
             type="button"
             size="sm"
             variant="outline"
             className="h-8"
-            onClick={(e) => { e.stopPropagation(); openRename() }}
-            data-testid={`integration-row-actions-rename-${type}-${id}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              if (mcpStatus?.kind === 'error') void runReconnect()
+              else void runTestConnection()
+            }}
+            disabled={mcpActionPending}
+            data-testid={`integration-row-actions-test-${type}-${id}`}
           >
-            <Pencil className="h-3.5 w-3.5 mr-1.5" />
-            Rename
+            {testMcpConnection.isPending || initiateMcpOAuth.isPending || oauthPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : mcpStatus?.kind === 'success' ? (
+              <span className="mr-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-emerald-500/15">
+                <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+              </span>
+            ) : mcpStatus?.kind === 'error' ? (
+              <span className="mr-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-destructive/15">
+                <X className="h-3 w-3 text-destructive" />
+              </span>
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            {oauthPending ? (
+              'Waiting for OAuth...'
+            ) : mcpStatus?.kind === 'success' ? (
+              mcpStatus.message
+            ) : mcpStatus?.kind === 'error' ? (
+              <>
+                Reconnect
+                <ArrowUpRight className="h-3 w-3 ml-1" aria-hidden="true" />
+              </>
+            ) : (
+              'Test connection'
+            )}
           </Button>
+        )}
+        {type === 'mcp' && (
           <Button
             type="button"
             size="sm"
             variant="outline"
-            className="h-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-            onClick={(e) => { e.stopPropagation(); openDelete() }}
-            data-testid={`integration-row-actions-delete-${type}-${id}`}
+            className="h-8"
+            onClick={(e) => { e.stopPropagation(); openTools() }}
+            data-testid={`integration-row-actions-tools-${type}-${id}`}
           >
-            <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-            Delete
+            <Wrench className="h-3.5 w-3.5 mr-1.5" />
+            Tools
           </Button>
-        </div>
-      ) : (
-        <Popover
-          open={menuOpen}
-          onOpenChange={(open) => {
-            setMenuOpen(open)
-            if (!open) setMcpStatus(null)
-          }}
+        )}
+        <Button
+          ref={triggerRef}
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8"
+          onClick={(e) => { e.stopPropagation(); openRename() }}
+          data-testid={`integration-row-actions-rename-${type}-${id}`}
         >
-          <PopoverTrigger asChild>
-            <Button
-              ref={triggerRef}
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="h-7 overflow-hidden w-0 -ml-2 opacity-0 group-hover:w-7 group-hover:ml-0 group-hover:opacity-100 focus-visible:w-7 focus-visible:ml-0 focus-visible:opacity-100 data-[state=open]:w-7 data-[state=open]:ml-0 data-[state=open]:opacity-100 transition-[width,margin,opacity] duration-200"
-              aria-label={`Actions for ${name}`}
-              onClick={(e) => e.stopPropagation()}
-              data-testid={`integration-row-actions-${type}-${id}`}
-            >
-              <Settings className="h-4 w-4 text-muted-foreground" />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="end"
-            className="w-48 p-1"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              type="button"
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-              onClick={openRename}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-              Rename
-            </button>
-            {type === 'oauth' && accountStatus && accountStatus !== 'active' && (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400 hover:bg-amber-500/10 transition-colors"
-                onClick={runOAuthReconnect}
-                disabled={oauthReconnectPending}
-              >
-                {oauthReconnectPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                Reconnect
-              </button>
-            )}
-            {canEditScopes && (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                onClick={openScopes}
-              >
-                <Shield className="h-3.5 w-3.5" />
-                Edit permissions
-              </button>
-            )}
-            {type === 'mcp' && (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                onClick={openTools}
-              >
-                <Wrench className="h-3.5 w-3.5" />
-                Discover tools
-              </button>
-            )}
-            {agentSlug && !hideRemoveFromAgent && (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                onClick={openRemoveFromAgent}
-              >
-                <LogOut className="h-3.5 w-3.5" />
-                Remove from agent
-              </button>
-            )}
-            <button
-              type="button"
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
-              onClick={openDelete}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              {agentSlug ? 'Delete for all agents' : 'Delete'}
-            </button>
-            {type === 'mcp' && (
-              <>
-                <div className="my-1 h-px bg-border" role="separator" />
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors disabled:opacity-50"
-                  onClick={() => {
-                    if (mcpStatus?.kind === 'error') void runReconnect()
-                    else void runTestConnection()
-                  }}
-                  disabled={
-                    testMcpConnection.isPending ||
-                    discoverMcpTools.isPending ||
-                    initiateMcpOAuth.isPending ||
-                    oauthPending
-                  }
-                >
-                  {testMcpConnection.isPending || initiateMcpOAuth.isPending || oauthPending ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : mcpStatus?.kind === 'success' ? (
-                    <span className="flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-emerald-500/15">
-                      <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
-                    </span>
-                  ) : mcpStatus?.kind === 'error' ? (
-                    <span className="flex h-3.5 w-3.5 items-center justify-center rounded-sm bg-destructive/15">
-                      <X className="h-3 w-3 text-destructive" />
-                    </span>
-                  ) : (
-                    <RefreshCw className="h-3.5 w-3.5" />
-                  )}
-                  {oauthPending ? (
-                    'Waiting for OAuth...'
-                  ) : mcpStatus?.kind === 'success' ? (
-                    'Connected'
-                  ) : mcpStatus?.kind === 'error' ? (
-                    <>
-                      Reconnect
-                      <ArrowUpRight className="h-3 w-3" aria-hidden="true" />
-                    </>
-                  ) : (
-                    'Test connection'
-                  )}
-                </button>
-              </>
-            )}
-          </PopoverContent>
-        </Popover>
-      )}
+          <Pencil className="h-3.5 w-3.5 mr-1.5" />
+          Rename
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 text-destructive hover:text-destructive hover:bg-destructive/10"
+          onClick={(e) => { e.stopPropagation(); openDelete() }}
+          data-testid={`integration-row-actions-delete-${type}-${id}`}
+        >
+          <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+          Delete
+        </Button>
+      </div>
 
       {/* Rename dialog */}
       <Dialog open={renameOpen} onOpenChange={(open) => { if (!renamePending) setRenameOpen(open) }}>
@@ -526,22 +392,10 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
       >
         <AlertDialogContent onClick={(e) => e.stopPropagation()} onCloseAutoFocus={restoreFocus}>
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              {agentSlug ? `Delete this ${connectionNoun} for all agents?` : `Delete ${connectionNoun}?`}
-            </AlertDialogTitle>
+            <AlertDialogTitle>Delete {connectionNoun}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {agentSlug ? (
-                <>
-                  This permanently deletes &quot;{name}&quot; and revokes access for every agent using
-                  it — not just this one. If you only want this agent to lose access, cancel and
-                  pick &quot;Remove from agent&quot; instead.
-                </>
-              ) : (
-                <>
-                  This permanently deletes &quot;{name}&quot; and revokes access for every agent using it.
-                  This action cannot be undone.
-                </>
-              )}
+              This permanently deletes &quot;{name}&quot; and revokes access for every agent using it.
+              This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {actionError && (
@@ -557,70 +411,13 @@ export function IntegrationRowActions({ type, id, name, toolkit, mcpTools, agent
               disabled={deletePending}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {deletePending ? 'Deleting...' : agentSlug ? 'Delete for all agents' : 'Delete'}
+              {deletePending ? 'Deleting...' : 'Delete'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Remove from this agent (only when agentSlug provided) */}
-      {agentSlug && (
-        <AlertDialog
-          open={removeFromAgentOpen}
-          onOpenChange={(open) => {
-            if (!removeFromAgentPending) {
-              setRemoveFromAgentOpen(open)
-              if (!open) setActionError(null)
-            }
-          }}
-        >
-          <AlertDialogContent onClick={(e) => e.stopPropagation()} onCloseAutoFocus={restoreFocus}>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Remove from this agent?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This agent will lose access to &quot;{name}&quot;. The connection stays available to
-                other agents and can be re-granted later.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            {actionError && (
-              <p className="text-xs text-destructive" role="alert">{actionError}</p>
-            )}
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={removeFromAgentPending}>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={(e) => {
-                  e.preventDefault()
-                  void submitRemoveFromAgent()
-                }}
-                disabled={removeFromAgentPending}
-              >
-                {removeFromAgentPending ? 'Removing...' : 'Remove'}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      )}
-
-      {/* Scope editor */}
-      {type === 'oauth' && toolkit && scopesOpen && (
-        <ScopePolicyEditor
-          accountId={id}
-          toolkit={toolkit}
-          open={scopesOpen}
-          onOpenChange={setScopesOpen}
-        />
-      )}
-      {type === 'mcp' && mcpTools && scopesOpen && (
-        <ToolPolicyEditor
-          mcpId={id}
-          mcpName={name}
-          tools={mcpTools}
-          open={scopesOpen}
-          onOpenChange={setScopesOpen}
-        />
-      )}
-
-      {/* Discover tools dialog */}
+      {/* Tools dialog */}
       {type === 'mcp' && (
         <Dialog
           open={toolsOpen}

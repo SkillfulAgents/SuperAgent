@@ -16,7 +16,11 @@ export type AgentView =
   | { kind: 'chat'; integrationId: string; sessionId?: string }
   | { kind: 'dashboard'; slug: string }
   | { kind: 'apiLogs' }
-  | { kind: 'connections' }
+  | {
+      kind: 'connections'
+      /** Open the connections page with this row's detail view already shown. */
+      detailRowKey?: string
+    }
   | { kind: 'notifications' }
 
 const HOME: AgentView = { kind: 'home' }

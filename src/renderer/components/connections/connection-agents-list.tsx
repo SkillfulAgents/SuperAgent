@@ -3,13 +3,6 @@ import { flushSync } from 'react-dom'
 import { Loader2 } from 'lucide-react'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { startViewTransition } from '@renderer/lib/view-transition'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/components/ui/dialog'
 import { Switch } from '@renderer/components/ui/switch'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUser } from '@renderer/context/user-context'
@@ -31,14 +24,14 @@ interface ConnectionAgentsListProps {
   /**
    * Split agents into two sectioned lists ("Agents With Access" / "Agents
    * Without Access") instead of one flat list — matches the per-agent
-   * connections page pattern. Defaults to false for the dialog.
+   * connections page pattern. Defaults to a single flat list.
    */
   sectioned?: boolean
 }
 
 /**
- * Inline list of agents that can use a given connection — same content as the
- * Dialog version. Toggles auto-save on change. Reused on the detail page.
+ * List of agents that can use a given connection, with access toggles that
+ * auto-save on change. Rendered on the connection detail page.
  */
 export function ConnectionAgentsList({ type, id, name, sectioned = false }: ConnectionAgentsListProps) {
   const { isAuthMode, rolesReady, canAdminAgent } = useUser()
@@ -218,37 +211,5 @@ export function ConnectionAgentsList({ type, id, name, sectioned = false }: Conn
     <ul className="divide-y divide-border/50">
       {visibleAgents.map((agent) => renderAgentRow(agent))}
     </ul>
-  )
-}
-
-interface ConnectionAgentsDialogProps {
-  type: 'oauth' | 'mcp'
-  id: string
-  name: string
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
-
-export function ConnectionAgentsDialog({ type, id, name, open, onOpenChange }: ConnectionAgentsDialogProps) {
-  const { isAuthMode } = useUser()
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        onClick={(e) => e.stopPropagation()}
-        onOpenAutoFocus={(e) => e.preventDefault()}
-        className="max-w-md"
-      >
-        <DialogHeader>
-          <DialogTitle>Agents with access to {name}</DialogTitle>
-          <DialogDescription>
-            Toggle which agents can use this connection.
-            {isAuthMode ? ' Only agents you own are shown.' : ''}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="max-h-[50vh] overflow-y-auto -mx-2">
-          <ConnectionAgentsList type={type} id={id} name={name} />
-        </div>
-      </DialogContent>
-    </Dialog>
   )
 }

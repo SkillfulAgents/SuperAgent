@@ -452,7 +452,7 @@ export function MainContent() {
         ) : view.kind === 'apiLogs' ? (
           <ApiLogsView agentSlug={agentSlug} />
         ) : view.kind === 'connections' ? (
-          <ConnectionsView agentSlug={agentSlug} />
+          <ConnectionsView agentSlug={agentSlug} initialDetailRowKey={view.detailRowKey} />
         ) : view.kind === 'task' ? (
           <ScheduledTaskView taskId={view.id} agentSlug={agentSlug} />
         ) : view.kind === 'webhook' ? (

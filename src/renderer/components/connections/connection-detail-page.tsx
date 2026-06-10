@@ -1,7 +1,7 @@
 import { ChevronLeft } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import { ConnectionAgentsList } from '@renderer/components/connections/connection-agents-dialog'
+import { ConnectionAgentsList } from '@renderer/components/connections/connection-agents-list'
 import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
 import { ScopePolicyEditorBody } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditorBody } from '@renderer/components/settings/tool-policy-editor'
@@ -68,7 +68,6 @@ export function ConnectionDetailPage({ row, onBack }: ConnectionDetailPageProps)
             toolkit={row.toolkit}
             mcpTools={row.mcpTools}
             accountStatus={row.accountStatus}
-            layout="buttons"
           />
         </div>
       </div>
