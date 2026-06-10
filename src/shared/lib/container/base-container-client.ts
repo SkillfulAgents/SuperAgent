@@ -1157,7 +1157,19 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       `http://127.0.0.1:${port}/sessions/${sessionId}/queued-messages/${encodeURIComponent(uuid)}`,
       { method: 'DELETE' }
     )
-    if (!response.ok) return false
+    if (response.status === 404) {
+      // Route missing = the container is running a build that predates the
+      // cancel endpoint. Restart the agent so a fresh container is created
+      // from the current image.
+      console.warn(
+        '[ContainerClient] cancelQueuedMessage: container returned 404 — the agent container predates the cancel endpoint; restart the agent to pick up the current image'
+      )
+      return false
+    }
+    if (!response.ok) {
+      console.warn(`[ContainerClient] cancelQueuedMessage: container returned ${response.status}`)
+      return false
+    }
     const body = (await response.json()) as { cancelled?: boolean }
     return body.cancelled === true
   }
