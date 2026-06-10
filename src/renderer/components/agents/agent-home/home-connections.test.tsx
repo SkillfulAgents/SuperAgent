@@ -72,10 +72,11 @@ describe('HomeConnections — row navigation', () => {
 
     await user.click(screen.getByRole('button', { name: 'Open GitHub connection details' }))
 
-    // The row key matches the UnifiedRow key format used by the connections page.
+    // The row key matches the UnifiedRow key format used by the connections
+    // page; source 'home' makes Back (and the header breadcrumb) skip the list.
     expect(mockSetView).toHaveBeenCalledWith({
       kind: 'connections',
-      detailRowKey: 'account-acc-1',
+      detail: { rowKey: 'account-acc-1', source: 'home' },
     })
   })
 

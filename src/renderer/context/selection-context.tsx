@@ -18,8 +18,12 @@ export type AgentView =
   | { kind: 'apiLogs' }
   | {
       kind: 'connections'
-      /** Open the connections page with this row's detail view already shown. */
-      detailRowKey?: string
+      /**
+       * Open the connections page with this row's detail view shown. `source`
+       * is where it was opened from — it decides the breadcrumb trail and
+       * where Back leads (agent home vs. the connections list).
+       */
+      detail?: { rowKey: string; source: 'home' | 'list' }
     }
   | { kind: 'notifications' }
 

@@ -21,6 +21,8 @@ import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle,
 import { Button } from '@renderer/components/ui/button'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
+import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
+import { useRemoteMcps } from '@renderer/hooks/use-remote-mcps'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTrigger } from '@renderer/hooks/use-webhook-triggers'
@@ -260,10 +262,10 @@ export function MainContent() {
             </div>
           )}
           {showConnectionsCrumb && (
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-              <span className="truncate text-sm font-light text-foreground">Connections</span>
-            </div>
+            <ConnectionsCrumbs
+              detail={view.kind === 'connections' ? view.detail ?? null : null}
+              onOpenList={() => setView({ kind: 'connections' })}
+            />
           )}
         </div>
         <div className="flex items-center gap-0 md:gap-2 shrink-0 app-no-drag">
@@ -452,7 +454,7 @@ export function MainContent() {
         ) : view.kind === 'apiLogs' ? (
           <ApiLogsView agentSlug={agentSlug} />
         ) : view.kind === 'connections' ? (
-          <ConnectionsView agentSlug={agentSlug} initialDetailRowKey={view.detailRowKey} />
+          <ConnectionsView agentSlug={agentSlug} />
         ) : view.kind === 'task' ? (
           <ScheduledTaskView taskId={view.id} agentSlug={agentSlug} />
         ) : view.kind === 'webhook' ? (
@@ -512,6 +514,66 @@ export function MainContent() {
         </>
       )}
     </ContentShell>
+  )
+}
+
+/**
+ * Header crumbs for the Connections view. The list shows "/ Connections";
+ * an open detail view appends the connection name — including the
+ * "Connections" segment (clickable, back to the list) only when the detail
+ * was opened from the list, so a home-card deep link reads "Agent / Account".
+ * Mounted only on the connections view, so the queries reuse its cache.
+ */
+function ConnectionsCrumbs({
+  detail,
+  onOpenList,
+}: {
+  detail: { rowKey: string; source: 'home' | 'list' } | null
+  onOpenList: () => void
+}) {
+  const { data: accountsData } = useConnectedAccounts()
+  const { data: mcpsData } = useRemoteMcps()
+
+  const separator = (
+    <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
+  )
+
+  if (!detail) {
+    return (
+      <div className="flex items-center gap-1.5 min-w-0">
+        {separator}
+        <span className="truncate text-sm font-light text-foreground">Connections</span>
+      </div>
+    )
+  }
+
+  const accounts = Array.isArray(accountsData?.accounts) ? accountsData.accounts : []
+  const mcps = Array.isArray(mcpsData?.servers) ? mcpsData.servers : []
+  const connectionName =
+    accounts.find((a) => `account-${a.id}` === detail.rowKey)?.displayName ??
+    mcps.find((m) => `mcp-${m.id}` === detail.rowKey)?.name ??
+    'Connection'
+
+  return (
+    <>
+      {detail.source === 'list' && (
+        <div className="flex items-center gap-1.5 min-w-0">
+          {separator}
+          <button
+            type="button"
+            className="truncate text-sm font-light text-muted-foreground hover:text-foreground transition-colors app-no-drag"
+            onClick={onOpenList}
+            data-testid="connections-breadcrumb"
+          >
+            Connections
+          </button>
+        </div>
+      )}
+      <div className="flex items-center gap-1.5 min-w-0">
+        {separator}
+        <span className="truncate text-sm font-light text-foreground">{connectionName}</span>
+      </div>
+    </>
   )
 }
 

@@ -97,7 +97,7 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
                   </span>
                 </>
               }
-              onActivate={() => setView({ kind: 'connections', detailRowKey: conn.id })}
+              onActivate={() => setView({ kind: 'connections', detail: { rowKey: conn.id, source: 'home' } })}
               ariaLabel={`Open ${conn.name} connection details`}
               right={
                 <span
