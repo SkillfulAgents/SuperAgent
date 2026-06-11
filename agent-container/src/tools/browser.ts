@@ -143,33 +143,33 @@ export const browserCloseTool = tool(
 
 export const browserSnapshotTool = tool(
   'browser_snapshot',
-  `Get an accessibility tree snapshot of the current page. Returns interactive elements with refs (like @e1, @e2) that you can use with browser_click and browser_fill.
+  `Get the current page's accessibility tree with refs (@e1, @e2, ...) for use with browser_click / browser_fill / etc.
 
-Use interactive=true (default) to get clickable/fillable elements with refs.
-Use compact=true (default) to reduce output size.
-Use json=true to get structured JSON output with a refs dictionary.`,
+Call with no arguments first for navigation/interaction. mode controls depth only: navigation (default) is shallow; detailed returns the full tree for a scoped section and requires scope because whole-page detail can be large.`,
   {
+    mode: z
+      .enum(['navigation', 'detailed'])
+      .optional()
+      .describe('Depth mode. navigation (default) returns a shallow snapshot for finding refs. detailed returns the full tree for the scoped target and requires scope.'),
+    scope: z
+      .string()
+      .optional()
+      .describe('Optional CSS or XPath selector for a known area. Does not accept snapshot refs, visible text, role names, or free-form phrases.'),
     interactive: z
       .boolean()
       .optional()
-      .default(true)
       .describe('Include interactive elements with refs (default: true)'),
     compact: z
       .boolean()
       .optional()
-      .default(true)
       .describe('Compact output to reduce size (default: true)'),
-    json: z
-      .boolean()
-      .optional()
-      .default(false)
-      .describe('Return structured JSON with refs dictionary (default: false)'),
   },
   async (args) => {
     const result = await browserFetch('snapshot', {
+      mode: args.mode,
+      scope: args.scope,
       interactive: args.interactive,
       compact: args.compact,
-      json: args.json,
     })
     if (!result.success) return errorResult(result.error!)
 

@@ -16,6 +16,7 @@ import { tabManager } from './tab-manager';
 import { runBrowserUpload } from './browser-upload';
 
 import { getEditingCommands } from './cdp-editing-commands';
+import { takeSnapshot, invalidate as invalidateSnapshot } from './snapshot';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -878,6 +879,7 @@ app.post('/browser/open', async (c) => {
     _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null });
     tabManager.resetTabCount();
     broadcastBrowserEvent(true);
+    invalidateSnapshot(body.sessionId);
 
     return c.json({ success: true });
   } catch (error: any) {
@@ -908,6 +910,7 @@ app.post('/browser/close', async (c) => {
 
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
+    if (body.sessionId) invalidateSnapshot(body.sessionId);
     _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
     tabManager.resetTabCount();
 
@@ -944,9 +947,11 @@ app.post('/browser/release', async (c) => {
 // POST /browser/notify-closed - Host browser was closed externally, clean up state
 app.post('/browser/notify-closed', (c) => {
   if (browserState.active) {
+    const prevSessionId = browserState.sessionId;
     cleanupAgentBrowserDaemon();
     cleanupCdpScreencast();
     broadcastBrowserEvent(false);
+    if (prevSessionId) invalidateSnapshot(prevSessionId);
     _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
     tabManager.resetTabCount();
     console.log('[Browser] Browser closed externally, state cleaned up');
@@ -954,46 +959,34 @@ app.post('/browser/notify-closed', (c) => {
   return c.json({ success: true });
 });
 
-// POST /browser/snapshot - Get accessibility tree snapshot
 app.post('/browser/snapshot', async (c) => {
   try {
-    const body = await c.req.json<{ sessionId: string; interactive?: boolean; compact?: boolean; json?: boolean }>();
+    const body = await c.req.json<{
+      sessionId: string;
+      mode?: 'navigation' | 'detailed';
+      interactive?: boolean;
+      compact?: boolean;
+      json?: boolean;
+      scope?: string;
+    }>();
 
-    if (!body.sessionId) {
-      return c.json({ error: 'sessionId is required' }, 400);
-    }
-
+    if (!body.sessionId) return c.json({ error: 'sessionId is required' }, 400);
     const validationError = validateBrowserSession(body.sessionId);
-    if (validationError) {
-      return c.json({ error: validationError }, 409);
-    }
+    if (validationError) return c.json({ error: validationError }, 409);
+    if (!browserState.active) return c.json({ error: 'Browser is not active' }, 400);
 
-    if (!browserState.active) {
-      return c.json({ error: 'Browser is not active' }, 400);
-    }
-
-    const snapshotArgs = ['snapshot'];
-    if (body.json) snapshotArgs.push('--json');
-    if (body.interactive !== false) snapshotArgs.push('-i');
-    if (body.compact !== false) snapshotArgs.push('-c');
-
-    const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined);
-
-    if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
-    }
+    const result = await takeSnapshot(body.sessionId, body, browserState.cdpUrl, execBrowser);
+    if (!result.ok) return c.json({ error: result.error, success: false }, 500);
 
     if (body.json) {
-      // Try to parse JSON output
       try {
-        const parsed = JSON.parse(result.stdout);
+        const parsed = JSON.parse(result.text);
         return c.json({ ...parsed, tabCount: tabManager.getTabCount() });
       } catch {
-        return c.json({ snapshot: result.stdout, tabCount: tabManager.getTabCount() });
+        // fall through
       }
     }
-
-    return c.json({ snapshot: result.stdout, tabCount: tabManager.getTabCount() });
+    return c.json({ snapshot: result.text, tabCount: tabManager.getTabCount() });
   } catch (error: any) {
     console.error('[Browser] Error taking snapshot:', error);
     return c.json({ error: error.message || 'Failed to take snapshot' }, 500);
@@ -1907,8 +1900,8 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
   }
 }
 
-/** After a browser action, check if the active tab changed and switch screencast */
 function notifyBrowserAction() {
+  if (browserState.sessionId) invalidateSnapshot(browserState.sessionId);
   if (!cdpScreencast) return;
   const currentClient = cdpScreencast.clientWs;
   // Brief delay to let agent-browser update its internal state after the action

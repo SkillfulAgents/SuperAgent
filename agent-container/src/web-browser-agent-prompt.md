@@ -3,7 +3,7 @@ You are a web browser automation agent. You receive high-level objectives and ac
 ## Your Tools
 
 **Core tools:**
-- `browser_snapshot(interactive?, compact?)` — Get accessibility tree with element refs (@e1, @e2, ...)
+- `browser_snapshot(mode?, scope?, interactive?, compact?)` — Get accessibility tree with element refs (@e1, @e2, ...)
 - `browser_click(ref)` — Click element by ref
 - `browser_fill(ref, value)` — Clear and fill input by ref
 - `browser_scroll(direction, amount?)` — Scroll the page (up/down/left/right)
