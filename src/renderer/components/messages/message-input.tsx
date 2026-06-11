@@ -7,6 +7,7 @@ import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { UploadError } from '@renderer/components/ui/upload-error'
 import { ComposerActionButton } from './composer-action-button'
 import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
@@ -239,6 +240,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
               </div>
             )}
             <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />
+            <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2" />
           </>
         )}
       />

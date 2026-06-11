@@ -343,67 +343,85 @@ agents.post('/import-template', async (c) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to import template'
     console.error('Failed to import template:', error)
+    captureException(error, { tags: { component: 'agents', operation: 'import-template' } })
     return c.json({ error: message }, 500)
   }
 })
 
-async function handleChunkedImport(c: Context, formData: FormData, chunk: File) {
+type ParsedChunkFields =
+  | { ok: true; uploadId: string; chunkIndex: number; totalChunks: number }
+  | { ok: false; error: string }
+
+// Validate the chunked-upload metadata fields shared by import-template and
+// upload-file. Keeps the three routes thin and the validation in one place.
+function parseChunkFields(formData: FormData): ParsedChunkFields {
   const uploadId = formData.get('uploadId') as string | null
   const chunkIndexStr = formData.get('chunkIndex') as string | null
   const totalChunksStr = formData.get('totalChunks') as string | null
 
   if (!uploadId || chunkIndexStr === null || totalChunksStr === null) {
-    return c.json({ error: 'Missing chunked upload fields: uploadId, chunkIndex, totalChunks' }, 400)
+    return { ok: false, error: 'Missing chunked upload fields: uploadId, chunkIndex, totalChunks' }
   }
-
-  // Validate uploadId format (UUID only — prevent path traversal)
+  // uploadId becomes a directory name — UUID only, prevents path traversal
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uploadId)) {
-    return c.json({ error: 'Invalid uploadId format' }, 400)
+    return { ok: false, error: 'Invalid uploadId format' }
   }
 
   const chunkIndex = parseInt(chunkIndexStr, 10)
   const totalChunks = parseInt(totalChunksStr, 10)
-
   if (isNaN(chunkIndex) || isNaN(totalChunks) || chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks || totalChunks > 200) {
-    return c.json({ error: 'Invalid chunkIndex or totalChunks' }, 400)
+    return { ok: false, error: 'Invalid chunkIndex or totalChunks' }
   }
 
+  return { ok: true, uploadId, chunkIndex, totalChunks }
+}
+
+type StoreChunkResult = { status: 'received' } | { status: 'assembled'; buffer: Buffer }
+
+// Persist one chunk; once all chunks are present, assemble them into a single
+// buffer (a `.assembling` lock prevents duplicate assembly from concurrent
+// requests). Shared by import-template and upload-file.
+async function storeUploadChunk(uploadId: string, chunkIndex: number, totalChunks: number, chunk: Buffer): Promise<StoreChunkResult> {
   const uploadDir = path.join(getTempUploadsDir(), uploadId)
   await ensureDirectory(uploadDir)
 
-  // Write this chunk to disk
-  const chunkBuffer = Buffer.from(await chunk.arrayBuffer())
-  await fs.promises.writeFile(path.join(uploadDir, `chunk-${chunkIndex}`), chunkBuffer)
+  await fs.promises.writeFile(path.join(uploadDir, `chunk-${chunkIndex}`), chunk)
 
-  // Check if all chunks are present
   const files = await fs.promises.readdir(uploadDir)
   const chunkFiles = files.filter((f) => f.startsWith('chunk-'))
-
   if (chunkFiles.length < totalChunks) {
-    return c.json({ status: 'chunk_received', chunkIndex })
+    return { status: 'received' }
   }
 
-  // Prevent duplicate assembly from concurrent requests
   const lockPath = path.join(uploadDir, '.assembling')
   try {
     await fs.promises.writeFile(lockPath, '', { flag: 'wx' }) // fails if already exists
   } catch {
-    return c.json({ status: 'chunk_received', chunkIndex })
+    return { status: 'received' }
   }
 
-  // All chunks received — assemble and process
   try {
     const buffers: Buffer[] = []
     for (let i = 0; i < totalChunks; i++) {
       buffers.push(await fs.promises.readFile(path.join(uploadDir, `chunk-${i}`)))
     }
-    const zipBuffer = Buffer.concat(buffers)
-
-    return await processImport(c, zipBuffer, formData)
+    return { status: 'assembled', buffer: Buffer.concat(buffers) }
   } finally {
-    // Clean up temp chunks
     try { await removeDirectory(uploadDir) } catch { /* ignore cleanup errors */ }
   }
+}
+
+async function handleChunkedImport(c: Context, formData: FormData, chunk: File) {
+  const parsed = parseChunkFields(formData)
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400)
+
+  const result = await storeUploadChunk(parsed.uploadId, parsed.chunkIndex, parsed.totalChunks, Buffer.from(await chunk.arrayBuffer()))
+
+  if (result.status === 'received') {
+    return c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex })
+  }
+
+  return await processImport(c, result.buffer, formData)
 }
 
 async function processImport(c: Context, zipBuffer: Buffer, formData: FormData) {
@@ -3814,10 +3832,8 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
   }
 })
 
-// Shared upload logic - writes file to agent workspace
-async function handleFileUpload(agentSlug: string, file: File, relativePath?: string) {
-  const filename = file.name
-
+// Shared upload logic - writes a buffer to the agent workspace
+async function writeUploadedFile(agentSlug: string, filename: string, buffer: Buffer, relativePath?: string) {
   // If relativePath is provided (folder upload), preserve directory structure
   let uploadPath: string
   if (relativePath) {
@@ -3835,9 +3851,6 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
     throw new Error('Invalid file path')
   }
 
-  const arrayBuffer = await file.arrayBuffer()
-  const buffer = Buffer.from(arrayBuffer)
-
   // Write directly to host filesystem (volume-mounted into container)
   await fs.promises.mkdir(path.dirname(fullPath), { recursive: true })
   await fs.promises.writeFile(fullPath, buffer)
@@ -3850,16 +3863,58 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
   }
 }
 
-// POST /api/agents/:id/upload-file - Upload a file to the agent workspace (no session required)
-agents.post('/:id/upload-file', AgentUser(), async (c) => {
+async function handleFileUpload(agentSlug: string, file: File, relativePath?: string) {
+  const buffer = Buffer.from(await file.arrayBuffer())
+  return writeUploadedFile(agentSlug, file.name, buffer, relativePath)
+}
+
+// Shared by both upload-file routes. When a `chunk` field is present, persist it
+// and only write the final file once every chunk has arrived. Returns
+// `{ pending }` (a Response to return immediately — either a 400 or the interim
+// `chunk_received` ack) or `{ uploadResult }` once the file is fully assembled.
+type ChunkedFileUploadOutcome = {
+  pending: Response | null
+  uploadResult?: Awaited<ReturnType<typeof writeUploadedFile>>
+}
+
+async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: FormData, chunk: File): Promise<ChunkedFileUploadOutcome> {
+  const parsed = parseChunkFields(formData)
+  if (!parsed.ok) return { pending: c.json({ error: parsed.error }, 400) }
+
+  const filename = (formData.get('filename') as string | null) || 'upload'
+  const relativePath = formData.get('relativePath') as string | null
+
+  const result = await storeUploadChunk(parsed.uploadId, parsed.chunkIndex, parsed.totalChunks, Buffer.from(await chunk.arrayBuffer()))
+
+  if (result.status === 'received') {
+    return { pending: c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex }) }
+  }
+
+  const uploadResult = await writeUploadedFile(agentSlug, filename, result.buffer, relativePath || undefined)
+  return { pending: null, uploadResult }
+}
+
+// Shared handler for both agent-level and session-level upload-file routes.
+// Supports single-request uploads (`file` field) and chunked uploads (`chunk`
+// field) so files above Cloudflare's 100MB request-body limit go through in
+// <100MB slices.
+async function respondUploadFile(c: Context) {
   try {
     const agentSlug = c.req.param('id')
-
-
+    if (!agentSlug) return c.json({ error: 'Missing agent id' }, 400)
     const formData = await c.req.formData()
+
+    const chunk = formData.get('chunk') as File | null
+    if (chunk) {
+      const outcome = await handleChunkedFileUpload(c, agentSlug, formData, chunk)
+      if (outcome.pending) return outcome.pending
+      const result = outcome.uploadResult!
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.filename}`, action: 'uploaded' })
+      return c.json(result)
+    }
+
     const file = formData.get('file') as File | null
     const relativePath = formData.get('relativePath') as string | null
-
     if (!file) {
       return c.json({ error: 'No file provided' }, 400)
     }
@@ -3869,32 +3924,16 @@ agents.post('/:id/upload-file', AgentUser(), async (c) => {
     return c.json(result)
   } catch (error) {
     console.error('Failed to upload file:', error)
+    captureException(error, { tags: { component: 'agents', operation: 'upload-file' }, extra: { agentSlug: c.req.param('id') } })
     return c.json({ error: 'Failed to upload file' }, 500)
   }
-})
+}
+
+// POST /api/agents/:id/upload-file - Upload a file to the agent workspace (no session required)
+agents.post('/:id/upload-file', AgentUser(), respondUploadFile)
 
 // POST /api/agents/:id/sessions/:sessionId/upload-file - Upload a file to the agent workspace
-agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), async (c) => {
-  try {
-    const agentSlug = c.req.param('id')
-
-
-    const formData = await c.req.formData()
-    const file = formData.get('file') as File | null
-    const relativePath = formData.get('relativePath') as string | null
-
-    if (!file) {
-      return c.json({ error: 'No file provided' }, 400)
-    }
-
-    const result = await handleFileUpload(agentSlug, file, relativePath || undefined)
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.filename}`, action: 'uploaded' })
-    return c.json(result)
-  } catch (error) {
-    console.error('Failed to upload file:', error)
-    return c.json({ error: 'Failed to upload file' }, 500)
-  }
-})
+agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), respondUploadFile)
 
 async function handleFolderUpload(agentSlug: string, sourcePath: string) {
   const stat = await fs.promises.stat(sourcePath)
@@ -3932,6 +3971,7 @@ agents.post('/:id/upload-folder', AgentUser(), async (c) => {
     return c.json(result)
   } catch (error) {
     console.error('Failed to upload folder:', error)
+    captureException(error, { tags: { component: 'agents', operation: 'upload-folder' }, extra: { agentSlug: c.req.param('id') } })
     return c.json({ error: 'Failed to upload folder' }, 500)
   }
 })
@@ -3947,6 +3987,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
     return c.json(result)
   } catch (error) {
     console.error('Failed to upload folder:', error)
+    captureException(error, { tags: { component: 'agents', operation: 'upload-folder' }, extra: { agentSlug: c.req.param('id') } })
     return c.json({ error: 'Failed to upload folder' }, 500)
   }
 })

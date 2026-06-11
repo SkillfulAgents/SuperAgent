@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { uploadFileChunked } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -63,17 +64,11 @@ export function useSendMessage() {
 export function useUploadFile() {
   return useMutation({
     mutationFn: async (data: { sessionId: string; agentSlug: string; file: File; relativePath?: string }) => {
-      const formData = new FormData()
-      formData.append('file', data.file)
-      if (data.relativePath) {
-        formData.append('relativePath', data.relativePath)
-      }
-      const res = await apiFetch(
-        `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
-        { method: 'POST', body: formData }
-      )
-      if (!res.ok) throw new Error('Failed to upload file')
-      return res.json() as Promise<{ path: string; filename: string; size: number }>
+      return uploadFileChunked<{ path: string; filename: string; size: number }>({
+        url: `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
+        file: data.file,
+        fields: data.relativePath ? { relativePath: data.relativePath } : undefined,
+      })
     },
   })
 }

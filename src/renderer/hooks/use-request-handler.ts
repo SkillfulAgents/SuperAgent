@@ -7,6 +7,7 @@
  */
 
 import { useState, useCallback } from 'react'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 
 export function useRequestHandler(onComplete: () => void) {
   const [status, setStatus] = useState<string>('pending')
@@ -28,6 +29,7 @@ export function useRequestHandler(onComplete: () => void) {
       setStatus(successStatus)
       onComplete()
     } catch (err: unknown) {
+      captureRendererException(err, { tags: { source: 'request-item' } })
       setError(err instanceof Error ? err.message : 'Request failed')
       setStatus('pending')
     }

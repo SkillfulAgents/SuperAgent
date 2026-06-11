@@ -7,6 +7,7 @@ import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, Check }
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { UploadError } from '@renderer/components/ui/upload-error'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
@@ -14,6 +15,7 @@ import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
+import { uploadFileChunked } from '@renderer/lib/upload'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -148,15 +150,11 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
 
   const composer = useMessageComposer({
     agentSlug: agent.slug,
-    uploadFile: useCallback(async ({ file }: { file: File }) => {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await apiFetch(
-        `/api/agents/${agent.slug}/upload-file`,
-        { method: 'POST', body: formData }
-      )
-      if (!res.ok) throw new Error('Failed to upload file')
-      return res.json() as Promise<{ path: string }>
+    uploadFile: useCallback(({ file }: { file: File }) => {
+      return uploadFileChunked<{ path: string }>({
+        url: `/api/agents/${agent.slug}/upload-file`,
+        file,
+      })
     }, [agent.slug]),
     uploadFolder: useCallback(async ({ sourcePath }: { sourcePath: string }) => {
       const res = await apiFetch(
@@ -450,7 +448,10 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                     </>
                   )}
                   footer={(
-                    <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
+                    <>
+                      <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
+                      <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
+                    </>
                   )}
                 />
               </form>

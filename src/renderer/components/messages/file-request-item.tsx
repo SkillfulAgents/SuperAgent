@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { uploadFileChunked } from '@renderer/lib/upload'
 import { useState, useRef, useCallback } from 'react'
 import { CloudUpload, FileIcon, X } from 'lucide-react'
 import { useRequestHandler } from '@renderer/hooks/use-request-handler'
@@ -43,15 +44,10 @@ export function FileRequestItem({
   const handleUpload = () => {
     if (!selectedFile) return
     submit(async () => {
-      const formData = new FormData()
-      formData.append('file', selectedFile)
-      const uploadResponse = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/upload-file`,
-        { method: 'POST', body: formData }
-      )
-      if (!uploadResponse.ok) throw new Error('Failed to upload file')
-
-      const { path } = await uploadResponse.json()
+      const { path } = await uploadFileChunked<{ path: string }>({
+        url: `/api/agents/${agentSlug}/sessions/${sessionId}/upload-file`,
+        file: selectedFile,
+      })
 
       const provideResponse = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/provide-file`,
