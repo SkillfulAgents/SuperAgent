@@ -1,24 +1,26 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully navigated to the agent application, found and clicked on the specified agent, verified it was idle, sent a math question message, waited for and received a response containing \"4\", and took a screenshot confirming the conversation.",
+  "reason": "Agent \"QA-20260611-225432-z9cx\" successfully responded to math question with correct answer \"4\"",
   "steps": [
-    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully with SuperAgent UI showing sidebar with agents list",
-    "Step 2 - Clicked on \"QA-20260611-194451-ux2k\" agent in sidebar — Agent detail page loaded showing the agent's home screen with message input field and settings panels",
-    "Step 3 - Verified agent status is \"running\" or \"idle\" — Agent status confirmed as \"idle\" shown in the top header area of the agent page",
-    "Step 4 - Sent message \"Hello! What is 2+2?\" — Message successfully typed into the message input field, sent button clicked, message appeared in chat history, and agent transitioned to \"working\" status",
-    "Step 5 - Waited up to 3 minutes for a response — Response received within 2 seconds as indicated by \"Worked for 2s\" status message in the chat",
-    "Step 6 - Verified response mentions \"4\" and took screenshot — Agent response clearly shows \"4\" as a quoted answer to the math question, screenshot saved showing full conversation (response-screenshot.png)"
+    "Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing agents",
+    "Found and clicked agent \"QA-20260611-225432-z9cx\" in sidebar — Agent detail page opened successfully",
+    "Verified agent status is \"idle\" — Status indicator confirmed agent is in valid state (idle is one of the allowed states: running or idle)",
+    "Typed message \"Hello! What is 2+2?\" in message input field — Message text successfully entered in textbox",
+    "Clicked \"Send message\" button — Message submitted and processed by agent",
+    "Waited for response — Response received immediately without delay (well within 3-minute timeout)",
+    "Verified response mentions \"4\" — Agent response displays \"4\" as the correct mathematical answer",
+    "Took final screenshot — Screenshot captured showing complete conversation with user message and agent response containing \"4\""
   ],
   "bugs": [],
-  "durationMs": 93758,
-  "sessionId": "f5f06bea-d923-4d63-bedf-4e855caaeb23",
+  "durationMs": 53943,
+  "sessionId": "9ddd516c-4581-4cee-9313-d16d5f5f77c5",
   "cost": {
-    "inputTokens": 323,
-    "outputTokens": 10668,
-    "cacheCreationTokens": 117456,
-    "cacheReadTokens": 1015168,
+    "inputTokens": 234,
+    "outputTokens": 8458,
+    "cacheCreationTokens": 101491,
+    "cacheReadTokens": 626927,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.302
+    "totalCostUsd": 0.23208
   }
 }
