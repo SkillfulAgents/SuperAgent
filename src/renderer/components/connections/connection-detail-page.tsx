@@ -1,7 +1,7 @@
 import { ChevronLeft } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import { ConnectionAgentsList } from '@renderer/components/connections/connection-agents-dialog'
+import { ConnectionAgentsList } from '@renderer/components/connections/connection-agents-list'
 import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
 import { ScopePolicyEditorBody } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditorBody } from '@renderer/components/settings/tool-policy-editor'
@@ -15,13 +15,18 @@ import type { UnifiedRow } from '@renderer/components/connections/unified-rows'
 interface ConnectionDetailPageProps {
   row: UnifiedRow
   onBack: () => void
+  /**
+   * Breadcrumb label naming where Back leads — e.g. "<Agent> Connections" on
+   * the agent connections page, or the agent's name for a home-card deep link.
+   */
+  backLabel?: string
 }
 
 /**
  * Detail view for a single connection: two columns showing which agents have
  * access and the per-scope / per-tool permissions for the connection.
  */
-export function ConnectionDetailPage({ row, onBack }: ConnectionDetailPageProps) {
+export function ConnectionDetailPage({ row, onBack, backLabel = 'Connections' }: ConnectionDetailPageProps) {
   // Hide the default SettingsPage header — the detail page owns its own — and
   // use the full inset width so the two columns can lay out like the agent home.
   useHideSettingsHeader(true)
@@ -38,7 +43,7 @@ export function ConnectionDetailPage({ row, onBack }: ConnectionDetailPageProps)
           data-testid="connection-detail-back"
         >
           <ChevronLeft className="h-3.5 w-3.5 mr-1" />
-          Connections
+          {backLabel}
         </Button>
       </div>
 
@@ -68,7 +73,6 @@ export function ConnectionDetailPage({ row, onBack }: ConnectionDetailPageProps)
             toolkit={row.toolkit}
             mcpTools={row.mcpTools}
             accountStatus={row.accountStatus}
-            layout="buttons"
           />
         </div>
       </div>

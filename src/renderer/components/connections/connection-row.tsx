@@ -15,11 +15,6 @@ interface ConnectionRowProps {
    * async items can mount late without leaving a dangling dot.
    */
   subtitleExtra?: ReactNode
-  /**
-   * Optional content right-justified at the end of the subtitle row (no `·`
-   * separator). Used for inline metadata like "N agents connected".
-   */
-  subtitleTrailing?: ReactNode
   /** When set, animates row position via the View Transitions API. */
   viewTransitionName?: string
   /** When provided, the row becomes clickable (and Enter/Space-activatable). */
@@ -36,7 +31,6 @@ export function ConnectionRow({
   row,
   right,
   subtitleExtra,
-  subtitleTrailing,
   viewTransitionName,
   onActivate,
   ariaLabel,
@@ -71,9 +65,6 @@ export function ConnectionRow({
             {formatCompactDistance(safeDate(row.date))}
           </span>
           {subtitleExtra}
-          {subtitleTrailing && (
-            <span className="ml-auto shrink-0 pl-2">{subtitleTrailing}</span>
-          )}
         </>
       }
       right={right}

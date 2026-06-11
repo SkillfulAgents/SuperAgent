@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
-import { Loader2, Plus } from 'lucide-react'
+import { ChevronRight, Loader2, Plus } from 'lucide-react'
 import { IntegrationDirectoryDialog, type NewApiConnection, type NewMcpConnection } from '@renderer/components/connections/integration-directory-dialog'
 import { IntegrationList } from '@renderer/components/connections/integration-row'
-import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
+import { ConnectionDetailPage } from '@renderer/components/connections/connection-detail-page'
 import { ConnectionRow } from '@renderer/components/connections/connection-row'
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
@@ -29,12 +29,22 @@ import { startViewTransition } from '@renderer/lib/view-transition'
 
 interface ConnectionsListProps {
   agentSlug: string
+  /** Key of the row whose detail page is shown instead of the list. */
+  detailRowKey: string | null
+  /** Breadcrumb label for the detail page's Back button. */
+  detailBackLabel?: string
+  onDetailRowKeyChange: (key: string | null) => void
 }
 
-export function ConnectionsList({ agentSlug }: ConnectionsListProps) {
+export function ConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetailRowKeyChange }: ConnectionsListProps) {
   return (
     <div className="flex flex-col gap-4">
-      <AllConnectionsList agentSlug={agentSlug} />
+      <AllConnectionsList
+        agentSlug={agentSlug}
+        detailRowKey={detailRowKey}
+        detailBackLabel={detailBackLabel}
+        onDetailRowKeyChange={onDetailRowKeyChange}
+      />
     </div>
   )
 }
@@ -93,9 +103,12 @@ export function NewIntegrationButton() {
 
 interface AllConnectionsListProps {
   agentSlug: string
+  detailRowKey: string | null
+  detailBackLabel?: string
+  onDetailRowKeyChange: (key: string | null) => void
 }
 
-function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
+function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetailRowKeyChange }: AllConnectionsListProps) {
   const { data: allAccountsData, isLoading: isLoadingAllAccounts } = useConnectedAccounts()
   const { data: agentAccountsData, isLoading: isLoadingAgentAccounts } = useAgentConnectedAccounts(agentSlug)
   const { data: allMcpsData, isLoading: isLoadingAllMcps } = useRemoteMcps()
@@ -212,6 +225,26 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
     return false
   }
 
+  // Resolve the selected row from the freshest data so the detail page stays
+  // live across renames; clear the selection once the row is truly gone.
+  const selectedRow = detailRowKey
+    ? [...grantedRows, ...notGrantedRows].find((r) => r.key === detailRowKey) ?? null
+    : null
+  if (detailRowKey && !selectedRow && !isLoading) {
+    // Defer clearing to next tick to avoid setState during render.
+    queueMicrotask(() => onDetailRowKeyChange(null))
+  }
+
+  if (selectedRow) {
+    return (
+      <ConnectionDetailPage
+        row={selectedRow}
+        backLabel={detailBackLabel}
+        onBack={() => onDetailRowKeyChange(null)}
+      />
+    )
+  }
+
   const renderRow = (row: UnifiedRow) => {
     const pending = isRowPending(row)
     return (
@@ -219,22 +252,21 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         key={row.key}
         row={row}
         viewTransitionName={`integration-${row.key}`}
+        onActivate={() => onDetailRowKeyChange(row.key)}
+        ariaLabel={`Open ${row.name} connection details`}
         onReconnect={row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
           ? () => oauthReconnect(row.id, row.toolkit!)
           : undefined}
         reconnecting={pendingAccountId === row.id}
         right={
           <>
-            <IntegrationRowActions
-              type={row.type}
-              id={row.id}
-              name={row.name}
-              toolkit={row.toolkit}
-              mcpTools={row.mcpTools}
-              agentSlug={agentSlug}
-              hideRemoveFromAgent
-              accountStatus={row.accountStatus}
-            />
+            {/* Slides in on row hover/focus; -ml-2 swallows the flex gap while hidden. */}
+            <span
+              aria-hidden="true"
+              className="flex justify-center overflow-hidden w-0 -ml-2 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:ml-0 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:ml-0 group-focus-visible:opacity-100"
+            >
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+            </span>
             {pending ? (
               <Loader2
                 className="h-4 w-4 animate-spin text-muted-foreground"

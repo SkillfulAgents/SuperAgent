@@ -16,7 +16,15 @@ export type AgentView =
   | { kind: 'chat'; integrationId: string; sessionId?: string }
   | { kind: 'dashboard'; slug: string }
   | { kind: 'apiLogs' }
-  | { kind: 'connections' }
+  | {
+      kind: 'connections'
+      /**
+       * Open the connections page with this row's detail view shown. `source`
+       * is where it was opened from — it decides the breadcrumb trail and
+       * where Back leads (agent home vs. the connections list).
+       */
+      detail?: { rowKey: string; source: 'home' | 'list' }
+    }
   | { kind: 'notifications' }
 
 const HOME: AgentView = { kind: 'home' }

@@ -1,9 +1,8 @@
 import { useMemo } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { Plus, Settings2 } from 'lucide-react'
+import { ChevronRight, Plus, Settings2 } from 'lucide-react'
 import { useSelection } from '@renderer/context/selection-context'
 import { IntegrationRow } from '@renderer/components/connections/integration-row'
-import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
 import { McpStatusPill } from '@renderer/components/connections/mcp-status-pill'
 import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
 import { useAgentRemoteMcps, type RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
@@ -19,19 +18,16 @@ interface HomeConnectionsProps {
 }
 
 interface ConnectionRow {
+  /** Matches the UnifiedRow key format so it can deep-link to the detail view. */
   id: string
-  rawId: string
   name: string
   subtitle?: string
   iconSlug?: string
   iconFallback: 'oauth' | 'mcp' | 'blocks'
   type: 'oauth' | 'mcp'
   date: string | number
-  toolkit?: string
-  mcpTools?: Array<{ name: string; description?: string }>
   mcpStatus?: RemoteMcpServer['status']
   mcpErrorMessage?: string | null
-  accountStatus?: 'active' | 'expired' | 'revoked'
 }
 
 export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) {
@@ -46,15 +42,12 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
     for (const account of accounts) {
       rows.push({
         id: `account-${account.id}`,
-        rawId: account.id,
         name: account.provider?.displayName ?? account.toolkitSlug,
         subtitle: account.displayName,
         iconSlug: account.toolkitSlug,
         iconFallback: 'oauth',
         type: 'oauth',
         date: account.createdAt,
-        toolkit: account.toolkitSlug,
-        accountStatus: account.status,
       })
     }
 
@@ -62,14 +55,12 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
     for (const mcp of mcps) {
       rows.push({
         id: `mcp-${mcp.id}`,
-        rawId: mcp.id,
         name: mcp.name,
         subtitle: mcp.url,
         iconSlug: COMMON_MCP_SERVERS.find((cs) => cs.url === mcp.url)?.slug,
         iconFallback: 'blocks',
         type: 'mcp',
         date: mcp.mappedAt,
-        mcpTools: mcp.tools,
         mcpStatus: mcp.status,
         mcpErrorMessage: mcp.errorMessage,
       })
@@ -106,16 +97,15 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
                   </span>
                 </>
               }
+              onActivate={() => setView({ kind: 'connections', detail: { rowKey: conn.id, source: 'home' } })}
+              ariaLabel={`Open ${conn.name} connection details`}
               right={
-                <IntegrationRowActions
-                  type={conn.type}
-                  id={conn.rawId}
-                  name={conn.name}
-                  toolkit={conn.toolkit}
-                  mcpTools={conn.mcpTools}
-                  agentSlug={agentSlug}
-                  accountStatus={conn.accountStatus}
-                />
+                <span
+                  aria-hidden="true"
+                  className="flex justify-center overflow-hidden w-0 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:opacity-100"
+                >
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </span>
               }
             />
           ))}
