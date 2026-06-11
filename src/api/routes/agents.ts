@@ -378,9 +378,8 @@ function parseChunkFields(formData: FormData): ParsedChunkFields {
 
 type StoreChunkResult = { status: 'received' } | { status: 'assembled'; buffer: Buffer }
 
-// Persist one chunk; once all chunks are present, assemble them into a single
-// buffer (a `.assembling` lock prevents duplicate assembly from concurrent
-// requests). Shared by import-template and upload-file.
+// Persist one chunk; assemble once all arrive (`.assembling` lock prevents double assembly).
+// TODO(upload-memory): cap total size before reading; stream to disk instead of Buffer.concat.
 async function storeUploadChunk(uploadId: string, chunkIndex: number, totalChunks: number, chunk: Buffer): Promise<StoreChunkResult> {
   const uploadDir = path.join(getTempUploadsDir(), uploadId)
   await ensureDirectory(uploadDir)
