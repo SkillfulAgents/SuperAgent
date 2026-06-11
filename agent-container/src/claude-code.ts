@@ -9,6 +9,25 @@ import { browserTools } from './tools/browser';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
 
+/**
+ * `Query` plus the `cancel_async_message` control request, which drops a queued
+ * (not yet executed) user message from the CLI's command queue by uuid.
+ *
+ * This is a sanctioned protocol feature — announced in the Agent SDK changelog
+ * (v0.2.76: "Added `cancel_async_message` control subtype to drop a queued user
+ * message by UUID before execution") and carrying an exported, doc-commented wire
+ * type `SDKControlCancelAsyncMessageRequest` ("Drops a pending async user message
+ * from the command queue by uuid. No-op if already dequeued for execution.").
+ * The convenience method is implemented in sdk.mjs but deliberately omitted from
+ * the public `Query` typings, so we declare it here. `cancelQueuedMessage` guards
+ * its presence at runtime (and queued-message-cancel.test.ts asserts the real SDK
+ * still exposes it) so an SDK bump that renames/removes it fails loudly instead of
+ * silently degrading every cancel to "already picked up".
+ */
+type QueryWithAsyncCancel = Query & {
+  cancelAsyncMessage(messageUuid: string): Promise<boolean>;
+};
+
 /** Generate prefixed MCP tool names from a tools array, optionally excluding some by name. */
 function mcpToolNames(
   serverName: string,
@@ -233,6 +252,15 @@ class MessageQueue {
     }
   }
 
+  // Remove a buffered message by uuid. Rarely hits — the SDK drains this
+  // queue eagerly — but covers the window before the SDK pulls it.
+  remove(uuid: string): boolean {
+    const index = this.queue.findIndex((m) => m.uuid === uuid);
+    if (index < 0) return false;
+    this.queue.splice(index, 1);
+    return true;
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
     return {
       next: (): Promise<IteratorResult<SDKUserMessage>> => {
@@ -431,8 +459,10 @@ export class ClaudeCodeProcess extends EventEmitter {
           ...process.env,
           ...this.customEnvVars,
           // Emit `session_state_changed` system events (idle/running/requires_action).
-          // The host uses `idle` as a self-healing backstop to clear any background
-          // task whose per-task terminal signal was missed — see message-persister.ts.
+          // The host treats `idle` as the authoritative end-of-session signal (a
+          // 'result' alone doesn't end it — queued messages can keep the run going).
+          // server.ts announces this capability on WebSocket connect — keep the two
+          // in sync. See message-persister.ts.
           CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
           // Explicit maxOutputTokens setting takes precedence over custom env var
           ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
@@ -692,7 +722,15 @@ export class ClaudeCodeProcess extends EventEmitter {
     if (!this.queryInstance) return;
 
     this.isProcessing = true;
-    let receivedResult = false;
+    // Tracks whether the MOST RECENT result was an error. The catch below emits
+    // a synthetic error result only when the SDK hasn't already reported this
+    // failure — but a SUCCESS result must NOT suppress it. In streaming-input
+    // mode this query lives across many turns, so if the process dies after a
+    // success (e.g. while a queued message keeps it running) there would be no
+    // result for that work and the host, which waits for the authoritative idle,
+    // would stay "working" forever. Keying on the last result's error-ness (not
+    // "any result seen") also resets per turn: a success clears it.
+    let lastResultWasError = false;
 
     try {
       for await (const message of this.queryInstance) {
@@ -724,13 +762,14 @@ export class ClaudeCodeProcess extends EventEmitter {
 
         // Check for result message to know when processing is complete
         if (message.type === 'result') {
-          receivedResult = true;
-          // Enrich error results that have no useful error message
           const msg = message as any;
-          if ((msg.subtype === 'error_during_execution' || msg.subtype === 'error') && !msg.error && !msg.message) {
-            if (this.claudeSessionId) {
-              msg.error = 'This session could not be resumed (it may have been corrupted by a previous crash). Please start a new session.';
-            }
+          lastResultWasError =
+            msg.subtype === 'error_during_execution' ||
+            msg.subtype === 'error' ||
+            msg.is_error === true;
+          // Enrich error results that have no useful error message
+          if (lastResultWasError && !msg.error && !msg.message && this.claudeSessionId) {
+            msg.error = 'This session could not be resumed (it may have been corrupted by a previous crash). Please start a new session.';
           }
           console.log(`[Session ${this.sessionId}] Query completed`);
         }
@@ -749,9 +788,12 @@ export class ClaudeCodeProcess extends EventEmitter {
         console.log(`[Session ${this.sessionId}] Query aborted`);
       } else {
         console.error(`[Session ${this.sessionId}] Query error:`, error);
-        // Only emit synthetic result if the SDK didn't already send a real one
-        // (e.g., SDK sends result error_during_execution then throws — don't overwrite)
-        if (!receivedResult) {
+        // Only emit a synthetic result if the SDK hasn't already reported this
+        // failure with an error result (e.g. it sends error_during_execution
+        // then throws — don't double-report). A prior SUCCESS does not count:
+        // a crash after a successful turn still needs to surface so the host
+        // stops waiting.
+        if (!lastResultWasError) {
           // Provide a user-friendly error message for known failure modes
           const errorMsg = error.message || '';
           let userError: string;
@@ -857,6 +899,39 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
     console.log(`[Session ${this.sessionId}] Sending message (userMessageCount=${this.userMessageCount}):`, content.substring(0, 100));
     this.messageQueue!.push(message);
+  }
+
+  /**
+   * Cancel a queued (not yet picked up) message by the uuid it was sent with.
+   * Returns true when the message was dropped before the agent saw it.
+   */
+  async cancelQueuedMessage(uuid: UUID): Promise<boolean> {
+    // Window before the SDK pulled it from our queue
+    if (this.messageQueue?.remove(uuid)) {
+      console.log(`[Session ${this.sessionId}] Cancelled queued message (local buffer):`, uuid);
+      return true;
+    }
+    if (!this.queryInstance) return false;
+    // The message already reached the CLI's command queue — drop it there via
+    // the cancel_async_message control request (see QueryWithAsyncCancel). No-op
+    // (false) if it was already dequeued for execution; verified against CLI
+    // 2.1.170, where a cancelled message leaves no transcript trace (the queue
+    // records only the enqueue/dequeue operations).
+    const cancellable = this.queryInstance as QueryWithAsyncCancel;
+    if (typeof cancellable.cancelAsyncMessage !== 'function') {
+      // The untyped SDK method is gone (renamed/removed by an upgrade). Fail
+      // safe: report "too late", so the caller leaves the ghost to materialize.
+      console.warn(`[Session ${this.sessionId}] cancelAsyncMessage unavailable in this SDK build`);
+      return false;
+    }
+    try {
+      const cancelled = await cancellable.cancelAsyncMessage(uuid);
+      console.log(`[Session ${this.sessionId}] cancelAsyncMessage(${uuid}) ->`, cancelled);
+      return cancelled;
+    } catch (error) {
+      console.warn(`[Session ${this.sessionId}] cancelAsyncMessage failed:`, error);
+      return false;
+    }
   }
 
   // Restart the session (used when session exits and user sends a new message)

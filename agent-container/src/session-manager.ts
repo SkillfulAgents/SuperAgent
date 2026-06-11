@@ -353,6 +353,17 @@ export class SessionManager extends EventEmitter {
     await sessionData.process.sendMessage(content, uuid, options);
   }
 
+  /**
+   * Cancel a queued (not yet picked up) message. Returns false when the
+   * session isn't live or the message was already dequeued for execution —
+   * a session that needs resuming has no queue, so nothing to cancel.
+   */
+  async cancelQueuedMessage(sessionId: string, uuid: UUID): Promise<boolean> {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData) return false;
+    return sessionData.process.cancelQueuedMessage(uuid);
+  }
+
   getMessages(sessionId: string): SDKMessage[] {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return [];

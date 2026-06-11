@@ -83,6 +83,20 @@ interface ApiRetryInfo {
   errorStatus?: number
 }
 
+/**
+ * Optimistic copy of a message another user sent in this shared session,
+ * shown until the persisted message (matched by uuid) arrives via refetch.
+ */
+export interface PeerUserMessage {
+  uuid: string
+  content: string
+  sender: { id: string; name?: string; email?: string }
+  /** Sent while the agent was mid-turn — rendered as a queued ghost. */
+  queued?: boolean
+  /** Local arrival time — bounds the text-fallback match so an old identical-text message can't claim this ghost. */
+  receivedAt: number
+}
+
 interface StreamState {
   isActive: boolean // True from user message until query result
   isStreaming: boolean // True while actively receiving tokens
@@ -108,7 +122,7 @@ interface StreamState {
   activeSubagents: SubagentInfo[] // Currently running subagent(s) info
   completedSubagents: Set<string> | null // parentToolIds of completed subagents (for status logic)
   typingUser: { id: string; name?: string } | null // User currently typing (auth mode shared agents)
-  peerUserMessage: { content: string; sender: { id: string; name?: string; email?: string } } | null // User message from another user
+  peerUserMessages: PeerUserMessage[] // Messages from other users not yet seen in fetched messages
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
   backgroundTasks: Array<{ taskId: string; startedAt: number }> // Active background Bash commands
   isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
@@ -150,7 +164,7 @@ const EMPTY_STREAM_STATE: StreamState = {
   activeSubagents: [],
   completedSubagents: null,
   typingUser: null,
-  peerUserMessage: null,
+  peerUserMessages: [],
   apiRetry: null,
   backgroundTasks: [],
   isWaitingBackground: false,
@@ -305,7 +319,7 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: Array.isArray(data.backgroundTasks) ? data.backgroundTasks : (current?.backgroundTasks ?? []),
           isWaitingBackground: Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
@@ -362,7 +376,7 @@ function getOrCreateEventSource(
           activeSubagents: [],
           completedSubagents: null,
           typingUser: null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
@@ -405,7 +419,7 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: [],
           isWaitingBackground: false,
@@ -452,7 +466,7 @@ function getOrCreateEventSource(
           activeSubagents: [],
           completedSubagents: null,
           typingUser: null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: [],
           isWaitingBackground: false,
@@ -519,7 +533,7 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: null, // Clear retry state — API call succeeded
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
@@ -550,7 +564,7 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
@@ -597,7 +611,7 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
@@ -638,19 +652,26 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
         })
       }
       else if (data.type === 'user_message') {
-        // Another user sent a message in this shared session
-        streamStates.set(sessionId, {
-          ...current!,
-          peerUserMessage: { content: data.content, sender: data.sender },
-          typingUser: null, // Clear typing since they sent
-        })
+        // Another user sent a message in this shared session. Track it until
+        // the persisted copy (same uuid) shows up in fetched messages — there
+        // may be several at once when users queue messages mid-turn.
+        if (current && data.uuid) {
+          const existing = current.peerUserMessages
+          streamStates.set(sessionId, {
+            ...current,
+            peerUserMessages: existing.some((p) => p.uuid === data.uuid)
+              ? existing
+              : [...existing, { uuid: data.uuid, content: data.content, sender: data.sender, queued: data.queued, receivedAt: Date.now() }],
+            typingUser: null, // Clear typing since they sent
+          })
+        }
         // Refetch to pick up the persisted message shortly
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
@@ -670,6 +691,17 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'messages_updated') {
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+      }
+      else if (data.type === 'turn_output_complete') {
+        // A turn's output finished (the session may or may not settle — e.g.
+        // queued messages or background work can keep it active). Reconcile
+        // the streamed text against the transcript exactly like at idle —
+        // otherwise a follow-up turn's stream_start clears the streaming
+        // bubble before the persisted copy is fetched and the final message
+        // disappears briefly. The reconcile helper is idempotent, so the
+        // session_idle handler's own reconcile coexists harmlessly.
+        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        void reconcileMessagesAfterIdle(sessionId, queryClient, current?.streamingMessage ?? null)
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
         // Message has been persisted - keep streamingMessage visible until refetch completes
@@ -1263,6 +1295,28 @@ export function removeComputerUseRequest(sessionId: string, toolUseId: string): 
         (r) => r.toolUseId !== toolUseId
       ),
     })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
+// Remove a peer user message once its persisted copy is visible in fetched messages
+export function removePeerUserMessage(sessionId: string, uuid: string): void {
+  const current = streamStates.get(sessionId)
+  if (current && current.peerUserMessages.some((p) => p.uuid === uuid)) {
+    streamStates.set(sessionId, {
+      ...current,
+      peerUserMessages: current.peerUserMessages.filter((p) => p.uuid !== uuid),
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
+// Drop all peer user messages (safety net for messages that never persisted,
+// e.g. the agent was interrupted before picking up a queued message)
+export function clearPeerUserMessages(sessionId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current && current.peerUserMessages.length > 0) {
+    streamStates.set(sessionId, { ...current, peerUserMessages: [] })
     streamListeners.get(sessionId)?.forEach((listener) => listener())
   }
 }

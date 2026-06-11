@@ -1998,6 +1998,129 @@ describe('useMessageStream', () => {
     })
   })
 
+  // ---- Peer user messages (shared sessions / message queueing) ----
+
+  describe('peer user messages', () => {
+    async function setupHook(sessionId: string) {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+      const { result } = renderHook(
+        () => mod.useMessageStream(sessionId, 'agent-1'),
+        { wrapper }
+      )
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+      return { mod, result, es }
+    }
+
+    it('appends peer messages with uuid, sender, and queued flag', async () => {
+      const { result, es } = await setupHook('peer-s1')
+
+      act(() => {
+        es.simulateMessage({
+          type: 'user_message',
+          uuid: 'peer-uuid-1',
+          content: 'Hello from Alice',
+          sender: { id: 'u2', name: 'Alice' },
+          queued: true,
+        })
+      })
+
+      expect(result.current.peerUserMessages).toEqual([
+        { uuid: 'peer-uuid-1', content: 'Hello from Alice', sender: { id: 'u2', name: 'Alice' }, queued: true, receivedAt: expect.any(Number) },
+      ])
+    })
+
+    it('accumulates multiple peer messages and dedupes by uuid', async () => {
+      const { result, es } = await setupHook('peer-s2')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+        es.simulateMessage({ type: 'user_message', uuid: 'p2', content: 'second', sender: { id: 'u2' }, queued: true })
+        // Duplicate broadcast of p1 (e.g. SSE redelivery) must not double up
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+      })
+
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p1', 'p2'])
+    })
+
+    it('ignores user_message events without a uuid', async () => {
+      const { result, es } = await setupHook('peer-s3')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', content: 'legacy broadcast', sender: { id: 'u2' } })
+      })
+
+      expect(result.current.peerUserMessages).toEqual([])
+    })
+
+    it('clears the typing indicator when the peer message arrives', async () => {
+      const { result, es } = await setupHook('peer-s4')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Alice' } })
+      })
+      expect(result.current.typingUser).toEqual({ id: 'u2', name: 'Alice' })
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'done typing', sender: { id: 'u2', name: 'Alice' } })
+      })
+      expect(result.current.typingUser).toBeNull()
+    })
+
+    it('preserves peer messages across unrelated stream events', async () => {
+      const { result, es } = await setupHook('peer-s5')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'sticky', sender: { id: 'u2' }, queued: true })
+        es.simulateMessage({ type: 'stream_start' })
+        es.simulateMessage({ type: 'stream_delta', text: 'agent output' })
+        es.simulateMessage({ type: 'session_active' })
+      })
+
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p1'])
+    })
+
+    it('removePeerUserMessage removes only the matching entry', async () => {
+      const { mod, result, es } = await setupHook('peer-s6')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+        es.simulateMessage({ type: 'user_message', uuid: 'p2', content: 'second', sender: { id: 'u2' } })
+      })
+
+      act(() => {
+        mod.removePeerUserMessage('peer-s6', 'p1')
+      })
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p2'])
+
+      // Removing an unknown uuid is a no-op
+      act(() => {
+        mod.removePeerUserMessage('peer-s6', 'does-not-exist')
+      })
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p2'])
+    })
+
+    it('clearPeerUserMessages drops all entries', async () => {
+      const { mod, result, es } = await setupHook('peer-s7')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+        es.simulateMessage({ type: 'user_message', uuid: 'p2', content: 'second', sender: { id: 'u2' }, queued: true })
+      })
+
+      act(() => {
+        mod.clearPeerUserMessages('peer-s7')
+      })
+      expect(result.current.peerUserMessages).toEqual([])
+    })
+  })
+
   // ---- Parallel tool call streaming ----
 
   describe('parallel tool calls', () => {

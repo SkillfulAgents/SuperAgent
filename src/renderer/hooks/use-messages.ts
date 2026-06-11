@@ -55,9 +55,26 @@ export function useSendMessage() {
         }),
       })
       if (!res.ok) throw new Error('Failed to send message')
-      return res.json()
+      // uuid is the server-assigned message id, used to materialize the
+      // optimistic pending copy by exact id match.
+      return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
     },
     // No onSuccess - we'll handle the pending message via props
+  })
+}
+
+export function useCancelQueuedMessage() {
+  return useMutation({
+    mutationFn: async (data: { sessionId: string; agentSlug: string; uuid: string }) => {
+      const res = await apiFetch(
+        `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/queued-messages/${encodeURIComponent(data.uuid)}`,
+        { method: 'DELETE' }
+      )
+      if (!res.ok) throw new Error('Failed to cancel queued message')
+      // cancelled: false = the agent already picked the message up; the
+      // caller leaves the ghost alone and lets it materialize normally.
+      return res.json() as Promise<{ cancelled: boolean }>
+    },
   })
 }
 

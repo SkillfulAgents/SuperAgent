@@ -169,6 +169,9 @@ export interface JsonlMessageEntry {
   isVisibleInTranscriptOnly?: boolean
   // SDK message origin metadata (available since claude-agent-sdk 0.3.144)
   origin?: { kind: string; [key: string]: unknown }
+  // Set on synthetic user entries derived from queued_command attachments
+  // (messages delivered mid-turn) — see normalizeQueuedCommandEntry.
+  isQueuedCommand?: boolean
 }
 
 /**
@@ -189,6 +192,28 @@ export interface JsonlSystemEntry {
 }
 
 /**
+ * Attachment entry from Claude's JSONL format. The CLI records user messages
+ * that arrive mid-turn (queued/steering input) as `queued_command` attachments
+ * instead of regular user entries; `source_uuid` is the queue entry's id (NOT
+ * the uuid the client sent with the message — the CLI regenerates it when the
+ * message is enqueued mid-turn).
+ */
+export interface JsonlAttachmentEntry {
+  uuid: string
+  parentUuid?: string | null
+  type: 'attachment'
+  sessionId?: string
+  timestamp: string
+  attachment: {
+    type: string
+    prompt?: string | ContentBlock[]
+    source_uuid?: string
+    commandMode?: string
+    isMeta?: boolean
+  }
+}
+
+/**
  * File history snapshot entry from JSONL
  */
 export interface JsonlFileHistoryEntry {
@@ -204,7 +229,7 @@ export interface JsonlFileHistoryEntry {
 /**
  * Union type for all JSONL entry types
  */
-export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry
+export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry | JsonlAttachmentEntry
 
 // ============================================================================
 // Content Block Types (from Anthropic API)

@@ -46,7 +46,7 @@ const INTRO_ANIMATION_MS = 2200
 
 interface AgentHomeProps {
   agent: ApiAgent
-  onSessionCreated: (sessionId: string, initialMessage: string) => void
+  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string) => void
   onOpenSettings?: (tab?: string) => void
 }
 
@@ -176,7 +176,9 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         message: content,
         ...composerOptions.toRuntimeOptions(),
       })
-      onSessionCreated(session.id, content)
+      // The server assigns the initial message's uuid and returns it; the
+      // optimistic pending copy is materialized by exact id match.
+      onSessionCreated(session.id, content, session.initialMessageUuid)
       // Fire rename after the session is created + navigated — the mutation
       // survives AgentHome unmounting since the queryClient is app-scoped.
       if (shouldRename) {

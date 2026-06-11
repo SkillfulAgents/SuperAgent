@@ -49,11 +49,13 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
 const baseProps = {
   sessionId: 's-1',
   agentSlug: 'agent-1',
-  pendingUserMessage: null,
+  pendingUserMessages: [],
   isViewOnly: false,
   contextPercent: null,
   onPendingMessageAppeared: () => {},
   onMessageSent: () => {},
+  onMessageUuidAssigned: () => {},
+  onMessageFailed: () => {},
 }
 
 const noop = () => {}

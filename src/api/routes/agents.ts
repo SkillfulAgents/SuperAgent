@@ -1294,11 +1294,10 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const agentLimits = getEffectiveAgentLimits()
     const customEnvVars = getCustomEnvVars()
 
-    // In auth mode, generate a UUID for the initial message author attribution
-    let initialMessageUuid: string | undefined
-    if (isAuthMode()) {
-      initialMessageUuid = randomUUID()
-    }
+    // Server-generated uuid for the initial message (never client-supplied —
+    // it keys the messageAuthor attribution row). Returned in the response so
+    // the client can materialize its optimistic copy by exact id match.
+    const initialMessageUuid = randomUUID()
 
     const sessionModel = runtimeOptions.model ?? getEffectiveModels().agentModel
 
@@ -1319,7 +1318,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const sessionId = containerSession.id
 
     // Record author for initial message after we know the sessionId
-    if (isAuthMode() && initialMessageUuid) {
+    if (isAuthMode()) {
       const userId = getCurrentUserId(c)
       await db.insert(messageAuthor).values({
         id: initialMessageUuid,
@@ -1365,6 +1364,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         lastActivityAt: new Date(),
         messageCount: 0,
         isActive: true,
+        initialMessageUuid,
       },
       201
     )
@@ -1551,13 +1551,32 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
     }
 
+    // Captured before markSessionActive: a message sent while the agent is
+    // mid-turn is queued by the agent loop rather than starting a new turn.
+    const wasQueued = messagePersister.isSessionActive(sessionId)
+
     messagePersister.markSessionActive(sessionId, agentSlug)
 
-    // In auth mode, generate a UUID and record the sender for message attribution
-    let messageUuid: string | undefined
+    // A mid-turn send must not carry model/effort: the container treats a
+    // parameter change as interrupt/restart of the in-flight query. The
+    // composer strips these client-side, but its view of "active" comes from
+    // SSE and can be stale (reconnect, second window, shared-session peer) —
+    // the server's check is authoritative.
+    if (wasQueued) {
+      delete runtimeOptions.effort
+      delete runtimeOptions.model
+    }
+
+    // Server-generated message uuid (never client-supplied — the uuid keys the
+    // messageAuthor attribution row, so a client-chosen value could collide
+    // with another user's message and misattribute it). It is forwarded to the
+    // container, becomes the JSONL entry id, and is returned in the response
+    // so the client can materialize its optimistic copy by exact id match.
+    const messageUuid = randomUUID()
+
+    // In auth mode, record the sender for message attribution
     if (isAuthMode()) {
       const userId = getCurrentUserId(c)
-      messageUuid = randomUUID()
       await db.insert(messageAuthor).values({
         id: messageUuid,
         sessionId,
@@ -1573,6 +1592,8 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
         type: 'user_message',
         content: content.trim(),
         sender: { id: user.id, name: user.name },
+        uuid: messageUuid,
+        queued: wasQueued,
       })
     }
 
@@ -1584,10 +1605,31 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       updateSessionMetadata(agentSlug, sessionId, updates).catch(console.error)
     }
 
-    return c.json({ success: true }, 201)
+    return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
   } catch (error) {
     console.error('Failed to send message:', error)
     return c.json({ error: 'Failed to send message' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/sessions/:sessionId/queued-messages/:uuid - Cancel a
+// queued (not yet picked up) message. `cancelled: false` means it was already
+// picked up (or the session isn't live) — the message will materialize normally.
+agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), async (c) => {
+  try {
+    const agentSlug = c.req.param('id')
+    const sessionId = c.req.param('sessionId')
+    const uuidParam = z.string().uuid().safeParse(c.req.param('uuid'))
+    if (!uuidParam.success) {
+      return c.json({ error: 'Invalid message uuid' }, 400)
+    }
+
+    const client = containerManager.getClient(agentSlug)
+    const cancelled = await client.cancelQueuedMessage(sessionId, uuidParam.data)
+    return c.json({ cancelled })
+  } catch (error) {
+    console.error('Failed to cancel queued message:', error)
+    return c.json({ error: 'Failed to cancel queued message' }, 500)
   }
 })
 

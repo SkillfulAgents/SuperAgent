@@ -151,6 +151,12 @@ export interface ApiMessage {
   sender?: ApiMessageSender
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
+  /**
+   * User message delivered mid-turn (queued/steering input). It does NOT end
+   * the turn it appears in — turn-boundary logic (elapsed times, running tool
+   * detection) must skip it.
+   */
+  queued?: boolean
 }
 
 /**

@@ -1,12 +1,15 @@
 
-import { useMessages, useDeleteMessage, useDeleteToolCall, TranscriptNotFoundError } from '@renderer/hooks/use-messages'
+import { useMessages, useDeleteMessage, useDeleteToolCall, useCancelQueuedMessage, TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import { VoiceAgentFeedbackDialog } from './voice-agent-feedback-dialog'
 import {
   useMessageStream,
   clearCompacting,
+  removePeerUserMessage,
+  clearPeerUserMessages,
 } from '@renderer/hooks/use-message-stream'
+import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { MessageItem } from './message-item'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
@@ -17,7 +20,7 @@ import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-r
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
-import { useDraft } from '@renderer/context/drafts-context'
+import { useDraft, useDraftsStore } from '@renderer/context/drafts-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, Fragment, type ReactNode } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
@@ -37,12 +40,6 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] '
 const BASE_WINDOW = 300
 const LOAD_STEP = 200
 
-interface PendingMessage {
-  text: string
-  sentAt: number
-  sender?: { id: string; name: string; email: string }
-}
-
 function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; agentSlug: string }) {
   return (
     <div className="flex flex-wrap gap-1.5 ml-11 -mt-1 pb-1">
@@ -56,18 +53,29 @@ function DeliveredFiles({ files, agentSlug }: { files: { filePath: string }[]; a
 interface MessageListProps {
   sessionId: string
   agentSlug: string
-  pendingUserMessage?: PendingMessage | null
+  pendingUserMessages?: PendingMessage[]
   pendingRequestCount?: number
-  onPendingMessageAppeared?: () => void
+  /** The pending message materialized (or was restored to the composer) — remove it. */
+  onPendingMessageAppeared?: (localId: string) => void
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingRequestCount = 0, onPendingMessageAppeared }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
+  const cancelQueuedMessage = useCancelQueuedMessage()
+  // Ghosts with a cancel request in flight (disables their Cancel button)
+  const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set())
+  // Ghosts whose cancel came back cancelled:false — the agent already picked
+  // the message up, so cancelling is no longer possible; the ghost will
+  // materialize on the next refetch.
+  const [pickedUpIds, setPickedUpIds] = useState<Set<string>>(new Set())
   const { user } = useUser()
   const [, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
+  // Imperative draft access for restoring undelivered messages at idle (must not
+  // re-render this list on every composer keystroke).
+  const draftsStore = useDraftsStore()
 
   const handleRemoveMessage = useCallback(
     (messageId: string) => {
@@ -110,37 +118,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     )
   }, [messages])
 
-  // Check if pending message has appeared in real messages.
-  // Once the server persists the user message and it shows up in the fetched
-  // messages array, we clear the optimistic pending copy to avoid duplication.
-  // We match by both text AND timestamp to handle duplicate message text correctly:
-  // only messages created around the time the pending was set can match.
-  // Text comparison uses trimmed values to handle trailing whitespace/newlines
-  // that the SDK may add when persisting to JSONL.
-  useEffect(() => {
-    if (pendingUserMessage && messages) {
-      const pendingText = pendingUserMessage.text.trim()
-      const found = messages.some(
-        (m) => m.type === 'user' &&
-          (m.content as { text?: string }).text?.trim() === pendingText &&
-          new Date(m.createdAt).getTime() >= pendingUserMessage.sentAt - 5000
-      )
-      if (found) {
-        onPendingMessageAppeared?.()
-      }
-    }
-  }, [messages, pendingUserMessage, onPendingMessageAppeared])
-
-  // Safety net: clear pending message after 10 seconds even if text matching
-  // fails (e.g., due to filesystem sync delays or unexpected text transforms).
-  // By this time the message has certainly been persisted.
-  useEffect(() => {
-    if (!pendingUserMessage) return
-    const timerId = setTimeout(() => {
-      onPendingMessageAppeared?.()
-    }, 10000)
-    return () => clearTimeout(timerId)
-  }, [pendingUserMessage, onPendingMessageAppeared])
   const {
     isActive,
     streamingMessage,
@@ -151,9 +128,101 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     completedSubagents,
     apiErrorCode,
     typingUser,
-    peerUserMessage,
+    peerUserMessages,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
+
+  const hasPendingMessages = !!pendingUserMessages?.length
+  // Pending messages sent from idle start a NEW turn, so the previous turn is
+  // over (close elapsed times, no more running tools). Queued ghosts (sent
+  // mid-turn) don't end the current turn, and undelivered ghosts never start
+  // one — neither may flip turn-derived state.
+  const hasTurnStartingPendingMessage = !!pendingUserMessages?.some((p) => !p.queued)
+
+  // Persisted message ids already consumed by a text-fallback match. Prevents
+  // one persisted copy from clearing two ghosts with identical text. Exact
+  // uuid matches don't need claiming (ids are 1:1). Reset on session switch
+  // (keyed remount).
+  const claimedMessageIdsRef = useRef(new Set<string>())
+
+  // Materialize optimistic copies. Primary signal: the server-assigned uuid
+  // (from the POST response) becomes the JSONL entry id, so a fetched message
+  // carrying that id is OUR copy — exact match. Fallback: messages sent
+  // mid-turn (queued/steering) are re-id'd by the CLI on enqueue (see
+  // normalizeQueuedCommandEntry in session-service), so those — and sends
+  // whose POST response hasn't arrived yet — match by trimmed text + arrival
+  // window, claiming each persisted id at most once.
+  useEffect(() => {
+    if (!messages) return
+    const claimed = claimedMessageIdsRef.current
+    const findTextMatch = (text: string, notBefore: number) => {
+      const trimmed = text.trim()
+      return messages.find(
+        (m) =>
+          m.type === 'user' &&
+          !claimed.has(m.id) &&
+          (m.content as { text?: string }).text?.trim() === trimmed &&
+          new Date(m.createdAt).getTime() >= notBefore
+      )
+    }
+    for (const pending of pendingUserMessages ?? []) {
+      let match = pending.uuid ? messages.find((m) => m.id === pending.uuid) : undefined
+      // Text fallback only where the uuid can't work: queued messages (CLI
+      // re-ids them) and sends still awaiting their POST response.
+      if (!match && (pending.queued || !pending.uuid)) {
+        match = findTextMatch(pending.text, pending.sentAt - 5000)
+        if (match) claimed.add(match.id)
+      }
+      if (match) {
+        onPendingMessageAppeared?.(pending.localId)
+      }
+    }
+    for (const peer of peerUserMessages) {
+      // The server echoes user_message to the sender too; our own echo is
+      // redundant with the local pending copy — drop it immediately so it
+      // can't linger in stream state (it would suppress the typing indicator).
+      if (peer.sender.id === user?.id) {
+        removePeerUserMessage(sessionId, peer.uuid)
+        continue
+      }
+      let match = messages.find((m) => m.id === peer.uuid)
+      if (!match && peer.queued) {
+        match = findTextMatch(peer.content, peer.receivedAt - 5000)
+        if (match) claimed.add(match.id)
+      }
+      if (match) {
+        removePeerUserMessage(sessionId, peer.uuid)
+      }
+    }
+  }, [messages, pendingUserMessages, peerUserMessages, onPendingMessageAppeared, sessionId, user?.id])
+
+  // Once the session goes idle, any of our messages still showing as pending
+  // were never persisted to the transcript — the agent was interrupted before
+  // picking them up, or the turn ended without consuming them. Restore their
+  // text to the composer so the user can edit/resend, and remove the ghosts;
+  // drop peer ghosts (we can't restore another user's text into our composer —
+  // their own client restores it for them). Messages that WERE delivered clear
+  // via the materialize effect above, which prunes them from this list as the
+  // post-idle refetch lands. The short grace below gives that refetch a beat to
+  // settle so a just-answered message isn't yanked back into the composer; it's
+  // a single refetch window, not a delivery guess (restoring is non-destructive
+  // either way). While the agent is active, queued ghosts may wait minutes.
+  useEffect(() => {
+    if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
+    const undelivered = pendingUserMessages ?? []
+    const timerId = setTimeout(() => {
+      if (undelivered.length > 0) {
+        const draftKey = `session:${sessionId}`
+        const existing = draftsStore.get<string>(draftKey)?.trim() ?? ''
+        const restored = undelivered.map((p) => p.text.trim()).filter(Boolean)
+        const merged = [...restored, existing].filter(Boolean).join('\n\n')
+        draftsStore.set(draftKey, merged || undefined)
+        for (const pending of undelivered) onPendingMessageAppeared?.(pending.localId)
+      }
+      clearPeerUserMessages(sessionId)
+    }, 1500)
+    return () => clearTimeout(timerId)
+  }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const isScrolledToBottomRef = useRef(true)
@@ -314,7 +383,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     let lastAssistantMessageTime: number | null = null
 
     for (const msg of messages) {
-      if (msg.type === 'user') {
+      // Queued (mid-turn) user messages don't end the turn they appear in
+      if (isTurnStartingUserMessage(msg)) {
         // Close previous turn
         if (lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
           elapsed.set(lastAssistantMessageId, lastAssistantMessageTime - lastUserMessageTime)
@@ -329,13 +399,13 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     }
 
     // Close the last turn if session is idle, or if the user has sent a new message
-    // (pendingUserMessage means a new turn started, so the previous one is complete)
-    if ((!isActive || pendingUserMessage) && lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
+    // (a pending message means a new turn started, so the previous one is complete)
+    if ((!isActive || hasTurnStartingPendingMessage) && lastUserMessageTime && lastAssistantMessageId && lastAssistantMessageTime) {
       elapsed.set(lastAssistantMessageId, lastAssistantMessageTime - lastUserMessageTime)
     }
 
     return elapsed
-  }, [messages, isActive, pendingUserMessage])
+  }, [messages, isActive, hasTurnStartingPendingMessage])
 
   // Collect delivered files for each completed turn (same turn boundaries as turnElapsedTimes)
   const turnDeliveredFiles = useMemo(() => {
@@ -346,7 +416,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     let lastAssistantMessageId: string | null = null
 
     for (const msg of messages) {
-      if (msg.type === 'user') {
+      if (isTurnStartingUserMessage(msg)) {
         if (lastAssistantMessageId && turnFiles.length > 0) {
           filesMap.set(lastAssistantMessageId, turnFiles)
         }
@@ -365,19 +435,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
       }
     }
 
-    if ((!isActive || pendingUserMessage) && lastAssistantMessageId && turnFiles.length > 0) {
+    if ((!isActive || hasTurnStartingPendingMessage) && lastAssistantMessageId && turnFiles.length > 0) {
       filesMap.set(lastAssistantMessageId, turnFiles)
     }
 
     return filesMap
-  }, [messages, isActive, pendingUserMessage])
+  }, [messages, isActive, hasTurnStartingPendingMessage])
 
   // If there's unpersisted streaming content, defer the last turn's elapsed time
   // to render after the streaming section (otherwise it appears above the streaming message).
-  // Exception: if pendingUserMessage exists, streaming belongs to the NEW turn, so the
+  // Exception: if a pending message exists, streaming belongs to the NEW turn, so the
   // previous turn's elapsed/files should render inline (not deferred after new streaming).
   const deferredElapsedMessageId = useMemo(() => {
-    if (!messages || pendingUserMessage) return null
+    if (!messages || hasTurnStartingPendingMessage) return null
     const hasUnpersistedStreaming =
       (streamingMessage && !isStreamingMessagePersisted) ||
       unpersistedStreamingToolUses.length > 0
@@ -387,35 +457,47 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     // shouldn't defer the previous turn's elapsed/files.
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].type === 'assistant') return messages[i].id
-      if (messages[i].type === 'user') return null
+      if (isTurnStartingUserMessage(messages[i])) return null
     }
     return null
-  }, [messages, pendingUserMessage, streamingMessage, isStreamingMessagePersisted, unpersistedStreamingToolUses])
+  }, [messages, hasTurnStartingPendingMessage, streamingMessage, isStreamingMessagePersisted, unpersistedStreamingToolUses])
 
   // Determine which messages could have tool calls that are still running.
   // Only the trailing assistant messages (after the last user message) can have running tools,
   // and only if the session is active and there's no pending user message (which means user moved on).
   const canHaveRunningToolCalls = useMemo(() => {
     const result = new Set<string>()
-    if (!messages || !isActive || pendingUserMessage) return result
+    if (!messages || !isActive || hasTurnStartingPendingMessage) return result
 
-    // Walk backwards - only assistant messages after the last user message can have running tools
+    // Walk backwards - only assistant messages after the last turn-starting user
+    // message can have running tools (queued mid-turn messages don't end the turn)
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].type === 'user') break
+      if (isTurnStartingUserMessage(messages[i])) break
       if (messages[i].type === 'assistant') {
         result.add(messages[i].id)
       }
     }
     return result
-  }, [messages, isActive, pendingUserMessage])
+  }, [messages, isActive, hasTurnStartingPendingMessage])
 
-  // Re-pin to bottom when the user sends a new message
+  // Re-pin to bottom when the user sends a new message. Track ids actually
+  // seen — not a count — so a send racing a ghost removal still re-pins, and
+  // a removal alone never yanks a scrolled-up reader back down.
+  const seenPendingIdsRef = useRef(new Set<string>())
   useEffect(() => {
-    if (pendingUserMessage) {
+    const seen = seenPendingIdsRef.current
+    let hasNewSend = false
+    for (const pending of pendingUserMessages ?? []) {
+      if (!seen.has(pending.localId)) {
+        seen.add(pending.localId)
+        hasNewSend = true
+      }
+    }
+    if (hasNewSend) {
       isScrolledToBottomRef.current = true
       setShowScrollToBottom(false)
     }
-  }, [pendingUserMessage])
+  }, [pendingUserMessages])
 
   // Auto-scroll to bottom when new messages arrive or requests appear,
   // but only if the user hasn't scrolled up to read earlier content.
@@ -423,9 +505,138 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
     if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessage, streamingMessage, streamingToolUses, isCompacting, pendingRequestCount, activeSubagents])
+  }, [messages, pendingUserMessages, streamingMessage, streamingToolUses, isCompacting, pendingRequestCount, activeSubagents])
 
-  if (isLoading && !pendingUserMessage) {
+  // Peer messages still worth showing optimistically: not our own, and the
+  // persisted copy (by uuid, or — for queued/steering messages whose uuid the
+  // CLI replaces — recent identical text) hasn't been fetched yet.
+  const visiblePeerMessages = useMemo(
+    () =>
+      peerUserMessages.filter(
+        (p) =>
+          p.sender.id !== user?.id &&
+          !messages?.some(
+            (m) =>
+              m.type === 'user' &&
+              (m.id === p.uuid ||
+                (p.queued &&
+                  (m.content as { text?: string }).text?.trim() === p.content.trim() &&
+                  new Date(m.createdAt).getTime() >= p.receivedAt - 5000))
+          )
+      ),
+    [peerUserMessages, messages, user?.id]
+  )
+
+  // Cancel a queued message before the agent picks it up. cancelled: false
+  // means we lost the race — the agent already has the message, so flip the
+  // ghost to a picked-up state (no Cancel) until it materializes.
+  const handleCancelQueued = useCallback(
+    (localId: string, uuid: string) => {
+      setCancellingIds((prev) => new Set(prev).add(localId))
+      cancelQueuedMessage.mutate(
+        { sessionId, agentSlug, uuid },
+        {
+          onSuccess: ({ cancelled }) => {
+            if (cancelled) {
+              onPendingMessageAppeared?.(localId)
+            } else {
+              setPickedUpIds((prev) => new Set(prev).add(localId))
+            }
+          },
+          onSettled: () => {
+            setCancellingIds((prev) => {
+              const next = new Set(prev)
+              next.delete(localId)
+              return next
+            })
+          },
+        }
+      )
+    },
+    [cancelQueuedMessage, sessionId, agentSlug, onPendingMessageAppeared]
+  )
+
+  // Single render path for both local pending ghosts and peer ghosts.
+  const renderGhost = (ghost: {
+    key: string
+    text: string
+    sentAt: number
+    queued?: boolean
+    sender?: { id: string; name: string; email: string }
+    testId?: string
+    /** Set for own queued ghosts once the server uuid is known — enables Cancel. */
+    onCancel?: () => void
+    cancelling?: boolean
+    /** A cancel attempt confirmed the agent already has this message. */
+    pickedUp?: boolean
+  }) => (
+    <MessageErrorBoundary key={ghost.key} kind="message" raw={ghost} itemId={`ghost-${ghost.key}`}>
+      <div className={ghost.queued ? 'opacity-60' : undefined} data-testid={ghost.testId}>
+        <MessageItem
+          message={{
+            id: ghost.key,
+            type: 'user',
+            content: { text: ghost.text },
+            toolCalls: [],
+            createdAt: new Date(ghost.sentAt),
+            sender: ghost.sender,
+          }}
+          agentSlug={agentSlug}
+        />
+        {ghost.queued ? (
+          <div className="flex items-center justify-end gap-2 mt-1 text-xs text-muted-foreground italic">
+            <span>{ghost.pickedUp ? 'Picked up by the agent' : 'Queued'}</span>
+            {!ghost.pickedUp && ghost.onCancel && (
+              <>
+                <span aria-hidden>·</span>
+                <button
+                  type="button"
+                  className="not-italic underline hover:no-underline disabled:opacity-50"
+                  onClick={ghost.onCancel}
+                  disabled={ghost.cancelling}
+                  data-testid="cancel-queued-message"
+                >
+                  {ghost.cancelling ? 'Cancelling…' : 'Cancel'}
+                </button>
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </MessageErrorBoundary>
+  )
+
+  const renderPendingGhost = (pending: PendingMessage) =>
+    renderGhost({
+      key: pending.localId,
+      text: pending.text,
+      sentAt: pending.sentAt,
+      queued: pending.queued,
+      sender: pending.sender,
+      testId: pending.queued ? 'queued-user-message' : 'pending-user-message',
+      // Cancellation keys off the server-assigned uuid, so it's available
+      // only once the POST response has landed (a sub-second window).
+      ...(pending.queued && pending.uuid
+        ? {
+            onCancel: () => handleCancelQueued(pending.localId, pending.uuid!),
+            cancelling: cancellingIds.has(pending.localId),
+            pickedUp: pickedUpIds.has(pending.localId),
+          }
+        : {}),
+    })
+
+  const renderPeerGhost = (peer: (typeof peerUserMessages)[number]) =>
+    renderGhost({
+      key: peer.uuid,
+      text: peer.content,
+      sentAt: peer.receivedAt,
+      queued: peer.queued,
+      sender: peer.sender.name
+        ? { id: peer.sender.id, name: peer.sender.name, email: peer.sender.email || '' }
+        : undefined,
+    })
+
+  if (isLoading && !hasPendingMessages) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -436,7 +647,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
   // The transcript file is gone (e.g. removed by the CLI's retention cleanup)
   // while the session still appears in the nav. Don't show this during the brief
   // new-session window — the creating client has a pendingUserMessage then.
-  if (error instanceof TranscriptNotFoundError && !pendingUserMessage) {
+  if (error instanceof TranscriptNotFoundError && !hasPendingMessages) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
         <FileX2 className="h-8 w-8 text-muted-foreground" />
@@ -492,46 +703,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
           </Fragment>
         ))}
 
-        {/* Peer user message — optimistic display until persisted data arrives.
-            Hidden if sender is the current user (they see their own pendingUserMessage)
-            or if the message already appeared in the fetched messages list. */}
-        {peerUserMessage &&
-          peerUserMessage.sender.id !== user?.id &&
-          !messages?.some((m) => m.type === 'user' && (m.content as { text?: string }).text?.trim() === peerUserMessage.content.trim()) && (
-          <MessageErrorBoundary kind="message" raw={peerUserMessage} itemId="peer-user-message">
-            <MessageItem
-              message={{
-                id: 'peer-user-message',
-                type: 'user',
-                content: { text: peerUserMessage.content },
-                toolCalls: [],
-                createdAt: new Date(),
-                ...(peerUserMessage.sender.name ? { sender: { id: peerUserMessage.sender.id, name: peerUserMessage.sender.name, email: peerUserMessage.sender.email || '' } } : {}),
-              }}
-              agentSlug={agentSlug}
-            />
-          </MessageErrorBoundary>
-        )}
+        {/* Turn-starting ghosts (sent while idle) — the next turn belongs to
+            them, so they render before any streaming content. Queued ghosts
+            (sent mid-turn) render at the bottom instead, below the current
+            turn's streaming output and running tools. */}
+        {visiblePeerMessages.filter((p) => !p.queued).map(renderPeerGhost)}
+        {pendingUserMessages?.filter((p) => !p.queued).map(renderPendingGhost)}
 
-        {/* Pending user message - shown immediately after sending */}
-        {pendingUserMessage && (
-          <MessageErrorBoundary kind="message" raw={pendingUserMessage} itemId="pending-user-message">
-            <MessageItem
-              message={{
-                id: 'pending-user-message',
-                type: 'user',
-                content: { text: pendingUserMessage.text },
-                toolCalls: [],
-                createdAt: new Date(),
-                sender: pendingUserMessage.sender,
-              }}
-              agentSlug={agentSlug}
-            />
-          </MessageErrorBoundary>
-        )}
-
-        {/* Typing indicator - shown when another user is typing */}
-        {typingUser && !peerUserMessage && (
+        {/* Typing indicator - shown when another user is typing (gated on the
+            sender-filtered peer list — our own echo must not suppress it) */}
+        {typingUser && visiblePeerMessages.length === 0 && (
           <div className="flex gap-3 flex-row-reverse">
             <div className="h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex bg-primary text-primary-foreground">
               <span className="text-xs font-medium">
@@ -613,6 +794,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessage, pendingR
             <div className="h-px flex-1 bg-border" />
           </div>
         )}
+
+        {/* Queued ghosts — waiting for the agent loop to pick them up, so they
+            always sit below the current turn's streaming output and tools. */}
+        {visiblePeerMessages.filter((p) => p.queued).map(renderPeerGhost)}
+        {pendingUserMessages?.filter((p) => p.queued).map(renderPendingGhost)}
 
         {/* Connection lost warning during active session */}
         {isActive && !isOnline && (

@@ -33,6 +33,8 @@ export interface TransformedMessage {
   }
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
+  /** User message delivered mid-turn (queued/steering input) — does not end the turn it appears in */
+  queued?: boolean
 }
 
 export interface TransformedCompactBoundary {
@@ -395,6 +397,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       toolCalls,
       createdAt: new Date(entry.timestamp),
       ...(entry.error && { apiError: entry.error }),
+      ...(entry.isQueuedCommand && { queued: true }),
     })
   }
 

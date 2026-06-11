@@ -20,7 +20,7 @@ const testAgent: ApiAgent = {
 // --- Mocks ---
 
 const mockCreateSession = {
-  mutateAsync: vi.fn().mockResolvedValue({ id: 'session-123' }),
+  mutateAsync: vi.fn().mockResolvedValue({ id: 'session-123', initialMessageUuid: 'srv-msg-uuid' }),
   isPending: false,
 }
 
@@ -166,7 +166,7 @@ describe('AgentHome', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockCreateSession.isPending = false
-    mockCreateSession.mutateAsync.mockResolvedValue({ id: 'session-123' })
+    mockCreateSession.mutateAsync.mockResolvedValue({ id: 'session-123', initialMessageUuid: 'srv-msg-uuid' })
     mockComposer.message = ''
     mockComposer.attachments = []
     mockComposer.isUploading = false
@@ -430,7 +430,10 @@ describe('AgentHome', () => {
         effort: 'medium',
       })
     )
-    expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'Hello agent')
+    // The uuid is server-assigned: never sent in the request, and the one
+    // from the response is forwarded to onSessionCreated.
+    expect(mockCreateSession.mutateAsync.mock.calls[0][0]).not.toHaveProperty('messageUuid')
+    expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'Hello agent', 'srv-msg-uuid')
   })
 
   // --- Attachment picker ---

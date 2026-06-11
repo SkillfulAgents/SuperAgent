@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { SessionManager } from './session-manager';
 import { CreateSessionRequest, SendMessageRequest } from './types';
+import type { UUID } from 'crypto';
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import * as fs from 'fs';
@@ -152,6 +153,22 @@ app.post('/sessions/:id/messages', async (c) => {
   } catch (error: any) {
     console.error('Error sending message:', error);
     return c.json({ error: error.message || 'Failed to send message' }, 500);
+  }
+});
+
+// Cancel a queued (not yet picked up) message by the uuid it was sent with.
+// `cancelled: false` means it was already dequeued for execution (or the
+// session isn't live) — never an error; the caller treats it as "too late".
+app.delete('/sessions/:id/queued-messages/:uuid', async (c) => {
+  const sessionId = c.req.param('id');
+  const uuid = c.req.param('uuid');
+
+  try {
+    const cancelled = await sessionManager.cancelQueuedMessage(sessionId, uuid as UUID);
+    return c.json({ cancelled });
+  } catch (error: any) {
+    console.error('Error cancelling queued message:', error);
+    return c.json({ error: error.message || 'Failed to cancel queued message' }, 500);
   }
 });
 
@@ -1451,6 +1468,20 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
     ws.close();
     return;
   }
+
+  // Announce the stream contract before relaying any SDK message (WS is FIFO,
+  // and this is sent before the subscription below, so it always precedes the
+  // first relayed message). session_state_events: this build runs the CLI with
+  // CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, so the host can treat
+  // session_state_changed:'idle' as the idle authority from the first turn —
+  // a 'result' alone must not end the session while queued messages keep the
+  // runtime going.
+  ws.send(JSON.stringify({
+    type: 'system',
+    subtype: 'capabilities',
+    session_state_events: true,
+    timestamp: new Date(),
+  }));
 
   // Subscribe to session events (SDK messages)
   const unsubscribe = sessionManager.subscribe(sessionId, (message) => {

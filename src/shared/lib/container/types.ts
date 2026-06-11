@@ -156,6 +156,9 @@ export interface ContainerClient {
 
   // Message operations
   sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void>
+  // Cancel a queued (not yet picked up) message by the uuid it was sent with.
+  // false = too late (already picked up) or session not live — never throws for that.
+  cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>
   getMessages(sessionId: string): Promise<any[]>
   interruptSession(sessionId: string): Promise<boolean>
 
