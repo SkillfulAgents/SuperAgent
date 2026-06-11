@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified browser-use feature successfully navigates to a URL and retrieves page title, with response correctly mentioning \"Example Domain\"",
+  "reason": "Verified that the agent can successfully open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report back the result.",
   "steps": [
-    "Step 1 - Navigate to http://localhost:47891 — Successfully loaded Super Agent application home page showing agent list",
-    "Step 2 - Click on agent \"QA-20260611-000239-spnj\" in sidebar — Successfully opened agent chat interface with message input field",
-    "Step 3 - Type and send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully transmitted, agent began processing with \"Working...\" indicator",
-    "Step 4 - Wait for response (up to 3 minutes) — Agent completed response in 14 seconds, all browser tools executed successfully",
-    "Step 5 - Verify response mentions \"Example Domain\" — Response explicitly states \"The page title is \"Example Domain\".\" confirming successful browser navigation and page title retrieval"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing SuperAgent interface with agents list in sidebar",
+    "Clicked on agent \"QA-20260611-194452-a8gu\" in sidebar — Agent page opened with chat interface and empty message input",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into chat input — Message was entered into the textbox successfully",
+    "Clicked Send button to send the message — Message was sent and agent began processing (status changed to \"working\")",
+    "Waited up to 180 seconds for response containing \"Example Domain\" — Agent successfully completed task within timeout period",
+    "Took final screenshot to verify response — Screenshot confirms agent's response includes the text \"The page title is \"Example Domain\". Browser closed.\" along with all browser tool calls (Open Browser, Browser Get State, Close Browser) that were executed successfully"
   ],
   "bugs": [],
-  "durationMs": 85569,
-  "sessionId": "8366de6c-789e-407b-9f3c-9de695f3df0b",
+  "durationMs": 109294,
+  "sessionId": "af3b875f-3dd9-42b8-89b6-b6263bdef187",
   "cost": {
-    "inputTokens": 432,
-    "outputTokens": 15723,
-    "cacheCreationTokens": 78594,
-    "cacheReadTokens": 1454056,
+    "inputTokens": 288,
+    "outputTokens": 10032,
+    "cacheCreationTokens": 59131,
+    "cacheReadTokens": 826706,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.322695
+    "totalCostUsd": 0.207032
   }
 }
