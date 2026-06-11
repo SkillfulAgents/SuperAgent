@@ -9,6 +9,25 @@ import { browserTools } from './tools/browser';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
 
+/**
+ * `Query` plus the `cancel_async_message` control request, which drops a queued
+ * (not yet executed) user message from the CLI's command queue by uuid.
+ *
+ * This is a sanctioned protocol feature — announced in the Agent SDK changelog
+ * (v0.2.76: "Added `cancel_async_message` control subtype to drop a queued user
+ * message by UUID before execution") and carrying an exported, doc-commented wire
+ * type `SDKControlCancelAsyncMessageRequest` ("Drops a pending async user message
+ * from the command queue by uuid. No-op if already dequeued for execution.").
+ * The convenience method is implemented in sdk.mjs but deliberately omitted from
+ * the public `Query` typings, so we declare it here. `cancelQueuedMessage` guards
+ * its presence at runtime (and queued-message-cancel.test.ts asserts the real SDK
+ * still exposes it) so an SDK bump that renames/removes it fails loudly instead of
+ * silently degrading every cancel to "already picked up".
+ */
+type QueryWithAsyncCancel = Query & {
+  cancelAsyncMessage(messageUuid: string): Promise<boolean>;
+};
+
 /** Generate prefixed MCP tool names from a tools array, optionally excluding some by name. */
 function mcpToolNames(
   serverName: string,
@@ -893,16 +912,19 @@ export class ClaudeCodeProcess extends EventEmitter {
       return true;
     }
     if (!this.queryInstance) return false;
+    // The message already reached the CLI's command queue — drop it there via
+    // the cancel_async_message control request (see QueryWithAsyncCancel). No-op
+    // (false) if it was already dequeued for execution; verified against CLI
+    // 2.1.170, where a cancelled message leaves no transcript trace (the queue
+    // records only the enqueue/dequeue operations).
+    const cancellable = this.queryInstance as QueryWithAsyncCancel;
+    if (typeof cancellable.cancelAsyncMessage !== 'function') {
+      // The untyped SDK method is gone (renamed/removed by an upgrade). Fail
+      // safe: report "too late", so the caller leaves the ghost to materialize.
+      console.warn(`[Session ${this.sessionId}] cancelAsyncMessage unavailable in this SDK build`);
+      return false;
+    }
     try {
-      // cancel_async_message control request: drops a pending message from the
-      // CLI's command queue by the SDKUserMessage uuid; no-op (false) if it was
-      // already dequeued for execution. Present in sdk.mjs but stripped from
-      // the public typings — behavior verified against CLI 2.1.170: the queue
-      // entry retains our uuid and a cancelled message leaves no transcript
-      // trace (queue-operation enqueue/dequeue only).
-      const cancellable = this.queryInstance as unknown as {
-        cancelAsyncMessage(messageUuid: string): Promise<boolean>;
-      };
       const cancelled = await cancellable.cancelAsyncMessage(uuid);
       console.log(`[Session ${this.sessionId}] cancelAsyncMessage(${uuid}) ->`, cancelled);
       return cancelled;
