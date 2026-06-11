@@ -47,6 +47,17 @@ export function DraftsProvider({ children }: { children: ReactNode }) {
 
 const NOOP_UNSUB = () => {}
 
+/**
+ * Imperative access to the drafts store without subscribing. Use when you need
+ * to read/write a draft in an event handler or effect but must NOT re-render on
+ * every keystroke (which `useDraft` would cause). The returned store is stable.
+ */
+export function useDraftsStore(): DraftsStore {
+  const store = useContext(DraftsContext)
+  if (!store) throw new Error('useDraftsStore must be used within DraftsProvider')
+  return store
+}
+
 export function useDraft<T>(key: string | null | undefined): [T | undefined, (value: T | undefined) => void] {
   const store = useContext(DraftsContext)
   if (!store) throw new Error('useDraft must be used within DraftsProvider')

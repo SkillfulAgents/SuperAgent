@@ -50,8 +50,8 @@ export function usePendingRequests({
   pendingUserMessages,
 }: UsePendingRequestsArgs): UsePendingRequestsResult {
   // Only turn-starting sends mean the user "moved past" a request; queued
-  // (mid-turn) and undelivered messages leave the agent blocked on it.
-  const hasPendingUserMessage = !!pendingUserMessages?.some((p) => !p.queued && !p.failed)
+  // (mid-turn) messages leave the agent blocked on it.
+  const hasPendingUserMessage = !!pendingUserMessages?.some((p) => !p.queued)
   const { data: messages } = useMessages(sessionId, agentSlug)
   const {
     isActive,

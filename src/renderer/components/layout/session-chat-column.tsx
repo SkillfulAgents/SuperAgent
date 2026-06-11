@@ -19,7 +19,6 @@ interface SessionChatColumnProps {
   effort?: EffortLevel
   model?: string
   onPendingMessageAppeared: (localId: string) => void
-  onPendingMessageDropped: (localId: string) => void
   onMessageSent: (content: string, localId: string, queued: boolean) => void
   onMessageUuidAssigned: (localId: string, uuid: string) => void
   onMessageFailed: (localId: string) => void
@@ -34,7 +33,6 @@ export function SessionChatColumn({
   effort,
   model,
   onPendingMessageAppeared,
-  onPendingMessageDropped,
   onMessageSent,
   onMessageUuidAssigned,
   onMessageFailed,
@@ -57,7 +55,6 @@ export function SessionChatColumn({
       pendingUserMessages={pendingUserMessages}
       pendingRequestCount={pendingRequestCount}
       onPendingMessageAppeared={onPendingMessageAppeared}
-      onPendingMessageDropped={onPendingMessageDropped}
       footerClassName="bg-background max-w-[740px] mx-auto w-full"
       footer={
         pendingRequestCount > 0 ? (

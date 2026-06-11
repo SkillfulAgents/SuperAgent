@@ -23,11 +23,6 @@ export interface PendingMessage {
    * agent picks it up and it materializes in the transcript.
    */
   queued?: boolean
-  /**
-   * The agent never received the message (e.g. the turn was interrupted
-   * before pickup). Rendered as an undelivered notice until dismissed.
-   */
-  failed?: boolean
   sender?: { id: string; name: string; email: string }
 }
 

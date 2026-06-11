@@ -170,19 +170,6 @@ export function MainContent() {
     }
   }, [sessionId])
 
-  // The session went idle without the message ever materializing (e.g. the
-  // turn was interrupted before the agent picked it up) — mark it undelivered
-  // instead of silently dropping it, so the user can see it was lost.
-  const handlePendingMessageDropped = useCallback((localId: string) => {
-    if (sessionId) {
-      const existing = pendingMessagesRef.current.get(sessionId)
-      const entry = existing?.find((m) => m.localId === localId)
-      if (!entry || entry.failed) return
-      pendingMessagesRef.current.set(sessionId, existing!.map((m) => (m.localId === localId ? { ...m, failed: true } : m)))
-      forceUpdate((n) => n + 1)
-    }
-  }, [sessionId])
-
   // Callback for AgentHome when a new session is created with initial message.
   // The uuid is server-assigned (from the create response), so it's known
   // up-front — no re-keying needed on this path.
@@ -516,7 +503,6 @@ export function MainContent() {
                 effort={session?.effort}
                 model={session?.model}
                 onPendingMessageAppeared={handlePendingMessageAppeared}
-                onPendingMessageDropped={handlePendingMessageDropped}
                 onMessageSent={handleMessageSent}
                 onMessageUuidAssigned={handleMessageUuidAssigned}
                 onMessageFailed={handlePendingMessageAppeared}

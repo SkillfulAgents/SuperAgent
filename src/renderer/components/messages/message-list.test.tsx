@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, act } from '@testing-library/react'
 import { MessageList } from './message-list'
+import { useDraft } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
@@ -687,27 +688,46 @@ describe('MessageList', () => {
     expect(onAppeared).toHaveBeenCalledWith('l1')
   })
 
-  it('renders undelivered ghosts with a notice and dismisses via the button', () => {
-    const onAppeared = vi.fn()
-    mockMessagesData.data = []
+  it('restores an undelivered queued message to the composer at idle and removes the ghost', async () => {
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      mockMessagesData.data = []
+      mockStreamState.isActive = false
 
-    renderWithProviders(
-      <MessageList
-        sessionId="s-1"
-        agentSlug="agent-1"
-        pendingUserMessages={[{ localId: 'l1', text: 'lost message', sentAt: Date.now(), queued: true, failed: true }]}
-        onPendingMessageAppeared={onAppeared}
-      />
-    )
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
 
-    const failed = screen.getByTestId('failed-user-message')
-    expect(failed).toHaveTextContent('lost message')
-    expect(failed).toHaveTextContent('Not delivered')
-    // Failed ghosts are not matched/removed by the materialization effect
-    expect(onAppeared).not.toHaveBeenCalled()
+      renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={[{ localId: 'l1', text: 'lost message', sentAt: Date.now(), queued: true }]}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
 
-    fireEvent.click(screen.getByTestId('dismiss-failed-message'))
-    expect(onAppeared).toHaveBeenCalledWith('l1')
+      // The ghost is visible and nothing has been restored yet.
+      expect(screen.getByTestId('queued-user-message')).toHaveTextContent('lost message')
+      expect(onAppeared).not.toHaveBeenCalled()
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('')
+
+      // After the post-idle grace, the un-picked-up text returns to the composer
+      // draft and the ghost is removed.
+      await act(async () => {
+        vi.advanceTimersByTime(1500)
+      })
+
+      expect(onAppeared).toHaveBeenCalledWith('l1')
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('lost message')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   // ---- Cancelling queued messages ----

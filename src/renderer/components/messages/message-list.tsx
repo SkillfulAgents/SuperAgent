@@ -20,7 +20,7 @@ import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-r
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
-import { useDraft } from '@renderer/context/drafts-context'
+import { useDraft, useDraftsStore } from '@renderer/context/drafts-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, Fragment, type ReactNode } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
@@ -55,13 +55,11 @@ interface MessageListProps {
   agentSlug: string
   pendingUserMessages?: PendingMessage[]
   pendingRequestCount?: number
-  /** The pending message materialized (or was dismissed) — remove it. */
+  /** The pending message materialized (or was restored to the composer) — remove it. */
   onPendingMessageAppeared?: (localId: string) => void
-  /** The session went idle without the message materializing — mark it undelivered. */
-  onPendingMessageDropped?: (localId: string) => void
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, onPendingMessageDropped }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
@@ -75,6 +73,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const [pickedUpIds, setPickedUpIds] = useState<Set<string>>(new Set())
   const { user } = useUser()
   const [, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
+  // Imperative draft access for restoring undelivered messages at idle (must not
+  // re-render this list on every composer keystroke).
+  const draftsStore = useDraftsStore()
 
   const handleRemoveMessage = useCallback(
     (messageId: string) => {
@@ -136,7 +137,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // over (close elapsed times, no more running tools). Queued ghosts (sent
   // mid-turn) don't end the current turn, and undelivered ghosts never start
   // one — neither may flip turn-derived state.
-  const hasTurnStartingPendingMessage = !!pendingUserMessages?.some((p) => !p.queued && !p.failed)
+  const hasTurnStartingPendingMessage = !!pendingUserMessages?.some((p) => !p.queued)
 
   // Persisted message ids already consumed by a text-fallback match. Prevents
   // one persisted copy from clearing two ghosts with identical text. Exact
@@ -164,9 +165,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           new Date(m.createdAt).getTime() >= notBefore
       )
     }
-    // Failed (undelivered-marked) ghosts still participate: if a false idle
-    // marked a message undelivered but the agent delivered it after all, the
-    // arriving persisted copy clears the ghost instead of contradicting it.
     for (const pending of pendingUserMessages ?? []) {
       let match = pending.uuid ? messages.find((m) => m.id === pending.uuid) : undefined
       // Text fallback only where the uuid can't work: queued messages (CLI
@@ -198,22 +196,33 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
   }, [messages, pendingUserMessages, peerUserMessages, onPendingMessageAppeared, sessionId, user?.id])
 
-  // Safety net: once the session is idle, every accepted message has been
-  // persisted — anything still pending after a grace period was lost (e.g.
-  // the agent was interrupted before picking up a queued message). Mark local
-  // ghosts as undelivered (visible feedback, dismissed by the user) and drop
-  // peer ghosts. While the agent is active, queued ghosts may wait minutes.
+  // Once the session goes idle, any of our messages still showing as pending
+  // were never persisted to the transcript — the agent was interrupted before
+  // picking them up, or the turn ended without consuming them. Restore their
+  // text to the composer so the user can edit/resend, and remove the ghosts;
+  // drop peer ghosts (we can't restore another user's text into our composer —
+  // their own client restores it for them). Messages that WERE delivered clear
+  // via the materialize effect above, which prunes them from this list as the
+  // post-idle refetch lands. The short grace below gives that refetch a beat to
+  // settle so a just-answered message isn't yanked back into the composer; it's
+  // a single refetch window, not a delivery guess (restoring is non-destructive
+  // either way). While the agent is active, queued ghosts may wait minutes.
   useEffect(() => {
-    const undelivered = pendingUserMessages?.filter((p) => !p.failed) ?? []
-    if (isActive || (undelivered.length === 0 && peerUserMessages.length === 0)) return
+    if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
+    const undelivered = pendingUserMessages ?? []
     const timerId = setTimeout(() => {
-      for (const pending of undelivered) {
-        onPendingMessageDropped?.(pending.localId)
+      if (undelivered.length > 0) {
+        const draftKey = `session:${sessionId}`
+        const existing = draftsStore.get<string>(draftKey)?.trim() ?? ''
+        const restored = undelivered.map((p) => p.text.trim()).filter(Boolean)
+        const merged = [...restored, existing].filter(Boolean).join('\n\n')
+        draftsStore.set(draftKey, merged || undefined)
+        for (const pending of undelivered) onPendingMessageAppeared?.(pending.localId)
       }
       clearPeerUserMessages(sessionId)
-    }, 10000)
+    }, 1500)
     return () => clearTimeout(timerId)
-  }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageDropped, sessionId])
+  }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const isScrolledToBottomRef = useRef(true)
@@ -553,7 +562,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     text: string
     sentAt: number
     queued?: boolean
-    failed?: boolean
     sender?: { id: string; name: string; email: string }
     testId?: string
     /** Set for own queued ghosts once the server uuid is known — enables Cancel. */
@@ -563,7 +571,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     pickedUp?: boolean
   }) => (
     <MessageErrorBoundary key={ghost.key} kind="message" raw={ghost} itemId={`ghost-${ghost.key}`}>
-      <div className={ghost.queued && !ghost.failed ? 'opacity-60' : undefined} data-testid={ghost.testId}>
+      <div className={ghost.queued ? 'opacity-60' : undefined} data-testid={ghost.testId}>
         <MessageItem
           message={{
             id: ghost.key,
@@ -575,19 +583,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           }}
           agentSlug={agentSlug}
         />
-        {ghost.failed ? (
-          <div className="flex items-center justify-end gap-2 mt-1 text-xs text-destructive">
-            <span>Not delivered — the agent stopped before reading this</span>
-            <button
-              type="button"
-              className="underline hover:no-underline"
-              onClick={() => onPendingMessageAppeared?.(ghost.key)}
-              data-testid="dismiss-failed-message"
-            >
-              Dismiss
-            </button>
-          </div>
-        ) : ghost.queued ? (
+        {ghost.queued ? (
           <div className="flex items-center justify-end gap-2 mt-1 text-xs text-muted-foreground italic">
             <span>{ghost.pickedUp ? 'Picked up by the agent' : 'Queued'}</span>
             {!ghost.pickedUp && ghost.onCancel && (
@@ -616,12 +612,11 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       text: pending.text,
       sentAt: pending.sentAt,
       queued: pending.queued,
-      failed: pending.failed,
       sender: pending.sender,
-      testId: pending.failed ? 'failed-user-message' : pending.queued ? 'queued-user-message' : 'pending-user-message',
+      testId: pending.queued ? 'queued-user-message' : 'pending-user-message',
       // Cancellation keys off the server-assigned uuid, so it's available
       // only once the POST response has landed (a sub-second window).
-      ...(pending.queued && !pending.failed && pending.uuid
+      ...(pending.queued && pending.uuid
         ? {
             onCancel: () => handleCancelQueued(pending.localId, pending.uuid!),
             cancelling: cancellingIds.has(pending.localId),
