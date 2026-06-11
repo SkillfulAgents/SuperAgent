@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent successfully opens a browser, navigates to https://example.com, and returns the correct page title \"Example Domain\"",
+  "reason": "Verified browser-use feature successfully navigates to a URL and retrieves page title, with response correctly mentioning \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with SuperAgent interface displaying the sidebar with agents",
-    "Clicked on the \"QA-20260610-222806-fysz\" agent in the sidebar — Agent interface opened with a new chat session titled \"Browser Navigation and Page Title Check\"",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message was entered successfully in the active textbox",
-    "Clicked the \"Send message\" button — Message was sent and agent status changed to \"working\"",
-    "Waited up to 3 minutes for response — Agent completed work within 10 seconds and returned a response",
-    "Verified response mentions \"Example Domain\" — Screenshot confirms the agent's response explicitly states: \"The page title is 'Example Domain'.\" and \"Done — the page at https://example.com has the title 'Example Domain'. I've closed the browser.\""
+    "Step 1 - Navigate to http://localhost:47891 — Successfully loaded Super Agent application home page showing agent list",
+    "Step 2 - Click on agent \"QA-20260611-000239-spnj\" in sidebar — Successfully opened agent chat interface with message input field",
+    "Step 3 - Type and send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully transmitted, agent began processing with \"Working...\" indicator",
+    "Step 4 - Wait for response (up to 3 minutes) — Agent completed response in 14 seconds, all browser tools executed successfully",
+    "Step 5 - Verify response mentions \"Example Domain\" — Response explicitly states \"The page title is \"Example Domain\".\" confirming successful browser navigation and page title retrieval"
   ],
   "bugs": [],
-  "durationMs": 59145,
-  "sessionId": "edc84009-a3b8-490d-9c11-3a64a9696378",
+  "durationMs": 85569,
+  "sessionId": "8366de6c-789e-407b-9f3c-9de695f3df0b",
   "cost": {
-    "inputTokens": 269,
-    "outputTokens": 8353,
-    "cacheCreationTokens": 50222,
-    "cacheReadTokens": 779062,
+    "inputTokens": 432,
+    "outputTokens": 15723,
+    "cacheCreationTokens": 78594,
+    "cacheReadTokens": 1454056,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.182718
+    "totalCostUsd": 0.322695
   }
 }
