@@ -136,7 +136,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
         src={iframeSrc}
         className="flex-1 w-full border-0"
         title={dashboard?.name || dashboardSlug}
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
         allow="microphone; camera"
       />
     </div>
