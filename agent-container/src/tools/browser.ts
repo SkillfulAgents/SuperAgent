@@ -295,7 +295,7 @@ const browserPressTool = tool(
   'browser_press',
   `Press ONE keyboard key (or a modifier combo). Use this for Enter (submit forms), Tab (next field), Escape (close dialogs), or key combos like "Control+a".
 
-This cannot type text — multi-character strings are rejected. To type into the currently focused element (e.g. fields inside payment iframes), use browser_run with args ["keyboard", "type", "<text>"]; to fill an input that has a ref, use browser_fill.`,
+This cannot type text — multi-character strings are rejected. To type into the currently focused element (e.g. fields inside payment iframes), use browser_type; to replace an input's content by ref, use browser_fill.`,
   {
     key: z.string().describe('A single key or modifier combo (e.g., "Enter", "Tab", "Escape", "Control+a", "ArrowDown") — never a text string'),
   },
@@ -436,13 +436,43 @@ The selector must target the actual file input element, such as input[type="file
   }
 )
 
+const browserTypeTool = tool(
+  'browser_type',
+  `Type text with REAL keystrokes into the currently focused element — or pass a ref to focus that element first.
+
+Use this when browser_fill cannot work:
+- Fields inside cross-origin payment iframes (Stripe card number/expiry/CVC): click into the field first (by ref if available, else by coordinates via browser_run mouse), then call browser_type WITHOUT a ref. Verify with a screenshot — the field is not readable from outside the iframe.
+- Keystroke-listening widgets that ignore programmatic fill: OTP digit boxes, typeaheads, autocomplete inputs.
+
+Notes: this APPENDS to existing content (it does not clear first — use browser_fill to replace, or browser_press "Control+a" then type). When a ref is provided, the field's value is read back and returned.`,
+  {
+    text: z.string().describe('The text to type with real key events'),
+    ref: z.string().optional().describe('Optional element ref to focus before typing (e.g. "@e4"). Omit when the target is inside a payment iframe — focus it by clicking first.'),
+  },
+  async (args) => {
+    const result = await browserFetch('type', { text: args.text, ref: args.ref })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    let text: string
+    if (data && typeof data.committedValue === 'string') {
+      text = `Typed ${args.text.length} chars into ${args.ref} — field value is now: "${data.committedValue}".`
+    } else {
+      text = `Typed ${args.text.length} chars into the focused element. If the field is inside a payment iframe, verify visually with browser_screenshot.`
+    }
+    text += getTabWarning()
+    return {
+      content: [{ type: 'text' as const, text }],
+    }
+  }
+)
+
 const browserEvalTool = tool(
   'browser_eval',
   `Run JavaScript in the page and return the result. Prefer this over browser_run("eval ...").
 
 - Evaluated as an expression; await is supported. Bare function expressions are automatically invoked for you.
 - Return JSON-serializable data — for structured results, end with JSON.stringify(...).
-- TOP FRAME ONLY: elements inside cross-origin iframes (e.g. Stripe payment frames) are unreachable from JavaScript. For those, click the field by coordinates and type with browser_run args ["keyboard", "type", "<text>"].
+- TOP FRAME ONLY: elements inside cross-origin iframes (e.g. Stripe payment frames) are unreachable from JavaScript. For those, click the field by coordinates and type with browser_type.
 - Output is capped at ~8000 chars — query only the fields you need instead of dumping HTML.`,
   {
     script: z.string().describe('JavaScript to evaluate in the page, e.g. document.title or (() => JSON.stringify({n: document.querySelectorAll("a").length}))()'),
@@ -589,6 +619,7 @@ const browserGetStateTool = tool(
     browserSelectTool,
     browserHoverTool,
     browserUploadTool,
+    browserTypeTool,
     browserEvalTool,
     browserRunTool,
     browserGetStateTool,

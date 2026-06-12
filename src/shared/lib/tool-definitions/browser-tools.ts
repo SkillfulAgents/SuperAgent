@@ -49,6 +49,16 @@ export const browserPressDef: ToolDefinition = {
   getSummary: (input) => (input as { key?: string }).key ?? null,
 }
 
+export const browserTypeDef: ToolDefinition = {
+  displayName: 'Type Text', iconName: 'Keyboard',
+  getSummary: (input) => {
+    const { text, ref } = input as { text?: string; ref?: string }
+    if (!text) return ref ?? null
+    const truncated = text.length > 30 ? text.slice(0, 27) + '...' : text
+    return ref ? `${ref} ← "${truncated}"` : `"${truncated}" → focused element`
+  },
+}
+
 export const browserScreenshotDef: ToolDefinition = {
   displayName: 'Screenshot', iconName: 'Camera',
   getSummary: (input) => (input as { full?: boolean }).full ? 'full page' : 'viewport',
@@ -68,12 +78,23 @@ export const browserHoverDef: ToolDefinition = {
   getSummary: (input) => (input as { ref?: string }).ref ?? null,
 }
 
+export const browserEvalDef: ToolDefinition = {
+  displayName: 'Run JavaScript', iconName: 'Braces',
+  getSummary: (input) => {
+    const { script } = input as { script?: string }
+    if (!script) return null
+    const firstLine = script.split('\n')[0]
+    return firstLine.length > 50 ? `${firstLine.slice(0, 47)}...` : firstLine
+  },
+}
+
 export const browserRunDef: ToolDefinition = {
   displayName: 'Browser Command', iconName: 'Terminal',
   getSummary: (input) => {
-    const { command } = input as { command?: string }
-    if (!command) return null
-    const firstLine = command.split('\n')[0]
+    const { command, args } = input as { command?: string; args?: string[] }
+    const line = command ?? (Array.isArray(args) ? args.join(' ') : null)
+    if (!line) return null
+    const firstLine = line.split('\n')[0]
     return firstLine.length > 50 ? `$ ${firstLine.slice(0, 47)}...` : `$ ${firstLine}`
   },
 }

@@ -26,9 +26,11 @@ import {
   browserScrollRenderer,
   browserWaitRenderer,
   browserPressRenderer,
+  browserTypeRenderer,
   browserScreenshotRenderer,
   browserSelectRenderer,
   browserHoverRenderer,
+  browserEvalRenderer,
   browserRunRenderer,
 } from './browser-tools'
 import {
@@ -107,9 +109,11 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__browser__browser_scroll': browserScrollRenderer,
   'mcp__browser__browser_wait': browserWaitRenderer,
   'mcp__browser__browser_press': browserPressRenderer,
+  'mcp__browser__browser_type': browserTypeRenderer,
   'mcp__browser__browser_screenshot': browserScreenshotRenderer,
   'mcp__browser__browser_select': browserSelectRenderer,
   'mcp__browser__browser_hover': browserHoverRenderer,
+  'mcp__browser__browser_eval': browserEvalRenderer,
   'mcp__browser__browser_run': browserRunRenderer,
 
   // MCP tools - dashboards

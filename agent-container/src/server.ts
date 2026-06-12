@@ -1371,6 +1371,57 @@ app.post('/browser/upload', async (c) => {
   }
 });
 
+// POST /browser/type - Type real keystrokes into the focused element (optionally focusing a ref first)
+app.post('/browser/type', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; text: string; ref?: string }>();
+
+    if (!body.sessionId || typeof body.text !== 'string' || body.text.length === 0) {
+      return c.json({ error: 'sessionId and text are required' }, 400);
+    }
+
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    if (body.ref) {
+      const focusResult = await execBrowser(['focus', body.ref], browserState.cdpUrl || undefined);
+      if (focusResult.exitCode !== 0) {
+        return c.json({ error: focusResult.stdout, success: false }, 500);
+      }
+    }
+
+    // `keyboard type` dispatches real key events into whatever has focus —
+    // this is what drives keystroke-listening widgets (Stripe card fields,
+    // OTP boxes, typeaheads) that programmatic fill cannot.
+    const result = await execBrowser(['keyboard', 'type', body.text], browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: result.stdout, success: false }, 500);
+    }
+
+    // When we know the target, read the value back (keyboard type APPENDS to
+    // existing content). Focused-element typing without a ref has no readable
+    // target by definition (e.g. cross-origin payment iframes).
+    let committedValue: string | null = null;
+    if (body.ref) {
+      const read = await execBrowser(['get', 'value', body.ref], browserState.cdpUrl || undefined);
+      if (read.exitCode === 0) committedValue = read.stdout.trim();
+    }
+
+    notifyBrowserAction();
+    return c.json({ success: true, ...(committedValue !== null && { committedValue }) });
+  } catch (error: any) {
+    console.error('[Browser] Error typing:', error);
+    return c.json({ error: error.message || 'Failed to type' }, 500);
+  }
+});
+
 // POST /browser/eval - Run JavaScript in the page (dedicated eval with guardrails)
 app.post('/browser/eval', async (c) => {
   try {

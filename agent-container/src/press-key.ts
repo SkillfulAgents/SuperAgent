@@ -51,5 +51,5 @@ export function validatePressKey(key: string): string | null {
     return null
   }
 
-  return `"${key}" is not a keyboard key. browser_press presses ONE key (or a modifier combo) like "Enter", "Tab", "ArrowDown", "Control+a" — it cannot type text. To type into the focused element, use browser_run with args ["keyboard", "type", "<your text>"]; to fill an input that has a ref, use browser_fill.`
+  return `"${key}" is not a keyboard key. browser_press presses ONE key (or a modifier combo) like "Enter", "Tab", "ArrowDown", "Control+a" — it cannot type text. To type text, use browser_type (types real keystrokes into the focused element, or focuses a ref first); to replace an input's content, use browser_fill.`
 }

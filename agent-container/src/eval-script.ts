@@ -45,7 +45,7 @@ export function finalizeEvalOutput(output: string): string {
 /** Append a hint to known-confusing eval error shapes. */
 export function evalErrorHint(error: string): string {
   if (/Cannot read propert(y|ies) of (null|undefined)/i.test(error)) {
-    return `${error}\nHint: a selector likely matched nothing. eval runs in the TOP frame only — elements inside cross-origin iframes (e.g. payment frames) are unreachable from JavaScript; use coordinate clicks + browser_run args ["keyboard", "type", ...] for those.`
+    return `${error}\nHint: a selector likely matched nothing. eval runs in the TOP frame only — elements inside cross-origin iframes (e.g. payment frames) are unreachable from JavaScript; use coordinate clicks + browser_type for those.`
   }
   if (/is not a valid selector/i.test(error)) {
     return `${error}\nHint: attribute values containing spaces must be quoted inside the selector string, e.g. querySelector('iframe[title="Payment frame"]').`

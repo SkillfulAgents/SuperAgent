@@ -38,7 +38,7 @@ describe('validatePressKey', () => {
   it('rejects multi-character text (the digit-by-digit card entry trigger)', () => {
     const err = validatePressKey('4242424242424242')
     expect(err).toMatch(/cannot type text/)
-    expect(err).toMatch(/keyboard.*type/)
+    expect(err).toMatch(/browser_type/)
     expect(validatePressKey('hello world')).not.toBeNull()
     expect(validatePressKey('isn')).not.toBeNull()
   })
