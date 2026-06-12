@@ -9,7 +9,6 @@ import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
-import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getSettings, updateSettings } from '@shared/lib/config/settings'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
@@ -517,13 +516,12 @@ class ContainerManager {
 
       // Set up proxy authentication
       const proxyToken = await getOrCreateProxyToken(agentId)
-      const hostUrl = getContainerHostUrl()
-      const appPort = getAppPort()
-      envVars['PROXY_BASE_URL'] = `http://${hostUrl}:${appPort}/api/proxy/${agentId}`
+      const hostApiBaseUrl = client.getHostApiBaseUrl()
+      envVars['PROXY_BASE_URL'] = `${hostApiBaseUrl}/api/proxy/${agentId}`
       envVars['PROXY_TOKEN'] = proxyToken
 
       // X-Agent Work: cross-agent calls. Container POSTs to host with PROXY_TOKEN.
-      envVars['SUPERAGENT_HOST_API_URL'] = `http://${hostUrl}:${appPort}/api`
+      envVars['SUPERAGENT_HOST_API_URL'] = `${hostApiBaseUrl}/api`
       envVars['SUPERAGENT_AGENT_SLUG'] = agentId
 
       // Fetch connected accounts for this agent
@@ -570,7 +568,7 @@ class ContainerManager {
           return {
             id: mcp.id,
             name: mcp.name,
-            proxyUrl: `http://${hostUrl}:${appPort}/api/mcp-proxy/${agentId}/${mcp.id}`,
+            proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${agentId}/${mcp.id}`,
             tools: toolNames,
           }
         })
@@ -583,7 +581,7 @@ class ContainerManager {
       const settings = getSettings()
       if (settings.app?.hostBrowserProvider) {
         envVars['AGENT_BROWSER_USE_HOST'] = '1'
-        envVars['HOST_APP_URL'] = `http://${hostUrl}:${appPort}`
+        envVars['HOST_APP_URL'] = hostApiBaseUrl
         envVars['AGENT_ID'] = agentId
       }
 
@@ -931,6 +929,15 @@ class ContainerManager {
     }
 
     const effectiveRunner = configuredRunner
+
+    if (!getContainerClientClass(effectiveRunner).requiresLocalImage) {
+      this.setReadiness({
+        status: 'READY',
+        message: `Ready (${getRunnerDisplayName(effectiveRunner)})`,
+        pullProgress: null,
+      })
+      return
+    }
 
     // Step 2: Check if image exists
     this.setReadiness({

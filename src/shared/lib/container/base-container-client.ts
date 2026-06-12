@@ -20,6 +20,7 @@ import type {
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
+import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -253,6 +254,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   static isEligible(): boolean {
     return true
   }
+
+  static readonly requiresLocalImage: boolean = true
 
   /** Whether the CLI is installed. Subclasses must override. */
   static async isAvailable(): Promise<boolean> {
@@ -713,6 +716,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
+  protected terminateWebSocketConnections(): void {
+    for (const ws of this.wsConnections.values()) {
+      ws.removeAllListeners()
+      try {
+        ws.terminate()
+      } catch {
+        // ws.terminate() throws if the socket is still in CONNECTING state.
+      }
+    }
+    this.wsConnections.clear()
+  }
+
   async stop(options?: StopOptions): Promise<StopResult> {
     let forceStopUsed = false
     const stopTimeoutMs = options?.stopTimeoutMs ?? 10_000
@@ -720,17 +735,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const escalateToForceStop = options?.escalateToForceStop ?? true
 
     try {
-      // Terminate all WebSocket connections immediately (no graceful close handshake)
-      // to avoid ECONNRESET errors when the container is stopped
-      for (const ws of this.wsConnections.values()) {
-        ws.removeAllListeners()
-        try {
-          ws.terminate()
-        } catch {
-          // ws.terminate() throws if the socket is still in CONNECTING state
-        }
-      }
-      this.wsConnections.clear()
+      this.terminateWebSocketConnections()
 
       // Stop and remove container by name, with escalation if the container is unresponsive.
       // 1. Try graceful stop with 5s SIGTERM grace period (enough for clean Node.js shutdown)
@@ -846,17 +851,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   stopSync(): void {
     try {
-      // Terminate all WebSocket connections immediately (no graceful close handshake)
-      // to avoid ECONNRESET errors when the container is stopped
-      for (const ws of this.wsConnections.values()) {
-        ws.removeAllListeners()
-        try {
-          ws.terminate()
-        } catch {
-          // ws.terminate() throws if the socket is still in CONNECTING state
-        }
-      }
-      this.wsConnections.clear()
+      this.terminateWebSocketConnections()
 
       // Stop and remove container by name synchronously, with escalation.
       // Use 5s grace period so process can shut down cleanly before SIGKILL.
@@ -920,7 +915,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // stale-cache liveness check), and a container that died with its port
       // forward left half-open would accept the TCP connect but never respond,
       // hanging the fetch — and the caller — indefinitely without this.
-      const response = await fetch(`http://127.0.0.1:${port}/health`, {
+      const response = await fetch(`${this.getBaseUrl(port)}/health`, {
         signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
       })
       return response.ok
@@ -949,6 +944,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return `http://127.0.0.1:${port}`
   }
 
+  public getWebSocketBaseUrl(port: number): string {
+    return `ws://127.0.0.1:${port}`
+  }
+
+  public getHostApiBaseUrl(): string {
+    return `http://${getContainerHostUrl()}:${getAppPort()}`
+  }
+
   async fetch(path: string, init?: RequestInit): Promise<Response> {
     const port = await this.getPortOrThrow()
     const baseUrl = this.getBaseUrl(port)
@@ -975,7 +978,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-      const response = await fetch(`http://127.0.0.1:${port}/sessions`, {
+      const response = await fetch(`${this.getBaseUrl(port)}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1055,7 +1058,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
 
     const response = await fetch(
-      `http://127.0.0.1:${port}/sessions/${sessionId}`
+      `${this.getBaseUrl(port)}/sessions/${sessionId}`
     )
 
     if (response.status === 404) return null
@@ -1077,7 +1080,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
 
     const response = await fetch(
-      `http://127.0.0.1:${port}/sessions/${sessionId}`,
+      `${this.getBaseUrl(port)}/sessions/${sessionId}`,
       { method: 'DELETE' }
     )
 
@@ -1096,7 +1099,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
       const response = await fetch(
-        `http://127.0.0.1:${port}/sessions/${sessionId}/messages`,
+        `${this.getBaseUrl(port)}/sessions/${sessionId}/messages`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1178,7 +1181,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
 
     const response = await fetch(
-      `http://127.0.0.1:${port}/sessions/${sessionId}/interrupt`,
+      `${this.getBaseUrl(port)}/sessions/${sessionId}/interrupt`,
       { method: 'POST' }
     )
 
@@ -1189,7 +1192,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
 
     const response = await fetch(
-      `http://127.0.0.1:${port}/sessions/${sessionId}/messages`
+      `${this.getBaseUrl(port)}/sessions/${sessionId}/messages`
     )
 
     if (!response.ok) {
@@ -1219,7 +1222,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       const ws = new WebSocket(
-        `ws://127.0.0.1:${port}/sessions/${sessionId}/stream`
+        `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream`
       )
 
       ws.on('open', () => {

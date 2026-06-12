@@ -1592,6 +1592,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
   }
 
+  getWebSocketBaseUrl(port: number): string {
+    return `ws://127.0.0.1:${port}`
+  }
+
+  getHostApiBaseUrl(): string {
+    return 'http://127.0.0.1:3000'
+  }
+
   // Health checks
 
   async waitForHealthy(_timeoutMs?: number, _knownPort?: number): Promise<boolean> {
