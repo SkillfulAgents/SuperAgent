@@ -5,7 +5,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { EffortLevel } from './types';
 import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer, createChatMcpServer } from './mcp-server';
-import { browserTools } from './tools/browser';
+import { createBrowserTools } from './tools/browser';
+import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, resolveToolFilePath } from './file-hooks';
 
@@ -40,7 +41,6 @@ function mcpToolNames(
     .map(t => `mcp__${serverName}__${t.name}`)
 }
 import { inputManager } from './input-manager';
-import { setCurrentBrowserSessionId } from './tools/browser';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
@@ -358,8 +358,6 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.availableEnvVars,
       options.userSystemPrompt
     );
-    // Set the session ID for browser tools so they can identify the owning session
-    setCurrentBrowserSessionId(this.sessionId);
     // Set module-level reference for tools that need access to the process
     currentProcess = this;
   }
@@ -422,6 +420,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     const remoteMcpConfigs = this.buildRemoteMcpServers();
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
 
+    // Browser tools are bound per-session via a getter read on every request:
+    // this.sessionId changes when the query (re)starts, and a module-global id
+    // shared across sessions stranded browser calls on the ownership lock.
+    const browserMcpTools = createBrowserTools(() => this.sessionId);
+
     console.log(`[Session ${this.sessionId}] createQuery: model=${this.model ?? '(default)'}, effort=${this.effort ?? '(default)'}`);
 
     return query({
@@ -469,7 +472,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         },
         mcpServers: {
           'user-input': createUserInputMcpServer(),
-          'browser': createBrowserMcpServer(),
+          'browser': createBrowserMcpServer(browserMcpTools),
           'dashboards': createDashboardsMcpServer(),
           'agents': createAgentsMcpServer(() => this.sessionId),
           'chat': createChatMcpServer(),
@@ -481,7 +484,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
             model: (this.browserModel || 'sonnet') as SDKModelAlias,
             tools: [
-              ...mcpToolNames('browser', browserTools),
+              ...mcpToolNames('browser', browserMcpTools),
               'WebSearch',
               'Read',
               'mcp__user-input__request_file',
@@ -739,8 +742,14 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.claudeSessionId = message.session_id;
           // Update sessionId to the canonical Claude session ID so browser tools
           // broadcast to the correct session in the session manager
+          const previousSessionId = this.sessionId;
           this.sessionId = message.session_id;
-          setCurrentBrowserSessionId(this.sessionId);
+          // If this session already owns the browser under its previous id
+          // (query restart mid-browse), re-key the lock or every subsequent
+          // browser call 409s against our own browser.
+          if (previousSessionId !== this.sessionId && renameBrowserSession(previousSessionId, this.sessionId)) {
+            console.log(`[Session ${this.sessionId}] Re-keyed browser lock from ${previousSessionId}`);
+          }
           console.log(`[Session ${this.sessionId}] Captured Claude session ID:`, this.claudeSessionId);
           this.emit('claude-session-id', this.claudeSessionId);
           // Fetch rich slash command info from SDK

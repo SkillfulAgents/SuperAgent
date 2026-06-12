@@ -29,7 +29,7 @@ import { deliverSessionTool } from './tools/deliver-session'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
 import { requestScriptRunTool } from './tools/request-script-run'
-import { browserTools } from './tools/browser'
+import { createBrowserTools } from './tools/browser'
 import { computerUseTools } from './tools/computer-use'
 import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
@@ -76,11 +76,17 @@ export function createUserInputMcpServer() {
   })
 }
 
-export function createBrowserMcpServer() {
+/**
+ * @param tools - per-session browser tool set from createBrowserTools().
+ *   Each session must bind its own tools so browser requests carry that
+ *   session's CURRENT id (it changes on query restart) — a shared tool set
+ *   races across sessions and strands browser calls on the ownership lock.
+ */
+export function createBrowserMcpServer(tools: ReturnType<typeof createBrowserTools>) {
   return createSdkMcpServer({
     name: 'browser',
     version: '1.0.0',
-    tools: browserTools,
+    tools,
   })
 }
 

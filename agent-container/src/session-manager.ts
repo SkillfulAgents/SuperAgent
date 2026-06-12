@@ -280,6 +280,15 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  /**
+   * Whether the session is live in memory right now. Unlike getSession(),
+   * never resumes from persistence — used for browser-lock liveness checks
+   * where resurrecting a session would defeat the purpose.
+   */
+  hasActiveSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
   async getSession(sessionId: string): Promise<Session | null> {
     let sessionData = this.sessions.get(sessionId);
 

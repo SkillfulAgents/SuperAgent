@@ -68,8 +68,7 @@ vi.mock('./mcp-server', () => ({
 }))
 
 vi.mock('./tools/browser', () => ({
-  browserTools: [],
-  setCurrentBrowserSessionId: () => {},
+  createBrowserTools: () => [],
 }))
 
 vi.mock('./tools/computer-use', () => ({

@@ -14,34 +14,6 @@ import { tabManager } from '../tab-manager'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
 
-// Helper to get the current session ID from the environment
-// The session ID is set by the MCP server context when tools are invoked
-let currentSessionId: string | null = null
-
-export function setCurrentBrowserSessionId(sessionId: string | null): void {
-  currentSessionId = sessionId
-}
-
-async function browserFetch(
-  endpoint: string,
-  body: Record<string, unknown>
-): Promise<{ success: boolean; data?: unknown; error?: string }> {
-  try {
-    const response = await fetch(`${CONTAINER_URL}/browser/${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: currentSessionId, ...body }),
-    })
-    const data = await response.json() as Record<string, unknown>
-    if (!response.ok) {
-      return { success: false, error: (data.error as string) || `HTTP ${response.status}` }
-    }
-    return { success: true, data }
-  } catch (error: any) {
-    return { success: false, error: error.message || 'Request failed' }
-  }
-}
-
 function errorResult(message: string) {
   return {
     content: [{ type: 'text' as const, text: `Error: ${message}` }],
@@ -79,7 +51,36 @@ async function readScreenshotAsBase64(filePath: string): Promise<{ data: string;
   }
 }
 
-export const browserOpenTool = tool(
+/**
+ * Build the browser tool set for one session/process.
+ *
+ * `getSessionId` is read at call time on every request: a ClaudeCodeProcess's
+ * session id changes whenever its SDK query (re)starts, and a module-global id
+ * shared across processes is exactly the race that stranded browser sub-agents
+ * in "Browser is owned by session <other>" loops (see browser-tools-audit.md).
+ */
+export function createBrowserTools(getSessionId: () => string | null) {
+  async function browserFetch(
+    endpoint: string,
+    body: Record<string, unknown>
+  ): Promise<{ success: boolean; data?: unknown; error?: string }> {
+    try {
+      const response = await fetch(`${CONTAINER_URL}/browser/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: getSessionId(), ...body }),
+      })
+      const data = await response.json() as Record<string, unknown>
+      if (!response.ok) {
+        return { success: false, error: (data.error as string) || `HTTP ${response.status}` }
+      }
+      return { success: true, data }
+    } catch (error: any) {
+      return { success: false, error: error.message || 'Request failed' }
+    }
+  }
+
+  const browserOpenTool = tool(
   'browser_open',
   `Open a headless browser and navigate to a URL. The user can see the browser live in their interface and interact with it directly.
 
@@ -126,7 +127,7 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
   }
 )
 
-export const browserCloseTool = tool(
+const browserCloseTool = tool(
   'browser_close',
   `Close the browser and free resources. Call this when you're done browsing.`,
   {},
@@ -141,7 +142,7 @@ export const browserCloseTool = tool(
   }
 )
 
-export const browserSnapshotTool = tool(
+const browserSnapshotTool = tool(
   'browser_snapshot',
   `Get an accessibility tree snapshot of the current page. Returns interactive elements with refs (like @e1, @e2) that you can use with browser_click and browser_fill.
 
@@ -187,7 +188,7 @@ Use json=true to get structured JSON output with a refs dictionary.`,
   }
 )
 
-export const browserClickTool = tool(
+const browserClickTool = tool(
   'browser_click',
   `Click an element on the page by its ref (e.g., @e1). Get refs from browser_snapshot.`,
   {
@@ -212,7 +213,7 @@ export const browserClickTool = tool(
   }
 )
 
-export const browserFillTool = tool(
+const browserFillTool = tool(
   'browser_fill',
   `Fill an input field by its ref (e.g., @e2) with a value. Get refs from browser_snapshot.`,
   {
@@ -238,7 +239,7 @@ export const browserFillTool = tool(
   }
 )
 
-export const browserScrollTool = tool(
+const browserScrollTool = tool(
   'browser_scroll',
   `Scroll the page in a given direction.`,
   {
@@ -269,7 +270,7 @@ export const browserScrollTool = tool(
   }
 )
 
-export const browserWaitTool = tool(
+const browserWaitTool = tool(
   'browser_wait',
   `Wait for a CSS selector to appear on the page. Only use this when you need to wait for a specific element to render (e.g. after triggering dynamic content). Do NOT use for "networkidle", "load", or "domcontentloaded" — browser_open already waits for the page to load.`,
   {
@@ -290,7 +291,7 @@ export const browserWaitTool = tool(
   }
 )
 
-export const browserPressTool = tool(
+const browserPressTool = tool(
   'browser_press',
   `Press a keyboard key. Use this for Enter (submit forms), Tab (next field), Escape (close dialogs), or key combos like "Control+a".`,
   {
@@ -315,7 +316,7 @@ export const browserPressTool = tool(
   }
 )
 
-export const browserScreenshotTool = tool(
+const browserScreenshotTool = tool(
   'browser_screenshot',
   `Take a screenshot of the current page. Returns the screenshot image and the file path where it was saved. Use full=true to capture the entire scrollable page. Use annotate=true to overlay numbered labels on interactive elements — each label [N] corresponds to ref @eN, so you can click elements by their visual label.`,
   {
@@ -359,7 +360,7 @@ export const browserScreenshotTool = tool(
   }
 )
 
-export const browserSelectTool = tool(
+const browserSelectTool = tool(
   'browser_select',
   `Select an option from a <select> dropdown element by its ref. Get refs from browser_snapshot.`,
   {
@@ -377,7 +378,7 @@ export const browserSelectTool = tool(
   }
 )
 
-export const browserHoverTool = tool(
+const browserHoverTool = tool(
   'browser_hover',
   `Hover over an element by its ref. Useful for triggering dropdown menus, tooltips, or hover states. Get refs from browser_snapshot.`,
   {
@@ -394,7 +395,7 @@ export const browserHoverTool = tool(
   }
 )
 
-export const browserUploadTool = tool(
+const browserUploadTool = tool(
   'browser_upload',
   `Upload a local file into a web page <input type="file"> using Playwright setInputFiles.
 
@@ -429,7 +430,7 @@ The selector must target the actual file input element, such as input[type="file
   }
 )
 
-export const browserRunTool = tool(
+const browserRunTool = tool(
   'browser_run',
   `Run any agent-browser CLI command. Use this for advanced browser operations not covered by the dedicated tools.
 
@@ -480,7 +481,7 @@ Available commands:
   }
 )
 
-export const browserGetStateTool = tool(
+const browserGetStateTool = tool(
   'browser_get_state',
   `Get the current state of the browser in one call. Returns the current URL, a screenshot image, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls.`,
   {},
@@ -537,19 +538,20 @@ export const browserGetStateTool = tool(
   }
 )
 
-export const browserTools = [
-  browserOpenTool,
-  browserCloseTool,
-  browserSnapshotTool,
-  browserClickTool,
-  browserFillTool,
-  browserScrollTool,
-  browserWaitTool,
-  browserPressTool,
-  browserScreenshotTool,
-  browserSelectTool,
-  browserHoverTool,
-  browserUploadTool,
-  browserRunTool,
-  browserGetStateTool,
-]
+  return [
+    browserOpenTool,
+    browserCloseTool,
+    browserSnapshotTool,
+    browserClickTool,
+    browserFillTool,
+    browserScrollTool,
+    browserWaitTool,
+    browserPressTool,
+    browserScreenshotTool,
+    browserSelectTool,
+    browserHoverTool,
+    browserUploadTool,
+    browserRunTool,
+    browserGetStateTool,
+  ]
+}

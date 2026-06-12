@@ -562,6 +562,7 @@ import {
   setBrowserState as _setBrowserState,
   validateBrowserSession,
   releaseBrowserLock,
+  transferBrowserLock,
 } from './browser-state';
 
 // Proxy object so existing code can read `browserState.active` etc. without changes.
@@ -571,6 +572,28 @@ const browserState: BrowserState = new Proxy({} as BrowserState, {
     return (_getBrowserState() as any)[prop];
   },
 });
+
+/**
+ * validateBrowserSession with stale-owner recovery.
+ *
+ * A lock can be left keyed to a session id that no longer maps to any live
+ * session: the canonical Claude id changes on query restart, and crashed
+ * sessions never call release. Locking everyone out until container restart
+ * produced 100+ consecutive "Browser is owned by session …" failures in the
+ * browser-tools audit. If the recorded owner is not an active session,
+ * transfer the lock to the requester instead of rejecting.
+ */
+function validateBrowserSessionWithRecovery(requestSessionId: string): string | null {
+  const error = validateBrowserSession(requestSessionId);
+  if (!error) return null;
+  const ownerId = _getBrowserState().sessionId;
+  if (ownerId && !sessionManager.hasActiveSession(ownerId)) {
+    transferBrowserLock(requestSessionId);
+    console.log(`[Browser] Lock owner ${ownerId} is no longer an active session — transferred browser to ${requestSessionId}`);
+    return null;
+  }
+  return `${error}, which is still active. The browser is in use by another session — do not retry; report the conflict and stop.`;
+}
 
 
 const execFileAsync = promisify(execFile);
@@ -839,7 +862,7 @@ app.post('/browser/open', async (c) => {
       return c.json({ error: 'sessionId and url are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -912,7 +935,7 @@ app.post('/browser/close', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -980,7 +1003,7 @@ app.post('/browser/snapshot', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1026,7 +1049,7 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: 'sessionId and ref are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1059,7 +1082,7 @@ app.post('/browser/fill', async (c) => {
       return c.json({ error: 'sessionId, ref, and value are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1091,7 +1114,7 @@ app.post('/browser/scroll', async (c) => {
       return c.json({ error: 'sessionId and direction are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1126,7 +1149,7 @@ app.post('/browser/wait', async (c) => {
       return c.json({ error: 'sessionId and for are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1168,7 +1191,7 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: 'sessionId and key are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1201,7 +1224,7 @@ app.post('/browser/screenshot', async (c) => {
       return c.json({ error: 'sessionId is required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1236,7 +1259,7 @@ app.post('/browser/select', async (c) => {
       return c.json({ error: 'sessionId, ref, and value are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1268,7 +1291,7 @@ app.post('/browser/hover', async (c) => {
       return c.json({ error: 'sessionId and ref are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
@@ -1296,7 +1319,7 @@ app.post('/browser/upload', async (c) => {
   try {
     const rawBody = await c.req.json().catch(() => ({}));
     const result = await runBrowserUpload(rawBody, {
-      validateSession: validateBrowserSession,
+      validateSession: validateBrowserSessionWithRecovery,
       isBrowserActive: () => browserState.active,
       getConnectionUrl: () => browserState.cdpUrl || getCdpHttpEndpoint(),
       getActiveTargetUrl: async () => (await findActivePageTarget())?.url ?? null,
@@ -1324,7 +1347,7 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: 'sessionId and command are required' }, 400);
     }
 
-    const validationError = validateBrowserSession(body.sessionId);
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
     if (validationError) {
       return c.json({ error: validationError }, 409);
     }
