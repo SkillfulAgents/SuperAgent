@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the QA-20260602-225001-3yw0 agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the chat interface.",
+  "reason": "Browser use feature test: Agent successfully executed browser tools to navigate to example.com and retrieve the page title \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully, displaying the SuperAgent home interface with a sidebar containing two agents.",
-    "Found and clicked the \"QA-20260602-225001-3yw0\" agent in the sidebar — Agent page opened successfully, displaying the chat interface for this specific agent with an empty conversation.",
-    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted, and the agent began processing with a \"Working...\" indicator.",
-    "Waited up to 3 minutes for the agent to complete the task — Agent completed the task in 17 seconds, successfully:",
-    "Verified the response mentions \"Example Domain\" and took a screenshot — Response clearly shows multiple mentions of \"Example Domain\":"
+    "Step 1 - Navigated to http://localhost:47891 — Application loaded successfully, displaying SuperAgent interface with agent list in sidebar",
+    "Step 2 - Clicked on \"QA-20260612-021359-kch2\" agent in sidebar — Agent page opened with chat interface and configuration sections visible",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was typed and sent successfully; agent status changed to \"working\"",
+    "Step 4 - Waited for response (max 3 minutes) — Agent completed task in 11 seconds; \"Working\" status cleared indicating completion",
+    "Step 5 - Verified response mentions \"Example Domain\" — Agent's final response states: \"The page title is \\\"Example Domain\\\". I've closed the browser.\" ✓"
   ],
   "bugs": [],
-  "durationMs": 76361,
-  "sessionId": "05e58b25-9a3f-4e9c-8e7d-2ea00ca91dc5",
+  "durationMs": 94220,
+  "sessionId": "8e49e076-a16c-4893-acba-8fe7581f159e",
   "cost": {
-    "inputTokens": 309,
-    "outputTokens": 8229,
-    "cacheCreationTokens": 50129,
-    "cacheReadTokens": 1384402,
+    "inputTokens": 456,
+    "outputTokens": 14610,
+    "cacheCreationTokens": 78189,
+    "cacheReadTokens": 1558995,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.242555
+    "totalCostUsd": 0.327142
   }
 }
