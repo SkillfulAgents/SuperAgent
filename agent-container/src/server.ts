@@ -601,6 +601,7 @@ const execFileAsync = promisify(execFile);
 import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
+import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
 
 // Ensure Chrome download preferences are set in the browser profile directory.
 // Merges with existing preferences to avoid overwriting other settings.
@@ -1277,14 +1278,32 @@ app.post('/browser/select', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
+    // Read the element's value before and after: the CLI reports "✓ Done"
+    // even when nothing commits (custom dropdown divs, React-reverted
+    // selects) — the read-back is what makes the result honest.
+    const readValue = async (): Promise<string | null> => {
+      const r = await execBrowser(['get', 'value', body.ref], browserState.cdpUrl || undefined);
+      return r.exitCode === 0 ? r.stdout.trim() : null;
+    };
+
+    const before = await readValue();
+
     const result = await execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined);
 
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
+    await new Promise(resolve => setTimeout(resolve, SELECT_COMMIT_SETTLE_MS));
+    const after = await readValue();
+
+    const judgement = judgeSelectCommit(body.value, before, after);
+    if (!judgement.ok) {
+      return c.json({ error: judgement.reason, success: false }, 500);
+    }
+
     notifyBrowserAction();
-    return c.json({ success: true });
+    return c.json({ success: true, committedValue: judgement.committed });
   } catch (error: any) {
     console.error('[Browser] Error selecting:', error);
     return c.json({ error: error.message || 'Failed to select' }, 500);

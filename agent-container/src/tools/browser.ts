@@ -364,17 +364,21 @@ const browserScreenshotTool = tool(
 
 const browserSelectTool = tool(
   'browser_select',
-  `Select an option from a <select> dropdown element by its ref. Get refs from browser_snapshot.`,
+  `Select an option in a NATIVE <select> element by its ref, using the option's value or visible label. The committed value is verified by read-back and returned — if nothing committed, this errors instead of pretending.
+
+Custom dropdowns (divs with role=combobox/listbox) will NOT work with this tool. For those: browser_click the trigger, re-snapshot, type into the popup's filter input, click the option's fresh ref, then re-snapshot to verify.`,
   {
     ref: z.string().describe('Select element ref from snapshot (e.g., "@e3")'),
-    value: z.string().describe('The option value to select'),
+    value: z.string().describe('The option value or visible label to select'),
   },
   async (args) => {
     const result = await browserFetch('select', { ref: args.ref, value: args.value })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    const committed = data?.committedValue
     return {
       content: [
-        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref}.` },
+        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref} — committed value verified: "${committed}".` },
       ],
     }
   }
