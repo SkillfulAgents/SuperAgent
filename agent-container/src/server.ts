@@ -600,6 +600,7 @@ const execFileAsync = promisify(execFile);
 
 import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
+import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
 
 // Ensure Chrome download preferences are set in the browser profile directory.
 // Merges with existing preferences to avoid overwriting other settings.
@@ -1343,6 +1344,39 @@ app.post('/browser/upload', async (c) => {
   } catch (error: any) {
     console.error('[Browser] Error uploading file:', error);
     return c.json({ error: error.message || 'Failed to upload file' }, 500);
+  }
+});
+
+// POST /browser/eval - Run JavaScript in the page (dedicated eval with guardrails)
+app.post('/browser/eval', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; script: string }>();
+
+    if (!body.sessionId || typeof body.script !== 'string' || body.script.trim() === '') {
+      return c.json({ error: 'sessionId and script are required' }, 400);
+    }
+
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const { script, wrapped } = prepareEvalScript(body.script);
+    const result = await execBrowser(['eval', script], browserState.cdpUrl || undefined);
+
+    if (result.exitCode !== 0) {
+      return c.json({ error: evalErrorHint(result.stdout), success: false }, 500);
+    }
+
+    notifyBrowserAction();
+    return c.json({ success: true, output: finalizeEvalOutput(result.stdout), wrapped });
+  } catch (error: any) {
+    console.error('[Browser] Error running eval:', error);
+    return c.json({ error: error.message || 'Failed to run eval' }, 500);
   }
 });
 

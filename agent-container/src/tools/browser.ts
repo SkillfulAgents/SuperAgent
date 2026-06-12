@@ -432,6 +432,32 @@ The selector must target the actual file input element, such as input[type="file
   }
 )
 
+const browserEvalTool = tool(
+  'browser_eval',
+  `Run JavaScript in the page and return the result. Prefer this over browser_run("eval ...").
+
+- Evaluated as an expression; await is supported. Bare function expressions are automatically invoked for you.
+- Return JSON-serializable data — for structured results, end with JSON.stringify(...).
+- TOP FRAME ONLY: elements inside cross-origin iframes (e.g. Stripe payment frames) are unreachable from JavaScript. For those, click the field by coordinates and type with browser_run args ["keyboard", "type", "<text>"].
+- Output is capped at ~8000 chars — query only the fields you need instead of dumping HTML.`,
+  {
+    script: z.string().describe('JavaScript to evaluate in the page, e.g. document.title or (() => JSON.stringify({n: document.querySelectorAll("a").length}))()'),
+  },
+  async (args) => {
+    const result = await browserFetch('eval', { script: args.script })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown>
+    let text = data.output ? String(data.output) : '(no output)'
+    if (data.wrapped) {
+      text += '\n(note: your script was a bare function expression — it was auto-invoked as (fn)())'
+    }
+    text += getTabWarning()
+    return {
+      content: [{ type: 'text' as const, text }],
+    }
+  }
+)
+
 const browserRunTool = tool(
   'browser_run',
   `Run any agent-browser CLI command. Use this for advanced browser operations not covered by the dedicated tools.
@@ -448,7 +474,7 @@ Available commands:
 - check/uncheck <ref> — Toggle checkbox
 - scrollintoview <ref> — Scroll element into view
 - drag <srcRef> <tgtRef> — Drag and drop
-- eval <js> — Run JavaScript
+- eval <js> — Run JavaScript (prefer the dedicated browser_eval tool)
 - get text/html/value/attr/title/url/count/box <ref> — Get element info
 - is visible/enabled/checked <ref> — Check element state
 - find role/text/label/placeholder/alt/title/testid <query> <action> — Semantic locators
@@ -559,6 +585,7 @@ const browserGetStateTool = tool(
     browserSelectTool,
     browserHoverTool,
     browserUploadTool,
+    browserEvalTool,
     browserRunTool,
     browserGetStateTool,
   ]
