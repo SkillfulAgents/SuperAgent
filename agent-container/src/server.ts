@@ -602,6 +602,7 @@ import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
 import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
+import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 
 // Ensure Chrome download preferences are set in the browser profile directory.
 // Merges with existing preferences to avoid overwriting other settings.
@@ -658,28 +659,32 @@ async function execBrowser(args: string[], cdpUrl?: string): Promise<{ stdout: s
     const fullArgs = cdpUrl ? ['--cdp', cdpUrl, ...args] : args;
     const { stdout } = await execFileAsync('agent-browser', fullArgs, {
       timeout: 30000,
+      // Large-but-legitimate outputs must not THROW (the throw path used to
+      // stuff up to 1 MiB of partial output into an error string);
+      // capBrowserOutput below bounds what the model actually sees.
+      maxBuffer: 4 * 1024 * 1024,
       env: {
         ...process.env,
         AGENT_BROWSER_STREAM_PORT: process.env.AGENT_BROWSER_STREAM_PORT || '9223',
         AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
       },
     });
-    return { stdout: stdout.trim(), exitCode: 0 };
+    return { stdout: capBrowserOutput(stdout.trim(), MAX_BROWSER_OUTPUT_CHARS), exitCode: 0 };
   } catch (error: any) {
+    // Full, unsanitized detail (incl. the command line with the CDP URL) goes
+    // to container logs for connectivity debugging — never to the model.
+    console.error('[Browser] agent-browser failed:', error.message);
     if (error.stderr) {
       console.error('[Browser] agent-browser stderr:', error.stderr);
     }
-    // Combine stdout, stderr, and message for maximum debuggability.
-    // The error shown to users includes the full command line (from error.message)
-    // which contains the CDP URL — helpful for diagnosing connectivity issues.
     const parts = [
       error.stdout?.trim(),
       error.stderr?.trim(),
     ].filter(Boolean);
-    const detail = parts.length > 0 ? parts.join('\n') : (error.message || 'Command failed');
+    const rawDetail = parts.length > 0 ? parts.join('\n') : (error.message || 'Command failed');
     return {
-      stdout: detail,
-      exitCode: error.code || 1,
+      stdout: redactCdpUrls(capBrowserOutput(rawDetail, MAX_BROWSER_ERROR_CHARS)),
+      exitCode: typeof error.code === 'number' ? error.code : 1,
     };
   }
 }
