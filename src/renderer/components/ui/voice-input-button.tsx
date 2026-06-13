@@ -42,7 +42,11 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
   // In auth mode, only admins can configure voice settings
   const canConfigureVoice = !isAuthMode || isAdmin
 
-  const { isRecording, isConnecting, stopRecording, startRecording } = voiceInput
+  const { isRecording, isConnecting, isFinalizing, stopRecording, startRecording } = voiceInput
+  // Mic engaged: recording, connecting, or flushing the tail after stop.
+  const active = isRecording || isConnecting || isFinalizing
+  // Spinner while connecting or finalizing (no live waveform to show).
+  const busy = isConnecting || isFinalizing
 
   const handleToggle = useCallback(() => {
     if (!hasVoiceConfigured) {
@@ -51,10 +55,12 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
     }
     if (isRecording || isConnecting) {
       stopRecording()
-    } else {
+    }
+    // While finalizing we ignore clicks (stop already in progress); otherwise start.
+    else if (!isFinalizing) {
       startRecording(message)
     }
-  }, [hasVoiceConfigured, canConfigureVoice, openSettings, isRecording, isConnecting, stopRecording, startRecording, message])
+  }, [hasVoiceConfigured, canConfigureVoice, openSettings, isRecording, isConnecting, isFinalizing, stopRecording, startRecording, message])
 
   if (!voiceInput.isSupported) return null
 
@@ -88,17 +94,17 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
     <button
       type="button"
       onClick={handleToggle}
-      disabled={disabled && !isRecording && !isConnecting}
+      disabled={disabled && !active}
       data-testid="voice-input-button"
       className={cn(
         buttonVariants({ variant: 'outline', size: 'icon' }),
         'overflow-hidden px-0 transition-[width,padding,background-color,border-color,color,border-radius] duration-200 ease-out',
-        isRecording || isConnecting
+        active
           ? `${config.pill} gap-2 justify-between rounded-md border-input bg-background px-2 text-foreground hover:bg-zinc-100`
           : `gap-0 rounded-md ${config.button}`
       )}
       title={
-        isRecording || isConnecting
+        active
           ? 'Stop recording'
           : !hasVoiceConfigured
             ? 'Set up voice input'
@@ -108,12 +114,12 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
       <span
         className={cn(
           'overflow-hidden transition-[max-width,opacity] duration-200 ease-out',
-          isRecording || isConnecting ? 'max-w-[64px] opacity-100' : 'max-w-0 opacity-0'
+          active ? 'max-w-[64px] opacity-100' : 'max-w-0 opacity-0'
         )}
       >
         <MiniWaveform analyserRef={voiceInput.analyserRef} color="black" {...config.waveform} />
       </span>
-      {isConnecting ? (
+      {busy ? (
         <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
       ) : isRecording ? (
         <Square className="h-3 w-3 shrink-0 fill-current" />
