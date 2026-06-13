@@ -1,0 +1,1 @@
+ALTER TABLE `chat_integrations` ADD `session_timeout` integer;

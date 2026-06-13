@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import Database from 'better-sqlite3'
+import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '../db/schema'
@@ -30,6 +31,7 @@ import {
   createWebhookTrigger,
   getWebhookTrigger,
   getWebhookTriggerByComposioId,
+  getActiveComposioTriggerIds,
   listWebhookTriggers,
   listActiveWebhookTriggers,
   cancelWebhookTrigger,
@@ -277,6 +279,46 @@ describe('webhook-trigger-service', () => {
       await markTriggerFailed(id, 'Agent not found')
       const trigger = await getWebhookTrigger(id)
       expect(trigger!.status).toBe('failed')
+    })
+  })
+
+  describe('getActiveComposioTriggerIds', () => {
+    it('returns active triggers with a composio ID, skipping paused and unset rows', async () => {
+      await createWebhookTrigger({
+        agentSlug: 'agent-1',
+        composioTriggerId: 'ti_active_a',
+        connectedAccountId: 'ca_1',
+        triggerType: 'GMAIL_NEW_EMAIL',
+        prompt: 'A',
+      })
+      await createWebhookTrigger({
+        agentSlug: 'agent-1',
+        composioTriggerId: 'ti_active_b',
+        connectedAccountId: 'ca_2',
+        triggerType: 'GMAIL_NEW_EMAIL',
+        prompt: 'B',
+      })
+      const pausedId = await createWebhookTrigger({
+        agentSlug: 'agent-1',
+        composioTriggerId: 'ti_paused',
+        connectedAccountId: 'ca_3',
+        triggerType: 'GMAIL_NEW_EMAIL',
+        prompt: 'Paused',
+      })
+      await testDb
+        .update(schema.webhookTriggers)
+        .set({ status: 'paused' })
+        .where(eq(schema.webhookTriggers.id, pausedId))
+
+      await createWebhookTrigger({
+        agentSlug: 'agent-2',
+        connectedAccountId: 'ca_4',
+        triggerType: 'GMAIL_NEW_EMAIL',
+        prompt: 'No composio id yet',
+      })
+
+      const ids = getActiveComposioTriggerIds()
+      expect(ids.sort()).toEqual(['ti_active_a', 'ti_active_b'])
     })
   })
 

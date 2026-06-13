@@ -16,6 +16,7 @@ export function useMcpOAuthListener(active: boolean, onComplete: (result: McpOAu
     if (!active) return
 
     const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return
       if (event.data?.type === 'mcp-oauth-callback') {
         callbackRef.current({ success: !!event.data.success, error: event.data.error })
       }

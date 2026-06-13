@@ -106,7 +106,7 @@ describe('FileRequestItem', () => {
     expect(defaultProps.onComplete).toHaveBeenCalled()
   })
 
-  it('shows error on upload failure', async () => {
+  it('shows the backend error message on upload failure', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValueOnce({
       ok: false,
@@ -125,7 +125,7 @@ describe('FileRequestItem', () => {
     await user.click(screen.getByText('Upload file'))
 
     await waitFor(() => {
-      expect(screen.getByText(/Error:.*Failed to upload file/)).toBeInTheDocument()
+      expect(screen.getByText(/Error:.*Upload failed/)).toBeInTheDocument()
     })
   })
 })

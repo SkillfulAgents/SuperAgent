@@ -1,11 +1,13 @@
 
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
+import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, Check } from 'lucide-react'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { UploadError } from '@renderer/components/ui/upload-error'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
@@ -13,6 +15,7 @@ import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
+import { uploadFileChunked } from '@renderer/lib/upload'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -22,8 +25,10 @@ import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
+import { HomeChatIntegrations } from './home-chat-integrations'
 import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
+import { DashboardCard } from '@renderer/components/home/dashboard-card'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
@@ -37,15 +42,32 @@ import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agen
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 
+const INTRO_ANIMATION_MS = 2200
+
 interface AgentHomeProps {
   agent: ApiAgent
-  onSessionCreated: (sessionId: string, initialMessage: string) => void
+  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string) => void
   onOpenSettings?: (tab?: string) => void
 }
 
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { setView, setAgent, consumePendingDraft } = useSelection()
+  const { setView, setAgent, consumePendingDraft, justCreatedSlug, setJustCreatedSlug } = useSelection()
+  const [introStagger] = useState(() => {
+    if (justCreatedSlug !== agent.slug) return false
+    return !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  })
+  const [introPlaying, setIntroPlaying] = useState(!introStagger)
+  useEffect(() => {
+    if (!introStagger) return
+    const t = setTimeout(() => setIntroPlaying(true), 1000)
+    return () => clearTimeout(t)
+  }, [introStagger])
+  useEffect(() => {
+    if (!introStagger) return
+    const t = setTimeout(() => setJustCreatedSlug(null), INTRO_ANIMATION_MS)
+    return () => clearTimeout(t)
+  }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
   const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
@@ -128,15 +150,11 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
 
   const composer = useMessageComposer({
     agentSlug: agent.slug,
-    uploadFile: useCallback(async ({ file }: { file: File }) => {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await apiFetch(
-        `/api/agents/${agent.slug}/upload-file`,
-        { method: 'POST', body: formData }
-      )
-      if (!res.ok) throw new Error('Failed to upload file')
-      return res.json() as Promise<{ path: string }>
+    uploadFile: useCallback(({ file }: { file: File }) => {
+      return uploadFileChunked<{ path: string }>({
+        url: `/api/agents/${agent.slug}/upload-file`,
+        file,
+      })
     }, [agent.slug]),
     uploadFolder: useCallback(async ({ sourcePath }: { sourcePath: string }) => {
       const res = await apiFetch(
@@ -158,7 +176,9 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         message: content,
         ...composerOptions.toRuntimeOptions(),
       })
-      onSessionCreated(session.id, content)
+      // The server assigns the initial message's uuid and returns it; the
+      // optimistic pending copy is materialized by exact id match.
+      onSessionCreated(session.id, content, session.initialMessageUuid)
       // Fire rename after the session is created + navigated — the mutation
       // survives AgentHome unmounting since the queryClient is app-scoped.
       if (shouldRename) {
@@ -245,11 +265,25 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const showRightColumn = isOwner
 
   return (
-    <div className="flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background">
+    <div
+      className={cn(
+        'flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background',
+        introStagger && 'agent-home-intro relative',
+        introPlaying && 'intro-play'
+      )}
+    >
+      {introStagger && !introPlaying && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Creating
+          </div>
+        </div>
+      )}
       <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-2 intro-step intro-step-1">
             {isEditingName && isOwner ? (
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 <Input
@@ -333,7 +367,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               />
               <form
                 onSubmit={composer.handleSubmit}
-                className={composer.isDragOver ? 'rounded-2xl ring-2 ring-primary ring-inset' : ''}
+                className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}
                 {...composer.dragHandlers}
               >
                 <ChatComposerBox
@@ -416,16 +450,20 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                     </>
                   )}
                   footer={(
-                    <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
+                    <>
+                      <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
+                      <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
+                    </>
                   )}
                 />
               </form>
 
+              <div className="space-y-6 intro-step intro-step-3">
               {/* Bookmarks */}
               <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 
               {/* Sessions list / creation aids */}
-              <div className={sessions.length > 0 ? 'pt-2' : '-mt-5'}>
+              <div className={sessions.length > 0 ? 'pt-2' : ''}>
                 {sessions.length > 0 ? (
                   <>
                     <div className="flex items-center gap-2">
@@ -474,6 +512,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   />
                 )}
               </div>
+              </div>
             </>
           )}
         </div>
@@ -481,16 +520,36 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
+            {(Array.isArray(agent.dashboards) ? agent.dashboards : []).map((d) => (
+              <DashboardCard
+                key={d.slug}
+                dashboard={d}
+                agentSlug={agent.slug}
+              />
+            ))}
             <HomeTriggers
+              className="intro-step intro-step-4"
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
               onSelectTask={(taskId: string) => setView({ kind: 'task', id: taskId })}
               onSelectWebhook={(webhookId: string) => setView({ kind: 'webhook', id: webhookId })}
             />
-            <HomeConnections agentSlug={agent.slug} />
-            <HomeSkills agentSlug={agent.slug} />
-            <HomeVolumes agentSlug={agent.slug} />
-            <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+            <HomeConnections className="intro-step intro-step-5" agentSlug={agent.slug} />
+            <HomeSkills className="intro-step intro-step-6" agentSlug={agent.slug} onRunSkill={(skillPath) => {
+              const text = `/${skillPath} `
+              composer.setMessage(text)
+              composerTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              setTimeout(() => {
+                const el = composerTextareaRef.current
+                if (el) {
+                  el.focus()
+                  el.selectionStart = el.selectionEnd = text.length
+                }
+              }, 0)
+            }} />
+            <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
+            <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
+            <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
           </div>
         )}
       </div>

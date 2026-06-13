@@ -1,4 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import * as tar from 'tar'
+
+vi.mock('@shared/lib/utils/retry', async () => {
+  const actual = await vi.importActual<typeof import('@shared/lib/utils/retry')>(
+    '@shared/lib/utils/retry',
+  )
+  return {
+    ...actual,
+    withRetry: async (fn: () => Promise<unknown>) => fn(),
+  }
+})
 
 const mockGetPlatformProxyBaseUrl = vi.fn()
 const mockGetPlatformAccessToken = vi.fn()
@@ -17,8 +31,16 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
-import { PlatformSkillsetProvider } from './platform-provider'
+import { NonRetryableError } from '@shared/lib/utils/retry'
+import {
+  PlatformSkillsetProvider,
+  setPlatformGitAvailabilityForTesting,
+} from './platform-provider'
 
+// Force a known git-availability state so module-level `provider` is
+// deterministic across machines (CI may or may not have git installed).
+// Individual describe blocks override this when they need the opposite.
+setPlatformGitAvailabilityForTesting(false)
 const provider = new PlatformSkillsetProvider()
 
 function makeRef(overrides: Partial<{ skillsetId: string; skillsetName: string; repoId: string; orgId: string }> = {}) {
@@ -87,6 +109,245 @@ describe('PlatformSkillsetProvider.resolveCloneUrl', () => {
   it('throws when unauthenticated', async () => {
     mockGetPlatformAccessToken.mockReturnValue(null)
     await expect(provider.resolveCloneUrl('ignored', makeRef())).rejects.toThrow(/Platform not connected/)
+  })
+})
+
+describe('PlatformSkillsetProvider archive cache (no-git path)', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    mockGetPlatformProxyBaseUrl.mockReturnValue('https://platform.example')
+    mockGetPlatformAccessToken.mockReturnValue('plat_test_token_xxxxx')
+    tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'platform-provider-test-'))
+  })
+
+  afterEach(async () => {
+    vi.unstubAllGlobals()
+    await fs.promises.rm(tmpDir, { recursive: true, force: true })
+  })
+
+  /**
+   * Build an in-memory tar.gz buffer from flat path → content pairs.
+   * Mirrors the format Pierre's getArchiveStream produces.
+   */
+  async function buildTarGz(files: Record<string, string>): Promise<Buffer> {
+    const srcDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tar-src-'))
+    try {
+      for (const [relPath, content] of Object.entries(files)) {
+        const full = path.join(srcDir, relPath)
+        await fs.promises.mkdir(path.dirname(full), { recursive: true })
+        await fs.promises.writeFile(full, content, 'utf-8')
+      }
+      const chunks: Buffer[] = []
+      const stream = tar.c({ gzip: true, cwd: srcDir }, Object.keys(files))
+      for await (const chunk of stream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      }
+      return Buffer.concat(chunks)
+    } finally {
+      await fs.promises.rm(srcDir, { recursive: true, force: true })
+    }
+  }
+
+  function mockArchiveFetch(buffer: Buffer, status = 200) {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: status >= 200 && status < 300,
+      status,
+      statusText: status === 200 ? 'OK' : 'Error',
+      arrayBuffer: async () =>
+        buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+    }))
+  }
+
+  it('usesGitCache is false when git is unavailable (fallback path)', () => {
+    setPlatformGitAvailabilityForTesting(false)
+    const p = new PlatformSkillsetProvider()
+    expect(p.usesGitCache).toBe(false)
+  })
+
+  it('usesGitCache is true when git is available (default git-clone path)', () => {
+    setPlatformGitAvailabilityForTesting(true)
+    const p = new PlatformSkillsetProvider()
+    expect(p.usesGitCache).toBe(true)
+    setPlatformGitAvailabilityForTesting(false)
+  })
+
+  it('isCacheReady returns false on empty dir and true after populateCache', async () => {
+    const destDir = path.join(tmpDir, 'cache')
+    expect(await provider.isCacheReady(destDir)).toBe(false)
+
+    mockArchiveFetch(await buildTarGz({
+      'index.json': '{"skillset_name":"acme-skillset","skills":[]}',
+      'skills/foo/SKILL.md': '# Foo',
+    }))
+    await provider.populateCache(destDir, makeRef())
+
+    expect(await provider.isCacheReady(destDir)).toBe(true)
+    expect(await fs.promises.readFile(path.join(destDir, 'skills/foo/SKILL.md'), 'utf-8'))
+      .toBe('# Foo')
+  })
+
+  it('populateCache calls the proxy archive endpoint with bearer auth', async () => {
+    const tarGz = await buildTarGz({ 'index.json': '{}' })
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () =>
+        tarGz.buffer.slice(tarGz.byteOffset, tarGz.byteOffset + tarGz.byteLength),
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await provider.populateCache(path.join(tmpDir, 'cache'), makeRef())
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe('https://platform.example/v1/skills/archive?skillset=acme-skillset')
+    expect(init.headers.Authorization).toBe('Bearer plat_test_token_xxxxx')
+  })
+
+  it('populateCache throws "Platform not connected" when no token', async () => {
+    mockGetPlatformAccessToken.mockReturnValue(null)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache'), makeRef()),
+    ).rejects.toThrow(/Platform not connected/)
+  })
+
+  it('populateCache maps 404 to a NonRetryableError so withRetry skips backoff', async () => {
+    mockArchiveFetch(Buffer.alloc(0), 404)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache'), makeRef()),
+    ).rejects.toThrow(/Platform skillset not found: acme-skillset/)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef()),
+    ).rejects.toBeInstanceOf(NonRetryableError)
+  })
+
+  it('populateCache maps 401/403 to a NonRetryableError reconnect message', async () => {
+    mockArchiveFetch(Buffer.alloc(0), 401)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache'), makeRef()),
+    ).rejects.toThrow(/Not authorized.*Reconnect to platform/)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef()),
+    ).rejects.toBeInstanceOf(NonRetryableError)
+  })
+
+  it('populateCache maps 5xx to a transient server-error message', async () => {
+    mockArchiveFetch(Buffer.alloc(0), 502)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache'), makeRef()),
+    ).rejects.toThrow(/Platform server error.*502.*try again/)
+  })
+
+  it('populateCache rejects unsafe archive URLs (proxy on private IP)', async () => {
+    mockGetPlatformProxyBaseUrl.mockReturnValue('http://127.0.0.1')
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache'), makeRef()),
+    ).rejects.toThrow(/Unsafe clone URL host/)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('populateCache drops __MACOSX entries silently', async () => {
+    const srcDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tar-macosx-'))
+    await fs.promises.mkdir(path.join(srcDir, '__MACOSX'), { recursive: true })
+    await fs.promises.writeFile(path.join(srcDir, '__MACOSX/._junk'), 'rsrc')
+    await fs.promises.writeFile(path.join(srcDir, 'index.json'), '{}')
+    const chunks: Buffer[] = []
+    const stream = tar.c({ gzip: true, cwd: srcDir }, ['__MACOSX', 'index.json'])
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    }
+    await fs.promises.rm(srcDir, { recursive: true, force: true })
+
+    mockArchiveFetch(Buffer.concat(chunks))
+    const destDir = path.join(tmpDir, 'cache')
+
+    await expect(provider.populateCache(destDir, makeRef())).resolves.toBeUndefined()
+    expect(fs.existsSync(path.join(destDir, '__MACOSX'))).toBe(false)
+    expect(fs.existsSync(path.join(destDir, 'index.json'))).toBe(true)
+  })
+
+  it('populateCache rejects tar entries with path traversal', async () => {
+    // Hand-craft a tar where an entry has a `..` segment. tar.x with our
+    // filter + strict should drop it without writing outside cacheDir.
+    const srcDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'tar-evil-'))
+    await fs.promises.writeFile(path.join(srcDir, 'evil.txt'), 'evil')
+    const tarGz = await new Promise<Buffer>((resolve, reject) => {
+      const chunks: Buffer[] = []
+      const stream = tar.c(
+        {
+          gzip: true,
+          cwd: srcDir,
+          prefix: '../escape',
+        },
+        ['evil.txt'],
+      )
+      stream.on('data', (c: Buffer) => chunks.push(c))
+      stream.on('end', () => resolve(Buffer.concat(chunks)))
+      stream.on('error', reject)
+    })
+    await fs.promises.rm(srcDir, { recursive: true, force: true })
+
+    mockArchiveFetch(tarGz)
+    const destDir = path.join(tmpDir, 'cache')
+
+    // The tar.x filter drops `..` entries silently, so populateCache resolves
+    // successfully but the escape path must not have been written.
+    await expect(
+      provider.populateCache(destDir, makeRef()),
+    ).resolves.toBeUndefined()
+    expect(fs.existsSync(path.resolve(destDir, '../escape/evil.txt'))).toBe(false)
+  })
+
+  it('refreshCache replaces stale cache atomically', async () => {
+    const destDir = path.join(tmpDir, 'cache')
+    await fs.promises.mkdir(destDir, { recursive: true })
+    await fs.promises.writeFile(path.join(destDir, 'stale.txt'), 'old')
+
+    mockArchiveFetch(await buildTarGz({ 'index.json': '{"fresh":true}' }))
+    await provider.refreshCache(destDir, makeRef())
+
+    expect(fs.existsSync(path.join(destDir, 'stale.txt'))).toBe(false)
+    expect(JSON.parse(await fs.promises.readFile(path.join(destDir, 'index.json'), 'utf-8')))
+      .toEqual({ fresh: true })
+    expect(await provider.isCacheReady(destDir)).toBe(true)
+  })
+
+  it('refreshCache preserves the existing cache when the swap fails (ELECTRON-4G)', async () => {
+    const destDir = path.join(tmpDir, 'cache')
+    await fs.promises.mkdir(destDir, { recursive: true })
+    await fs.promises.writeFile(path.join(destDir, 'stale.txt'), 'old')
+    await fs.promises.writeFile(path.join(destDir, '.skillset-cache-meta.json'), '{}')
+
+    mockArchiveFetch(await buildTarGz({ 'index.json': '{"fresh":true}' }))
+
+    // Persistent Windows EPERM lock on the swap moves, plus a failing copy
+    // fallback, so the new cache can't be installed. The old cache must be
+    // restored intact rather than left destroyed.
+    const realRename = fs.promises.rename
+    const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (String(from) === destDir || String(to) === destDir) {
+        const e = new Error('EPERM: operation not permitted, rename') as NodeJS.ErrnoException
+        e.code = 'EPERM'
+        throw e
+      }
+      return realRename(from, to)
+    })
+    const cpSpy = vi.spyOn(fs.promises, 'cp').mockRejectedValue(
+      Object.assign(new Error('EPERM: operation not permitted, copyfile'), { code: 'EPERM' }),
+    )
+
+    await expect(provider.refreshCache(destDir, makeRef())).rejects.toThrow(/EPERM/)
+
+    expect(fs.existsSync(path.join(destDir, 'stale.txt'))).toBe(true)
+    expect(await fs.promises.readFile(path.join(destDir, 'stale.txt'), 'utf-8')).toBe('old')
+    expect(await provider.isCacheReady(destDir)).toBe(true)
+
+    renameSpy.mockRestore()
+    cpSpy.mockRestore()
   })
 })
 

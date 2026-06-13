@@ -15,6 +15,7 @@ import type {
   CreateSessionOptions,
   StartOptions,
   StopOptions,
+  StopResult,
   StreamMessage,
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
@@ -63,9 +64,34 @@ const isWindows = process.platform === 'win32'
 /**
  * Wrap a value in the platform-appropriate shell quotes.
  * On Unix, single quotes; on Windows cmd.exe, double quotes.
+ *
+ * NOTE: this is a naive wrapper — it does NOT escape quote characters embedded
+ * in `value`. It is safe only for known-literal arguments (e.g. Go template
+ * format strings like `{{json .}}`). For user-controlled values that are
+ * interpolated into a command string and run through a real shell, use
+ * shellEscape() instead.
  */
 export function shellQuote(value: string): string {
   return isWindows ? `"${value}"` : `'${value}'`
+}
+
+/**
+ * Shell-escape a user-controlled value so it survives interpolation into a
+ * command string executed by a real shell (child_process.exec → /bin/sh -c on
+ * Unix). Unlike shellQuote(), this escapes embedded quote characters so the
+ * value can never break out of its quoted region and re-enable expansion.
+ *
+ * On Unix: wrap in single quotes and rewrite each embedded `'` as `'\''`
+ * (close-quote, escaped-quote, reopen-quote). Inside single quotes nothing —
+ * not `$(...)`, backticks, nor `$VAR` — is special, so the value is inert.
+ * On Windows cmd.exe: wrap in double quotes and escape embedded `"` (a path
+ * cannot legally contain `"`, so this is belt-and-suspenders).
+ */
+export function shellEscape(value: string): string {
+  if (isWindows) {
+    return `"${value.replace(/"/g, '\\"')}"`
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
 /**
@@ -183,6 +209,18 @@ export function isConnectionError(err: Error): boolean {
 export const AGENT_CONTAINER_PATH = './agent-container'
 export const CONTAINER_INTERNAL_PORT = 3000
 const BASE_PORT = 4000
+// Max time for a single /health probe (isHealthy). Kept short because it gates
+// the request hot path via ensureRunning's stale-cache liveness check.
+const HEALTH_PROBE_TIMEOUT_MS = 2000
+
+/**
+ * Error thrown by ensureImageExists() when an image build fails, carrying the
+ * captured stderr tail and exit code so start()'s catch can surface them to Sentry.
+ */
+interface ImageBuildError extends Error {
+  imageBuildStderr?: string
+  imageBuildExitCode?: number | null
+}
 
 /**
  * Parse a memory value string (e.g., "231.2MiB", "1.5GiB", "512MB") to bytes.
@@ -232,6 +270,23 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Emit an 'error' event without crashing the process.
+   *
+   * Node's EventEmitter throws synchronously when 'error' is emitted and no
+   * 'error' listener is registered. Most consumers of this client never attach
+   * one, so a bare `this.emit('error', ...)` would throw — and when that emit
+   * happens inside a free-floating promise chain (e.g. the WebSocket
+   * `setupWebSocket().catch()` path), the throw escapes as an unhandled
+   * rejection. Guard every error emit through here so a missing listener is a
+   * no-op instead of a crash.
+   */
+  protected safeEmitError(error: unknown): void {
+    if (this.listenerCount('error') > 0) {
+      this.emit('error', error)
+    }
+  }
+
+  /**
    * Check if an error is a connection error (container not reachable).
    */
   private isConnectionError(err: Error): boolean {
@@ -272,6 +327,19 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Host-internal bridge IP a host-side service must bind to so this runner's
+   * containers can reach it via host.docker.internal, or null when containers
+   * reach the host's loopback directly. Default null — Docker Desktop and other
+   * loopback-forwarding runtimes need no bridge bind. Runners that route
+   * containers through a real gateway interface (Lima, WSL2, native Docker
+   * bridge) override this so a host CDP proxy can bind that single interface
+   * instead of 0.0.0.0 (SUP-217).
+   */
+  getHostBridgeIp(): string | null {
+    return null
+  }
+
+  /**
    * Returns a suffix to append to volume mount specifications (e.g., ':U' for Podman).
    * Subclasses can override this for runtime-specific volume options.
    */
@@ -293,7 +361,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * Encapsulates hostPathForRuntime() + getVolumeMountSuffix().
    */
   public buildVolumeFlag(hostPath: string, containerPath: string): string {
-    return `"${this.hostPathForRuntime(hostPath)}:${containerPath}${this.getVolumeMountSuffix()}"`
+    // hostPath is user-controlled (a selected mount). shellEscape() (not raw
+    // double quotes) so a path like `/tmp/a$(...)` can't trigger command
+    // substitution when start() runs the joined command through a real shell.
+    return shellEscape(`${this.hostPathForRuntime(hostPath)}:${containerPath}${this.getVolumeMountSuffix()}`)
   }
 
   /**
@@ -311,6 +382,33 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   protected async handleRunError(_error: any): Promise<boolean> {
     return false
+  }
+
+  /**
+   * Whether a run failure is a host-port allocation race. The chosen port passed
+   * findAvailablePort()'s pre-flight bind but was grabbed (or published on a
+   * different interface) before `run -p` claimed it. Recoverable by re-picking a
+   * port. Matches Docker, nerdctl/containerd, and Podman phrasings.
+   */
+  protected isPortConflictError(error: any): boolean {
+    const msg = String(error?.message || error?.stderr || error || '')
+    return (
+      /port is already allocated/i.test(msg) ||
+      /address already in use/i.test(msg) ||
+      /Bind for .* failed/i.test(msg) ||
+      /failed to bind host port/i.test(msg)
+    )
+  }
+
+  /**
+   * If a run failure is caused by a bind mount the runtime can't access, return
+   * the offending host path so start() can drop that one mount and retry without
+   * it. Default: never (most runtimes share the host filesystem directly).
+   * VM-based runtimes (Lima) override to parse EPERM-on-stat for cloud-synced
+   * mounts that the VM helper is denied access to.
+   */
+  protected extractInaccessibleMountPath(_error: any): string | null {
+    return null
   }
 
   protected getContainerName(): string {
@@ -395,11 +493,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  private async findAvailablePort(): Promise<number> {
+  /**
+   * Find a free host port to publish the container on.
+   * `exclude` lets a retry skip ports that just lost a publish race even if
+   * they momentarily look free again to the pre-flight bind.
+   */
+  private async findAvailablePort(exclude?: Set<number>): Promise<number> {
     const usedPorts = await this.getUsedPorts()
 
     let port = BASE_PORT
-    while (usedPorts.has(port) || !(await this.isPortAvailable(port))) {
+    while (usedPorts.has(port) || exclude?.has(port) || !(await this.isPortAvailable(port))) {
       port++
     }
     return port
@@ -432,7 +535,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         server.close()
         resolve(true)
       })
-      server.listen(port, '127.0.0.1')
+      // Bind 0.0.0.0 to match docker/nerdctl's publish address — a 127.0.0.1
+      // bind would miss a conflict from a process already on 0.0.0.0:<port>.
+      server.listen(port, '0.0.0.0')
     })
   }
 
@@ -459,44 +564,87 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       fs.mkdirSync(workspaceDir, { recursive: true })
 
       // Find an available port
-      const port = await this.findAvailablePort()
+      let port = await this.findAvailablePort()
 
       // Write env vars to a temp file (avoids command length limits on Windows)
       const { flag: envFileFlag, cleanup: cleanupEnvFile } = this.buildEnvFile(options?.envVars)
       const containerName = this.getContainerName()
 
-      // Remove existing container if exists (stop first for runtimes like Apple Container that don't support rm -f)
-      await execWithPathSilent(`${runner} stop ${containerName}`)
-      await execWithPathSilent(`${runner} rm ${containerName}`)
-
       // Build resource limit flags
       const resourceFlags = this.getResourceFlags(cpu, memory)
       const additionalFlags = this.getAdditionalRunFlags()
 
-      // Start container with volume mount for persistent workspace
-      const runCmd = [
-        runner, 'run', '-d',
-        '--name', containerName,
-        '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
-        '-v', `"${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}"`,
-        ...(options?.additionalVolumes || []).flatMap(v => ['-v', v]),
-        resourceFlags,
-        additionalFlags,
-        envFileFlag,
-        image,
-      ].filter(Boolean).join(' ')
+      // Mutable copy of bind-mount flags — an inaccessible mount (e.g. a
+      // cloud-synced folder the VM helper is denied) is dropped from this list
+      // on retry so the container can still start without it.
+      let volumes = [...(options?.additionalVolumes || [])]
 
+      const buildRunCmd = () =>
+        [
+          runner, 'run', '-d',
+          '--name', containerName,
+          '-p', `${port}:${CONTAINER_INTERNAL_PORT}`,
+          '-v', shellEscape(`${this.hostPathForRuntime(workspaceDir)}:/workspace${this.getVolumeMountSuffix()}`),
+          ...volumes.flatMap(v => ['-v', v]),
+          resourceFlags,
+          additionalFlags,
+          envFileFlag,
+          image,
+        ].filter(Boolean).join(' ')
+
+      // Bounded retry loop. Each recovery path makes exactly one attempt of
+      // progress so the loop can't spin: dropping a mount shrinks `volumes`,
+      // re-picking a port is capped by portRetries, and VM provisioning runs
+      // once. A fresh stop+rm precedes every attempt so we never double-start.
+      const MAX_PORT_RETRIES = 3
+      let portRetries = 0
+      const triedPorts = new Set<number>([port])
+      let vmRecoveryTried = false
       let stdout: string
       try {
-        ({ stdout } = await execWithPath(runCmd))
-      } catch (runError: any) {
-        // Allow subclasses to handle and recover from run errors (e.g., kernel setup)
-        const recovered = await this.handleRunError(runError)
-        if (!recovered) throw runError
-        // Retry after recovery
-        await execWithPathSilent(`${runner} stop ${containerName}`)
-        await execWithPathSilent(`${runner} rm ${containerName}`);
-        ({ stdout } = await execWithPath(runCmd))
+        for (;;) {
+          await execWithPathSilent(`${runner} stop ${containerName}`)
+          await execWithPathSilent(`${runner} rm ${containerName}`)
+
+          try {
+            ({ stdout } = await execWithPath(buildRunCmd()))
+            break
+          } catch (runError: any) {
+            // 1. Inaccessible bind mount (e.g. iCloud/File Provider path the VM
+            //    can't stat). Drop that one mount and retry without it.
+            const badMountPath = this.extractInaccessibleMountPath(runError)
+            if (badMountPath) {
+              const before = volumes.length
+              volumes = volumes.filter((v) => !v.includes(badMountPath))
+              if (volumes.length < before) {
+                console.warn(`[Container] Dropping inaccessible mount and retrying: ${badMountPath}`)
+                addErrorBreadcrumb({ category: 'container', message: 'Dropped inaccessible mount, retrying', data: { hostPath: badMountPath, agentId: this.config.agentId } })
+                options?.onMountDropped?.(badMountPath)
+                continue
+              }
+            }
+
+            // 2. Host-port allocation race — re-pick a port (bounded).
+            if (this.isPortConflictError(runError) && portRetries < MAX_PORT_RETRIES) {
+              portRetries++
+              const newPort = await this.findAvailablePort(triedPorts)
+              triedPorts.add(newPort)
+              console.warn(`[Container] Port ${port} unavailable (attempt ${portRetries}/${MAX_PORT_RETRIES}), retrying on ${newPort}`)
+              addErrorBreadcrumb({ category: 'container', message: 'Port conflict, retrying with new port', data: { oldPort: port, newPort, attempt: portRetries, agentId: this.config.agentId } })
+              port = newPort
+              continue
+            }
+
+            // 3. Subclass recovery (e.g. provisioning a missing VM) — once.
+            if (!vmRecoveryTried) {
+              vmRecoveryTried = true
+              const recovered = await this.handleRunError(runError)
+              if (recovered) continue
+            }
+
+            throw runError
+          }
+        }
       } finally {
         cleanupEnvFile()
       }
@@ -505,7 +653,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       // Wait for container to be healthy
       addErrorBreadcrumb({ category: 'container', message: 'Waiting for container health check', data: { port, containerName } })
-      const healthy = await this.waitForHealthy(60000)
+      const healthy = await this.waitForHealthy(60000, port)
       if (!healthy) {
         // Grab logs to help diagnose the failure
         const logs = await this.getLogs(30)
@@ -524,6 +672,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             containerLogs: logs,
           },
         })
+        // Stop + remove the just-created-but-unhealthy container. Otherwise it
+        // stays process-alive, and the next start() short-circuits on the
+        // running-status early return (getInfoFromRuntime derives 'running'
+        // from inspect's State.Running, not /health), caching a container that
+        // never became healthy. Best-effort/silent so an already-gone container
+        // is harmless and cleanup failure never masks the health error. Logs
+        // were already captured above, before this removes the container.
+        await execWithPathSilent(`${runner} stop ${containerName}`)
+        await execWithPathSilent(`${runner} rm ${containerName}`)
         throw healthError
       }
 
@@ -531,25 +688,36 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     } catch (error: any) {
       // Only capture if not already captured (health check errors are captured above)
       if (!error.message?.includes('Container failed to become healthy')) {
+        // Port races are a handled, user-environment failure — we retried with
+        // fresh ports and only land here after exhausting them. Downgrade to a
+        // warning so it doesn't page as a hard error.
+        const isHandledEnvFailure = this.isPortConflictError(error)
         captureException(error, {
           tags: { component: 'container', operation: 'start' },
+          ...(isHandledEnvFailure ? { level: 'warning' as const } : {}),
           extra: {
             agentId: this.config.agentId,
             containerName: this.getContainerName(),
             runner: getSettings().container.containerRunner,
+            image: getSettings().container.agentImage,
+            // Surface image-build diagnostics when start() failed during
+            // ensureImageExists() (otherwise these are undefined).
+            imageBuildExitCode: error.imageBuildExitCode,
+            imageBuildStderr: error.imageBuildStderr,
           },
         })
       }
       console.error('Failed to start container:', error)
-      this.emit('error', error)
+      this.safeEmitError(error)
       throw error
     }
   }
 
-  async stop(options?: StopOptions): Promise<{ forceStopUsed: boolean }> {
+  async stop(options?: StopOptions): Promise<StopResult> {
     let forceStopUsed = false
     const stopTimeoutMs = options?.stopTimeoutMs ?? 10_000
     const killTimeoutMs = options?.killTimeoutMs ?? 5_000
+    const escalateToForceStop = options?.escalateToForceStop ?? true
 
     try {
       // Terminate all WebSocket connections immediately (no graceful close handshake)
@@ -586,12 +754,59 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         ])
 
         if (!killed) {
-          console.warn(`Container ${containerName} kill also timed out, attempting force stop`)
+          console.warn(
+            `Container ${containerName} kill also timed out` +
+              (escalateToForceStop
+                ? ', attempting force stop'
+                : ' (force-stop disabled — leaving container running, will retry)')
+          )
+
+          // Probe why stop+kill hung so we can learn the root cause. Best-effort
+          // and bounded — a probe timing out is itself a signal the runtime is
+          // wedged. Collected on EVERY occurrence (including auto-sleep bails),
+          // not just real escalations. Diagnostics are telemetry only and must
+          // never be load-bearing: if collection throws, degrade to a marker so
+          // the capture and the escalation/bail decision below still proceed.
+          let stopFailureDiagnostics: Record<string, unknown>
+          try {
+            stopFailureDiagnostics = await this.collectStopFailureDiagnostics(containerName)
+          } catch (diagError: any) {
+            stopFailureDiagnostics = {
+              diagnostics_collection_failed: String(diagError?.message ?? diagError).slice(0, 300),
+            }
+          }
           captureException(new Error(`Container stop escalated to forceStop: both stop and kill timed out`), {
-            tags: { component: 'container', operation: 'stop-escalation' },
-            extra: { containerName, agentId: this.config.agentId, runner: getSettings().container.containerRunner },
+            tags: {
+              component: 'container',
+              operation: 'stop-escalation',
+              // Distinguish deliberate escalations from auto-sleep bails so the
+              // two can be split/filtered in Sentry while sharing one issue.
+              escalation: escalateToForceStop ? 'forced' : 'skipped',
+            },
+            extra: {
+              containerName,
+              agentId: this.config.agentId,
+              runner: getSettings().container.containerRunner,
+              stopTimeoutMs,
+              killTimeoutMs,
+              escalateToForceStop,
+              ...stopFailureDiagnostics,
+            },
             level: 'warning',
           })
+
+          if (!escalateToForceStop) {
+            // Background auto-sleep: never kill the shared VM to reclaim one idle
+            // container. Leave it running (don't `rm` it — it's still alive) and
+            // let the next sweep retry.
+            addErrorBreadcrumb({
+              category: 'container',
+              message: 'Stop failed but force-stop disabled; leaving container running',
+              data: { containerName, agentId: this.config.agentId },
+            })
+            return { forceStopUsed: false, stopped: false }
+          }
+
           await this.forceStop()
           forceStopUsed = true
         }
@@ -602,11 +817,22 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       console.log(`Stopped container ${containerName}`)
     } catch (error: any) {
       console.error('Failed to stop container:', error)
-      this.emit('error', error)
+      this.safeEmitError(error)
       throw error
     }
 
-    return { forceStopUsed }
+    return { forceStopUsed, stopped: true }
+  }
+
+  /**
+   * Collect diagnostic data at the moment a stop fails (both `stop` and `kill`
+   * timed out). Attached to the Sentry report to surface why the runtime is
+   * unresponsive. Default is a no-op; VM-based runtimes override to probe the
+   * guest (load, memory, container/runtime state). Must be best-effort and
+   * bounded — the runtime is likely wedged when this runs.
+   */
+  protected async collectStopFailureDiagnostics(_containerName: string): Promise<Record<string, unknown>> {
+    return {}
   }
 
   /**
@@ -658,19 +884,26 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  async waitForHealthy(timeoutMs: number = 30000): Promise<boolean> {
+  async waitForHealthy(timeoutMs: number = 30000, knownPort?: number): Promise<boolean> {
     const startTime = Date.now()
-    const pollInterval = 1000
+    const pollInterval = 250
+    // Only check container exit status every ~2s to avoid spawning docker inspect on every tick
+    const exitCheckInterval = 2000
+    let lastExitCheck = 0
 
     while (Date.now() - startTime < timeoutMs) {
-      if (await this.isHealthy()) {
+      if (await this.isHealthy(knownPort)) {
         return true
       }
 
-      // If container has already exited, fail immediately instead of polling until timeout
-      const info = await this.getInfo()
-      if (info.status !== 'running') {
-        return false
+      // Periodically check if the container has exited so we can fail fast
+      const now = Date.now()
+      if (now - lastExitCheck >= exitCheckInterval) {
+        lastExitCheck = now
+        const info = await this.getInfo()
+        if (info.status !== 'running') {
+          return false
+        }
       }
 
       await new Promise((resolve) => setTimeout(resolve, pollInterval))
@@ -679,15 +912,20 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return false
   }
 
-  async isHealthy(): Promise<boolean> {
-    const info = await this.getInfo()
-    if (info.status !== 'running' || !info.port) {
-      return false
-    }
+  async isHealthy(knownPort?: number): Promise<boolean> {
+    const port = knownPort ?? (await this.getInfo()).port
+    if (!port) return false
     try {
-      const response = await fetch(`http://127.0.0.1:${info.port}/health`)
+      // Bound the probe: this runs on the request hot path (ensureRunning's
+      // stale-cache liveness check), and a container that died with its port
+      // forward left half-open would accept the TCP connect but never respond,
+      // hanging the fetch — and the caller — indefinitely without this.
+      const response = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+      })
       return response.ok
     } catch {
+      // Includes AbortError on timeout — treat an unresponsive probe as unhealthy.
       return false
     }
   }
@@ -851,6 +1089,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const timeoutMs = 30000 // 30 second timeout
     const effort = options?.effort
     const model = options?.model
+    const shouldQuery = options?.shouldQuery
 
     try {
       const controller = new AbortController()
@@ -866,6 +1105,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ...(uuid ? { uuid } : {}),
             ...(effort ? { effort } : {}),
             ...(model ? { model } : {}),
+            ...(shouldQuery !== undefined ? { shouldQuery } : {}),
           }),
           signal: controller.signal,
         }
@@ -908,6 +1148,30 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       throw err
     }
+  }
+
+  async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {
+    const port = await this.getPortOrThrow()
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/sessions/${sessionId}/queued-messages/${encodeURIComponent(uuid)}`,
+      { method: 'DELETE' }
+    )
+    if (response.status === 404) {
+      // Route missing = the container is running a build that predates the
+      // cancel endpoint. Restart the agent so a fresh container is created
+      // from the current image.
+      console.warn(
+        '[ContainerClient] cancelQueuedMessage: container returned 404 — the agent container predates the cancel endpoint; restart the agent to pick up the current image'
+      )
+      return false
+    }
+    if (!response.ok) {
+      console.warn(`[ContainerClient] cancelQueuedMessage: container returned ${response.status}`)
+      return false
+    }
+    const body = (await response.json()) as { cancelled?: boolean }
+    return body.cancelled === true
   }
 
   async interruptSession(sessionId: string): Promise<boolean> {
@@ -983,7 +1247,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         // Only log and emit if this connection is still tracked (not cleaned up by stop())
         if (this.wsConnections.has(sessionId)) {
           console.error(`WebSocket error for session ${sessionId}:`, error)
-          this.emit('error', error)
+          this.safeEmitError(error)
         }
         rejectReady(error instanceof Error ? error : new Error(String(error)))
       })
@@ -1007,7 +1271,18 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     setupWebSocket().catch((error) => {
       console.error('Failed to set up WebSocket:', error)
-      this.emit('error', error)
+      this.safeEmitError(error)
+      // Notify the callback so the consumer (e.g. MessagePersister) can react to
+      // the failed (re)subscribe instead of relying on the `ready` promise —
+      // callers that discard `ready` (e.g. reconnect) would otherwise leave a
+      // free-floating rejected promise and never learn the session is gone.
+      const closeMessage: StreamMessage = {
+        type: 'connection_closed',
+        content: { type: 'connection_closed' },
+        timestamp: new Date(),
+        sessionId,
+      }
+      callback(closeMessage)
       rejectReady(error instanceof Error ? error : new Error(String(error)))
     })
 
@@ -1066,19 +1341,35 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     } catch {
       console.log(`Building container image ${image}...`)
 
+      // Pipe (not inherit) stdout/stderr so we can capture the build output —
+      // a bare exit code is undiagnosable in Sentry. Mirrors buildImage() in
+      // client-factory.ts.
       const buildProcess = spawnWithPath(
         runner,
-        ['build', '-t', image, AGENT_CONTAINER_PATH],
-        { stdio: 'inherit' }
+        ['build', '-t', image, AGENT_CONTAINER_PATH]
       )
+
+      const stderrChunks: string[] = []
+      buildProcess.stdout?.on('data', (data: Buffer) => process.stdout.write(data))
+      buildProcess.stderr?.on('data', (data: Buffer) => {
+        stderrChunks.push(data.toString())
+        process.stderr.write(data)
+      })
 
       await new Promise<void>((resolve, reject) => {
         buildProcess.on('close', (code) => {
-          if (code === 0) {
+          const stderr = stderrChunks.join('').trim()
+          // Treat an "already exists" image as success — a concurrent build
+          // (e.g. ensureImageReady racing the start path) may have created it.
+          if (code === 0 || /already exists/i.test(stderr)) {
             console.log(`Container image ${image} built successfully`)
             resolve()
           } else {
-            reject(new Error(`Container build failed with code ${code}`))
+            const detail = stderr ? `: ${stderr.slice(-500)}` : ''
+            const error = new Error(`Container build failed with code ${code}${detail}`) as ImageBuildError
+            error.imageBuildExitCode = code
+            error.imageBuildStderr = stderr.slice(-2000)
+            reject(error)
           }
         })
         buildProcess.on('error', reject)

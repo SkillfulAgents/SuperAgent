@@ -34,9 +34,11 @@ import {
   browserScrollDef,
   browserWaitDef,
   browserPressDef,
+  browserTypeDef,
   browserScreenshotDef,
   browserSelectDef,
   browserHoverDef,
+  browserEvalDef,
   browserRunDef,
 } from './browser-tools'
 import {
@@ -52,6 +54,17 @@ import {
   getAgentSessionsDef,
   getAgentSessionTranscriptDef,
 } from './x-agent-tools'
+import {
+  taskCreateDef,
+  taskUpdateDef,
+  taskListDef,
+} from './task-management'
+import {
+  listAvailableChatProvidersDef,
+  listChatIntegrationsDef,
+  addChatIntegrationDef,
+  sendChatMessageDef,
+} from './chat-tools'
 
 const definitions: Record<string, ToolDefinition> = {
   // Agent tools
@@ -72,6 +85,9 @@ const definitions: Record<string, ToolDefinition> = {
 
   // Task management
   TodoWrite: todoWriteDef,
+  TaskCreate: taskCreateDef,
+  TaskUpdate: taskUpdateDef,
+  TaskList: taskListDef,
 
   // User interaction
   AskUserQuestion: askUserQuestionDef,
@@ -96,9 +112,11 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__browser__browser_scroll': browserScrollDef,
   'mcp__browser__browser_wait': browserWaitDef,
   'mcp__browser__browser_press': browserPressDef,
+  'mcp__browser__browser_type': browserTypeDef,
   'mcp__browser__browser_screenshot': browserScreenshotDef,
   'mcp__browser__browser_select': browserSelectDef,
   'mcp__browser__browser_hover': browserHoverDef,
+  'mcp__browser__browser_eval': browserEvalDef,
   'mcp__browser__browser_run': browserRunDef,
 
   // MCP tools - dashboards
@@ -113,6 +131,12 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__agents__invoke_agent': invokeAgentDef,
   'mcp__agents__get_agent_sessions': getAgentSessionsDef,
   'mcp__agents__get_agent_session_transcript': getAgentSessionTranscriptDef,
+
+  // MCP tools - chat integrations
+  'mcp__chat__list_available_chat_providers': listAvailableChatProvidersDef,
+  'mcp__chat__list_chat_integrations': listChatIntegrationsDef,
+  'mcp__chat__add_chat_integration': addChatIntegrationDef,
+  'mcp__chat__send_chat_message': sendChatMessageDef,
 }
 
 export function getToolDefinition(toolName: string): ToolDefinition | undefined {

@@ -230,11 +230,13 @@ export class LimaContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Add --add-host so containers can reach the macOS host via host.docker.internal.
-   * Lima/nerdctl doesn't set this up automatically like Docker Desktop does.
-   * The host IP is the VM's default gateway (VZ NAT routes to the macOS host).
+   * The macOS host IP as seen from inside the Lima VM — the VM's default-route
+   * gateway, which VZ NAT routes to the host. Containers reach the host here via
+   * host.docker.internal, and it is a real host interface (the vmnet host side),
+   * NOT loopback — so a host-side proxy exposing the loopback CDP port must bind
+   * this IP, never 0.0.0.0 (SUP-217). Returns null if it can't be detected.
    */
-  protected getAdditionalRunFlags(): string {
+  getHostBridgeIp(): string | null {
     try {
       const limaHome = getLimaHome()
       const limactl = getLimactlPath()
@@ -244,12 +246,22 @@ export class LimaContainerClient extends BaseContainerClient {
       ).toString().trim()
       // Output: "default via 192.168.64.1 dev enp0s1 ..."
       const match = output.match(/via\s+([\d.]+)/)
-      if (match) {
-        console.log(`Lima host IP detected: ${match[1]}`)
-        return `--add-host host.docker.internal:${match[1]}`
-      }
+      if (match) return match[1]
     } catch (e) {
       console.warn('Failed to detect host IP for Lima VM:', e)
+    }
+    return null
+  }
+
+  /**
+   * Add --add-host so containers can reach the macOS host via host.docker.internal.
+   * Lima/nerdctl doesn't set this up automatically like Docker Desktop does.
+   */
+  protected getAdditionalRunFlags(): string {
+    const ip = this.getHostBridgeIp()
+    if (ip) {
+      console.log(`Lima host IP detected: ${ip}`)
+      return `--add-host host.docker.internal:${ip}`
     }
     return ''
   }
@@ -275,11 +287,51 @@ export class LimaContainerClient extends BaseContainerClient {
   }
 
   /**
+   * Parse the host path of a bind mount the Lima VM can't access. The VM helper
+   * (a separate process) is denied by macOS TCC + File Provider when nerdctl /
+   * containerd stats a cloud-synced mount (iCloud Drive, Dropbox, …), failing
+   * with EPERM ("operation not permitted") rather than ENOENT — even though the
+   * Electron app itself can read the path. start() uses this to drop that one
+   * mount and retry without it instead of aborting the whole container.
+   *
+   * Example stderr (nerdctl logs via logrus, which wraps the message in
+   * msg="..." and escapes the inner quotes as \"):
+   *   level=fatal msg="failed to stat \"/Users/x/Library/Mail\": stat
+   *   /Users/x/Library/Mail: operation not permitted"
+   */
+  protected extractInaccessibleMountPath(error: any): string | null {
+    const raw = error?.message || error?.stderr || String(error)
+    if (!/operation not permitted/i.test(raw)) return null
+    // nerdctl/containerd log via logrus, which escapes the inner quotes around
+    // the path as \". Unescape first — otherwise the captured path keeps its \"
+    // artifacts and the mount-drop filter (volumes.filter(v => v.includes(path)))
+    // never matches, so the inaccessible mount is never dropped.
+    const msg = raw.replace(/\\"/g, '"')
+    // Pull the host path out of `stat "<path>"` (handles spaces) / `stat <path>:`.
+    const m =
+      msg.match(/(?:failed to )?stat(?:\s+host\s+path)?\s+"([^"]+)"/i) ||
+      msg.match(/(?:failed to )?stat(?:\s+host\s+path)?\s+([^\s:"]+)/i)
+    return m ? m[1] : null
+  }
+
+  /**
    * Handle run errors by provisioning the Lima VM if needed.
    */
   protected async handleRunError(error: any): Promise<boolean> {
     const msg = error.message || error.stderr || String(error)
     addErrorBreadcrumb({ category: 'lima', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
+
+    // An inaccessible cloud-synced mount (EPERM-on-stat) is handled by start()
+    // dropping that mount and retrying — it must NOT trigger VM reprovisioning
+    // here, and it isn't a VM fault worth an error-level capture.
+    if (this.extractInaccessibleMountPath(error)) {
+      captureMessage('Container run failed: inaccessible bind mount (cloud-synced path)', {
+        level: 'warning',
+        tags: { component: 'lima', operation: 'mount-inaccessible' },
+        extra: { originalError: msg, agentId: this.config.agentId },
+      })
+      return false
+    }
 
     const isKnownVmIssue =
       msg.includes('ENOENT') ||
@@ -329,6 +381,49 @@ export class LimaContainerClient extends BaseContainerClient {
    * nerdctl stats output matches Docker format.
    * No override needed — base class implementation works.
    */
+
+  /**
+   * Probe the guest to learn WHY nerdctl stop + kill hung. The VM is likely
+   * CPU-pegged or containerd is wedged, so every probe goes through `limactl
+   * shell` (which SSHes into the guest) and is individually bounded — a probe
+   * timing out is itself a signal the guest is unresponsive. All best-effort.
+   */
+  protected async collectStopFailureDiagnostics(containerName: string): Promise<Record<string, unknown>> {
+    // Host/VM-level state (VM status, disk, host memory, limactl health).
+    const diag: Record<string, unknown> = { ...collectLimaDiagnostics() }
+
+    const probe = async (key: string, args: string, timeoutMs = 4000): Promise<void> => {
+      try {
+        const { stdout } = await Promise.race([
+          execLimactl(args),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('probe timed out')), timeoutMs)
+          ),
+        ])
+        diag[key] = stdout.trim().slice(0, 2000) || '(empty)'
+      } catch (e: any) {
+        diag[key] = `probe_failed: ${String(e?.message ?? e).slice(0, 200)}`
+      }
+    }
+
+    const sh = (cmd: string) => `shell ${LIMA_VM_NAME} -- sh -c "${cmd}"`
+
+    await Promise.all([
+      // Guest load and memory pressure — the prime suspects for a wedged VM.
+      probe('guest_loadavg', `shell ${LIMA_VM_NAME} -- cat /proc/loadavg`),
+      probe('guest_meminfo', sh("grep -E 'MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree' /proc/meminfo")),
+      probe('guest_uptime', `shell ${LIMA_VM_NAME} -- uptime`),
+      // Top processes by CPU (busybox top) — what's actually pegging the VM.
+      probe('guest_top', sh('top -bn1 2>/dev/null | head -20')),
+      // Container runtime state — is containerd alive, and what state is this
+      // container actually in (running / OOMKilled / dead / pid)?
+      probe('nerdctl_ps', sh("sudo nerdctl ps -a --format '{{.Names}}|{{.Status}}|{{.ID}}' 2>&1")),
+      probe('container_state', sh(`sudo nerdctl inspect ${containerName} --format '{{json .State}}' 2>&1`)),
+      probe('containerd_status', sh('rc-service containerd status 2>&1 || echo unknown')),
+    ])
+
+    return diag
+  }
 
   /**
    * Force-stop by killing the Lima VM directly (QEMU process).

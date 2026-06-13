@@ -1,5 +1,35 @@
 import { describe, it, expect } from 'vitest'
-import { isPrivateHost, validateHttpUrl, validateSafeCloneUrl } from './url-safety'
+import { isLocalhostHost, isPrivateHost, validateHttpUrl, validateSafeCloneUrl } from './url-safety'
+
+describe('isLocalhostHost', () => {
+  it.each([
+    'localhost',
+    'foo.localhost',
+    '127.0.0.1',
+    '127.5.5.5',
+    '0.0.0.0',
+    '::1',
+    'ip6-localhost',
+    'ip6-loopback',
+    '::ffff:127.0.0.1',
+  ])('flags %s as localhost', (host) => {
+    expect(isLocalhostHost(host)).toBe(true)
+  })
+
+  it.each([
+    'example.com',
+    '10.0.0.1',
+    '192.168.1.1',
+    '172.16.0.1',
+    '169.254.169.254',
+    '8.8.8.8',
+    'box.local',
+    'fd00::1',
+    'fe80::1',
+  ])('does not flag %s as localhost', (host) => {
+    expect(isLocalhostHost(host)).toBe(false)
+  })
+})
 
 describe('isPrivateHost', () => {
   it.each([

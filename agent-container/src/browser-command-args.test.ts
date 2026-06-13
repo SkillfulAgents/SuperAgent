@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { splitCommandArgs, buildRunCommandArgs } from './browser-command-args'
+import { splitCommandArgs, buildRunCommandArgs, resolveRunCommandArgs } from './browser-command-args'
 
 describe('splitCommandArgs', () => {
   it('splits simple commands on whitespace', () => {
@@ -50,6 +50,46 @@ describe('splitCommandArgs', () => {
 
   it('handles leading/trailing whitespace', () => {
     expect(splitCommandArgs('  click @e1  ')).toEqual(['click', '@e1'])
+  })
+
+  // Regression guards for browser-tools audit F2: the old tokenizer treated any
+  // quote as a group toggle and always stripped it, which corrupted live data.
+
+  it('keeps an unpaired apostrophe as a literal (shipped "isnt" to live listings)', () => {
+    expect(splitCommandArgs("type @e28 when chat isn't enough")).toEqual([
+      'type', '@e28', 'when', 'chat', "isn't", 'enough',
+    ])
+  })
+
+  it('preserves quotes interior to a token (CSS attribute selectors)', () => {
+    expect(splitCommandArgs('frame iframe[title="Secure payment input frame"]')).toEqual([
+      'frame', 'iframe[title="Secure payment input frame"]',
+    ])
+  })
+
+  it('preserves single-quoted attribute values inside a token', () => {
+    expect(splitCommandArgs("wait div[data-test='submit area']")).toEqual([
+      'wait', "div[data-test='submit area']",
+    ])
+  })
+
+  it('still strips whole-token quotes after a flag', () => {
+    expect(splitCommandArgs('find role button click --name "View demo"')).toEqual([
+      'find', 'role', 'button', 'click', '--name', 'View demo',
+    ])
+  })
+
+  it('supports backslash-escaped quotes', () => {
+    expect(splitCommandArgs('fill @e1 "say \\"hi\\" now"')).toEqual(['fill', '@e1', 'say "hi" now'])
+    expect(splitCommandArgs("type @e1 don\\'t")).toEqual(['type', '@e1', "don't"])
+  })
+
+  it('paired apostrophes in prose group but never lose characters', () => {
+    // Two apostrophes pair up and group the span between them; the quote marks
+    // are kept (interior), so rejoining with spaces reproduces the original text.
+    const args = splitCommandArgs("type @e1 it's Gamut's turn")
+    expect(args.slice(0, 2)).toEqual(['type', '@e1'])
+    expect(args.slice(2).join(' ')).toBe("it's Gamut's turn")
   })
 })
 
@@ -212,5 +252,42 @@ describe('buildRunCommandArgs', () => {
         `window.location.href = 'https://example.com'`,
       ])
     })
+  })
+})
+
+describe('resolveRunCommandArgs', () => {
+  it('passes a pre-tokenized args array through verbatim — no tokenization, no escaping', () => {
+    expect(resolveRunCommandArgs({ args: ['type', '@e1', "chat isn't enough"] })).toEqual({
+      args: ['type', '@e1', "chat isn't enough"],
+    })
+    expect(resolveRunCommandArgs({ args: ['frame', 'iframe[title="Secure payment input frame"]'] })).toEqual({
+      args: ['frame', 'iframe[title="Secure payment input frame"]'],
+    })
+    expect(resolveRunCommandArgs({ args: ['eval', "document.title + ' done'"] })).toEqual({
+      args: ['eval', "document.title + ' done'"],
+    })
+  })
+
+  it('tokenizes the command string form via buildRunCommandArgs', () => {
+    expect(resolveRunCommandArgs({ command: 'fill @e2 "hello world"' })).toEqual({
+      args: ['fill', '@e2', 'hello world'],
+    })
+  })
+
+  it('rejects providing both command and args', () => {
+    const r = resolveRunCommandArgs({ command: 'get url', args: ['get', 'url'] })
+    expect(r.error).toMatch(/not both/)
+  })
+
+  it('rejects providing neither', () => {
+    expect(resolveRunCommandArgs({}).error).toBeDefined()
+    expect(resolveRunCommandArgs({ command: '   ' }).error).toBeDefined()
+  })
+
+  it('rejects malformed args arrays', () => {
+    expect(resolveRunCommandArgs({ args: [] }).error).toMatch(/non-empty array/)
+    expect(resolveRunCommandArgs({ args: ['get', 42] as unknown as string[] }).error).toMatch(/array of strings/)
+    expect(resolveRunCommandArgs({ args: 'get url' as unknown as string[] }).error).toMatch(/array of strings/)
+    expect(resolveRunCommandArgs({ args: ['', 'url'] }).error).toMatch(/command verb/)
   })
 })

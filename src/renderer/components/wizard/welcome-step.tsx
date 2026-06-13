@@ -20,6 +20,8 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
     isLaunching,
     error: platformError,
     isConnected: isPlatformConnected,
+    platformAuth,
+    isLoadingPlatformAuth,
   } = usePlatformConnect({
     successMessage: null,
     onSuccess: () => {
@@ -38,6 +40,8 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
     autoAdvancedRef.current = true
     onChoosePlatform?.()
   }, [isPlatformConnected, onChoosePlatform])
+
+  const isPlatformAvailable = !isLoadingPlatformAuth && Boolean(platformAuth?.platformBaseUrl)
 
   async function handleManualSetup() {
     try {
@@ -61,42 +65,61 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
       </div>
 
       <div className="flex flex-col gap-8">
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <Button
-              type="button"
-              variant="default"
-              size="lg"
-              onClick={() => void handleConnect()}
-              data-testid="wizard-platform-login"
-              disabled={isLaunching}
-              className="w-full max-w-[380px]"
-            >
-              {isLaunching ? (
-                <><Loader2 className="h-4 w-4 animate-spin mr-2" />Logging in...</>
-              ) : (
-                'Get Started'
-              )}
-            </Button>
+        {isPlatformAvailable && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="default"
+                size="lg"
+                onClick={() => void handleConnect()}
+                data-testid="wizard-platform-login"
+                disabled={isLaunching}
+                className="w-full max-w-[380px]"
+              >
+                {isLaunching ? (
+                  <><Loader2 className="h-4 w-4 animate-spin mr-2" />Logging in...</>
+                ) : (
+                  'Get Started'
+                )}
+              </Button>
+            </div>
+            {isLaunching && (
+              <ManualAccessKeyInput prefixText="Log in issues?" className="text-sm text-muted-foreground" />
+            )}
           </div>
-          {isLaunching && (
-            <ManualAccessKeyInput prefixText="Log in issues?" className="text-sm text-muted-foreground" />
-          )}
-        </div>
+        )}
         <RequestError message={platformError ?? null} />
-        <p className="text-sm text-muted-foreground">
-          Need to bring your own keys?{' '}
-          <button
+        {isPlatformAvailable ? (
+          <p className="text-sm text-muted-foreground">
+            Need to bring your own keys?{' '}
+            <button
+              type="button"
+              onClick={() => void handleManualSetup()}
+              data-testid="wizard-manual-setup"
+              disabled={updateSettings.isPending}
+              className="underline underline-offset-2 hover:text-foreground transition-colors disabled:opacity-50"
+            >
+              {updateSettings.isPending ? <Loader2 className="inline h-3 w-3 animate-spin mr-1" /> : null}
+              Start BYOK setup
+            </button>
+          </p>
+        ) : (
+          <Button
             type="button"
+            variant="default"
+            size="lg"
             onClick={() => void handleManualSetup()}
             data-testid="wizard-manual-setup"
-            disabled={updateSettings.isPending}
-            className="underline underline-offset-2 hover:text-foreground transition-colors disabled:opacity-50"
+            disabled={isLoadingPlatformAuth || updateSettings.isPending}
+            className="w-full max-w-[380px]"
           >
-            {updateSettings.isPending ? <Loader2 className="inline h-3 w-3 animate-spin mr-1" /> : null}
-            Start BYOK setup
-          </button>
-        </p>
+            {(isLoadingPlatformAuth || updateSettings.isPending) ? (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            ) : null}
+            Get Started
+          </Button>
+        )}
       </div>
 
     </div>

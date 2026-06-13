@@ -9,6 +9,9 @@ import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/con
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
+import { captureMessage } from '@shared/lib/error-reporting'
 
 function safeParseTools(json: string | null): McpToolInfo[] {
   if (!json) return []
@@ -40,6 +43,13 @@ function escapeHtml(str: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;')
+}
+
+// Entry-path SSRF guard for the user-supplied MCP server URL. Delegates to the
+// shared policy so it cannot drift from the OAuth-discovery checks, which must
+// reject the same private/loopback hosts on every server-supplied metadata URL.
+function validateMcpServerUrl(url: string): URL {
+  return validateMcpDiscoveryUrl(url)
 }
 
 const remoteMcps = new Hono()
@@ -76,6 +86,8 @@ async function parseMcpResponse(res: Response): Promise<unknown> {
  * Throws on failure.
  */
 async function discoverTools(url: string, accessToken?: string | null): Promise<McpToolInfo[]> {
+  validateMcpServerUrl(url)
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Accept': 'application/json, text/event-stream',
@@ -100,6 +112,44 @@ async function discoverTools(url: string, accessToken?: string | null): Promise<
   })
 
   if (!initRes.ok) {
+    // TEMP DIAGNOSTIC (remove after debugging the Lifetimely 401): capture the
+    // resource server's own error reason and the token's claims (NOT the raw
+    // token — claims alone can't authenticate, so they're safe to log).
+    let body = ''
+    try { body = await initRes.text() } catch { /* ignore */ }
+    const wwwAuth = initRes.headers.get('WWW-Authenticate')
+    let claims: unknown = null
+    if (accessToken) {
+      const parts = accessToken.split('.')
+      if (parts.length === 3) {
+        try {
+          claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+        } catch { /* not a JWT */ }
+      }
+    }
+    const tokenType = accessToken ? (claims ? 'jwt' : 'opaque-or-unparsable') : 'none'
+    const diagnostic = {
+      url,
+      status: initRes.status,
+      wwwAuthenticate: wwwAuth,
+      body: body.slice(0, 1000),
+      tokenType,
+      tokenClaims: claims,
+    }
+    console.error('[mcp/discover] initialize failed', diagnostic)
+    captureMessage('MCP initialize failed during tool discovery', {
+      level: 'warning',
+      tags: {
+        area: 'remote-mcp',
+        op: 'discover-tools',
+        status: String(initRes.status),
+        tokenType,
+      },
+      extra: diagnostic,
+      // Group every occurrence into one Sentry issue regardless of which
+      // server/status, so it's easy to find while debugging.
+      fingerprint: ['mcp-discover-initialize-failed'],
+    })
     throw new Error(`Initialize failed: ${initRes.status}`)
   }
 
@@ -167,6 +217,12 @@ remoteMcps.post('/', async (c) => {
     return c.json({ error: 'Name and URL are required' }, 400)
   }
 
+  try {
+    validateMcpServerUrl(body.url.trim())
+  } catch (e: any) {
+    return c.json({ error: e.message }, 400)
+  }
+
   const authType = body.authType || 'none'
 
   if (authType === 'oauth') {
@@ -224,6 +280,8 @@ remoteMcps.post('/', async (c) => {
     .from(remoteMcpServers)
     .where(eq(remoteMcpServers.id, id))
     .limit(1)
+
+  logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'created', details: { name: body.name.trim(), url: body.url.trim() } })
 
   return c.json({
     server: sanitizeServer(server),
@@ -288,6 +346,12 @@ remoteMcps.post('/initiate-oauth', async (c) => {
 
     return c.json({ redirectUrl: result.authorizationUrl, state: result.state })
   } else if (body.name && body.url) {
+    try {
+      validateMcpServerUrl(body.url.trim())
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400)
+    }
+
     // New server: OAuth-first flow (no DB insert yet)
     const result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectUri, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
 
@@ -316,7 +380,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
     const errorPayload = JSON.stringify({ type: 'mcp-oauth-callback', success: false, error: safeError })
     return c.html(`
       <html><body><script>
-        window.opener?.postMessage(${errorPayload}, '*');
+        window.opener?.postMessage(${errorPayload}, window.location.origin);
         window.close();
       </script><p>OAuth error: ${safeError}. You can close this window.</p></body></html>
     `)
@@ -332,7 +396,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
     const failPayload = JSON.stringify({ type: 'mcp-oauth-callback', success: false, error: 'Token exchange failed' })
     return c.html(`
       <html><body><script>
-        window.opener?.postMessage(${failPayload}, '*');
+        window.opener?.postMessage(${failPayload}, window.location.origin);
         window.close();
       </script><p>OAuth failed. You can close this window.</p></body></html>
     `)
@@ -366,7 +430,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
     const payload = JSON.stringify({ type: 'mcp-oauth-callback', success: false, error: `Connected but failed to discover tools: ${errorMsg}` })
     return c.html(`
       <html><body><script>
-        window.opener?.postMessage(${payload}, '*');
+        window.opener?.postMessage(${payload}, window.location.origin);
         window.close();
       </script><p>OAuth succeeded but tool discovery failed. You can close this window.</p></body></html>
     `)
@@ -376,7 +440,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
   const successPayload = JSON.stringify({ type: 'mcp-oauth-callback', success: true, mcpId: result.mcpId })
   return c.html(`
     <html><body><script>
-      window.opener?.postMessage(${successPayload}, '*');
+      window.opener?.postMessage(${successPayload}, window.location.origin);
       window.close();
     </script><p>OAuth successful! You can close this window.</p></body></html>
   `)
@@ -436,6 +500,14 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     return c.json({ error: 'MCP server not found' }, 404)
   }
 
+  if (body.url !== undefined) {
+    try {
+      validateMcpServerUrl(body.url.trim())
+    } catch (e: any) {
+      return c.json({ error: e.message }, 400)
+    }
+  }
+
   const updates: Record<string, unknown> = { updatedAt: new Date() }
   if (body.name !== undefined) updates.name = body.name.trim()
   if (body.url !== undefined) updates.url = body.url.trim()
@@ -453,6 +525,8 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
     .from(remoteMcpServers)
     .where(eq(remoteMcpServers.id, id))
     .limit(1)
+
+  logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'updated' })
 
   return c.json({
     server: sanitizeServer(updated),
@@ -474,6 +548,9 @@ remoteMcps.delete('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
   }
 
   await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, id))
+
+  logAuditEvent({ userId: getCurrentUserId(c), object: 'mcp', objectId: id, action: 'deleted', details: { name: existing.name } })
+
   return c.json({ success: true })
 })
 
@@ -537,6 +614,8 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
   }
 
   try {
+    validateMcpServerUrl(server.url)
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Accept': 'application/json, text/event-stream',

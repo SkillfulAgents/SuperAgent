@@ -1,7 +1,7 @@
 
 import { cn } from '@shared/lib/utils/cn'
 import { Check, X, Ban, ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react'
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo, memo } from 'react'
 import { getToolRenderer } from './tool-renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
@@ -88,7 +88,7 @@ export function StatusIndicator({ status }: { status: string }) {
   )
 }
 
-export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionActive }: ToolCallItemProps) {
+function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
   const renderer = getToolRenderer(toolCall.name)
@@ -100,12 +100,13 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
   const summary = renderer?.getSummary?.(toolCall.input)
 
   // Format input for display (fallback)
-  const inputStr = typeof toolCall.input === 'string'
-    ? toolCall.input
-    : JSON.stringify(toolCall.input, null, 2)
+  const inputStr = useMemo(
+    () => (typeof toolCall.input === 'string' ? toolCall.input : JSON.stringify(toolCall.input, null, 2)),
+    [toolCall.input]
+  )
 
   // Parse result into text + images
-  const parsed = parseToolResult(toolCall.result)
+  const parsed = useMemo(() => parseToolResult(toolCall.result), [toolCall.result])
   const resultStr = parsed.text
   const resultImages = parsed.images
 
@@ -218,6 +219,11 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
   )
 }
 
+// Memoized: a persisted tool call's props are stable across refetches (React
+// Query structural sharing), so collapsed rows don't re-render when the parent
+// MessageItem re-renders (e.g. while a sibling subagent streams).
+export const ToolCallItem = memo(ToolCallItemComponent)
+
 // Component for displaying a tool call while its input is being streamed
 export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallItemProps) {
   const startTimeRef = useRef(new Date())
@@ -228,26 +234,18 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
   const CustomStreamingView = renderer?.StreamingView
   const ToolIcon = renderer?.icon || Search
 
-  // Try to get summary from partial input
+  // Parse the partial input at most once and reuse it for both the summary and
+  // the pretty-printed fallback. Skip the parse entirely when nothing consumes
+  // it (a CustomStreamingView renders the body and there's no summary getter).
   let summary: string | null = null
-  if (renderer?.getSummary) {
-    try {
-      const parsed = JSON.parse(partialInput)
-      summary = renderer.getSummary(parsed)
-    } catch {
-      // Can't parse yet, no summary
-    }
-  }
-
-  // Fallback: Try to pretty-print the partial JSON if it's valid
   let displayInput = partialInput
-  if (partialInput) {
+  if (partialInput && (renderer?.getSummary || !CustomStreamingView)) {
     try {
       const parsed = JSON.parse(partialInput)
-      displayInput = JSON.stringify(parsed, null, 2)
+      if (!CustomStreamingView) displayInput = JSON.stringify(parsed, null, 2)
+      if (renderer?.getSummary) summary = renderer.getSummary(parsed)
     } catch {
-      // Show raw partial input as-is
-      displayInput = partialInput
+      // Partial/invalid JSON mid-stream — keep the raw partialInput, no summary.
     }
   }
 

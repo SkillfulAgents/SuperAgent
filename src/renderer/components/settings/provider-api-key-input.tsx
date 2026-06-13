@@ -130,20 +130,27 @@ export function ProviderApiKeyInput({
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <Label htmlFor={idPrefix} className="font-normal text-muted-foreground">{label}</Label>
-        {showSourceIndicator && apiKeyStatus?.isConfigured && (
-          <span
-            className={`text-xs px-2 py-0.5 rounded-full ${
-              apiKeyStatus.source === 'settings'
-                ? 'bg-green-500/10 text-green-700 dark:text-green-400'
-                : 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
-            }`}
-          >
-            {apiKeyStatus.source === 'settings'
-              ? 'Using saved setting'
-              : 'Using environment variable'}
-          </span>
+      <div className="space-y-0.5">
+        <div className="flex items-center gap-2">
+          <Label htmlFor={idPrefix} className="text-xs font-medium text-foreground">{label}</Label>
+          {showSourceIndicator && apiKeyStatus?.isConfigured && (
+            <span
+              className={`text-[11px] px-2 py-0.5 rounded-full ${
+                apiKeyStatus.source === 'settings'
+                  ? 'bg-green-500/10 text-green-700 dark:text-green-400'
+                  : 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
+              }`}
+            >
+              {apiKeyStatus.source === 'settings'
+                ? 'Using saved setting'
+                : 'Using environment variable'}
+            </span>
+          )}
+        </div>
+        {showHelpText && (
+          <p className="text-[11px] text-muted-foreground">
+            {helpText ?? defaultHelpText}
+          </p>
         )}
       </div>
 
@@ -156,35 +163,20 @@ export function ProviderApiKeyInput({
         </Alert>
       )}
 
-      <PasswordInput
-        id={idPrefix}
-        value={apiKeyInput}
-        onChange={(e) => {
-          setApiKeyInput(e.target.value)
-          setValidationResult(null)
-        }}
-        placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : placeholder}
-        disabled={disabled || isBusy}
-        className="bg-background"
-      />
-
-      {validationResult && !validationResult.valid && (
-        <RequestError message={validationResult.error || 'Invalid API key'} />
-      )}
-      {validationResult?.valid && (
-        <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
-          <Check className="h-3 w-3" />
-          API key is valid and has been saved.
-        </p>
-      )}
-
-      {showHelpText && (
-        <p className="text-xs text-muted-foreground">
-          {helpText ?? defaultHelpText}
-        </p>
-      )}
-
-      <div className="flex justify-end gap-2">
+      <div className="flex items-center gap-2">
+        <div className="flex-1 min-w-0">
+          <PasswordInput
+            id={idPrefix}
+            value={apiKeyInput}
+            onChange={(e) => {
+              setApiKeyInput(e.target.value)
+              setValidationResult(null)
+            }}
+            placeholder={apiKeyStatus?.isConfigured ? '••••••••••••••••' : placeholder}
+            disabled={disabled || isBusy}
+            className="bg-background"
+          />
+        </div>
         {apiKeyInput.trim() && (
           <Button size="sm" onClick={handleValidateAndSave} disabled={isBusy}>
             {isValidating ? (
@@ -197,7 +189,7 @@ export function ProviderApiKeyInput({
             )}
           </Button>
         )}
-        {showRemoveButton && apiKeyStatus?.source === 'settings' && (
+        {showRemoveButton && apiKeyStatus?.source === 'settings' && !apiKeyInput.trim() && (
           <Button
             size="sm"
             variant="outline"
@@ -208,6 +200,20 @@ export function ProviderApiKeyInput({
           </Button>
         )}
       </div>
+
+      {validationResult?.valid && (
+        <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+          <Check className="h-3 w-3" />
+          API key is valid and has been saved.
+        </p>
+      )}
+
+      {validationResult && !validationResult.valid && (
+        <RequestError
+          message={validationResult.error || 'Invalid API key'}
+          variant="compact"
+        />
+      )}
 
       {showRemoveConfirm && (
         <AlertDialog open={showRemoveDialog} onOpenChange={setShowRemoveDialog}>

@@ -184,6 +184,21 @@ export function QuestionRequestItem({
     submit(() => postAnswer({ answers }), 'answered')
   }
 
+  // Cmd/Ctrl-Enter inside the "Other" textarea advances to the next question,
+  // or submits on the last one — mirroring the Next/Submit button gating below.
+  const handleOtherKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== 'Enter' || !(e.metaKey || e.ctrlKey)) return
+    e.preventDefault()
+    if (status === 'submitting') return
+    if (currentQuestionIndex < questions.length - 1) {
+      if (currentQuestionAnswered) {
+        setCurrentQuestionIndex((i) => Math.min(questions.length - 1, i + 1))
+      }
+    } else {
+      handleSubmit()
+    }
+  }
+
   const handleDecline = (reason?: string) => {
     submit(
       () => postAnswer({ decline: true, declineReason: reason || 'User declined to answer' }),
@@ -301,6 +316,7 @@ export function QuestionRequestItem({
                   placeholder="Type something else"
                   value={otherTexts[currentQuestionIndex] || ''}
                   onChange={(e) => handleOtherTextChange(currentQuestionIndex, e.target.value, currentQuestion.multiSelect)}
+                  onKeyDown={handleOtherKeyDown}
                   onFocus={() => ensureOtherSelected(currentQuestionIndex, currentQuestion.multiSelect)}
                   disabled={status === 'submitting'}
                   className="min-h-0 resize-none overflow-hidden bg-white dark:bg-blue-500/10 border-input shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 text-sm"

@@ -1,24 +1,36 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useCallback } from 'react'
+import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2, Plus } from 'lucide-react'
+import { MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2, Plus, Play, Upload, Download, FileArchive } from 'lucide-react'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/components/ui/dialog'
 import { StatusBadge } from '../status-badge'
 import { SkillFilesDialog } from '../skill-files-dialog'
 import { SkillPublishDialog } from '../skill-publish-dialog'
 import { SkillPRDialog } from '../skill-pr-dialog'
 import { HomeCollapsible } from './home-collapsible'
 import { HomeSkillsBrowseDialog } from './home-skills-browse-dialog'
-import { useAgentSkills, useDiscoverableSkills, useUpdateSkill } from '@renderer/hooks/use-agent-skills'
+import { useAgentSkills, useDiscoverableSkills, useUpdateSkill, useExportSkill, useImportSkillZip } from '@renderer/hooks/use-agent-skills'
 import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
 import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
 import type { ApiSkillWithStatus } from '@shared/lib/types/api'
 
 interface HomeSkillsProps {
   agentSlug: string
+  className?: string
+  onRunSkill?: (skillName: string) => void
 }
 
-export function HomeSkills({ agentSlug }: HomeSkillsProps) {
+export function HomeSkills({ agentSlug, className, onRunSkill }: HomeSkillsProps) {
   const [browseOpen, setBrowseOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
 
   const { data: skillsData } = useAgentSkills(agentSlug)
   const skills = Array.isArray(skillsData) ? skillsData : []
@@ -31,7 +43,7 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
   const hasDiscoverable = discoverableSkills.length > 0
 
   return (
-    <HomeCollapsible title="Skills">
+    <HomeCollapsible title="Skills" className={className}>
       {skills.length === 0 ? (
         <div className="mt-3 mx-4 rounded-lg border border-dashed p-4 text-muted-foreground">
           <p className="text-xs font-medium text-foreground">No skills yet</p>
@@ -40,13 +52,23 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
       ) : (
         <div className="mt-2 divide-y divide-border/50" data-testid="installed-skills-list">
           {skills.map((skill) => (
-            <SkillRow key={skill.path} skill={skill} agentSlug={agentSlug} />
+            <SkillRow key={skill.path} skill={skill} agentSlug={agentSlug} onRunSkill={onRunSkill} />
           ))}
         </div>
       )}
 
-      {hasDiscoverable && (
-        <div className="flex justify-end mt-3 px-4 pb-1">
+      <div className="flex justify-end mt-3 px-4 pb-1 gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => setImportOpen(true)}
+          data-testid="import-skill-button"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Import
+        </Button>
+        {hasDiscoverable && (
           <Button
             type="button"
             variant="ghost"
@@ -57,8 +79,8 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
             <Plus />
             Add Skill
           </Button>
-        </div>
-      )}
+        )}
+      </div>
 
       <HomeSkillsBrowseDialog
         open={browseOpen}
@@ -66,15 +88,21 @@ export function HomeSkills({ agentSlug }: HomeSkillsProps) {
         agentSlug={agentSlug}
         discoverableSkills={discoverableSkills}
       />
+      <SkillImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        agentSlug={agentSlug}
+      />
     </HomeCollapsible>
   )
 }
 
-function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: string }) {
+function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus; agentSlug: string; onRunSkill?: (skillName: string) => void }) {
   const [filesOpen, setFilesOpen] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
   const [reviewOpen, setReviewOpen] = useState(false)
   const updateSkill = useUpdateSkill()
+  const exportSkill = useExportSkill()
   const publishMode = useSkillsetPublishMode(skill.status.skillsetId)
   const ReviewIcon = isPullRequestPublishMode(publishMode) ? GitPullRequest : Send
   const actionLabel = getReviewActionLabel(publishMode)
@@ -89,7 +117,19 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
         {skill.description && (
           <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{skill.description}</div>
         )}
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+          {onRunSkill && (
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              className="h-6 w-6"
+              aria-label={`Run ${skill.name ?? 'skill'}`}
+              onClick={(e) => { e.stopPropagation(); onRunSkill(skill.path) }}
+            >
+              <Play className="h-3 w-3" />
+            </Button>
+          )}
           <Popover>
             <PopoverTrigger asChild>
               <Button
@@ -110,6 +150,24 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
               >
                 <FileCode className="h-3.5 w-3.5" />
                 View Files
+              </button>
+              <button
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                disabled={exportSkill.isPending}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  exportSkill.mutate(
+                    { agentSlug, skillDir: skill.path, skillName: skill.name ?? skill.path },
+                    { onError: (err) => toast.error('Export failed', { description: err.message }) },
+                  )
+                }}
+              >
+                {exportSkill.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Upload className="h-3.5 w-3.5" />
+                )}
+                Export Skill
               </button>
               {skill.status.type === 'local' && skill.status.publishable !== false && publishMode !== 'none' && (
                 <button
@@ -170,6 +228,145 @@ function SkillRow({ skill, agentSlug }: { skill: ApiSkillWithStatus; agentSlug: 
         skillDir={skill.path}
         publishMode={publishMode}
       />
+    </>
+  )
+}
+
+function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; onOpenChange: (open: boolean) => void; agentSlug: string }) {
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const importSkill = useImportSkillZip()
+
+  const acceptFile = useCallback((file: File | null | undefined) => {
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      toast.error('Only .zip files are supported')
+      return
+    }
+    setImportFile(file)
+  }, [])
+
+  const resetImport = useCallback(() => {
+    setImportFile(null)
+    importSkill.reset()
+  }, [importSkill])
+
+  const closeDialog = useCallback(() => {
+    onOpenChange(false)
+    resetImport()
+  }, [onOpenChange, resetImport])
+
+  const handleImport = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!importFile) return
+
+    try {
+      const result = await importSkill.mutateAsync({ agentSlug, file: importFile })
+      closeDialog()
+      toast.success(`Imported skill "${result.skillName}"`)
+    } catch {
+      // Error is shown by the mutation's error state
+    }
+  }, [importFile, importSkill, agentSlug, closeDialog])
+
+  const handleFileDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    acceptFile(e.dataTransfer.files[0])
+  }
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={(o) => { if (!o) closeDialog() }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="font-medium">Import a Skill</DialogTitle>
+            <DialogDescription className="sr-only">
+              Upload a .zip file to import a skill.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleImport}>
+            <div className="py-4 space-y-4">
+              <div
+                className={`border border-dashed rounded-lg p-6 text-center transition-colors bg-muted/50 ${
+                  importSkill.isPending ? 'opacity-50 pointer-events-none' : 'cursor-pointer'
+                }`}
+                role="button"
+                tabIndex={0}
+                onClick={() => !importSkill.isPending && fileInputRef.current?.click()}
+                onKeyDown={(e) => {
+                  if ((e.key === 'Enter' || e.key === ' ') && !importSkill.isPending) {
+                    e.preventDefault()
+                    fileInputRef.current?.click()
+                  }
+                }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={importSkill.isPending ? undefined : handleFileDrop}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".zip"
+                  className="hidden"
+                  disabled={importSkill.isPending}
+                  onChange={(e) => {
+                    acceptFile(e.target.files?.[0])
+                    e.target.value = ''
+                  }}
+                />
+                {importFile ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <FileArchive className="h-5 w-5 text-primary" />
+                    <span className="text-sm font-medium">{importFile.name}</span>
+                    {!importSkill.isPending && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setImportFile(null)
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <Download className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
+                    <p className="text-sm text-muted-foreground">
+                      Drop a .zip skill file here<br />
+                      or click to browse
+                    </p>
+                  </>
+                )}
+              </div>
+
+              {importSkill.error && (
+                <p className="text-sm text-destructive">{importSkill.error.message}</p>
+              )}
+            </div>
+
+            <DialogFooter className="mt-4">
+              <Button type="button" variant="outline" onClick={closeDialog} disabled={importSkill.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={!importFile || importSkill.isPending}>
+                {importSkill.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Importing...
+                  </>
+                ) : (
+                  'Import'
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
     </>
   )
 }

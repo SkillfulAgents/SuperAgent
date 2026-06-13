@@ -1,4 +1,6 @@
 import path from 'path'
+import { statfs } from 'node:fs/promises'
+import os from 'os'
 import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, reconcileRunnerState, getRunnerDisplayName, getContainerClientClass, getCliCommand, type ContainerRunner } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, ImagePullProgress, RuntimeReadiness, StopOptions } from './types'
@@ -14,10 +16,11 @@ import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
-import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { mergeCustomEnvVars } from './reserved-env-vars'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -31,6 +34,26 @@ const HEALTH_CHECK_INTERVAL_MS = parseInt(
   10
 ) * 1000
 
+/** Minimum free disk space (in bytes) required before pulling an image: 5 GB */
+const MIN_DISK_SPACE_BYTES = 5 * 1024 * 1024 * 1024
+
+/**
+ * Max age (in ms) of a cached 'running' status before ensureRunning re-verifies
+ * liveness with a /health round-trip. The cache has no TTL of its own, so a
+ * container that died externally would otherwise report 'running' forever and
+ * the next sendMessage/createSession would throw "Container is not running".
+ * Default: 10 seconds — short enough to catch external death between requests,
+ * long enough to avoid a health probe on every back-to-back message. */
+const RUNNING_STATUS_TTL_MS = parseInt(
+  process.env.CONTAINER_RUNNING_STATUS_TTL_SECONDS || '10',
+  10
+) * 1000
+
+async function getAvailableDiskSpace(): Promise<number> {
+  const stats = await statfs(os.homedir())
+  return stats.bavail * stats.bsize
+}
+
 /** Cached container status */
 interface CachedContainerStatus {
   status: 'running' | 'stopped'
@@ -42,6 +65,7 @@ interface CachedContainerStatus {
 class ContainerManager {
   private clients: Map<string, ContainerClient> = new Map()
   private containerStartedAt: Map<string, number> = new Map()
+  private lastKeepAliveAt: Map<string, number> = new Map()
   /** Cached container statuses - avoids repeated docker inspect calls */
   private containerStatuses: Map<string, CachedContainerStatus> = new Map()
   private syncIntervalId: NodeJS.Timeout | null = null
@@ -143,6 +167,9 @@ class ContainerManager {
     this.startingAgents.delete(agentId)
 
     let forceStopUsed = false
+    // Default true: if stop() throws, preserve prior behavior of marking the
+    // agent stopped. Only the explicit force-stop-disabled bail returns false.
+    let stopped = true
 
     try {
       // Stop the host browser before the container so it closes gracefully
@@ -156,27 +183,40 @@ class ContainerManager {
       const client = this.getClient(agentId)
       const result = await client.stop(options)
       forceStopUsed = result.forceStopUsed
+      // Only an explicit `false` (stop+kill timed out with force-stop disabled)
+      // means the container is still running; anything else counts as stopped.
+      stopped = result.stopped ?? true
     } finally {
       this.stoppingAgents.delete(agentId)
 
-      // Update cached status
-      this.markAsStopped(agentId)
+      if (!stopped) {
+        // stop+kill timed out and force-stop was disabled (auto-sleep): the
+        // container is still running. Leave cached status untouched so the UI
+        // and the next auto-sleep sweep see reality, and skip the stopped-side
+        // effects below.
+        console.warn(
+          `[ContainerManager] Stop incomplete for ${agentId}; container still running, will retry next cycle`
+        )
+      } else {
+        // Update cached status
+        this.markAsStopped(agentId)
 
-      // Mark all sessions for this agent as inactive
-      messagePersister.markAllSessionsInactiveForAgent(agentId)
+        // Mark all sessions for this agent as inactive
+        messagePersister.markAllSessionsInactiveForAgent(agentId)
 
-      // If this agent had grabbed a window, ungrab it so the halo disappears
-      if (computerUsePermissionManager.getGrabbedApp(agentId)) {
-        computerUsePermissionManager.clearGrabbedApp(agentId)
-        ungrabAC().catch(() => {})  // Best-effort, non-blocking
+        // If this agent had grabbed a window, ungrab it so the halo disappears
+        if (computerUsePermissionManager.getGrabbedApp(agentId)) {
+          computerUsePermissionManager.clearGrabbedApp(agentId)
+          ungrabAC().catch(() => {})  // Best-effort, non-blocking
+        }
+
+        // Broadcast status change so UI updates
+        messagePersister.broadcastGlobal({
+          type: 'agent_status_changed',
+          agentSlug: agentId,
+          status: 'stopped',
+        })
       }
-
-      // Broadcast status change so UI updates
-      messagePersister.broadcastGlobal({
-        type: 'agent_status_changed',
-        agentSlug: agentId,
-        status: 'stopped',
-      })
 
       // If we had to force-kill the VM (e.g., Lima QEMU process):
       // 1. Mark ALL other running containers as stopped — they died with the VM
@@ -431,9 +471,34 @@ class ContainerManager {
     if (inflight) return inflight
 
     const client = this.getClient(agentId)
-    const cachedInfo = this.getCachedInfo(agentId)
+    const cached = this.containerStatuses.get(agentId)
 
-    if (cachedInfo.status !== 'running') {
+    // Treat the cached 'running' status as authoritative only while it's fresh.
+    // The cache has no liveness check, so a container that died externally would
+    // keep reporting 'running'. Once the cached status ages past the TTL,
+    // re-verify with a single /health round-trip before trusting it; if the
+    // probe fails, fall through to (re)start.
+    let needsStart = !cached || cached.status !== 'running'
+    if (!needsStart && cached && Date.now() - cached.lastSyncedAt > RUNNING_STATUS_TTL_MS) {
+      const healthy = await client.isHealthy(cached.port ?? undefined)
+      if (healthy) {
+        // Still alive — refresh the timestamp so we don't re-probe every request.
+        this.updateCachedStatus(agentId, 'running', cached.port)
+      } else {
+        console.warn(`[ContainerManager] Cached 'running' status for ${agentId} failed liveness check, (re)starting`)
+        this.markAsStopped(agentId)
+        needsStart = true
+      }
+    }
+
+    if (needsStart) {
+      // The liveness probe above is an await point, so another ensureRunning
+      // call may have kicked off a start while we were probing. Re-check the
+      // in-flight dedupe before starting so a liveness-triggered restart can't
+      // double-start the container.
+      const racedInflight = this.startingAgents.get(agentId)
+      if (racedInflight) return racedInflight
+
       const startPromise = this.doStartContainer(agentId, client)
       this.startingAgents.set(agentId, startPromise)
       try {
@@ -544,10 +609,13 @@ class ContainerManager {
         envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
       }
 
-      // Inject user-defined custom env vars (set in global settings)
-      if (settings.customEnvVars) {
-        Object.assign(envVars, settings.customEnvVars)
-      }
+      // Inject user-defined custom env vars (set in global settings). Reserved
+      // runtime keys are skipped so custom config can never clobber required
+      // wiring (proxy auth, agent identity, connected accounts, etc.). See
+      // SUP-210 / reserved-env-vars.ts.
+      mergeCustomEnvVars(envVars, settings.customEnvVars)
+
+      envVars['CLAUDE_CODE_ATTRIBUTION_HEADER'] = '0'
 
       // Load mounts and build volume flags for healthy ones
       const mountsWithHealth = getMountsWithHealth(agentId)
@@ -567,8 +635,29 @@ class ContainerManager {
         client.buildVolumeFlag(m.hostPath, m.containerPath)
       )
 
-      // Start container (user secrets are in .env file in workspace)
-      await client.start({ envVars, additionalVolumes })
+      // Start container (user secrets are in .env file in workspace).
+      // If a mount turns out to be inaccessible to the container runtime at run
+      // time (e.g. a cloud-synced folder the Lima VM helper is denied — passes
+      // the host health check but fails EPERM-on-stat inside the VM), start()
+      // drops that one mount and the container still comes up. Surface the same
+      // mount-health warning banner with a macOS-specific hint instead of
+      // failing the whole agent.
+      await client.start({
+        envVars,
+        additionalVolumes,
+        onMountDropped: (hostPath) => {
+          const dropped = healthyMounts.find((m) => m.hostPath === hostPath)
+          console.warn(`[ContainerManager] Mount inaccessible to runtime, dropped for ${agentId}: ${hostPath}`)
+          messagePersister.broadcastGlobal({
+            type: 'mount_health_warning',
+            agentSlug: agentId,
+            missingMounts: [{ folderName: dropped?.folderName ?? hostPath, hostPath }],
+            hint: process.platform === 'darwin'
+              ? 'This folder is in iCloud Drive or a cloud-synced location, which can’t be shared into the agent sandbox. Move it to a regular local folder.'
+              : undefined,
+          })
+        },
+      })
 
       // Get actual port from runtime and update cache directly
       // (can't use syncAgentStatus here — it's guarded against updates during startup)
@@ -594,10 +683,20 @@ class ContainerManager {
     return this.containerStartedAt.get(agentId)
   }
 
+  // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep
+  keepAlive(agentId: string): void {
+    this.lastKeepAliveAt.set(agentId, Date.now())
+  }
+
+  getLastKeepAlive(agentId: string): number | undefined {
+    return this.lastKeepAliveAt.get(agentId)
+  }
+
   // Remove a client from the cache
   removeClient(agentId: string): void {
     this.clients.delete(agentId)
     this.containerStartedAt.delete(agentId)
+    this.lastKeepAliveAt.delete(agentId)
     this.containerStatuses.delete(agentId)
     this.healthWarnings.delete(agentId)
     this.stoppingAgents.delete(agentId)
@@ -609,6 +708,7 @@ class ContainerManager {
   clearClients(): void {
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.lastKeepAliveAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
     this.stoppingAgents.clear()
@@ -640,6 +740,7 @@ class ContainerManager {
     }
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.lastKeepAliveAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
     this.stoppingAgents.clear()
@@ -659,6 +760,7 @@ class ContainerManager {
     }
     this.clients.clear()
     this.containerStartedAt.clear()
+    this.lastKeepAliveAt.clear()
     this.containerStatuses.clear()
     this.healthWarnings.clear()
   }
@@ -848,7 +950,29 @@ class ContainerManager {
       return
     }
 
-    // Step 3: Build or pull the image
+    // Step 3: Pre-flight disk space check
+    try {
+      const availableBytes = await getAvailableDiskSpace()
+      if (availableBytes < MIN_DISK_SPACE_BYTES) {
+        const availableGB = (availableBytes / (1024 * 1024 * 1024)).toFixed(1)
+        const requiredGB = (MIN_DISK_SPACE_BYTES / (1024 * 1024 * 1024)).toFixed(0)
+        captureMessage('Insufficient disk space for image pull', {
+          level: 'info',
+          tags: { component: 'runtime', operation: 'disk-space-check' },
+          extra: { availableGB: parseFloat(availableGB), requiredGB: parseInt(requiredGB), runner: effectiveRunner },
+        })
+        this.setReadiness({
+          status: 'ERROR',
+          message: `Insufficient disk space: ${availableGB} GB available, at least ${requiredGB} GB required to download the agent image. Free up disk space and try again.`,
+          pullProgress: null,
+        })
+        return
+      }
+    } catch (err) {
+      console.warn('[ContainerManager] Disk space check failed, proceeding anyway:', err)
+    }
+
+    // Step 4: Build or pull the image
     // In dev mode (agent-container directory exists), build locally.
     // In production (no build context), pull from registry.
     const shouldBuild = canBuildImage()

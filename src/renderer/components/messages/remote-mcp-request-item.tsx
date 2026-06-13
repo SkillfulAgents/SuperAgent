@@ -193,6 +193,7 @@ export function RemoteMcpRequestItem({
     if (status !== 'oauth_pending') return
 
     const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return
       if (event.data?.type === 'mcp-oauth-callback') {
         handleOAuthComplete(event.data.success, event.data.error)
       }

@@ -16,7 +16,7 @@ vi.mock('@renderer/lib/oauth-popup', () => ({
   prepareOAuthPopup: () => ({ navigate: vi.fn(), close: vi.fn() }),
 }))
 
-vi.mock('@shared/lib/composio/providers', () => ({
+vi.mock('@shared/lib/account-providers', () => ({
   getProvider: (slug: string) => ({
     slug,
     displayName: slug.charAt(0).toUpperCase() + slug.slice(1),

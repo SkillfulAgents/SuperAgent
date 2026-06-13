@@ -4,27 +4,13 @@ import { and, desc, eq } from 'drizzle-orm'
 
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
+
+// Re-export so existing consumers keep importing from here.
+export { decodeOrgIdFromToken }
 
 const PLATFORM_PROVIDER_ID = 'platform'
-
-/** Unverified `orgId` claim, or null for opaque access keys. Used only for routing. */
-export function decodeOrgIdFromToken(token: string): string | null {
-  const segments = token.split('.')
-  if (segments.length !== 3) return null
-  try {
-    const claims = JSON.parse(decodeBase64Url(segments[1])) as { orgId?: unknown }
-    return typeof claims.orgId === 'string' && claims.orgId.length > 0 ? claims.orgId : null
-  } catch {
-    return null
-  }
-}
-
-function decodeBase64Url(value: string): string {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
-  const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4)
-  return Buffer.from(padded, 'base64').toString('utf8')
-}
 
 function getPlatformAccountIdForUserId(userId: string): string | null {
   const rows = db
@@ -35,6 +21,15 @@ function getPlatformAccountIdForUserId(userId: string): string | null {
     .limit(1)
     .all()
   return rows[0]?.accountId ?? null
+}
+
+// The acting member for the current request: prefer the Better Auth
+// `authAccount` row (env / platform-OAuth path), then fall back to the
+// member id persisted with a settings-stored connection (single-connection
+// case). Opaque `plat_sa_` access keys are not org-scoped, so memberId is
+// unused for them — this only matters if an org-scoped token lives in settings.
+function resolveMemberIdForUserId(userId: string): string | null {
+  return getPlatformAccountIdForUserId(userId) ?? getStoredPlatformMemberId()
 }
 
 // Org JWTs carry the acting member as `<token>::<memberId>` (proxy splits
@@ -104,13 +99,21 @@ export function runWithAttribution<T>(
 
 function fromCurrentRequest(): Attribution | null {
   const userId = userContext.getStore()?.userId
-  return userId ? buildAttribution(getPlatformAccountIdForUserId(userId)) : null
+  return userId ? buildAttribution(resolveMemberIdForUserId(userId)) : null
+}
+
+// True when the active platform token is an org JWT, so every proxy call must
+// carry a per-request acting member. Opaque access keys and an unconfigured
+// token return false.
+function requiresActingMember(): boolean {
+  const token = getPlatformAccessToken()
+  return token !== null && decodeOrgIdFromToken(token) !== null
 }
 
 export const attribution = {
   fromCurrentRequest,
   fromUserId(userId: string): Attribution | null {
-    return buildAttribution(getPlatformAccountIdForUserId(userId))
+    return buildAttribution(resolveMemberIdForUserId(userId))
   },
   fromResourceCreator(ownerUserId: string | null): Attribution | null {
     return ownerUserId ? buildAttribution(getPlatformAccountIdForUserId(ownerUserId)) : null
@@ -118,6 +121,7 @@ export const attribution = {
   current(): Attribution | null {
     return attributionContext.getStore()?.auth ?? fromCurrentRequest()
   },
+  requiresActingMember,
 } as const
 
 export { installPlatformFetchInterceptor } from './install-fetch-interceptor'

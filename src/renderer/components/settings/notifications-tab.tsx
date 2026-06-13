@@ -1,16 +1,50 @@
-import { useState, useEffect } from 'react'
-import { Label } from '@renderer/components/ui/label'
+import { useState, useEffect, type ReactNode } from 'react'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
-import { Bell, BellOff, Info } from 'lucide-react'
+import { Info } from 'lucide-react'
 import { isElectron } from '@renderer/lib/env'
 import {
   requestNotificationPermission,
   hasNotificationPermission,
   showOSNotification,
 } from '@renderer/lib/os-notifications'
+
+interface SettingRowProps {
+  name: string
+  subtitle: ReactNode
+  right: ReactNode
+  /** When set, the name renders as a <label> bound to the control's id. */
+  htmlFor?: string
+}
+
+/**
+ * One row inside a notification settings card — name + supporting line on the
+ * left, control on the right. Visually mirrors `IntegrationRow` from the
+ * agent-level connections list, minus the leading service icon.
+ */
+function SettingRow({ name, subtitle, right, htmlFor }: SettingRowProps) {
+  return (
+    <div className="py-3 px-4">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          {htmlFor ? (
+            <label htmlFor={htmlFor} className="block text-xs font-medium truncate">
+              {name}
+            </label>
+          ) : (
+            <div className="text-xs font-medium truncate">{name}</div>
+          )}
+          <div className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">{right}</div>
+      </div>
+    </div>
+  )
+}
+
+const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
 
 export function NotificationsTab() {
   const { data: userSettings, isLoading } = useUserSettings()
@@ -22,6 +56,7 @@ export function NotificationsTab() {
     sessionComplete: boolean
     sessionWaiting: boolean
     sessionScheduled: boolean
+    notifyWhenUnfocused: boolean
   } | null>(null)
 
   // Browser notification permission state
@@ -41,6 +76,7 @@ export function NotificationsTab() {
     sessionComplete: true,
     sessionWaiting: true,
     sessionScheduled: true,
+    notifyWhenUnfocused: false,
   }
 
   const updateNotificationSetting = (key: string, value: boolean) => {
@@ -58,28 +94,10 @@ export function NotificationsTab() {
 
   return (
     <div className="space-y-6">
-      {/* Global Enable/Disable */}
-      <div className="flex items-center justify-between">
-        <div className="space-y-0.5">
-          <Label htmlFor="notifications-enabled" className="flex items-center gap-2">
-            {notificationSettings.enabled ? (
-              <Bell className="h-4 w-4" />
-            ) : (
-              <BellOff className="h-4 w-4" />
-            )}
-            Enable Notifications
-          </Label>
-          <p className="text-xs text-muted-foreground">
-            Receive notifications for agent activity
-          </p>
-        </div>
-        <Switch
-          id="notifications-enabled"
-          checked={notificationSettings.enabled}
-          onCheckedChange={(checked) => updateNotificationSetting('enabled', checked)}
-          disabled={isLoading}
-        />
-      </div>
+      <p className="text-xs text-muted-foreground">
+        Only sessions you aren&apos;t viewing trigger notifications. Opening a session marks its
+        notifications as read.
+      </p>
 
       {/* Browser Permission Section (web only) */}
       {showBrowserPermissionSection && (
@@ -100,85 +118,93 @@ export function NotificationsTab() {
         </Alert>
       )}
 
-      {/* Per-Type Toggles */}
-      <div className="border-t pt-4 space-y-4">
-        <h3 className="text-sm font-medium text-muted-foreground">Notification Types</h3>
-
-        {/* Session Complete */}
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <Label htmlFor="notify-session-complete">Session Complete</Label>
-            <p className="text-xs text-muted-foreground">
-              When an agent finishes running
-            </p>
-          </div>
-          <Switch
-            id="notify-session-complete"
-            checked={notificationSettings.sessionComplete}
-            onCheckedChange={(checked) => updateNotificationSetting('sessionComplete', checked)}
-            disabled={isLoading || !notificationSettings.enabled}
-          />
-        </div>
-
-        {/* Session Waiting */}
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <Label htmlFor="notify-session-waiting">Action Required</Label>
-            <p className="text-xs text-muted-foreground">
-              When an agent needs input (secrets, account access)
-            </p>
-          </div>
-          <Switch
-            id="notify-session-waiting"
-            checked={notificationSettings.sessionWaiting}
-            onCheckedChange={(checked) => updateNotificationSetting('sessionWaiting', checked)}
-            disabled={isLoading || !notificationSettings.enabled}
-          />
-        </div>
-
-        {/* Session Scheduled */}
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <Label htmlFor="notify-session-scheduled">Scheduled Task Started</Label>
-            <p className="text-xs text-muted-foreground">
-              When a scheduled task begins running
-            </p>
-          </div>
-          <Switch
-            id="notify-session-scheduled"
-            checked={notificationSettings.sessionScheduled}
-            onCheckedChange={(checked) => updateNotificationSetting('sessionScheduled', checked)}
-            disabled={isLoading || !notificationSettings.enabled}
-          />
-        </div>
+      <div className={CARD_CLASS}>
+        <SettingRow
+          htmlFor="notifications-enabled"
+          name="Enable Notifications"
+          subtitle="Receive notifications for agent activity"
+          right={
+            <Switch
+              id="notifications-enabled"
+              checked={notificationSettings.enabled}
+              onCheckedChange={(checked) => updateNotificationSetting('enabled', checked)}
+              disabled={isLoading}
+            />
+          }
+        />
+        <SettingRow
+          htmlFor="notify-session-complete"
+          name="Session Complete"
+          subtitle="When an agent finishes running"
+          right={
+            <Switch
+              id="notify-session-complete"
+              checked={notificationSettings.sessionComplete}
+              onCheckedChange={(checked) => updateNotificationSetting('sessionComplete', checked)}
+              disabled={isLoading || !notificationSettings.enabled}
+            />
+          }
+        />
+        <SettingRow
+          htmlFor="notify-session-waiting"
+          name="Action Required"
+          subtitle="When an agent needs input (secrets, account access)"
+          right={
+            <Switch
+              id="notify-session-waiting"
+              checked={notificationSettings.sessionWaiting}
+              onCheckedChange={(checked) => updateNotificationSetting('sessionWaiting', checked)}
+              disabled={isLoading || !notificationSettings.enabled}
+            />
+          }
+        />
+        <SettingRow
+          htmlFor="notify-session-scheduled"
+          name="Scheduled Task Started"
+          subtitle="When a scheduled task begins running"
+          right={
+            <Switch
+              id="notify-session-scheduled"
+              checked={notificationSettings.sessionScheduled}
+              onCheckedChange={(checked) => updateNotificationSetting('sessionScheduled', checked)}
+              disabled={isLoading || !notificationSettings.enabled}
+            />
+          }
+        />
+        <SettingRow
+          htmlFor="notify-when-unfocused"
+          name="Notify when window isn't focused"
+          subtitle="Send notifications even while the session is open, as long as the SuperAgent window is behind another app. Useful for long-running sessions you've left in the background."
+          right={
+            <Switch
+              id="notify-when-unfocused"
+              checked={notificationSettings.notifyWhenUnfocused}
+              onCheckedChange={(checked) => updateNotificationSetting('notifyWhenUnfocused', checked)}
+              disabled={isLoading || !notificationSettings.enabled}
+            />
+          }
+        />
       </div>
 
-      {/* Test Notification */}
-      <div className="border-t pt-4">
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <Label>Test Notifications</Label>
-            <p className="text-xs text-muted-foreground">
+      <div className={CARD_CLASS}>
+        <SettingRow
+          name="Test Notifications"
+          subtitle={
+            <>
               Send a test notification to verify they&apos;re working.
               {isElectron() && ' This will also request macOS permission if needed.'}
-            </p>
-          </div>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => showOSNotification('Test Notification', 'Notifications are working!')}
-          >
-            Send Test
-          </Button>
-        </div>
-      </div>
-
-      {/* Info about notification behavior */}
-      <div className="border-t pt-4">
-        <p className="text-xs text-muted-foreground">
-          Notifications are only shown for sessions you&apos;re not currently viewing.
-          Viewing a session automatically marks related notifications as read.
-        </p>
+            </>
+          }
+          right={
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => showOSNotification('Test Notification', 'Notifications are working!')}
+            >
+              Send Test
+            </Button>
+          }
+        />
       </div>
     </div>
   )

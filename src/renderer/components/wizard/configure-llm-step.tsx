@@ -56,7 +56,7 @@ const LLM_PROVIDER_OPTIONS: Array<{
 }> = [
   {
     id: 'anthropic',
-    label: 'Anthropic (Claude)',
+    label: 'Anthropic',
     description: 'Direct API access to Claude models.',
   },
   {

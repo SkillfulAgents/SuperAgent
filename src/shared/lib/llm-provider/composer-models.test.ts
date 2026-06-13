@@ -12,7 +12,7 @@ describe('getComposerModels', () => {
 
   it('Anthropic returns one entry per family with modelId === family', () => {
     const models = new AnthropicLlmProvider().getComposerModels()
-    expect(models.map(m => m.family)).toEqual(['opus', 'sonnet', 'haiku'])
+    expect(models.map(m => m.family)).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
     for (const m of models) {
       expect(m.modelId).toBe(m.family)
       expect(m.label.length).toBeGreaterThan(0)
@@ -21,16 +21,16 @@ describe('getComposerModels', () => {
 
   it('OpenRouter returns family aliases as modelIds', () => {
     const models = new OpenRouterLlmProvider().getComposerModels()
-    expect(models.map(m => m.modelId)).toEqual(['opus', 'sonnet', 'haiku'])
+    expect(models.map(m => m.modelId)).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
   })
 
   it('Platform returns family aliases as modelIds', () => {
     const models = new PlatformLlmProvider().getComposerModels()
-    expect(models.map(m => m.modelId)).toEqual(['opus', 'sonnet', 'haiku'])
+    expect(models.map(m => m.modelId)).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
   })
 
   it('Bedrock returns family aliases as modelIds (collapsed by container before SDK call)', () => {
     const models = new BedrockLlmProvider().getComposerModels()
-    expect(models.map(m => m.modelId)).toEqual(['opus', 'sonnet', 'haiku'])
+    expect(models.map(m => m.modelId)).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
   })
 })

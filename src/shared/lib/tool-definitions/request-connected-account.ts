@@ -1,4 +1,4 @@
-import { getProvider } from '@shared/lib/composio/providers'
+import { getProvider } from '@shared/lib/account-providers/service-catalog'
 
 export interface RequestConnectedAccountInput {
   toolkit?: string

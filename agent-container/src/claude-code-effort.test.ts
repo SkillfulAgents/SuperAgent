@@ -64,11 +64,11 @@ vi.mock('./mcp-server', () => ({
   createComputerUseMcpServer: () => ({}),
   createDashboardsMcpServer: () => ({}),
   createAgentsMcpServer: (_getCallerSessionId: () => string) => ({}),
+  createChatMcpServer: () => ({}),
 }))
 
 vi.mock('./tools/browser', () => ({
-  browserTools: [],
-  setCurrentBrowserSessionId: () => {},
+  createBrowserTools: () => [],
 }))
 
 vi.mock('./tools/computer-use', () => ({

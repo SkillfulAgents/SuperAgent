@@ -76,7 +76,7 @@ RUN apt-get update && apt-get install -y \
 # our dashboard screenshot code (via playwright-core) share a single Chromium
 # install under PLAYWRIGHT_BROWSERS_PATH.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
-RUN npm install -g agent-browser@0.25.3 && \
+RUN npm install -g agent-browser@0.27.2 && \
     npx playwright install chromium && \
     chmod -R o+rx /opt/playwright-browsers
 
@@ -156,9 +156,13 @@ RUN useradd -m -s /bin/bash claude && \
       chown -R claude:claude /home/claude/.agent-browser; \
     fi
 
-# Copy skills and settings into the user's Claude config directory (after user creation)
+# Copy skills into the user's Claude config directory (after user creation).
+# NOTE: session-transcript retention (cleanupPeriodDays) is NOT set here. The
+# CLI reads its user settings.json from CLAUDE_CONFIG_DIR (/workspace/.claude),
+# not ~/.claude, so a settings.json baked in here would be ignored. The
+# SessionManager provisions /workspace/.claude/settings.json at runtime instead
+# (see agent-container/src/session-manager.ts:ensureClaudeSettings).
 COPY skills/ /home/claude/.claude/skills/
-COPY settings.json /home/claude/.claude/settings.json
 RUN chown -R claude:claude /home/claude/.claude
 
 # Switch to non-root user
@@ -171,6 +175,7 @@ EXPOSE 3000
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOME=/home/claude
+ENV CLAUDE_CODE_ATTRIBUTION_HEADER=0
 ENV AGENT_BROWSER_STREAM_PORT=9223
 # Point agent-browser at the chromium binary installed under PLAYWRIGHT_BROWSERS_PATH.
 # agent-browser's built-in discovery only finds Playwright's chromium at the old

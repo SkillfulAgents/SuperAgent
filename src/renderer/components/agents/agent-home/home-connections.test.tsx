@@ -1,32 +1,33 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeConnections } from './home-connections'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
-// Mock apiFetch so the real `useAgentConnectedAccounts` hook and
-// `useDeleteConnectedAccount` mutation run end-to-end against a fake network.
-// This is the level of integration that exercises the cache-key wiring —
-// mocking the hooks would skip exactly the code we want to test.
+// Mock apiFetch so the real `useAgentConnectedAccounts` hook runs end-to-end
+// against a fake network.
 const mockApiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-// HomeConnections calls setView({ kind: 'connections' }) for the
-// "Manage Connections" button — not part of the delete flow we care about.
+// Capture setView so we can assert on the deep link into the connections page.
+const mockSetView = vi.fn()
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({
-    setView: vi.fn(),
+    view: { kind: 'home' },
+    setView: mockSetView,
     setAgent: vi.fn(),
     consumePendingDraft: vi.fn(() => null),
   }),
+  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
 const ACCOUNT = {
   id: 'acc-1',
-  composioConnectionId: 'conn-1',
+  providerConnectionId: 'conn-1',
+  providerName: 'composio',
   toolkitSlug: 'github',
   displayName: 'My GitHub Account',
   status: 'active' as const,
@@ -45,60 +46,48 @@ function jsonResponse(body: unknown, ok = true): Response {
   } as Response
 }
 
-describe('HomeConnections — delete account flow', () => {
+describe('HomeConnections — row navigation', () => {
   beforeEach(() => {
     mockApiFetch.mockReset()
-  })
-
-  it('removes the deleted account from the agent-home list after global delete', async () => {
-    // Backend state: starts with one account, becomes empty after DELETE.
-    let accounts = [ACCOUNT]
+    mockSetView.mockReset()
 
     mockApiFetch.mockImplementation((path: string, init?: { method?: string }) => {
       const method = init?.method ?? 'GET'
-
       if (path === '/api/agents/test-agent/connected-accounts' && method === 'GET') {
-        return Promise.resolve(jsonResponse({ accounts }))
+        return Promise.resolve(jsonResponse({ accounts: [ACCOUNT] }))
       }
       if (path === '/api/agents/test-agent/remote-mcps' && method === 'GET') {
         return Promise.resolve(jsonResponse({ mcps: [] }))
       }
-      if (path === '/api/connected-accounts/acc-1' && method === 'DELETE') {
-        accounts = []
-        return Promise.resolve(jsonResponse({}, true))
-      }
       throw new Error(`Unexpected request: ${method} ${path}`)
     })
+  })
 
+  it('deep-links to the connection detail view when a row is activated', async () => {
     const user = userEvent.setup()
     renderWithProviders(<HomeConnections agentSlug="test-agent" />)
 
-    // Wait for initial load — the account row appears.
-    expect(await screen.findByText('My GitHub Account')).toBeInTheDocument()
+    // Wait for initial load — the account row appears (name = provider display name).
+    expect(await screen.findByText('GitHub')).toBeInTheDocument()
 
-    // Open the row's actions menu, then trigger the global delete.
-    await user.click(screen.getByTestId('integration-row-actions-oauth-acc-1'))
-    await user.click(await screen.findByRole('button', { name: /delete/i }))
+    await user.click(screen.getByRole('button', { name: 'Open GitHub connection details' }))
 
-    // Confirm in the AlertDialog (button labeled "Delete for all agents").
-    // Use `getAllByRole` because the menu item still exists in the DOM behind the dialog.
-    const confirmButtons = await screen.findAllByRole('button', { name: /delete for all agents/i })
-    // The last one is the AlertDialogAction (rendered in a portal on top).
-    await user.click(confirmButtons[confirmButtons.length - 1])
-
-    // The account row should disappear once the agent-scoped query is
-    // invalidated and refetches the now-empty list. Without invalidation
-    // of `['agent-connected-accounts']`, the cache stays stale and this fails.
-    await waitFor(() => {
-      expect(screen.queryByText('My GitHub Account')).not.toBeInTheDocument()
+    // The row key matches the UnifiedRow key format used by the connections
+    // page; source 'home' makes Back (and the header breadcrumb) skip the list.
+    expect(mockSetView).toHaveBeenCalledWith({
+      kind: 'connections',
+      detail: { rowKey: 'account-acc-1', source: 'home' },
     })
-    expect(screen.getByText('No connections yet')).toBeInTheDocument()
+  })
 
-    // Sanity-check the network: the agent-scoped endpoint was hit at least
-    // twice (initial load + post-delete refetch).
-    const agentAccountCalls = mockApiFetch.mock.calls.filter(
-      ([path, init]) => path === '/api/agents/test-agent/connected-accounts' && (init?.method ?? 'GET') === 'GET'
-    )
-    expect(agentAccountCalls.length).toBeGreaterThanOrEqual(2)
+  it('opens the connections page (no deep link) from the Manage Connections button', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+
+    expect(await screen.findByText('GitHub')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('home-connections-open-page'))
+
+    expect(mockSetView).toHaveBeenCalledWith({ kind: 'connections' })
   })
 })

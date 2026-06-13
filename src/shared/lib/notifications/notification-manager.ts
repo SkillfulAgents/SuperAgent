@@ -77,8 +77,9 @@ class NotificationManager {
     body: string
     actions?: Array<{ text: string }>
     actionContext?: Record<string, unknown>
+    extra?: Omit<Record<string, unknown>, 'type' | 'notificationType' | 'notificationId' | 'sessionId' | 'agentSlug' | 'title' | 'body' | 'actions' | 'actionContext'>
   }): Promise<void> {
-    const { type, sessionId, agentSlug, title, body, actions, actionContext } = params
+    const { type, sessionId, agentSlug, title, body, actions, actionContext, extra } = params
 
     // Skip if notification type is disabled in settings
     if (!this.isNotificationTypeEnabled(type)) {
@@ -114,6 +115,7 @@ class NotificationManager {
       body,
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
+      ...extra,
     })
   }
 
@@ -130,7 +132,10 @@ class NotificationManager {
     agentName?: string
   ): Promise<void> {
     const meta = await getSessionMetadata(agentSlug, sessionId)
-    if (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession) {
+    if (
+      !meta?.promotedToInteractive &&
+      (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession)
+    ) {
       return
     }
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
@@ -237,6 +242,7 @@ class NotificationManager {
   async triggerScheduledSessionStarted(
     sessionId: string,
     agentSlug: string,
+    taskId: string,
     taskName?: string,
     agentName?: string
   ): Promise<void> {
@@ -249,6 +255,7 @@ class NotificationManager {
       agentSlug,
       title: 'Scheduled Task Started',
       body: `${taskDisplay} started for ${displayName}`,
+      extra: { taskId },
     })
   }
 
@@ -298,6 +305,7 @@ class NotificationManager {
   async triggerWebhookSessionStarted(
     sessionId: string,
     agentSlug: string,
+    triggerId: string,
     triggerName?: string,
     agentName?: string
   ): Promise<void> {
@@ -310,6 +318,7 @@ class NotificationManager {
       agentSlug,
       title: 'Webhook Trigger Fired',
       body: `${triggerDisplay} fired for ${displayName}`,
+      extra: { triggerId },
     })
   }
 }

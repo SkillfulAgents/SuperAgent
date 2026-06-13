@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveDisplayName, isUserRequestTool, isDisplayNameFallback } from './chat-integration-manager'
+import { deriveDisplayName, isUserRequestTool, isDisplayNameFallback, formatSessionTimestamp, shouldRotateSession, buildSessionName } from './chat-integration-manager'
 
 // ── deriveDisplayName ───────────────────────────────────────────────────
 
@@ -137,5 +137,153 @@ describe('isUserRequestTool', () => {
   it('is case-sensitive', () => {
     expect(isUserRequestTool('askuserquestion')).toBe(false)
     expect(isUserRequestTool('ASKUSERQUESTION')).toBe(false)
+  })
+})
+
+// ── formatSessionTimestamp ─────────────────────────────────────────────
+
+describe('formatSessionTimestamp', () => {
+  it('includes month, day, and time', () => {
+    const result = formatSessionTimestamp(new Date('2026-05-20T14:30:00'))
+    expect(result).toContain('May')
+    expect(result).toContain('20')
+    expect(result).toMatch(/2:30\s*PM/)
+  })
+
+  it('uses 12-hour format with AM/PM', () => {
+    const morning = formatSessionTimestamp(new Date('2026-01-15T09:05:00'))
+    expect(morning).toMatch(/9:05\s*AM/)
+    expect(morning).toContain('Jan')
+    expect(morning).toContain('15')
+  })
+
+  it('handles midnight correctly', () => {
+    const midnight = formatSessionTimestamp(new Date('2026-03-01T00:00:00'))
+    expect(midnight).toMatch(/12:00\s*AM/)
+  })
+
+  it('handles noon correctly', () => {
+    const noon = formatSessionTimestamp(new Date('2026-07-04T12:00:00'))
+    expect(noon).toMatch(/12:00\s*PM/)
+  })
+})
+
+// ── shouldRotateSession ───────────────────────────────────────────────
+
+describe('shouldRotateSession', () => {
+  const now = new Date('2026-05-20T14:00:00Z')
+
+  it('returns false when timeoutHours is null', () => {
+    const session = { updatedAt: new Date('2026-05-19T00:00:00Z'), createdAt: new Date('2026-05-19T00:00:00Z') }
+    expect(shouldRotateSession(session, null, now)).toBe(false)
+  })
+
+  it('returns false when timeoutHours is undefined', () => {
+    const session = { updatedAt: new Date('2026-05-19T00:00:00Z'), createdAt: new Date('2026-05-19T00:00:00Z') }
+    expect(shouldRotateSession(session, undefined, now)).toBe(false)
+  })
+
+  it('returns false when timeoutHours is 0', () => {
+    const session = { updatedAt: new Date('2026-05-19T00:00:00Z'), createdAt: new Date('2026-05-19T00:00:00Z') }
+    expect(shouldRotateSession(session, 0, now)).toBe(false)
+  })
+
+  it('returns false when timeoutHours is negative', () => {
+    const session = { updatedAt: new Date('2026-05-19T00:00:00Z'), createdAt: new Date('2026-05-19T00:00:00Z') }
+    expect(shouldRotateSession(session, -1, now)).toBe(false)
+  })
+
+  it('returns false when session is within the timeout window', () => {
+    const session = { updatedAt: new Date('2026-05-20T13:30:00Z'), createdAt: new Date('2026-05-20T10:00:00Z') }
+    expect(shouldRotateSession(session, 1, now)).toBe(false)
+  })
+
+  it('returns true when session exceeds the timeout', () => {
+    const session = { updatedAt: new Date('2026-05-20T12:00:00Z'), createdAt: new Date('2026-05-20T10:00:00Z') }
+    expect(shouldRotateSession(session, 1, now)).toBe(true)
+  })
+
+  it('uses updatedAt over createdAt when both exist', () => {
+    // createdAt is very old, but updatedAt is recent — should NOT rotate
+    const session = { updatedAt: new Date('2026-05-20T13:30:00Z'), createdAt: new Date('2026-01-01T00:00:00Z') }
+    expect(shouldRotateSession(session, 1, now)).toBe(false)
+  })
+
+  it('falls back to createdAt when updatedAt is null', () => {
+    // createdAt is 3 hours ago, timeout is 2 hours — should rotate
+    const session = { updatedAt: null, createdAt: new Date('2026-05-20T11:00:00Z') }
+    expect(shouldRotateSession(session, 2, now)).toBe(true)
+  })
+
+  it('falls back to createdAt when updatedAt is null and within window', () => {
+    const session = { updatedAt: null, createdAt: new Date('2026-05-20T13:30:00Z') }
+    expect(shouldRotateSession(session, 2, now)).toBe(false)
+  })
+
+  it('returns true at exactly the boundary (> not >=)', () => {
+    // updatedAt is exactly 1 hour ago, timeout is 1 hour — NOT rotated (need to exceed, not equal)
+    const session = { updatedAt: new Date('2026-05-20T13:00:00Z'), createdAt: new Date('2026-05-20T10:00:00Z') }
+    expect(shouldRotateSession(session, 1, now)).toBe(false)
+  })
+
+  it('returns true 1ms past the boundary', () => {
+    const session = { updatedAt: new Date('2026-05-20T12:59:59.999Z'), createdAt: new Date('2026-05-20T10:00:00Z') }
+    expect(shouldRotateSession(session, 1, now)).toBe(true)
+  })
+
+  it('works with large timeout values (24 hours)', () => {
+    // 25 hours old, 24 hour timeout — should rotate
+    const session = { updatedAt: new Date('2026-05-19T13:00:00Z'), createdAt: new Date('2026-05-19T10:00:00Z') }
+    expect(shouldRotateSession(session, 24, now)).toBe(true)
+  })
+
+  it('works with large timeout values — within window', () => {
+    // 23 hours old, 24 hour timeout — should NOT rotate
+    const session = { updatedAt: new Date('2026-05-19T15:00:00Z'), createdAt: new Date('2026-05-19T10:00:00Z') }
+    expect(shouldRotateSession(session, 24, now)).toBe(false)
+  })
+})
+
+// ── buildSessionName ──────────────────────────────────────────────────
+
+describe('buildSessionName', () => {
+  it('uses integration name and display name', () => {
+    expect(buildSessionName('My Bot', 'telegram', 'Alice', null)).toBe('My Bot — Alice')
+  })
+
+  it('falls back to provider when integration name is null', () => {
+    expect(buildSessionName(null, 'telegram', 'Alice', null)).toBe('telegram — Alice')
+  })
+
+  it('uses integration name alone when no display name', () => {
+    expect(buildSessionName('My Bot', 'telegram', undefined, null)).toBe('My Bot')
+  })
+
+  it('falls back to "<provider> chat" when no name and no display name', () => {
+    expect(buildSessionName(null, 'slack', undefined, null)).toBe('slack chat')
+  })
+
+  it('appends timestamp when timeout is set', () => {
+    const now = new Date('2026-05-20T14:30:00')
+    const name = buildSessionName('My Bot', 'telegram', 'Alice', 4, now)
+    expect(name).toMatch(/^My Bot — Alice — May 20/)
+    expect(name).toMatch(/2:30\s*PM$/)
+  })
+
+  it('appends timestamp without display name when timeout is set', () => {
+    const now = new Date('2026-01-15T09:05:00')
+    const name = buildSessionName('My Bot', 'telegram', undefined, 1, now)
+    expect(name).toMatch(/^My Bot — Jan 15/)
+    expect(name).toMatch(/9:05\s*AM$/)
+  })
+
+  it('does NOT append timestamp when timeout is null', () => {
+    const name = buildSessionName('My Bot', 'telegram', 'Alice', null)
+    expect(name).toBe('My Bot — Alice')
+  })
+
+  it('does NOT append timestamp when timeout is 0', () => {
+    const name = buildSessionName('My Bot', 'telegram', 'Alice', 0)
+    expect(name).toBe('My Bot — Alice')
   })
 })

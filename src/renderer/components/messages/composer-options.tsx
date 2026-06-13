@@ -18,12 +18,12 @@ import type { LlmProviderId } from '@shared/lib/config/settings'
  *   - rendering the two selector buttons as one toolbar block
  */
 
-const DEFAULT_EFFORT: EffortLevel = 'high'
+const DEFAULT_EFFORT: EffortLevel = 'medium'
 
 export interface ComposerOptionsState {
   effort: EffortLevel
   setEffort: (e: EffortLevel) => void
-  /** Family alias ("opus" | "sonnet" | "haiku"), or undefined while settings load. */
+  /** Family alias ("fable" | "opus" | "sonnet" | "haiku"), or undefined while settings load. */
   model: string | undefined
   setModel: (m: string) => void
   /** Family options for the active provider; empty for providers with no family UX. */
@@ -50,6 +50,8 @@ export interface UseComposerOptionsArgs {
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsState {
   const { initialEffort, initialModel, preferredFamily } = args
 
+  const { data: settings } = useSettings()
+
   // ---- Effort ----
   const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
   const effortSeededRef = useRef(initialEffort !== undefined)
@@ -59,6 +61,15 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       effortSeededRef.current = true
     }
   }, [initialEffort])
+  // For brand-new sessions (no `initialEffort`), adopt the user's configured
+  // default effort once settings load. Doesn't flip the seeded ref, so a
+  // late-arriving session effort can still win, and stops once the user picks.
+  const defaultEffort = settings?.models?.agentEffort
+  useEffect(() => {
+    if (!effortSeededRef.current && initialEffort === undefined && defaultEffort) {
+      setEffortState(defaultEffort)
+    }
+  }, [defaultEffort, initialEffort])
   // Wrap the setter so an explicit user pick locks out the late-arriving
   // initial-seed effect — otherwise a slow `useSession` resolution can clobber
   // the user's choice if they pick before session data lands.
@@ -68,7 +79,6 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [])
 
   // ---- Composer models from active provider ----
-  const { data: settings } = useSettings()
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const composerModels = useMemo(
     () => settings?.llmProviderStatus?.find(p => p.id === activeProvider)?.composerModels ?? [],
@@ -102,6 +112,16 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       setModelState(fallbackModel)
     }
   }, [model, fallbackModel])
+  // When preferredFamily arrives late (e.g. after async session list loads in
+  // AgentHome), override the settings-based default — but not if the user has
+  // already made an explicit pick.
+  const prevPreferredRef = useRef(preferredFamily)
+  useEffect(() => {
+    if (preferredFamily && preferredFamily !== prevPreferredRef.current && !modelSeededRef.current) {
+      setModelState(preferredFamily)
+    }
+    prevPreferredRef.current = preferredFamily
+  }, [preferredFamily])
   const setModel = useCallback((m: string) => {
     modelSeededRef.current = true
     setModelState(m)
@@ -121,6 +141,8 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
 interface ComposerOptionsProps {
   state: ComposerOptionsState
   disabled?: boolean
+  /** Show the Effort section. Disable for model-only pickers (e.g. summarizer). */
+  includeEffort?: boolean
 }
 
 /**
@@ -128,6 +150,6 @@ interface ComposerOptionsProps {
  * both the AgentHome and in-session composers. Stateless — owned by the
  * `useComposerOptions` hook above so the parent can read the values at submit.
  */
-export function ComposerOptions({ state, disabled }: ComposerOptionsProps) {
-  return <ComposerOptionsPopover state={state} disabled={disabled} />
+export function ComposerOptions({ state, disabled, includeEffort }: ComposerOptionsProps) {
+  return <ComposerOptionsPopover state={state} disabled={disabled} includeEffort={includeEffort} />
 }

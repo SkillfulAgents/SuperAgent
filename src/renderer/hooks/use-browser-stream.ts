@@ -265,13 +265,13 @@ export function useBrowserStream({
     }
   }, [tabs, viewingTargetId, agentActiveTargetId])
 
-  // Prevent wheel events from bubbling (must use native listener with passive: false)
+  // Prevent default scroll behavior (must use native listener with passive: false
+  // so preventDefault() works; React's onWheel is passive and can't prevent scrolling)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas || isViewOnly) return
     const handler = (e: WheelEvent) => {
       e.preventDefault()
-      e.stopPropagation()
     }
     canvas.addEventListener('wheel', handler, { passive: false })
     return () => canvas.removeEventListener('wheel', handler)

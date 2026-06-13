@@ -7,8 +7,10 @@ import { useSubagentMessages } from '@renderer/hooks/use-messages'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import type { ApiToolCall, ApiMessage } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
+import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 
 interface SubAgentBlockProps {
   toolCall: ApiToolCall
@@ -20,14 +22,6 @@ interface SubAgentBlockProps {
 }
 
 type SubagentStatus = 'running' | 'completed' | 'error' | 'cancelled'
-
-function formatDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  return `${minutes}m ${remainingSeconds}s`
-}
 
 function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
@@ -115,18 +109,23 @@ export function SubAgentBlock({
     )
   }, [subMessages, subagentStreamingToolUse])
 
-  // Extract display info from input
+  // Extract display info — prefer live SSE data (available immediately from task_started),
+  // fall back to tool_use input (available once the tool call is fully streamed)
   const input = toolCall.input as { subagent_type?: string; description?: string }
-  const subagentType = input.subagent_type || 'Agent'
-  const description = input.description || ''
+  const subagentType = activeSubagent?.subagentType || input.subagent_type || 'Agent'
+  const description = activeSubagent?.description || input.description || ''
 
-  // Extract summary text from the tool result (available immediately from the main messages,
-  // no need to wait for subagent JSONL refetch)
+  // Extract summary text — prefer persisted tool_result, fall back to SSE-delivered resultText
   const resultText = useMemo(() => {
-    if (toolCall.result == null) return null
-    const parsed = parseToolResult(toolCall.result)
-    return parsed.text
-  }, [toolCall.result])
+    if (toolCall.result != null) {
+      const parsed = parseToolResult(toolCall.result)
+      return parsed.text
+    }
+    if (isActiveSubagent && activeSubagent?.resultText) {
+      return activeSubagent.resultText
+    }
+    return null
+  }, [toolCall.result, isActiveSubagent, activeSubagent?.resultText])
 
   // Stats from completed subagent
   const stats = toolCall.subagent
@@ -235,7 +234,7 @@ export function SubAgentBlock({
             {visibleItems.map((item) =>
               item.kind === 'text' ? (
                 <div key={item.key} className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
                     {item.text}
                   </ReactMarkdown>
                 </div>
@@ -252,7 +251,7 @@ export function SubAgentBlock({
             {/* Streaming text from subagent (not yet persisted) */}
             {subagentStreamingMessage && !isStreamingMessagePersisted && (
               <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
                   {subagentStreamingMessage}
                 </ReactMarkdown>
               </div>
@@ -269,22 +268,32 @@ export function SubAgentBlock({
             {/* Result summary from tool_result (available immediately, no JSONL refetch needed) */}
             {resultText && !isResultInFlatItems && !isRunning && (
               <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
                   {resultText}
                 </ReactMarkdown>
               </div>
             )}
           </div>
 
-          {/* Stats footer */}
+          {/* Stats footer — show live usage while running, final stats when completed */}
           {stats && status !== 'running' && (
             <div className="mt-2 text-xs text-muted-foreground italic">
-              {stats.totalDurationMs != null && formatDuration(stats.totalDurationMs)}
+              {stats.totalDurationMs != null && formatElapsed(stats.totalDurationMs)}
               {stats.totalTokens != null && (
                 <>{stats.totalDurationMs != null && ' · '}{formatTokens(stats.totalTokens)} tokens</>
               )}
               {stats.totalToolUseCount != null && (
                 <> · {stats.totalToolUseCount} tool call{stats.totalToolUseCount !== 1 ? 's' : ''}</>
+              )}
+            </div>
+          )}
+          {isRunning && isActiveSubagent && activeSubagent?.usage && (
+            <div className="mt-2 text-xs text-muted-foreground italic">
+              {formatElapsed(activeSubagent.usage.duration_ms)}
+              {' · '}{formatTokens(activeSubagent.usage.total_tokens)} tokens
+              {' · '}{activeSubagent.usage.tool_uses} tool call{activeSubagent.usage.tool_uses !== 1 ? 's' : ''}
+              {activeSubagent.lastToolName && (
+                <> · <span className="font-mono">{activeSubagent.lastToolName}</span></>
               )}
             </div>
           )}

@@ -259,7 +259,10 @@ export function BedrockCredentialsInput({
       </div>
 
       {validationResult && !validationResult.valid && (
-        <RequestError message={validationResult.error || 'Invalid credentials'} />
+        <RequestError
+          message={validationResult.error || 'Invalid credentials'}
+          variant="compact"
+        />
       )}
       {validationResult?.valid && (
         <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">

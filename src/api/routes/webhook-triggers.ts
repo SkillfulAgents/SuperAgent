@@ -20,6 +20,8 @@ import {
   getSessionsByWebhookTrigger,
 } from '@shared/lib/services/session-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { getCurrentUserId } from '@shared/lib/auth/config'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, EntityAgentRole } from '../middleware/auth'
 
 const webhookTriggersRouter = new Hono()
@@ -69,6 +71,7 @@ webhookTriggersRouter.post('/:triggerId/pause', TriggerAgentRole('user'), async 
       return c.json({ error: 'Trigger is not active' }, 400)
     }
     const updated = await getWebhookTrigger(trigger!.id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'paused' })
     return c.json(updated)
   } catch (error) {
     console.error('Failed to pause webhook trigger:', error)
@@ -85,6 +88,7 @@ webhookTriggersRouter.post('/:triggerId/resume', TriggerAgentRole('user'), async
       return c.json({ error: 'Trigger is not paused' }, 400)
     }
     const updated = await getWebhookTrigger(trigger!.id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'resumed' })
     return c.json(updated)
   } catch (error) {
     console.error('Failed to resume webhook trigger:', error)
@@ -108,6 +112,7 @@ webhookTriggersRouter.patch('/:triggerId/prompt', TriggerAgentRole('user'), asyn
     }
 
     const refreshed = await getWebhookTrigger(trigger!.id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'prompt' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update webhook trigger prompt:', error)
@@ -135,6 +140,7 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
     }
 
     const refreshed = await getWebhookTrigger(trigger!.id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update webhook trigger runtime options:', error)
@@ -151,6 +157,8 @@ webhookTriggersRouter.delete('/:triggerId', TriggerAgentRole('user'), async (c) 
     if (!cancelled) {
       return c.json({ error: 'Webhook trigger not found or already cancelled' }, 404)
     }
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'deleted' })
 
     return c.body(null, 204)
   } catch (error) {

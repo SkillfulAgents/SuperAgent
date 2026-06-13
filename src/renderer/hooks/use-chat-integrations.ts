@@ -95,7 +95,12 @@ export function useChatIntegrationSessions(integrationId: string | null) {
       return res.json()
     },
     enabled: !!integrationId,
-    refetchInterval: 10_000, // Poll for new sessions (new users DMing the bot)
+    // Poll for new sessions (new users DMing the bot) — these have no SSE
+    // fallback, so keep polling, just less aggressively, and not while backgrounded.
+    // TODO: conservative first step down from the original 10s; can be raised
+    // further (e.g. 60s) once we've confirmed new-session latency is acceptable.
+    refetchInterval: 20_000,
+    refetchIntervalInBackground: false,
   })
 }
 
@@ -105,12 +110,16 @@ export function useCreateChatIntegration() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (params: {
       agentSlug: string
       provider: ChatProvider
       name?: string
       config: Record<string, unknown>
       showToolCalls?: boolean
+      sessionTimeout?: number | null
+      model?: string | null
+      effort?: string | null
     }) => {
       const { agentSlug, ...body } = params
       const res = await apiFetch(`/api/chat-integrations/${agentSlug}`, {
@@ -147,6 +156,7 @@ export function useUpdateChatIntegration() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({
       id,
       ...params
@@ -155,6 +165,9 @@ export function useUpdateChatIntegration() {
       name?: string
       config?: Record<string, unknown>
       showToolCalls?: boolean
+      sessionTimeout?: number | null
+      model?: string | null
+      effort?: string | null
       status?: 'active' | 'paused'
     }) => {
       const res = await apiFetch(`/api/chat-integrations/${id}`, {
@@ -198,6 +211,7 @@ export function useClearChatSession() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ integrationId, sessionId }: { integrationId: string; sessionId: string }) => {
       const res = await apiFetch(`/api/chat-integrations/${integrationId}/sessions/${sessionId}`, {
         method: 'DELETE',
@@ -216,6 +230,7 @@ export function useClearChatSession() {
 
 export function useTestChatIntegrationCredentials() {
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (params: {
       provider: ChatProvider
       config: Record<string, unknown>

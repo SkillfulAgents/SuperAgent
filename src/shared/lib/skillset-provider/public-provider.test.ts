@@ -4,14 +4,21 @@ import os from 'os'
 import path from 'path'
 import { createZipBuffer } from '@shared/lib/utils/zip'
 
-vi.mock('@shared/lib/utils/retry', () => ({
-  withRetry: async (fn: () => Promise<unknown>) => fn(),
-}))
+vi.mock('@shared/lib/utils/retry', async () => {
+  const actual = await vi.importActual<typeof import('@shared/lib/utils/retry')>(
+    '@shared/lib/utils/retry',
+  )
+  return {
+    ...actual,
+    withRetry: async (fn: () => Promise<unknown>) => fn(),
+  }
+})
 
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
+import { NonRetryableError } from '@shared/lib/utils/retry'
 import { PublicSkillsetProvider } from './public-provider'
 
 const provider = new PublicSkillsetProvider()
@@ -209,28 +216,40 @@ describe('PublicSkillsetProvider.populateCache', () => {
     expect(fs.existsSync(evilPath)).toBe(false)
   })
 
-  it('throws on 404 with descriptive message', async () => {
+  it('throws NonRetryableError on 404 so withRetry skips backoff', async () => {
     mockFetchError(404)
     const destDir = path.join(tmpDir, 'cache')
     await expect(
       provider.populateCache(destDir, makeRef('https://github.com/Org/missing-repo')),
     ).rejects.toThrow(/Repository not found.*missing-repo/)
+    mockFetchError(404)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef('https://github.com/Org/missing-repo')),
+    ).rejects.toBeInstanceOf(NonRetryableError)
   })
 
-  it('throws on 403 with rate limit message', async () => {
+  it('throws NonRetryableError on 403 with rate limit message', async () => {
     mockFetchError(403)
     const destDir = path.join(tmpDir, 'cache')
     await expect(
       provider.populateCache(destDir, makeRef('https://github.com/Org/repo')),
     ).rejects.toThrow(/rate limit/)
+    mockFetchError(403)
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef('https://github.com/Org/repo')),
+    ).rejects.toBeInstanceOf(NonRetryableError)
   })
 
-  it('throws on other HTTP errors with status', async () => {
+  it('5xx stays retryable (plain Error, not NonRetryableError)', async () => {
     mockFetchError(500, 'Internal Server Error')
     const destDir = path.join(tmpDir, 'cache')
     await expect(
       provider.populateCache(destDir, makeRef('https://github.com/Org/repo')),
     ).rejects.toThrow(/500.*Internal Server Error/)
+    mockFetchError(500, 'Internal Server Error')
+    await expect(
+      provider.populateCache(path.join(tmpDir, 'cache2'), makeRef('https://github.com/Org/repo')),
+    ).rejects.not.toBeInstanceOf(NonRetryableError)
   })
 
   it('handles ZIP with no common prefix (flat layout)', async () => {
@@ -275,5 +294,44 @@ describe('PublicSkillsetProvider.refreshCache', () => {
     expect(fs.existsSync(path.join(destDir, 'old-file.txt'))).toBe(false)
     expect(JSON.parse(await fs.promises.readFile(path.join(destDir, 'index.json'), 'utf-8'))).toEqual({ fresh: true })
     expect(await provider.isCacheReady(destDir)).toBe(true)
+  })
+
+  it('preserves the existing cache when the swap rename fails (ELECTRON-4G)', async () => {
+    const destDir = path.join(tmpDir, 'cache')
+    await fs.promises.mkdir(destDir, { recursive: true })
+    await fs.promises.writeFile(path.join(destDir, 'old-file.txt'), 'stale')
+    await fs.promises.writeFile(path.join(destDir, '.skillset-cache-meta.json'), '{}')
+
+    mockFetchResponse(await buildTestZip({ 'index.json': '{"fresh":true}' }))
+
+    // Simulate a persistent Windows EPERM lock on every rename so even the
+    // copy-fallback's source rename + the swap-in both fail. cp also fails so
+    // the new cache can't be installed — the old one must be restored intact.
+    const realRename = fs.promises.rename
+    const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      // Allow renaming the freshly-populated tmp dir during populateCache, but
+      // block the atomic swap moves (which target/originate the real cacheDir).
+      if (String(from) === destDir || String(to) === destDir) {
+        const e = new Error('EPERM: operation not permitted, rename') as NodeJS.ErrnoException
+        e.code = 'EPERM'
+        throw e
+      }
+      return realRename(from, to)
+    })
+    const cpSpy = vi.spyOn(fs.promises, 'cp').mockRejectedValue(
+      Object.assign(new Error('EPERM: operation not permitted, copyfile'), { code: 'EPERM' }),
+    )
+
+    await expect(
+      provider.refreshCache(destDir, makeRef('https://github.com/Org/repo')),
+    ).rejects.toThrow(/EPERM/)
+
+    // The old cache must still be there and usable — not destroyed.
+    expect(fs.existsSync(path.join(destDir, 'old-file.txt'))).toBe(true)
+    expect(await fs.promises.readFile(path.join(destDir, 'old-file.txt'), 'utf-8')).toBe('stale')
+    expect(await provider.isCacheReady(destDir)).toBe(true)
+
+    renameSpy.mockRestore()
+    cpSpy.mockRestore()
   })
 })

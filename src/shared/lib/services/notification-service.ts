@@ -81,7 +81,7 @@ export async function createNotification(
  * List notifications, ordered by creation time (newest first).
  * When userId is provided, only returns notifications for agents the user has access to.
  */
-export async function listNotifications(limit: number = 50, userId?: string): Promise<Notification[]> {
+export async function listNotifications(limit: number = 50, userId?: string, offset: number = 0): Promise<Notification[]> {
   if (userId) {
     const slugs = await getAccessibleAgentSlugs(userId)
     if (slugs.length === 0) return []
@@ -91,12 +91,30 @@ export async function listNotifications(limit: number = 50, userId?: string): Pr
       .where(inArray(notifications.agentSlug, slugs))
       .orderBy(desc(notifications.createdAt))
       .limit(limit)
+      .offset(offset)
   }
   return db
     .select()
     .from(notifications)
     .orderBy(desc(notifications.createdAt))
     .limit(limit)
+    .offset(offset)
+}
+
+export async function countNotifications(userId?: string): Promise<number> {
+  if (userId) {
+    const slugs = await getAccessibleAgentSlugs(userId)
+    if (slugs.length === 0) return 0
+    const result = await db
+      .select({ count: count() })
+      .from(notifications)
+      .where(inArray(notifications.agentSlug, slugs))
+    return result[0]?.count ?? 0
+  }
+  const result = await db
+    .select({ count: count() })
+    .from(notifications)
+  return result[0]?.count ?? 0
 }
 
 /**
@@ -302,6 +320,27 @@ export async function deleteNotification(notificationId: string): Promise<boolea
     .where(eq(notifications.id, notificationId))
 
   return (result.changes ?? 0) > 0
+}
+
+/**
+ * Delete all notifications for the given session IDs.
+ *
+ * Used by session retention cleanup (SessionAutoDeleteMonitor) and manual
+ * session deletion so that notification history does not retain rows pointing
+ * at sessions that no longer exist. Notifications are stored in BOTH auth and
+ * non-auth modes (userId is nullable), so callers should invoke this
+ * unconditionally — not gated on auth mode.
+ *
+ * No-op (returns 0) when the input list is empty.
+ */
+export async function deleteNotificationsBySessionIds(sessionIds: string[]): Promise<number> {
+  if (sessionIds.length === 0) return 0
+
+  const result = await db
+    .delete(notifications)
+    .where(inArray(notifications.sessionId, sessionIds))
+
+  return result.changes ?? 0
 }
 
 /**

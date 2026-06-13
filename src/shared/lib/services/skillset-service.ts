@@ -16,6 +16,7 @@ import { getDataDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { withRetry } from '@shared/lib/utils/retry'
+import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   getAgentWorkspaceDir,
   readFileOrNull,
@@ -46,6 +47,11 @@ const execFileAsync = promisify(execFile)
 const GIT_ENV = {
   ...process.env,
   GIT_TERMINAL_PROMPT: '0',
+  // Force the C locale so git emits English error messages. We pattern-match
+  // a handful of benign git errors (see isExpectedGitDriftError) to suppress
+  // Sentry noise; a translated locale would defeat that matching.
+  LC_ALL: 'C',
+  LANG: 'C',
 }
 
 // ============================================================================
@@ -335,8 +341,8 @@ function summarizeSkillPackageDiff(
 // ============================================================================
 
 /**
- * Parse the full YAML frontmatter from a SKILL.md file,
- * including nested metadata (version, required_env_vars).
+ * Parse the YAML frontmatter from a SKILL.md file: top-level `name`
+ * and nested `metadata.version`.
  */
 export function parseSkillFrontmatter(content: string): SkillFrontmatterMetadata {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---/)
@@ -355,18 +361,6 @@ export function parseSkillFrontmatter(content: string): SkillFrontmatterMetadata
 
     if (metadata.version !== undefined) {
       result.version = String(metadata.version)
-    }
-
-    if (Array.isArray(metadata.required_env_vars)) {
-      result.required_env_vars = metadata.required_env_vars
-        .filter((v: unknown) => v && typeof v === 'object' && 'name' in (v as Record<string, unknown>))
-        .map((v: unknown) => {
-          const obj = v as Record<string, unknown>
-          return {
-            name: String(obj.name),
-            description: String(obj.description || ''),
-          }
-        })
     }
 
     return result
@@ -429,61 +423,107 @@ async function gitClone(url: string, dest: string): Promise<void> {
   }
 }
 
-async function gitPull(repoDir: string): Promise<void> {
-  // Ensure we're on the default branch before pulling.
-  // After a PR flow the repo may be left on a detached HEAD or stale branch.
-  try {
-    const { stdout: headRef } = await execFileAsync(
-      'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
-      { cwd: repoDir, timeout: 5000, env: GIT_ENV },
-    )
-    const defaultBranch = headRef.trim().replace('refs/remotes/origin/', '')
-    await execFileAsync('git', ['checkout', defaultBranch], {
-      cwd: repoDir, timeout: 10000, env: GIT_ENV,
-    })
-  } catch {
-    // Fallback: try main, then master
+/**
+ * Benign git errors that show up on shallow single-branch caches that have
+ * been left in a drifted state by the PR/fork flow (e.g. a hardcoded
+ * `checkout master` on a main-only repo, or a stale `branch.<name>.merge`
+ * config). These are recovered from in `gitPull` and are not actionable, so
+ * we log them rather than reporting to Sentry (ELECTRON-H, ELECTRON-C).
+ */
+function isExpectedGitDriftError(msg: string): boolean {
+  return /pathspec '.*' did not match|no such ref was fetched|Your configuration specifies to merge|unknown revision/i.test(msg)
+}
+
+/**
+ * Resolve the repo's real default branch from its origin remote. Falls back to
+ * `set-head --auto` (which queries the remote's HEAD) when the local
+ * `refs/remotes/origin/HEAD` symref is missing — common on shallow clones.
+ * Returns null if it can't be determined.
+ */
+async function resolveDefaultBranch(repoDir: string): Promise<string | null> {
+  const readSymref = async (): Promise<string | null> => {
     try {
-      await execFileAsync('git', ['checkout', 'main'], {
-        cwd: repoDir, timeout: 10000, env: GIT_ENV,
-      })
+      const { stdout } = await execFileAsync(
+        'git', ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+        { cwd: repoDir, timeout: 5000, env: GIT_ENV },
+      )
+      const branch = stdout.trim().replace('refs/remotes/origin/', '')
+      return branch || null
     } catch {
-      await execFileAsync('git', ['checkout', 'master'], {
-        cwd: repoDir, timeout: 10000, env: GIT_ENV,
-      }).catch((err) => {
-        console.warn(`[gitPull] Could not check out default branch in ${repoDir}:`, err)
-        captureException(err, { tags: { area: 'skillset-git', op: 'checkout-default' }, extra: { repoDir } })
-      })
+      return null
     }
   }
 
-  await execFileAsync('git', ['fetch', 'origin'], {
-    cwd: repoDir, timeout: 30000, env: GIT_ENV,
-  })
+  const existing = await readSymref()
+  if (existing) return existing
 
-  // Hard-reset to origin so we always get the latest upstream content,
-  // even if the local branch drifted (e.g. leftover PR branch commits).
+  // The symref isn't set locally — ask the remote for its HEAD once, then
+  // re-read. `set-head --auto` is a no-op if it can't reach the remote.
   try {
-    const { stdout: branch } = await execFileAsync(
-      'git', ['rev-parse', '--abbrev-ref', 'HEAD'],
-      { cwd: repoDir, timeout: 5000, env: GIT_ENV },
-    )
-    await execFileAsync('git', ['reset', '--hard', `origin/${branch.trim()}`], {
+    await execFileAsync('git', ['remote', 'set-head', 'origin', '--auto'], {
       cwd: repoDir, timeout: 10000, env: GIT_ENV,
     })
-  } catch (resetError) {
-    // Fallback to normal pull if reset fails (e.g. branch isn't tracked
-    // upstream). Surface both failures so intermittent breakage is visible.
-    console.warn(`[gitPull] reset --hard failed in ${repoDir}, falling back to git pull:`, resetError)
-    captureException(resetError, { tags: { area: 'skillset-git', op: 'reset-hard' }, extra: { repoDir } })
-    try {
-      await execFileAsync('git', ['pull'], {
-        cwd: repoDir, timeout: 30000, env: GIT_ENV,
-      })
-    } catch (pullError) {
-      captureException(pullError, { tags: { area: 'skillset-git', op: 'pull-fallback' }, extra: { repoDir } })
-      throw pullError
+  } catch {
+    // Ignore — readSymref below will return null and the caller handles it.
+  }
+  return readSymref()
+}
+
+async function gitPull(repoDir: string): Promise<void> {
+  // Resolve the repo's real default branch instead of guessing main/master.
+  // After a PR flow the repo may be left on a detached HEAD, a stale branch,
+  // or with a drifted branch.<name>.merge config.
+  const defaultBranch = await resolveDefaultBranch(repoDir)
+
+  if (!defaultBranch) {
+    // Without a known default branch we can't deterministically refresh. This
+    // happens on caches whose origin/HEAD can't be resolved (offline, etc.).
+    const msg = `[gitPull] Could not resolve default branch in ${repoDir}`
+    console.warn(msg)
+    captureException(new Error(msg), {
+      tags: { area: 'skillset-git', op: 'resolve-default-branch' },
+      extra: { repoDir },
+    })
+    return
+  }
+
+  try {
+    await execFileAsync('git', ['checkout', defaultBranch], {
+      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // The default branch may not exist locally yet (shallow clone); the
+    // fetch + reset below recreates it from FETCH_HEAD, so this is benign.
+    if (isExpectedGitDriftError(msg)) {
+      console.warn(`[gitPull] checkout ${defaultBranch} failed (recoverable) in ${repoDir}:`, msg)
+    } else {
+      console.warn(`[gitPull] Could not check out default branch in ${repoDir}:`, err)
+      captureException(err, { tags: { area: 'skillset-git', op: 'checkout-default' }, extra: { repoDir } })
     }
+  }
+
+  // Fetch the default branch shallowly and hard-reset to it. This always
+  // pulls the latest upstream content while sidestepping both a missing
+  // origin/<branch> tracking ref and a stale branch.<name>.merge config that
+  // would break `reset --hard origin/<branch>` / `git pull`.
+  try {
+    await execFileAsync('git', ['fetch', '--depth', '1', 'origin', defaultBranch], {
+      cwd: repoDir, timeout: 30000, env: GIT_ENV,
+    })
+    await execFileAsync('git', ['reset', '--hard', 'FETCH_HEAD'], {
+      cwd: repoDir, timeout: 10000, env: GIT_ENV,
+    })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    if (isExpectedGitDriftError(msg)) {
+      // Expected drift on shallow single-branch caches — already handled, no
+      // user-facing impact, so don't report to Sentry.
+      console.warn(`[gitPull] fetch/reset drift (recoverable) in ${repoDir}:`, msg)
+      return
+    }
+    captureException(error, { tags: { area: 'skillset-git', op: 'fetch-reset' }, extra: { repoDir } })
+    throw error
   }
 }
 
@@ -676,7 +716,6 @@ export async function removeSkillsetCache(ref: Pick<SkillsetRef, 'skillsetId' | 
 
 /**
  * Install a skill from a skillset to an agent's workspace.
- * Returns the required env vars (if any) so the UI can prompt the user.
  */
 export async function installSkillFromSkillset(
   agentSlug: string,
@@ -684,7 +723,7 @@ export async function installSkillFromSkillset(
   skillPath: string,
   skillName: string,
   skillVersion: string,
-): Promise<{ requiredEnvVars?: Array<{ name: string; description: string }> }> {
+): Promise<void> {
   const repoDir = getSkillsetRepoDirForRef(skillsetRef)
   if (!(await isCacheReady(repoDir, skillsetRef.provider))) {
     await ensureSkillsetCached(skillsetRef)
@@ -713,7 +752,6 @@ export async function installSkillFromSkillset(
   }
 
   const hash = await getSkillPackageHash(destDir)
-  const frontmatter = parseSkillFrontmatter(skillContent)
 
   // Write metadata file
   const metadata: InstalledSkillMetadata = {
@@ -741,8 +779,6 @@ export async function installSkillFromSkillset(
     skillContent,
     'utf-8'
   )
-
-  return { requiredEnvVars: frontmatter.required_env_vars }
 }
 
 /**
@@ -1003,7 +1039,10 @@ export async function refreshAgentSkills(
       await refreshSkillset(toSkillsetRefFromConfig(ss))
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
-      captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
+      const msg = error instanceof Error ? error.message : String(error)
+      if (!isExpectedGitDriftError(msg)) {
+        captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
+      }
     }
   }
 
@@ -1059,7 +1098,10 @@ export async function refreshAgentSkills(
           try {
             await refreshSkillset(toSkillsetRefFromMeta(meta))
           } catch (error) {
-            captureException(error, { tags: { area: 'skillset-refresh', op: 'queue-merged-pull' }, extra: { skillsetId: meta.skillsetId } })
+            const msg = error instanceof Error ? error.message : String(error)
+            if (!isExpectedGitDriftError(msg)) {
+              captureException(error, { tags: { area: 'skillset-refresh', op: 'queue-merged-pull' }, extra: { skillsetId: meta.skillsetId } })
+            }
           }
           const mergedFiles = await getRepoSkillPackageFiles(skillRepoDir, meta.skillPath)
           if (mergedFiles) {
@@ -1159,16 +1201,6 @@ export async function getDiscoverableSkills(
       const dirName = skillPathToDirName(skill.path)
       if (installedDirs.has(dirName)) continue
 
-      // Try to get required_env_vars from the cached SKILL.md
-      let requiredEnvVars: Array<{ name: string; description: string }> | undefined
-      const repoDir = getSkillsetRepoDirForRef(ssRef)
-      const skillMdPath = path.join(repoDir, skill.path)
-      const content = await readFileOrNull(skillMdPath)
-      if (content) {
-        const meta = parseSkillFrontmatter(content)
-        requiredEnvVars = meta.required_env_vars
-      }
-
       discoverable.push({
         skillsetId: ss.id,
         skillsetName: ss.name,
@@ -1176,7 +1208,6 @@ export async function getDiscoverableSkills(
         description: skill.description,
         version: skill.version,
         path: skill.path,
-        requiredEnvVars,
       })
     }
   }
@@ -1670,6 +1701,194 @@ export async function publishSkillToSkillset(
   )
 
   return { prUrl: result.prUrl, successMessage: result.successMessage }
+}
+
+// ============================================================================
+// ZIP Export / Import
+// ============================================================================
+
+const SKILL_MAX_UNCOMPRESSED_SIZE = 100 * 1024 * 1024 // 100MB
+export const SKILL_MAX_COMPRESSED_SIZE = 100 * 1024 * 1024 // 100MB
+const SKILL_MAX_FILE_COUNT = 500
+
+/**
+ * Export a single skill directory as a ZIP buffer.
+ */
+export async function exportSkill(agentSlug: string, skillDirName: string): Promise<Buffer> {
+  sanitizeDirName(skillDirName)
+  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
+
+  if (!(await directoryExists(skillDir))) {
+    throw new Error('Skill directory not found')
+  }
+
+  const skillMdPath = path.join(skillDir, 'SKILL.md')
+  const skillContent = await readFileOrNull(skillMdPath)
+  if (!skillContent) {
+    throw new Error('SKILL.md not found in skill directory')
+  }
+
+  const packageFiles = await readSkillPackageFiles(skillDir)
+  const files: Record<string, string> = {}
+  for (const f of packageFiles) {
+    files[f.relativePath] = f.content
+  }
+
+  const { createZipBuffer } = await import('@shared/lib/utils/zip')
+  return createZipBuffer(files)
+}
+
+export interface SkillValidationResult {
+  valid: boolean
+  error?: string
+  skillName?: string
+  fileCount: number
+  stripPrefix: string
+}
+
+/**
+ * Validate a ZIP buffer as a skill package.
+ * Checks for SKILL.md, file count, size limits, and path traversal.
+ */
+export async function validateSkillZip(zipBuffer: Buffer): Promise<SkillValidationResult> {
+  const { openZipFromBuffer, detectZipPrefix } = await import('@shared/lib/utils/zip')
+  let reader: Awaited<ReturnType<typeof openZipFromBuffer>> | undefined
+  try {
+    reader = await openZipFromBuffer(zipBuffer)
+
+    const realEntries = reader.entries.filter((e) => !e.fileName.startsWith('__MACOSX/'))
+
+    if (realEntries.length > SKILL_MAX_FILE_COUNT) {
+      return { valid: false, error: `Too many files (${realEntries.length}, max ${SKILL_MAX_FILE_COUNT})`, fileCount: realEntries.length, stripPrefix: '' }
+    }
+
+    let totalSize = 0
+    for (const entry of realEntries) {
+      totalSize += entry.uncompressedSize
+      if (totalSize > SKILL_MAX_UNCOMPRESSED_SIZE) {
+        return { valid: false, error: `Skill package too large (exceeds ${SKILL_MAX_UNCOMPRESSED_SIZE / 1024 / 1024}MB)`, fileCount: realEntries.length, stripPrefix: '' }
+      }
+    }
+
+    for (const entry of realEntries) {
+      if (entry.fileName.split('/').includes('..') || path.isAbsolute(entry.fileName)) {
+        return { valid: false, error: `Invalid path in package: ${entry.fileName}`, fileCount: realEntries.length, stripPrefix: '' }
+      }
+    }
+
+    const stripPrefix = detectZipPrefix(reader.entries)
+
+    const skillMdEntry = realEntries.find((e) => {
+      const name = stripPrefix ? e.fileName.replace(stripPrefix, '') : e.fileName
+      const normalized = name.replace(/^\.\//, '')
+      return normalized === 'SKILL.md'
+    })
+    if (!skillMdEntry) {
+      return { valid: false, error: 'SKILL.md not found in package', fileCount: realEntries.length, stripPrefix }
+    }
+
+    const skillMdBuf = await reader.readEntry(skillMdEntry.fileName)
+    const frontmatter = parseSkillFrontmatter(skillMdBuf.toString('utf-8'))
+    const skillName = frontmatter.name || undefined
+
+    return { valid: true, skillName, fileCount: realEntries.length, stripPrefix }
+  } catch (error) {
+    return {
+      valid: false,
+      error: error instanceof Error ? error.message : 'Failed to read ZIP file',
+      fileCount: 0,
+      stripPrefix: '',
+    }
+  } finally {
+    reader?.close()
+  }
+}
+
+/**
+ * Import a skill from a ZIP buffer into an agent's workspace.
+ * Validates the ZIP upfront (file count, size, path traversal, SKILL.md presence)
+ * then extracts into `.claude/skills/<dir>`.
+ */
+export async function importSkillFromZip(
+  agentSlug: string,
+  zipBuffer: Buffer,
+): Promise<{ skillDir: string; skillName: string }> {
+  const validation = await validateSkillZip(zipBuffer)
+  if (!validation.valid) {
+    throw new Error(validation.error || 'Invalid skill package')
+  }
+
+  const { openZipFromBuffer } = await import('@shared/lib/utils/zip')
+  const reader = await openZipFromBuffer(zipBuffer)
+  try {
+    const { stripPrefix } = validation
+
+    // Read SKILL.md to get skill name and env vars
+    const realEntries = reader.entries.filter((e) => !e.fileName.startsWith('__MACOSX/'))
+    const skillMdEntry = realEntries.find((e) => {
+      const name = stripPrefix ? e.fileName.replace(stripPrefix, '') : e.fileName
+      return name.replace(/^\.\//, '') === 'SKILL.md'
+    })!
+    const skillMdBuf = await reader.readEntry(skillMdEntry.fileName)
+    const skillMdContent = skillMdBuf.toString('utf-8')
+    const frontmatter = parseSkillFrontmatter(skillMdContent)
+    const skillName = frontmatter.name || 'imported-skill'
+
+    // Derive a safe directory name from the skill name
+    const baseDirName = skillName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'imported-skill'
+
+    // Ensure unique directory name
+    const skillsDir = getAgentSkillsDir(agentSlug)
+    await ensureDirectory(skillsDir)
+    let dirName = baseDirName
+    let suffix = 1
+    while (await directoryExists(path.join(skillsDir, dirName))) {
+      dirName = `${baseDirName}-${suffix}`
+      suffix++
+    }
+
+    const destDir = path.join(skillsDir, dirName)
+    await ensureDirectory(destDir)
+
+    let totalExtracted = 0
+    for (const entry of reader.entries) {
+      if (entry.isDirectory) continue
+      if (entry.fileName.startsWith('__MACOSX/')) continue
+
+      let entryName = stripPrefix
+        ? entry.fileName.replace(stripPrefix, '')
+        : entry.fileName
+      entryName = entryName.replace(/^\.\//, '')
+
+      if (!entryName) continue
+
+      const baseName = path.basename(entryName)
+      if (baseName === '.skillset-metadata.json' || baseName === '.skillset-original.md') continue
+
+      const destPath = path.resolve(destDir, entryName)
+      // Defense-in-depth: validateSkillZip already rejects `..`/absolute entries
+      // upfront, but confirm genuine containment here too (prefix-safe).
+      if (!isPathWithinDir(destDir, destPath)) continue
+
+      await ensureDirectory(path.dirname(destPath))
+      const bytesWritten = await reader.extractEntry(
+        entry.fileName,
+        destPath,
+        SKILL_MAX_UNCOMPRESSED_SIZE - totalExtracted,
+      )
+      totalExtracted += bytesWritten
+    }
+
+    return {
+      skillDir: dirName,
+      skillName: frontmatter.name || getDisplayName(dirName),
+    }
+  } finally {
+    reader.close()
+  }
 }
 
 export { copyDirectoryFiltered as copyDirectory } from '@shared/lib/utils/file-storage'

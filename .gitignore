@@ -55,3 +55,7 @@ tsconfig.tsbuildinfo
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+
+# scope-labeling workflow working artifacts (intermediate, regenerated on demand)
+scripts/.scope-input.json
+scripts/.scope-labels.json

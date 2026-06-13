@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, nativeTheme, session, shell, Notification } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, nativeTheme, powerMonitor, session, shell, Notification } from 'electron'
 import { execFileSync, exec } from 'child_process'
 import path from 'path'
 import fs from 'fs'
@@ -37,6 +37,8 @@ import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
+import { openDashboardWindow, installPopupHandler, closeAllDashboardWindows } from './dashboard-window'
+import { safeOpenExternalFromApp } from './safe-open-external'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
 // Setting app.name before getPath('userData') changes the resolved directory.
@@ -69,8 +71,9 @@ registerUpdateHandlers()
 import { serve } from '@hono/node-server'
 import api from '../api'
 import { initializeServices, shutdownServices } from '@shared/lib/startup'
-import { findAvailablePort } from './find-port'
 import { setupServerHandlers } from '@shared/lib/startup'
+import { bindServerWithRetry } from '@shared/lib/server-bind'
+import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
 // Set the app name (shows in macOS menu bar instead of "Electron" during dev)
@@ -87,7 +90,6 @@ if (process.platform === 'darwin') {
 const DEFAULT_API_PORT = 47891
 let actualApiPort: number = DEFAULT_API_PORT
 let mainWindow: BrowserWindow | null = null
-const dashboardWindows: Map<string, BrowserWindow> = new Map()
 let apiServer: ReturnType<typeof serve> | null = null
 let notificationEventSource: EventSource | null = null
 let apiReady = false
@@ -194,32 +196,6 @@ function isNotificationTypeAllowedLocally(notificationType: string | undefined):
   }
 }
 
-function openDashboardWindow(agentSlug: string, dashboardSlug: string) {
-  const key = `${agentSlug}/${dashboardSlug}`
-
-  // Focus existing window if already open
-  const existing = dashboardWindows.get(key)
-  if (existing && !existing.isDestroyed()) {
-    existing.show()
-    existing.focus()
-    return
-  }
-
-  const url = `http://localhost:${actualApiPort}/api/agents/${agentSlug}/artifacts/${dashboardSlug}/view`
-  const win = new BrowserWindow({
-    width: 1000,
-    height: 700,
-    title: 'SuperAgent Dashboard',
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
-  win.loadURL(url)
-  dashboardWindows.set(key, win)
-  win.on('closed', () => dashboardWindows.delete(key))
-}
-
 // Register custom protocol for OAuth callbacks
 // Use a different scheme in dev to avoid conflicts with the installed production app
 const PROTOCOL_SCHEME = app.isPackaged ? 'superagent' : 'superagent-dev'
@@ -271,6 +247,14 @@ function processPendingProtocolUrls() {
 }
 
 function createWindow() {
+  // Idempotent: if a window already exists, focus it rather than creating a
+  // second (orphaned) one. Guards against multiple callers (startApp, activate,
+  // second-instance) racing during cold start.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.focus()
+    return
+  }
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -307,8 +291,14 @@ function createWindow() {
 
   // Spellcheck context menu — show correction suggestions on right-click
   mainWindow.webContents.on('context-menu', (_event, params) => {
+    // Only show a native menu for editable fields (e.g. the message composer). Non-editable
+    // elements use their own in-renderer Radix context menus, so we leave them alone.
+    if (!params.isEditable) return
+
+    const menu = new Menu()
+
+    // Spellcheck suggestions for the misspelled word under the cursor, if any.
     if (params.misspelledWord) {
-      const menu = new Menu()
       for (const suggestion of params.dictionarySuggestions) {
         menu.append(new MenuItem({
           label: suggestion,
@@ -322,21 +312,25 @@ function createWindow() {
         label: 'Add to Dictionary',
         click: () => mainWindow?.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord),
       }))
-      menu.popup()
+      menu.append(new MenuItem({ type: 'separator' }))
     }
+
+    // Standard editing roles — Electron wires these to the focused field and applies the
+    // correct enabled state from params.editFlags.
+    const { editFlags } = params
+    menu.append(new MenuItem({ role: 'cut', enabled: editFlags.canCut }))
+    menu.append(new MenuItem({ role: 'copy', enabled: editFlags.canCopy }))
+    menu.append(new MenuItem({ role: 'paste', enabled: editFlags.canPaste }))
+    menu.append(new MenuItem({ type: 'separator' }))
+    menu.append(new MenuItem({ role: 'selectAll', enabled: editFlags.canSelectAll }))
+
+    menu.popup()
   })
 
-  // Handle window.open() calls - prevent popup windows
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    // Handle file download URLs - download directly without opening a popup
-    if (url.includes('/api/agents/') && url.includes('/files/')) {
-      mainWindow?.webContents.downloadURL(url)
-      return { action: 'deny' }
-    }
-    // For other URLs (OAuth, external links), open in system browser
-    shell.openExternal(url)
-    return { action: 'deny' }
-  })
+  // Handle window.open() calls - deny popups and route external links / downloads.
+  // installPopupHandler routes external URLs through safeOpenExternal (scheme
+  // validation — SUP-214) and is shared with the dashboard popout (SUP-219).
+  installPopupHandler(mainWindow.webContents)
 
   // Load the app
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -417,9 +411,15 @@ ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
 })
 
-// IPC handler for opening URLs in system browser
+// IPC handler for opening URLs in system browser. Renderer-supplied strings are
+// scheme-validated before reaching the OS shell so a hostile/agent-controlled URL
+// can't launch local apps or privileged handlers (file:/javascript:/custom) (SUP-214).
+// First-party app UI also opens well-defined OS deep-links here (sms:/tel: for the
+// iMessage setup link, x-apple.systempreferences: for the computer-use permission
+// helper), so this path uses the slightly broader app allowlist; the popup handler
+// above stays strict (web-only) since it fires for untrusted content.
 ipcMain.handle('open-external', async (_event, url: string) => {
-  await shell.openExternal(url)
+  await safeOpenExternalFromApp(url)
 })
 
 // IPC handler for launching an elevated PowerShell window (Windows only)
@@ -723,7 +723,7 @@ ipcMain.handle('show-emoji-panel', () => {
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
-  openDashboardWindow(agentSlug, dashboardSlug)
+  openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
 })
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
@@ -849,14 +849,10 @@ ipcMain.handle('create-dock-shortcut', (_event, { agentSlug, dashboardSlug, dash
 ipcMain.handle('set-native-theme', (_event, theme: string) => {
   nativeTheme.themeSource = theme as 'system' | 'light' | 'dark'
 
-  // Update Windows title bar overlay symbol color to match theme
-  if (process.platform === 'win32' && mainWindow) {
-    const isDark = nativeTheme.shouldUseDarkColors
-    mainWindow.setTitleBarOverlay({
-      symbolColor: isDark ? '#cccccc' : '#333333',
-      color: '#00000000',
-    })
-  }
+  // Windows uses titleBarStyle: 'hidden' WITHOUT a native overlay (see window
+  // creation above) and draws its own title-bar buttons in the renderer, which
+  // recolor via CSS. Calling setTitleBarOverlay here would throw
+  // "Titlebar overlay is not enabled", so there is nothing native to recolor.
 })
 
 // IPC handler for popping up the full app menu at a position (Windows custom title bar)
@@ -927,7 +923,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const agentSlug = decodeURIComponent(parts[0])
       const dashboardSlug = decodeURIComponent(parts[1])
       if (apiReady) {
-        openDashboardWindow(agentSlug, dashboardSlug)
+        openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
       } else {
         pendingDashboardLinks.push({ agentSlug, dashboardSlug })
       }
@@ -1022,6 +1018,8 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const orgId = callbackUrl.searchParams.get('org_id')
       const orgName = callbackUrl.searchParams.get('org_name')
       const role = callbackUrl.searchParams.get('role')
+      const userId = callbackUrl.searchParams.get('user_id')
+      const memberId = callbackUrl.searchParams.get('member_id')
       const apiUrl = `http://localhost:${actualApiPort}/api/platform-auth/complete`
 
       fetch(apiUrl, {
@@ -1036,6 +1034,8 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
           orgId,
           orgName,
           role,
+          userId,
+          memberId,
         }),
       })
         .then(async (res) => {
@@ -1209,53 +1209,67 @@ function stopNotificationListener(): void {
 
 // Start the API server and app
 async function startApp() {
-  // Find an available port
+  // Bind the API server atomically, retrying on a port race until a port is
+  // claimed (no probe-then-bind TOCTOU gap; an EADDRINUSE retries instead of
+  // crashing the app via uncaughtException). See bindServerWithRetry.
+  let boundPort: number
   try {
-    actualApiPort = await findAvailablePort(DEFAULT_API_PORT)
-    process.env.PORT = String(actualApiPort)
-    console.log(`Found available port: ${actualApiPort}`)
+    const bound = await bindServerWithRetry(api.fetch, {
+      startPort: DEFAULT_API_PORT,
+      hostname: '0.0.0.0',
+    })
+    apiServer = bound.server
+    // Record the port everyone else reads (createAppMenu, createTray, the
+    // renderer base URL, etc.). A stale value here points the UI at a dead
+    // server, so update both the module state and process.env.PORT.
+    actualApiPort = bound.port
+    process.env.PORT = String(bound.port)
+    boundPort = bound.port
+    // Wire server-level handlers (WebSocket proxies, etc.) on the bound server.
+    setupServerHandlers(bound.server)
+    console.log(`API server running on http://localhost:${bound.port}`)
   } catch (error) {
-    console.error('Failed to find available port:', error)
+    console.error('Failed to bind API server:', error)
     app.quit()
     return
   }
 
-  // Start the API server
-  apiServer = serve({ fetch: api.fetch, port: actualApiPort, hostname: '0.0.0.0' }, () => {
-    console.log(`API server running on http://localhost:${actualApiPort}`)
-
-    // Initialize all background services
-    initializeServices().catch((error) => {
-      console.error('Failed to initialize services:', error)
-    })
-
-    // Start listening for notifications (for when window is closed)
-    startNotificationListener()
-
-    // Mark API as ready and process any queued dashboard deep links
-    apiReady = true
-    for (const link of pendingDashboardLinks) {
-      openDashboardWindow(link.agentSlug, link.dashboardSlug)
-    }
-    pendingDashboardLinks.length = 0
-    processPendingProtocolUrls()
+  // Initialize all background services
+  initializeServices().catch((error) => {
+    console.error('Failed to initialize services:', error)
   })
 
-  // Set up server-level handlers (WebSocket proxies, etc.)
-  setupServerHandlers(apiServer)
+  // Reconnect chat integrations after system sleep
+  powerMonitor.on('resume', () => {
+    chatIntegrationManager.reconnectAll().catch((err) => {
+      console.error('Failed to reconnect chat integrations after resume:', err)
+    })
+  })
 
-  // Wait for app to be ready, then create window
+  // Start listening for notifications (for when window is closed)
+  startNotificationListener()
+
+  // Mark API as ready and process any queued dashboard deep links
+  apiReady = true
+  for (const link of pendingDashboardLinks) {
+    openDashboardWindow(link.agentSlug, link.dashboardSlug, actualApiPort)
+  }
+  pendingDashboardLinks.length = 0
+  processPendingProtocolUrls()
+
+  // Wait for app to be ready, then create window. Window/menu/tray creation is
+  // deferred until here so they're never built against a port that never bound.
   await app.whenReady()
 
   createWindow()
 
   // Create the application menu (macOS menu bar)
-  createAppMenu(mainWindow, actualApiPort)
+  createAppMenu(mainWindow, boundPort)
 
   // Create system tray if enabled in settings
   const settings = getSettings()
   if (settings.app?.showMenuBarIcon !== false) {
-    createTray(mainWindow, actualApiPort)
+    createTray(mainWindow, boundPort)
   }
 
   // Restore keep-awake state from previous session (after window is ready so dialogs display correctly)
@@ -1265,20 +1279,33 @@ async function startApp() {
   })
 }
 
-startApp()
-
 // App lifecycle - handle activate separately
+// Show the main window, recreating it if it was closed (window stays in tray
+// after close on macOS/Windows, so `mainWindow` may be null/destroyed here).
+function showOrCreateMainWindow() {
+  // During the first instance's cold start the window doesn't exist yet, but
+  // startApp() will create and show it momentarily — don't race it. (A queued
+  // deep-link URL, if any, is handled separately by handleDeepLinkUrl.)
+  if (!app.isReady()) return
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    // Update tray, menu, and auto-updater with new window reference
+    updateTrayWindow(mainWindow)
+    updateAppMenuWindow(mainWindow)
+    updateAutoUpdaterWindow(mainWindow)
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
 app.whenReady().then(() => {
 
   app.on('activate', () => {
     // On macOS, re-create window when dock icon is clicked
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
-      // Update tray, menu, and auto-updater with new window reference
-      updateTrayWindow(mainWindow)
-      updateAppMenuWindow(mainWindow)
-      updateAutoUpdaterWindow(mainWindow)
-    }
+    showOrCreateMainWindow()
   })
 })
 
@@ -1290,21 +1317,34 @@ app.on('window-all-closed', () => {
   }
 })
 
-// Handle second instance (Windows/Linux deep links)
+// Single-instance handling (must run BEFORE startApp). When the app is already
+// running in the tray and the user re-launches it (e.g. from the Start menu), a
+// second process spawns. It MUST bail out immediately — if it falls through to
+// startApp() it boots its own API server and briefly shows a window before the
+// quit lands, which is the "ghost window" flash on re-launch.
 const gotTheLock = app.requestSingleInstanceLock()
 
 if (!gotTheLock) {
-  app.quit()
+  // Exit hard without running startApp() or the before-quit graceful-shutdown
+  // dance — this process never initialized anything, so there's nothing to clean
+  // up and nothing should ever become visible.
+  app.exit(0)
 } else {
   app.on('second-instance', (_event, commandLine) => {
+    // The re-launch landed here on the original instance. Surface its window —
+    // recreating it if it was closed to the tray — otherwise a plain re-launch
+    // does nothing visible.
+    showOrCreateMainWindow()
+
     // Handle protocol URLs on Windows/Linux
     const url = commandLine.find((arg) => arg.startsWith(`${PROTOCOL_SCHEME}://`))
     if (url) {
       handleDeepLinkUrl(url)
-      if (mainWindow?.isMinimized()) mainWindow.restore()
-      mainWindow?.focus()
     }
   })
+
+  // Only the instance that holds the lock boots the app.
+  startApp()
 }
 
 // Graceful shutdown handling
@@ -1323,10 +1363,7 @@ async function gracefulShutdown() {
   stopNotificationListener()
 
   // Close all dashboard windows
-  for (const win of dashboardWindows.values()) {
-    if (!win.isDestroyed()) win.close()
-  }
-  dashboardWindows.clear()
+  closeAllDashboardWindows()
 
   // Destroy tray and app menu
   destroyTray()

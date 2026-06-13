@@ -1,19 +1,37 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import { createElement, type ReactNode } from 'react'
 import { FileDownloadPill } from './file-download-pill'
 
+// Mock the file preview context
+vi.mock('@renderer/context/file-preview-context', () => ({
+  useFilePreview: () => ({
+    openFile: vi.fn(),
+    openFiles: [],
+    activeFileIndex: 0,
+    comments: new Map(),
+    isOpen: false,
+    closeFile: vi.fn(),
+    setActiveFile: vi.fn(),
+    close: vi.fn(),
+    addComment: vi.fn(),
+    removeComment: vi.fn(),
+    clearComments: vi.fn(),
+  }),
+  FilePreviewProvider: ({ children }: { children: ReactNode }) => children,
+}))
+
 describe('FileDownloadPill', () => {
-  it('renders a file with download link', () => {
+  it('renders a file with view button', () => {
     render(<FileDownloadPill filePath="/workspace/uploads/report.pdf" agentSlug="test-agent" />)
-    const link = screen.getByRole('link')
-    expect(link).toHaveTextContent('report.pdf')
-    expect(link).toHaveAttribute('href', expect.stringContaining('report.pdf'))
+    const button = screen.getByRole('button')
+    expect(button).toHaveTextContent('report.pdf')
   })
 
-  it('renders a folder with folder icon and no download link when path ends with /', () => {
+  it('renders a folder with folder icon and no button', () => {
     render(<FileDownloadPill filePath="/workspace/uploads/my-project/" agentSlug="test-agent" />)
-    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
     expect(screen.getByText('my-project')).toBeInTheDocument()
   })
 
@@ -30,6 +48,6 @@ describe('FileDownloadPill', () => {
   it('handles nested folder path with trailing slash', () => {
     render(<FileDownloadPill filePath="/workspace/uploads/deep/nested/folder/" agentSlug="test-agent" />)
     expect(screen.getByText('folder')).toBeInTheDocument()
-    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 })

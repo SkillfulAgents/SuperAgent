@@ -91,6 +91,9 @@ export interface SessionMetadata {
   // Chat integration fields - present when session was created from an external chat
   isChatIntegrationSession?: boolean
   chatIntegrationId?: string
+  // Set when an automated session is promoted to interactive (e.g. agent asked a user question).
+  // The original automation flags above are preserved for provenance.
+  promotedToInteractive?: boolean
   // Context window usage from the last completed turn
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK
@@ -149,6 +152,7 @@ export interface JsonlMessageEntry {
     stderr: string
     interrupted: boolean
     isImage: boolean
+    backgroundTaskId?: string
     // Subagent-specific (present only on Task tool results)
     agentId?: string
     status?: string
@@ -163,6 +167,11 @@ export interface JsonlMessageEntry {
   // Compact summary fields (present on user messages that contain a compaction summary)
   isCompactSummary?: boolean
   isVisibleInTranscriptOnly?: boolean
+  // SDK message origin metadata (available since claude-agent-sdk 0.3.144)
+  origin?: { kind: string; [key: string]: unknown }
+  // Set on synthetic user entries derived from queued_command attachments
+  // (messages delivered mid-turn) — see normalizeQueuedCommandEntry.
+  isQueuedCommand?: boolean
 }
 
 /**
@@ -183,6 +192,28 @@ export interface JsonlSystemEntry {
 }
 
 /**
+ * Attachment entry from Claude's JSONL format. The CLI records user messages
+ * that arrive mid-turn (queued/steering input) as `queued_command` attachments
+ * instead of regular user entries; `source_uuid` is the queue entry's id (NOT
+ * the uuid the client sent with the message — the CLI regenerates it when the
+ * message is enqueued mid-turn).
+ */
+export interface JsonlAttachmentEntry {
+  uuid: string
+  parentUuid?: string | null
+  type: 'attachment'
+  sessionId?: string
+  timestamp: string
+  attachment: {
+    type: string
+    prompt?: string | ContentBlock[]
+    source_uuid?: string
+    commandMode?: string
+    isMeta?: boolean
+  }
+}
+
+/**
  * File history snapshot entry from JSONL
  */
 export interface JsonlFileHistoryEntry {
@@ -198,7 +229,7 @@ export interface JsonlFileHistoryEntry {
 /**
  * Union type for all JSONL entry types
  */
-export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry
+export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry | JsonlAttachmentEntry
 
 // ============================================================================
 // Content Block Types (from Anthropic API)

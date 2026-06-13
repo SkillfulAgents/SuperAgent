@@ -27,6 +27,7 @@ import {
   removeMessage,
   removeToolCall,
   getSessionsByScheduledTask,
+  getSessionsByWebhookTrigger,
 } from './session-service'
 
 describe('session-service', () => {
@@ -306,6 +307,56 @@ describe('session-service', () => {
       expect(filtered[0].name).toBe('Manual Pending')
     })
 
+    it('includes promoted automated sessions when excludeAutomated is set', async () => {
+      await createSessionFile('test-agent', 'manual-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'promoted-session', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'still-automated', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'manual-session': { name: 'Manual' },
+        'promoted-session': {
+          name: 'Promoted',
+          isScheduledExecution: true,
+          scheduledTaskId: 'task-1',
+          promotedToInteractive: true,
+        },
+        'still-automated': {
+          name: 'Still Automated',
+          isScheduledExecution: true,
+          scheduledTaskId: 'task-2',
+        },
+      })
+
+      const filtered = await listSessions('test-agent', { excludeAutomated: true })
+      expect(filtered.length).toBe(2)
+      const names = filtered.map(s => s.name)
+      expect(names).toContain('Manual')
+      expect(names).toContain('Promoted')
+      expect(names).not.toContain('Still Automated')
+    })
+
+    it('includes promoted metadata-only sessions (no JSONL) when excludeAutomated is set', async () => {
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'promoted-pending': {
+          name: 'Promoted Pending',
+          createdAt: '2026-01-24T10:00:00.000Z',
+          isWebhookExecution: true,
+          webhookTriggerId: 'trigger-1',
+          promotedToInteractive: true,
+        },
+        'automated-pending': {
+          name: 'Automated Pending',
+          createdAt: '2026-01-24T11:00:00.000Z',
+          isWebhookExecution: true,
+          webhookTriggerId: 'trigger-2',
+        },
+      })
+
+      const filtered = await listSessions('test-agent', { excludeAutomated: true })
+      expect(filtered.length).toBe(1)
+      expect(filtered[0].name).toBe('Promoted Pending')
+    })
+
     it('sorts sessions by last activity (newest first)', async () => {
       const oldEntries = [
         {
@@ -440,6 +491,59 @@ describe('session-service', () => {
         'file1.txt\nfile2.txt\nREADME.md'
       )
     })
+
+    it('converts queued_command attachments (mid-turn messages) into user entries', async () => {
+      const entries = [
+        ...SAMPLE_JSONL_ENTRIES,
+        {
+          type: 'attachment',
+          uuid: 'attachment-entry-uuid',
+          parentUuid: null,
+          sessionId: 'test-session',
+          timestamp: '2025-01-01T00:01:00.000Z',
+          attachment: {
+            type: 'queued_command',
+            prompt: [{ type: 'text', text: 'Queued mid-turn message' }],
+            source_uuid: 'queue-source-uuid',
+            commandMode: 'prompt',
+          },
+        },
+        // Task notifications and meta queued commands are system-injected, not user-typed
+        {
+          type: 'attachment',
+          uuid: 'notification-uuid',
+          timestamp: '2025-01-01T00:02:00.000Z',
+          attachment: {
+            type: 'queued_command',
+            prompt: '<task-notification>done</task-notification>',
+            commandMode: 'task-notification',
+          },
+        },
+        {
+          type: 'attachment',
+          uuid: 'meta-uuid',
+          timestamp: '2025-01-01T00:03:00.000Z',
+          attachment: {
+            type: 'queued_command',
+            prompt: 'injected context',
+            source_uuid: 'meta-source-uuid',
+            commandMode: 'prompt',
+            isMeta: true,
+          },
+        },
+      ]
+      await createSessionFile('test-agent', 'queued-session', entries)
+
+      const messages = await getSessionMessages('test-agent', 'queued-session')
+
+      expect(messages.length).toBe(5)
+      const queued = messages[4]
+      expect(queued.type).toBe('user')
+      // Uses source_uuid (the id the SDK replays this message under on resume)
+      expect(queued.uuid).toBe('queue-source-uuid')
+      expect(queued.timestamp).toBe('2025-01-01T00:01:00.000Z')
+      expect(queued.message.content).toEqual([{ type: 'text', text: 'Queued mid-turn message' }])
+    })
   })
 
   describe('deleteSession', () => {
@@ -477,6 +581,21 @@ describe('session-service', () => {
         'test-agent',
         '519f8756-a16e-41ff-99de-9fe599dedae5'
       )
+      expect(metadata).toBeNull()
+    })
+
+    it('deletes a dangling metadata-only session (no JSONL)', async () => {
+      // Metadata entry whose transcript was already removed (e.g. by the CLI's
+      // retention cleanup). Deletion must still clear the metadata.
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'dangling-session': { name: 'Dangling', createdAt: '2026-01-24T10:00:00.000Z' },
+      })
+
+      const result = await deleteSession('test-agent', 'dangling-session')
+
+      expect(result).toBe(true)
+      const metadata = await getSessionMetadata('test-agent', 'dangling-session')
       expect(metadata).toBeNull()
     })
   })
@@ -701,6 +820,43 @@ describe('session-service', () => {
       expect(remaining.length).toBe(2)
       expect(remaining[0].uuid).toBe('asst-1')
       expect(remaining[1].uuid).toBe('user-2')
+    })
+
+    it('removes a queued message by its source_uuid (underlying attachment entry)', async () => {
+      const entries = [
+        {
+          type: 'user',
+          uuid: 'user-1',
+          parentUuid: null,
+          sessionId: 'sess-1',
+          timestamp: '2026-01-24T01:00:00.000Z',
+          message: { role: 'user', content: 'Start' },
+        },
+        // Mid-turn message: persisted as an attachment, surfaced in the UI
+        // with id = attachment.source_uuid (not the entry's top-level uuid)
+        {
+          type: 'attachment',
+          uuid: 'attachment-entry-uuid',
+          parentUuid: 'user-1',
+          sessionId: 'sess-1',
+          timestamp: '2026-01-24T01:00:05.000Z',
+          attachment: {
+            type: 'queued_command',
+            prompt: [{ type: 'text', text: 'Queued steer' }],
+            source_uuid: 'queue-source-uuid',
+            commandMode: 'prompt',
+          },
+        },
+      ]
+
+      await createSessionFile('test-agent', 'sess-1', entries)
+
+      const result = await removeMessage('test-agent', 'sess-1', 'queue-source-uuid')
+      expect(result).toBe(true)
+
+      const remaining = await readSessionEntries('test-agent', 'sess-1')
+      expect(remaining.length).toBe(1)
+      expect(remaining[0].uuid).toBe('user-1')
     })
 
     it('removes an assistant message and associated tool_result entries', async () => {
@@ -2094,6 +2250,46 @@ describe('session-service', () => {
 
       const sessions = await getSessionsByScheduledTask('test-agent', 'task-abc')
       expect(sessions).toEqual([])
+    })
+
+    it('still returns promoted sessions (promotion does not remove from trigger page)', async () => {
+      await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'sess-1': {
+          name: 'Promoted Run',
+          createdAt: '2026-01-24T01:00:00.000Z',
+          scheduledTaskId: 'task-abc',
+          isScheduledExecution: true,
+          promotedToInteractive: true,
+        },
+      })
+
+      const sessions = await getSessionsByScheduledTask('test-agent', 'task-abc')
+      expect(sessions.length).toBe(1)
+      expect(sessions[0].id).toBe('sess-1')
+    })
+  })
+
+  // ============================================================================
+  // getSessionsByWebhookTrigger Tests
+  // ============================================================================
+
+  describe('getSessionsByWebhookTrigger', () => {
+    it('still returns promoted sessions (promotion does not remove from trigger page)', async () => {
+      await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'sess-1': {
+          name: 'Promoted Webhook Run',
+          createdAt: '2026-01-24T01:00:00.000Z',
+          webhookTriggerId: 'trigger-abc',
+          isWebhookExecution: true,
+          promotedToInteractive: true,
+        },
+      })
+
+      const sessions = await getSessionsByWebhookTrigger('test-agent', 'trigger-abc')
+      expect(sessions.length).toBe(1)
+      expect(sessions[0].id).toBe('sess-1')
     })
   })
 })

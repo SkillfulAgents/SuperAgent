@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import agents from './routes/agents'
 import xAgent from './routes/x-agent'
+import xAgentChat from './routes/x-agent-chat'
 import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
@@ -25,6 +26,7 @@ import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import { ANTHROPIC_SDK_BUNDLE } from './llm-sdk-bundle'
 import adminUsersRouter from './routes/admin-users'
+import auditLogRouter from './routes/audit-log'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
 import { initializeServices } from '@shared/lib/startup'
@@ -34,7 +36,7 @@ import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
 import { authEnforcementMiddleware, getAuthSettings } from './middleware/auth-enforcement'
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
-import { LocalModeAuth } from './middleware/local-mode-auth'
+import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 
 const app = new Hono()
 
@@ -55,11 +57,9 @@ if (!isAuthMode()) {
   const localModeAuth = LocalModeAuth()
 
   app.use('/api/*', async (c, next) => {
-    const path = c.req.path
-    // Container endpoints: protected by IsAgent() bearer tokens
-    if (path.startsWith('/api/proxy/') ||
-        path.startsWith('/api/mcp-proxy/') ||
-        path.startsWith('/api/browser/')) {
+    // Container endpoints: protected by per-agent bearer tokens, and reached
+    // from a non-loopback container IP — they must skip the localhost check.
+    if (isContainerFacingPath(c.req.path)) {
       return next()
     }
     return localModeAuth(c, next)
@@ -165,6 +165,7 @@ app.get('/api/llm/anthropic-sdk.js', (c) => {
 // Mount route handlers
 app.route('/api/agents', agents)
 app.route('/api/x-agent', xAgent)
+app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/connected-accounts', connectedAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)
@@ -183,6 +184,7 @@ app.route('/api/user-settings', userSettingsRouter)
 app.route('/api/policies', policies)
 app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/admin/users', adminUsersRouter)
+app.route('/api/audit-log', auditLogRouter)
 app.route('/api/platform-auth', platformAuth)
 app.route('/api/stt', sttRouter)
 app.route('/api/llm', llmRouter)

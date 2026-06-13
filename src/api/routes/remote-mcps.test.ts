@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import type { MiddlewareHandler } from 'hono'
 
@@ -743,6 +743,274 @@ describe('POST / — validation', () => {
 })
 
 // ---------------------------------------------------------------------------
+// SSRF protection — reject private/loopback/non-HTTP URLs
+// ---------------------------------------------------------------------------
+describe('SSRF protection', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  describe('POST / — rejects unsafe URLs before any fetch', () => {
+    it.each([
+      ['http://192.168.1.1/mcp', 'private 192.168.x.x'],
+      ['http://10.0.0.1/mcp', 'private 10.x.x.x'],
+      ['http://172.16.0.1/mcp', 'private 172.16.x.x'],
+      ['http://169.254.169.254/latest/meta-data', 'cloud metadata endpoint'],
+      ['http://box.local/mcp', '.local domain'],
+    ])('rejects %s (%s)', async (url) => {
+      const res = await app.request('http://localhost/api/remote-mcps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Evil MCP', url }),
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toMatch(/private|loopback/)
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['http://127.0.0.1/mcp', 'loopback IPv4'],
+      ['http://localhost/mcp', 'localhost'],
+      ['http://[::1]/mcp', 'loopback IPv6'],
+      ['http://foo.localhost/mcp', 'subdomain of localhost'],
+    ])('rejects localhost URL %s (%s) in non-Electron mode', async (url) => {
+      const res = await app.request('http://localhost/api/remote-mcps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Local MCP', url }),
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toMatch(/private|loopback/)
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['ftp://evil.com/mcp', 'FTP'],
+      ['file:///etc/passwd', 'file://'],
+      ['javascript:alert(1)', 'javascript:'],
+    ])('rejects non-HTTP URL: %s (%s)', async (url) => {
+      const res = await app.request('http://localhost/api/remote-mcps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Evil MCP', url }),
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toMatch(/Unsafe URL protocol|Invalid URL/)
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('allows public HTTPS URLs', async () => {
+      // Initialize
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ jsonrpc: '2.0', result: {}, id: 1 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }))
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ jsonrpc: '2.0', result: { tools: [] }, id: 2 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+      mockInsertValues.mockResolvedValue(undefined)
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([
+        {
+          id: 'mcp-ok',
+          name: 'Public MCP',
+          url: 'https://mcp.example.com',
+          toolsJson: '[]',
+          accessToken: null,
+          refreshToken: null,
+          oauthClientSecret: null,
+        },
+      ])
+
+      const res = await app.request('http://localhost/api/remote-mcps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Public MCP', url: 'https://mcp.example.com' }),
+      })
+
+      expect(res.status).toBe(201)
+      expect(mockFetch).toHaveBeenCalled()
+    })
+  })
+
+  describe('POST / — allows localhost in Electron mode', () => {
+    const originalProcessType = process.type
+
+    beforeEach(() => {
+      Object.defineProperty(process, 'type', { value: 'browser', configurable: true })
+    })
+
+    afterEach(() => {
+      Object.defineProperty(process, 'type', { value: originalProcessType, configurable: true })
+    })
+
+    function mockSuccessfulDiscoverTools() {
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ jsonrpc: '2.0', result: {}, id: 1 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }))
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ jsonrpc: '2.0', result: { tools: [] }, id: 2 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+      mockInsertValues.mockResolvedValue(undefined)
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+    }
+
+    it.each([
+      ['http://127.0.0.1:8080/mcp', 'loopback IPv4'],
+      ['http://localhost:3000/mcp', 'localhost'],
+      ['http://[::1]:9090/mcp', 'loopback IPv6'],
+      ['http://foo.localhost:4000/mcp', 'subdomain of localhost'],
+    ])('allows %s (%s) in Electron mode', async (url) => {
+      mockSuccessfulDiscoverTools()
+      mockLimit.mockResolvedValue([
+        {
+          id: 'mcp-local',
+          name: 'Local MCP',
+          url,
+          toolsJson: '[]',
+          accessToken: null,
+          refreshToken: null,
+          oauthClientSecret: null,
+        },
+      ])
+
+      const res = await app.request('http://localhost/api/remote-mcps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Local MCP', url }),
+      })
+
+      expect(res.status).toBe(201)
+      expect(mockFetch).toHaveBeenCalled()
+    })
+
+    it.each([
+      ['http://192.168.1.1/mcp', 'private LAN'],
+      ['http://10.0.0.1/mcp', 'private 10.x'],
+      ['http://169.254.169.254/latest/meta-data', 'cloud metadata'],
+    ])('still rejects non-localhost private URL %s (%s) even in Electron mode', async (url) => {
+      const res = await app.request('http://localhost/api/remote-mcps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Evil MCP', url }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('POST /initiate-oauth — rejects unsafe URLs for new servers', () => {
+    it('rejects private host URLs', async () => {
+      const res = await app.request('http://localhost/api/remote-mcps/initiate-oauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Evil OAuth', url: 'http://192.168.1.1/mcp' }),
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toMatch(/private|loopback/)
+      expect(mockInitiateNewServerOAuth).not.toHaveBeenCalled()
+    })
+
+    it('does not validate URL for existing server re-auth (mcpId path)', async () => {
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([
+        { id: 'mcp-existing', url: 'https://mcp.example.com' },
+      ])
+      mockInitiateOAuthFlow.mockResolvedValue({
+        authorizationUrl: 'https://auth.example.com/auth',
+        state: 'state-123',
+      })
+
+      const res = await app.request('http://localhost/api/remote-mcps/initiate-oauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mcpId: 'mcp-existing' }),
+      })
+
+      expect(res.status).toBe(200)
+    })
+  })
+
+  describe('PATCH /:id — rejects unsafe URL updates', () => {
+    it('rejects private host URL in update', async () => {
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([
+        { id: 'mcp-1', name: 'Old', url: 'https://mcp.example.com' },
+      ])
+
+      const res = await app.request('http://localhost/api/remote-mcps/mcp-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'http://127.0.0.1:8080/evil' }),
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toMatch(/private|loopback/)
+    })
+
+    it('allows updating to a public URL', async () => {
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      // First call: existing server lookup
+      mockLimit.mockResolvedValueOnce([
+        { id: 'mcp-1', name: 'Old', url: 'https://old.example.com' },
+      ])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+      // Second call: updated server fetch
+      mockLimit.mockResolvedValueOnce([
+        {
+          id: 'mcp-1',
+          name: 'Old',
+          url: 'https://new.example.com',
+          toolsJson: '[]',
+          accessToken: null,
+          refreshToken: null,
+          oauthClientSecret: null,
+        },
+      ])
+
+      const res = await app.request('http://localhost/api/remote-mcps/mcp-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://new.example.com' }),
+      })
+
+      expect(res.status).toBe(200)
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
 // GET /:id/agents — list agent slugs that have this MCP server mapped
 // ---------------------------------------------------------------------------
 describe('GET /:id/agents', () => {
@@ -783,5 +1051,75 @@ describe('GET /:id/agents', () => {
 
     const res = await app.request('http://localhost/api/remote-mcps/m-3/agents')
     expect(res.status).toBe(500)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// OAuth callback — postMessage uses window.location.origin, not '*'
+// ---------------------------------------------------------------------------
+describe('OAuth callback — postMessage origin', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('uses window.location.origin (not wildcard) on error', async () => {
+    const res = await app.request(
+      'http://localhost/api/remote-mcps/oauth-callback?error=access_denied'
+    )
+
+    expect(res.status).toBe(200)
+    const html = await res.text()
+    expect(html).toContain('window.location.origin')
+    expect(html).not.toContain("'*'")
+  })
+
+  it('uses window.location.origin (not wildcard) on token exchange failure', async () => {
+    mockCompleteOAuthFlow.mockResolvedValue({ success: false })
+
+    const res = await app.request(
+      'http://localhost/api/remote-mcps/oauth-callback?code=abc&state=xyz'
+    )
+
+    expect(res.status).toBe(200)
+    const html = await res.text()
+    expect(html).toContain('window.location.origin')
+    expect(html).not.toContain("'*'")
+  })
+
+  it('uses window.location.origin (not wildcard) on success', async () => {
+    mockCompleteOAuthFlow.mockResolvedValue({ success: true, mcpId: 'mcp-new' })
+    mockDbFrom.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      { id: 'mcp-new', url: 'https://mcp.example.com', accessToken: 'tok' },
+    ])
+
+    // discoverTools fetches
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ jsonrpc: '2.0', result: {}, id: 1 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }))
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ jsonrpc: '2.0', result: { tools: [] }, id: 2 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
+    mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+    const res = await app.request(
+      'http://localhost/api/remote-mcps/oauth-callback?code=abc&state=xyz'
+    )
+
+    expect(res.status).toBe(200)
+    const html = await res.text()
+    expect(html).toContain('window.location.origin')
+    expect(html).not.toContain("'*'")
   })
 })

@@ -1,12 +1,24 @@
 import { apiFetch } from '@renderer/lib/api'
 import { useState, useEffect, useRef } from 'react'
-import { ShieldCheck, ShieldX, ChevronDown, ArrowUp } from 'lucide-react'
+import { ShieldCheck, ShieldX, ChevronDown, ChevronRight, ArrowUp } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@renderer/components/ui/collapsible'
 import { cn } from '@shared/lib/utils/cn'
+import { getScopeLabel, type ScopeLabel } from '@shared/lib/proxy/scope-metadata'
+import { labelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import ReactMarkdown from 'react-markdown'
+import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
+
+// read is least privileged, destructive most — used to pick the minimal group
+// whose "allow all" still satisfies this request (resolver takes most-permissive).
+const LABEL_RANK: Record<ScopeLabel, number> = { read: 0, write: 1, destructive: 2 }
 
 interface ProxyReviewRequestItemProps {
   reviewId: string
@@ -43,10 +55,20 @@ export function ProxyReviewRequestItem({
   const [error, setError] = useState<string | null>(null)
   const [allowMenuOpen, setAllowMenuOpen] = useState(false)
   const [denyMenuOpen, setDenyMenuOpen] = useState(false)
+  const [specificScopeOpen, setSpecificScopeOpen] = useState(false)
   const [denyReason, setDenyReason] = useState('')
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const denyReasonInputRef = useRef<HTMLTextAreaElement | null>(null)
   const requestLabel = `${method} /${targetPath}`
+
+  // The minimal (lowest-risk) label among the matched scopes. Allowing this whole
+  // group is the smallest-blast-radius "allow all" that still lets this request
+  // through, since the resolver picks the most-permissive sufficient scope.
+  const minimalLabel: ScopeLabel | undefined = matchedScopes
+    .map((s) => getScopeLabel(toolkit, s))
+    .filter((l): l is ScopeLabel => !!l)
+    .sort((a, b) => LABEL_RANK[a] - LABEL_RANK[b])[0]
+  const isApiReview = !targetPath.startsWith('tools/call')
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -241,6 +263,7 @@ export function ProxyReviewRequestItem({
                             {scopeDescriptions[scope] && (
                               <span className="block w-full truncate text-xs font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
                                 <ReactMarkdown
+                                  urlTransform={markdownUrlTransform}
                                   components={{
                                     p: ({ children }) => <>{children}</>,
                                     a: ({ href, children }) => (
@@ -310,7 +333,13 @@ export function ProxyReviewRequestItem({
         </div>
 
         <div className="flex items-stretch">
-          <Popover open={allowMenuOpen} onOpenChange={setAllowMenuOpen}>
+          <Popover
+            open={allowMenuOpen}
+            onOpenChange={(o) => {
+              setAllowMenuOpen(o)
+              if (!o) setSpecificScopeOpen(false) // collapse the disclosure on close
+            }}
+          >
             <PopoverTrigger asChild>
               <Button
                 disabled={status === 'submitting'}
@@ -322,8 +351,9 @@ export function ProxyReviewRequestItem({
                 <ChevronDown className={cn('ml-2 h-3.5 w-3.5 transition-transform', allowMenuOpen && 'rotate-180')} />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-auto min-w-0 max-w-[480px] p-1">
+            <PopoverContent align="end" className="w-[380px] max-w-[calc(100vw-2rem)] p-1">
               <div className="flex flex-col items-start gap-0">
+                {/* Allow once (this request only) */}
                 <Button
                   data-testid="proxy-review-allow-once-menu-btn"
                   onClick={() => {
@@ -342,71 +372,131 @@ export function ProxyReviewRequestItem({
                     </span>
                   </span>
                 </Button>
-                {matchedScopes.length > 0 && (
-                  <div className="w-full py-2">
-                    <div className="mx-3 border-t border-border" />
-                    {matchedScopes.map((scope) => (
-                      <Button
-                        key={scope}
-                        data-testid={`proxy-review-always-allow-${scope}`}
-                        onClick={() => {
-                          setAllowMenuOpen(false)
-                          handleAlways('allow', scope)
-                        }}
-                        disabled={status === 'submitting'}
-                        variant="ghost"
-                        size="xs"
-                        className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
-                      >
-                        <span className="flex min-w-0 w-full flex-col items-start text-left">
-                          <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
-                            <span className="shrink-0">Always allow</span>
-                            <span className="inline-flex min-w-0 max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">
-                              {scope}
-                            </span>
+
+                {/* Minimal risk group — smallest "allow all" that still covers this request */}
+                {isApiReview && minimalLabel && (
+                  <>
+                    <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
+                    <Button
+                      data-testid={`proxy-review-allow-label-${minimalLabel}`}
+                      onClick={() => {
+                        setAllowMenuOpen(false)
+                        handleAlways('allow', labelDefaultKey(minimalLabel))
+                      }}
+                      disabled={status === 'submitting'}
+                      variant="ghost"
+                      size="xs"
+                      className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
+                    >
+                      <span className="flex min-w-0 w-full flex-col items-start text-left">
+                        <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
+                          <span className="shrink-0">Allow all</span>
+                          <span className="inline-flex shrink-0 items-center rounded-md bg-muted px-1.5 py-0.5 text-xs capitalize text-foreground/70">
+                            {minimalLabel}
                           </span>
-                          {scopeDescriptions[scope] && (
-                            <span className="block w-full truncate text-xs font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
-                              <ReactMarkdown
-                                components={{
-                                  p: ({ children }) => <>{children}</>,
-                                  a: ({ href, children }) => (
-                                    <a href={href} target="_blank" rel="noopener noreferrer">
-                                      {children}
-                                    </a>
-                                  ),
-                                }}
-                              >
-                                {scopeDescriptions[scope]}
-                              </ReactMarkdown>
-                            </span>
-                          )}
+                          <span className="shrink-0">
+                            requests to <span className="capitalize">{toolkit}</span>
+                          </span>
                         </span>
-                      </Button>
-                    ))}
-                    <div className="mx-3 border-b border-border" />
-                  </div>
+                        <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
+                          Auto-allow every {minimalLabel}-level scope for this account
+                        </span>
+                      </span>
+                    </Button>
+                  </>
                 )}
-              <Button
-                data-testid="proxy-review-always-allow-all"
-                onClick={() => {
-                  setAllowMenuOpen(false)
-                  handleAlways('allow', '*')
-                }}
-                disabled={status === 'submitting'}
-                variant="ghost"
-                size="xs"
-                className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
-              >
-                <span className="flex min-w-0 w-full flex-col items-start text-left">
-                  <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
-                    <span className="shrink-0">Always allow all {toolkit} requests</span>
+
+                {/* Per-scope "always allow" — tucked behind a disclosure */}
+                {matchedScopes.length > 0 && (
+                  <>
+                    <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
+                    <Collapsible
+                      open={specificScopeOpen}
+                      onOpenChange={setSpecificScopeOpen}
+                      className="w-full"
+                    >
+                      <CollapsibleTrigger
+                        data-testid="proxy-review-specific-scope-toggle"
+                        className="flex w-full items-center gap-1 rounded-md px-3 py-2 text-left text-xs text-foreground hover:bg-muted"
+                      >
+                        <ChevronRight
+                          className={cn(
+                            'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+                            specificScopeOpen && 'rotate-90',
+                          )}
+                        />
+                        <span>Select specific scope for allow all</span>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        {matchedScopes.map((scope) => (
+                          <Button
+                            key={scope}
+                            data-testid={`proxy-review-always-allow-${scope}`}
+                            onClick={() => {
+                              setAllowMenuOpen(false)
+                              handleAlways('allow', scope)
+                            }}
+                            disabled={status === 'submitting'}
+                            variant="ghost"
+                            size="xs"
+                            className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
+                          >
+                            <span className="flex min-w-0 w-full flex-col items-start text-left">
+                              <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
+                                <span className="shrink-0">Always allow</span>
+                                <span className="inline-flex min-w-0 max-w-full items-center truncate rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/70">
+                                  {scope}
+                                </span>
+                              </span>
+                              {scopeDescriptions[scope] && (
+                                <span className="block w-full truncate text-xs font-normal text-muted-foreground/80 [&_a]:font-normal [&_a]:text-inherit [&_a]:underline">
+                                  <ReactMarkdown
+                                    urlTransform={markdownUrlTransform}
+                                    components={{
+                                      p: ({ children }) => <>{children}</>,
+                                      a: ({ href, children }) => (
+                                        <a href={href} target="_blank" rel="noopener noreferrer">
+                                          {children}
+                                        </a>
+                                      ),
+                                    }}
+                                  >
+                                    {scopeDescriptions[scope]}
+                                  </ReactMarkdown>
+                                </span>
+                              )}
+                            </span>
+                          </Button>
+                        ))}
+                      </CollapsibleContent>
+                    </Collapsible>
+                  </>
+                )}
+
+                {/* Allow everything for this account */}
+                <div className="mx-3 my-1 w-[calc(100%-1.5rem)] border-t border-border" />
+                <Button
+                  data-testid="proxy-review-always-allow-all"
+                  onClick={() => {
+                    setAllowMenuOpen(false)
+                    handleAlways('allow', '*')
+                  }}
+                  disabled={status === 'submitting'}
+                  variant="ghost"
+                  size="xs"
+                  className="h-auto min-w-0 w-full justify-start py-2 text-foreground hover:bg-muted"
+                >
+                  <span className="flex min-w-0 w-full flex-col items-start text-left">
+                    <span className="flex w-full min-w-0 items-center gap-1 overflow-hidden">
+                      <span className="shrink-0">
+                        Always allow all <span className="capitalize">{toolkit}</span> requests
+                      </span>
+                    </span>
+                    <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
+                      Allow full read/edit access to {toolkit}
+                    </span>
                   </span>
-                  <span className="block w-full truncate text-xs font-normal text-muted-foreground/80">
-                    Allow full read/edit access to {toolkit}
-                  </span>
-                </span>
-              </Button>
+                </Button>
               </div>
             </PopoverContent>
           </Popover>

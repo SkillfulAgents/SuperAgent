@@ -6,6 +6,7 @@ import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
+import type { EffortLevel } from '@shared/lib/container/types'
 
 export interface ContainerSettings {
   containerRunner: string
@@ -34,6 +35,8 @@ export interface ApiKeySettings {
   browserbaseProjectId?: string
   deepgramApiKey?: string
   openaiApiKey?: string
+  nangoSecretKey?: string
+  accountProviderUserId?: string
 }
 
 export type SttProvider = 'deepgram' | 'openai' | 'platform'
@@ -47,12 +50,15 @@ export interface NotificationSettings {
   sessionComplete: boolean
   sessionWaiting: boolean
   sessionScheduled: boolean
+  notifyWhenUnfocused?: boolean
 }
 
 export interface ModelSettings {
   summarizerModel: string
   agentModel: string
   browserModel: string
+  /** Default reasoning effort seeded into the composer for new agent sessions. */
+  agentEffort?: EffortLevel
 }
 
 export interface AgentLimitsSettings {
@@ -66,12 +72,15 @@ export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform'
 
 export type BrowserbaseStealthOs = 'linux' | 'windows' | 'mac' | 'mobile' | 'tablet'
 
+export type AccountProviderType = 'composio' | 'nango'
+
 export interface AppPreferences {
   showMenuBarIcon?: boolean
   notifications?: NotificationSettings
   autoSleepTimeoutMinutes?: number
   autoDeleteInactiveDays?: number
   setupCompleted?: boolean
+  accountProvider?: AccountProviderType
   hostBrowserProvider?: HostBrowserProviderId
   chromeProfileId?: string
   chromeHeadless?: boolean
@@ -163,6 +172,10 @@ export interface PlatformAuthSettings {
   orgId: string | null
   orgName: string | null
   role: string | null
+  /** Global platform user identity (Supabase auth UUID) — used for analytics. */
+  userId: string | null
+  /** Per-org membership id (sub_…) — used for request attribution. */
+  memberId: string | null
   createdAt: string
   updatedAt: string
 }
@@ -235,11 +248,13 @@ export interface GlobalSettingsResponse {
     bedrock: ApiKeyStatus
     platform: ApiKeyStatus
     composio: ApiKeyStatus
+    nango: ApiKeyStatus
     browserbase: ApiKeyStatus
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
   }
   composioUserId?: string
+  accountProviderUserId?: string
   voice?: VoiceSettings
   models: ModelSettings
   agentLimits: AgentLimitsSettings
@@ -289,8 +304,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   models: {
     summarizerModel: 'claude-haiku-4-5',
-    agentModel: 'claude-opus-4-7',
+    agentModel: 'claude-opus-4-8',
     browserModel: 'claude-sonnet-4-6',
+    agentEffort: 'medium',
   },
   enableToolSearch: true,
   skillsets: [DEFAULT_PUBLIC_SKILLSET],
@@ -361,7 +377,7 @@ export function loadSettings(): AppSettings {
         },
         voice: loaded.voice,
         computerUse: loaded.computerUse,
-        shareAnalytics: loaded.shareAnalytics ?? false,
+        shareAnalytics: loaded.shareAnalytics ?? true,
         analyticsTargets: loaded.analyticsTargets,
         shareErrorReports: loaded.shareErrorReports,
         platformAuth: loaded.platformAuth,
@@ -487,6 +503,38 @@ export function getComposioUserId(): string | undefined {
   return process.env.COMPOSIO_USER_ID
 }
 
+export function getNangoApiKeyStatus(): ApiKeyStatus {
+  const settings = getSettings()
+  if (settings.apiKeys?.nangoSecretKey) {
+    return { isConfigured: true, source: 'settings' }
+  }
+  if (process.env.NANGO_SECRET_KEY) {
+    return { isConfigured: true, source: 'env' }
+  }
+  return { isConfigured: false, source: 'none' }
+}
+
+export function getNangoSecretKey(): string | undefined {
+  const settings = getSettings()
+  if (settings.apiKeys?.nangoSecretKey) {
+    return settings.apiKeys.nangoSecretKey
+  }
+  return process.env.NANGO_SECRET_KEY
+}
+
+export function getAccountProviderUserId(): string | undefined {
+  const settings = getSettings()
+  if (settings.apiKeys?.accountProviderUserId) {
+    return settings.apiKeys.accountProviderUserId
+  }
+  return getComposioUserId()
+}
+
+export function getDefaultAccountProviderType(): AccountProviderType {
+  const settings = getSettings()
+  return settings.app?.accountProvider ?? 'composio'
+}
+
 /**
  * Get the status of the Browserbase API key configuration.
  */
@@ -534,6 +582,7 @@ export function getEffectiveModels(): ModelSettings {
     summarizerModel: settings.models?.summarizerModel || DEFAULT_SETTINGS.models!.summarizerModel,
     agentModel: settings.models?.agentModel || DEFAULT_SETTINGS.models!.agentModel,
     browserModel: settings.models?.browserModel || DEFAULT_SETTINGS.models!.browserModel,
+    agentEffort: settings.models?.agentEffort || DEFAULT_SETTINGS.models!.agentEffort,
   }
 }
 

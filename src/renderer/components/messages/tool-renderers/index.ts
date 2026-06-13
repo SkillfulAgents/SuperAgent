@@ -26,9 +26,11 @@ import {
   browserScrollRenderer,
   browserWaitRenderer,
   browserPressRenderer,
+  browserTypeRenderer,
   browserScreenshotRenderer,
   browserSelectRenderer,
   browserHoverRenderer,
+  browserEvalRenderer,
   browserRunRenderer,
 } from './browser-tools'
 import {
@@ -44,6 +46,17 @@ import {
   getAgentSessionsRenderer,
   getAgentSessionTranscriptRenderer,
 } from './x-agent-tools'
+import {
+  listChatProvidersRenderer,
+  listChatIntegrationsRenderer,
+  addChatIntegrationRenderer,
+  sendChatMessageRenderer,
+} from './chat-tools'
+import {
+  taskCreateRenderer,
+  taskUpdateRenderer,
+  taskListRenderer,
+} from './task-management'
 
 export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
 
@@ -70,6 +83,9 @@ const toolRenderers: Record<string, ToolRenderer> = {
 
   // Task management
   TodoWrite: todoWriteRenderer,
+  TaskCreate: taskCreateRenderer,
+  TaskUpdate: taskUpdateRenderer,
+  TaskList: taskListRenderer,
 
   // User interaction
   AskUserQuestion: askUserQuestionRenderer,
@@ -93,9 +109,11 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__browser__browser_scroll': browserScrollRenderer,
   'mcp__browser__browser_wait': browserWaitRenderer,
   'mcp__browser__browser_press': browserPressRenderer,
+  'mcp__browser__browser_type': browserTypeRenderer,
   'mcp__browser__browser_screenshot': browserScreenshotRenderer,
   'mcp__browser__browser_select': browserSelectRenderer,
   'mcp__browser__browser_hover': browserHoverRenderer,
+  'mcp__browser__browser_eval': browserEvalRenderer,
   'mcp__browser__browser_run': browserRunRenderer,
 
   // MCP tools - dashboards
@@ -110,6 +128,12 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__agents__invoke_agent': invokeAgentRenderer,
   'mcp__agents__get_agent_sessions': getAgentSessionsRenderer,
   'mcp__agents__get_agent_session_transcript': getAgentSessionTranscriptRenderer,
+
+  // MCP tools - chat integrations
+  'mcp__chat__list_available_chat_providers': listChatProvidersRenderer,
+  'mcp__chat__list_chat_integrations': listChatIntegrationsRenderer,
+  'mcp__chat__add_chat_integration': addChatIntegrationRenderer,
+  'mcp__chat__send_chat_message': sendChatMessageRenderer,
 }
 
 /**

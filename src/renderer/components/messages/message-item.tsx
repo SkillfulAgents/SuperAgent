@@ -1,18 +1,22 @@
 import { cn } from '@shared/lib/utils/cn'
-import { useState, useCallback, type ReactNode } from 'react'
+import { useState, useCallback, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
+import { MessageErrorBoundary } from './message-error-boundary'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -57,6 +61,80 @@ function extractText(node: ReactNode): string {
   return ''
 }
 
+const REMARK_PLUGINS = [remarkGfm]
+
+// Hoisted to a stable module-level reference. The memoized <MarkdownBlock> below
+// must NOT be handed a fresh `components`/`remarkPlugins` object each render, or
+// its memo would never bail and every settled streaming block would re-parse.
+const MARKDOWN_COMPONENTS: Components = {
+  // Style code blocks
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+  code: ({ children, className }) => {
+    const isInline = !className
+    return isInline ? (
+      <code className={cn(
+        'rounded px-1.5 py-0.5 text-sm font-medium',
+        'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
+      )}>
+        {children}
+      </code>
+    ) : (
+      <code className={cn(className, 'text-foreground')}>{children}</code>
+    )
+  },
+  // Style tables with borders and horizontal scroll
+  table: ({ children }) => (
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-sm">
+        {children}
+      </table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className={cn(
+      'border-b-2 px-3 py-1.5 text-left font-semibold',
+      'border-border'
+    )}>
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className={cn(
+      'border-b px-3 py-1.5',
+      'border-border'
+    )}>
+      {children}
+    </td>
+  ),
+  // Ensure links open in new tab
+  a: ({ children, href }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(
+        'hover:underline',
+        'text-blue-500'
+      )}
+    >
+      {children}
+    </a>
+  ),
+}
+
+// A single markdown block. Memoized so that, while a response streams, each
+// already-settled block parses exactly once even though later deltas keep
+// re-rendering the parent MessageItem. See split-streaming-markdown.ts.
+// Exported so the agent-markdown link/scheme handling can be tested directly
+// (SUP-238) without standing up a full MessageItem.
+export const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={markdownUrlTransform}>
+      {text}
+    </ReactMarkdown>
+  )
+})
+
 interface MessageItemProps {
   message: ApiMessage
   isStreaming?: boolean
@@ -69,7 +147,7 @@ interface MessageItemProps {
   onRemoveToolCall?: (toolCallId: string) => void
 }
 
-export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
@@ -83,8 +161,15 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
 
   const isSlashCommand = isUser && hasText && text.startsWith('/')
 
+  // While streaming, pre-split the markdown into fence-safe blocks so each
+  // settled block parses once; only the small trailing block re-parses per
+  // delta (O(N) instead of O(N^2)). Persisted messages render as one document.
+  const streamingSplit = isStreaming && text ? splitStreamingMarkdown(text) : null
+
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
   const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
+  const billingUrl = usePlatformBillingUrl(rawText ?? '')
+  const showBillingCard = isAssistant && !!message.apiError && !!billingUrl
 
   // Don't render assistant messages that have no text and no tool calls
   // (and aren't streaming). These are transient empty entries from partially-
@@ -145,77 +230,32 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
                 </div>
               )}
 
+              {/* Actionable platform billing error */}
+              {hasText && !isSlashCommand && showBillingCard && (
+                <InsufficientBalanceCard billingUrl={billingUrl!} />
+              )}
+
               {/* LLM provider error display */}
-              {hasText && !isSlashCommand && isProviderErrorMessage && (
+              {hasText && !isSlashCommand && !showBillingCard && isProviderErrorMessage && (
                 <ProviderErrorCard message={text} />
               )}
 
               {/* Text content */}
-              {hasText && !isSlashCommand && !isProviderErrorMessage && (
+              {hasText && !isSlashCommand && !showBillingCard && !isProviderErrorMessage && (
                 <div dir="auto" className={cn(
                   'prose prose-sm max-w-none min-w-0 break-words font-normal dark:prose-invert',
                   'prose-strong:font-medium'
                 )}>
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      // Style code blocks
-                      pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-                      code: ({ children, className }) => {
-                        const isInline = !className
-                        return isInline ? (
-                          <code className={cn(
-                            'rounded px-1.5 py-0.5 text-sm font-medium',
-                            'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
-                          )}>
-                            {children}
-                          </code>
-                        ) : (
-                          <code className={cn(className, 'text-foreground')}>{children}</code>
-                        )
-                      },
-                      // Style tables with borders and horizontal scroll
-                      table: ({ children }) => (
-                        <div className="overflow-x-auto">
-                          <table className="w-full border-collapse text-sm">
-                            {children}
-                          </table>
-                        </div>
-                      ),
-                      th: ({ children }) => (
-                        <th className={cn(
-                          'border-b-2 px-3 py-1.5 text-left font-semibold',
-                          'border-border'
-                        )}>
-                          {children}
-                        </th>
-                      ),
-                      td: ({ children }) => (
-                        <td className={cn(
-                          'border-b px-3 py-1.5',
-                          'border-border'
-                        )}>
-                          {children}
-                        </td>
-                      ),
-                      // Ensure links open in new tab
-                      a: ({ children, href }) => (
-                        <a
-                          href={href}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={cn(
-                            'hover:underline',
-                            'text-blue-500'
-                          )}
-                        >
-                          {children}
-                        </a>
-                      ),
-                    }}
-                  >
-                    {text}
-                  </ReactMarkdown>
+                  {streamingSplit ? (
+                    <>
+                      {streamingSplit.settled.map((block, i) => (
+                        <MarkdownBlock key={i} text={block} />
+                      ))}
+                      {streamingSplit.tail && <MarkdownBlock text={streamingSplit.tail} />}
+                    </>
+                  ) : (
+                    <MarkdownBlock text={text} />
+                  )}
                   {isStreaming && (
                     <span className="inline-block w-2 h-4 bg-current ml-0.5 animate-pulse" />
                   )}
@@ -262,18 +302,20 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
             {toolCalls.map((toolCall) => (
               <MessageContextMenu key={toolCall.id} text={toolCall.name} onRemove={onRemoveToolCall ? () => onRemoveToolCall(toolCall.id) : undefined}>
                 <div>
-                  {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
-                    <SubAgentBlock
-                      toolCall={toolCall}
-                      sessionId={sessionId}
-                      agentSlug={agentSlug!}
-                      isSessionActive={isSessionActive}
-                      activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
-                      isCompleted={completedSubagents?.has(toolCall.id) ?? false}
-                    />
-                  ) : (
-                    <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
-                  )}
+                  <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
+                    {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
+                      <SubAgentBlock
+                        toolCall={toolCall}
+                        sessionId={sessionId}
+                        agentSlug={agentSlug!}
+                        isSessionActive={isSessionActive}
+                        activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
+                        isCompleted={completedSubagents?.has(toolCall.id) ?? false}
+                      />
+                    ) : (
+                      <ToolCallItem toolCall={toolCall} messageCreatedAt={message.createdAt} agentSlug={agentSlug} isSessionActive={isSessionActive} />
+                    )}
+                  </MessageErrorBoundary>
                 </div>
               </MessageContextMenu>
             ))}
@@ -283,6 +325,15 @@ export function MessageItem({ message, isStreaming, agentSlug, sessionId, isSess
     </div>
   )
 }
+
+// Memoized: on the 5s refetch React Query's structural sharing preserves the
+// object reference of any unchanged message, so the default shallow prop compare
+// skips re-rendering all but the items that actually changed. Handlers, agentSlug
+// and sessionId are referentially stable. Note: activeSubagents/completedSubagents
+// are passed to every item and change identity on each subagent SSE event, so the
+// memo gives no benefit while a subagent is actively streaming — it still pays off
+// for the common idle/refetch and plain-text-streaming cases.
+export const MessageItem = memo(MessageItemComponent)
 
 if (__RENDER_TRACKING__) {
   (MessageItem as any).whyDidYouRender = true

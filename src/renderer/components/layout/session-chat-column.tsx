@@ -1,64 +1,63 @@
-import { MessageList } from '@renderer/components/messages/message-list'
 import { MessageInput } from '@renderer/components/messages/message-input'
-import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
+import { SessionThread } from '@renderer/components/messages/session-thread'
 import { PendingRequestStack } from '@renderer/components/messages/pending-request-stack'
 import { renderPendingRequest, type RenderContext } from '@renderer/components/messages/pending-request-renderer'
 import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watcher'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
 import type { EffortLevel } from '@shared/lib/container/types'
-
-interface PendingMessage {
-  text: string
-  sentAt: number
-  sender?: { id: string; name: string; email: string }
-}
+import type { PendingMessage } from '@renderer/components/messages/pending-message'
 
 interface SessionChatColumnProps {
   sessionId: string
   agentSlug: string
-  pendingUserMessage: PendingMessage | null
+  pendingUserMessages: PendingMessage[]
   isViewOnly: boolean
   contextPercent: number | null
   effort?: EffortLevel
   model?: string
-  onPendingMessageAppeared: () => void
-  onMessageSent: (content: string) => void
+  onPendingMessageAppeared: (localId: string) => void
+  onMessageSent: (content: string, localId: string, queued: boolean) => void
+  onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
+  onMessageFailed: (localId: string) => void
 }
 
 export function SessionChatColumn({
   sessionId,
   agentSlug,
-  pendingUserMessage,
+  pendingUserMessages,
   isViewOnly,
   contextPercent,
   effort,
   model,
   onPendingMessageAppeared,
   onMessageSent,
+  onMessageUuidAssigned,
+  onMessageFailed,
 }: SessionChatColumnProps) {
-  const { isActive } = useMessageStream(sessionId, agentSlug)
+  const { isActive, browserActive } = useMessageStream(sessionId, agentSlug)
+  useFileDeliveryWatcher(sessionId, agentSlug)
   const { items: pendingRequestItems, count: pendingRequestCount } = usePendingRequests({
     sessionId,
     agentSlug,
-    pendingUserMessage,
+    pendingUserMessages,
   })
 
   const renderCtx: RenderContext = { sessionId, agentSlug, readOnly: isViewOnly }
 
   return (
-    <div className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0">
-      <MessageList
-        sessionId={sessionId}
-        agentSlug={agentSlug}
-        pendingUserMessage={pendingUserMessage}
-        pendingRequestCount={pendingRequestCount}
-        onPendingMessageAppeared={onPendingMessageAppeared}
-      />
-      <div className="bg-background max-w-[740px] mx-auto w-full">
-        <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
-        {pendingRequestCount > 0 ? (
+    <SessionThread
+      sessionId={sessionId}
+      agentSlug={agentSlug}
+      browserActive={browserActive}
+      pendingUserMessages={pendingUserMessages}
+      pendingRequestCount={pendingRequestCount}
+      onPendingMessageAppeared={onPendingMessageAppeared}
+      footerClassName="bg-background max-w-[740px] mx-auto w-full"
+      footer={
+        pendingRequestCount > 0 ? (
           <div className="px-4 pb-4" data-testid="pending-request-slot">
             <PendingRequestStack>
               {pendingRequestItems.map((d) => renderPendingRequest(d, renderCtx))}
@@ -71,6 +70,8 @@ export function SessionChatColumn({
               sessionId={sessionId}
               agentSlug={agentSlug}
               onMessageSent={onMessageSent}
+              onMessageUuidAssigned={onMessageUuidAssigned}
+              onMessageFailed={onMessageFailed}
               initialEffort={effort}
               initialModel={model}
             />
@@ -106,8 +107,8 @@ export function SessionChatColumn({
               </span>
             </div>
           </>
-        )}
-      </div>
-    </div>
+        )
+      }
+    />
   )
 }

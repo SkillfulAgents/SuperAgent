@@ -94,10 +94,11 @@ export const verification = sqliteTable('verification', {
 // Agents, sessions, messages, and secrets are now file-based
 // =============================================================================
 
-// Connected accounts - app-level OAuth connections managed by Composio
+// Connected accounts - app-level OAuth connections via pluggable providers (Composio, Nango, …)
 export const connectedAccounts = sqliteTable('connected_accounts', {
   id: text('id').primaryKey(),
-  composioConnectionId: text('composio_connection_id').notNull().unique(),
+  providerConnectionId: text('provider_connection_id').notNull().unique(),
+  providerName: text('provider_name').notNull().default('composio'),
   toolkitSlug: text('toolkit_slug').notNull(), // e.g., 'gmail', 'slack', 'github'
   displayName: text('display_name').notNull(), // User-friendly label
   status: text('status', { enum: ['active', 'revoked', 'expired'] })
@@ -183,7 +184,16 @@ export const notifications = sqliteTable('notifications', {
   title: text('title').notNull(),
   body: text('body').notNull(),
   isRead: integer('is_read', { mode: 'boolean' }).notNull().default(false),
-  userId: text('user_id').references(() => user.id, { onDelete: 'set null' }), // Owner in auth mode, null in non-auth mode
+  // NOTE: notifications are intentionally agent/session-scoped, NOT per-user.
+  // Read state is shared across everyone with access to the agent (a teammate
+  // acknowledging a "session waiting"/"session complete" item clears it for the
+  // team). There is deliberately no per-user owner column here: cross-agent
+  // isolation is enforced by getAccessibleAgentSlugs() in the service layer and
+  // by HasNotificationAccess on the by-id routes. A previously-speculative
+  // `user_id` column was dropped (SUP-227, never wired up — always NULL). Do not
+  // re-add a per-user owner unless a *targeted* notification type lands (e.g. an
+  // @-mention or per-approver request), which needs a recipient + split read
+  // state, not a single shared isRead bit.
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   readAt: integer('read_at', { mode: 'timestamp_ms' }),
 }, (table) => ({
@@ -405,6 +415,9 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
 
   // Behavior settings
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
+  sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
+  model: text('model'), // Claude model override; null = use default
+  effort: text('effort'), // Effort level override; null = use default
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })
@@ -435,6 +448,23 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
+}))
+
+// Audit log - tracks key user actions across the app
+export const auditLog = sqliteTable('audit_log', {
+  id: text('id').primaryKey(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    .default(sql`(cast(unixepoch('subsecond') * 1000 as integer))`)
+    .notNull(),
+  userId: text('user_id'),
+  object: text('object').notNull(),
+  objectId: text('object_id').notNull(),
+  action: text('action').notNull(),
+  details: text('details'), // JSON
+}, (table) => ({
+  createdAtIdx: index('audit_log_created_at_idx').on(table.createdAt),
+  objectIdx: index('audit_log_object_idx').on(table.object),
+  userIdIdx: index('audit_log_user_id_idx').on(table.userId),
 }))
 
 // Type exports for convenience
@@ -476,3 +506,5 @@ export type ChatIntegration = typeof chatIntegrations.$inferSelect
 export type NewChatIntegration = typeof chatIntegrations.$inferInsert
 export type ChatIntegrationSession = typeof chatIntegrationSessions.$inferSelect
 export type NewChatIntegrationSession = typeof chatIntegrationSessions.$inferInsert
+export type AuditLogEntry = typeof auditLog.$inferSelect
+export type NewAuditLogEntry = typeof auditLog.$inferInsert

@@ -4,6 +4,8 @@ import { Authenticated, IsAdmin } from '../middleware/auth'
 import { db } from '@shared/lib/db'
 import { user, authAccount } from '@shared/lib/db/schema'
 import { hashPassword } from 'better-auth/crypto'
+import { getCurrentUserId } from '@shared/lib/auth/config'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 
 const adminUsersRouter = new Hono()
 adminUsersRouter.use('*', Authenticated(), IsAdmin())
@@ -53,6 +55,7 @@ adminUsersRouter.post('/invite', async (c) => {
       updatedAt: now,
     }).run()
 
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'user', objectId: userId, action: 'invited', details: { email: trimmedEmail, role: role || 'user' } })
     return c.json({ user: { id: userId, name: trimmedName, email: trimmedEmail } })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to create user'
@@ -98,6 +101,7 @@ adminUsersRouter.post('/reset-password', async (c) => {
       .where(eq(user.id, userId))
       .run()
 
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'user', objectId: userId, action: 'reset_password' })
     return c.json({ success: true })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Failed to reset password'

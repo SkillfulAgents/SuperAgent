@@ -48,3 +48,21 @@ export function setRendererErrorReportingUser(user: ErrorReportingUser | null): 
     }
   } catch { /* never crash */ }
 }
+
+/**
+ * Report a caught exception to Sentry from the renderer.
+ *
+ * Safe to call from anywhere (including error-boundary lifecycles) — it never
+ * throws, and is a no-op in dev where Sentry is intentionally not initialized.
+ */
+export function captureRendererException(
+  error: unknown,
+  context?: { tags?: Record<string, string>; extra?: Record<string, unknown> }
+): void {
+  try {
+    Sentry.captureException(error, {
+      tags: context?.tags,
+      extra: context?.extra,
+    })
+  } catch { /* never crash */ }
+}

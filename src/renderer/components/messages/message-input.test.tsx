@@ -9,7 +9,7 @@ import { useEffect } from 'react'
 
 // Mock hooks
 const mockSendMessage = {
-  mutateAsync: vi.fn().mockResolvedValue({}),
+  mutateAsync: vi.fn().mockResolvedValue({ success: true, uuid: 'server-uuid-1', queued: false }),
   isPending: false,
 }
 const mockUploadFile = { mutateAsync: vi.fn().mockResolvedValue({ path: '/tmp/file' }) }
@@ -113,27 +113,67 @@ describe('MessageInput', () => {
     expect(screen.getByTestId('message-input')).not.toBeDisabled()
   })
 
-  it('shows only the stop button when active', () => {
+  it('shows stop and send buttons when active', () => {
     mockStreamState.isActive = true
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
     expect(screen.getByTestId('stop-button')).toBeInTheDocument()
-    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+    expect(screen.getByTestId('send-button')).toBeInTheDocument()
   })
 
-  it('does not submit message while agent is active', async () => {
+  it('queues a message sent while the agent is active (localId, queued=true, no model/effort)', async () => {
     mockStreamState.isActive = true
     const user = userEvent.setup()
+    const onMessageSent = vi.fn()
+    const onMessageUuidAssigned = vi.fn()
     renderWithProviders(
-      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+      <MessageInput sessionId="s-1" agentSlug="agent-1" onMessageSent={onMessageSent} onMessageUuidAssigned={onMessageUuidAssigned} />
     )
 
     const input = screen.getByTestId('message-input')
     await user.type(input, 'Follow up')
     await user.keyboard('{Enter}')
 
-    expect(mockSendMessage.mutateAsync).not.toHaveBeenCalled()
+    await waitFor(() => {
+      expect(onMessageSent).toHaveBeenCalledWith('Follow up', expect.any(String), true)
+    })
+    await waitFor(() => {
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith({
+        sessionId: 's-1',
+        agentSlug: 'agent-1',
+        content: 'Follow up',
+      })
+    })
+    // Mid-turn sends must not carry runtime options — a model/effort change
+    // would interrupt the in-flight query. The uuid is server-assigned, so
+    // the payload never includes one.
+    const call = mockSendMessage.mutateAsync.mock.calls[0][0]
+    expect(call).not.toHaveProperty('effort')
+    expect(call).not.toHaveProperty('model')
+    expect(call).not.toHaveProperty('uuid')
+    // The server-assigned uuid from the response is attached to the same localId
+    await waitFor(() => {
+      expect(onMessageUuidAssigned).toHaveBeenCalledWith(onMessageSent.mock.calls[0][1], 'server-uuid-1', false)
+    })
+  })
+
+  it('reports failure so the optimistic copy can be dropped', async () => {
+    mockSendMessage.mutateAsync.mockRejectedValueOnce(new Error('boom'))
+    const user = userEvent.setup()
+    const onMessageSent = vi.fn()
+    const onMessageFailed = vi.fn()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" onMessageSent={onMessageSent} onMessageFailed={onMessageFailed} />
+    )
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Will fail')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => {
+      expect(onMessageFailed).toHaveBeenCalledWith(onMessageSent.mock.calls[0][1])
+    })
   })
 
   it('submits message on Enter key', async () => {
@@ -148,7 +188,7 @@ describe('MessageInput', () => {
     await user.keyboard('{Enter}')
 
     await waitFor(() => {
-      expect(onMessageSent).toHaveBeenCalledWith('Hello world')
+      expect(onMessageSent).toHaveBeenCalledWith('Hello world', expect.any(String), false)
     })
     await waitFor(() => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
@@ -156,7 +196,7 @@ describe('MessageInput', () => {
           sessionId: 's-1',
           agentSlug: 'agent-1',
           content: 'Hello world',
-          effort: 'high',
+          effort: 'medium',
         })
       )
     })
@@ -218,7 +258,7 @@ describe('MessageInput', () => {
           sessionId: 's-1',
           agentSlug: 'agent-1',
           content: 'Hello by button',
-          effort: 'high',
+          effort: 'medium',
         })
       )
     })
@@ -536,7 +576,7 @@ describe('MessageInput', () => {
     await user.keyboard('{Enter}')
 
     await waitFor(() => {
-      expect(onMessageSent).toHaveBeenCalledWith('Hello')
+      expect(onMessageSent).toHaveBeenCalledWith('Hello', expect.any(String), false)
     })
     await waitFor(() => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
@@ -544,7 +584,7 @@ describe('MessageInput', () => {
           sessionId: 's-1',
           agentSlug: 'agent-1',
           content: 'Hello',
-          effort: 'high',
+          effort: 'medium',
         })
       )
     })

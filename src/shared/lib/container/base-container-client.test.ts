@@ -1,8 +1,23 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath } from './base-container-client'
+import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient } from './base-container-client'
+import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
+
+/** Minimal concrete subclass to exercise protected run-error classification. */
+class TestContainerClient extends BaseContainerClient {
+  protected getRunnerCommand(): string {
+    return 'docker'
+  }
+  // Expose protected predicates for testing.
+  public testIsPortConflictError(error: unknown): boolean {
+    return this.isPortConflictError(error)
+  }
+  public testExtractInaccessibleMountPath(error: unknown): string | null {
+    return this.extractInaccessibleMountPath(error)
+  }
+}
 
 describe('writeEnvFile', () => {
   const cleanups: (() => void)[] = []
@@ -568,5 +583,137 @@ describe('getEnhancedPath', () => {
     // Every separator should be the platform delimiter
     const parts = enhanced.split(path.delimiter)
     expect(parts.length).toBeGreaterThan(1)
+  })
+})
+
+// ============================================================================
+// subscribeToStream error handling (ELECTRON-Q unhandled rejection)
+// ============================================================================
+
+/**
+ * Minimal concrete client whose getInfoFromRuntime reports the container as
+ * stopped, so subscribeToStream's getPortOrThrow throws "Container is not
+ * running" — the exact path that used to leak an unhandled rejection.
+ */
+class StoppedTestClient extends BaseContainerClient {
+  protected getRunnerCommand(): string {
+    return 'docker'
+  }
+  async getInfoFromRuntime(): Promise<ContainerInfo> {
+    return { status: 'stopped', port: null }
+  }
+}
+
+function makeStoppedClient(): StoppedTestClient {
+  return new StoppedTestClient({ agentId: 'test-agent' } as ContainerConfig)
+}
+
+describe('subscribeToStream failure handling', () => {
+  it('does not throw or emit an unhandled error when no error listener is attached', async () => {
+    const client = makeStoppedClient()
+    // No 'error' listener registered — a bare emit('error') would throw here.
+    const { ready } = client.subscribeToStream('sess-1', () => {})
+
+    // The discarded-promise scenario from MessagePersister: only catch `ready`.
+    await expect(ready).rejects.toThrow('Container is not running')
+  })
+
+  it('routes a connection_closed message through the callback on setup failure', async () => {
+    const client = makeStoppedClient()
+    const messages: StreamMessage[] = []
+
+    const { ready } = client.subscribeToStream('sess-2', (m) => messages.push(m))
+
+    await ready.catch(() => {}) // swallow the expected rejection
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].type).toBe('connection_closed')
+    expect(messages[0].sessionId).toBe('sess-2')
+  })
+
+  it('still emits error when a listener IS attached', async () => {
+    const client = makeStoppedClient()
+    const errors: unknown[] = []
+    client.on('error', (err) => errors.push(err))
+
+    const { ready } = client.subscribeToStream('sess-3', () => {})
+    await ready.catch(() => {})
+
+    expect(errors).toHaveLength(1)
+    expect((errors[0] as Error).message).toContain('Container is not running')
+  })
+})
+
+// ============================================================================
+// run-error classification (port races, inaccessible mounts)
+// ============================================================================
+
+describe('BaseContainerClient.isPortConflictError', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  it('matches docker "port is already allocated"', () => {
+    expect(client.testIsPortConflictError(new Error('Error: port is already allocated'))).toBe(true)
+  })
+
+  it('matches "address already in use"', () => {
+    expect(client.testIsPortConflictError(new Error('listen tcp 0.0.0.0:4000: bind: address already in use'))).toBe(true)
+  })
+
+  it('matches docker "Bind for ... failed"', () => {
+    expect(client.testIsPortConflictError(new Error('Bind for 0.0.0.0:4000 failed: port is already allocated'))).toBe(true)
+  })
+
+  it('reads from a .stderr property', () => {
+    expect(client.testIsPortConflictError({ stderr: 'failed to bind host port for 0.0.0.0:4000' })).toBe(true)
+  })
+
+  it('does not match unrelated errors', () => {
+    expect(client.testIsPortConflictError(new Error('no such image'))).toBe(false)
+  })
+
+  it('base extractInaccessibleMountPath returns null (no VM filesystem)', () => {
+    expect(client.testExtractInaccessibleMountPath(new Error('operation not permitted'))).toBe(null)
+  })
+})
+
+// ============================================================================
+// isHealthy — the /health probe must be bounded (it gates the request hot path
+// via ensureRunning's stale-cache liveness check; an unresponsive port-forward
+// would otherwise hang the caller indefinitely).
+// ============================================================================
+
+describe('BaseContainerClient.isHealthy', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('passes an AbortSignal to the /health fetch (bounded probe)', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true }) as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.isHealthy(4001)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4001/health',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+  })
+
+  it('returns true when the probe responds ok', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true }) as Response))
+    await expect(client.isHealthy(4001)).resolves.toBe(true)
+  })
+
+  it('returns false (not throw) when the probe aborts/times out', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new DOMException('The operation was aborted', 'AbortError')
+    }))
+    await expect(client.isHealthy(4001)).resolves.toBe(false)
+  })
+
+  it('returns false when no port is known', async () => {
+    await expect(client.isHealthy(0)).resolves.toBe(false)
   })
 })

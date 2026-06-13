@@ -103,7 +103,11 @@ import {
   getSkillsetRepoDir,
   isCacheReady,
   isGitAvailable,
+  exportSkill,
+  validateSkillZip,
+  importSkillFromZip,
 } from './skillset-service'
+import { createZipBuffer, openZipFromBuffer } from '@shared/lib/utils/zip'
 
 // ============================================================================
 // Test Suite
@@ -245,7 +249,14 @@ describe('skillset-service', () => {
   const SKILL_MD_PLAIN = `# Test Skill\nSome instructions for the agent.`
 
   function mockExecFileAsNoOp() {
-    mockExecFile.mockReturnValue({ stdout: '', stderr: '' })
+    mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+      // Resolve a default branch so gitPull exercises its real fetch/reset
+      // path instead of bailing out on an unresolved origin/HEAD.
+      if (cmd === 'git' && args[0] === 'symbolic-ref') {
+        return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+      }
+      return { stdout: '', stderr: '' }
+    })
   }
 
   function setupPublishMocks() {
@@ -714,6 +725,98 @@ Instructions here`
       )
       expect(onDiskSkill).toBe(localContent)
     })
+
+    it('gitPull resolves origin/HEAD via set-head and refreshes via fetch+reset FETCH_HEAD', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+      await createSkillDir('test-agent', 'test-skill', skillContent, meta)
+      await createSkillsetCache(config.id, index, { [meta.skillPath]: skillContent })
+
+      const calls: string[][] = []
+      let setHeadDone = false
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        calls.push([cmd, ...args])
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          // Symref is missing until `set-head --auto` runs (shallow clone).
+          if (!setHeadDone) {
+            throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref')
+          }
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-head') {
+          setHeadDone = true
+          return { stdout: '', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+
+      const cmdline = calls.map((c) => c.join(' '))
+      expect(cmdline).toContain('git remote set-head origin --auto')
+      expect(cmdline).toContain('git checkout main')
+      expect(cmdline).toContain('git fetch --depth 1 origin main')
+      expect(cmdline).toContain('git reset --hard FETCH_HEAD')
+      // No brittle hardcoded master fallback and no full-history reset by name.
+      expect(cmdline).not.toContain('git checkout master')
+      expect(cmdline.some((c) => c.startsWith('git reset --hard origin/'))).toBe(false)
+    })
+
+    it('gitPull swallows expected drift errors from fetch+reset without throwing', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+      await createSkillDir('test-agent', 'test-skill', skillContent, meta)
+      await createSkillsetCache(config.id, index, { [meta.skillPath]: skillContent })
+
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'fetch') {
+          // The kind of benign drift seen on shallow single-branch caches.
+          throw new Error("fatal: couldn't find remote ref main: no such ref was fetched")
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      // Refresh must not throw and metadata must remain intact (up-to-date).
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+      const updated = await readMetadata('test-agent', 'test-skill')
+      expect(updated.originalContentHash).toBe(hashTestSkillPackage({ 'SKILL.md': skillContent }))
+    })
+
+    it('gitPull reports unexpected fetch errors to Sentry', async () => {
+      const skillContent = '# Test Skill\nOriginal content'
+      const meta = buildMetadata({ originalContentHash: contentHash(skillContent) })
+      const config = buildSkillsetConfig()
+      const index = buildIndex({
+        skills: [{ name: 'Test Skill', path: meta.skillPath, description: 'desc', version: '1.0.0' }],
+      })
+      await createSkillDir('test-agent', 'test-skill', skillContent, meta)
+      await createSkillsetCache(config.id, index, { [meta.skillPath]: skillContent })
+
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        if (cmd === 'git' && args[0] === 'fetch') {
+          throw new Error('fatal: unable to access remote: Connection timed out')
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      // Unexpected errors are surfaced (captured + rethrown) but refreshAgentSkills
+      // catches per-skillset so the overall call still resolves.
+      await expect(refreshAgentSkills('test-agent', [config])).resolves.toBeUndefined()
+    })
   })
 
   // ============================================================================
@@ -1029,25 +1132,6 @@ metadata:
       expect(parseSkillFrontmatter(content).version).toBe('1.2.3')
     })
 
-    it('parses required_env_vars from metadata section', () => {
-      const content = `---
-metadata:
-  version: "1.0.0"
-  required_env_vars:
-    - name: API_KEY
-      description: The API key
-    - name: SECRET
-      description: Auth token
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.required_env_vars).toEqual([
-        { name: 'API_KEY', description: 'The API key' },
-        { name: 'SECRET', description: 'Auth token' },
-      ])
-    })
-
     it('returns empty object for invalid YAML', () => {
       const content = `---
   invalid: yaml: content: [broken
@@ -1067,23 +1151,6 @@ metadata:
       expect(parseSkillFrontmatter(content)).toEqual({})
     })
 
-    it('filters out invalid required_env_vars entries', () => {
-      const content = `---
-metadata:
-  required_env_vars:
-    - name: VALID
-      description: Valid entry
-    - just_a_string
-    - name: ALSO_VALID
-      description: Another valid
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.required_env_vars).toHaveLength(2)
-      expect(result.required_env_vars![0].name).toBe('VALID')
-      expect(result.required_env_vars![1].name).toBe('ALSO_VALID')
-    })
   })
 
   describe('contentHash', () => {
@@ -1346,80 +1413,6 @@ just a string
       expect(parseSkillFrontmatter(content)).toEqual({})
     })
 
-    it('handles metadata with empty required_env_vars array', () => {
-      const content = `---
-metadata:
-  version: "1.0.0"
-  required_env_vars: []
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.version).toBe('1.0.0')
-      expect(result.required_env_vars).toEqual([])
-    })
-
-    it('handles required_env_vars entry with missing description', () => {
-      const content = `---
-metadata:
-  version: "1.0.0"
-  required_env_vars:
-    - name: MY_VAR
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.required_env_vars).toEqual([
-        { name: 'MY_VAR', description: '' },
-      ])
-    })
-
-    it('filters out null entries in required_env_vars', () => {
-      const content = `---
-metadata:
-  required_env_vars:
-    - name: VALID
-      description: Good
-    -
-    - name: ALSO_VALID
-      description: Also good
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      // The null entry should be filtered out (falsy check)
-      expect(result.required_env_vars).toHaveLength(2)
-    })
-
-    it('filters out entries without name property in required_env_vars', () => {
-      const content = `---
-metadata:
-  required_env_vars:
-    - description: Only description, no name
-    - name: HAS_NAME
-      description: Has both
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.required_env_vars).toHaveLength(1)
-      expect(result.required_env_vars![0].name).toBe('HAS_NAME')
-    })
-
-    it('converts non-string name/description to strings in required_env_vars', () => {
-      const content = `---
-metadata:
-  required_env_vars:
-    - name: 123
-      description: true
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      expect(result.required_env_vars![0].name).toBe('123')
-      expect(result.required_env_vars![0].description).toBe('true')
-    })
-
     it('does not return version when metadata section exists but has no version key', () => {
       const content = `---
 metadata:
@@ -1475,9 +1468,6 @@ metadata:
   tags:
     - ai
     - automation
-  required_env_vars:
-    - name: API_KEY
-      description: Main API key
 ---
 
 # Complex Skill
@@ -1485,9 +1475,6 @@ Instructions here.`
       const result = parseSkillFrontmatter(content)
       expect(result.name).toBe('Complex Skill')
       expect(result.version).toBe('2.0.0')
-      expect(result.required_env_vars).toEqual([
-        { name: 'API_KEY', description: 'Main API key' },
-      ])
     })
 
     it('handles version: 0 (falsy but defined)', () => {
@@ -1501,20 +1488,6 @@ metadata:
       expect(parseSkillFrontmatter(content).version).toBe('0')
     })
 
-    it('handles required_env_vars that is not an array (e.g. object)', () => {
-      const content = `---
-metadata:
-  version: "1.0.0"
-  required_env_vars:
-    API_KEY: some key
----
-
-# Skill`
-      const result = parseSkillFrontmatter(content)
-      // Array.isArray check fails, so required_env_vars not set
-      expect(result.version).toBe('1.0.0')
-      expect(result.required_env_vars).toBeUndefined()
-    })
   })
 
   // --------------------------------------------------------------------------
@@ -2240,6 +2213,308 @@ metadata:
     it('returns false when git --version fails', async () => {
       mockExecFile.mockImplementation(() => { throw new Error('not found') })
       expect(await isGitAvailable()).toBe(false)
+    })
+  })
+
+  // ==========================================================================
+  // Skill ZIP Export / Import
+  // ==========================================================================
+
+  const MINIMAL_SKILL_MD = `---
+name: Test Skill
+metadata:
+  version: "1.0.0"
+---
+# Test Skill
+
+Do something useful.
+`
+
+  const SKILL_MD_NO_NAME = `---
+metadata:
+  version: "1.0.0"
+---
+# A Skill
+`
+
+  async function makeSkillZip(files: Record<string, string>): Promise<Buffer> {
+    return createZipBuffer(files)
+  }
+
+  function makeSkillDir(agentSlug: string, skillDirName: string): string {
+    const skillsDir = path.join(testDir, 'agents', agentSlug, 'workspace', '.claude', 'skills', skillDirName)
+    fs.mkdirSync(skillsDir, { recursive: true })
+    return skillsDir
+  }
+
+  describe('exportSkill', () => {
+    it('exports a single-file skill', async () => {
+      const agentSlug = 'test-agent'
+      const skillDir = makeSkillDir(agentSlug, 'my-skill')
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), MINIMAL_SKILL_MD)
+
+      const zipBuffer = await exportSkill(agentSlug, 'my-skill')
+      expect(zipBuffer).toBeInstanceOf(Buffer)
+
+      const reader = await openZipFromBuffer(zipBuffer)
+      try {
+        const fileNames = reader.entries.map(e => e.fileName)
+        expect(fileNames).toContain('SKILL.md')
+        expect(reader.entries.length).toBe(1)
+      } finally {
+        reader.close()
+      }
+    })
+
+    it('exports a multi-file skill', async () => {
+      const agentSlug = 'test-agent'
+      const skillDir = makeSkillDir(agentSlug, 'multi-skill')
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), MINIMAL_SKILL_MD)
+      fs.writeFileSync(path.join(skillDir, 'helper.py'), 'print("hello")')
+      fs.mkdirSync(path.join(skillDir, 'lib'))
+      fs.writeFileSync(path.join(skillDir, 'lib', 'utils.py'), 'x = 1')
+
+      const zipBuffer = await exportSkill(agentSlug, 'multi-skill')
+      const reader = await openZipFromBuffer(zipBuffer)
+      try {
+        const fileNames = reader.entries.map(e => e.fileName).sort()
+        expect(fileNames).toEqual(['SKILL.md', 'helper.py', expect.stringContaining('utils.py')])
+      } finally {
+        reader.close()
+      }
+    })
+
+    it('excludes .skillset-metadata.json and .skillset-original.md', async () => {
+      const agentSlug = 'test-agent'
+      const skillDir = makeSkillDir(agentSlug, 'meta-skill')
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), MINIMAL_SKILL_MD)
+      fs.writeFileSync(path.join(skillDir, '.skillset-metadata.json'), '{}')
+      fs.writeFileSync(path.join(skillDir, '.skillset-original.md'), '# original')
+
+      const zipBuffer = await exportSkill(agentSlug, 'meta-skill')
+      const reader = await openZipFromBuffer(zipBuffer)
+      try {
+        const fileNames = reader.entries.map(e => e.fileName)
+        expect(fileNames).toContain('SKILL.md')
+        expect(fileNames).not.toContain('.skillset-metadata.json')
+        expect(fileNames).not.toContain('.skillset-original.md')
+      } finally {
+        reader.close()
+      }
+    })
+
+    it('throws when skill directory does not exist', async () => {
+      await expect(exportSkill('test-agent', 'nonexistent')).rejects.toThrow('Skill directory not found')
+    })
+
+    it('throws when SKILL.md is missing', async () => {
+      const agentSlug = 'test-agent'
+      const skillDir = makeSkillDir(agentSlug, 'no-skillmd')
+      fs.writeFileSync(path.join(skillDir, 'helper.py'), 'x = 1')
+
+      await expect(exportSkill(agentSlug, 'no-skillmd')).rejects.toThrow('SKILL.md not found')
+    })
+
+    it('rejects path traversal in skillDirName', async () => {
+      await expect(exportSkill('test-agent', '../etc')).rejects.toThrow('Invalid directory name')
+    })
+  })
+
+  describe('validateSkillZip', () => {
+    it('accepts a valid zip with SKILL.md and extracts name', async () => {
+      const buf = await makeSkillZip({ 'SKILL.md': MINIMAL_SKILL_MD })
+      const result = await validateSkillZip(buf)
+      expect(result.valid).toBe(true)
+      expect(result.skillName).toBe('Test Skill')
+      expect(result.fileCount).toBe(1)
+      expect(result.stripPrefix).toBe('')
+    })
+
+    it('returns skillName undefined when frontmatter has no name', async () => {
+      const buf = await makeSkillZip({ 'SKILL.md': SKILL_MD_NO_NAME })
+      const result = await validateSkillZip(buf)
+      expect(result.valid).toBe(true)
+      expect(result.skillName).toBeUndefined()
+    })
+
+    it('rejects zip without SKILL.md', async () => {
+      const buf = await makeSkillZip({ 'README.md': '# Readme' })
+      const result = await validateSkillZip(buf)
+      expect(result.valid).toBe(false)
+      expect(result.error).toContain('SKILL.md not found')
+    })
+
+    it('handles macOS wrapper directory prefix', async () => {
+      const buf = await makeSkillZip({
+        'my-skill/SKILL.md': MINIMAL_SKILL_MD,
+        'my-skill/helper.py': 'x = 1',
+      })
+      const result = await validateSkillZip(buf)
+      expect(result.valid).toBe(true)
+      expect(result.skillName).toBe('Test Skill')
+      expect(result.stripPrefix).toBe('my-skill/')
+    })
+
+    it('filters __MACOSX entries', async () => {
+      const buf = await makeSkillZip({
+        'SKILL.md': MINIMAL_SKILL_MD,
+        '__MACOSX/._SKILL.md': 'junk',
+      })
+      const result = await validateSkillZip(buf)
+      expect(result.valid).toBe(true)
+      expect(result.fileCount).toBe(1)
+    })
+
+    it('rejects path traversal in entries', async () => {
+      // yazl rejects `..` in paths, so we must patch the buffer directly
+      const buf = Buffer.from(await makeSkillZip({
+        'SKILL.md': MINIMAL_SKILL_MD,
+        'safe/evil.txt': 'bad content',
+      }))
+      const searchStr = Buffer.from('safe/evil.txt')
+      const replaceStr = Buffer.from('../evil..txt')
+      let idx = buf.indexOf(searchStr)
+      while (idx !== -1) {
+        replaceStr.copy(buf, idx)
+        idx = buf.indexOf(searchStr, idx + 1)
+      }
+      const result = await validateSkillZip(buf)
+      expect(result.valid).toBe(false)
+      expect(result.error?.toLowerCase()).toMatch(/invalid.*path/)
+    })
+
+    it('handles invalid/corrupt buffer gracefully', async () => {
+      const result = await validateSkillZip(Buffer.from('not a zip'))
+      expect(result.valid).toBe(false)
+      expect(result.error).toBeDefined()
+      expect(result.fileCount).toBe(0)
+    })
+  })
+
+  describe('importSkillFromZip', () => {
+    it('imports a valid zip and returns skill info', async () => {
+      const agentSlug = 'import-agent'
+      // Create the agent workspace dir
+      const agentDir = path.join(testDir, 'agents', agentSlug, 'workspace')
+      fs.mkdirSync(agentDir, { recursive: true })
+
+      const buf = await makeSkillZip({ 'SKILL.md': MINIMAL_SKILL_MD })
+      const result = await importSkillFromZip(agentSlug, buf)
+
+      expect(result.skillDir).toBe('test-skill')
+      expect(result.skillName).toBe('Test Skill')
+
+      // Verify file was extracted
+      const skillMdPath = path.join(agentDir, '.claude', 'skills', 'test-skill', 'SKILL.md')
+      expect(fs.existsSync(skillMdPath)).toBe(true)
+      expect(fs.readFileSync(skillMdPath, 'utf-8')).toBe(MINIMAL_SKILL_MD)
+    })
+
+    it('derives safe directory name from skill name', async () => {
+      const agentSlug = 'safe-name-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+
+      const skillMd = `---\nname: My Fancy Skill!\n---\n# Skill\n`
+      const buf = await makeSkillZip({ 'SKILL.md': skillMd })
+      const result = await importSkillFromZip(agentSlug, buf)
+
+      expect(result.skillDir).toBe('my-fancy-skill')
+    })
+
+    it('appends suffix when directory name collides', async () => {
+      const agentSlug = 'collision-agent'
+      const agentDir = path.join(testDir, 'agents', agentSlug, 'workspace')
+      fs.mkdirSync(agentDir, { recursive: true })
+
+      // Pre-create the target directory
+      const existingDir = path.join(agentDir, '.claude', 'skills', 'test-skill')
+      fs.mkdirSync(existingDir, { recursive: true })
+
+      const buf = await makeSkillZip({ 'SKILL.md': MINIMAL_SKILL_MD })
+      const result = await importSkillFromZip(agentSlug, buf)
+
+      expect(result.skillDir).toBe('test-skill-1')
+    })
+
+    it('strips wrapper directory prefix', async () => {
+      const agentSlug = 'prefix-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+
+      const buf = await makeSkillZip({
+        'wrapper/SKILL.md': MINIMAL_SKILL_MD,
+        'wrapper/helper.py': 'x = 1',
+      })
+      const result = await importSkillFromZip(agentSlug, buf)
+
+      expect(result.skillDir).toBe('test-skill')
+      const skillDir = path.join(testDir, 'agents', agentSlug, 'workspace', '.claude', 'skills', result.skillDir)
+      expect(fs.existsSync(path.join(skillDir, 'SKILL.md'))).toBe(true)
+      expect(fs.existsSync(path.join(skillDir, 'helper.py'))).toBe(true)
+    })
+
+    it('skips .skillset-metadata.json and .skillset-original.md from source', async () => {
+      const agentSlug = 'skip-meta-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+
+      const buf = await makeSkillZip({
+        'SKILL.md': MINIMAL_SKILL_MD,
+        '.skillset-metadata.json': '{"skillsetId": "old"}',
+        '.skillset-original.md': '# old',
+      })
+      const result = await importSkillFromZip(agentSlug, buf)
+
+      const skillDir = path.join(testDir, 'agents', agentSlug, 'workspace', '.claude', 'skills', result.skillDir)
+      expect(fs.existsSync(path.join(skillDir, 'SKILL.md'))).toBe(true)
+      expect(fs.existsSync(path.join(skillDir, '.skillset-metadata.json'))).toBe(false)
+      expect(fs.existsSync(path.join(skillDir, '.skillset-original.md'))).toBe(false)
+    })
+
+    it('throws when SKILL.md is missing', async () => {
+      const agentSlug = 'no-skill-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+
+      const buf = await makeSkillZip({ 'README.md': '# Hi' })
+      await expect(importSkillFromZip(agentSlug, buf)).rejects.toThrow('SKILL.md not found')
+    })
+
+    it('filters __MACOSX entries during import', async () => {
+      const agentSlug = 'macosx-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+
+      const buf = await makeSkillZip({
+        'SKILL.md': MINIMAL_SKILL_MD,
+        '__MACOSX/._SKILL.md': 'resource fork junk',
+      })
+      const result = await importSkillFromZip(agentSlug, buf)
+
+      const skillDir = path.join(testDir, 'agents', agentSlug, 'workspace', '.claude', 'skills', result.skillDir)
+      expect(fs.existsSync(path.join(skillDir, '__MACOSX'))).toBe(false)
+    })
+  })
+
+  describe('skill zip round-trip', () => {
+    it('export then import preserves files', async () => {
+      const agentSlug = 'roundtrip-agent'
+      const agentDir = path.join(testDir, 'agents', agentSlug, 'workspace')
+      fs.mkdirSync(agentDir, { recursive: true })
+
+      // Create a skill to export
+      const sourceDir = makeSkillDir(agentSlug, 'source-skill')
+      fs.writeFileSync(path.join(sourceDir, 'SKILL.md'), MINIMAL_SKILL_MD)
+      fs.writeFileSync(path.join(sourceDir, 'tool.py'), 'def run(): pass')
+
+      // Export it
+      const zipBuffer = await exportSkill(agentSlug, 'source-skill')
+
+      // Import into a different agent
+      const importAgentSlug = 'roundtrip-import'
+      fs.mkdirSync(path.join(testDir, 'agents', importAgentSlug, 'workspace'), { recursive: true })
+      const result = await importSkillFromZip(importAgentSlug, zipBuffer)
+
+      // Verify files match
+      const importedDir = path.join(testDir, 'agents', importAgentSlug, 'workspace', '.claude', 'skills', result.skillDir)
+      expect(fs.readFileSync(path.join(importedDir, 'SKILL.md'), 'utf-8')).toBe(MINIMAL_SKILL_MD)
+      expect(fs.readFileSync(path.join(importedDir, 'tool.py'), 'utf-8')).toBe('def run(): pass')
     })
   })
 })

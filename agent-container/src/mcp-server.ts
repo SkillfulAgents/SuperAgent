@@ -11,7 +11,13 @@ import { requestConnectedAccountTool } from './tools/request-connected-account'
 import { searchConnectedAccountServicesTool } from './tools/search-connected-account-services'
 import { requestRemoteMcpTool } from './tools/request-remote-mcp'
 import { searchRemoteMcpServicesTool } from './tools/search-remote-mcp-services'
-import { scheduleTaskTool } from './tools/schedule-task'
+import {
+  scheduleTaskTool,
+  listScheduledTasksTool,
+  cancelScheduledTaskTool,
+  pauseScheduledTaskTool,
+  resumeScheduledTaskTool,
+} from './tools/schedule-task'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -23,7 +29,7 @@ import { deliverSessionTool } from './tools/deliver-session'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
 import { requestScriptRunTool } from './tools/request-script-run'
-import { browserTools } from './tools/browser'
+import { createBrowserTools } from './tools/browser'
 import { computerUseTools } from './tools/computer-use'
 import { createDashboardTool } from './tools/create-dashboard'
 import { startDashboardTool } from './tools/start-dashboard'
@@ -34,6 +40,12 @@ import { createAgentTool } from './tools/agents/create-agent'
 import { makeInvokeAgentTool } from './tools/agents/invoke-agent'
 import { getSessionsTool } from './tools/agents/get-sessions'
 import { getSessionTranscriptTool } from './tools/agents/get-session-transcript'
+import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat-providers'
+import { listChatIntegrationsTool } from './tools/chat/list-chat-integrations'
+import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
+import { sendChatMessageTool } from './tools/chat/send-chat-message'
+
+// TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
 
 /**
  * Factory functions for MCP servers.
@@ -54,7 +66,9 @@ export function createUserInputMcpServer() {
     version: '1.0.0',
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
-      requestRemoteMcpTool, searchRemoteMcpServicesTool, scheduleTaskTool,
+      requestRemoteMcpTool, searchRemoteMcpServicesTool,
+      scheduleTaskTool, listScheduledTasksTool, cancelScheduledTaskTool,
+      pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeWebhookTriggers ? [getAvailableTriggersTool, listTriggersTool, setupTriggerTool, cancelTriggerTool] : []),
@@ -62,11 +76,17 @@ export function createUserInputMcpServer() {
   })
 }
 
-export function createBrowserMcpServer() {
+/**
+ * @param tools - per-session browser tool set from createBrowserTools().
+ *   Each session must bind its own tools so browser requests carry that
+ *   session's CURRENT id (it changes on query restart) — a shared tool set
+ *   races across sessions and strands browser calls on the ownership lock.
+ */
+export function createBrowserMcpServer(tools: ReturnType<typeof createBrowserTools>) {
   return createSdkMcpServer({
     name: 'browser',
     version: '1.0.0',
-    tools: browserTools,
+    tools,
   })
 }
 
@@ -102,6 +122,19 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
       makeInvokeAgentTool(getCallerSessionId),
       getSessionsTool,
       getSessionTranscriptTool,
+    ],
+  })
+}
+
+export function createChatMcpServer() {
+  return createSdkMcpServer({
+    name: 'chat',
+    version: '1.0.0',
+    tools: [
+      listAvailableChatProvidersTool,
+      listChatIntegrationsTool,
+      addChatIntegrationTool,
+      sendChatMessageTool,
     ],
   })
 }

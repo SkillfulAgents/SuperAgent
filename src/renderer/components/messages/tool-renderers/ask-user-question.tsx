@@ -3,11 +3,11 @@ import { CircleHelp } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps } from './types'
 import { askUserQuestionDef, type AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
 
+// Use the shared parser, which coerces a JSON-string `questions` argument back
+// into an array (some models stringify complex tool args). Casting the raw
+// input here instead would let a string reach `questions.map(...)` and crash.
 function parseInput(input: unknown): AskUserQuestionInput {
-  if (typeof input === 'object' && input !== null) {
-    return input as AskUserQuestionInput
-  }
-  return {}
+  return askUserQuestionDef.parseInput(input)
 }
 
 function getSummary(input: unknown): string | null {

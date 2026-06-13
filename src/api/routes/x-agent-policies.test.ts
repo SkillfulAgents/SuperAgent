@@ -310,7 +310,7 @@ describe('PUT /api/agents/:id/x-agent-policies', () => {
     expect(getPolicy('other-caller', 'invoke', TARGET_A)?.decision).toBe('allow')
   })
 
-  it('treats decision=review as default (no row stored)', async () => {
+  it('persists decision=review rows (review is a valid explicit override)', async () => {
     await app.request(`/api/agents/${CALLER}/x-agent-policies`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -322,7 +322,9 @@ describe('PUT /api/agents/:id/x-agent-policies', () => {
       }),
     })
     const rows = listPoliciesForCaller(CALLER)
-    expect(rows).toHaveLength(1)
-    expect(rows[0].operation).toBe('invoke')
+    expect(rows).toHaveLength(2)
+    const byOp = Object.fromEntries(rows.map((r) => [r.operation, r.decision]))
+    expect(byOp.invoke).toBe('allow')
+    expect(byOp.read).toBe('review')
   })
 })

@@ -15,7 +15,7 @@ import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
-import { formatProviderName } from './utils'
+import { formatProviderName, formatSessionTimestamp } from './utils'
 import {
   listStartupChatIntegrations,
   getChatIntegration,
@@ -27,8 +27,12 @@ import {
   createChatIntegrationSession,
   updateChatIntegrationSessionName,
   archiveChatIntegrationSession,
+  touchChatIntegrationSession,
   listChatIntegrationSessions,
+  resolveActiveSession,
+  getLastDisplayName,
 } from '@shared/lib/services/chat-integration-session-service'
+import type { EffortLevel } from '@shared/lib/container/types'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -55,6 +59,16 @@ function breadcrumb(message: string, data?: Record<string, unknown>): void {
   addErrorBreadcrumb({ category: COMPONENT, message, data })
 }
 
+/**
+ * True if the error is the recoverable "Container is not running" case thrown by
+ * BaseContainerClient.getPortOrThrow when the container died between requests.
+ * On the chat-integration send/create paths the user is told to retry and the
+ * container restarts on the next message, so this is reported as a warning.
+ */
+function isContainerNotRunning(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('Container is not running')
+}
+
 // ── Constants ───────────────────────────────────────────────────────────
 
 const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow these rules:
@@ -68,7 +82,6 @@ const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024 // 50 MB
-const QUEUE_CLEANUP_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -112,11 +125,13 @@ class ChatIntegrationManager {
   private chatSessions: Map<string, ManagedConnector> = new Map() // key: `${integrationId}:${chatId}`
   private isRunning = false
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
-  private queueCleanupInterval: ReturnType<typeof setInterval> | null = null
   private globalNotificationUnsubscribe: (() => void) | null = null
   private disconnectedSince: Map<string, number> = new Map()
   private consecutiveFailures: Map<string, number> = new Map()
+  // Per-(integration,chat) serialized tail promise. Entries self-evict once their
+  // chain settles (see scheduleQueueEviction), so the map stays bounded.
   private messageQueues: Map<string, Promise<void>> = new Map()
+  private lastSessionTouch: Map<string, number> = new Map()
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -147,11 +162,6 @@ class ChatIntegrationManager {
       })
     }, HEALTH_CHECK_INTERVAL_MS)
 
-    // Periodic cleanup of resolved message queue entries
-    this.queueCleanupInterval = setInterval(() => {
-      this.cleanupResolvedQueues()
-    }, QUEUE_CLEANUP_INTERVAL_MS)
-
     // Subscribe to global notifications for proxy review requests (tool approvals)
     this.globalNotificationUnsubscribe = messagePersister.addGlobalNotificationClient((event: unknown) => {
       this.handleGlobalNotification(event).catch((err) => {
@@ -165,10 +175,6 @@ class ChatIntegrationManager {
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval)
       this.healthCheckInterval = null
-    }
-    if (this.queueCleanupInterval) {
-      clearInterval(this.queueCleanupInterval)
-      this.queueCleanupInterval = null
     }
     this.globalNotificationUnsubscribe?.()
     this.globalNotificationUnsubscribe = null
@@ -192,6 +198,26 @@ class ChatIntegrationManager {
 
   // ── Public API ──────────────────────────────────────────────────────
 
+  async reconnectAll(): Promise<void> {
+    if (!this.isRunning) return
+    console.log('[ChatIntegrationManager] Reconnecting all integrations (system resume)')
+
+    const entries = [...this.connections.entries()]
+    for (const [id, conn] of entries) {
+      try {
+        const integration = getChatIntegration(id)
+        if (!integration || integration.status === 'paused') continue
+        await this.removeIntegration(id)
+        await this.connectIntegration(integration)
+        this.disconnectedSince.delete(id)
+        this.consecutiveFailures.delete(id)
+      } catch (err) {
+        console.error(`[ChatIntegrationManager] Resume reconnect failed for ${id}:`, err)
+        reportError(err, 'resume-reconnect', { integrationId: id, provider: conn.integration.provider })
+      }
+    }
+  }
+
   async addIntegration(id: string): Promise<void> {
     const integration = getChatIntegration(id)
     if (!integration) throw new Error(`Chat integration ${id} not found`)
@@ -214,7 +240,72 @@ class ChatIntegrationManager {
     }
     this.disconnectedSince.delete(id)
     this.consecutiveFailures.delete(id)
-    this.messageQueues.delete(id)
+    // Drop any per-chat message/SSE queues for this integration. Keys are
+    // `${id}:${chatId}` and `sse:${id}:${chatId}`, so the old bare delete(id)
+    // never matched — iterate by prefix. The `:` delimiter plus UUID integration
+    // ids (which contain no `:` and are never the literal "sse") guarantee this
+    // can't false-match a sibling integration's keys.
+    //
+    // Settled chains already self-evict, so this only force-drops STILL-IN-FLIGHT
+    // chains. On a true teardown that is exactly what we want. On the reconnect
+    // path (runHealthChecks → removeIntegration → connectIntegration) it means a
+    // handler still running against the now-dead connection no longer serializes
+    // ahead of the first post-reconnect message — an accepted trade-off, since the
+    // stale connection is going away and new work should not block on it.
+    for (const key of [...this.messageQueues.keys()]) {
+      if (key.startsWith(`${id}:`) || key.startsWith(`sse:${id}:`)) {
+        this.messageQueues.delete(key)
+      }
+    }
+  }
+
+  /**
+   * Ensure a chat integration session exists for the given (integrationId, chatId).
+   * If an active session already exists (and hasn't timed out), returns its sessionId.
+   * Otherwise creates a lightweight session (no container, no agent response) and
+   * returns the new sessionId.
+   *
+   * Used by outbound sends so they can log messages into the session JSONL.
+   */
+  async ensureSession(integrationId: string, chatId: string): Promise<string> {
+    const integration = getChatIntegration(integrationId)
+    if (!integration) throw new Error(`Chat integration ${integrationId} not found`)
+
+    const existing = resolveActiveSession(
+      integrationId, chatId, integration.sessionTimeout,
+      (archivedId) => {
+        this.teardownManagedSession(integrationId, chatId)
+        this.lastSessionTouch.delete(archivedId)
+      },
+    )
+    if (existing) return existing.sessionId
+
+    const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
+
+    const displayName = getLastDisplayName(integrationId, chatId)
+    const sessionId = crypto.randomUUID()
+    const sessionName = buildSessionName(
+      integration.name,
+      integration.provider,
+      displayName,
+      integration.sessionTimeout,
+    )
+
+    await registerSession(integration.agentSlug, sessionId, sessionName)
+    await updateSessionMetadata(integration.agentSlug, sessionId, {
+      isChatIntegrationSession: true,
+      chatIntegrationId: integrationId,
+      ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
+    })
+
+    createChatIntegrationSession({
+      integrationId,
+      externalChatId: chatId,
+      sessionId,
+      displayName,
+    })
+
+    return sessionId
   }
 
   async pauseIntegration(id: string): Promise<void> {
@@ -399,6 +490,7 @@ class ChatIntegrationManager {
       })
     )
     this.messageQueues.set(queueKey, next)
+    this.scheduleQueueEviction(queueKey, next)
   }
 
   // ── Health monitoring ───────────────────────────────────────────────
@@ -452,18 +544,22 @@ class ChatIntegrationManager {
     }
   }
 
-  /** Remove resolved entries from the message queue map to prevent unbounded growth. */
-  private cleanupResolvedQueues(): void {
-    const settled = Promise.resolve()
-    for (const [key, promise] of this.messageQueues) {
-      // If the promise is already resolved, the .then fires synchronously in microtask
-      let isSettled = false
-      promise.then(() => { isSettled = true }, () => { isSettled = true })
-      // Check synchronously — if it resolved, the microtask already ran
-      if (promise === settled || isSettled) {
-        this.messageQueues.delete(key)
+  /**
+   * Once `promise` (the tail enqueued for `queueKey`) settles, drop it from the
+   * map so messageQueues stays bounded. The identity check is the crux: a newer
+   * enqueue chains off this promise and replaces the map slot, so we evict only
+   * if the map still holds *this* promise — otherwise we'd delete a live,
+   * still-running successor. In-flight entries are never evicted because their
+   * `.finally` hasn't run yet. This makes a periodic sweep unnecessary: native
+   * Promise state can't be read synchronously, but driving eviction off the
+   * promise's own settlement avoids needing to.
+   */
+  private scheduleQueueEviction(queueKey: string, promise: Promise<void>): void {
+    void promise.finally(() => {
+      if (this.messageQueues.get(queueKey) === promise) {
+        this.messageQueues.delete(queueKey)
       }
-    }
+    })
   }
 
   // ── Message queue (serial per integration+chat) ─────────────────────
@@ -478,6 +574,7 @@ class ChatIntegrationManager {
       })
     )
     this.messageQueues.set(queueKey, next)
+    this.scheduleQueueEviction(queueKey, next)
   }
 
   // ── Incoming message handling ─────────────────────────────────────
@@ -531,8 +628,15 @@ class ChatIntegrationManager {
       return
     }
 
-    // Look up existing session for this chat
-    let chatSession = getChatIntegrationSession(integrationId, chatId)
+    // Look up existing session, rotating if timed out
+    let chatSession = resolveActiveSession(
+      integrationId, chatId, integration.sessionTimeout,
+      (archivedId) => {
+        breadcrumb('Session timed out, rotating', { integrationId, chatId, timeoutHours: integration.sessionTimeout })
+        this.teardownManagedSession(integrationId, chatId)
+        this.lastSessionTouch.delete(archivedId)
+      },
+    )
 
     if (!chatSession) {
       // New chat — create a new agent session
@@ -559,11 +663,13 @@ class ChatIntegrationManager {
           })
         }
 
+        const models = getEffectiveModels()
         const containerSession = await client.createSession({
           availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
           initialMessage: messageText,
-          model: getEffectiveModels().agentModel,
-          browserModel: getEffectiveModels().browserModel,
+          model: integration.model || models.agentModel,
+          browserModel: models.browserModel,
+          ...(integration.effort ? { effort: integration.effort as EffortLevel } : {}),
           ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
         })
 
@@ -572,9 +678,12 @@ class ChatIntegrationManager {
 
         const displayName = this.deriveDisplayName(integration.provider, message)
 
-        const sessionName = displayName
-          ? `${integration.name || integration.provider} — ${displayName}`
-          : integration.name || `${integration.provider} chat`
+        const sessionName = buildSessionName(
+          integration.name,
+          integration.provider,
+          displayName,
+          integration.sessionTimeout,
+        )
 
         await registerSession(integration.agentSlug, sessionId, sessionName)
 
@@ -598,7 +707,10 @@ class ChatIntegrationManager {
         return // initialMessage already sent via createSession
       } catch (err) {
         console.error(`[ChatIntegrationManager] Failed to create new session for ${integrationId}:`, err)
-        reportError(err, 'create-session', { integrationId, agentSlug: integration.agentSlug, provider: integration.provider, chatId })
+        // This path recovers and prompts the user to retry. A dead container
+        // ("Container is not running") is expected and self-healing here, so
+        // report it as a warning rather than an error to cut Sentry noise.
+        reportError(err, 'create-session', { integrationId, agentSlug: integration.agentSlug, provider: integration.provider, chatId }, isContainerNotRunning(err) ? 'warning' : 'error')
         await conn.connector.sendMessage(chatId, { text: 'Error: Failed to start a new session. Please try again.' }).catch(() => {})
         return
       }
@@ -618,6 +730,9 @@ class ChatIntegrationManager {
         await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
       }
 
+      // Ensure SSE → chat forwarding is active (may have been torn down by reconnect)
+      this.subscribeChatSession(integrationId, chatId, sessionId)
+
       const { text: messageText, failedFiles } = await this.buildMessageContent(integration, message)
 
       if (failedFiles.length > 0 && !messageText.trim()) {
@@ -636,16 +751,35 @@ class ChatIntegrationManager {
 
       await client.sendMessage(sessionId, messageText)
       messagePersister.markSessionActive(sessionId, integration.agentSlug)
+      const now = Date.now()
+      const lastTouch = this.lastSessionTouch.get(chatSession.id) ?? 0
+      if (now - lastTouch > 60_000) {
+        try { touchChatIntegrationSession(chatSession.id) } catch { /* best-effort */ }
+        this.lastSessionTouch.set(chatSession.id, now)
+      }
     } catch (err) {
       console.error(`[ChatIntegrationManager] Failed to send message for ${integrationId}/${sessionId}:`, err)
-      reportError(err, 'send-message', { integrationId, sessionId, provider: integration.provider, chatId })
+      // Recovered path (user is told to retry); a dead container is expected and
+      // self-healing, so downgrade it to a warning to cut Sentry noise.
+      reportError(err, 'send-message', { integrationId, sessionId, provider: integration.provider, chatId }, isContainerNotRunning(err) ? 'warning' : 'error')
       await conn.connector.sendMessage(chatId, { text: 'Error: Failed to send your message to the agent. Please try again.' }).catch(() => {})
       return
     }
 
     // Show typing indicator
-    const managed = this.getOrCreateChatSession(integrationId, chatId)
-    managed?.connector.showTypingIndicator(chatId).catch(() => {})
+    this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+      ?.connector.showTypingIndicator(chatId).catch(() => {})
+  }
+
+  private teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): void {
+    const key = this.getChatSessionKey(integrationId, chatId)
+    const managed = this.chatSessions.get(key)
+    managed?.sseUnsubscribe?.()
+    this.chatSessions.delete(key)
+    if (opts?.archive) {
+      this.lastSessionTouch.delete(opts.archive)
+      try { archiveChatIntegrationSession(opts.archive) } catch { /* best-effort */ }
+    }
   }
 
   private async clearChatSession(
@@ -656,11 +790,7 @@ class ChatIntegrationManager {
     try {
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession) {
-        const key = this.getChatSessionKey(integrationId, chatId)
-        const managed = this.chatSessions.get(key)
-        managed?.sseUnsubscribe?.()
-        this.chatSessions.delete(key)
-        try { archiveChatIntegrationSession(chatSession.id) } catch { /* best-effort */ }
+        this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
       }
     } catch (err) {
       console.error('[ChatIntegrationManager] Error during session clear:', err)
@@ -674,9 +804,7 @@ class ChatIntegrationManager {
 
   /** Clear a chat session by its DB row ID (called from API route). */
   clearChatSessionById(sessionId: string): void {
-    // Find and clean up the managed session
     for (const [key, managed] of this.chatSessions) {
-      // Look up the DB mapping to check if this managed session matches
       const [integrationId, chatId] = key.split(':')
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession?.id === sessionId) {
@@ -711,7 +839,7 @@ class ChatIntegrationManager {
     message: IncomingMessage,
   ): Promise<{ text: string; failedFiles: string[] }> {
     // In group/channel contexts, prefix with sender name so the agent can attribute messages.
-    const prefix = message.chatName && message.userName ? `[${message.userName}]: ` : ''
+    const prefix = message.chatName && message.userName ? `\\[${message.userName}]: ` : ''
     const text = prefix + (message.text || '')
 
     if (!message.files || message.files.length === 0) {
@@ -1131,22 +1259,10 @@ export async function processSSEEvent(
     case 'tool_use_ready': {
       const toolName = data.toolName as string
 
-      // Handle file delivery — send the file to the chat client
-      if (toolName === 'mcp__user-input__deliver_file') {
-        try {
-          const toolInput = JSON.parse(managed.currentToolInput || '{}')
-          const filePath = toolInput.filePath as string | undefined
-          const description = toolInput.description as string | undefined
-          if (filePath) {
-            await sendDeliveredFile(managed, filePath, description)
-          }
-        } catch (err) {
-          console.error('[ChatIntegrationManager] Failed to deliver file:', err)
-          reportError(err, 'deliver-file', { integrationId: managed.integration.id, provider: managed.integration.provider })
-        }
-        managed.currentToolInput = ''
-        break
-      }
+      // Note: deliver_file is handled off its tool_result (see 'tool_result_ready'
+      // below), not off the streamed input — so we never read a host-side path
+      // before the in-container tool has validated the file exists. It falls
+      // through to isUserRequestTool() here, which just resets the tool input.
 
       if (isUserRequestTool(toolName)) {
         managed.currentToolInput = ''
@@ -1171,6 +1287,27 @@ export async function processSSEEvent(
         }
       }
       managed.currentToolInput = ''
+      break
+    }
+
+    case 'tool_result_ready': {
+      // Fired once the in-container tool has returned its result. Currently only
+      // deliver_file acts on it: deliver the file to the chat client, but only if
+      // the tool validated the file exists (isError === false). On an error
+      // result we skip host delivery — the agent's text already covers the user.
+      const toolName = data.toolName as string
+      if (toolName === 'mcp__user-input__deliver_file' && !data.isError) {
+        const filePath = data.filePath as string | undefined
+        const description = data.description as string | undefined
+        if (filePath) {
+          try {
+            await sendDeliveredFile(managed, filePath, description)
+          } catch (err) {
+            console.error('[ChatIntegrationManager] Failed to deliver file:', err)
+            reportError(err, 'deliver-file', { integrationId: managed.integration.id, provider: managed.integration.provider })
+          }
+        }
+      }
       break
     }
 
@@ -1269,7 +1406,12 @@ async function sendDeliveredFile(
     await managed.connector.sendFile(managed.chatId, fileData, filename, description)
   } catch (err) {
     console.error('[ChatIntegrationManager] Failed to send delivered file:', err)
-    reportError(err, 'send-delivered-file', { integrationId: managed.integration.id, provider: managed.integration.provider, filePath })
+    // ENOENT is benign: the file isn't host-visible (e.g. a not-yet-flushed
+    // write across the VM file-share). The text fallback below still reaches the
+    // user, so don't page Sentry — log everything else at 'warning'.
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      reportError(err, 'send-delivered-file', { integrationId: managed.integration.id, provider: managed.integration.provider, filePath }, 'warning')
+    }
     // Fall back to a text message with the file path
     await managed.connector.sendMessage(managed.chatId, {
       text: `📎 File ready: \`${filePath}\`${description ? ` — ${description}` : ''}\n(File delivery to chat not available — download from the UI)`,
@@ -1305,6 +1447,38 @@ export function deriveDisplayName(message: Pick<IncomingMessage, 'chatName' | 'u
 /** Check if a display name looks like the raw-ID fallback (e.g. "User U08G59..."). */
 export function isDisplayNameFallback(name: string | null | undefined): boolean {
   return !name || name.startsWith('User ')
+}
+
+export { formatSessionTimestamp } from './utils'
+
+/** Decide whether a chat session should be rotated based on the configured timeout. */
+export function shouldRotateSession(
+  session: { updatedAt: Date | null; createdAt: Date },
+  timeoutHours: number | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (!timeoutHours || timeoutHours <= 0) return false
+  const lastActivity = session.updatedAt?.getTime?.() ?? session.createdAt.getTime()
+  const timeoutMs = timeoutHours * 60 * 60 * 1000
+  return now.getTime() - lastActivity > timeoutMs
+}
+
+/** Build the session name, appending a timestamp when session rotation is enabled. */
+export function buildSessionName(
+  integrationName: string | null,
+  provider: string,
+  displayName: string | undefined,
+  timeoutHours: number | null | undefined,
+  now: Date = new Date(),
+): string {
+  const baseName = displayName
+    ? `${integrationName || provider} — ${displayName}`
+    : integrationName || `${provider} chat`
+
+  if (timeoutHours && timeoutHours > 0) {
+    return `${baseName} — ${formatSessionTimestamp(now)}`
+  }
+  return baseName
 }
 
 // ── Singleton (globalThis for HMR persistence) ─────────────────────────

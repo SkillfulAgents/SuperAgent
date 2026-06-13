@@ -35,7 +35,7 @@ import {
   type WebhookTrigger,
 } from '@renderer/hooks/use-webhook-triggers'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
-import { formatRelativeTime } from '@renderer/components/home/home-page'
+import { formatDistanceToNow } from 'date-fns'
 import { HomeCollapsible } from './home-collapsible'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 
@@ -44,6 +44,7 @@ interface HomeTriggersProps {
   scheduledTasks: ApiScheduledTask[]
   onSelectTask: (taskId: string) => void
   onSelectWebhook: (webhookId: string) => void
+  className?: string
 }
 
 type TriggerItem =
@@ -55,6 +56,7 @@ export function HomeTriggers({
   scheduledTasks,
   onSelectTask,
   onSelectWebhook,
+  className,
 }: HomeTriggersProps) {
   const { data: webhookTriggersData } = useWebhookTriggers(agentSlug, 'active')
   const { data: cancelledWebhooksData } = useWebhookTriggers(agentSlug, 'cancelled')
@@ -92,7 +94,7 @@ export function HomeTriggers({
   const hasDeleted = deletedItems.length > 0
 
   return (
-    <HomeCollapsible title="Triggers">
+    <HomeCollapsible title="Triggers" className={className}>
       {items.length > 0 || hasDeleted ? (
         <div className="mt-2 divide-y divide-border/50">
           {items.map((item) =>
@@ -173,6 +175,8 @@ interface TriggerRowProps {
   // Cron-only Run Now action.
   onRunNow?: () => void
   runNowPending?: boolean
+  // When true, the trigger is already deleted — only the View Details action is shown.
+  isDeleted?: boolean
 }
 
 function TriggerRow({
@@ -189,6 +193,7 @@ function TriggerRow({
   kind,
   onRunNow,
   runNowPending,
+  isDeleted = false,
 }: TriggerRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const label = kind === 'cron' ? 'Cron' : 'Webhook'
@@ -230,7 +235,7 @@ function TriggerRow({
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-36 p-1">
-              {canTogglePause && (
+              {canTogglePause && !isDeleted && (
                 <>
                   <div className="flex w-full items-center justify-between px-2 py-1.5">
                     <div
@@ -269,7 +274,7 @@ function TriggerRow({
                 <Info className="h-3.5 w-3.5" />
                 View Details
               </button>
-              {onRunNow && (
+              {onRunNow && !isDeleted && (
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   disabled={runNowPending}
@@ -282,16 +287,18 @@ function TriggerRow({
                   {runNowPending ? 'Running...' : 'Run Now'}
                 </button>
               )}
-              <button
-                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setShowDeleteDialog(true)
-                }}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                Delete {label}
-              </button>
+              {!isDeleted && (
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setShowDeleteDialog(true)
+                  }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete {label}
+                </button>
+              )}
             </PopoverContent>
           </Popover>
         </div>
@@ -336,17 +343,19 @@ function CronRow({
   const resumeTask = useResumeScheduledTask()
   const humanizedCron = useHumanizedCron(task.isRecurring ? task.scheduleExpression : null)
   const isPaused = task.status === 'paused'
+  const isDeleted = task.status === 'cancelled'
 
   return (
     <TriggerRow
       kind="cron"
+      isDeleted={isDeleted}
       name={task.name ?? 'Scheduled Task'}
       subtitleLeft={<span>cron · {humanizedCron ?? 'One-time'}</span>}
       subtitleRight={
         task.nextExecutionAt && !isPaused ? (
           <span className="shrink-0">
             <span className="text-muted-foreground">next run </span>
-            {formatRelativeTime(task.nextExecutionAt)}
+            {formatDistanceToNow(new Date(task.nextExecutionAt), { addSuffix: true })}
           </span>
         ) : null
       }
@@ -382,19 +391,21 @@ function WebhookRow({
   const pauseTrigger = usePauseWebhookTrigger()
   const resumeTrigger = useResumeWebhookTrigger()
   const isPaused = trigger.status === 'paused'
+  const isDeleted = trigger.status === 'cancelled'
   const displayName = trigger.name ?? trigger.triggerType
 
   return (
     <TriggerRow
       kind="webhook"
+      isDeleted={isDeleted}
       name={displayName}
       subtitleLeft={<span className="truncate lowercase">webhook · {trigger.triggerType}</span>}
       subtitleRight={
         <span className="shrink-0">
-          {formatRelativeTime(trigger.lastFiredAt) ? (
+          {trigger.lastFiredAt ? (
             <>
               <span className="text-muted-foreground">last run </span>
-              {formatRelativeTime(trigger.lastFiredAt)}
+              {formatDistanceToNow(new Date(trigger.lastFiredAt), { addSuffix: true })}
             </>
           ) : (
             'No runs yet'

@@ -27,12 +27,14 @@ export class MockChatClientConnector extends ChatClientConnector {
   // ── Simulation methods ────────────────────────────────────────────
 
   /** Simulate an incoming message from an external user. */
-  simulateIncomingMessage(text: string, chatId = 'mock-chat-1', userId = 'mock-user-1'): void {
+  simulateIncomingMessage(text: string, chatId = 'mock-chat-1', userId = 'mock-user-1', opts?: { userName?: string; chatName?: string }): void {
     this.emitMessage({
       externalMessageId: `mock-msg-${this.nextMessageId++}`,
       text,
       chatId,
       userId,
+      userName: opts?.userName,
+      chatName: opts?.chatName,
       timestamp: new Date(),
     })
   }

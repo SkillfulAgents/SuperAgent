@@ -5,13 +5,17 @@ import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provid
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { getCurrentUserId } from '@shared/lib/auth/config'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import {
   getSettings,
   updateSettings,
   clearSettingsCache,
   getBrowserbaseApiKeyStatus,
   getComposioApiKeyStatus,
+  getNangoApiKeyStatus,
   getComposioUserId,
+  getAccountProviderUserId,
   getVoiceSettings,
   getEffectiveModels,
   getEffectiveAgentLimits,
@@ -25,14 +29,77 @@ import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
-import { VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
+import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
+import { customEnvVarsSchema } from '@shared/lib/container/reserved-env-vars'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { db } from '@shared/lib/db'
-import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts, userSettings } from '@shared/lib/db/schema'
+import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
+import {
+  proxyAuditLog,
+  proxyTokens,
+  agentConnectedAccounts,
+  scheduledTasks,
+  notifications,
+  connectedAccounts,
+  userSettings,
+  auditLog,
+  webhookTriggers,
+  chatIntegrations,
+  chatIntegrationSessions,
+  remoteMcpServers,
+  agentRemoteMcps,
+  mcpAuditLog,
+  mcpToolPolicies,
+  agentAcl,
+  messageAuthor,
+  xAgentPolicies,
+  apiScopePolicies,
+} from '@shared/lib/db/schema'
 import fs from 'fs'
 
 const settings = new Hono()
+
+/**
+ * Canonical set of agent/app-owned relational tables wiped by factory reset.
+ *
+ * Ordered children-before-parents so deletes succeed regardless of FK-cascade
+ * state. Better Auth tables (user, session, account, verification) are
+ * intentionally excluded — a factory reset clears app/agent data but does NOT
+ * delete user accounts.
+ *
+ * Keep this reconciled with the per-agent set in agent-cleanup-service.ts. The
+ * test in factory-reset.sup206.test.ts enumerates the schema dynamically and
+ * fails if a new agent/app-owned table is added without being listed here, so
+ * the set cannot silently drift again.
+ */
+const FACTORY_RESET_TABLES: SQLiteTable[] = [
+  // Leaf / no-FK-to-reset-table audit + attribution rows
+  proxyAuditLog,
+  proxyTokens,
+  mcpAuditLog,
+  messageAuthor,
+  agentAcl,
+  xAgentPolicies,
+  webhookTriggers,
+  notifications,
+  scheduledTasks,
+  // chat integrations (sessions cascade-cascade from integrations)
+  chatIntegrationSessions,
+  chatIntegrations,
+  // connected accounts + dependents (api scope policies + agent mappings cascade)
+  agentConnectedAccounts,
+  apiScopePolicies,
+  connectedAccounts,
+  // remote MCP servers + dependents (tool policies + agent mappings cascade)
+  agentRemoteMcps,
+  mcpToolPolicies,
+  remoteMcpServers,
+  // per-user settings (user row itself is preserved)
+  userSettings,
+  // global app audit log
+  auditLog,
+]
 
 settings.use('*', Authenticated(), IsAdmin())
 
@@ -50,6 +117,8 @@ const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
   'browserbaseProjectId',
   'deepgramApiKey',
   'openaiApiKey',
+  'nangoSecretKey',
+  'accountProviderUserId',
 ]
 
 /** Build the GlobalSettingsResponse shared by GET and PUT handlers. */
@@ -73,6 +142,7 @@ function buildSettingsResponse(
       platform: getLlmProvider('platform').getApiKeyStatus(),
       browserbase: getBrowserbaseApiKeyStatus(),
       composio: getComposioApiKeyStatus(),
+      nango: getNangoApiKeyStatus(),
       deepgram: getSttProvider('deepgram').getApiKeyStatus(),
       openai: getSttProvider('openai').getApiKeyStatus(),
     },
@@ -80,6 +150,7 @@ function buildSettingsResponse(
     agentLimits: getEffectiveAgentLimits(),
     customEnvVars: getCustomEnvVars(),
     composioUserId: getComposioUserId(),
+    accountProviderUserId: getAccountProviderUserId(),
     setupCompleted: !!appSettings.app?.setupCompleted,
     hostBrowserStatus: { providers: detectAllProviders() },
     runtimeReadiness: containerManager.getReadiness(),
@@ -87,7 +158,7 @@ function buildSettingsResponse(
     voice: getVoiceSettings(),
     tenantId: getTenantId(),
     computerUse: appSettings.computerUse,
-    shareAnalytics: !!appSettings.shareAnalytics,
+    shareAnalytics: appSettings.shareAnalytics !== false,
     analyticsTargets: appSettings.analyticsTargets,
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
@@ -142,11 +213,26 @@ settings.put('/', async (c) => {
       return c.json({ error: 'enableToolSearch must be a boolean' }, 400)
     }
 
+    // Validate agentEffort if provided
+    if (body.models?.agentEffort !== undefined && !EFFORT_LEVELS.includes(body.models.agentEffort)) {
+      return c.json({ error: `agentEffort must be one of: ${EFFORT_LEVELS.join(', ')}` }, 400)
+    }
+
     // Validate runtimeSettings if provided
     if (body.container?.runtimeSettings) {
       const limaSettings = body.container.runtimeSettings.lima
       if (limaSettings?.vmMemory && !VALID_LIMA_VM_MEMORY_OPTIONS.includes(limaSettings.vmMemory)) {
         return c.json({ error: `Invalid VM memory setting. Must be one of: ${VALID_LIMA_VM_MEMORY_OPTIONS.join(', ')}` }, 400)
+      }
+    }
+
+    // Validate customEnvVars at the write boundary (defense-in-depth for
+    // SUP-210): reject payloads that try to set reserved runtime env vars so
+    // they never reach persisted settings.
+    if (body.customEnvVars !== undefined) {
+      const parsed = customEnvVarsSchema.safeParse(body.customEnvVars)
+      if (!parsed.success) {
+        return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid customEnvVars' }, 400)
       }
     }
 
@@ -213,6 +299,16 @@ settings.put('/', async (c) => {
 
     updateSettings(newSettings)
 
+    // If account provider settings changed, re-register providers
+    if (body.apiKeys?.nangoSecretKey !== undefined || body.app?.accountProvider !== undefined) {
+      try {
+        const { registerAllAccountProviders } = await import('@shared/lib/account-providers/register')
+        await registerAllAccountProviders()
+      } catch (err) {
+        console.error('Failed to re-register account providers:', err)
+      }
+    }
+
     // If auth settings changed, reset the Better Auth singleton so it picks up new config
     if (body.auth !== undefined && isAuthMode()) {
       import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {})
@@ -234,6 +330,7 @@ settings.put('/', async (c) => {
     }
 
     const runnerAvailability = await checkAllRunnersAvailability()
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'settings', objectId: 'global', action: 'updated' })
     return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
   } catch (error) {
     console.error('Failed to update settings:', error)
@@ -468,6 +565,32 @@ settings.post('/validate-composio-key', async (c) => {
   }
 })
 
+// POST /api/settings/validate-nango-key - Validate a Nango secret key
+settings.post('/validate-nango-key', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'Secret key is required' }, 400)
+    }
+
+    const response = await fetch('https://api.nango.dev/integrations', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    })
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        return c.json({ valid: false, error: 'Invalid secret key' })
+      }
+      return c.json({ valid: false, error: `Nango API error: ${response.status}` })
+    }
+
+    return c.json({ valid: true })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
 // POST /api/settings/validate-stt-key - Validate an STT provider API key
 settings.post('/validate-stt-key', async (c) => {
   try {
@@ -504,14 +627,11 @@ settings.post('/factory-reset', async (c) => {
     const agentsDir = getAgentsDataDir()
     await fs.promises.rm(agentsDir, { recursive: true, force: true })
 
-    // Clear all DB tables (order matters for FK constraints)
-    db.delete(proxyAuditLog).run()
-    db.delete(proxyTokens).run()
-    db.delete(agentConnectedAccounts).run()
-    db.delete(scheduledTasks).run()
-    db.delete(notifications).run()
-    db.delete(connectedAccounts).run()
-    db.delete(userSettings).run()
+    // Clear every agent/app-owned relational table (children before parents).
+    // Better Auth tables (user/session/account/verification) are preserved.
+    for (const table of FACTORY_RESET_TABLES) {
+      db.delete(table).run()
+    }
 
     // Delete settings file (includes platform auth token)
     const settingsPath = path.join(getDataDir(), 'settings.json')
@@ -521,7 +641,6 @@ settings.post('/factory-reset', async (c) => {
     // Remove platform device identity so a fresh key is issued on next login
     const platformDeviceDir = path.join(getDataDir(), '.platform-auth')
     await fs.promises.rm(platformDeviceDir, { recursive: true, force: true })
-
     return c.json({ success: true })
   } catch (error) {
     console.error('Factory reset failed:', error)

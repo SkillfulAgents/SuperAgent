@@ -38,7 +38,7 @@ import {
   useInvalidateRemoteMcps,
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
-import type { Provider } from '@shared/lib/composio/providers'
+import type { Provider } from '@shared/lib/account-providers/service-catalog'
 import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common-servers'
 
 export type DirectoryTab = 'apis' | 'mcps'

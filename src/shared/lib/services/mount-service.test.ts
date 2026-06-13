@@ -111,6 +111,28 @@ describe('mount-service', () => {
       // since macOS /tmp -> /private/var/... resolution)
       expect(mount.hostPath).toBe(fs.realpathSync(realDir))
     })
+
+    it.runIf(process.platform === 'darwin')('rejects iCloud Drive (Mobile Documents) paths', async () => {
+      const { addMount } = await importService()
+      const cloudDir = path.join(os.homedir(), 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'proj')
+      // Path need not exist — the prefix check fires before any fs access.
+      expect(() => addMount('test-agent', cloudDir)).toThrow(/cloud-synced|iCloud/i)
+    })
+
+    it.runIf(process.platform === 'darwin')('rejects File Provider (CloudStorage) paths like Dropbox', async () => {
+      const { addMount } = await importService()
+      const cloudDir = path.join(os.homedir(), 'Library', 'CloudStorage', 'Dropbox', 'work')
+      expect(() => addMount('test-agent', cloudDir)).toThrow(/cloud-synced|iCloud/i)
+    })
+  })
+
+  describe('isCloudStoragePath', () => {
+    it.runIf(process.platform === 'darwin')('flags iCloud and CloudStorage prefixes, not regular folders', async () => {
+      const { isCloudStoragePath } = await importService()
+      expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'CloudStorage', 'Dropbox', 'x'))).toBe(true)
+      expect(isCloudStoragePath(path.join(os.homedir(), 'Library', 'Mobile Documents', 'x'))).toBe(true)
+      expect(isCloudStoragePath(path.join(os.homedir(), 'Projects', 'x'))).toBe(false)
+    })
   })
 
   describe('removeMount', () => {

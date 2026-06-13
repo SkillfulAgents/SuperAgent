@@ -2,20 +2,21 @@ import { Hono } from 'hono'
 import { db } from '@shared/lib/db'
 import { connectedAccounts, agentConnectedAccounts } from '@shared/lib/db/schema'
 import { desc, eq } from 'drizzle-orm'
-import { getProvider, isProviderSupported } from '@shared/lib/composio/providers'
 import {
-  getOrCreateAuthConfig,
-  initiateConnection,
-  getConnection,
-  deleteConnection,
-  getAccountDisplayName,
-} from '@shared/lib/composio/client'
+  getProvider,
+  isProviderSupported,
+  getDefaultAccountProvider,
+  getAccountProviderByName,
+  isValidProviderName,
+} from '@shared/lib/account-providers'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { getComposioUserId } from '@shared/lib/config/settings'
+import { isOwnedByCaller } from '@shared/lib/auth/ownership'
+import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
-import { countActiveTriggersPerAccount } from '@shared/lib/services/webhook-trigger-service'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { countActiveTriggersPerAccount, cancelTriggersForConnectedAccount } from '@shared/lib/services/webhook-trigger-service'
 
 const connectedAccountsRouter = new Hono()
 
@@ -52,13 +53,13 @@ connectedAccountsRouter.get('/', async (c) => {
 connectedAccountsRouter.post('/', async (c) => {
   try {
     const body = await c.req.json()
-    const { composioConnectionId, toolkitSlug, displayName } = body
+    const { providerConnectionId, providerName, toolkitSlug, displayName, status: reqStatus } = body
 
-    if (!composioConnectionId || !toolkitSlug || !displayName) {
+    if (!providerConnectionId || !toolkitSlug || !displayName) {
       return c.json(
         {
           error:
-            'Missing required fields: composioConnectionId, toolkitSlug, displayName',
+            'Missing required fields: providerConnectionId, toolkitSlug, displayName',
         },
         400
       )
@@ -69,11 +70,12 @@ connectedAccountsRouter.post('/', async (c) => {
 
     await db.insert(connectedAccounts).values({
       id,
-      composioConnectionId,
+      providerConnectionId,
+      providerName: providerName ?? 'composio',
       toolkitSlug,
       displayName,
       userId: getCurrentUserId(c),
-      status: 'active',
+      status: reqStatus ?? 'active',
       createdAt: now,
       updatedAt: now,
     })
@@ -83,6 +85,8 @@ connectedAccountsRouter.post('/', async (c) => {
       .from(connectedAccounts)
       .where(eq(connectedAccounts.id, id))
       .limit(1)
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug, displayName } })
 
     return c.json({
       account: { ...created, provider: getProvider(toolkitSlug) },
@@ -98,54 +102,78 @@ connectedAccountsRouter.post('/', async (c) => {
   }
 })
 
+// POST /api/connected-accounts/sync - Trigger account status sync with remote providers
+connectedAccountsRouter.post('/sync', async (c) => {
+  try {
+    const { accountSyncService } = await import('@shared/lib/scheduler/account-sync-service')
+    await accountSyncService.syncAll()
+    return c.json({ success: true })
+  } catch (error: any) {
+    console.error('Account sync failed:', error)
+    return c.json({ error: error.message || 'Sync failed' }, 500)
+  }
+})
+
 // POST /api/connected-accounts/initiate - Start OAuth flow
 connectedAccountsRouter.post('/initiate', async (c) => {
   try {
     const body = await c.req.json()
-    const { providerSlug, electron } = body
+    const { providerSlug, electron, reconnectAccountId } = body
 
     if (!providerSlug) {
       return c.json({ error: 'Missing required field: providerSlug' }, 400)
     }
 
-    if (!isProviderSupported(providerSlug)) {
+    // If reconnecting, verify the account exists and belongs to this user.
+    // In auth mode, scope ownership to the acting user so a user cannot take
+    // over another user's connected account by guessing its id (SUP-198).
+    if (reconnectAccountId) {
+      const [existing] = await db
+        .select()
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, reconnectAccountId))
+        .limit(1)
+      if (!existing || !isOwnedByCaller(c, existing)) {
+        return c.json({ error: 'Account not found' }, 404)
+      }
+    }
+
+    const provider = getDefaultAccountProvider()
+
+    if (!isProviderSupported(providerSlug, provider.name)) {
       return c.json(
-        { error: `Provider '${providerSlug}' is not supported` },
+        { error: `Provider '${providerSlug}' is not supported by ${provider.name}` },
         400
       )
     }
 
-    const authConfig = await getOrCreateAuthConfig(providerSlug)
-
     // Build the callback URL
     // For Electron, use custom protocol; for web, use HTTP callback
+    const reconnectParam = reconnectAccountId ? `&reconnectAccountId=${encodeURIComponent(reconnectAccountId)}` : ''
     let callbackUrl: string
     if (electron) {
-      // Electron: use custom protocol that the app handles
       const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
-      callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}`
+      callbackUrl = `${protocol}://oauth-callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${reconnectParam}`
     } else {
-      // Web: use HTTP callback endpoint
       const origin = getAppBaseUrlFromRequest(c)
-      callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}`
+      callbackUrl = `${origin}/api/connected-accounts/callback?toolkit=${encodeURIComponent(providerSlug)}&providerName=${encodeURIComponent(provider.name)}${reconnectParam}`
     }
 
-    // Platform proxy injects user_id server-side, so it's only required
-    // for local API key users and auth-mode users.
-    const composioUserId = isAuthMode()
+    const userId = isAuthMode()
       ? getCurrentUserId(c)
-      : getComposioUserId()
+      : getAccountProviderUserId()
 
-    const { connectionId, redirectUrl } = await initiateConnection(
-      authConfig.id,
+    const { connectionId, redirectUrl } = await provider.initiateConnection(
+      providerSlug,
       callbackUrl,
-      composioUserId
+      userId
     )
 
     return c.json({
       connectionId,
       redirectUrl,
       providerSlug,
+      providerName: provider.name,
     })
   } catch (error: any) {
     console.error('Failed to initiate connection:', error)
@@ -159,15 +187,16 @@ connectedAccountsRouter.post('/initiate', async (c) => {
     if (isNoManagedAuth) {
       return c.json(
         {
-          error: `This provider requires custom OAuth credentials. Composio does not have managed credentials for it. Please set up your own app credentials in the Composio dashboard and configure a custom auth config for this provider.`,
+          error: `This provider requires custom OAuth credentials. The account provider does not have managed credentials for it.`,
         },
         400
       )
     }
 
     // Never forward upstream 401s as our own — 401 is reserved for session auth
-    // and triggers auto-sign-out on the frontend.
-    const status = error.statusCode === 401 ? 502 : (error.statusCode || 500)
+    // and triggers auto-sign-out on the frontend. Use 424 (Failed Dependency)
+    // so reverse proxies like Cloudflare don't intercept the response.
+    const status = error.statusCode === 401 ? 424 : (error.statusCode || 500)
     return c.json(
       { error: error.message || 'Failed to initiate connection' },
       status
@@ -179,7 +208,7 @@ connectedAccountsRouter.post('/initiate', async (c) => {
 connectedAccountsRouter.post('/complete', async (c) => {
   try {
     const body = await c.req.json()
-    const { connectionId, toolkit } = body
+    const { connectionId, toolkit, providerName: reqProviderName, reconnectAccountId } = body
 
     if (!connectionId) {
       return c.json({ error: 'Missing connectionId' }, 400)
@@ -189,40 +218,89 @@ connectedAccountsRouter.post('/complete', async (c) => {
       return c.json({ error: 'Missing toolkit' }, 400)
     }
 
-    const connection = await getConnection(connectionId)
+    const providerName = reqProviderName ?? 'composio'
+    if (!isValidProviderName(providerName)) {
+      return c.json({ error: `Unknown account provider: "${providerName}"` }, 400)
+    }
+    const accountProvider = getAccountProviderByName(providerName)
+    const toolkitSlug = toolkit.toLowerCase()
+
+    const connection = await accountProvider.getConnection(connectionId, toolkitSlug)
 
     if (connection.status !== 'ACTIVE') {
       return c.json({ error: `Connection status: ${connection.status}` }, 400)
     }
+    const serviceProvider = getProvider(toolkitSlug)
+    const fallbackName = serviceProvider?.displayName || toolkit
 
-    const toolkitSlug = toolkit.toLowerCase()
-    const provider = getProvider(toolkitSlug)
-    const fallbackName = provider?.displayName || toolkit
+    const displayName = await accountProvider.getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
 
-    // Try to get user-specific display name (e.g., email for Gmail)
-    const displayName = await getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
-
-    const id = crypto.randomUUID()
     const now = new Date()
+    let id: string
 
-    await db.insert(connectedAccounts).values({
-      id,
-      composioConnectionId: connectionId,
-      toolkitSlug,
-      displayName,
-      userId: getCurrentUserId(c),
-      status: 'active',
-      createdAt: now,
-      updatedAt: now,
-    })
+    if (reconnectAccountId) {
+      // Look up old connection ID (and owner) before updating so we can clean it
+      // up remotely and verify ownership.
+      const [oldRecord] = await db
+        .select({
+          providerConnectionId: connectedAccounts.providerConnectionId,
+          userId: connectedAccounts.userId,
+        })
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, reconnectAccountId))
+        .limit(1)
 
-    trackServerEvent('account_oauth_succeeded', { toolkitSlug })
+      // The account must exist and, in auth mode, be owned by the acting user.
+      // Otherwise a user could overwrite another user's connection (SUP-198).
+      if (!oldRecord || !isOwnedByCaller(c, oldRecord)) {
+        return c.json({ error: 'Account not found' }, 404)
+      }
+
+      // Reconnecting: update existing record to preserve agent mappings and scope policies
+      await db.update(connectedAccounts)
+        .set({
+          providerConnectionId: connectionId,
+          providerName,
+          displayName,
+          status: 'active',
+          updatedAt: now,
+        })
+        .where(eq(connectedAccounts.id, reconnectAccountId))
+      id = reconnectAccountId
+
+      // Clean up the old remote connection (fire-and-forget)
+      if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
+        accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
+          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
+      }
+
+      trackServerEvent('account_oauth_reconnected', { toolkitSlug })
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+    } else {
+      id = crypto.randomUUID()
+
+      await db.insert(connectedAccounts).values({
+        id,
+        providerConnectionId: connectionId,
+        providerName,
+        toolkitSlug,
+        displayName,
+        userId: getCurrentUserId(c),
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      trackServerEvent('account_oauth_succeeded', { toolkitSlug })
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+    }
 
     return c.json({
       success: true,
       account: {
         id,
-        composioConnectionId: connectionId,
+        providerConnectionId: connectionId,
+        providerName,
         toolkitSlug,
         displayName,
         status: 'active',
@@ -242,11 +320,19 @@ connectedAccountsRouter.post('/complete', async (c) => {
 // GET /api/connected-accounts/callback - OAuth callback handler (for web)
 connectedAccountsRouter.get('/callback', async (c) => {
   try {
-    // Composio's /link flow may use either casing — accept both.
+    // Provider callback may use either casing — accept both.
     const connectionId =
       c.req.query('connectedAccountId') || c.req.query('connected_account_id')
     const status = c.req.query('status')
     const toolkit = c.req.query('toolkit')
+    const providerName = c.req.query('providerName') ?? 'composio'
+    const reconnectAccountId = c.req.query('reconnectAccountId')
+
+    if (!isValidProviderName(providerName)) {
+      return c.html(
+        generateCallbackHtml({ success: false, error: `Unknown account provider: "${providerName}"` })
+      )
+    }
 
     if (status === 'failed' || !connectionId) {
       const error = c.req.query('error') || 'OAuth flow failed'
@@ -259,7 +345,9 @@ connectedAccountsRouter.get('/callback', async (c) => {
       )
     }
 
-    const connection = await getConnection(connectionId)
+    const accountProvider = getAccountProviderByName(providerName)
+    const toolkitSlug = toolkit.toLowerCase()
+    const connection = await accountProvider.getConnection(connectionId, toolkitSlug)
 
     if (connection.status !== 'ACTIVE') {
       return c.html(
@@ -269,29 +357,68 @@ connectedAccountsRouter.get('/callback', async (c) => {
         })
       )
     }
+    const serviceProvider = getProvider(toolkitSlug)
+    const fallbackName = serviceProvider?.displayName || toolkit
 
-    const toolkitSlug = toolkit.toLowerCase()
-    const provider = getProvider(toolkitSlug)
-    const fallbackName = provider?.displayName || toolkit
+    const displayName = await accountProvider.getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
 
-    // Try to get user-specific display name (e.g., email for Gmail)
-    const displayName = await getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
-
-    const id = crypto.randomUUID()
     const now = new Date()
+    let id: string
 
-    await db.insert(connectedAccounts).values({
-      id,
-      composioConnectionId: connectionId,
-      toolkitSlug,
-      displayName,
-      userId: getCurrentUserId(c),
-      status: 'active',
-      createdAt: now,
-      updatedAt: now,
-    })
+    if (reconnectAccountId) {
+      const [oldRecord] = await db
+        .select({
+          providerConnectionId: connectedAccounts.providerConnectionId,
+          userId: connectedAccounts.userId,
+        })
+        .from(connectedAccounts)
+        .where(eq(connectedAccounts.id, reconnectAccountId))
+        .limit(1)
 
-    trackServerEvent('account_oauth_succeeded', { toolkitSlug })
+      // The account must exist and, in auth mode, be owned by the acting user.
+      // Otherwise a user could overwrite another user's connection (SUP-198).
+      if (!oldRecord || !isOwnedByCaller(c, oldRecord)) {
+        return c.html(
+          generateCallbackHtml({ success: false, error: 'Account not found' })
+        )
+      }
+
+      await db.update(connectedAccounts)
+        .set({
+          providerConnectionId: connectionId,
+          providerName,
+          displayName,
+          status: 'active',
+          updatedAt: now,
+        })
+        .where(eq(connectedAccounts.id, reconnectAccountId))
+      id = reconnectAccountId
+
+      if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
+        accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
+          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
+      }
+
+      trackServerEvent('account_oauth_reconnected', { toolkitSlug })
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+    } else {
+      id = crypto.randomUUID()
+
+      await db.insert(connectedAccounts).values({
+        id,
+        providerConnectionId: connectionId,
+        providerName,
+        toolkitSlug,
+        displayName,
+        userId: getCurrentUserId(c),
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+      })
+
+      trackServerEvent('account_oauth_succeeded', { toolkitSlug })
+      logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
+    }
 
     return c.html(
       generateCallbackHtml({
@@ -418,13 +545,22 @@ connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =
       return c.json({ error: 'Connected account not found' }, 404)
     }
 
+    // Cancel any webhook triggers bound to this account FIRST, while the account
+    // and its auth are still present, so the upstream Composio subscription is
+    // torn down too. Otherwise the trigger rows (no DB-level FK/cascade) would be
+    // orphaned status='active' and keep feeding the live subscription (SUP-221).
+    await cancelTriggersForConnectedAccount(id)
+
     try {
-      await deleteConnection(existing.composioConnectionId)
+      const accountProvider = getAccountProviderByName(existing.providerName)
+      await accountProvider.deleteConnection(existing.providerConnectionId, existing.toolkitSlug)
     } catch (error) {
-      console.warn('Failed to delete connection from Composio:', error)
+      console.warn('Failed to delete connection from provider:', error)
     }
 
     await db.delete(connectedAccounts).where(eq(connectedAccounts.id, id))
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'disconnected', details: { toolkitSlug: existing.toolkitSlug } })
 
     return c.body(null, 204)
   } catch (error) {
@@ -507,14 +643,7 @@ function generateCallbackHtml(result: CallbackResult): string {
   </div>
   <script>
     if (window.opener) {
-      try {
-        // Get the opener's origin for secure postMessage
-        var targetOrigin = window.opener.location.origin;
-        window.opener.postMessage(${message}, targetOrigin);
-      } catch (e) {
-        // Cross-origin - use fallback (opener will validate message type)
-        window.opener.postMessage(${message}, '*');
-      }
+      window.opener.postMessage(${message}, window.location.origin);
       setTimeout(function() { window.close(); }, ${result.success ? 1000 : 3000});
     }
   </script>

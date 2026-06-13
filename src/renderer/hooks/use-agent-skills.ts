@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
+import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiSkillWithStatus, ApiDiscoverableSkill } from '@shared/lib/types/api'
 
@@ -63,7 +64,7 @@ export function useInstallSkill() {
   const queryClient = useQueryClient()
 
   return useMutation<
-    { installed: boolean; requiredEnvVars?: Array<{ name: string; description: string }> },
+    { installed: boolean },
     Error,
     {
       agentSlug: string
@@ -71,14 +72,13 @@ export function useInstallSkill() {
       skillPath: string
       skillName: string
       skillVersion: string
-      envVars?: Record<string, string>
     }
   >({
-    mutationFn: async ({ agentSlug, skillsetId, skillPath, skillName, skillVersion, envVars }) => {
+    mutationFn: async ({ agentSlug, skillsetId, skillPath, skillName, skillVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/install`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ skillsetId, skillPath, skillName, skillVersion, envVars }),
+        body: JSON.stringify({ skillsetId, skillPath, skillName, skillVersion }),
       })
       if (!res.ok) {
         const data = await res.json()
@@ -157,6 +157,7 @@ export function useCreateSkillPR() {
     Error,
     { agentSlug: string; skillDir: string; title: string; body: string; newVersion?: string }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, skillDir, title, body, newVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}/create-pr`, {
         method: 'POST',
@@ -221,6 +222,7 @@ export function usePublishSkill() {
       newVersion?: string
     }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, skillDir, skillsetId, title, body, newVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}/publish`, {
         method: 'POST',
@@ -236,6 +238,52 @@ export function usePublishSkill() {
     onSuccess: (_, vars) => {
       queryClient.invalidateQueries({ queryKey: ['agent-skills', vars.agentSlug] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-skills', vars.agentSlug] })
+    },
+  })
+}
+
+export function useExportSkill() {
+  return useMutation<void, Error, { agentSlug: string; skillDir: string; skillName: string }>({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ agentSlug, skillDir, skillName }) => {
+      const res = await apiFetch(
+        `/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}/export`,
+        { method: 'POST' },
+      )
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to export skill')
+      }
+      await downloadBlob(res, `${skillName || skillDir}.zip`)
+    },
+  })
+}
+
+export function useImportSkillZip() {
+  const queryClient = useQueryClient()
+
+  return useMutation<
+    { skillDir: string; skillName: string },
+    Error,
+    { agentSlug: string; file: File }
+  >({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ agentSlug, file }) => {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const res = await apiFetch(
+        `/api/agents/${encodeURIComponent(agentSlug)}/skills/import-zip`,
+        { method: 'POST', body: formData },
+      )
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to import skill')
+      }
+      return res.json()
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-skills', vars.agentSlug] })
     },
   })
 }

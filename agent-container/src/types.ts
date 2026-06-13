@@ -75,4 +75,5 @@ export interface SendMessageRequest {
   uuid?: UUID;
   effort?: EffortLevel; // If set and different from current session effort, triggers interrupt+restart with new effort
   model?: string; // If set and different from current session model, triggers interrupt+restart with new model
+  shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
 }

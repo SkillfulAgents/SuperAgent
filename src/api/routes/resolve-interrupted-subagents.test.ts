@@ -6,11 +6,19 @@ import type { TransformedItem, TransformedMessage } from '@shared/lib/utils/mess
 // ============================================================================
 
 const mockReaddir = vi.fn()
-const mockStat = vi.fn()
+const mockReadFile = vi.fn()
 
 vi.mock('fs', () => ({
-  default: { promises: { readdir: (...args: unknown[]) => mockReaddir(...args), stat: (...args: unknown[]) => mockStat(...args) } },
-  promises: { readdir: (...args: unknown[]) => mockReaddir(...args), stat: (...args: unknown[]) => mockStat(...args) },
+  default: {
+    promises: {
+      readdir: (...args: unknown[]) => mockReaddir(...args),
+      readFile: (...args: unknown[]) => mockReadFile(...args),
+    },
+  },
+  promises: {
+    readdir: (...args: unknown[]) => mockReaddir(...args),
+    readFile: (...args: unknown[]) => mockReadFile(...args),
+  },
 }))
 
 vi.mock('@shared/lib/utils/file-storage', () => ({
@@ -57,7 +65,7 @@ vi.mock('drizzle-orm', () => ({
 }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: vi.fn(() => false) }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: vi.fn() }))
-vi.mock('@shared/lib/composio/providers', () => ({ getProvider: vi.fn() }))
+vi.mock('@shared/lib/account-providers', () => ({ getProvider: vi.fn() }))
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: vi.fn(), getEffectiveModels: vi.fn(),
   getEffectiveAgentLimits: vi.fn(), getCustomEnvVars: vi.fn(), getSettings: vi.fn(),
@@ -121,12 +129,12 @@ function makeRegularToolCall(id: string): TransformedMessage['toolCalls'][number
   return { id, name: 'Bash', input: { command: 'ls' }, result: 'file.txt' }
 }
 
-/** Helper to set up mockStat to return different mtimes by filename */
-function setupStatMtimes(mtimeByFile: Record<string, number>) {
-  mockStat.mockImplementation((filePath: string) => {
-    for (const [name, mtime] of Object.entries(mtimeByFile)) {
+/** Helper to set up mockReadFile to return .meta.json content by filename */
+function setupMetaFiles(metaByFile: Record<string, { toolUseId: string }>) {
+  mockReadFile.mockImplementation((filePath: string) => {
+    for (const [name, meta] of Object.entries(metaByFile)) {
       if (filePath.endsWith(name)) {
-        return Promise.resolve({ mtimeMs: mtime })
+        return Promise.resolve(JSON.stringify(meta))
       }
     }
     return Promise.reject(new Error('ENOENT'))
@@ -206,15 +214,15 @@ describe('resolveInterruptedSubagents', () => {
   })
 
   // --------------------------------------------------------------------------
-  // Single interrupted subagent — the core bug scenario
+  // Single interrupted subagent — the core scenario
   // --------------------------------------------------------------------------
 
-  it('resolves a single interrupted Task tool call to the subagent file', async () => {
+  it('resolves a single interrupted Task tool call via .meta.json toolUseId', async () => {
     const tc = makeTaskToolCall('tool-1')
     const items: TransformedItem[] = [makeAssistantMsg([tc])]
 
-    mockReaddir.mockResolvedValue(['agent-abc123.jsonl'])
-    setupStatMtimes({ 'agent-abc123.jsonl': 1000 })
+    mockReaddir.mockResolvedValue(['agent-abc123.meta.json'])
+    setupMetaFiles({ 'agent-abc123.meta.json': { toolUseId: 'tool-1' } })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
@@ -228,8 +236,8 @@ describe('resolveInterruptedSubagents', () => {
     const tc = makeTaskToolCall('tool-1')
     const items: TransformedItem[] = [makeAssistantMsg([tc])]
 
-    mockReaddir.mockResolvedValue(['agent-xyz.jsonl'])
-    setupStatMtimes({ 'agent-xyz.jsonl': 1000 })
+    mockReaddir.mockResolvedValue(['agent-xyz.meta.json'])
+    setupMetaFiles({ 'agent-xyz.meta.json': { toolUseId: 'tool-1' } })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'sess-42')
 
@@ -238,10 +246,10 @@ describe('resolveInterruptedSubagents', () => {
   })
 
   // --------------------------------------------------------------------------
-  // Multiple subagents — ordering
+  // Multiple subagents — deterministic matching by toolUseId
   // --------------------------------------------------------------------------
 
-  it('matches multiple interrupted Task calls to subagent files by mtime order', async () => {
+  it('matches multiple interrupted Task calls to subagents by toolUseId', async () => {
     const tc1 = makeTaskToolCall('tool-1')
     const tc2 = makeTaskToolCall('tool-2')
     const items: TransformedItem[] = [
@@ -249,17 +257,16 @@ describe('resolveInterruptedSubagents', () => {
       makeAssistantMsg([tc2], 'msg-2'),
     ]
 
-    mockReaddir.mockResolvedValue(['agent-second.jsonl', 'agent-first.jsonl'])
-    setupStatMtimes({
-      'agent-first.jsonl': 1000,   // created first
-      'agent-second.jsonl': 2000,  // created second
+    mockReaddir.mockResolvedValue(['agent-second.meta.json', 'agent-first.meta.json'])
+    setupMetaFiles({
+      'agent-first.meta.json': { toolUseId: 'tool-1' },
+      'agent-second.meta.json': { toolUseId: 'tool-2' },
     })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
-    // tc1 (first unresolved) → agent-first (earliest mtime)
+    // Deterministic matching: tc1 (tool-1) → agent-first, tc2 (tool-2) → agent-second
     expect(tc1.subagent).toEqual({ agentId: 'first', status: 'cancelled' })
-    // tc2 (second unresolved) → agent-second (later mtime)
     expect(tc2.subagent).toEqual({ agentId: 'second', status: 'cancelled' })
   })
 
@@ -279,27 +286,55 @@ describe('resolveInterruptedSubagents', () => {
     ]
 
     mockReaddir.mockResolvedValue([
-      'agent-already-resolved.jsonl',
-      'agent-new-one.jsonl',
+      'agent-already-resolved.meta.json',
+      'agent-new-one.meta.json',
     ])
-    setupStatMtimes({
-      'agent-already-resolved.jsonl': 1000,
-      'agent-new-one.jsonl': 2000,
+    setupMetaFiles({
+      'agent-already-resolved.meta.json': { toolUseId: 'tool-1' },
+      'agent-new-one.meta.json': { toolUseId: 'tool-2' },
     })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
     // Resolved one stays unchanged
     expect(resolvedTc.subagent).toEqual({ agentId: 'already-resolved', status: 'completed' })
-    // Unresolved one gets the unmatched file (already-resolved is excluded)
+    // Unresolved one gets matched via toolUseId
+    expect(unresolvedTc.subagent).toEqual({ agentId: 'new-one', status: 'cancelled' })
+  })
+
+  it('excludes already-resolved agentIds from the meta.json scan', async () => {
+    const resolvedTc = makeTaskToolCall('tool-1', {
+      result: 'done',
+      subagent: { agentId: 'already-resolved', status: 'completed' },
+    })
+    const unresolvedTc = makeTaskToolCall('tool-2')
+    const items: TransformedItem[] = [
+      makeAssistantMsg([resolvedTc, unresolvedTc]),
+    ]
+
+    mockReaddir.mockResolvedValue([
+      'agent-already-resolved.meta.json',
+      'agent-new-one.meta.json',
+    ])
+    setupMetaFiles({
+      // already-resolved.meta.json should be skipped (agentId already known)
+      'agent-already-resolved.meta.json': { toolUseId: 'tool-1' },
+      'agent-new-one.meta.json': { toolUseId: 'tool-2' },
+    })
+
+    await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
+
+    // readFile should NOT have been called for the already-resolved agent
+    const readFileCalls = mockReadFile.mock.calls.map((c: unknown[]) => c[0] as string)
+    expect(readFileCalls.some((p: string) => p.includes('already-resolved'))).toBe(false)
     expect(unresolvedTc.subagent).toEqual({ agentId: 'new-one', status: 'cancelled' })
   })
 
   // --------------------------------------------------------------------------
-  // Edge: more unresolved calls than files
+  // Edge: unresolved calls with no matching meta.json
   // --------------------------------------------------------------------------
 
-  it('leaves extra unresolved calls untouched when fewer files than calls', async () => {
+  it('leaves unresolved calls untouched when no meta.json matches their toolUseId', async () => {
     const tc1 = makeTaskToolCall('tool-1')
     const tc2 = makeTaskToolCall('tool-2')
     const tc3 = makeTaskToolCall('tool-3')
@@ -307,80 +342,116 @@ describe('resolveInterruptedSubagents', () => {
       makeAssistantMsg([tc1, tc2, tc3]),
     ]
 
-    mockReaddir.mockResolvedValue(['agent-only-one.jsonl'])
-    setupStatMtimes({ 'agent-only-one.jsonl': 1000 })
+    // Only one meta.json exists and it maps to tool-2
+    mockReaddir.mockResolvedValue(['agent-only-one.meta.json'])
+    setupMetaFiles({ 'agent-only-one.meta.json': { toolUseId: 'tool-2' } })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
-    expect(tc1.subagent).toEqual({ agentId: 'only-one', status: 'cancelled' })
-    expect(tc2.subagent).toBeUndefined()
+    expect(tc1.subagent).toBeUndefined()
+    expect(tc2.subagent).toEqual({ agentId: 'only-one', status: 'cancelled' })
     expect(tc3.subagent).toBeUndefined()
   })
 
   // --------------------------------------------------------------------------
-  // Edge: more files than unresolved calls
+  // Edge: more meta.json files than unresolved calls
   // --------------------------------------------------------------------------
 
-  it('only uses as many files as needed when more files than unresolved calls', async () => {
+  it('only resolves matching calls when more meta.json files than unresolved calls', async () => {
     const tc = makeTaskToolCall('tool-1')
     const items: TransformedItem[] = [makeAssistantMsg([tc])]
 
     mockReaddir.mockResolvedValue([
-      'agent-aaa.jsonl',
-      'agent-bbb.jsonl',
-      'agent-ccc.jsonl',
+      'agent-aaa.meta.json',
+      'agent-bbb.meta.json',
+      'agent-ccc.meta.json',
     ])
-    setupStatMtimes({
-      'agent-aaa.jsonl': 3000,
-      'agent-bbb.jsonl': 1000,  // earliest
-      'agent-ccc.jsonl': 2000,
+    setupMetaFiles({
+      'agent-aaa.meta.json': { toolUseId: 'tool-99' },
+      'agent-bbb.meta.json': { toolUseId: 'tool-1' },
+      'agent-ccc.meta.json': { toolUseId: 'tool-42' },
     })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
-    // Should pick the earliest one (bbb, mtime 1000)
+    // Should match based on toolUseId, not position/order
     expect(tc.subagent).toEqual({ agentId: 'bbb', status: 'cancelled' })
   })
 
   // --------------------------------------------------------------------------
-  // Non-agent files in subagents directory
+  // Non-.meta.json files in subagents directory
   // --------------------------------------------------------------------------
 
-  it('ignores non-agent files in the subagents directory', async () => {
+  it('ignores non-.meta.json files in the subagents directory', async () => {
     const tc = makeTaskToolCall('tool-1')
     const items: TransformedItem[] = [makeAssistantMsg([tc])]
 
     mockReaddir.mockResolvedValue([
       'README.md',
       '.DS_Store',
-      'not-agent-file.jsonl',
-      'something-agent-fake.jsonl',
-      'agent-real-one.jsonl',
+      'agent-fake.jsonl',
+      'agent-real-one.meta.json',
     ])
-    setupStatMtimes({
-      'agent-real-one.jsonl': 1000,
+    setupMetaFiles({
+      'agent-real-one.meta.json': { toolUseId: 'tool-1' },
     })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
-    // Should only match agent-*.jsonl files
-    expect(tc.subagent?.agentId).toBe('real-one')
+    // Should only process .meta.json files
+    expect(tc.subagent).toEqual({ agentId: 'real-one', status: 'cancelled' })
+    // readFile should only be called for the .meta.json file
+    expect(mockReadFile).toHaveBeenCalledTimes(1)
   })
 
   // --------------------------------------------------------------------------
-  // Stat failure for a file
+  // readFile failure for a file
   // --------------------------------------------------------------------------
 
-  it('skips files whose stat() call fails', async () => {
+  it('skips .meta.json files whose readFile call fails', async () => {
     const tc = makeTaskToolCall('tool-1')
     const items: TransformedItem[] = [makeAssistantMsg([tc])]
 
-    mockReaddir.mockResolvedValue(['agent-broken.jsonl', 'agent-good.jsonl'])
-    mockStat.mockImplementation((filePath: string) => {
-      if (filePath.endsWith('agent-broken.jsonl')) {
+    mockReaddir.mockResolvedValue(['agent-broken.meta.json', 'agent-good.meta.json'])
+    mockReadFile.mockImplementation((filePath: string) => {
+      if (filePath.endsWith('agent-broken.meta.json')) {
         return Promise.reject(new Error('EACCES'))
       }
-      return Promise.resolve({ mtimeMs: 1000 })
+      return Promise.resolve(JSON.stringify({ toolUseId: 'tool-1' }))
+    })
+
+    await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
+
+    expect(tc.subagent).toEqual({ agentId: 'good', status: 'cancelled' })
+  })
+
+  it('skips .meta.json files with invalid JSON', async () => {
+    const tc = makeTaskToolCall('tool-1')
+    const items: TransformedItem[] = [makeAssistantMsg([tc])]
+
+    mockReaddir.mockResolvedValue(['agent-bad.meta.json', 'agent-good.meta.json'])
+    mockReadFile.mockImplementation((filePath: string) => {
+      if (filePath.endsWith('agent-bad.meta.json')) {
+        return Promise.resolve('not valid json{{{')
+      }
+      return Promise.resolve(JSON.stringify({ toolUseId: 'tool-1' }))
+    })
+
+    await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
+
+    expect(tc.subagent).toEqual({ agentId: 'good', status: 'cancelled' })
+  })
+
+  it('skips .meta.json files without a toolUseId field', async () => {
+    const tc = makeTaskToolCall('tool-1')
+    const items: TransformedItem[] = [makeAssistantMsg([tc])]
+
+    mockReaddir.mockResolvedValue(['agent-no-id.meta.json', 'agent-good.meta.json'])
+    mockReadFile.mockImplementation((filePath: string) => {
+      if (filePath.endsWith('agent-no-id.meta.json')) {
+        return Promise.resolve(JSON.stringify({ someOtherField: 'value' }))
+      }
+      return Promise.resolve(JSON.stringify({ toolUseId: 'tool-1' }))
     })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
@@ -399,8 +470,8 @@ describe('resolveInterruptedSubagents', () => {
       makeAssistantMsg([bashTc, taskTc]),
     ]
 
-    mockReaddir.mockResolvedValue(['agent-sub1.jsonl'])
-    setupStatMtimes({ 'agent-sub1.jsonl': 1000 })
+    mockReaddir.mockResolvedValue(['agent-sub1.meta.json'])
+    setupMetaFiles({ 'agent-sub1.meta.json': { toolUseId: 'task-1' } })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
@@ -417,8 +488,8 @@ describe('resolveInterruptedSubagents', () => {
     const tc = makeTaskToolCall('tool-1', { result: 'some result' })
     const items: TransformedItem[] = [makeAssistantMsg([tc])]
 
-    mockReaddir.mockResolvedValue(['agent-discovered.jsonl'])
-    setupStatMtimes({ 'agent-discovered.jsonl': 1000 })
+    mockReaddir.mockResolvedValue(['agent-discovered.meta.json'])
+    setupMetaFiles({ 'agent-discovered.meta.json': { toolUseId: 'tool-1' } })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
@@ -451,15 +522,35 @@ describe('resolveInterruptedSubagents', () => {
       makeAssistantMsg([makeRegularToolCall('bash-1'), tc1, makeRegularToolCall('bash-2'), tc2]),
     ]
 
-    mockReaddir.mockResolvedValue(['agent-first.jsonl', 'agent-second.jsonl'])
-    setupStatMtimes({
-      'agent-first.jsonl': 1000,
-      'agent-second.jsonl': 2000,
+    mockReaddir.mockResolvedValue(['agent-first.meta.json', 'agent-second.meta.json'])
+    setupMetaFiles({
+      'agent-first.meta.json': { toolUseId: 'tool-1' },
+      'agent-second.meta.json': { toolUseId: 'tool-2' },
     })
 
     await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
 
     expect(tc1.subagent).toEqual({ agentId: 'first', status: 'cancelled' })
     expect(tc2.subagent).toEqual({ agentId: 'second', status: 'cancelled' })
+  })
+
+  // --------------------------------------------------------------------------
+  // Agent tool calls (not just Task) are also resolved
+  // --------------------------------------------------------------------------
+
+  it('resolves Agent tool calls the same as Task tool calls', async () => {
+    const tc: TransformedMessage['toolCalls'][number] = {
+      id: 'agent-call-1',
+      name: 'Agent',
+      input: { prompt: 'do something', description: 'test' },
+    }
+    const items: TransformedItem[] = [makeAssistantMsg([tc])]
+
+    mockReaddir.mockResolvedValue(['agent-sub1.meta.json'])
+    setupMetaFiles({ 'agent-sub1.meta.json': { toolUseId: 'agent-call-1' } })
+
+    await resolveInterruptedSubagents(items, 'my-agent', 'session-1')
+
+    expect(tc.subagent).toEqual({ agentId: 'sub1', status: 'cancelled' })
   })
 })

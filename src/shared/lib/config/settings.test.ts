@@ -1042,8 +1042,9 @@ describe('getEffectiveModels', () => {
 
     expect(models).toEqual({
       summarizerModel: 'claude-haiku-4-5',
-      agentModel: 'claude-opus-4-7',
+      agentModel: 'claude-opus-4-8',
       browserModel: 'claude-sonnet-4-6',
+      agentEffort: 'medium',
     })
   })
 
@@ -1064,6 +1065,7 @@ describe('getEffectiveModels', () => {
       summarizerModel: 'custom-summarizer',
       agentModel: 'custom-agent',
       browserModel: 'custom-browser',
+      agentEffort: 'medium',
     })
   })
 
@@ -1096,7 +1098,7 @@ describe('getEffectiveModels', () => {
 
     // Empty strings are falsy, so || fallback triggers
     expect(models.summarizerModel).toBe('claude-haiku-4-5')
-    expect(models.agentModel).toBe('claude-opus-4-7')
+    expect(models.agentModel).toBe('claude-opus-4-8')
     expect(models.browserModel).toBe('claude-sonnet-4-6')
   })
 
@@ -1107,8 +1109,9 @@ describe('getEffectiveModels', () => {
 
     expect(models).toEqual({
       summarizerModel: 'claude-haiku-4-5',
-      agentModel: 'claude-opus-4-7',
+      agentModel: 'claude-opus-4-8',
       browserModel: 'claude-sonnet-4-6',
+      agentEffort: 'medium',
     })
   })
 })
@@ -1202,8 +1205,9 @@ describe('DEFAULT_SETTINGS', () => {
   it('has expected model defaults', () => {
     expect(DEFAULT_SETTINGS.models).toEqual({
       summarizerModel: 'claude-haiku-4-5',
-      agentModel: 'claude-opus-4-7',
+      agentModel: 'claude-opus-4-8',
       browserModel: 'claude-sonnet-4-6',
+      agentEffort: 'medium',
     })
   })
 })

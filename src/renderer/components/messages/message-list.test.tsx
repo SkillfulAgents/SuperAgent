@@ -1,24 +1,43 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { screen, fireEvent, act } from '@testing-library/react'
 import { MessageList } from './message-list'
+import { useDraft } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { createUserMessage, createAssistantMessage, createToolCall, createCompactBoundary } from '@renderer/test/factories'
 import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 
 // Mock useMessages
-const mockMessagesData: { data: ApiMessageOrBoundary[] | undefined; isLoading: boolean } = {
+const mockMessagesData: { data: ApiMessageOrBoundary[] | undefined; isLoading: boolean; error: Error | null } = {
   data: undefined,
   isLoading: false,
+  error: null,
 }
 
 const mockDeleteMessage = vi.fn()
 const mockDeleteToolCall = vi.fn()
+// Cancel mutation mock: invokes the mutate() callbacks synchronously with a
+// configurable result so tests can exercise both race outcomes.
+let mockCancelResult: { cancelled: boolean } = { cancelled: true }
+const mockCancelQueued = vi.fn(
+  (_vars: unknown, opts?: { onSuccess?: (r: { cancelled: boolean }) => void; onSettled?: () => void }) => {
+    opts?.onSuccess?.(mockCancelResult)
+    opts?.onSettled?.()
+  }
+)
 
 vi.mock('@renderer/hooks/use-messages', () => ({
   useMessages: () => mockMessagesData,
   useDeleteMessage: () => ({ mutate: mockDeleteMessage }),
   useDeleteToolCall: () => ({ mutate: mockDeleteToolCall }),
+  useCancelQueuedMessage: () => ({ mutate: mockCancelQueued }),
+  // Real class so `error instanceof TranscriptNotFoundError` works in the component.
+  TranscriptNotFoundError: class TranscriptNotFoundError extends Error {
+    constructor() {
+      super('Session transcript not found')
+      this.name = 'TranscriptNotFoundError'
+    }
+  },
 }))
 
 // Mock useMessageStream
@@ -26,19 +45,23 @@ const mockStreamState = {
   isActive: false,
   isStreaming: false,
   streamingMessage: null as string | null,
-  streamingToolUse: null as { id: string; name: string; partialInput: string } | null,
+  streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string }>,
   isCompacting: false,
-  activeSubagents: new Map(),
-  completedSubagents: new Map(),
+  activeSubagents: [] as any[],
+  completedSubagents: null as Set<string> | null,
   typingUser: null as { id: string; name?: string } | null,
-  peerUserMessage: null as { content: string; sender: { id: string; name?: string; email?: string } } | null,
+  peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
 }
 
 const mockClearCompacting = vi.fn()
+const mockRemovePeerUserMessage = vi.fn()
+const mockClearPeerUserMessages = vi.fn()
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
   clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
+  removePeerUserMessage: (...args: unknown[]) => mockRemovePeerUserMessage(...args),
+  clearPeerUserMessages: (...args: unknown[]) => mockClearPeerUserMessages(...args),
 }))
 
 // Mock useUser — default no user, override per test
@@ -84,7 +107,9 @@ vi.mock('@renderer/lib/env', () => ({
 
 // Mock child components that are complex
 vi.mock('./tool-call-item', () => ({
-  ToolCallItem: ({ toolCall }: any) => <div data-testid={`tool-call-${toolCall.name}`}>{toolCall.name}</div>,
+  ToolCallItem: ({ toolCall, isSessionActive }: any) => (
+    <div data-testid={`tool-call-${toolCall.name}`} data-running={isSessionActive ? 'true' : 'false'}>{toolCall.name}</div>
+  ),
   StreamingToolCallItem: ({ name }: any) => <div data-testid="streaming-tool-call">{name}</div>,
   StatusIndicator: ({ status }: any) => <span data-testid="status-indicator">{status}</span>,
 }))
@@ -111,16 +136,17 @@ describe('MessageList', () => {
     mockMessagesData.isLoading = false
     mockIsOnline = true
     mockCurrentUser = null
+    mockCancelResult = { cancelled: true }
     Object.assign(mockStreamState, {
       isActive: false,
       isStreaming: false,
       streamingMessage: null,
-      streamingToolUse: null,
+      streamingToolUses: [],
       isCompacting: false,
-      activeSubagents: new Map(),
-      completedSubagents: new Map(),
+      activeSubagents: [],
+      completedSubagents: null,
       typingUser: null,
-      peerUserMessage: null,
+      peerUserMessages: [],
     })
   })
 
@@ -162,10 +188,30 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'Sending...', sentAt: Date.now() }}
+        pendingUserMessages={[{ localId: 'pm-1', uuid: 'pm-1', text: 'Sending...', sentAt: Date.now() }]}
       />
     )
     expect(screen.getByText('Sending...')).toBeInTheDocument()
+  })
+
+  it('shows queued ghost messages with a Queued label', () => {
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[
+          { localId: 'pm-1', uuid: 'pm-1', text: 'First queued', sentAt: Date.now(), queued: true },
+          { localId: 'pm-2', uuid: 'pm-2', text: 'Second queued', sentAt: Date.now(), queued: true },
+        ]}
+      />
+    )
+    expect(screen.getByText('First queued')).toBeInTheDocument()
+    expect(screen.getByText('Second queued')).toBeInTheDocument()
+    expect(screen.getAllByTestId('queued-user-message')).toHaveLength(2)
+    expect(screen.getAllByText('Queued')).toHaveLength(2)
   })
 
   it('shows streaming message when not persisted', () => {
@@ -204,11 +250,11 @@ describe('MessageList', () => {
     mockMessagesData.data = [
       createUserMessage({ content: { text: 'Hello' } }),
     ]
-    mockStreamState.streamingToolUse = {
+    mockStreamState.streamingToolUses = [{
       id: 'tc-streaming',
       name: 'WebSearch',
       partialInput: '{"query": "test"}',
-    }
+    }]
     mockStreamState.isStreaming = true
 
     renderWithProviders(
@@ -225,11 +271,11 @@ describe('MessageList', () => {
         toolCalls: [createToolCall({ id: 'tc-1', name: 'WebSearch' })],
       }),
     ]
-    mockStreamState.streamingToolUse = {
+    mockStreamState.streamingToolUses = [{
       id: 'tc-1', // Same ID = persisted
       name: 'WebSearch',
       partialInput: '{"query": "test"}',
-    }
+    }]
 
     renderWithProviders(
       <MessageList sessionId="s-1" agentSlug="agent-1" />
@@ -406,12 +452,13 @@ describe('MessageList', () => {
 
   // ---- Pending message detection ----
 
-  it('calls onPendingMessageAppeared when pending message found in server messages', () => {
+  it('calls onPendingMessageAppeared when a message with the pending uuid is fetched', () => {
     const onAppeared = vi.fn()
     const sentAt = new Date('2025-01-01T00:00:00Z').getTime()
 
     mockMessagesData.data = [
       createUserMessage({
+        id: 'uuid-1',
         content: { text: 'My message' },
         createdAt: new Date('2025-01-01T00:00:01Z'),
       }),
@@ -421,35 +468,357 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'My message', sentAt }}
+        pendingUserMessages={[{ localId: 'uuid-1', uuid: 'uuid-1', text: 'My message', sentAt }]}
         onPendingMessageAppeared={onAppeared}
       />
     )
 
-    expect(onAppeared).toHaveBeenCalled()
+    expect(onAppeared).toHaveBeenCalledWith('uuid-1')
   })
 
-  it('does not call onPendingMessageAppeared when text does not match', () => {
+  it('falls back to text+time matching when the uuid differs (queued/steering messages)', () => {
+    // The CLI re-ids messages sent mid-turn (queued_command attachments), so
+    // the persisted copy never carries the client uuid — text fallback must fire.
     const onAppeared = vi.fn()
     const sentAt = new Date('2025-01-01T00:00:00Z').getTime()
 
     mockMessagesData.data = [
       createUserMessage({
+        id: 'cli-generated-uuid',
+        content: { text: 'My message' },
+        createdAt: new Date('2025-01-01T00:00:01Z'),
+      }),
+    ]
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'uuid-1', uuid: 'uuid-1', text: 'My message', sentAt, queued: true }]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    expect(onAppeared).toHaveBeenCalledWith('uuid-1')
+  })
+
+  it('does not call onPendingMessageAppeared when neither uuid nor text matches', () => {
+    const onAppeared = vi.fn()
+    const sentAt = new Date('2025-01-01T00:00:00Z').getTime()
+
+    mockMessagesData.data = [
+      createUserMessage({
+        id: 'other-uuid',
         content: { text: 'Different message' },
         createdAt: new Date('2025-01-01T00:00:01Z'),
       }),
+    ]
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'uuid-1', uuid: 'uuid-1', text: 'My message', sentAt, queued: true }]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    expect(onAppeared).not.toHaveBeenCalled()
+  })
+
+  // ---- Queued (mid-turn) message rendering & turn boundaries ----
+
+  it('renders queued ghosts below streaming content and tools', () => {
+    mockMessagesData.data = [createUserMessage({ content: { text: 'Start' } })]
+    mockStreamState.isActive = true
+    mockStreamState.isStreaming = true
+    mockStreamState.streamingMessage = 'Working on it...'
+    mockStreamState.streamingToolUses = [{ id: 'tc-x', name: 'StreamingBash', partialInput: '' }]
+
+    const { container } = renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'q1', uuid: 'q1', text: 'Queued msg', sentAt: Date.now(), queued: true }]}
+      />
+    )
+
+    const text = container.textContent || ''
+    expect(text.indexOf('Working on it...')).toBeLessThan(text.indexOf('Queued msg'))
+    expect(text.indexOf('StreamingBash')).toBeLessThan(text.indexOf('Queued msg'))
+  })
+
+  it('does not close the turn at a persisted queued message (no elapsed divider mid-turn)', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Start' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
+      createAssistantMessage({ content: { text: 'Searching' }, createdAt: new Date('2025-01-01T00:00:09Z') }),
+      createUserMessage({ content: { text: 'Steer' }, createdAt: new Date('2025-01-01T00:00:10Z'), queued: true }),
+      createAssistantMessage({ content: { text: 'Continuing' }, createdAt: new Date('2025-01-01T00:00:20Z') }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.queryByText(/Worked for/)).not.toBeInTheDocument()
+  })
+
+  it('attributes the whole turn duration across steering segments once idle', () => {
+    mockStreamState.isActive = false
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Start' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
+      createAssistantMessage({ content: { text: 'Searching' }, createdAt: new Date('2025-01-01T00:00:09Z') }),
+      createUserMessage({ content: { text: 'Steer' }, createdAt: new Date('2025-01-01T00:00:10Z'), queued: true }),
+      createAssistantMessage({ content: { text: 'Continuing' }, createdAt: new Date('2025-01-01T00:00:20Z') }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    // One elapsed entry, from the turn-starting message to the final assistant message
+    expect(screen.getByText('Worked for 20s')).toBeInTheDocument()
+    expect(screen.queryByText('Worked for 9s')).not.toBeInTheDocument()
+  })
+
+  it('keeps tools running when a persisted queued message follows them', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Start' } }),
+      createAssistantMessage({
+        id: 'a1',
+        content: { text: '' },
+        toolCalls: [createToolCall({ id: 'tc-1', name: 'Bash', result: undefined })],
+      }),
+      createUserMessage({ content: { text: 'Steer' }, queued: true }),
+    ]
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    // The queued message doesn't end the turn, so the unfinished tool is still running
+    expect(screen.getByTestId('tool-call-Bash').getAttribute('data-running')).toBe('true')
+  })
+
+  it('one persisted copy clears at most one of two identical queued ghosts', () => {
+    const onAppeared = vi.fn()
+    const sentAt = Date.now()
+
+    mockMessagesData.data = [
+      createUserMessage({ id: 'cli-uuid-1', content: { text: 'Do it' }, createdAt: new Date() }),
+    ]
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[
+          { localId: 'uuid-1', uuid: 'uuid-1', text: 'Do it', sentAt, queued: true },
+          { localId: 'uuid-2', uuid: 'uuid-2', text: 'Do it', sentAt, queued: true },
+        ]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    expect(onAppeared).toHaveBeenCalledWith('uuid-1')
+    expect(onAppeared).not.toHaveBeenCalledWith('uuid-2')
+  })
+
+  it('materializes only the matched message when several are queued', () => {
+    const onAppeared = vi.fn()
+    const sentAt = Date.now()
+
+    mockMessagesData.data = [
+      createUserMessage({ id: 'uuid-1', content: { text: 'First' } }),
+    ]
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[
+          { localId: 'uuid-1', uuid: 'uuid-1', text: 'First', sentAt, queued: true },
+          { localId: 'uuid-2', uuid: 'uuid-2', text: 'Second', sentAt, queued: true },
+        ]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    expect(onAppeared).toHaveBeenCalledWith('uuid-1')
+    expect(onAppeared).not.toHaveBeenCalledWith('uuid-2')
+  })
+
+  it('does not text-fallback for non-queued pendings that already have their server uuid', () => {
+    // A turn-starting send persists under its server-assigned uuid, so an
+    // identical-text OLD message must never clear it (wrong-copy match).
+    const onAppeared = vi.fn()
+
+    mockMessagesData.data = [
+      createUserMessage({ id: 'old-copy', content: { text: 'continue' }, createdAt: new Date() }),
+    ]
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'l1', uuid: 'server-uuid', text: 'continue', sentAt: Date.now() }]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    expect(onAppeared).not.toHaveBeenCalled()
+  })
+
+  it('text-fallback applies while the POST response (uuid) is still pending', () => {
+    const onAppeared = vi.fn()
+
+    mockMessagesData.data = [
+      createUserMessage({ id: 'persisted-1', content: { text: 'hello there' }, createdAt: new Date() }),
     ]
 
     renderWithProviders(
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'My message', sentAt }}
+        pendingUserMessages={[{ localId: 'l1', text: 'hello there', sentAt: Date.now() - 1000 }]}
         onPendingMessageAppeared={onAppeared}
       />
     )
 
+    expect(onAppeared).toHaveBeenCalledWith('l1')
+  })
+
+  it('restores an undelivered queued message to the composer at idle and removes the ghost', async () => {
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      mockMessagesData.data = []
+      mockStreamState.isActive = false
+
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
+
+      renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={[{ localId: 'l1', text: 'lost message', sentAt: Date.now(), queued: true }]}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      // The ghost is visible and nothing has been restored yet.
+      expect(screen.getByTestId('queued-user-message')).toHaveTextContent('lost message')
+      expect(onAppeared).not.toHaveBeenCalled()
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('')
+
+      // After the post-idle grace, the un-picked-up text returns to the composer
+      // draft and the ghost is removed.
+      await act(async () => {
+        vi.advanceTimersByTime(1500)
+      })
+
+      expect(onAppeared).toHaveBeenCalledWith('l1')
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('lost message')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // ---- Cancelling queued messages ----
+
+  it('shows Cancel on queued ghosts only once the server uuid is known', () => {
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+
+    const { rerender } = renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'l1', text: 'queued msg', sentAt: Date.now(), queued: true }]}
+      />
+    )
+    // No uuid yet (POST response pending) — cancel not possible
+    expect(screen.queryByTestId('cancel-queued-message')).not.toBeInTheDocument()
+
+    rerender(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'l1', uuid: 'srv-1', text: 'queued msg', sentAt: Date.now(), queued: true }]}
+      />
+    )
+    expect(screen.getByTestId('cancel-queued-message')).toBeInTheDocument()
+  })
+
+  it('cancelling a queued ghost removes it on success', () => {
+    mockCancelResult = { cancelled: true }
+    const onAppeared = vi.fn()
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'l1', uuid: 'srv-1', text: 'queued msg', sentAt: Date.now(), queued: true }]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    fireEvent.click(screen.getByTestId('cancel-queued-message'))
+
+    expect(mockCancelQueued).toHaveBeenCalledWith(
+      { sessionId: 's-1', agentSlug: 'agent-1', uuid: 'srv-1' },
+      expect.anything()
+    )
+    expect(onAppeared).toHaveBeenCalledWith('l1')
+  })
+
+  it('leaves the ghost in place when cancellation lost the race to pickup', () => {
+    mockCancelResult = { cancelled: false }
+    const onAppeared = vi.fn()
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'l1', uuid: 'srv-1', text: 'queued msg', sentAt: Date.now(), queued: true }]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    fireEvent.click(screen.getByTestId('cancel-queued-message'))
+
+    // Too late — the ghost stays and will materialize normally
     expect(onAppeared).not.toHaveBeenCalled()
+    expect(screen.getByTestId('queued-user-message')).toBeInTheDocument()
+  })
+
+  it('drops the sender own user_message echo from peer state immediately', () => {
+    mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
+    mockMessagesData.data = []
+    Object.assign(mockStreamState, {
+      typingUser: { id: 'other-user', name: 'Alice Baker' },
+      peerUserMessages: [
+        { uuid: 'own-echo', receivedAt: Date.now(), content: 'my own message', sender: { id: 'me', name: 'Me' } },
+      ],
+    })
+
+    renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+    // Own echo is pruned from stream state without waiting for a persisted match
+    expect(mockRemovePeerUserMessage).toHaveBeenCalledWith('s-1', 'own-echo')
+    // And it must not suppress other peers' typing indicator
+    expect(screen.getByText('...')).toBeInTheDocument()
   })
 
   // ---- isStreamingMessagePersisted edge cases ----
@@ -543,11 +912,11 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'Follow up', sentAt: Date.now() }}
+        pendingUserMessages={[{ localId: 'pm-1', uuid: 'pm-1', text: 'Follow up', sentAt: Date.now() }]}
       />
     )
 
-    // Even though isActive=true, pendingUserMessage closes the previous turn
+    // Even though isActive=true, the pending message closes the previous turn
     expect(screen.getByText('Worked for 60s')).toBeInTheDocument()
   })
 
@@ -578,7 +947,7 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'Follow up', sentAt: Date.now() }}
+        pendingUserMessages={[{ localId: 'pm-1', uuid: 'pm-1', text: 'Follow up', sentAt: Date.now() }]}
       />
     )
 
@@ -655,11 +1024,11 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'New message', sentAt: Date.now() }}
+        pendingUserMessages={[{ localId: 'pm-1', uuid: 'pm-1', text: 'New message', sentAt: Date.now() }]}
       />
     )
 
-    // The tool call renders, but since pendingUserMessage exists,
+    // The tool call renders, but since a turn-starting pending message exists,
     // canHaveRunningToolCalls is empty → tool is not considered running
     expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
   })
@@ -732,7 +1101,7 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'Waiting...', sentAt: Date.now() }}
+        pendingUserMessages={[{ localId: 'pm-1', uuid: 'pm-1', text: 'Waiting...', sentAt: Date.now() }]}
       />
     )
     // Should show pending message, not spinner
@@ -767,12 +1136,10 @@ describe('MessageList', () => {
       <MessageList sessionId="s-1" agentSlug="agent-1" />
     )
 
-    const link = screen.getByText('report.pdf')
-    expect(link).toBeInTheDocument()
-    expect(link.closest('a')).toHaveAttribute(
-      'href',
-      'http://test-api/api/agents/agent-1/files/output/report.pdf'
-    )
+    const pill = screen.getByText('report.pdf')
+    expect(pill).toBeInTheDocument()
+    // Delivered files render as a click-to-preview button, not a download link.
+    expect(pill.closest('[role="button"]')).toBeInTheDocument()
   })
 
   it('shows multiple delivered files from a single turn', () => {
@@ -837,11 +1204,11 @@ describe('MessageList', () => {
       <MessageList
         sessionId="s-1"
         agentSlug="agent-1"
-        pendingUserMessage={{ text: 'Now do X', sentAt: Date.now() }}
+        pendingUserMessages={[{ localId: 'pm-1', uuid: 'pm-1', text: 'Now do X', sentAt: Date.now() }]}
       />
     )
 
-    // Even though isActive=true, pendingUserMessage keeps the previous turn closed
+    // Even though isActive=true, the pending message keeps the previous turn closed
     expect(screen.getByText('report.pdf')).toBeInTheDocument()
   })
 
@@ -1015,7 +1382,7 @@ describe('MessageList', () => {
       mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
       mockMessagesData.data = []
       Object.assign(mockStreamState, {
-        peerUserMessage: { content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice Baker' } },
+        peerUserMessages: [{ uuid: 'peer-1', receivedAt: Date.now(), content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice Baker' } }],
       })
 
       renderWithProviders(
@@ -1025,11 +1392,28 @@ describe('MessageList', () => {
       expect(screen.getByText('Hello from peer')).toBeInTheDocument()
     })
 
+    it('renders queued peer messages as ghosts with a Queued label', () => {
+      mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
+      mockMessagesData.data = []
+      Object.assign(mockStreamState, {
+        peerUserMessages: [
+          { uuid: 'peer-1', receivedAt: Date.now(), content: 'Queued peer message', sender: { id: 'other-user', name: 'Alice' }, queued: true },
+        ],
+      })
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      expect(screen.getByText('Queued peer message')).toBeInTheDocument()
+      expect(screen.getByText('Queued')).toBeInTheDocument()
+    })
+
     it('does not render peer message if sender is the current user', () => {
       mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
       mockMessagesData.data = []
       Object.assign(mockStreamState, {
-        peerUserMessage: { content: 'My own message', sender: { id: 'me', name: 'Me' } },
+        peerUserMessages: [{ uuid: 'peer-own', receivedAt: Date.now(), content: 'My own message', sender: { id: 'me', name: 'Me' } }],
       })
 
       renderWithProviders(
@@ -1039,13 +1423,13 @@ describe('MessageList', () => {
       expect(screen.queryByText('My own message')).not.toBeInTheDocument()
     })
 
-    it('does not render peer message if already in fetched messages (dedup)', () => {
+    it('does not render peer message if already in fetched messages (dedup by uuid)', () => {
       mockCurrentUser = { id: 'me', name: 'Me', email: 'me@test.com' }
       mockMessagesData.data = [
-        createUserMessage({ content: { text: 'Hello from peer' } }),
+        createUserMessage({ id: 'peer-1', content: { text: 'Hello from peer' } }),
       ]
       Object.assign(mockStreamState, {
-        peerUserMessage: { content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice' } },
+        peerUserMessages: [{ uuid: 'peer-1', receivedAt: Date.now(), content: 'Hello from peer', sender: { id: 'other-user', name: 'Alice' } }],
       })
 
       renderWithProviders(
@@ -1055,6 +1439,111 @@ describe('MessageList', () => {
       // Only one instance — from fetched messages, not the optimistic peer copy
       const matches = screen.getAllByText('Hello from peer')
       expect(matches).toHaveLength(1)
+      // The persisted copy also prunes the stream-state entry
+      expect(mockRemovePeerUserMessage).toHaveBeenCalledWith('s-1', 'peer-1')
+    })
+  })
+
+  describe('parallel streaming tool uses', () => {
+    it('renders multiple StreamingToolCallItem for multiple streaming tools', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+      ]
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-A', name: 'Bash', partialInput: '{"command":"ls"}' },
+        { id: 'tc-B', name: 'Read', partialInput: '{"file":"x.ts"}' },
+      ]
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      const streamingItems = screen.getAllByTestId('streaming-tool-call')
+      expect(streamingItems).toHaveLength(2)
+      expect(streamingItems[0]).toHaveTextContent('Bash')
+      expect(streamingItems[1]).toHaveTextContent('Read')
+    })
+
+    it('renders ready tool as ToolCallItem instead of StreamingToolCallItem', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+      ]
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-ready', name: 'WebSearch', partialInput: '{"query":"test"}', ready: true },
+      ] as any
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      // Ready tool should render as ToolCallItem, not StreamingToolCallItem
+      expect(screen.queryByTestId('streaming-tool-call')).not.toBeInTheDocument()
+      expect(screen.getByTestId('tool-call-WebSearch')).toBeInTheDocument()
+    })
+
+    it('renders ready Task tool as SubAgentBlock', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-task', name: 'Task', partialInput: '{"subagent_type":"Explore"}', ready: true },
+      ] as any
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      // Ready Task tool should render as SubAgentBlock
+      expect(screen.queryByTestId('streaming-tool-call')).not.toBeInTheDocument()
+      expect(screen.getByTestId('subagent-block')).toBeInTheDocument()
+    })
+
+    it('renders mix of ready and non-ready tools correctly', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+      ]
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-1', name: 'Bash', partialInput: '{"cmd":"ls"}', ready: true },
+        { id: 'tc-2', name: 'Read', partialInput: '' },
+      ] as any
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      // tc-1 (ready) renders as ToolCallItem
+      expect(screen.getByTestId('tool-call-Bash')).toBeInTheDocument()
+      // tc-2 (not ready) renders as StreamingToolCallItem
+      expect(screen.getByTestId('streaming-tool-call')).toBeInTheDocument()
+    })
+
+    it('filters out streaming tools already persisted in messages', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Hello' } }),
+        createAssistantMessage({
+          content: { text: '' },
+          toolCalls: [createToolCall({ id: 'tc-persisted', name: 'Bash' })],
+        }),
+      ]
+      mockStreamState.streamingToolUses = [
+        { id: 'tc-persisted', name: 'Bash', partialInput: '{"cmd":"ls"}' },
+        { id: 'tc-new', name: 'Read', partialInput: '' },
+      ]
+      mockStreamState.isStreaming = true
+
+      renderWithProviders(
+        <MessageList sessionId="s-1" agentSlug="agent-1" />
+      )
+
+      // Only tc-new should render as streaming (tc-persisted is already in messages)
+      const streamingItems = screen.getAllByTestId('streaming-tool-call')
+      expect(streamingItems).toHaveLength(1)
+      expect(streamingItems[0]).toHaveTextContent('Read')
     })
   })
 
@@ -1088,7 +1577,7 @@ describe('MessageList', () => {
       mockMessagesData.data = []
       Object.assign(mockStreamState, {
         typingUser: { id: 'other-user', name: 'Alice Baker' },
-        peerUserMessage: { content: 'Done typing', sender: { id: 'other-user', name: 'Alice Baker' } },
+        peerUserMessages: [{ uuid: 'peer-1', receivedAt: Date.now(), content: 'Done typing', sender: { id: 'other-user', name: 'Alice Baker' } }],
       })
 
       renderWithProviders(
@@ -1101,6 +1590,100 @@ describe('MessageList', () => {
       // (the "AB" initials will appear on the peer message avatar instead)
       const dots = screen.queryAllByText('...')
       expect(dots).toHaveLength(0)
+    })
+  })
+
+  describe('windowing (long threads)', () => {
+    // BASE_WINDOW=300, LOAD_STEP=200 in message-list.tsx. Each message renders a
+    // bubble whose exact text is `m{i}`, so getByText/queryByText tells us precisely
+    // which messages are mounted in the DOM.
+    const manyMessages = (n: number): ApiMessageOrBoundary[] =>
+      Array.from({ length: n }, (_, i) => createUserMessage({ content: { text: `m${i}` } }))
+
+    // jsdom has no layout, so scroll metrics are 0. Mock them on the scroll
+    // container so handleScroll can decide "at bottom" vs "scrolled up".
+    const mockScrollGeometry = (
+      el: HTMLElement,
+      { scrollHeight, clientHeight, scrollTop }: { scrollHeight: number; clientHeight: number; scrollTop: number }
+    ) => {
+      let top = scrollTop
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => scrollHeight })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => clientHeight })
+      Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => { top = v } })
+    }
+
+    it('renders every message when at or below the window threshold', () => {
+      mockMessagesData.data = manyMessages(50)
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('m0')).toBeInTheDocument()
+      expect(screen.getByText('m49')).toBeInTheDocument()
+      expect(screen.queryByText(/earlier messages? hidden/)).not.toBeInTheDocument()
+    })
+
+    it('renders only the trailing window plus a hidden-count indicator on long threads', () => {
+      mockMessagesData.data = manyMessages(305) // 5 over BASE_WINDOW
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      // Oldest 5 are outside the window…
+      expect(screen.queryByText('m0')).not.toBeInTheDocument()
+      expect(screen.queryByText('m4')).not.toBeInTheDocument()
+      // …window runs from m5 through the latest message.
+      expect(screen.getByText('m5')).toBeInTheDocument()
+      expect(screen.getByText('m304')).toBeInTheDocument()
+      expect(screen.getByText(/5 earlier messages hidden/)).toBeInTheDocument()
+    })
+
+    it('uses singular wording when exactly one message is hidden', () => {
+      mockMessagesData.data = manyMessages(301)
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText(/1 earlier message hidden/)).toBeInTheDocument()
+    })
+
+    it('reveals older messages when scrolled to the top', () => {
+      mockMessagesData.data = manyMessages(305)
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 50 })
+      fireEvent.scroll(el)
+      // windowSize grew by LOAD_STEP (200) → 305 < 500, so the whole thread renders.
+      expect(screen.getByText('m0')).toBeInTheDocument()
+      expect(screen.queryByText(/earlier messages? hidden/)).not.toBeInTheDocument()
+    })
+
+    it('keeps the top of the window stable when a message arrives while scrolled up', () => {
+      const base = manyMessages(305) // window = m5..m304
+      mockMessagesData.data = base
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      // Scrolled up, but not near the top (so we don't trigger a load-more expand).
+      mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 5000 })
+      fireEvent.scroll(el)
+      expect(screen.getByText('m5')).toBeInTheDocument()
+
+      // A new message is persisted while the user reads history.
+      mockMessagesData.data = [...base, createUserMessage({ content: { text: 'm305' } })]
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      // The window grew by one instead of sliding, so the top item the user was
+      // reading (m5) stays mounted — no upward jump.
+      expect(screen.getByText('m5')).toBeInTheDocument()
+      expect(screen.getByText('m305')).toBeInTheDocument()
+    })
+
+    it('slides the window (drops the oldest rendered) when a message arrives while pinned to the bottom', () => {
+      const base = manyMessages(305)
+      mockMessagesData.data = base
+      const { rerender } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      const el = screen.getByTestId('message-list')
+      mockScrollGeometry(el, { scrollHeight: 10000, clientHeight: 500, scrollTop: 9500 }) // at bottom
+      fireEvent.scroll(el)
+      expect(screen.getByText('m5')).toBeInTheDocument()
+
+      mockMessagesData.data = [...base, createUserMessage({ content: { text: 'm305' } })]
+      rerender(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+
+      // Pinned to bottom: the slice slides so the DOM stays bounded — m5 drops off.
+      expect(screen.queryByText('m5')).not.toBeInTheDocument()
+      expect(screen.getByText('m305')).toBeInTheDocument()
     })
   })
 })

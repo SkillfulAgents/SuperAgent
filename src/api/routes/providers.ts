@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { getAllProviders } from '@shared/lib/composio/providers'
+import { getAllProviders } from '@shared/lib/account-providers'
 import { Authenticated } from '../middleware/auth'
 
 const providers = new Hono()

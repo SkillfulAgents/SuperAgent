@@ -39,6 +39,10 @@ export function usePlatformAuthStatus() {
   const queryClient = useQueryClient()
   const query = useQuery<PlatformAuthStatus>({
     queryKey: ['platform-auth'],
+    // Matches the server-side introspection TTL: the status only changes via
+    // connect/revoke (which invalidate this key explicitly), so remounts within
+    // the window shouldn't re-hit the endpoint.
+    staleTime: 5 * 60 * 1000,
     queryFn: async () => {
       const res = await apiFetch('/api/platform-auth')
       if (!res.ok) {
@@ -63,6 +67,7 @@ export function usePlatformAuthStatus() {
 
 function useInitiatePlatformLogin() {
   return useMutation<{ loginUrl: string; platformBaseUrl: string }, Error>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async () => {
       const res = await apiFetch('/api/platform-auth/initiate', {
         method: 'POST',
@@ -78,6 +83,7 @@ function useInitiatePlatformLogin() {
 
 function useRevokePlatformToken() {
   return useMutation<{ success: boolean }, Error, { clearLocal?: boolean } | undefined>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (options) => {
       const res = await apiFetch('/api/platform-auth/revoke', {
         method: 'POST',
@@ -140,6 +146,7 @@ export function useSavePlatformAccessKey() {
   const applyPlatformDefaults = useApplyPlatformDefaults()
 
   return useMutation<unknown, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (token: string) => {
       const res = await apiFetch('/api/platform-auth/complete', {
         method: 'POST',

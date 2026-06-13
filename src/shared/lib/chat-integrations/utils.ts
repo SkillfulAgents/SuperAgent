@@ -8,6 +8,17 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   imessage: 'iMessage',
 }
 
+/** Format a Date as a human-readable timestamp for session names (e.g. "May 20, 2:30 PM"). */
+export function formatSessionTimestamp(date: Date): string {
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
+}
+
 /** Format a provider slug for display (e.g. "telegram" → "Telegram", "imessage" → "iMessage"). */
 export function formatProviderName(provider: string): string {
   return PROVIDER_DISPLAY_NAMES[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
@@ -24,6 +35,34 @@ const UNSUPPORTED_IN_CHAT: ReadonlySet<UserRequestEvent['type']> = new Set([
 
 export function isUnsupportedInChat(event: UserRequestEvent): boolean {
   return UNSUPPORTED_IN_CHAT.has(event.type)
+}
+
+/**
+ * Split a message into chunks that fit within a provider's max message length.
+ * Prefers splitting at paragraph boundaries (\n\n), then line boundaries (\n),
+ * falling back to a hard split at maxLength.
+ */
+export function splitChatMessage(text: string, maxLength: number): string[] {
+  if (text.length <= maxLength) return [text]
+
+  const chunks: string[] = []
+  let remaining = text
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLength) {
+      chunks.push(remaining)
+      break
+    }
+    let splitAt = remaining.lastIndexOf('\n\n', maxLength)
+    if (splitAt === -1 || splitAt < maxLength / 2) {
+      splitAt = remaining.lastIndexOf('\n', maxLength)
+    }
+    if (splitAt === -1 || splitAt < maxLength / 2) {
+      splitAt = maxLength
+    }
+    chunks.push(remaining.slice(0, splitAt))
+    remaining = remaining.slice(splitAt).trimStart()
+  }
+  return chunks
 }
 
 /**

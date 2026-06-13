@@ -37,6 +37,7 @@ export function useCreateAgent() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (data: { name: string; description?: string }) => {
       const res = await apiFetch('/api/agents', {
         method: 'POST',
@@ -46,7 +47,12 @@ export function useCreateAgent() {
       if (!res.ok) throw new Error('Failed to create agent')
       return res.json() as Promise<ApiAgent>
     },
-    onSuccess: () => {
+    onSuccess: (agent) => {
+      // Seed the per-slug cache so consumers reading useAgent(slug) right
+      // after navigation (e.g. AgentHome via MainContent) render synchronously
+      // instead of flashing through an undefined state while the list query
+      // refetches.
+      queryClient.setQueryData(['agents', agent.slug], agent)
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
@@ -57,9 +63,18 @@ export function useDeleteAgent() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (slug: string) => {
       const res = await apiFetch(`/api/agents/${slug}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to delete agent')
+      if (!res.ok) {
+        // Surface the server's message (e.g. the SUP-209 "container is busy" 409)
+        // so the UI can explain why the delete failed, not a generic string.
+        const message = await res
+          .json()
+          .then((d) => (d && typeof d.error === 'string' ? d.error : null))
+          .catch(() => null)
+        throw new Error(message ?? 'Failed to delete agent')
+      }
       // 204 No Content - no body to parse
     },
     onSuccess: () => {
@@ -112,6 +127,7 @@ export function useStartAgent() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (slug: string) => {
       const res = await apiFetch(`/api/agents/${slug}/start`, { method: 'POST' })
       if (!res.ok) {

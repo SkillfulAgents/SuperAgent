@@ -2,7 +2,7 @@
 import { Blocks } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from './types'
 import { requestConnectedAccountDef, type RequestConnectedAccountInput } from '@shared/lib/tool-definitions/request-connected-account'
-import { getProvider } from '@shared/lib/composio/providers'
+import { getProvider } from '@shared/lib/account-providers/service-catalog'
 
 const parseRequestConnectedAccountInput = requestConnectedAccountDef.parseInput
 

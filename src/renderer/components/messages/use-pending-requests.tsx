@@ -12,17 +12,12 @@ import {
 } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingProxyReviews, type PendingReview } from '@renderer/hooks/use-proxy-reviews'
-
-interface PendingMessage {
-  text: string
-  sentAt: number
-  sender?: { id: string; name: string; email: string }
-}
+import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 
 interface UsePendingRequestsArgs {
   sessionId: string
   agentSlug: string
-  pendingUserMessage?: PendingMessage | null
+  pendingUserMessages?: PendingMessage[]
 }
 
 type Question = {
@@ -52,8 +47,11 @@ interface UsePendingRequestsResult {
 export function usePendingRequests({
   sessionId,
   agentSlug,
-  pendingUserMessage,
+  pendingUserMessages,
 }: UsePendingRequestsArgs): UsePendingRequestsResult {
+  // Only turn-starting sends mean the user "moved past" a request; queued
+  // (mid-turn) messages leave the agent blocked on it.
+  const hasPendingUserMessage = !!pendingUserMessages?.some((p) => !p.queued)
   const { data: messages } = useMessages(sessionId, agentSlug)
   const {
     isActive,
@@ -89,7 +87,10 @@ export function usePendingRequests({
       const message = messages[i]
       if (message.type !== 'assistant') continue
 
-      const hasSubsequentUserMessage = !!pendingUserMessage || messages.slice(i + 1).some((m) => m.type === 'user')
+      // Queued (mid-turn) messages don't count — the agent hasn't moved past
+      // the request; it stays blocked until the request is answered.
+      const hasSubsequentUserMessage =
+        hasPendingUserMessage || messages.slice(i + 1).some(isTurnStartingUserMessage)
       if (hasSubsequentUserMessage) continue
 
       for (const toolCall of message.toolCalls) {
@@ -165,7 +166,7 @@ export function usePendingRequests({
     }
 
     return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests, scriptRunRequests }
-  }, [messages, pendingUserMessage])
+  }, [messages, hasPendingUserMessage])
 
   // Track toolUseIds the user has already answered, so the message-based
   // recovery source doesn't re-surface them before the tool result is persisted.

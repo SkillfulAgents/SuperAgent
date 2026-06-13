@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { ArrowUpRight, ChevronRight, Copy } from 'lucide-react'
+import { cn } from '@shared/lib/utils/cn'
 import { apiFetch } from '@renderer/lib/api'
 import { isElectron } from '@renderer/lib/env'
 import { useSelection } from '@renderer/context/selection-context'
@@ -7,9 +8,10 @@ import { useSelection } from '@renderer/context/selection-context'
 interface HomeExtrasProps {
   agentSlug: string
   onOpenSettings?: (tab?: string) => void
+  className?: string
 }
 
-export function HomeExtras({ agentSlug, onOpenSettings }: HomeExtrasProps) {
+export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasProps) {
   const [error, setError] = useState<string | null>(null)
   const { setView } = useSelection()
 
@@ -43,7 +45,7 @@ export function HomeExtras({ agentSlug, onOpenSettings }: HomeExtrasProps) {
   const directoryLabel = isElectron() ? 'Agent Directory' : 'Copy Agent Path'
 
   return (
-    <div className="rounded-xl border bg-background py-2">
+    <div className={cn("rounded-xl border bg-background py-2", className)}>
       <div className="divide-y divide-border/50">
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
         <ExtrasButton label={directoryLabel} onClick={handleOpenDirectory} hoverIcon={directoryHoverIcon} />

@@ -31,7 +31,8 @@ async function seedMockConnectedAccount(): Promise<void> {
   const now = new Date()
   await db.insert(connectedAccounts).values({
     id: MOCK_ACCOUNT_ID,
-    composioConnectionId: MOCK_ACCOUNT_ID,
+    providerConnectionId: MOCK_ACCOUNT_ID,
+    providerName: 'composio',
     toolkitSlug: 'slack',
     displayName: 'Mock Account',
     status: 'active',
@@ -129,6 +130,61 @@ export class SimpleTextResponseScenario implements MockScenario {
         content: { type: 'result', subtype: 'success' },
       })
     }, finalDelay)
+  }
+}
+
+/**
+ * Slow scenario for message-queueing E2E tests: holds the session in the
+ * working state long enough for the test to send mid-turn messages, which the
+ * mock records as queued_command attachments (mirroring the real CLI's
+ * steering behavior — see the busy path in sendMessage).
+ */
+export class SlowWorkScenario implements MockScenario {
+  constructor(private durationMs = 5000) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      // Echo on the stream so the host broadcasts messages_updated and the
+      // frontend materializes the turn-starting ghost while still working
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: { type: 'user', message: { content: [{ type: 'text', text: userMessage }] } },
+      })
+    }, 10)
+
+    // Open a streaming text block so the UI shows live activity for the
+    // whole window
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Working on the slow task...' } } },
+      })
+    }, 50)
+
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Finished the slow work.' }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, this.durationMs)
   }
 }
 
@@ -399,6 +455,15 @@ export class UserInputRequestScenario implements MockScenario {
     // resolve/reject calls from the API can find and decrement the count.
     client.registerPendingInputs(sessionId, this.tools.length)
 
+    // Write the user message entry immediately so the JSONL file exists on disk.
+    // The backend's getSession() checks fileExists(jsonlPath) and returns 404 if
+    // missing — without this, a fast deny/resolve can race the delayed write below.
+    client.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content: userMessage },
+      timestamp: new Date().toISOString(),
+    })
+
     // Start assistant message
     setTimeout(() => {
       client.emitStreamMessage(sessionId, {
@@ -468,30 +533,32 @@ export class UserInputRequestScenario implements MockScenario {
     }, delay)
     delay += 10
 
-    // Write JSONL entries (for message-based recovery on page refresh)
+    // Write assistant JSONL entry after streaming completes (user message was
+    // already written synchronously above so the file exists on disk).
     const capturedToolIds = [...toolIds]
     const capturedTools = [...this.tools]
     const finalDelay = delay
     setTimeout(() => {
-      // Write user message
-      client.writeJsonlEntry(sessionId, {
-        type: 'user',
-        message: { content: userMessage },
-        timestamp: new Date().toISOString(),
-      })
-
-      // Write assistant message with all tool use blocks
+      const assistantContent = capturedTools.map((tool, i) => ({
+        type: 'tool_use',
+        id: capturedToolIds[i],
+        name: tool.name,
+        input: tool.input,
+      }))
       client.writeJsonlEntry(sessionId, {
         type: 'assistant',
-        message: {
-          content: capturedTools.map((tool, i) => ({
-            type: 'tool_use',
-            id: capturedToolIds[i],
-            name: tool.name,
-            input: tool.input,
-          })),
-        },
+        message: { content: assistantContent },
         timestamp: new Date().toISOString(),
+      })
+      // Emit the completed assistant message through the stream so MessagePersister
+      // broadcasts `messages_updated` (the real Claude Agent SDK emits this; a direct
+      // JSONL write alone does not). Without it, a client that joined after the
+      // one-shot `*_request` broadcasts has NO signal to refetch the transcript and
+      // recover the pending input cards — it would hang until the safety-net poll,
+      // which is the e2e flake on slow CI (user-input-requests parallel cases).
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: { type: 'assistant', message: { content: assistantContent } },
       })
     }, finalDelay)
   }
@@ -682,6 +749,234 @@ export class XAgentReviewScenario implements MockScenario {
 }
 
 /**
+ * Background Bash scenario — simulates a Bash tool call with run_in_background: true.
+ * The SDK returns an immediate tool result with backgroundTaskId, the agent finishes
+ * its turn, then after a delay a task-notification arrives and the agent responds.
+ */
+export class BackgroundBashScenario implements MockScenario {
+  constructor(
+    private delayMs: number = 2000,
+    private commandOutput: string = 'done sleeping',
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    let delay = 10
+    const toolId = `tool_bash_${Date.now()}`
+    const bgTaskId = `bg_${Date.now().toString(36)}`
+
+    // Start assistant message
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, delay)
+    delay += 10
+
+    // Tool use start: Bash
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_start',
+            content_block: { type: 'tool_use', id: toolId, name: 'Bash' },
+          },
+        },
+      })
+    }, delay)
+    delay += 10
+
+    // Tool input delta
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            delta: { type: 'input_json_delta', partial_json: JSON.stringify({ command: 'sleep 10 && echo done', run_in_background: true }) },
+          },
+        },
+      })
+    }, delay)
+    delay += 20
+
+    // Tool use stop
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+    }, delay)
+    delay += 10
+
+    // Tool result with backgroundTaskId
+    setTimeout(() => {
+      client.registerBackgroundTask(sessionId, bgTaskId)
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: {
+          type: 'user',
+          tool_use_result: { backgroundTaskId: bgTaskId, stdout: '', stderr: '', interrupted: false, isImage: false },
+          message: {
+            content: [{
+              type: 'tool_result',
+              tool_use_id: toolId,
+              content: `Command running in background with ID: ${bgTaskId}. Output is being written to: /tmp/tasks/${bgTaskId}.output.`,
+            }],
+          },
+        },
+      })
+    }, delay)
+    delay += 20
+
+    // Agent streams a text response
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+    }, delay)
+    delay += 10
+
+    const responseText = `Started background task ${bgTaskId}.`
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: responseText } } },
+      })
+    }, delay)
+    delay += 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+    }, delay)
+    delay += 10
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+    }, delay)
+    delay += 10
+
+    // Write JSONL and emit result (agent turn ends, but bg task is still running)
+    const firstResultDelay = delay
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [
+          { type: 'tool_use', id: toolId, name: 'Bash', input: { command: 'sleep 10 && echo done', run_in_background: true } },
+          { type: 'text', text: responseText },
+        ] },
+        timestamp: new Date().toISOString(),
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        toolUseResult: { backgroundTaskId: bgTaskId, stdout: '', stderr: '', interrupted: false, isImage: false },
+        message: { content: [{ type: 'tool_result', tool_use_id: toolId, content: `Command running in background with ID: ${bgTaskId}.` }] },
+        timestamp: new Date().toISOString(),
+      })
+
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, firstResultDelay)
+
+    // After delay, the background command finishes. The SDK delivers the completion
+    // as a `task_updated` state patch (the busy-path shape: the task settled while
+    // the agent had moved on, so there is no in-band `task_notification` carrying this
+    // task's id — only a state change). The persister clears the task from this.
+    // See message-persister.ts `task_updated` handling and the
+    // background-bash-busy-completion replay fixture.
+    const notificationDelay = firstResultDelay + this.delayMs
+    setTimeout(() => {
+      client.completeBackgroundTask(sessionId, bgTaskId)
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'task_updated',
+          task_id: bgTaskId,
+          patch: { status: 'completed', end_time: Date.now() },
+          session_id: sessionId,
+        },
+      })
+    }, notificationDelay)
+
+    // Agent processes the notification — reads the output and responds
+    const finalDelay = notificationDelay + 50
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, finalDelay)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+    }, finalDelay + 10)
+
+    const finalText = `Background command completed. Output: ${this.commandOutput}`
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: finalText } } },
+      })
+    }, finalDelay + 20)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+    }, finalDelay + 30)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+    }, finalDelay + 40)
+
+    // Write JSONL and final result
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        origin: { kind: 'task-notification' },
+        message: { content: `<task-notification>\n<task-id>${bgTaskId}</task-id>\n<status>completed</status>\n</task-notification>` },
+        timestamp: new Date().toISOString(),
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: finalText }] },
+        timestamp: new Date().toISOString(),
+      })
+
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, finalDelay + 50)
+  }
+}
+
+/**
  * Mock implementation of ContainerClient for E2E testing.
  * Simulates container behavior without requiring Docker/Podman.
  */
@@ -700,6 +995,8 @@ if (process.env.E2E_MOCK === 'true' && process.env.E2E_CHROMIUM_PATH) {
 export class MockContainerClient extends EventEmitter implements ContainerClient {
   // Global scenario registry - tests can register scenarios by message pattern
   static scenarios = new Map<string, MockScenario>([
+    // Slow response window for message-queueing tests (send mid-turn → queued)
+    ['work slowly', new SlowWorkScenario()],
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',
@@ -707,6 +1004,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'file1.txt\nfile2.txt\nfolder/',
       'I found the following files in the current directory.'
     )],
+    // Register a background bash scenario for testing background task tracking
+    ['run background', new BackgroundBashScenario(2000, 'done sleeping')],
     // Register a slow response scenario for cross-session tests
     ['slow response', new DelayedTextResponseScenario(
       'This is a delayed mock response.',
@@ -815,10 +1114,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         },
       },
     ])],
+    // Script type must be valid for the host platform (VALID_SCRIPT_TYPES in
+    // settings.ts) or the persister auto-rejects before the card ever pends.
     ['ask script', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_script_run',
-        input: { script: 'sw_vers', explanation: 'Check macOS version', scriptType: 'shell' },
+        input: process.platform === 'win32'
+          ? { script: 'Get-ComputerInfo', explanation: 'Check OS version', scriptType: 'powershell' }
+          : { script: 'sw_vers', explanation: 'Check OS version', scriptType: 'shell' },
       },
     ])],
     ['use computer', new UserInputRequestScenario([
@@ -902,6 +1205,19 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         input: { url: 'http://localhost:9876/mcp', name: 'Test MCP', reason: 'Need access to test tools' },
       },
     ])],
+    // File delivery scenario for E2E tests
+    ['deliver file', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/report.md', description: 'Generated report' },
+      'File delivered successfully (size: 150 bytes)',
+      'I\'ve delivered the report for your review.'
+    )],
+    ['deliver image', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/chart.png', description: 'Sales chart' },
+      'File delivered successfully (size: 2048 bytes)',
+      'Here is the sales chart.'
+    )],
     // API error scenarios
     ['auth error', new ApiErrorScenario('authentication_failed', 'Invalid API key')],
     ['rate limit error', new ApiErrorScenario('rate_limit', 'Rate limit exceeded, please try again later')],
@@ -989,6 +1305,22 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.config = config
   }
 
+  // Uuids supplied with sendMessage/createSession, consumed by writeJsonlEntry
+  // when the scenario echoes the user message into the JSONL.
+  private pendingUserMessageUuids = new Map<string, Array<{ uuid: string; content: string }>>()
+
+  // Sessions with a scenario currently running (between scenario start and its
+  // 'result' event). Messages sent while busy take the queued/steering path,
+  // mirroring the real CLI.
+  private busySessions = new Set<string>()
+  // Background tasks the mock runtime considers still running, per session.
+  // Mirrors the real CLI: 'idle' is withheld while any of these exist.
+  private runningBackgroundTaskIds = new Map<string, Set<string>>()
+
+  // Pending steering injections by message uuid, so queued messages can be
+  // cancelled before pickup (mirrors the CLI's cancel_async_message).
+  private queuedSteeringTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>()
+
   getAgentId(): string {
     return this.config.agentId
   }
@@ -1012,6 +1344,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       const dir = path.dirname(jsonlPath)
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true })
+      }
+
+      // User-message echoes adopt the uuid supplied with the send (mirrors the
+      // real CLI persisting the SDKUserMessage uuid), so optimistic-UI ghost
+      // matching by id works in E2E mock mode. Matched by content so tool
+      // results / task notifications (also type 'user') don't consume uuids.
+      if (!entry.uuid && entry.type === 'user') {
+        const queue = this.pendingUserMessageUuids.get(containerSessionId)
+        const content = (entry.message as { content?: unknown } | undefined)?.content
+        const idx = queue?.findIndex((q) => q.content === content) ?? -1
+        if (queue && idx >= 0) {
+          entry.uuid = queue[idx].uuid
+          queue.splice(idx, 1)
+        }
       }
 
       // Ensure uuid/parentUuid/sessionId so entries conform to JsonlMessageEntry
@@ -1054,6 +1400,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
    * Emit a stream message to all subscribers of a session
    */
   emitStreamMessage(sessionId: string, content: { type: string; content: unknown }): void {
+    // A scenario's result ends the turn — messages sent after this take the
+    // normal (turn-starting) path again
+    if (content.type === 'result') {
+      this.busySessions.delete(sessionId)
+    }
     const callbacks = this.streamCallbacks.get(sessionId)
     if (callbacks) {
       const message: StreamMessage = {
@@ -1065,11 +1416,50 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       callbacks.forEach((cb) => cb(message))
       this.emit('message', sessionId, content)
     }
+    // Mirror the real CLI's session_state_changed lifecycle: 'idle' is the
+    // authoritative settled signal and is withheld while queued (steering)
+    // messages are still awaiting pickup or background tasks are still
+    // running — their completion emits it instead.
+    if (content.type === 'result') {
+      const timers = this.queuedSteeringTimers.get(sessionId)
+      const bgTasks = this.runningBackgroundTaskIds.get(sessionId)
+      if ((!timers || timers.size === 0) && (!bgTasks || bgTasks.size === 0)) {
+        this.emitSessionState(sessionId, 'idle')
+      }
+    }
+  }
+
+  /**
+   * Track a running background task — the real runtime stays non-idle while
+   * background work runs, so the result hook withholds 'idle' until the
+   * scenario marks the task complete.
+   */
+  registerBackgroundTask(sessionId: string, taskId: string): void {
+    const tasks = this.runningBackgroundTaskIds.get(sessionId) ?? new Set()
+    tasks.add(taskId)
+    this.runningBackgroundTaskIds.set(sessionId, tasks)
+  }
+
+  completeBackgroundTask(sessionId: string, taskId: string): void {
+    this.runningBackgroundTaskIds.get(sessionId)?.delete(taskId)
+  }
+
+  /** Emit a session_state_changed system event (mirrors CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS). */
+  emitSessionState(sessionId: string, stateValue: 'idle' | 'running'): void {
+    this.emitStreamMessage(sessionId, {
+      type: 'system',
+      content: { type: 'system', subtype: 'session_state_changed', state: stateValue },
+    })
   }
 
   // Volume flag builder (no-op in mock — mounts are not simulated)
   buildVolumeFlag(hostPath: string, containerPath: string): string {
     return `"${hostPath}:${containerPath}"`
+  }
+
+  // No real host networking in mock mode — report loopback-direct (no proxy).
+  getHostBridgeIp(): string | null {
+    return null
   }
 
   // Lifecycle management
@@ -1079,7 +1469,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
   }
 
-  async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean }> {
+  async stop(_options?: StopOptions): Promise<{ forceStopUsed: boolean; stopped: boolean }> {
     if (this.activeBrowserSessionId && cleanupBrowserSessionFn) {
       cleanupBrowserSessionFn(this.activeBrowserSessionId)
       this.activeBrowserSessionId = null
@@ -1089,7 +1479,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.sessionMessages.clear()
     this.streamCallbacks.clear()
     console.log(`[MockContainerClient] Stopped mock container for agent ${this.config.agentId}`)
-    return { forceStopUsed: false }
+    return { forceStopUsed: false, stopped: true }
   }
 
   stopSync(): void {
@@ -1204,11 +1594,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Health checks
 
-  async waitForHealthy(_timeoutMs?: number): Promise<boolean> {
+  async waitForHealthy(_timeoutMs?: number, _knownPort?: number): Promise<boolean> {
     return this.running
   }
 
-  async isHealthy(): Promise<boolean> {
+  async isHealthy(_knownPort?: number): Promise<boolean> {
     return this.running
   }
 
@@ -1261,6 +1651,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // If there's an initial message, process it after a longer delay
     // to ensure the caller has time to subscribe to the stream
     if (options.initialMessage) {
+      if (options.initialMessageUuid) {
+        this.pendingUserMessageUuids.set(sessionId, [
+          { uuid: options.initialMessageUuid, content: options.initialMessage },
+        ])
+      }
       // Store user message
       const userMessage = {
         role: 'user',
@@ -1286,7 +1681,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           }
         }
 
-        // Execute the scenario
+        // Execute the scenario (session is busy until the scenario's 'result').
+        // Deliberately do NOT emit a 'running' state event here: a CLI run starts
+        // already in 'running' and only PUBLISHES transitions, so the session's
+        // very first turn emits nothing until its final idle. Emitting 'running'
+        // here would let the host discover state-event support by observation —
+        // masking a regression of the capabilities handshake that the host
+        // actually relies on (the exact failure that already shipped once).
+        this.busySessions.add(sessionId)
         scenario.execute(sessionId, this, options.initialMessage!)
       }, 100)  // Brief delay to ensure subscription is set up
     }
@@ -1303,13 +1705,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.sessions.delete(sessionId)
     this.sessionMessages.delete(sessionId)
     this.streamCallbacks.delete(sessionId)
+    this.pendingUserMessageUuids.delete(sessionId)
+    this.busySessions.delete(sessionId)
+    const timers = this.queuedSteeringTimers.get(sessionId)
+    if (timers) {
+      for (const timer of timers.values()) clearTimeout(timer)
+      this.queuedSteeringTimers.delete(sessionId)
+    }
     console.log(`[MockContainerClient] Deleted session ${sessionId}`)
     return existed
   }
 
   // Message operations
 
-  async sendMessage(sessionId: string, content: string, _uuid?: string, options?: RuntimeOptions): Promise<void> {
+  async sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void> {
     // Record for E2E test assertions
     MockContainerClient.lastSendMessageCall = {
       sessionId,
@@ -1340,6 +1749,72 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // Update last activity
     session.lastActivity = new Date().toISOString()
 
+    // shouldQuery: false — append to transcript without triggering a response
+    if (options?.shouldQuery === false) {
+      this.sessionMessages.get(sessionId)?.push({
+        role: 'user',
+        content,
+        timestamp: new Date().toISOString(),
+        shouldQuery: false,
+      })
+      return
+    }
+
+    // Mid-turn send — mirror the real CLI's steering behavior: no user entry
+    // is written; after a pickup delay the message lands in the JSONL as a
+    // queued_command attachment with a CLI-generated source_uuid (the sender
+    // uuid is NOT preserved there), followed by assistant output whose stream
+    // message triggers the refetch that materializes the ghost. Until pickup
+    // the injection is cancellable by uuid (cancel_async_message semantics).
+    if (this.busySessions.has(sessionId)) {
+      // Content keyword lets tests pick the long pickup window: with the slow
+      // scenario's 5s turn, a 5500ms delay deterministically lands pickup
+      // AFTER the turn's result (late-window settle path) no matter when the
+      // message was queued during the turn.
+      const steeringDelayMs = content.includes('pickup after turn') ? 5500 : 1200
+      const steeringUuid = uuid ?? randomUUID()
+      const timer = setTimeout(() => {
+        this.queuedSteeringTimers.get(sessionId)?.delete(steeringUuid)
+        // The drain signal: the real CLI emits status 'requesting' when it
+        // picks queued messages up — the persister clears its pending-queued
+        // set and broadcasts a refetch on it.
+        this.emitStreamMessage(sessionId, {
+          type: 'system',
+          content: { type: 'system', subtype: 'status', status: 'requesting' },
+        })
+        this.writeJsonlEntry(sessionId, {
+          type: 'attachment',
+          timestamp: new Date().toISOString(),
+          attachment: {
+            type: 'queued_command',
+            prompt: [{ type: 'text', text: content }],
+            source_uuid: randomUUID(),
+            commandMode: 'prompt',
+          },
+        })
+        const ackContent = [{ type: 'text', text: `Adjusting based on: ${content}` }]
+        this.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: { content: ackContent },
+          timestamp: new Date().toISOString(),
+        })
+        this.emitStreamMessage(sessionId, {
+          type: 'assistant',
+          content: { type: 'assistant', message: { content: ackContent } },
+        })
+        // If the turn's result already fired (queued late in the window), this
+        // pickup is the real end of the session's work — settle it now.
+        const remaining = this.queuedSteeringTimers.get(sessionId)
+        if (!this.busySessions.has(sessionId) && (!remaining || remaining.size === 0)) {
+          this.emitSessionState(sessionId, 'idle')
+        }
+      }, steeringDelayMs)
+      const timers = this.queuedSteeringTimers.get(sessionId) ?? new Map()
+      timers.set(steeringUuid, timer)
+      this.queuedSteeringTimers.set(sessionId, timers)
+      return
+    }
+
     // Store user message
     const userMessage = {
       role: 'user',
@@ -1347,6 +1822,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       timestamp: new Date().toISOString(),
     }
     this.sessionMessages.get(sessionId)?.push(userMessage)
+
+    // Remember the uuid so the scenario's JSONL echo of this message gets it
+    if (uuid) {
+      const queue = this.pendingUserMessageUuids.get(sessionId) ?? []
+      queue.push({ uuid, content })
+      this.pendingUserMessageUuids.set(sessionId, queue)
+    }
 
     // Emit user message to stream
     this.emitStreamMessage(sessionId, {
@@ -1363,12 +1845,27 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       }
     }
 
-    // Execute the scenario
+    // Execute the scenario (session is busy until the scenario's 'result').
+    // Unlike the first turn (createSession), this is a real idle -> running
+    // transition (a message waking a settled session), which the CLI does
+    // publish — so emitting 'running' here mirrors the runtime.
+    this.busySessions.add(sessionId)
+    this.emitSessionState(sessionId, 'running')
     scenario.execute(sessionId, this, content)
   }
 
   async getMessages(sessionId: string): Promise<unknown[]> {
     return this.sessionMessages.get(sessionId) || []
+  }
+
+  async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {
+    const timers = this.queuedSteeringTimers.get(sessionId)
+    const timer = timers?.get(uuid)
+    if (!timer) return false
+    clearTimeout(timer)
+    timers!.delete(uuid)
+    console.log(`[MockContainerClient] Cancelled queued message ${uuid} in session ${sessionId}`)
+    return true
   }
 
   async interruptSession(sessionId: string): Promise<boolean> {
@@ -1398,6 +1895,17 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     callbacks.add(callback)
 
     console.log(`[MockContainerClient] Subscribed to stream for session ${sessionId}`)
+
+    // Mirror the real container's WS hello: announce the stream contract
+    // before any relayed message so the persister treats state events as the
+    // idle authority from the first turn (the mock emits them — see
+    // emitSessionState).
+    callback({
+      type: 'system',
+      content: { type: 'system', subtype: 'capabilities', session_state_events: true },
+      timestamp: new Date(),
+      sessionId,
+    })
 
     const unsubscribe = () => {
       callbacks?.delete(callback)

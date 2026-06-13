@@ -17,6 +17,8 @@ import {
 import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { getCurrentUserId } from '@shared/lib/auth/config'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, AgentUser, EntityAgentRole } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -116,7 +118,7 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const body = await c.req.json()
-    const { provider, name, config, showToolCalls } = body
+    const { provider, name, config, showToolCalls, sessionTimeout, model, effort } = body
 
     if (!provider || !config) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
@@ -176,6 +178,9 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
         name,
         config,
         showToolCalls: showToolCalls ?? false,
+        sessionTimeout: sessionTimeout ?? null,
+        model: model ?? null,
+        effort: effort ?? null,
         createdByUserId,
       })
     } catch (err) {
@@ -210,6 +215,7 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
     }
 
     const integration = getChatIntegration(id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
     return c.json(integration, 201)
   } catch (error) {
     console.error('Failed to create chat integration:', error)
@@ -223,7 +229,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
   try {
     const id = c.req.param('integrationId')
     const body = await c.req.json()
-    const { name, config, showToolCalls, status } = body
+    const { name, config, showToolCalls, sessionTimeout, model, effort, status } = body
 
     // Validate config if provided
     if (config !== undefined) {
@@ -243,6 +249,9 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     if (name !== undefined) updates.name = name
     if (config !== undefined) updates.config = config
     if (showToolCalls !== undefined) updates.showToolCalls = showToolCalls
+    if (sessionTimeout !== undefined) updates.sessionTimeout = sessionTimeout
+    if (model !== undefined) updates.model = model
+    if (effort !== undefined) updates.effort = effort
 
     if (Object.keys(updates).length > 0) {
       updateChatIntegration(id, updates)
@@ -260,6 +269,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     }
 
     const updated = getChatIntegration(id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
     return c.json(updated)
   } catch (error) {
     if (error instanceof DuplicateBotTokenError) {
@@ -294,6 +304,8 @@ chatIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), a
     if (!deleted) {
       return c.json({ error: 'Chat integration not found' }, 404)
     }
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'deleted' })
 
     return c.body(null, 204)
   } catch (error) {
@@ -358,9 +370,16 @@ chatIntegrationsRouter.get('/:integrationId/sessions', IntegrationAgentRole('vie
 // DELETE /api/chat-integrations/:integrationId/sessions/:sessionId - Clear a chat session
 chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', IntegrationAgentRole('user'), async (c) => {
   try {
+    const integrationId = c.req.param('integrationId')
     const sessionId = c.req.param('sessionId')
     const session = getChatIntegrationSessionById(sessionId)
-    if (!session) {
+    // Scope the session to the authorized integration. `IntegrationAgentRole`
+    // only authorizes :integrationId; the session is loaded by primary key, so
+    // we must verify it belongs to that integration before mutating it.
+    // Otherwise a user with access to one integration could clear/archive a
+    // session belonging to another integration/agent (BOLA — SUP-202/SUP-229).
+    // Return 404 (not 403) so foreign session IDs are not enumerable.
+    if (!session || session.integrationId !== integrationId) {
       return c.json({ error: 'Session not found' }, 404)
     }
     // Notify the manager to clean up SSE subscriptions

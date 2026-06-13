@@ -4,6 +4,8 @@ import { Authenticated, OwnsAccountByParam, OwnsMcpByParam } from '../middleware
 import { db } from '@shared/lib/db'
 import { apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
+import { getCurrentUserId } from '@shared/lib/auth/config'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 
 const VALID_DECISIONS = ['allow', 'review', 'block'] as const
 type ValidDecision = (typeof VALID_DECISIONS)[number]
@@ -64,6 +66,7 @@ policies.put('/scope/:accountId', OwnsAccountByParam('accountId'), async (c) => 
     }
   })
 
+  logAuditEvent({ userId: getCurrentUserId(c), object: 'policy', objectId: accountId, action: 'updated', details: { type: 'scope', count: validated.length } })
   return c.json({ ok: true })
 })
 
@@ -115,6 +118,7 @@ policies.put('/tool/:mcpId', OwnsMcpByParam('mcpId'), async (c) => {
     }
   })
 
+  logAuditEvent({ userId: getCurrentUserId(c), object: 'policy', objectId: mcpId, action: 'updated', details: { type: 'tool', count: validated.length } })
   return c.json({ ok: true })
 })
 

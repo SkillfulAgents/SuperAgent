@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchScopes } from './scope-matcher'
+import { matchScopes, isValidApiScope } from './scope-matcher'
 
 describe('matchScopes', () => {
   it('exact match: gmail GET /gmail/v1/users/me/messages returns correct scopes', () => {
@@ -28,6 +28,19 @@ describe('matchScopes', () => {
     expect(deleteResult.scopes).not.toContain('gmail.readonly')
     // GET /messages/* has more scopes
     expect(getResult.scopes).toContain('gmail.readonly')
+  })
+
+  it('method-agnostic ("*"): slack GET /api/conversations.history matches the POST-or-GET RPC entry', () => {
+    // Slack is RPC-style: the path identifies the operation and the same scope
+    // applies whether the agent calls it via GET or POST. Both must resolve to
+    // the *:history scopes so the user gets a specific "Always allow" option
+    // instead of falling back to the broad "all slack requests" suggestion.
+    const get = matchScopes('slack', 'GET', '/api/conversations.history')
+    const post = matchScopes('slack', 'POST', '/api/conversations.history')
+    expect(get.matched).toBe(true)
+    expect(post.matched).toBe(true)
+    expect(get.scopes).toContain('channels:history')
+    expect(get.scopes.sort()).toEqual(post.scopes.sort())
   })
 
   it('unknown endpoint: gmail GET /gmail/v1/unknown/path returns matched: false', () => {
@@ -97,7 +110,7 @@ describe('matchScopes', () => {
     expect(result.scopes).toEqual([])
   })
 
-  it('descriptions: prefers curated SCOPE_DESCRIPTIONS over endpoint description', () => {
+  it('descriptions: prefers curated SCOPE_METADATA over endpoint description', () => {
     // gmail.readonly is curated; the curated description is scope-level
     // ("View your email messages…"), not the endpoint-level "Lists the messages
     // in the user's mailbox." that scope-maps.ts has on this entry.
@@ -113,9 +126,9 @@ describe('matchScopes', () => {
   })
 
   it('descriptions: falls back to endpoint description for uncurated scopes', () => {
-    // Use a provider/scope that exists but isn't in SCOPE_DESCRIPTIONS — we
+    // Use a provider/scope that exists but isn't in SCOPE_METADATA — we
     // cover all 40 providers, so any fallback should be impossible. Verify the
-    // mechanism: if scope-descriptions ever loses an entry, the endpoint
+    // mechanism: if scope-metadata ever loses an entry, the endpoint
     // description still appears. Simulate by checking that EVERY description
     // is a non-empty string, and that the format is plausible.
     const result = matchScopes('gmail', 'GET', '/gmail/v1/users/me/profile')
@@ -134,5 +147,40 @@ describe('matchScopes', () => {
   it('endpointDescription: undefined for unmatched requests', () => {
     const result = matchScopes('gmail', 'GET', '/gmail/v1/unknown/path')
     expect(result.endpointDescription).toBeUndefined()
+  })
+})
+
+describe('isValidApiScope', () => {
+  it('accepts a real scope declared by the toolkit', () => {
+    expect(isValidApiScope('gmail', 'gmail.readonly')).toBe(true)
+  })
+
+  it('rejects a scope not in the toolkit scope set', () => {
+    expect(isValidApiScope('gmail', 'gmail:read')).toBe(false)
+    expect(isValidApiScope('gmail', 'not-a-real-scope')).toBe(false)
+  })
+
+  it('does not leak scopes across toolkits', () => {
+    // A real gmail scope is not valid for a different toolkit.
+    expect(isValidApiScope('slack', 'gmail.readonly')).toBe(false)
+  })
+
+  it.each(['*', '*read', '*write', '*destructive'])('accepts the %s sentinel on any toolkit', (sentinel) => {
+    expect(isValidApiScope('gmail', sentinel)).toBe(true)
+    // Sentinels are valid even when the toolkit is unknown.
+    expect(isValidApiScope('totally-unknown-toolkit', sentinel)).toBe(true)
+    expect(isValidApiScope(undefined, sentinel)).toBe(true)
+  })
+
+  it('rejects non-sentinel scopes for an unknown or missing toolkit', () => {
+    expect(isValidApiScope('totally-unknown-toolkit', 'gmail.readonly')).toBe(false)
+    expect(isValidApiScope(undefined, 'gmail.readonly')).toBe(false)
+  })
+
+  it('rejects empty or non-string scopes', () => {
+    expect(isValidApiScope('gmail', '')).toBe(false)
+    expect(isValidApiScope('gmail', null as unknown as string)).toBe(false)
+    expect(isValidApiScope('gmail', undefined as unknown as string)).toBe(false)
+    expect(isValidApiScope('gmail', 123 as unknown as string)).toBe(false)
   })
 })

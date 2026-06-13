@@ -4,6 +4,8 @@ import { ConnectivityProvider } from '@renderer/context/connectivity-context'
 import { UserProvider } from '@renderer/context/user-context'
 import { DialogProvider } from '@renderer/context/dialog-context'
 import { DraftsProvider } from '@renderer/context/drafts-context'
+import { SelectionProvider } from '@renderer/context/selection-context'
+import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import type { ReactElement, ReactNode } from 'react'
 
 export { screen, waitFor, within, act } from '@testing-library/react'
@@ -28,7 +30,11 @@ function AllProviders({ children }: { children: ReactNode }) {
         <UserProvider>
           <DialogProvider onOpenWizard={() => {}}>
             <DraftsProvider>
-              {children}
+              <SelectionProvider>
+                <FilePreviewProvider>
+                  {children}
+                </FilePreviewProvider>
+              </SelectionProvider>
             </DraftsProvider>
           </DialogProvider>
         </UserProvider>

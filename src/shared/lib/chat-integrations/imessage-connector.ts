@@ -72,7 +72,13 @@ export class IMessageConnector extends ChatClientConnector {
   private static readonly MAX_RECONNECT_DELAY_MS = 60_000
   private static readonly BASE_RECONNECT_DELAY_MS = 1_000
 
+  private pingInterval: ReturnType<typeof setInterval> | null = null
+  private pongReceived = true
+  private static readonly PING_INTERVAL_MS = 30_000
+  private static readonly PONG_TIMEOUT_MS = 10_000
+
   private lastReceivedMessageId: string | null = null
+  private lastChatId: string | null = null
   private pendingApprovals: Map<string, PendingApproval> = new Map()
   private pendingQuestions: Map<string, PendingQuestion> = new Map()
 
@@ -117,6 +123,10 @@ export class IMessageConnector extends ChatClientConnector {
         this.send({ type: 'ready' })
       })
 
+      this.ws.on('pong', () => {
+        this.pongReceived = true
+      })
+
       this.ws.on('message', (raw) => {
         try {
           const event = JSON.parse(raw.toString())
@@ -125,6 +135,7 @@ export class IMessageConnector extends ChatClientConnector {
             clearTimeout(timeout)
             this._connected = true
             this.reconnectAttempts = 0
+            this.startPingLoop()
             console.log(`[IMessageConnector] Connected (${event.data?.queuedCount ?? 0} queued events)`)
             resolve()
           }
@@ -167,6 +178,8 @@ export class IMessageConnector extends ChatClientConnector {
     this.disconnecting = true
     this._connected = false
 
+    this.stopPingLoop()
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -190,8 +203,9 @@ export class IMessageConnector extends ChatClientConnector {
 
   // ── Message sending ─────────────────────────────────────────────────
 
-  async sendMessage(_chatId: string, message: OutgoingMessage): Promise<string> {
+  async sendMessage(chatId: string, message: OutgoingMessage): Promise<string> {
     const text = message.text || ''
+    const targetChatId = chatId || this.lastChatId || undefined
 
     // Parse and handle reaction tags
     const { cleanText, reactions } = this.extractReactions(text)
@@ -218,7 +232,7 @@ export class IMessageConnector extends ChatClientConnector {
 
     this.send({
       type: 'send_message',
-      data: { parts: [{ type: 'text', value: cleanText }] },
+      data: { chatId: targetChatId, parts: [{ type: 'text', value: cleanText }] },
     })
 
     return `msg-${Date.now()}`
@@ -229,16 +243,18 @@ export class IMessageConnector extends ChatClientConnector {
     return existingMessageId || `stream-noop-${Date.now()}`
   }
 
-  async finalizeStreamingMessage(_chatId: string, _messageId: string, finalText: string): Promise<void> {
+  async finalizeStreamingMessage(chatId: string, _messageId: string, finalText: string): Promise<void> {
     // Since we don't stream, send the complete message now
-    await this.sendMessage('', { text: finalText })
+    await this.sendMessage(chatId, { text: finalText })
   }
 
-  async showTypingIndicator(_chatId: string): Promise<void> {
-    this.send({ type: 'start_typing' })
+  async showTypingIndicator(chatId: string): Promise<void> {
+    const targetChatId = chatId || this.lastChatId || undefined
+    this.send({ type: 'start_typing', data: { chatId: targetChatId } })
   }
 
-  async sendFile(_chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
+  async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
+    const targetChatId = chatId || this.lastChatId || undefined
     const mimeType = guessMimeType(filename)
 
     try {
@@ -281,7 +297,7 @@ export class IMessageConnector extends ChatClientConnector {
         parts.push({ type: 'text', value: caption })
       }
 
-      this.send({ type: 'send_message', data: { parts } })
+      this.send({ type: 'send_message', data: { chatId: targetChatId, parts } })
       return `file-${Date.now()}`
     } catch (err) {
       console.error('[IMessageConnector] Failed to send file:', err)
@@ -289,7 +305,7 @@ export class IMessageConnector extends ChatClientConnector {
       // Fall back to a text message about the file
       this.send({
         type: 'send_message',
-        data: { parts: [{ type: 'text', value: `[File: ${filename}]${caption ? ` — ${caption}` : ''}` }] },
+        data: { chatId: targetChatId, parts: [{ type: 'text', value: `[File: ${filename}]${caption ? ` — ${caption}` : ''}` }] },
       })
       return `file-fallback-${Date.now()}`
     }
@@ -297,48 +313,49 @@ export class IMessageConnector extends ChatClientConnector {
 
   // ── User request cards ──────────────────────────────────────────────
 
-  async sendUserRequestCard(_chatId: string, event: UserRequestEvent): Promise<string> {
+  async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {
+    const targetChatId = chatId || this.lastChatId || undefined
     if (isUnsupportedInChat(event)) {
-      return this.sendTextAndReturn(describeUnsupportedRequest(event))
+      return this.sendTextAndReturn(describeUnsupportedRequest(event), targetChatId)
     }
 
     switch (event.type) {
       case 'user_question_request': {
         // Handle proxy review requests (approval cards)
         if (event.toolUseId.startsWith('review:')) {
-          return this.sendApprovalCard(event)
+          return this.sendApprovalCard(event, targetChatId)
         }
-        return this.sendQuestionCard(event)
+        return this.sendQuestionCard(event, targetChatId)
       }
 
       case 'secret_request': {
         const text = `Secret requested: ${event.secretName}${event.reason ? `\nReason: ${event.reason}` : ''}\n\nPlease reply with the secret value.`
-        return this.sendTextAndReturn(text)
+        return this.sendTextAndReturn(text, targetChatId)
       }
 
       case 'file_request': {
         const text = `File requested:\n${event.description}${event.fileTypes ? `\n\nAccepted types: ${event.fileTypes}` : ''}\n\nPlease send the file.`
-        return this.sendTextAndReturn(text)
+        return this.sendTextAndReturn(text, targetChatId)
       }
 
       case 'file_delivery': {
         const text = `File delivered: ${event.filePath}${event.description ? `\n${event.description}` : ''}`
-        return this.sendTextAndReturn(text)
+        return this.sendTextAndReturn(text, targetChatId)
       }
 
       case 'tool_status': {
         const emoji = event.status === 'success' ? '✅' : event.status === 'error' ? '❌' : event.status === 'cancelled' ? '⛔' : '⏳'
         const text = `${event.toolName} — ${event.summary} ${emoji}`
-        return this.sendTextAndReturn(text)
+        return this.sendTextAndReturn(text, targetChatId)
       }
 
       default: {
-        return this.sendTextAndReturn(describeUnsupportedRequest(event))
+        return this.sendTextAndReturn(describeUnsupportedRequest(event), targetChatId)
       }
     }
   }
 
-  private sendApprovalCard(event: UserRequestEvent): string {
+  private sendApprovalCard(event: UserRequestEvent, targetChatId?: string): string {
     const questions = (event as any).questions as Array<{ question: string }> | undefined
     const displayText = questions?.[0]?.question || 'Allow this action?'
     const text = `${displayText}\n\nReact with 👍 to allow, 👎 to deny.`
@@ -346,7 +363,7 @@ export class IMessageConnector extends ChatClientConnector {
     const messageId = `approval-${this.nextApprovalId++}`
     this.send({
       type: 'send_message',
-      data: { parts: [{ type: 'text', value: text }] },
+      data: { chatId: targetChatId, parts: [{ type: 'text', value: text }] },
     })
 
     this.pendingApprovals.set(messageId, {
@@ -357,7 +374,7 @@ export class IMessageConnector extends ChatClientConnector {
     return messageId
   }
 
-  private sendQuestionCard(event: UserRequestEvent): string {
+  private sendQuestionCard(event: UserRequestEvent, targetChatId?: string): string {
     const questions = (event as any).questions as Array<{
       question: string
       header?: string
@@ -365,7 +382,7 @@ export class IMessageConnector extends ChatClientConnector {
     }>
 
     if (!questions || questions.length === 0) {
-      return this.sendTextAndReturn('(No question provided)')
+      return this.sendTextAndReturn('(No question provided)', targetChatId)
     }
 
     const lines: string[] = []
@@ -386,7 +403,7 @@ export class IMessageConnector extends ChatClientConnector {
     const text = lines.join('\n').trim()
     this.send({
       type: 'send_message',
-      data: { parts: [{ type: 'text', value: text }] },
+      data: { chatId: targetChatId, parts: [{ type: 'text', value: text }] },
     })
 
     this.pendingQuestions.set(event.toolUseId, {
@@ -428,10 +445,13 @@ export class IMessageConnector extends ChatClientConnector {
         console.error('[IMessageConnector] Message delivery failed:', event.data)
         break
 
-      case 'error':
+      case 'error': {
+        const msg = event.data?.message || 'unknown'
         console.error('[IMessageConnector] Gateway error:', event.data)
-        this.emitError(new Error(`Gateway error: ${event.data?.message || 'unknown'}`))
+        if (/typing indicators are not supported/i.test(msg)) break
+        this.emitError(new Error(`Gateway error: ${msg}`))
         break
+      }
 
       case 'typing.started':
         this.emitTypingHint(this.config.phoneNumber)
@@ -446,14 +466,16 @@ export class IMessageConnector extends ChatClientConnector {
 
     const messageId = data.messageId as string
     const chatId = data.chatId as string || this.config.phoneNumber
+    const chatName = data.chatName as string | undefined
     const from = data.from as string
     const parts = data.parts as Array<{ type: string; value?: string; url?: string; mimeType?: string; filename?: string; sizeBytes?: number }> || []
     const sentAt = data.sentAt ? new Date(data.sentAt) : new Date()
 
     this.lastReceivedMessageId = messageId
+    this.lastChatId = chatId
 
     // Send read receipt immediately
-    this.send({ type: 'mark_read' })
+    this.send({ type: 'mark_read', data: { chatId } })
 
     // Extract text and files from parts
     let text = ''
@@ -488,6 +510,7 @@ export class IMessageConnector extends ChatClientConnector {
       externalMessageId: messageId,
       text,
       chatId,
+      chatName,
       userId: from,
       userName: from,
       files: files.length > 0 ? files : undefined,
@@ -626,17 +649,42 @@ export class IMessageConnector extends ChatClientConnector {
     }
   }
 
-  private sendTextAndReturn(text: string): string {
+  private sendTextAndReturn(text: string, targetChatId?: string): string {
     this.send({
       type: 'send_message',
-      data: { parts: [{ type: 'text', value: text }] },
+      data: { chatId: targetChatId, parts: [{ type: 'text', value: text }] },
     })
     return `msg-${Date.now()}`
+  }
+
+  private startPingLoop(): void {
+    this.stopPingLoop()
+    this.pongReceived = true
+    this.pingInterval = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return
+
+      if (!this.pongReceived) {
+        console.log('[IMessageConnector] Pong timeout — closing stale connection')
+        this.ws.terminate()
+        return
+      }
+
+      this.pongReceived = false
+      this.ws.ping()
+    }, IMessageConnector.PING_INTERVAL_MS)
+  }
+
+  private stopPingLoop(): void {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval)
+      this.pingInterval = null
+    }
   }
 
   private scheduleReconnect(): void {
     if (this.disconnecting) return
 
+    this.stopPingLoop()
     this.reconnectAttempts++
     const delay = Math.min(
       IMessageConnector.BASE_RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1),
@@ -650,6 +698,7 @@ export class IMessageConnector extends ChatClientConnector {
         console.error('[IMessageConnector] Reconnect failed:', err)
         captureException(err, { tags: { component: 'chat-integration', operation: 'imessage-reconnect' } })
         this.emitError(err instanceof Error ? err : new Error(String(err)))
+        this.scheduleReconnect()
       })
     }, delay)
   }

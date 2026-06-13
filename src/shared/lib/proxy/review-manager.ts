@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { broadcastReview } from './review-broadcast'
+import { getScopeLabel, type ScopeLabel } from './scope-metadata'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 
@@ -162,11 +163,10 @@ export class ReviewManager {
       // session of this agent. The proxy call is agent-scoped (no sessionId
       // in the request), so we pick an active session — same attribution
       // heuristic the sidebar uses for its orange dot (agents.ts:
-      // isActive && hasAgentLevelReviews). Do NOT gate on hasActiveViewers
-      // here: an open SSE connection ≠ actively looking at the screen
-      // (the user can have the session open and be alt-tabbed away). The
-      // renderer-side gate (isAppActive && isViewingNotificationSession)
-      // is the only one that knows about real OS focus.
+      // isActive && hasAgentLevelReviews). Whether the OS popup actually
+      // shows is the renderer's call — it knows OS focus + per-user viewing
+      // + `notifyWhenUnfocused`. An open SSE connection ≠ actively looking
+      // at the screen.
       const targetSessionId = messagePersister.getActiveSessionIdsForAgent(details.agentSlug)[0]
       if (targetSessionId) {
         const kind = details.xAgent ? 'agent_action' : 'api_request'
@@ -231,6 +231,35 @@ export class ReviewManager {
           decision,
         })
       }
+    }
+  }
+
+  /**
+   * Resolve every pending API review for `agentSlug` whose matched scopes include
+   * one carrying the given risk label. Used when the user picks "Allow all <label>"
+   * — the saved policy is a label sentinel ('*read'/'*write'/'*destructive') that
+   * `resolveMatchingPending` (exact scope match) can't catch, so sibling same-label
+   * prompts would otherwise sit until they time out.
+   */
+  resolveMatchingPendingByLabel(
+    agentSlug: string,
+    label: ScopeLabel,
+    decision: 'allow' | 'deny',
+  ): void {
+    for (const [id, review] of this.pending) {
+      if (review.details.agentSlug !== agentSlug) continue
+      const hasLabel = review.details.matchedScopes.some(
+        (s) => getScopeLabel(review.details.toolkit, s) === label,
+      )
+      if (!hasLabel) continue
+      clearTimeout(review.timer)
+      this.pending.delete(id)
+      review.resolve(decision)
+      broadcastReview(agentSlug, {
+        type: 'proxy_review_resolved',
+        reviewId: id,
+        decision,
+      })
     }
   }
 

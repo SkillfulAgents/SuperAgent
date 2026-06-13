@@ -13,10 +13,8 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { VoiceAgent } from '@renderer/components/ui/voice-agent'
-import { SkillInstallDialog } from '@renderer/components/agents/skill-install-dialog'
 import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
 import { apiFetch } from '@renderer/lib/api'
-import { useDeleteAgent } from '@renderer/hooks/use-agents'
 import { useImportAgentTemplate, useDiscoverableAgents, type ImportProgress } from '@renderer/hooks/use-agent-templates'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
@@ -44,7 +42,6 @@ export interface AgentCreationAidsProps {
  */
 export function AgentCreationAids({ onVoiceResult, onImportComplete, className }: AgentCreationAidsProps) {
   const hasVoiceConfigured = useIsVoiceAgentConfigured()
-  const deleteAgent = useDeleteAgent()
   const { data: discoverableAgents } = useDiscoverableAgents()
   const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
   const [showTemplatesDialog, setShowTemplatesDialog] = useState(false)
@@ -111,12 +108,6 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
   const fileInputRef = useRef<HTMLInputElement>(null)
   const importTemplate = useImportAgentTemplate()
 
-  const [templateSecretsPrompt, setTemplateSecretsPrompt] = useState<{
-    agent: ApiAgent
-    requiredEnvVars: Array<{ name: string; description: string }>
-    hasOnboarding?: boolean
-  } | null>(null)
-
   const acceptFile = useCallback((file: File | null | undefined) => {
     if (!file) return
     if (!file.name.toLowerCase().endsWith('.zip')) {
@@ -159,15 +150,6 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
         })
         setUploadProgress(null)
 
-        if (result.requiredEnvVars && result.requiredEnvVars.length > 0) {
-          setTemplateSecretsPrompt({
-            agent: result,
-            requiredEnvVars: result.requiredEnvVars,
-            hasOnboarding: result.hasOnboarding,
-          })
-          return
-        }
-
         setShowImportDialog(false)
         resetImport()
         await finishImport(result, result.hasOnboarding)
@@ -177,33 +159,6 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
       }
     },
     [importFile, importFull, importTemplate, resetImport, finishImport],
-  )
-
-  const handleTemplateSecretsSubmit = useCallback(
-    async (envVars: Record<string, string>) => {
-      if (!templateSecretsPrompt) return
-      const { agent, hasOnboarding } = templateSecretsPrompt
-      setTemplateSecretsPrompt(null)
-
-      for (const [key, value] of Object.entries(envVars)) {
-        if (value && typeof value === 'string') {
-          try {
-            await apiFetch(`/api/agents/${encodeURIComponent(agent.slug)}/secrets`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ key, value }),
-            })
-          } catch (error) {
-            console.error(`Failed to save secret ${key}:`, error)
-          }
-        }
-      }
-
-      setShowImportDialog(false)
-      resetImport()
-      await finishImport(agent, hasOnboarding)
-    },
-    [templateSecretsPrompt, resetImport, finishImport],
   )
 
   const handleFileDrop = (e: React.DragEvent) => {
@@ -401,20 +356,6 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
         </DialogContent>
       </Dialog>
 
-      {templateSecretsPrompt && (
-        <SkillInstallDialog
-          open={!!templateSecretsPrompt}
-          onOpenChange={(open) => {
-            if (!open) {
-              deleteAgent.mutate(templateSecretsPrompt.agent.slug)
-              setTemplateSecretsPrompt(null)
-            }
-          }}
-          skillName="agent template"
-          requiredEnvVars={templateSecretsPrompt.requiredEnvVars}
-          onInstall={handleTemplateSecretsSubmit}
-        />
-      )}
     </div>
   )
 }

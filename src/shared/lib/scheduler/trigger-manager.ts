@@ -12,7 +12,8 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
-import { runWithOptionalUser } from '@shared/lib/platform-attribution'
+import { runWithOptionalUser, attribution } from '@shared/lib/platform-attribution'
+import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
@@ -21,6 +22,7 @@ import {
   getWebhookTriggersByComposioId,
   markTriggerFired,
   markTriggerFailed,
+  resolvePlatformMemberForCandidates,
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -120,10 +122,15 @@ class TriggerManager {
     this.isProcessing = true
 
     try {
-      // Poll once per distinct trigger owner; first realtime config wins
-      // (other members are picked up on the next pollAndProcess()).
-      const memberIds = getDistinctPlatformMemberIdsForActiveTriggers()
-      if (memberIds.length === 0) return
+      // Poll once per distinct trigger owner; first realtime config wins.
+      // Opaque-key mode has no authAccount rows, so fall back to a placeholder
+      // (buildBearer ignores it). Org JWT mode returns early to avoid a bogus
+      // `${token}::local` bearer.
+      let memberIds = getDistinctPlatformMemberIdsForActiveTriggers()
+      if (memberIds.length === 0) {
+        if (attribution.requiresActingMember() || !getPlatformAccessToken()) return
+        memberIds = ['local']
+      }
 
       for (const memberId of memberIds) {
         try {
@@ -257,8 +264,17 @@ class TriggerManager {
     trigger: WebhookTrigger,
     events: WebhookEvent[]
   ): Promise<void> {
-    // Attribute to trigger creator; fall back to the connected_account owner.
-    const ownerUserId = trigger.createdByUserId ?? resolveConnectedAccountOwner(trigger.connectedAccountId)
+    // Attribute to the same user the poller claimed events under: prefer the
+    // trigger creator, but fall back to the connected_account owner when the
+    // creator has no platform member (SUP-226). If neither resolves to a
+    // platform member (e.g. opaque-key / single-user mode), keep the prior
+    // best-effort attribution (creator, else owner).
+    const candidates = [
+      trigger.createdByUserId,
+      resolveConnectedAccountOwner(trigger.connectedAccountId),
+    ]
+    const resolved = resolvePlatformMemberForCandidates(candidates)
+    const ownerUserId = resolved?.userId ?? candidates.find((c) => c) ?? null
     return runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
   }
 
@@ -319,7 +335,7 @@ class TriggerManager {
 
     // Notification
     notificationManager
-      .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.name || undefined)
+      .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.id, trigger.name || undefined)
       .catch((err) => {
         console.error('[TriggerManager] Failed to trigger notification:', err)
       })

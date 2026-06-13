@@ -5,6 +5,8 @@ import {
   resetBrowserState,
   validateBrowserSession,
   releaseBrowserLock,
+  renameBrowserSession,
+  transferBrowserLock,
 } from './browser-state'
 
 describe('browser-state', () => {
@@ -61,6 +63,44 @@ describe('browser-state', () => {
 
       // session-2 can now acquire
       expect(validateBrowserSession('session-2')).toBeNull()
+    })
+  })
+
+  describe('renameBrowserSession', () => {
+    it('re-keys the lock when the old id owns it (query restart mid-browse)', () => {
+      setBrowserState({ active: true, sessionId: 'old-id', cdpUrl: 'ws://localhost:9222' })
+      expect(renameBrowserSession('old-id', 'new-id')).toBe(true)
+      expect(getBrowserState().sessionId).toBe('new-id')
+      expect(getBrowserState().cdpUrl).toBe('ws://localhost:9222')
+      // requests under the new id now pass; old id no longer matches
+      expect(validateBrowserSession('new-id')).toBeNull()
+      expect(validateBrowserSession('old-id')).not.toBeNull()
+    })
+
+    it('does nothing when the old id does not own the lock', () => {
+      setBrowserState({ active: true, sessionId: 'other-session', cdpUrl: null })
+      expect(renameBrowserSession('old-id', 'new-id')).toBe(false)
+      expect(getBrowserState().sessionId).toBe('other-session')
+    })
+
+    it('does nothing when the browser is inactive', () => {
+      expect(renameBrowserSession('old-id', 'new-id')).toBe(false)
+      expect(getBrowserState().active).toBe(false)
+    })
+  })
+
+  describe('transferBrowserLock', () => {
+    it('reassigns ownership while preserving the live connection', () => {
+      setBrowserState({ active: true, sessionId: 'dead-session', cdpUrl: 'ws://localhost:9222' })
+      transferBrowserLock('live-session')
+      expect(getBrowserState()).toEqual({ active: true, sessionId: 'live-session', cdpUrl: 'ws://localhost:9222' })
+      expect(validateBrowserSession('live-session')).toBeNull()
+    })
+
+    it('does nothing when the browser is inactive', () => {
+      transferBrowserLock('live-session')
+      expect(getBrowserState().active).toBe(false)
+      expect(getBrowserState().sessionId).toBeNull()
     })
   })
 

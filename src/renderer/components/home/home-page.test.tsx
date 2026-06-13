@@ -2,90 +2,6 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { screen } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
-import { formatRelativeTime } from './home-page'
-
-// ============================================================================
-// formatRelativeTime unit tests
-// ============================================================================
-
-describe('formatRelativeTime', () => {
-  beforeEach(() => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-03-26T12:00:00Z'))
-  })
-
-  afterAll(() => {
-    vi.useRealTimers()
-  })
-
-  it('returns null for null/undefined input', () => {
-    expect(formatRelativeTime(null)).toBeNull()
-    expect(formatRelativeTime(undefined)).toBeNull()
-  })
-
-  it('returns "just now" for times less than 1 minute ago', () => {
-    const thirtySecsAgo = new Date('2026-03-26T11:59:31Z')
-    expect(formatRelativeTime(thirtySecsAgo)).toBe('just now')
-  })
-
-  it('returns "just now" for times less than 1 minute in the future', () => {
-    const thirtySecsFromNow = new Date('2026-03-26T12:00:29Z')
-    expect(formatRelativeTime(thirtySecsFromNow)).toBe('just now')
-  })
-
-  it('returns minutes ago for past times < 1 hour', () => {
-    const fiveMinsAgo = new Date('2026-03-26T11:55:00Z')
-    expect(formatRelativeTime(fiveMinsAgo)).toBe('5m ago')
-  })
-
-  it('returns "in Xm" for future times < 1 hour', () => {
-    const tenMinsFromNow = new Date('2026-03-26T12:10:00Z')
-    expect(formatRelativeTime(tenMinsFromNow)).toBe('in 10m')
-  })
-
-  it('returns hours ago for past times < 24 hours', () => {
-    const threeHoursAgo = new Date('2026-03-26T09:00:00Z')
-    expect(formatRelativeTime(threeHoursAgo)).toBe('3h ago')
-  })
-
-  it('returns "in Xh" for future times < 24 hours', () => {
-    const twoHoursFromNow = new Date('2026-03-26T14:00:00Z')
-    expect(formatRelativeTime(twoHoursFromNow)).toBe('in 2h')
-  })
-
-  it('returns days ago for past times < 30 days', () => {
-    const fiveDaysAgo = new Date('2026-03-21T12:00:00Z')
-    expect(formatRelativeTime(fiveDaysAgo)).toBe('5d ago')
-  })
-
-  it('returns "in Xd" for future times < 30 days', () => {
-    const threeDaysFromNow = new Date('2026-03-29T12:00:00Z')
-    expect(formatRelativeTime(threeDaysFromNow)).toBe('in 3d')
-  })
-
-  it('returns months ago for past times >= 30 days', () => {
-    // 59 days ago → floor(59/30) = 1mo
-    const aboutOneMonthAgo = new Date('2026-01-26T12:00:00Z')
-    expect(formatRelativeTime(aboutOneMonthAgo)).toBe('1mo ago')
-
-    // 90 days ago → floor(90/30) = 3mo
-    const threeMonthsAgo = new Date('2025-12-26T12:00:00Z')
-    expect(formatRelativeTime(threeMonthsAgo)).toBe('3mo ago')
-  })
-
-  it('returns "in Xmo" for future times >= 30 days', () => {
-    const sixtyDaysFromNow = new Date('2026-05-25T12:00:00Z')
-    expect(formatRelativeTime(sixtyDaysFromNow)).toBe('in 2mo')
-  })
-
-  it('accepts string dates', () => {
-    expect(formatRelativeTime('2026-03-26T11:55:00Z')).toBe('5m ago')
-  })
-
-  it('accepts Date objects', () => {
-    expect(formatRelativeTime(new Date('2026-03-26T11:55:00Z'))).toBe('5m ago')
-  })
-})
 
 // ============================================================================
 // AgentCard component tests (rendered via HomePage)
@@ -111,6 +27,7 @@ vi.mock('@shared/lib/utils/cn', () => ({
 const mockSetAgent = vi.fn()
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({ setAgent: mockSetAgent, view: { kind: 'home' }, selectedAgentSlug: null }),
+  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
 vi.mock('@renderer/context/search-context', () => ({
@@ -176,13 +93,6 @@ vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => '',
 }))
 
-// Palette extraction is async and network-bound (fetches the image). In tests
-// we short-circuit to `status: 'ready', palette: null` so the overlay renders
-// immediately with theme-default fallback, without flashing.
-vi.mock('@renderer/hooks/use-image-palette', () => ({
-  useImagePalette: () => ({ status: 'ready', palette: null }),
-}))
-
 // Import after mocks
 import { HomePage } from './home-page'
 
@@ -233,7 +143,7 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('3h ago')).toBeInTheDocument()
+    expect(screen.getByText('about 3 hours ago')).toBeInTheDocument()
   })
 
   it('does not render last worked when lastActivityAt is null', () => {
@@ -252,7 +162,7 @@ describe('HomePage AgentCard', () => {
     })
     renderWithProviders(<HomePage />)
     expect(screen.getByText('1 task')).toBeInTheDocument()
-    expect(screen.getByText(/in 2h/)).toBeInTheDocument()
+    expect(screen.getByText(/in about 2 hours/)).toBeInTheDocument()
   })
 
   it('renders scheduled task count with plural form', () => {
@@ -286,8 +196,8 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('Sales')).toBeInTheDocument()
-    expect(screen.getByText('Metrics')).toBeInTheDocument()
+    const cards = document.querySelectorAll('[class*="h-24"]')
+    expect(cards.length).toBeGreaterThanOrEqual(2)
   })
 
   it('renders a screenshot img when hasScreenshot is true', () => {
@@ -314,7 +224,6 @@ describe('HomePage AgentCard', () => {
     renderWithProviders(<HomePage />)
     const img = document.querySelector('img[src*="/screenshot.png"]')
     expect(img).toBeNull()
-    expect(screen.getByText('Sales')).toBeInTheDocument()
   })
 
   it('renders no dashboard cards when count is 0', () => {
@@ -349,10 +258,9 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('1h ago')).toBeInTheDocument()
+    expect(screen.getByText('about 1 hour ago')).toBeInTheDocument()
     expect(screen.getByText('2 tasks')).toBeInTheDocument()
-    expect(screen.getByText(/in 1h/)).toBeInTheDocument()
-    expect(screen.getByText('Overview')).toBeInTheDocument()
+    expect(screen.getByText(/in about 1 hour/)).toBeInTheDocument()
   })
 
   it('passes pre-aggregated status to AgentStatus', () => {

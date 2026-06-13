@@ -9,6 +9,7 @@ import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import {
   listNotifications,
+  countNotifications,
   getUnreadCount,
   markAsRead,
   markAllAsRead,
@@ -101,11 +102,16 @@ notificationsRouter.get('/stream', async (c) => {
 notificationsRouter.get('/', async (c) => {
   try {
     const limitParam = c.req.query('limit')
+    const offsetParam = c.req.query('offset')
     const limit = limitParam ? parseInt(limitParam, 10) : 50
+    const offset = offsetParam ? parseInt(offsetParam, 10) : 0
     const userId = getScopedUserId(c)
 
-    const notificationList = await listNotifications(limit, userId)
-    return c.json(notificationList)
+    const [items, total] = await Promise.all([
+      listNotifications(limit, userId, offset),
+      countNotifications(userId),
+    ])
+    return c.json({ items, total })
   } catch (error) {
     console.error('Failed to fetch notifications:', error)
     return c.json({ error: 'Failed to fetch notifications' }, 500)

@@ -28,13 +28,14 @@ import type { AgentMountWithHealth } from '@shared/lib/types/mount'
 
 interface HomeVolumesProps {
   agentSlug: string
+  className?: string
 }
 
-export function HomeVolumes({ agentSlug }: HomeVolumesProps) {
+export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
   const volumes = useVolumesManager(agentSlug)
 
   return (
-    <HomeCollapsible title="Volumes">
+    <HomeCollapsible title="Volumes" className={className}>
       {volumes.mounts.length > 0 ? (
         <div className="mt-2 divide-y divide-border/50">
           {volumes.mounts.map((mount) => (

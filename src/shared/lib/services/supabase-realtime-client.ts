@@ -12,6 +12,12 @@ import WebSocket from 'ws'
 import type { RealtimeConfig } from './webhook-events-client'
 
 type RealtimeCallback = (payload: unknown) => void
+type RealtimeRecord = {
+  member_id?: unknown
+  org_id?: unknown
+  composio_trigger_id?: unknown
+  status?: unknown
+}
 
 export class SupabaseRealtimeClient {
   private ws: WebSocket | null = null
@@ -74,6 +80,9 @@ export class SupabaseRealtimeClient {
         console.log('[SupabaseRealtime] Connected')
 
         // Join the realtime channel for webhook_events with RLS
+        console.log(
+          `[SupabaseRealtime] Joining channel realtime:public:webhook_events jwt=${describeRealtimeJwt(jwt)}`,
+        )
         this.sendMessage({
           topic: `realtime:public:webhook_events`,
           event: 'phx_join',
@@ -112,17 +121,22 @@ export class SupabaseRealtimeClient {
             topic?: string
             event?: string
             payload?: unknown
+            ref?: string
           }
 
           // Handle postgres_changes INSERT events
           if (msg.event === 'postgres_changes' && msg.payload) {
             const payload = msg.payload as { data?: { type?: string; record?: unknown } }
             if (payload.data?.type === 'INSERT' && payload.data.record) {
+              const record = payload.data.record as RealtimeRecord
+              console.log(
+                `[SupabaseRealtime] INSERT member=${stringValue(record.member_id)} org=${stringValue(record.org_id)} trigger=${stringValue(record.composio_trigger_id)} status=${stringValue(record.status)}`,
+              )
               this.onEvent?.(payload.data.record)
             }
           }
-        } catch {
-          // Ignore non-JSON messages
+        } catch (error) {
+          console.warn('[SupabaseRealtime] Failed to parse realtime message:', error)
         }
       }
 
@@ -207,6 +221,7 @@ export class SupabaseRealtimeClient {
   async updateToken(jwt: string): Promise<void> {
     if (!this.config) return
     this.config = { ...this.config, jwt }
+    console.log(`[SupabaseRealtime] Updating access_token jwt=${describeRealtimeJwt(jwt)}`)
 
     // Send access_token update if connected
     if (this.isConnected) {
@@ -218,4 +233,25 @@ export class SupabaseRealtimeClient {
       })
     }
   }
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' && value.length > 0 ? value : 'none'
+}
+
+function describeRealtimeJwt(jwt: string): string {
+  const segments = jwt.split('.')
+  if (segments.length !== 3) return 'opaque'
+  try {
+    const payload = JSON.parse(decodeBase64Url(segments[1])) as Record<string, unknown>
+    return `sub=${stringValue(payload.sub)} member=${stringValue(payload.member_id)} org=${stringValue(payload.org_id)} exp=${typeof payload.exp === 'number' ? payload.exp : 'none'}`
+  } catch {
+    return 'unparseable'
+  }
+}
+
+function decodeBase64Url(value: string): string {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4)
+  return Buffer.from(padded, 'base64').toString('utf8')
 }

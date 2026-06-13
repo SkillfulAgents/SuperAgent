@@ -9,6 +9,7 @@ const mockStop = vi.fn()
 const mockStopSync = vi.fn()
 const mockGetInfoFromRuntime = vi.fn()
 const mockGetStats = vi.fn()
+const mockIsHealthy = vi.fn()
 
 const mockClearRunnerAvailabilityCache = vi.fn()
 
@@ -21,6 +22,7 @@ vi.mock('./client-factory', () => ({
     stopSync: mockStopSync,
     getInfoFromRuntime: mockGetInfoFromRuntime,
     getStats: mockGetStats,
+    isHealthy: (...args: unknown[]) => mockIsHealthy(...args),
     fetch: vi.fn(),
     buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...args as [string, string]),
   }),
@@ -79,7 +81,8 @@ vi.mock('@shared/lib/db/schema', () => ({
   connectedAccounts: {
     id: 'id',
     toolkitSlug: 'toolkit_slug',
-    composioConnectionId: 'composio_connection_id',
+    providerConnectionId: 'provider_connection_id',
+    providerName: 'provider_name',
     status: 'status',
     displayName: 'display_name',
   },
@@ -120,6 +123,18 @@ vi.mock('@shared/lib/browser/chrome-profile', () => ({
 }))
 
 vi.mock('@shared/lib/services/agent-service', () => ({}))
+
+const mockStatfs = vi.fn()
+vi.mock('node:fs/promises', () => ({
+  statfs: (...args: unknown[]) => mockStatfs(...args),
+}))
+
+const mockCaptureMessage = vi.fn()
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: vi.fn(),
+  captureMessage: (...args: unknown[]) => mockCaptureMessage(...args),
+  addErrorBreadcrumb: vi.fn(),
+}))
 
 vi.mock('@shared/lib/composio/client', () => ({
   isPlatformComposioActive: () => false,
@@ -163,7 +178,8 @@ describe('containerManager.ensureRunning — env var construction', () => {
       toolkitSlug: string
       displayName: string
       status: string
-      composioConnectionId: string
+      providerConnectionId: string
+      providerName: string
     }>
   ) {
     // First db.select().from() call: connected accounts
@@ -202,10 +218,10 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
   it('CONNECTED_ACCOUNTS includes only active accounts, grouped by toolkitSlug', async () => {
     setupAccountMocks([
-      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', composioConnectionId: 'c1' },
-      { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'user2@gmail.com', status: 'active', composioConnectionId: 'c2' },
-      { id: 'acc-3', toolkitSlug: 'slack', displayName: 'My Slack', status: 'active', composioConnectionId: 'c3' },
-      { id: 'acc-4', toolkitSlug: 'github', displayName: 'My GH', status: 'expired', composioConnectionId: 'c4' },
+      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
+      { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'user2@gmail.com', status: 'active', providerConnectionId: 'c2', providerName: 'composio' },
+      { id: 'acc-3', toolkitSlug: 'slack', displayName: 'My Slack', status: 'active', providerConnectionId: 'c3', providerName: 'composio' },
+      { id: 'acc-4', toolkitSlug: 'github', displayName: 'My GH', status: 'expired', providerConnectionId: 'c4', providerName: 'composio' },
     ])
 
     await containerManager.ensureRunning('test-agent')
@@ -220,7 +236,7 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
   it('each account entry has { name, id } structure', async () => {
     setupAccountMocks([
-      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', composioConnectionId: 'c1' },
+      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
     ])
 
     await containerManager.ensureRunning('test-agent')
@@ -243,9 +259,9 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
   it('inactive accounts are excluded from metadata', async () => {
     setupAccountMocks([
-      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'active@gmail.com', status: 'active', composioConnectionId: 'c1' },
-      { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'inactive@gmail.com', status: 'inactive', composioConnectionId: 'c2' },
-      { id: 'acc-3', toolkitSlug: 'slack', displayName: 'expired-slack', status: 'expired', composioConnectionId: 'c3' },
+      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'active@gmail.com', status: 'active', providerConnectionId: 'c1', providerName: 'composio' },
+      { id: 'acc-2', toolkitSlug: 'gmail', displayName: 'inactive@gmail.com', status: 'inactive', providerConnectionId: 'c2', providerName: 'composio' },
+      { id: 'acc-3', toolkitSlug: 'slack', displayName: 'expired-slack', status: 'expired', providerConnectionId: 'c3', providerName: 'composio' },
     ])
 
     await containerManager.ensureRunning('test-agent')
@@ -265,6 +281,15 @@ describe('containerManager.ensureRunning — env var construction', () => {
 
     const startOpts = mockStart.mock.calls[0][0]
     expect(startOpts.envVars.TZ).toBe('America/New_York')
+  })
+
+  it('disables Claude Code attribution header injection for stable prompt caching', async () => {
+    setupAccountMocks([])
+
+    await containerManager.ensureRunning('test-agent')
+
+    const startOpts = mockStart.mock.calls[0][0]
+    expect(startOpts.envVars.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0')
   })
 })
 
@@ -429,6 +454,72 @@ describe('containerManager — status caching', () => {
 })
 
 // ============================================================================
+// ensureRunning — cached 'running' liveness TTL (ELECTRON-35 check-then-use)
+// ============================================================================
+
+describe('containerManager.ensureRunning — cached running liveness TTL', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    containerManager.removeClient('test-agent')
+
+    mockGetOrCreateProxyToken.mockResolvedValue('synth-token-123')
+    mockGetContainerHostUrl.mockReturnValue('192.168.1.100')
+    mockGetAppPort.mockReturnValue(3000)
+    mockGetMountsWithHealth.mockReturnValue([])
+    mockStart.mockResolvedValue(undefined)
+    mockGetInfoFromRuntime.mockResolvedValue({ status: 'running', port: 8080 })
+
+    // DB mocks so a (re)start can build env vars without throwing
+    mockDbInnerJoin.mockReturnValue({ where: mockDbWhere })
+    mockDbWhere.mockResolvedValue([])
+    mockMcpInnerJoin.mockReturnValue({ where: mockMcpWhere })
+    mockMcpWhere.mockResolvedValue([])
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('does not probe or restart when the cached running status is fresh', async () => {
+    containerManager.updateCachedStatus('test-agent', 'running', 4001)
+
+    await containerManager.ensureRunning('test-agent')
+
+    expect(mockIsHealthy).not.toHaveBeenCalled()
+    expect(mockStart).not.toHaveBeenCalled()
+  })
+
+  it('re-probes once the cached running status ages past the TTL and keeps it when healthy', async () => {
+    vi.useFakeTimers()
+    containerManager.updateCachedStatus('test-agent', 'running', 4001)
+    mockIsHealthy.mockResolvedValue(true)
+
+    // Age the cache past the 10s TTL
+    vi.advanceTimersByTime(11_000)
+
+    await containerManager.ensureRunning('test-agent')
+
+    expect(mockIsHealthy).toHaveBeenCalledWith(4001)
+    expect(mockStart).not.toHaveBeenCalled()
+    // Cache stays 'running'
+    expect(containerManager.getCachedInfo('test-agent')).toEqual({ status: 'running', port: 4001 })
+  })
+
+  it('restarts when the stale cached running status fails the liveness probe', async () => {
+    vi.useFakeTimers()
+    containerManager.updateCachedStatus('test-agent', 'running', 4001)
+    mockIsHealthy.mockResolvedValue(false)
+
+    vi.advanceTimersByTime(11_000)
+
+    await containerManager.ensureRunning('test-agent')
+
+    expect(mockIsHealthy).toHaveBeenCalledWith(4001)
+    expect(mockStart).toHaveBeenCalledOnce()
+  })
+})
+
+// ============================================================================
 // hasRunningAgents / getRunningAgentIds
 // ============================================================================
 
@@ -534,6 +625,8 @@ describe('containerManager.ensureImageReady — state machine', () => {
     vi.clearAllMocks()
     containerManager.clearClients()
     delete process.env.E2E_MOCK
+    // Default: plenty of disk space (100 GB)
+    mockStatfs.mockResolvedValue({ bavail: 100 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
   })
 
   afterEach(() => {
@@ -717,6 +810,86 @@ describe('containerManager.ensureImageReady — state machine', () => {
       .filter(([msg]: any) => msg.type === 'runtime_readiness_changed' && msg.readiness.status === 'PULLING_IMAGE')
 
     expect(pullEvents.length).toBeGreaterThan(0)
+  })
+
+  it('transitions to ERROR when disk space is insufficient', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    // 1 GB free (below 5 GB threshold)
+    mockStatfs.mockResolvedValue({ bavail: 1 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
+
+    await containerManager.ensureImageReady()
+
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('ERROR')
+    expect(readiness.message).toContain('Insufficient disk space')
+    expect(readiness.message).toContain('1.0 GB available')
+    // Should NOT have attempted to pull
+    expect(pullImage).not.toHaveBeenCalled()
+  })
+
+  it('sends info-level Sentry event when disk space is insufficient', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    mockStatfs.mockResolvedValue({ bavail: 2 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
+
+    await containerManager.ensureImageReady()
+
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'Insufficient disk space for image pull',
+      expect.objectContaining({
+        level: 'info',
+        tags: { component: 'runtime', operation: 'disk-space-check' },
+        extra: expect.objectContaining({ availableGB: 2, requiredGB: 5 }),
+      }),
+    )
+  })
+
+  it('proceeds with pull when disk space is sufficient', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage).mockResolvedValue(undefined)
+    // 20 GB free (above 5 GB threshold)
+    mockStatfs.mockResolvedValue({ bavail: 20 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
+
+    await containerManager.ensureImageReady()
+
+    expect(pullImage).toHaveBeenCalled()
+    expect(containerManager.getReadiness().status).toBe('READY')
+  })
+
+  it('proceeds with pull when statfs fails', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage).mockResolvedValue(undefined)
+    mockStatfs.mockRejectedValue(new Error('ENOSYS: function not implemented'))
+
+    await containerManager.ensureImageReady()
+
+    expect(pullImage).toHaveBeenCalled()
+    expect(containerManager.getReadiness().status).toBe('READY')
+  })
+
+  it('skips disk space check when image already exists', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(true)
+
+    await containerManager.ensureImageReady()
+
+    expect(mockStatfs).not.toHaveBeenCalled()
+    expect(containerManager.getReadiness().status).toBe('READY')
   })
 })
 
@@ -1035,6 +1208,34 @@ describe('containerManager.stopContainer force stop recovery', () => {
     expect(alertEvents).toHaveLength(0)
 
     // No cache clear
+    expect(mockClearRunnerAvailabilityCache).not.toHaveBeenCalled()
+  })
+
+  it('leaves container running and skips recovery when stop bails (stopped: false)', async () => {
+    // Auto-sleep path: stop+kill timed out and force-stop was disabled, so the
+    // container is still alive. We must NOT mark it stopped, broadcast a stop,
+    // or trigger VM-restart recovery — the next sweep retries.
+    containerManager.getClient('stuck-agent')
+    containerManager.getClient('other-agent')
+    containerManager.updateCachedStatus('stuck-agent', 'running', 4001)
+    containerManager.updateCachedStatus('other-agent', 'running', 4002)
+
+    mockStop.mockResolvedValue({ forceStopUsed: false, stopped: false })
+
+    await containerManager.stopContainer('stuck-agent', { escalateToForceStop: false })
+
+    // Still running — status untouched
+    expect(containerManager.getCachedInfo('stuck-agent')).toEqual({ status: 'running', port: 4001 })
+    expect(containerManager.getCachedInfo('other-agent')).toEqual({ status: 'running', port: 4002 })
+
+    // No stopped broadcast for the stuck agent, no system_alert, no recovery
+    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const stoppedEvents = broadcasts.filter(
+      ([msg]: any) => msg.type === 'agent_status_changed' && msg.status === 'stopped'
+    )
+    expect(stoppedEvents).toHaveLength(0)
+    expect(broadcasts.filter(([msg]: any) => msg.type === 'system_alert')).toHaveLength(0)
+    expect(messagePersister.markAllSessionsInactiveForAgent).not.toHaveBeenCalledWith('stuck-agent')
     expect(mockClearRunnerAvailabilityCache).not.toHaveBeenCalled()
   })
 

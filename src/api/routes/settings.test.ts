@@ -16,6 +16,10 @@ const mockGetEffectiveAgentLimits = vi.fn()
 const mockGetCustomEnvVars = vi.fn()
 const mockGetVoiceSettings = vi.fn()
 const mockGetBrowserbaseApiKeyStatus = vi.fn()
+const mockGetNangoApiKeyStatus = vi.fn()
+const mockGetAccountProviderUserId = vi.fn()
+const mockGetDefaultAccountProviderType = vi.fn()
+const mockGetNangoSecretKey = vi.fn()
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
@@ -29,6 +33,10 @@ vi.mock('@shared/lib/config/settings', () => ({
   getCustomEnvVars: (...args: unknown[]) => mockGetCustomEnvVars(...args),
   getVoiceSettings: (...args: unknown[]) => mockGetVoiceSettings(...args),
   getBrowserbaseApiKeyStatus: (...args: unknown[]) => mockGetBrowserbaseApiKeyStatus(...args),
+  getNangoApiKeyStatus: (...args: unknown[]) => mockGetNangoApiKeyStatus(...args),
+  getAccountProviderUserId: (...args: unknown[]) => mockGetAccountProviderUserId(...args),
+  getDefaultAccountProviderType: (...args: unknown[]) => mockGetDefaultAccountProviderType(...args),
+  getNangoSecretKey: (...args: unknown[]) => mockGetNangoSecretKey(...args),
 }))
 
 const mockHasRunningAgents = vi.fn()
@@ -103,6 +111,19 @@ vi.mock('@shared/lib/db/schema', () => ({
   scheduledTasks: {},
   notifications: {},
   connectedAccounts: {},
+  userSettings: {},
+  auditLog: {},
+  webhookTriggers: {},
+  chatIntegrations: {},
+  chatIntegrationSessions: {},
+  remoteMcpServers: {},
+  agentRemoteMcps: {},
+  mcpAuditLog: {},
+  mcpToolPolicies: {},
+  agentAcl: {},
+  messageAuthor: {},
+  xAgentPolicies: {},
+  apiScopePolicies: {},
 }))
 
 vi.mock('fs', () => ({
@@ -166,6 +187,10 @@ function setupDefaults() {
   mockGetComposioApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetBrowserbaseApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
   mockGetComposioUserId.mockReturnValue(undefined)
+  mockGetNangoApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
+  mockGetAccountProviderUserId.mockReturnValue(undefined)
+  mockGetDefaultAccountProviderType.mockReturnValue('composio')
+  mockGetNangoSecretKey.mockReturnValue(undefined)
   mockGetEffectiveModels.mockReturnValue({ summarizerModel: 'claude-3-haiku', agentModel: 'claude-sonnet-4-20250514', browserModel: 'claude-3-haiku' })
   mockGetEffectiveAgentLimits.mockReturnValue({ maxTurns: 100 })
   mockGetCustomEnvVars.mockReturnValue({ FOO: 'bar' })
@@ -579,6 +604,28 @@ describe('settings route', () => {
       const saved = mockUpdateSettings.mock.calls[0][0]
       // customEnvVars replaced, not merged
       expect(saved.customEnvVars).toEqual({ NEW_VAR: 'value' })
+    })
+
+    // SUP-210: reject customEnvVars that try to override reserved runtime vars.
+    it('rejects customEnvVars containing a reserved runtime key (400)', async () => {
+      const res = await putSettings({
+        customEnvVars: { PROXY_TOKEN: 'attacker', MY_OK: 'fine' },
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('PROXY_TOKEN')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('accepts customEnvVars with only non-reserved keys (200)', async () => {
+      const res = await putSettings({
+        customEnvVars: { MY_OK: 'fine', ANOTHER: 'x' },
+      })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.customEnvVars).toEqual({ MY_OK: 'fine', ANOTHER: 'x' })
     })
 
     it('merges auth settings with existing', async () => {

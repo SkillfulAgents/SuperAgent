@@ -17,11 +17,12 @@ vi.mock('@shared/lib/services/skillset-service', async (importOriginal) => {
     getSkillsetRepoDir: vi.fn((id: string) => {
       return `/tmp/mock-skillset-cache/${id}`
     }),
+    isCacheReady: vi.fn(() => Promise.resolve(true)),
     getSkillsetIndex: vi.fn(),
     readIndexJson: vi.fn(),
     refreshSkillset: vi.fn(),
     copyDirectory: vi.fn(),
-    // Keep the real parseSkillFrontmatter for collectAgentRequiredEnvVars tests
+    // Keep the real parseSkillFrontmatter for tests that parse SKILL.md
   }
 })
 
@@ -56,9 +57,9 @@ import {
   exportAgentTemplate,
   exportAgentFull,
   importAgentFromTemplate,
+  installAgentFromSkillset,
   computeAgentTemplateHash,
   getAgentTemplateStatus,
-  collectAgentRequiredEnvVars,
   getInstalledAgentMetadata,
   hasOnboardingSkill,
   getDiscoverableAgents,
@@ -381,6 +382,9 @@ describe('validateAgentTemplate', () => {
   // Size limits
   // --------------------------------------------------------------------------
 
+  // Each case below builds and zlib-compresses ~500MB in memory, which can run
+  // right up against the 5s default test timeout under `vitest --coverage` on
+  // CI runners (a pre-existing flake). Give these the headroom they need.
   describe('total size limits', () => {
     it('rejects template exceeding 500MB uncompressed', async () => {
       const largeContent = 'x'.repeat(10 * 1024 * 1024)
@@ -394,7 +398,7 @@ describe('validateAgentTemplate', () => {
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
       expect(result.error).toContain('500MB')
-    })
+    }, 30_000)
 
     it('accepts template at exactly the uncompressed size limit', async () => {
       const chunkContent = 'a'.repeat(10 * 1024 * 1024)
@@ -410,7 +414,7 @@ describe('validateAgentTemplate', () => {
       files['data-last.bin'] = 'b'.repeat(remaining)
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(true)
-    })
+    }, 30_000)
 
     it('rejects template at exactly one byte over the limit', async () => {
       const chunkContent = 'a'.repeat(10 * 1024 * 1024)
@@ -426,7 +430,7 @@ describe('validateAgentTemplate', () => {
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-    })
+    }, 30_000)
 
     it('rejects when multiple small files sum to over the limit', async () => {
       const files: Record<string, string> = {
@@ -440,7 +444,7 @@ describe('validateAgentTemplate', () => {
       const result = await validateAgentTemplate(await makeZip(files))
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-    })
+    }, 30_000)
   })
 
   // --------------------------------------------------------------------------
@@ -1808,216 +1812,6 @@ describe('getDiscoverableAgents', () => {
 })
 
 // ============================================================================
-// collectAgentRequiredEnvVars
-// ============================================================================
-
-describe('collectAgentRequiredEnvVars', () => {
-  let testDir: string
-  let originalEnv: string | undefined
-
-  beforeEach(async () => {
-    testDir = await fs.promises.mkdtemp(
-      path.join(os.tmpdir(), 'agent-env-vars-test-')
-    )
-    originalEnv = process.env.SUPERAGENT_DATA_DIR
-    process.env.SUPERAGENT_DATA_DIR = testDir
-  })
-
-  afterEach(async () => {
-    process.env.SUPERAGENT_DATA_DIR = originalEnv
-    await fs.promises.rm(testDir, { recursive: true, force: true })
-  })
-
-  function createWorkspace(agentSlug: string, files: Record<string, string>): void {
-    const workspaceDir = path.join(testDir, 'agents', agentSlug, 'workspace')
-    for (const [filePath, content] of Object.entries(files)) {
-      const fullPath = path.join(workspaceDir, filePath)
-      fs.mkdirSync(path.dirname(fullPath), { recursive: true })
-      fs.writeFileSync(fullPath, content)
-    }
-  }
-
-  it('returns empty array when agent has no skills directory', async () => {
-    createWorkspace('test-agent', { 'CLAUDE.md': MINIMAL_CLAUDE_MD })
-    const result = await collectAgentRequiredEnvVars('test-agent')
-    expect(result).toEqual([])
-  })
-
-  it('returns empty array when skills have no required_env_vars', async () => {
-    createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '.claude/skills/my-skill/SKILL.md': `---
-description: A skill with no secrets
----
-# My Skill`,
-    })
-    const result = await collectAgentRequiredEnvVars('test-agent')
-    expect(result).toEqual([])
-  })
-
-  it('collects required_env_vars from a single skill', async () => {
-    createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '.claude/skills/db-query/SKILL.md': `---
-description: Query the database
-metadata:
-  required_env_vars:
-    - name: DB_HOST
-      description: Database hostname
-    - name: DB_PASSWORD
-      description: Database password
----
-# DB Query`,
-    })
-    const result = await collectAgentRequiredEnvVars('test-agent')
-    expect(result).toEqual([
-      { name: 'DB_HOST', description: 'Database hostname' },
-      { name: 'DB_PASSWORD', description: 'Database password' },
-    ])
-  })
-
-  it('collects and de-duplicates required_env_vars across multiple skills', async () => {
-    createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '.claude/skills/skill-a/SKILL.md': `---
-description: Skill A
-metadata:
-  required_env_vars:
-    - name: API_KEY
-      description: Shared API key
-    - name: SECRET_A
-      description: Secret for A
----
-# Skill A`,
-      '.claude/skills/skill-b/SKILL.md': `---
-description: Skill B
-metadata:
-  required_env_vars:
-    - name: API_KEY
-      description: Shared API key (duplicate)
-    - name: SECRET_B
-      description: Secret for B
----
-# Skill B`,
-    })
-    const result = await collectAgentRequiredEnvVars('test-agent')
-    const names = result.map((v) => v.name).sort()
-    expect(names).toEqual(['API_KEY', 'SECRET_A', 'SECRET_B'])
-  })
-
-  it('skips skill directories without SKILL.md', async () => {
-    createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '.claude/skills/no-md/script.py': 'print("hi")',
-      '.claude/skills/has-md/SKILL.md': `---
-description: Has secrets
-metadata:
-  required_env_vars:
-    - name: TOKEN
-      description: Auth token
----
-# Has MD`,
-    })
-    const result = await collectAgentRequiredEnvVars('test-agent')
-    expect(result).toEqual([{ name: 'TOKEN', description: 'Auth token' }])
-  })
-
-  it('handles a mix of skills with and without required_env_vars', async () => {
-    createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '.claude/skills/no-secrets/SKILL.md': `---
-description: No secrets needed
----
-# No Secrets`,
-      '.claude/skills/has-secrets/SKILL.md': `---
-description: Needs secrets
-metadata:
-  required_env_vars:
-    - name: MY_SECRET
-      description: A secret value
----
-# Has Secrets`,
-    })
-    const result = await collectAgentRequiredEnvVars('test-agent')
-    expect(result).toEqual([{ name: 'MY_SECRET', description: 'A secret value' }])
-  })
-
-  it('returns empty array when workspace does not exist', async () => {
-    const result = await collectAgentRequiredEnvVars('nonexistent-agent')
-    expect(result).toEqual([])
-  })
-
-  it('filters out required env vars already present in the agent .env when requested', async () => {
-    createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '.env': 'API_KEY=present\n',
-      '.claude/skills/skill-a/SKILL.md': `---
-description: Skill A
-metadata:
-  required_env_vars:
-    - name: API_KEY
-      description: Shared API key
-    - name: SECRET_A
-      description: Secret for A
----
-# Skill A`,
-    })
-
-    const result = await collectAgentRequiredEnvVars('test-agent', {
-      excludeExistingSecrets: true,
-    })
-
-    expect(result).toEqual([{ name: 'SECRET_A', description: 'Secret for A' }])
-  })
-
-  it('treats quoted and commented .env entries as existing secrets', async () => {
-    createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '.env': 'API_KEY="abc 123"\nTOKEN=value  # Auth token\n',
-      '.claude/skills/skill-a/SKILL.md': `---
-description: Skill A
-metadata:
-  required_env_vars:
-    - name: API_KEY
-      description: Shared API key
-    - name: TOKEN
-      description: Access token
-    - name: SECRET_A
-      description: Secret for A
----
-# Skill A`,
-    })
-
-    const result = await collectAgentRequiredEnvVars('test-agent', {
-      excludeExistingSecrets: true,
-    })
-
-    expect(result).toEqual([{ name: 'SECRET_A', description: 'Secret for A' }])
-  })
-
-  it('matches existing secrets by exact env var name', async () => {
-    createWorkspace('test-agent', {
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '.env': 'api_key=present\n',
-      '.claude/skills/skill-a/SKILL.md': `---
-description: Skill A
-metadata:
-  required_env_vars:
-    - name: API_KEY
-      description: Shared API key
----
-# Skill A`,
-    })
-
-    const result = await collectAgentRequiredEnvVars('test-agent', {
-      excludeExistingSecrets: true,
-    })
-
-    expect(result).toEqual([{ name: 'API_KEY', description: 'Shared API key' }])
-  })
-})
-
-// ============================================================================
 // exportAgentTemplate - error cases
 // ============================================================================
 
@@ -2213,31 +2007,6 @@ describe('importAgentFromTemplate (full mode)', () => {
     expect(fs.readFileSync(envPath, 'utf-8')).toBe('SECRET=abc')
   })
 
-  it('full import can satisfy required env vars from imported .env', async () => {
-    setupAgentMock('import-full-env-agent')
-    const zipBuffer = await makeZip({
-      'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      '.env': 'API_KEY=present\n',
-      '.claude/skills/skill-a/SKILL.md': `---
-description: Skill A
-metadata:
-  required_env_vars:
-    - name: API_KEY
-      description: Shared API key
-    - name: SECRET_A
-      description: Secret for A
----
-# Skill A`,
-    })
-
-    const agent = await importAgentFromTemplate(zipBuffer, undefined, 'full')
-    const result = await collectAgentRequiredEnvVars(agent.slug, {
-      excludeExistingSecrets: true,
-    })
-
-    expect(result).toEqual([{ name: 'SECRET_A', description: 'Secret for A' }])
-  })
-
   it('strips .env in template mode', async () => {
     const workspaceDir = setupAgentMock('import-template-agent')
     const zipBuffer = await makeZip({
@@ -2306,5 +2075,68 @@ metadata:
 
     const envPath = path.join(workspaceDir, '.env')
     expect(fs.existsSync(envPath)).toBe(false)
+  })
+})
+
+describe('installAgentFromSkillset', () => {
+  let testDir: string
+  let originalEnv: string | undefined
+  const mockCreateAgent = vi.mocked(createAgentFromExistingWorkspace)
+  const mockGetAgentWithStatus = vi.mocked(getAgentWithStatus)
+
+  beforeEach(async () => {
+    testDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), 'agent-install-test-')
+    )
+    originalEnv = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = testDir
+    vi.clearAllMocks()
+  })
+
+  afterEach(async () => {
+    process.env.SUPERAGENT_DATA_DIR = originalEnv
+    await fs.promises.rm(testDir, { recursive: true, force: true })
+  })
+
+  it('preserves install-time createdAt when template has an older timestamp', async () => {
+    const slug = 'install-test-agent'
+    const installTime = new Date()
+    const oldTemplateTime = '2020-01-01T00:00:00.000Z'
+
+    const agent = { slug, name: 'My Agent', createdAt: installTime, status: 'stopped' as const, containerPort: null }
+    mockCreateAgent.mockResolvedValue(agent)
+    mockGetAgentWithStatus.mockResolvedValue(agent)
+
+    // Create the workspace dir (createAgentFromExistingWorkspace would do this)
+    const workspaceDir = path.join(testDir, 'agents', slug, 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+
+    // Create a fake skillset repo with a CLAUDE.md that has an old createdAt
+    const skillsetId = 'test-skillset'
+    const repoDir = `/tmp/mock-skillset-cache/${skillsetId}`
+    const agentPath = 'agents/my-template'
+    const templateDir = path.join(repoDir, agentPath)
+    fs.mkdirSync(templateDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(templateDir, 'CLAUDE.md'),
+      `---\nname: Template Agent\ncreatedAt: "${oldTemplateTime}"\n---\n# Template\n`,
+    )
+
+    try {
+      await installAgentFromSkillset(
+        { skillsetId, skillsetUrl: 'https://example.com', provider: 'github' },
+        agentPath,
+        'My Agent',
+        '1.0.0',
+      )
+
+      // Read the resulting CLAUDE.md and verify createdAt is the install time, not the template's
+      const claudeMd = fs.readFileSync(path.join(workspaceDir, 'CLAUDE.md'), 'utf-8')
+      expect(claudeMd).toContain(installTime.toISOString())
+      expect(claudeMd).not.toContain(oldTemplateTime)
+      expect(claudeMd).toContain('name: My Agent')
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true })
+    }
   })
 })

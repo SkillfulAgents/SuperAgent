@@ -48,7 +48,7 @@ function Harness({
 describe('ComposerOptionsPopover', () => {
   it('renders the combined "Model · Effort" label on the trigger', () => {
     render(<Harness initialModel="opus" initialEffort="high" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.7 · High')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · High')
   })
 
   it('falls back to Sonnet on the trigger when no model is set', () => {
@@ -62,12 +62,12 @@ describe('ComposerOptionsPopover', () => {
     // correct family — otherwise the user sees one model in the UI while the
     // pinned ID gets sent on the wire.
     render(<Harness initialModel="claude-opus-4-7" initialEffort="high" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.7 · High')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · High')
   })
 
   it('resolves a region-prefixed Bedrock pinned ID to the right family', () => {
     render(<Harness initialModel="us.anthropic.claude-opus-4-6-v1" initialEffort="high" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.7 · High')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · High')
   })
 
   it('opens the popover and shows both section headers and all model rows', async () => {
@@ -142,13 +142,13 @@ describe('ComposerOptionsPopover', () => {
     expect(screen.getByTestId('effort-option-max')).toBeInTheDocument()
   })
 
-  it('auto-resets effort to High when switching from Opus+xhigh to Sonnet', async () => {
+  it('auto-resets effort to Medium when switching from Opus+xhigh to Sonnet', async () => {
     const user = userEvent.setup()
     render(<Harness initialModel="opus" initialEffort="xhigh" />)
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.7 · Extra High')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · Extra High')
     await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('model-option-sonnet'))
-    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · High')
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · Medium')
   })
 
   it('hides the Models section when composerModels is empty', async () => {

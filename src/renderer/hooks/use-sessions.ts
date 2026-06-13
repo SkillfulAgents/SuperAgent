@@ -48,7 +48,9 @@ export function useCreateSession() {
         }),
       })
       if (!res.ok) throw new Error('Failed to create session')
-      return res.json() as Promise<ApiSession>
+      // initialMessageUuid is the server-assigned id of the initial message,
+      // used to materialize the optimistic pending copy by exact id match.
+      return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
     },
     onSuccess: (_, variables) => {
       track('session_created')

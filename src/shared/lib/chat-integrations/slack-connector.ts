@@ -10,7 +10,7 @@
 import { App as SlackApp } from '@slack/bolt'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -410,7 +410,7 @@ export class SlackConnector extends ChatClientConnector {
 
     const { channel, threadTs } = this.resolveChannel(chatId)
     const mrkdwn = markdownToSlackMrkdwn(message.text || '(empty message)')
-    const chunks = this.splitMessage(mrkdwn)
+    const chunks = splitChatMessage(mrkdwn, MAX_MESSAGE_LENGTH)
 
     let lastTs = ''
     for (const chunk of chunks) {
@@ -451,7 +451,7 @@ export class SlackConnector extends ChatClientConnector {
 
     const { channel, threadTs } = this.resolveChannel(chatId)
     const truncated = text.length > MAX_MESSAGE_LENGTH
-      ? text.slice(0, MAX_MESSAGE_LENGTH - 20) + '\n\n... (truncated)'
+      ? text.slice(0, MAX_MESSAGE_LENGTH - 60) + '\n\n... (full response will appear when done)'
       : text
     const displayText = markdownToSlackMrkdwn(truncated || ':hourglass_flowing_sand: Thinking...')
 
@@ -485,17 +485,25 @@ export class SlackConnector extends ChatClientConnector {
   async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void> {
     if (!this.app) return
 
-    const { channel } = this.resolveChannel(chatId)
-    const truncated = finalText.length > MAX_MESSAGE_LENGTH
-      ? finalText.slice(0, MAX_MESSAGE_LENGTH - 20) + '\n\n... (truncated)'
-      : finalText
+    const { channel, threadTs } = this.resolveChannel(chatId)
+    const mrkdwn = markdownToSlackMrkdwn(finalText || '(empty response)')
+    const chunks = splitChatMessage(mrkdwn, MAX_MESSAGE_LENGTH)
 
     try {
       await this.app.client.chat.update({
         channel,
         ts: messageId,
-        text: markdownToSlackMrkdwn(truncated || '(empty response)'),
+        text: chunks[0],
       })
+
+      for (let i = 1; i < chunks.length; i++) {
+        await this.app.client.chat.postMessage({
+          channel,
+          text: chunks[i],
+          mrkdwn: true,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
+        })
+      }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
       if (!errMsg.includes('no_change')) {
@@ -802,27 +810,4 @@ export class SlackConnector extends ChatClientConnector {
     }
   }
 
-  private splitMessage(text: string): string[] {
-    if (text.length <= MAX_MESSAGE_LENGTH) return [text]
-
-    const chunks: string[] = []
-    let remaining = text
-    while (remaining.length > 0) {
-      if (remaining.length <= MAX_MESSAGE_LENGTH) {
-        chunks.push(remaining)
-        break
-      }
-      // Try to split at paragraph boundary
-      let splitAt = remaining.lastIndexOf('\n\n', MAX_MESSAGE_LENGTH)
-      if (splitAt === -1 || splitAt < MAX_MESSAGE_LENGTH / 2) {
-        splitAt = remaining.lastIndexOf('\n', MAX_MESSAGE_LENGTH)
-      }
-      if (splitAt === -1 || splitAt < MAX_MESSAGE_LENGTH / 2) {
-        splitAt = MAX_MESSAGE_LENGTH
-      }
-      chunks.push(remaining.slice(0, splitAt))
-      remaining = remaining.slice(splitAt).trimStart()
-    }
-    return chunks
-  }
 }

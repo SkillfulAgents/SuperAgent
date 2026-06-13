@@ -34,6 +34,8 @@ import { validateCronExpression } from '@shared/lib/services/schedule-parser'
 import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
 import type { EffortLevel } from '@shared/lib/container/types'
 import { withRetry } from '@shared/lib/utils/retry'
+import { getCurrentUserId } from '@shared/lib/auth/config'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, EntityAgentRole } from '../middleware/auth'
 
 const scheduledTasksRouter = new Hono()
@@ -84,6 +86,8 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
       return c.json({ error: 'Scheduled task not found or already cancelled' }, 404)
     }
 
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'deleted' })
+
     return c.body(null, 204)
   } catch (error) {
     console.error('Failed to cancel scheduled task:', error)
@@ -103,6 +107,7 @@ scheduledTasksRouter.post('/:taskId/pause', TaskAgentRole('user'), async (c) => 
       return c.json({ error: 'Task is not pending' }, 400)
     }
     const updated = await getScheduledTask(task.id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'paused' })
     return c.json(updated)
   } catch (error) {
     console.error('Failed to pause scheduled task:', error)
@@ -122,6 +127,7 @@ scheduledTasksRouter.post('/:taskId/resume', TaskAgentRole('user'), async (c) =>
       return c.json({ error: 'Task is not paused' }, 400)
     }
     const updated = await getScheduledTask(task.id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'resumed' })
     return c.json(updated)
   } catch (error) {
     console.error('Failed to resume scheduled task:', error)
@@ -163,6 +169,7 @@ scheduledTasksRouter.patch('/:taskId/prompt', TaskAgentRole('user'), async (c) =
     }
 
     const refreshed = await getScheduledTask(task!.id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'prompt' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update scheduled task prompt:', error)
@@ -220,6 +227,7 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
     }
 
     const refreshed = await getScheduledTask(task!.id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update scheduled task runtime options:', error)
@@ -403,10 +411,11 @@ scheduledTasksRouter.patch('/:taskId/schedule', TaskAgentRole('user'), async (c)
 
     const updated = await updateScheduleExpression(task.id, body.scheduleExpression.trim())
     if (!updated) {
-      return c.json({ error: 'Task not found or not pending' }, 404)
+      return c.json({ error: 'Task not found or not editable' }, 404)
     }
 
     const refreshed = await getScheduledTask(task.id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'schedule' } })
     return c.json(refreshed)
   } catch (error) {
     console.error('Failed to update schedule:', error)

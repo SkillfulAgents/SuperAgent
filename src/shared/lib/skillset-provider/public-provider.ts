@@ -3,7 +3,9 @@ import fs from 'fs'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
 import { openZipFromBuffer, detectZipPrefix } from '@shared/lib/utils/zip'
 import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
-import { withRetry } from '@shared/lib/utils/retry'
+import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { withRetry, NonRetryableError } from '@shared/lib/utils/retry'
+import { atomicSwapCacheDir } from './atomic-cache-swap'
 import {
   BaseSkillsetProvider,
   type SkillsetPublishInput,
@@ -46,12 +48,13 @@ export class PublicSkillsetProvider extends BaseSkillsetProvider {
     const tmpDir = cacheDir + '.tmp-' + Date.now()
     try {
       await this.populateCache(tmpDir, ref)
-      await fs.promises.rm(cacheDir, { recursive: true, force: true })
-      await fs.promises.rename(tmpDir, cacheDir)
     } catch (err) {
       await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
       throw err
     }
+    // Swap atomically so a failed rename (Windows EPERM/EBUSY) can never leave
+    // the user with a destroyed cache instead of a working one.
+    await atomicSwapCacheDir(cacheDir, tmpDir)
   }
 
   override async publishUpdate(_input: SkillsetPublishInput): Promise<SkillsetPublishResult> {
@@ -95,18 +98,24 @@ async function downloadAndExtract(
       redirect: 'follow',
     })
     if (!response.ok) {
+      // 4xx from GitHub are deterministic — don't waste retry delays.
       if (response.status === 404) {
-        throw new Error(
+        throw new NonRetryableError(
           `Repository not found: ${originalUrl}\n` +
           'Make sure the repository exists and is public.',
         )
       }
       if (response.status === 403) {
-        throw new Error(
+        throw new NonRetryableError(
           'GitHub API rate limit exceeded. Please try again later.',
         )
       }
-      throw new Error(`Failed to download skillset: ${response.status} ${response.statusText}`)
+      if (response.status >= 500) {
+        throw new Error(`Failed to download skillset: ${response.status} ${response.statusText}`)
+      }
+      throw new NonRetryableError(
+        `Failed to download skillset: ${response.status} ${response.statusText}`,
+      )
     }
     return Buffer.from(await response.arrayBuffer())
   }, 3, 1000)
@@ -130,7 +139,7 @@ async function downloadAndExtract(
       if (entryName.startsWith('__MACOSX/')) continue
 
       const destPath = path.resolve(destDir, entryName)
-      if (!destPath.startsWith(path.resolve(destDir) + path.sep)) continue
+      if (!isPathWithinDir(destDir, destPath)) continue
 
       await ensureDirectory(path.dirname(destPath))
       const bytesWritten = await reader.extractEntry(

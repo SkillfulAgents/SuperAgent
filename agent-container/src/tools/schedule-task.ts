@@ -8,6 +8,7 @@
 
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
+import { inputManager } from '../input-manager'
 
 /**
  * Basic validation for cron expression (5-6 space-separated fields)
@@ -47,7 +48,7 @@ For recurring tasks, use cron syntax (5 fields: minute hour day-of-month month d
 The prompt you provide will be sent to the agent as a new conversation at the scheduled time.
 The task will be executed in a new session, and the agent will have full access to tools and capabilities.
 
-Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cron') will continue executing on schedule until cancelled.`,
+Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cron') will continue executing on schedule indefinitely until cancelled — there is no expiration or time limit.`,
   {
     scheduleType: z
       .enum(['at', 'cron'])
@@ -152,6 +153,167 @@ The task has been registered and will be executed according to the schedule. ${
           }`,
         },
       ],
+    }
+  }
+)
+
+export const listScheduledTasksTool = tool(
+  'list_scheduled_tasks',
+  `List the scheduled tasks for this agent that are still on the schedule (pending or paused).
+
+Returns each task's ID, name, schedule type ("at" for one-time, "cron" for recurring), schedule expression, next execution time, and prompt. Use the returned task ID with cancel_scheduled_task to remove a task.
+
+This only shows tasks that are still scheduled — it does not include tasks that have already executed, failed, or been cancelled.`,
+  {},
+  async () => {
+    console.log('[list_scheduled_tasks] Fetching scheduled tasks')
+
+    const toolUseId = inputManager.consumeCurrentToolUseId()
+    if (!toolUseId) {
+      return {
+        content: [{ type: 'text' as const, text: 'Unable to process request — no tool use ID available.' }],
+        isError: true,
+      }
+    }
+
+    try {
+      const result = await inputManager.createPendingWithType<string>(
+        toolUseId,
+        'list_scheduled_tasks',
+      )
+
+      return {
+        content: [{ type: 'text' as const, text: result }],
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        content: [{ type: 'text' as const, text: `Failed to list scheduled tasks: ${msg}` }],
+        isError: true,
+      }
+    }
+  }
+)
+
+export const cancelScheduledTaskTool = tool(
+  'cancel_scheduled_task',
+  `Cancel a scheduled task by ID. This removes the task from the schedule so it will no longer execute.
+
+Use list_scheduled_tasks first to find the task ID. Only pending or paused tasks can be cancelled — tasks that have already executed or been cancelled cannot.`,
+  {
+    task_id: z
+      .string()
+      .describe('The ID of the scheduled task to cancel (from list_scheduled_tasks)'),
+  },
+  async (args) => {
+    console.log(`[cancel_scheduled_task] Cancelling task ${args.task_id}`)
+
+    const toolUseId = inputManager.consumeCurrentToolUseId()
+    if (!toolUseId) {
+      return {
+        content: [{ type: 'text' as const, text: 'Unable to process request — no tool use ID available.' }],
+        isError: true,
+      }
+    }
+
+    try {
+      const result = await inputManager.createPendingWithType<string>(
+        toolUseId,
+        'cancel_scheduled_task',
+        { task_id: args.task_id },
+      )
+
+      return {
+        content: [{ type: 'text' as const, text: result }],
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        content: [{ type: 'text' as const, text: `Failed to cancel scheduled task: ${msg}` }],
+        isError: true,
+      }
+    }
+  }
+)
+
+export const pauseScheduledTaskTool = tool(
+  'pause_scheduled_task',
+  `Pause a recurring (cron) scheduled task by ID. A paused task stays on the schedule but does not execute until resumed with resume_scheduled_task.
+
+Use list_scheduled_tasks first to find the task ID. Only active recurring tasks can be paused — one-time ("at") tasks cannot.`,
+  {
+    task_id: z
+      .string()
+      .describe('The ID of the recurring scheduled task to pause (from list_scheduled_tasks)'),
+  },
+  async (args) => {
+    console.log(`[pause_scheduled_task] Pausing task ${args.task_id}`)
+
+    const toolUseId = inputManager.consumeCurrentToolUseId()
+    if (!toolUseId) {
+      return {
+        content: [{ type: 'text' as const, text: 'Unable to process request — no tool use ID available.' }],
+        isError: true,
+      }
+    }
+
+    try {
+      const result = await inputManager.createPendingWithType<string>(
+        toolUseId,
+        'pause_scheduled_task',
+        { task_id: args.task_id },
+      )
+
+      return {
+        content: [{ type: 'text' as const, text: result }],
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        content: [{ type: 'text' as const, text: `Failed to pause scheduled task: ${msg}` }],
+        isError: true,
+      }
+    }
+  }
+)
+
+export const resumeScheduledTaskTool = tool(
+  'resume_scheduled_task',
+  `Resume a paused recurring (cron) scheduled task by ID. The next execution time is recomputed from the cron expression, so any executions missed while paused are skipped.
+
+Use list_scheduled_tasks first to find the task ID. Only paused recurring tasks can be resumed.`,
+  {
+    task_id: z
+      .string()
+      .describe('The ID of the paused scheduled task to resume (from list_scheduled_tasks)'),
+  },
+  async (args) => {
+    console.log(`[resume_scheduled_task] Resuming task ${args.task_id}`)
+
+    const toolUseId = inputManager.consumeCurrentToolUseId()
+    if (!toolUseId) {
+      return {
+        content: [{ type: 'text' as const, text: 'Unable to process request — no tool use ID available.' }],
+        isError: true,
+      }
+    }
+
+    try {
+      const result = await inputManager.createPendingWithType<string>(
+        toolUseId,
+        'resume_scheduled_task',
+        { task_id: args.task_id },
+      )
+
+      return {
+        content: [{ type: 'text' as const, text: result }],
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        content: [{ type: 'text' as const, text: `Failed to resume scheduled task: ${msg}` }],
+        isError: true,
+      }
     }
   }
 )

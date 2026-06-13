@@ -8,6 +8,8 @@ interface SettingsPageContainerProps {
   className?: string
   /** Use a wider, less padded frame for content like tables. */
   fullScreen?: boolean
+  /** Drop the 720px cap and fill the full inset width (sub-views lay out their own width). */
+  fullWidth?: boolean
 }
 
 /**
@@ -15,12 +17,13 @@ interface SettingsPageContainerProps {
  * sibling pages). Centers content at 720px, adds vertical rhythm, and scrolls
  * independently of the app shell.
  */
-export function SettingsPageContainer({ children, className, fullScreen }: SettingsPageContainerProps) {
+export function SettingsPageContainer({ children, className, fullScreen, fullWidth }: SettingsPageContainerProps) {
   return (
     <div className="flex-1 overflow-auto">
       <div
         className={cn(
-          'mx-auto w-full max-w-[720px] px-6 pt-10 pb-6 space-y-10',
+          'mx-auto w-full px-6 pt-10 pb-6 space-y-10',
+          fullWidth ? 'max-w-none' : 'max-w-[720px]',
           fullScreen && 'max-w-5xl pt-4 space-y-6',
           className,
         )}

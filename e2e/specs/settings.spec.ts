@@ -64,7 +64,7 @@ test.describe('Settings Page', () => {
     await expect(page.locator('[data-testid="settings-nav-llm"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-runtime"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-browser"]')).toBeVisible()
-    await expect(page.locator('[data-testid="settings-nav-composio"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-nav-account-provider"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-voice"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-skillsets"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-admin"]')).toBeVisible()
@@ -80,7 +80,7 @@ test.describe('Settings Page', () => {
 
     // Click LLM tab
     await goToTab(page, 'llm')
-    await expect(page.locator('#llm-provider')).toBeVisible()
+    await expect(page.locator('[data-testid="llm-provider-card-anthropic"]')).toBeVisible()
 
     // Click Runtime tab
     await goToTab(page, 'runtime')
@@ -88,7 +88,7 @@ test.describe('Settings Page', () => {
 
     // Click Browser tab
     await goToTab(page, 'browser')
-    await expect(page.locator('#browser-model')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toBeVisible()
 
     // Click General tab
     await goToTab(page, 'general')
@@ -99,9 +99,10 @@ test.describe('Settings Page', () => {
     await openSettings(page)
     await goToTab(page, 'llm')
 
-    await expect(page.locator('#llm-provider')).toBeVisible()
-    await expect(page.locator('#agent-model')).toBeVisible()
-    await expect(page.locator('#summarizer-model')).toBeVisible()
+    // Provider radio cards replace the old <select>; the active provider's card
+    // expands inline to show its two model selectors (default + summarizer).
+    await expect(page.locator('[data-testid="llm-provider-card-anthropic"]')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toHaveCount(2)
   })
 
   test('Runtime tab shows container config fields', async ({ page }) => {
@@ -120,7 +121,7 @@ test.describe('Settings Page', () => {
     await openSettings(page)
     await goToTab(page, 'browser')
 
-    await expect(page.locator('#browser-model')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toBeVisible()
     await expect(page.locator('#max-browser-tabs')).toBeVisible()
     await expect(page.locator('#browser-host')).toBeVisible()
   })
@@ -282,10 +283,10 @@ test.describe('Settings persistence', () => {
 
   test('Composio tab: user ID save persists', async ({ page }) => {
     await openSettings(page)
-    await goToTab(page, 'composio')
+    await goToTab(page, 'account-provider')
 
     // Type a user ID
-    await page.locator('#composio-user-id').fill('test-user-123')
+    await page.locator('#provider-user-id').fill('test-user-123')
 
     // Save button should appear
     const saveBtn = page.getByRole('button', { name: 'Save User ID' })
@@ -301,7 +302,7 @@ test.describe('Settings persistence', () => {
     // Close, reopen, verify the badge is still there
     await closeSettings(page)
     await openSettings(page)
-    await goToTab(page, 'composio')
+    await goToTab(page, 'account-provider')
     await expect(page.getByText('Configured', { exact: true })).toBeVisible()
 
     // Clean up: remove user ID
@@ -329,16 +330,13 @@ test.describe('Custom environment variables', () => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // Handle the browser prompt() dialog
-    page.on('dialog', async (dialog) => {
-      expect(dialog.type()).toBe('prompt')
-      await dialog.accept('MY_TEST_VAR')
-    })
+    await page.getByRole('button', { name: 'Add Variable' }).click()
+    const dialog = page.getByRole('dialog').filter({ hasText: 'Add Custom Environment Variable' })
+    await expect(dialog).toBeVisible()
+    await dialog.getByLabel('Variable Name').fill('MY_TEST_VAR')
 
-    // Click Add Variable
-    const addBtn = page.getByRole('button', { name: 'Add Variable' })
     const savePromise = waitForSettingsSave(page)
-    await addBtn.click()
+    await dialog.getByRole('button', { name: 'Add Variable' }).click()
     await savePromise
 
     // The variable should appear in the list (key input is disabled, shows the name)
@@ -365,21 +363,23 @@ test.describe('Custom environment variables', () => {
     await openSettings(page)
     await goToTab(page, 'runtime')
 
-    // Add a variable first
-    page.on('dialog', async (dialog) => {
-      await dialog.accept('EDIT_TEST_VAR')
-    })
-    const addPromise = waitForSettingsSave(page)
     await page.getByRole('button', { name: 'Add Variable' }).click()
+    const dialog = page.getByRole('dialog').filter({ hasText: 'Add Custom Environment Variable' })
+    await expect(dialog).toBeVisible()
+    await dialog.getByLabel('Variable Name').fill('EDIT_TEST_VAR')
+
+    const addPromise = waitForSettingsSave(page)
+    await dialog.getByRole('button', { name: 'Add Variable' }).click()
     await addPromise
 
     // Find the value input (sibling of the key input)
     const row = page.locator('input[disabled][value="EDIT_TEST_VAR"]').locator('..')
     const valueInput = row.locator('input:not([disabled])').first()
 
-    // Type a value — wait for the onChange save before blurring to avoid race condition
-    const fillPromise = waitForSettingsSave(page)
+    // Persist on blur, matching the runtime tab behavior.
     await valueInput.fill('hello-world')
+    const fillPromise = waitForSettingsSave(page)
+    await valueInput.blur()
     await fillPromise
 
     // Close, reopen, verify value persisted

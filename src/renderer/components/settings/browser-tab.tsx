@@ -15,8 +15,9 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { apiFetch } from '@renderer/lib/api'
 import { Check, Loader2 } from 'lucide-react'
 import { RequestError } from '@renderer/components/messages/request-error'
-import type { HostBrowserProviderId, BrowserbaseStealthOs, LlmProviderId } from '@shared/lib/config/settings'
+import type { HostBrowserProviderId, BrowserbaseStealthOs } from '@shared/lib/config/settings'
 import { ChromeProfileSelect } from '@renderer/components/settings/chrome-profile-select'
+import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 
 // Value used for "Container (built-in)" — no host browser provider
 const CONTAINER_VALUE = '__container__'
@@ -45,27 +46,15 @@ export function BrowserTab() {
     <div className="space-y-6">
       {/* Browser Agent Model */}
       <div className="space-y-2">
-        <Label htmlFor="browser-model">Browser Agent Model</Label>
-        <Select
-          value={settings?.models?.browserModel ?? 'claude-sonnet-4-6'}
-          onValueChange={(value) => {
-            updateSettings.mutate({ models: { browserModel: value } })
-          }}
-          disabled={isLoading}
-        >
-          <SelectTrigger id="browser-model">
-            <SelectValue placeholder="Select a model" />
-          </SelectTrigger>
-          <SelectContent>
-            {(settings?.llmProviderStatus?.find(
-              p => p.id === ((settings?.llmProvider ?? 'anthropic') as LlmProviderId)
-            )?.availableModels ?? []).map((model) => (
-              <SelectItem key={model.value} value={model.value}>
-                {model.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <Label>Browser Agent Model</Label>
+        <div>
+          <SettingsModelSelect
+            model={settings?.models?.browserModel}
+            onModelChange={(value) => updateSettings.mutate({ models: { browserModel: value } })}
+            emit="family"
+            disabled={isLoading}
+          />
+        </div>
         <p className="text-xs text-muted-foreground">
           Model used for the web browser subagent
         </p>

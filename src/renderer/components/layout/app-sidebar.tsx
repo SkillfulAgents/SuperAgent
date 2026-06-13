@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, Loader2, SquareMousePointer, WifiOff, LogOut, User, Users, Compass } from 'lucide-react'
+import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
@@ -30,6 +30,13 @@ import {
   SidebarRail,
 } from '@renderer/components/ui/sidebar'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
+import {
+  OfflineSidebarBanner,
+  RuntimeUnavailableSidebarBanner,
+  RuntimeCheckingSidebarBanner,
+  RuntimePullingSidebarBanner,
+  SidebarBannerStack,
+} from '@renderer/components/runtime/runtime-status-banners'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
@@ -53,7 +60,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useUser } from '@renderer/context/user-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
-import { NotificationsPopoverContent } from '@renderer/components/notifications/notifications-popover'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import {
@@ -77,6 +83,7 @@ import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
+import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -215,6 +222,11 @@ function ChatIntegrationSubItem({
                       >
                         <span className="truncate text-xs">
                           {session.displayName || `Chat ${session.externalChatId.slice(-6)}`}
+                          {session.createdAt && (
+                            <span className="text-muted-foreground/50">
+                              {' — '}{formatSessionTimestamp(new Date(session.createdAt))}
+                            </span>
+                          )}
                         </span>
                         {isArchived && (
                           <span className="ml-auto text-2xs text-muted-foreground/50 shrink-0">archived</span>
@@ -662,28 +674,24 @@ if (__RENDER_TRACKING__) {
 function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const unreadCount = countData?.count ?? 0
-  const [open, setOpen] = useState(false)
+  const { view, setView } = useSelection()
+  const isActive = view.kind === 'notifications'
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <SidebarMenuButton data-testid="notifications-button">
-          <Bell className="h-4 w-4" />
-          <span>Notifications</span>
-          {unreadCount > 0 && (
-            <span className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500" aria-label={`${unreadCount} unread`} />
-          )}
-        </SidebarMenuButton>
-      </PopoverTrigger>
-      <PopoverContent
-        className="w-80 p-0"
-        align="start"
-        side="right"
-        sideOffset={8}
-      >
-        <NotificationsPopoverContent onNavigate={() => setOpen(false)} />
-      </PopoverContent>
-    </Popover>
+    <SidebarMenuButton
+      data-testid="notifications-button"
+      isActive={isActive}
+      onClick={() => setView({ kind: 'notifications' })}
+    >
+      <Bell className="h-4 w-4" />
+      <span>Notifications</span>
+      {unreadCount > 0 && (
+        <span
+          className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500"
+          aria-label={`${unreadCount} unread`}
+        />
+      )}
+    </SidebarMenuButton>
   )
 }
 
@@ -897,57 +905,27 @@ export function AppSidebar() {
             </div>
 
             {/* Status banners — render under the wordmark so they sit inside the
-                sidebar's content area rather than pushing the wordmark down. */}
-            {!isOnline && (
-              <div className="px-2 pb-2">
-                <Alert variant="destructive" className="py-2 [&>svg]:top-2.5">
-                  <WifiOff className="h-4 w-4" />
-                  <AlertDescription className="text-xs">
-                    No internet connection. Some features may be unavailable.
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {isRuntimeUnavailable && (
-              <div className="px-2 pb-2">
-                <Alert
-                  variant="destructive"
-                  className="py-2 [&>svg]:top-2.5 cursor-pointer hover:bg-destructive/20 transition-colors"
-                  onClick={() => openSettings('runtime')}
-                >
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertDescription className="text-xs">
-                    {readiness?.message || 'Container runtime not available.'}{' '}
-                    <span className="underline">Open settings</span>
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {isChecking && (
-              <div className="px-2 pb-2">
-                <Alert className="py-2 [&>svg]:top-2.5">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <AlertDescription className="text-xs">
-                    {readiness?.message || 'Starting runtime...'}
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {isPullingOrBuilding && (
-              <div className="px-2 pb-2">
-                <Alert className="py-2 [&>svg]:top-2.5">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <AlertDescription className="text-xs">
-                    {readiness?.message || 'Preparing agent image...'}
-                    {readiness?.pullProgress?.percent != null && (
-                      <span className="ml-1">({readiness.pullProgress.percent}%)</span>
-                    )}
-                  </AlertDescription>
-                </Alert>
-              </div>
+                sidebar's content area rather than pushing the wordmark down. The
+                SidebarBannerStack wrapper owns horizontal padding, inter-banner
+                gap, and trailing space; render it only when at least one banner
+                is visible to avoid a stray padded div. */}
+            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding) && (
+              <SidebarBannerStack>
+                {!isOnline && <OfflineSidebarBanner />}
+                {isRuntimeUnavailable && (
+                  <RuntimeUnavailableSidebarBanner
+                    message={readiness?.message}
+                    onOpenSettings={() => openSettings('runtime')}
+                  />
+                )}
+                {isChecking && <RuntimeCheckingSidebarBanner message={readiness?.message} />}
+                {isPullingOrBuilding && (
+                  <RuntimePullingSidebarBanner
+                    message={readiness?.message}
+                    percent={readiness?.pullProgress?.percent}
+                  />
+                )}
+              </SidebarBannerStack>
             )}
 
             <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />

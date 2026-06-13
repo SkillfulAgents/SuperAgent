@@ -151,6 +151,12 @@ export interface ApiMessage {
   sender?: ApiMessageSender
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
+  /**
+   * User message delivered mid-turn (queued/steering input). It does NOT end
+   * the turn it appears in — turn-boundary logic (elapsed times, running tool
+   * detection) must skip it.
+   */
+  queued?: boolean
 }
 
 /**
@@ -248,7 +254,6 @@ export interface ApiDiscoverableSkill {
   description: string
   version: string
   path: string
-  requiredEnvVars?: Array<{ name: string; description: string }>
 }
 
 /**
@@ -319,7 +324,7 @@ export interface ApiScheduledTask {
  */
 export interface ApiNotification {
   id: string
-  type: 'session_complete' | 'session_waiting' | 'session_scheduled'
+  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration'
   sessionId: string
   agentSlug: string
   title: string
@@ -347,7 +352,8 @@ export interface ApiProvider {
  */
 export interface ApiConnectedAccount {
   id: string
-  composioConnectionId: string
+  providerConnectionId: string
+  providerName: string
   toolkitSlug: string
   displayName: string
   status: 'active' | 'revoked' | 'expired'

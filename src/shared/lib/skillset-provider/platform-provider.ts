@@ -1,3 +1,9 @@
+import path from 'path'
+import fs from 'fs'
+import { Readable } from 'stream'
+import { pipeline } from 'stream/promises'
+import { execFileSync } from 'child_process'
+import * as tar from 'tar'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import type {
@@ -7,8 +13,11 @@ import type {
   SkillsetConfig,
   SkillsetProviderData,
 } from '@shared/lib/types/skillset'
+import { ensureDirectory } from '@shared/lib/utils/file-storage'
 import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
+import { withRetry, NonRetryableError } from '@shared/lib/utils/retry'
 import { captureException } from '@shared/lib/error-reporting'
+import { atomicSwapCacheDir } from './atomic-cache-swap'
 import {
   BaseSkillsetProvider,
   type SkillsetHostedUpdateInput,
@@ -25,11 +34,33 @@ type PlatformProviderData = {
   orgName?: string
 }
 
+// Probed once at module load — git availability doesn't change at runtime.
+let cachedGitAvailable: boolean | null = null
+
+function isGitAvailableSync(): boolean {
+  if (cachedGitAvailable !== null) return cachedGitAvailable
+  try {
+    execFileSync('git', ['--version'], { timeout: 2000, stdio: 'ignore' })
+    cachedGitAvailable = true
+  } catch {
+    cachedGitAvailable = false
+  }
+  return cachedGitAvailable
+}
+
+/** Test-only: override the cached git probe result. */
+export function setPlatformGitAvailabilityForTesting(value: boolean | null): void {
+  cachedGitAvailable = value
+}
+
 export class PlatformSkillsetProvider extends BaseSkillsetProvider {
   readonly id = 'platform'
   readonly name = 'Platform'
   readonly publishMode = 'hosted_submit' as const
   readonly supportsRemoteSync = true
+
+  // git when available (incremental pull); HTTPS archive otherwise.
+  override readonly usesGitCache: boolean = isGitAvailableSync()
 
   override normalizeProviderData(source?: { providerData?: SkillsetProviderData } | null): SkillsetProviderData | undefined {
     const providerData = source?.providerData
@@ -127,6 +158,116 @@ export class PlatformSkillsetProvider extends BaseSkillsetProvider {
     })
 
     return data.url
+  }
+
+  override async isCacheReady(cacheDir: string): Promise<boolean> {
+    try {
+      await fs.promises.access(path.join(cacheDir, '.skillset-cache-meta.json'))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  override async populateCache(cacheDir: string, ref: SkillsetProviderRef): Promise<void> {
+    const proxyBase = getPlatformProxyBaseUrl()
+    const token = getPlatformAccessToken()
+    if (!proxyBase || !token) {
+      throw new Error('Platform not connected. Please connect to platform first.')
+    }
+
+    const skillsetName = this.getSkillsetDisplayName({
+      skillsetId: ref.skillsetId,
+      skillsetName: ref.skillsetName,
+      providerData: ref.providerData,
+    })
+    if (!skillsetName) {
+      throw new Error('skillsetName is required for platform provider')
+    }
+
+    const archiveUrl = `${proxyBase}/v1/skills/archive?skillset=${encodeURIComponent(skillsetName)}`
+    const proxyOrigin = (() => {
+      try { return new URL(proxyBase).origin } catch { return undefined }
+    })()
+    validateSafeCloneUrl(archiveUrl, {
+      allowedHostPrefixes: proxyOrigin ? [proxyOrigin] : undefined,
+    })
+
+    const archiveBuffer = await withRetry(async () => {
+      const response = await fetch(archiveUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/gzip',
+        },
+        redirect: 'follow',
+      })
+      if (!response.ok) {
+        // 4xx are deterministic — don't burn 3s of retry waits on them.
+        if (response.status === 404) {
+          throw new NonRetryableError(`Platform skillset not found: ${skillsetName}`)
+        }
+        if (response.status === 401 || response.status === 403) {
+          throw new NonRetryableError(
+            `Not authorized to download platform skillset "${skillsetName}". ` +
+            'Reconnect to platform and try again.',
+          )
+        }
+        if (response.status >= 500) {
+          throw new Error(
+            `Platform server error while downloading "${skillsetName}" ` +
+            `(${response.status}). Please try again in a moment.`,
+          )
+        }
+        throw new NonRetryableError(
+          `Failed to download platform skillset: ${response.status} ${response.statusText}`,
+        )
+      }
+      return Buffer.from(await response.arrayBuffer())
+    }, 3, 1000)
+
+    await ensureDirectory(cacheDir)
+
+    // tar.x with strict + filter rejects entries containing `..` and absolute
+    // paths so an attacker-controlled archive can't escape cacheDir.
+    await pipeline(
+      Readable.from(archiveBuffer),
+      tar.x({
+        cwd: cacheDir,
+        strict: true,
+        filter: (entryPath) => {
+          if (!entryPath) return false
+          if (entryPath.includes('..')) return false
+          if (path.isAbsolute(entryPath)) return false
+          // Strip macOS resource-fork noise if it ever shows up upstream;
+          // matches the public-provider behavior for symmetry.
+          if (entryPath.startsWith('__MACOSX/')) return false
+          return true
+        },
+      }),
+    )
+
+    await fs.promises.writeFile(
+      path.join(cacheDir, '.skillset-cache-meta.json'),
+      JSON.stringify({
+        provider: 'platform',
+        cachedAt: new Date().toISOString(),
+        skillsetName,
+      }, null, 2),
+      'utf-8',
+    )
+  }
+
+  override async refreshCache(cacheDir: string, ref: SkillsetProviderRef): Promise<void> {
+    const tmpDir = cacheDir + '.tmp-' + Date.now()
+    try {
+      await this.populateCache(tmpDir, ref)
+    } catch (err) {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+      throw err
+    }
+    // Swap atomically so a failed rename (Windows EPERM/EBUSY) can never leave
+    // the user with a destroyed cache instead of a working one.
+    await atomicSwapCacheDir(cacheDir, tmpDir)
   }
 
   override async publishUpdate(input: SkillsetPublishInput): Promise<SkillsetPublishResult> {

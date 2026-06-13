@@ -45,3 +45,30 @@ export function releaseBrowserLock(sessionId: string): boolean {
   }
   return false;
 }
+
+/**
+ * Re-key the browser lock when a session adopts a new canonical id.
+ * A ClaudeCodeProcess's sessionId changes whenever its SDK query (re)starts
+ * (model/effort change, MCP approval restart) — without this, a lock acquired
+ * under the old id strands every subsequent browser call from the same session.
+ *
+ * Returns true if the lock was re-keyed, false if oldId didn't own it.
+ */
+export function renameBrowserSession(oldId: string, newId: string): boolean {
+  if (browserState.active && browserState.sessionId === oldId) {
+    browserState = { ...browserState, sessionId: newId };
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Force-assign browser ownership to a session, preserving the live browser
+ * connection. Used to recover a lock stranded under a session id that no
+ * longer corresponds to any active session.
+ */
+export function transferBrowserLock(sessionId: string): void {
+  if (browserState.active) {
+    browserState = { ...browserState, sessionId };
+  }
+}

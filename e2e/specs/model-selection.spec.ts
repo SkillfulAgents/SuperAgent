@@ -135,7 +135,7 @@ test.describe('Model selection', () => {
     expect(sendRecord.effort).toBe('low')
   })
 
-  test('switching from Opus+ExtraHigh to Sonnet auto-resets effort to High on the next send', async ({ page }, testInfo) => {
+  test('switching from Opus+ExtraHigh to Sonnet auto-resets effort to Medium on the next send', async ({ page }, testInfo) => {
     const tag = `${testInfo.workerIndex}-${Date.now()}`
     const initialMessage = `xhigh→sonnet auto-reset ${tag}`
 
@@ -149,12 +149,12 @@ test.describe('Model selection', () => {
     await page.locator('[data-testid="effort-option-xhigh"]').click()
 
     // Switch to Sonnet — popover's auto-reset effect should clamp effort back
-    // to High since Sonnet doesn't allow xhigh.
+    // to Medium (the default) since Sonnet doesn't allow xhigh.
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="model-option-sonnet"]').click()
 
-    // Trigger should now read "Sonnet · High" (effort was auto-reset).
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('High')
+    // Trigger should now read "Sonnet · Medium" (effort was auto-reset).
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Medium')
     await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Extra High')
 
     await page.locator('[data-testid="home-message-input"]').fill(initialMessage)
@@ -165,12 +165,12 @@ test.describe('Model selection', () => {
       (r) => r.type === 'createSession' && r.initialMessage === initialMessage
     )
     expect(record.model).toBe('sonnet')
-    expect(record.effort).toBe('high')
+    expect(record.effort).toBe('medium')
   })
 
   test('AgentHome trigger displays the family of the user pinned default model', async ({ page }, testInfo) => {
     // Regression: settings stores `agentModel` as a pinned ID
-    // ('claude-opus-4-7') while composer's `composerModels` are keyed by
+    // (e.g. 'claude-opus-4-8') while composer's `composerModels` are keyed by
     // family alias. When AgentHome falls back to settings (i.e. the agent
     // already has at least one session, so isFirstSession is false), the
     // popover trigger must still resolve to the right family — otherwise the
@@ -182,9 +182,11 @@ test.describe('Model selection', () => {
     // next visit — that's what triggers the settings-fallback codepath.
     await agentPage.createAgent(`First message ${tag}`)
 
-    // We're back on agent-home. With the default `agentModel:
-    // "claude-opus-4-7"` setting, the trigger must show Opus, not Sonnet.
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Opus 4.7')
+    // We're back on agent-home. With the default Opus `agentModel` setting,
+    // the trigger must show the Opus family, not Sonnet. Assert family-shape
+    // (not the exact version) so the test stays robust to future agentModel
+    // default bumps — same reasoning as the wire-model check below.
+    await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Opus')
     await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Sonnet')
 
     // Send a message without touching the popover — assert the wire model

@@ -89,6 +89,7 @@ type MockView =
   | { kind: 'dashboard'; slug: string }
   | { kind: 'apiLogs' }
   | { kind: 'connections' }
+  | { kind: 'notifications' }
 
 const mockSelectionContext = {
   selectedAgentSlug: null as string | null,
@@ -99,6 +100,7 @@ const mockSelectionContext = {
 }
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => mockSelectionContext,
+  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
 vi.mock('@renderer/context/search-context', () => ({
@@ -170,14 +172,6 @@ vi.mock('@renderer/components/dashboards/dashboard-context-menu', () => ({
 
 vi.mock('@renderer/components/settings/container-setup-dialog', () => ({
   ContainerSetupDialog: () => null,
-}))
-
-vi.mock('@renderer/components/notifications/notifications-popover', () => ({
-  NotificationsPopoverContent: ({ onNavigate }: { onNavigate: () => void }) => (
-    <button data-testid="popover-content" onClick={onNavigate}>
-      popover content
-    </button>
-  ),
 }))
 
 vi.mock('@renderer/components/ui/error-boundary', () => ({
@@ -446,16 +440,11 @@ describe('AppSidebar — notifications', () => {
     expect(button.querySelector('[aria-label="3 unread"]')).not.toBeNull()
   })
 
-  it('closes the popover when a notification is clicked (onNavigate wired)', async () => {
+  it('navigates to the notifications page when the button is clicked', async () => {
     const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
-    // Our Popover mock exposes the controlled open state on data-open and
-    // forwards onNavigate to onOpenChange(false). Click the popover content to
-    // simulate a notification click; the popover should flip to closed.
-    const popover = screen.getByTestId('popover')
-    expect(popover).toHaveAttribute('data-open', 'false')
-    await user.click(screen.getByTestId('popover-content'))
-    expect(popover).toHaveAttribute('data-open', 'false')
+    await user.click(screen.getByTestId('notifications-button'))
+    expect(mockSelectionContext.setView).toHaveBeenCalledWith({ kind: 'notifications' })
   })
 })
 

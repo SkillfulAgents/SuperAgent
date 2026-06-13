@@ -70,7 +70,10 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await agentPage.selectAgent(agentName)
 
     const main = appPage.getMainContent()
-    await expect(main.getByText('Triggers')).toBeVisible({ timeout: 5000 })
+    // Role-scoped: the section's empty state ("No triggers yet" / "Triggers
+    // fire your agent…") also contains the word "Triggers", and bare
+    // getByText trips strict mode while the task is still being created.
+    await expect(main.getByRole('button', { name: 'Triggers' })).toBeVisible({ timeout: 5000 })
     await expect(main.getByText('Daily Issue Summary')).toBeVisible({ timeout: 10000 })
   })
 })

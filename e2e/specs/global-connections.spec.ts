@@ -69,8 +69,8 @@ test.describe('Global Settings → Connections — Add MCP flow', () => {
     const newRow = page.getByText(mcpName, { exact: true }).first()
     await expect(newRow).toBeVisible({ timeout: 10000 })
 
-    // 6. The agents pill is rendered for the row and reads "0 agents" — the
-    //    server has the MCP but it's not mapped to anyone yet.
+    // 6. The row subtitle shows the agent-count snippet and reads "Not in use"
+    //    — the server has the MCP but it's not mapped to anyone yet.
     const allMcps = await (await request.get(`${API}/api/remote-mcps`)).json()
     const created = (allMcps.servers as Array<{ id: string; name: string; url: string }>).find(
       (m) => m.url === mockMcp.url,
@@ -78,9 +78,9 @@ test.describe('Global Settings → Connections — Add MCP flow', () => {
     expect(created, 'newly added MCP missing from /api/remote-mcps').toBeDefined()
     expect(created!.name).toBe(mcpName)
 
-    const agentsPill = page.locator(`[data-testid="connection-agents-pill-mcp-${created!.id}"]`)
-    await expect(agentsPill).toBeVisible()
-    await expect(agentsPill).toContainText('0 agents')
+    const agentCount = page.locator(`[data-testid="connection-agent-count-mcp-${created!.id}"]`)
+    await expect(agentCount).toBeVisible()
+    await expect(agentCount).toContainText('Not in use')
 
     // 7. Backend cross-check: the new /:id/agents endpoint returns an empty list.
     const agentsRes = await request.get(`${API}/api/remote-mcps/${created!.id}/agents`)

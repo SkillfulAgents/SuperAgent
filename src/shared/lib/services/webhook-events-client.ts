@@ -6,8 +6,9 @@
  */
 
 import { decodeOrgIdFromToken } from '@shared/lib/platform-attribution'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
+import { getSubscribedComposioTriggerIds } from '@shared/lib/services/webhook-trigger-service'
 
 // ============================================================================
 // Types
@@ -69,9 +70,14 @@ async function webhookEventsFetch<T>(
   return response.json()
 }
 
-/** Claim pending webhook events for `memberId` and get Realtime credentials. */
+// Always scope by local trigger_ids. Includes paused triggers (still subscribed
+// upstream) so paused-period events are claimed and acked/discarded rather than
+// piling up pending and firing a session on resume (SUP-225).
 export async function pollAndClaimEvents(memberId: string): Promise<PollResult> {
-  return webhookEventsFetch<PollResult>('/poll', memberId, { method: 'POST' })
+  return webhookEventsFetch<PollResult>('/poll', memberId, {
+    method: 'POST',
+    body: JSON.stringify({ trigger_ids: getSubscribedComposioTriggerIds() }),
+  })
 }
 
 /** Mark events consumed (must use the same memberId that claimed them). */

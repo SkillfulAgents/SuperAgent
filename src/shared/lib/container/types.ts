@@ -61,6 +61,13 @@ export interface CreateSessionOptions {
 export interface StartOptions {
   envVars?: Record<string, string>
   additionalVolumes?: string[] // Extra -v flag values for bind mounts
+  /**
+   * Called when a bind mount is dropped at run time because the container
+   * runtime can't access it (e.g. a cloud-synced folder the Lima VM helper is
+   * denied). Receives the host path so the caller can warn the user. The
+   * container is still started without that one mount.
+   */
+  onMountDropped?: (hostPath: string) => void
 }
 
 // Container resource usage stats
@@ -82,16 +89,47 @@ export interface HealthCheckResult {
 export interface StopOptions {
   stopTimeoutMs?: number
   killTimeoutMs?: number
+  /**
+   * Whether to escalate to a runtime-level force-stop (e.g. killing the entire
+   * Lima VM) when both `stop` and `kill` time out. Defaults to true.
+   *
+   * Force-stop kills the shared VM, taking down ALL running agents. That is an
+   * acceptable last resort for user-initiated stops (a debug escape hatch — if
+   * a container won't die, you want the bigger hammer) and for app shutdown.
+   * It is NOT acceptable for the background auto-sleep sweep: reclaiming one
+   * idle container should never nuke everyone's active work. Auto-sleep passes
+   * `false`, in which case a stuck container is left running and retried on the
+   * next cycle.
+   */
+  escalateToForceStop?: boolean
+}
+
+export interface StopResult {
+  /** True if we had to force-stop the runtime (e.g. kill the Lima VM). */
+  forceStopUsed: boolean
+  /**
+   * True if the container was actually stopped (gracefully, killed, or via
+   * force-stop). False only when stop+kill timed out and force-stop was
+   * disabled — the container is still running and should be retried.
+   */
+  stopped: boolean
 }
 
 export interface ContainerClient {
   // Lifecycle management
   start(options?: StartOptions): Promise<void>
-  stop(options?: StopOptions): Promise<{ forceStopUsed: boolean }>
+  stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
 
   // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)
   buildVolumeFlag(hostPath: string, containerPath: string): string
+
+  // Host-internal bridge IP that a host-side service must bind to so THIS runner's
+  // containers can reach it via host.docker.internal, or null when containers reach
+  // the host's loopback directly (e.g. Docker Desktop forwards loopback). Used to
+  // forward an unauthenticated host CDP port to the container without ever binding
+  // it on 0.0.0.0 (SUP-217).
+  getHostBridgeIp(): string | null
 
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead
@@ -105,8 +143,8 @@ export interface ContainerClient {
   fetch(path: string, init?: RequestInit): Promise<Response>
 
   // Health checks
-  waitForHealthy(timeoutMs?: number): Promise<boolean>
-  isHealthy(): Promise<boolean>
+  waitForHealthy(timeoutMs?: number, knownPort?: number): Promise<boolean>
+  isHealthy(knownPort?: number): Promise<boolean>
 
   // Resource stats (memory, CPU usage)
   getStats(): Promise<ContainerStats | null>
@@ -118,6 +156,9 @@ export interface ContainerClient {
 
   // Message operations
   sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void>
+  // Cancel a queued (not yet picked up) message by the uuid it was sent with.
+  // false = too late (already picked up) or session not live — never throws for that.
+  cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>
   getMessages(sessionId: string): Promise<any[]>
   interruptSession(sessionId: string): Promise<boolean>
 

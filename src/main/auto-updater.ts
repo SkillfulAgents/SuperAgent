@@ -3,7 +3,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
-import { captureException } from '@shared/lib/error-reporting'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 export interface UpdateStatus {
   state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
@@ -31,6 +31,14 @@ let runIsUserVisible = false
 const INITIAL_CHECK_DELAY_MS = 30_000
 const RECURRING_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
 
+// Hard ceiling on a single check. electron-updater can hang silently — no
+// 'error' event, no resolution — on flaky networks (e.g. a check fired right
+// after macOS wakes from sleep, before wifi reconnects). The 'checking-for-update'
+// event has already painted the UI to 'checking' (a disabled spinner) by then, so
+// without this backstop the button sticks there forever. 25s is well past a
+// healthy check (~1-3s) but short enough not to strand the user.
+const CHECK_TIMEOUT_MS = 25_000
+
 async function getAutoUpdater() {
   const mod = await import('electron-updater')
   return mod.autoUpdater ?? (mod as any).default?.autoUpdater
@@ -39,6 +47,27 @@ async function getAutoUpdater() {
 function semverGt(a: string, b: string): boolean {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   return require('semver').gt(a, b)
+}
+
+/**
+ * True for the benign "channel file (latest-mac.yml) is missing" failure.
+ *
+ * This happens when the newest release on the feed has no mac artifacts yet —
+ * e.g. a stable user with allowPrereleaseUpdates picks the newest rc whose
+ * release published before its mac assets (latest-mac.yml) finished uploading,
+ * or a stable release seen mid-publish. electron-updater surfaces it as
+ * ERR_UPDATER_CHANNEL_FILE_NOT_FOUND / an HTTP 404 on latest-mac.yml. There's
+ * nothing the user can do and it self-heals once the assets land, so we treat
+ * it as "no update available" rather than reporting it to Sentry.
+ */
+function isChannelFileNotFoundError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const code = (err as { code?: unknown }).code
+  if (code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') return true
+  const statusCode = (err as { statusCode?: unknown }).statusCode
+  if (statusCode === 404) return true
+  const message = err instanceof Error ? err.message : String(err)
+  return /Cannot find .*latest-mac\.yml.*404/.test(message)
 }
 
 function sendStatusToRenderer() {
@@ -50,6 +79,25 @@ function sendStatusToRenderer() {
 function setStatus(status: UpdateStatus) {
   currentStatus = status
   sendStatusToRenderer()
+}
+
+// Shown on a manual check when the channel file is missing (latest-mac.yml 404).
+// A user who actively asked deserves an honest "couldn't verify, retry" rather
+// than a false "you're up to date" — there may be a newer release mid-publish.
+const CHANNEL_FILE_PENDING_MESSAGE =
+  'Could not check for updates right now — the latest release may still be publishing. Please try again shortly.'
+
+/**
+ * Apply the benign channel-file-404 status. A silent background check stays
+ * quiet at 'not-available'; a user-initiated check gets the honest, non-Sentry
+ * "try again shortly" message instead of a misleading "no update available".
+ */
+function setChannelFilePendingStatus() {
+  if (runIsUserVisible) {
+    setStatus({ state: 'error', error: CHANNEL_FILE_PENDING_MESSAGE })
+  } else {
+    setStatus({ state: 'not-available' })
+  }
 }
 
 /**
@@ -65,9 +113,33 @@ async function runUpdateCheck({ silent }: { silent: boolean }): Promise<void> {
   }
   runIsUserVisible = !silent
   runningCheck = (async () => {
+    let watchdog: NodeJS.Timeout | undefined
     try {
-      await runUpdateCheckBody()
+      // runUpdateCheckBody handles its own errors internally, so the only thing
+      // that rejects the race is the watchdog — i.e. a genuine hang where the
+      // updater never fired a terminal event. Reset the stuck 'checking' UI then.
+      await Promise.race([
+        runUpdateCheckBody(),
+        new Promise<never>((_, reject) => {
+          watchdog = setTimeout(
+            () => reject(new Error('Timed out checking for updates')),
+            CHECK_TIMEOUT_MS,
+          )
+        }),
+      ])
+    } catch (err) {
+      // Only clobber if we're still stuck on 'checking'; if the body already
+      // landed a terminal state the race resolved and we never get here.
+      if (currentStatus.state === 'checking') {
+        if (runIsUserVisible) {
+          const message = err instanceof Error ? err.message : String(err)
+          setStatus({ state: 'error', error: message })
+        } else {
+          setStatus({ state: 'idle' })
+        }
+      }
     } finally {
+      if (watchdog) clearTimeout(watchdog)
       runningCheck = null
     }
   })()
@@ -156,6 +228,19 @@ async function runUpdateCheckBody() {
       setStatus({ state: 'not-available' })
     }
   } catch (err) {
+    // A missing channel file (latest-mac.yml 404) is benign and self-healing —
+    // never report it to Sentry. Silent checks stay quiet; a manual check gets a
+    // soft "try again shortly" message rather than a misleading "up to date".
+    if (isChannelFileNotFoundError(err)) {
+      addErrorBreadcrumb({
+        category: 'auto-updater',
+        message: 'Update channel file not yet available (latest-mac.yml 404)',
+        level: 'info',
+        data: { currentVersion: app.getVersion(), operation: 'check' },
+      })
+      setChannelFilePendingStatus()
+      return
+    }
     captureException(err, {
       tags: { component: 'auto-updater', operation: 'check' },
       extra: { currentVersion: app.getVersion(), userVisible: runIsUserVisible },
@@ -163,6 +248,11 @@ async function runUpdateCheckBody() {
     if (runIsUserVisible) {
       const message = err instanceof Error ? err.message : String(err)
       setStatus({ state: 'error', error: message })
+    } else if (currentStatus.state === 'checking') {
+      // Silent check failed — clear the spinner the 'checking-for-update' event
+      // painted, without surfacing an error the user never asked for. Back to
+      // 'idle' ("could not verify"), not 'not-available' (a false "up to date").
+      setStatus({ state: 'idle' })
     }
   }
 }
@@ -289,6 +379,19 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
 
     autoUpdater.on('error', (err: Error) => {
       if (suppressErrors) return
+      // checkForUpdates both emits 'error' AND rejects, so a channel-file 404 is
+      // seen here too — treat it as benign (no Sentry), mirroring the catch in
+      // runUpdateCheckBody: quiet for silent checks, soft retry for manual ones.
+      if (isChannelFileNotFoundError(err)) {
+        addErrorBreadcrumb({
+          category: 'auto-updater',
+          message: 'Update channel file not yet available (latest-mac.yml 404)',
+          level: 'info',
+          data: { currentVersion: app.getVersion(), operation: 'runtime' },
+        })
+        setChannelFilePendingStatus()
+        return
+      }
       const isTransientNetworkError = /net::ERR_(NETWORK_CHANGED|INTERNET_DISCONNECTED|NAME_NOT_RESOLVED|CONNECTION_TIMED_OUT|CONNECTION_REFUSED|CONNECTION_RESET)\b/.test(err.message)
       if (!isTransientNetworkError) {
         captureException(err, {
@@ -301,9 +404,14 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
           level: 'warning',
         })
       }
-      // Errors during a purely silent background check should not flip the UI
-      // to error state — the user never asked for the check.
-      if (runningCheck && !runIsUserVisible) return
+      // Errors during a purely silent background check should not flip the UI to
+      // an alarming error state — the user never asked for the check. But the
+      // 'checking-for-update' event already painted 'checking', so we still have
+      // to clear that spinner or the button sticks on it (see runUpdateCheckBody).
+      if (runningCheck && !runIsUserVisible) {
+        if (currentStatus.state === 'checking') setStatus({ state: 'idle' })
+        return
+      }
       setStatus({ state: 'error', error: err.message })
     })
 

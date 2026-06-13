@@ -27,6 +27,10 @@ vi.mock('@renderer/components/messages/pending-request-renderer', () => ({
     <div key={d.key} data-testid={`pending-${d.kind}`} data-key={d.key} />
   ),
 }))
+// TrayManager pulls in the sidebar/browser world; the composer-swap logic doesn't need it.
+vi.mock('@renderer/components/tray/tray-manager', () => ({
+  TrayManager: () => null,
+}))
 
 // usePendingRequests is the lever this test pulls.
 const mockPendingResult = {
@@ -37,19 +41,21 @@ vi.mock('@renderer/components/messages/use-pending-requests', () => ({
   usePendingRequests: () => mockPendingResult,
 }))
 
-// useMessageStream — only `isActive` is read by SessionChatColumn.
+// useMessageStream — SessionChatColumn reads `isActive` and `browserActive`.
 vi.mock('@renderer/hooks/use-message-stream', () => ({
-  useMessageStream: () => ({ isActive: false }),
+  useMessageStream: () => ({ isActive: false, browserActive: false }),
 }))
 
 const baseProps = {
   sessionId: 's-1',
   agentSlug: 'agent-1',
-  pendingUserMessage: null,
+  pendingUserMessages: [],
   isViewOnly: false,
   contextPercent: null,
   onPendingMessageAppeared: () => {},
   onMessageSent: () => {},
+  onMessageUuidAssigned: () => {},
+  onMessageFailed: () => {},
 }
 
 const noop = () => {}

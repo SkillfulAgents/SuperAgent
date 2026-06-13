@@ -91,7 +91,7 @@ describe('useMessageStream', () => {
     expect(result.current.isActive).toBe(false)
     expect(result.current.isStreaming).toBe(false)
     expect(result.current.streamingMessage).toBeNull()
-    expect(result.current.streamingToolUse).toBeNull()
+    expect(result.current.streamingToolUses).toEqual([])
     expect(result.current.error).toBeNull()
     expect(result.current.pendingSecretRequests).toEqual([])
   })
@@ -371,11 +371,11 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(result.current.streamingToolUse).toEqual({
+    expect(result.current.streamingToolUses).toEqual([{
       id: 'tc-1',
       name: 'Bash',
       partialInput: '',
-    })
+    }])
 
     act(() => {
       MockEventSource.instances[0].simulateMessage({
@@ -386,7 +386,7 @@ describe('useMessageStream', () => {
       })
     })
 
-    expect(result.current.streamingToolUse?.partialInput).toBe('{"command": "ls"}')
+    expect(result.current.streamingToolUses[0]?.partialInput).toBe('{"command": "ls"}')
   })
 
   it('handles compact_start and compact_complete events', async () => {
@@ -507,6 +507,10 @@ describe('useMessageStream', () => {
       streamingMessage: '',
       streamingToolUse: null,
       progressSummary: null,
+      subagentType: null,
+      description: null,
+      usage: null,
+      lastToolName: null,
     })
 
     act(() => {
@@ -763,6 +767,102 @@ describe('useMessageStream', () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
   })
 
+  // The session_idle SSE can arrive before the final assistant line is durably
+  // readable in the JSONL transcript, so the handler's immediate invalidate may
+  // refetch stale data. A bounded reconcile loop refetches a few more times until
+  // the persisted tail matches the streamed text, so finalization (the "Worked
+  // for Xs" line) doesn't wait for the slow safety-net poll.
+  const countMessageInvalidations = (spy: ReturnType<typeof vi.spyOn>): number =>
+    spy.mock.calls.filter((call: unknown[]) => {
+      const key = (call[0] as { queryKey?: unknown[] } | undefined)?.queryKey
+      return Array.isArray(key) && key[0] === 'messages' && key[1] === 'session-1'
+    }).length
+
+  it('reconciles messages after session_idle when the transcript lags, then stops', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'Final answer' })
+      })
+
+      // Persisted transcript does NOT yet contain the final assistant line.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], [
+        { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+      ])
+
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
+      // Immediate invalidate from the handler.
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // First backoff tick: still no match → an extra refetch fires.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBeGreaterThan(1)
+
+      // Drain well past the reconcile window — it must self-terminate (bounded:
+      // 1 immediate + at most 3 reconcile attempts).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBeLessThanOrEqual(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not reconcile after session_idle when the persisted message already matches', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'Final answer' })
+      })
+
+      // Transcript already has the final assistant line (no write/read race).
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], [
+        { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+        { id: 'a1', type: 'assistant', content: { text: 'Final answer' }, toolCalls: [], createdAt: '2026-01-01T00:00:01Z' },
+      ])
+
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
+
+      // Only the handler's immediate invalidate — the reconcile sees a match and bails.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('invalidates messages and sessions queries on session_error', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
@@ -983,15 +1083,16 @@ describe('useMessageStream', () => {
     })
 
     act(() => {
-      MockEventSource.instances[0].simulateMessage({ type: 'tool_use_ready' })
+      MockEventSource.instances[0].simulateMessage({ type: 'tool_use_ready', toolId: 'tc-1' })
     })
 
-    // Tool use should still be visible
-    expect(result.current.streamingToolUse).toEqual({
+    // Tool use should still be visible, now marked as ready
+    expect(result.current.streamingToolUses).toEqual([{
       id: 'tc-1',
       name: 'Bash',
       partialInput: '{"cmd":"ls"}',
-    })
+      ready: true,
+    }])
     expect(result.current.isStreaming).toBe(true)
   })
 
@@ -1395,10 +1496,10 @@ describe('useMessageStream', () => {
 
     // streamingMessage preserved so MessageList can deduplicate
     expect(result.current.streamingMessage).toBe('Preserved text')
-    expect(result.current.streamingToolUse).toBeNull()
+    expect(result.current.streamingToolUses).toEqual([])
   })
 
-  it('stream_start invalidates messages when previous streamingToolUse exists', async () => {
+  it('stream_start invalidates messages when previous streamingToolUses exist', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
     const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
@@ -1418,7 +1519,7 @@ describe('useMessageStream', () => {
         partialInput: '',
       })
     })
-    expect(result.current.streamingToolUse).not.toBeNull()
+    expect(result.current.streamingToolUses.length).toBeGreaterThan(0)
     spy.mockClear()
 
     act(() => {
@@ -1427,7 +1528,7 @@ describe('useMessageStream', () => {
 
     // Should invalidate messages to fetch persisted tool call before clearing streaming state
     expect(spy).toHaveBeenCalledWith({ queryKey: ['messages', 'session-1'] })
-    expect(result.current.streamingToolUse).toBeNull()
+    expect(result.current.streamingToolUses).toEqual([])
   })
 
   it('ping does not change state when server agrees session is active', async () => {
@@ -1895,5 +1996,711 @@ describe('useMessageStream', () => {
       expect(result.current.pendingScriptRunRequests[0].toolUseId).toBe('tool-prompt')
       expect(result.current.autoApprovedScriptRunIds.has('tool-prompt')).toBe(false)
     })
+  })
+
+  // ---- Peer user messages (shared sessions / message queueing) ----
+
+  describe('peer user messages', () => {
+    async function setupHook(sessionId: string) {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+      const { result } = renderHook(
+        () => mod.useMessageStream(sessionId, 'agent-1'),
+        { wrapper }
+      )
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+      return { mod, result, es }
+    }
+
+    it('appends peer messages with uuid, sender, and queued flag', async () => {
+      const { result, es } = await setupHook('peer-s1')
+
+      act(() => {
+        es.simulateMessage({
+          type: 'user_message',
+          uuid: 'peer-uuid-1',
+          content: 'Hello from Alice',
+          sender: { id: 'u2', name: 'Alice' },
+          queued: true,
+        })
+      })
+
+      expect(result.current.peerUserMessages).toEqual([
+        { uuid: 'peer-uuid-1', content: 'Hello from Alice', sender: { id: 'u2', name: 'Alice' }, queued: true, receivedAt: expect.any(Number) },
+      ])
+    })
+
+    it('accumulates multiple peer messages and dedupes by uuid', async () => {
+      const { result, es } = await setupHook('peer-s2')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+        es.simulateMessage({ type: 'user_message', uuid: 'p2', content: 'second', sender: { id: 'u2' }, queued: true })
+        // Duplicate broadcast of p1 (e.g. SSE redelivery) must not double up
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+      })
+
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p1', 'p2'])
+    })
+
+    it('ignores user_message events without a uuid', async () => {
+      const { result, es } = await setupHook('peer-s3')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', content: 'legacy broadcast', sender: { id: 'u2' } })
+      })
+
+      expect(result.current.peerUserMessages).toEqual([])
+    })
+
+    it('clears the typing indicator when the peer message arrives', async () => {
+      const { result, es } = await setupHook('peer-s4')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Alice' } })
+      })
+      expect(result.current.typingUser).toEqual({ id: 'u2', name: 'Alice' })
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'done typing', sender: { id: 'u2', name: 'Alice' } })
+      })
+      expect(result.current.typingUser).toBeNull()
+    })
+
+    it('preserves peer messages across unrelated stream events', async () => {
+      const { result, es } = await setupHook('peer-s5')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'sticky', sender: { id: 'u2' }, queued: true })
+        es.simulateMessage({ type: 'stream_start' })
+        es.simulateMessage({ type: 'stream_delta', text: 'agent output' })
+        es.simulateMessage({ type: 'session_active' })
+      })
+
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p1'])
+    })
+
+    it('removePeerUserMessage removes only the matching entry', async () => {
+      const { mod, result, es } = await setupHook('peer-s6')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+        es.simulateMessage({ type: 'user_message', uuid: 'p2', content: 'second', sender: { id: 'u2' } })
+      })
+
+      act(() => {
+        mod.removePeerUserMessage('peer-s6', 'p1')
+      })
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p2'])
+
+      // Removing an unknown uuid is a no-op
+      act(() => {
+        mod.removePeerUserMessage('peer-s6', 'does-not-exist')
+      })
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p2'])
+    })
+
+    it('clearPeerUserMessages drops all entries', async () => {
+      const { mod, result, es } = await setupHook('peer-s7')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+        es.simulateMessage({ type: 'user_message', uuid: 'p2', content: 'second', sender: { id: 'u2' }, queued: true })
+      })
+
+      act(() => {
+        mod.clearPeerUserMessages('peer-s7')
+      })
+      expect(result.current.peerUserMessages).toEqual([])
+    })
+  })
+
+  // ---- Parallel tool call streaming ----
+
+  describe('parallel tool calls', () => {
+    it('supports multiple concurrent streaming tool uses', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper: createWrapper() }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Start tool A
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-A',
+          toolName: 'Bash',
+          partialInput: '',
+        })
+      })
+
+      // Start tool B while tool A is still streaming
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-B',
+          toolName: 'Read',
+          partialInput: '',
+        })
+      })
+
+      // Both tools should be in streamingToolUses
+      expect(result.current.streamingToolUses).toHaveLength(2)
+      expect(result.current.streamingToolUses[0]).toEqual({
+        id: 'tc-A',
+        name: 'Bash',
+        partialInput: '',
+      })
+      expect(result.current.streamingToolUses[1]).toEqual({
+        id: 'tc-B',
+        name: 'Read',
+        partialInput: '',
+      })
+    })
+
+    it('stream_delta preserves existing streamingToolUses', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper: createWrapper() }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Start a tool
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-1',
+          toolName: 'Bash',
+          partialInput: '{"cmd":"ls"}',
+        })
+      })
+      expect(result.current.streamingToolUses).toHaveLength(1)
+
+      // Receive a stream_delta (text) — should NOT clear streamingToolUses
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'stream_delta',
+          text: 'Some text',
+        })
+      })
+
+      expect(result.current.streamingToolUses).toHaveLength(1)
+      expect(result.current.streamingToolUses[0].id).toBe('tc-1')
+      expect(result.current.streamingMessage).toBe('Some text')
+    })
+
+    it('tool_use_ready marks a specific tool as ready by toolId', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper: createWrapper() }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Start two tools
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-A',
+          toolName: 'Bash',
+          partialInput: '{"cmd":"ls"}',
+        })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-B',
+          toolName: 'Read',
+          partialInput: '{"file":"x.ts"}',
+        })
+      })
+
+      // Mark only tool A as ready
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_ready',
+          toolId: 'tc-A',
+        })
+      })
+
+      expect(result.current.streamingToolUses).toHaveLength(2)
+      expect(result.current.streamingToolUses[0]).toEqual({
+        id: 'tc-A',
+        name: 'Bash',
+        partialInput: '{"cmd":"ls"}',
+        ready: true,
+      })
+      // Tool B should NOT be marked as ready
+      expect(result.current.streamingToolUses[1]).toEqual({
+        id: 'tc-B',
+        name: 'Read',
+        partialInput: '{"file":"x.ts"}',
+      })
+    })
+
+    it('tool_use_ready with unknown toolId is a no-op', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper: createWrapper() }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Start one tool
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-1',
+          toolName: 'Bash',
+          partialInput: '',
+        })
+      })
+
+      const toolUsesBefore = result.current.streamingToolUses
+
+      // Send tool_use_ready for a non-existent tool
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_ready',
+          toolId: 'tc-nonexistent',
+        })
+      })
+
+      // State should be unchanged — the existing tool should not be modified
+      expect(result.current.streamingToolUses).toHaveLength(1)
+      expect(result.current.streamingToolUses[0].ready).toBeUndefined()
+    })
+
+    it('tool_use_streaming upserts by toolId instead of replacing', async () => {
+      const { useMessageStream } = await getHookModule()
+      const { result } = renderHook(
+        () => useMessageStream('session-1', 'agent-1'),
+        { wrapper: createWrapper() }
+      )
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      // Start two tools
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-A',
+          toolName: 'Bash',
+          partialInput: '',
+        })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_start',
+          toolId: 'tc-B',
+          toolName: 'Read',
+          partialInput: '',
+        })
+      })
+
+      // Update tool A via tool_use_streaming
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({
+          type: 'tool_use_streaming',
+          toolId: 'tc-A',
+          toolName: 'Bash',
+          partialInput: '{"command": "ls -la"}',
+        })
+      })
+
+      // Both tools should still be present; tool A updated, tool B unchanged
+      expect(result.current.streamingToolUses).toHaveLength(2)
+      expect(result.current.streamingToolUses[0]).toEqual({
+        id: 'tc-A',
+        name: 'Bash',
+        partialInput: '{"command": "ls -la"}',
+      })
+      expect(result.current.streamingToolUses[1]).toEqual({
+        id: 'tc-B',
+        name: 'Read',
+        partialInput: '',
+      })
+    })
+  })
+
+  // ---- Subagent resultText ----
+
+  it('subagent_completed with resultText stores it in the SubagentInfo entry', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    // Start a subagent
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_start',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+      })
+    })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_delta',
+        parentToolId: 'pt-1',
+        text: 'Working on it...',
+      })
+    })
+
+    // Complete with resultText
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_completed',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+        resultText: 'Task completed successfully. All files updated.',
+      })
+    })
+
+    expect(result.current.completedSubagents?.has('pt-1')).toBe(true)
+    const sub = result.current.activeSubagents.find(s => s.parentToolId === 'pt-1')
+    expect(sub).toBeDefined()
+    expect(sub?.resultText).toBe('Task completed successfully. All files updated.')
+    // Streaming message should still be preserved
+    expect(sub?.streamingMessage).toBe('Working on it...')
+  })
+
+  it('subagent_completed without resultText stores null for resultText', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_stream_start',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+      })
+    })
+
+    // Complete without resultText
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'subagent_completed',
+        parentToolId: 'pt-1',
+        agentId: 'sub-1',
+      })
+    })
+
+    const sub = result.current.activeSubagents.find(s => s.parentToolId === 'pt-1')
+    expect(sub?.resultText).toBeNull()
+  })
+
+  // ============================================================================
+  // Background Bash task events
+  // ============================================================================
+
+  it('tracks background tasks from SSE events', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([])
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-1',
+        startedAt: 1000,
+      })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-1', startedAt: 1000 }])
+
+    // Add second task
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-2',
+        startedAt: 2000,
+      })
+    })
+
+    expect(result.current.backgroundTasks).toHaveLength(2)
+
+    // Complete first task
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_completed',
+        taskId: 'bg-1',
+      })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-2', startedAt: 2000 }])
+  })
+
+  it('restores background tasks from connected event', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        backgroundTasks: [{ taskId: 'bg-restore', startedAt: 500 }],
+      })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-restore', startedAt: 500 }])
+  })
+
+  it('clears background tasks on session_idle', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-1',
+        startedAt: 1000,
+      })
+    })
+
+    expect(result.current.backgroundTasks).toHaveLength(1)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([])
+  })
+
+  it('preserves background tasks across session_active', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'background_task_started',
+        taskId: 'bg-1',
+        startedAt: 1000,
+      })
+    })
+
+    expect(result.current.backgroundTasks).toHaveLength(1)
+
+    // New turn starts — background tasks should be preserved
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([{ taskId: 'bg-1', startedAt: 1000 }])
+  })
+
+  it('sets isWaitingBackground on session_waiting_background event', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(false)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'session_waiting_background',
+        backgroundTaskCount: 1,
+      })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(true)
+    expect(result.current.isActive).toBe(true)
+  })
+
+  it('clears isWaitingBackground when the last background task completes', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-1', startedAt: 1000 })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_waiting_background', backgroundTaskCount: 1 })
+    })
+    expect(result.current.isWaitingBackground).toBe(true)
+
+    // Last task completes — flag must clear even without a follow-up session_idle.
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_completed', taskId: 'bg-1' })
+    })
+
+    expect(result.current.backgroundTasks).toEqual([])
+    expect(result.current.isWaitingBackground).toBe(false)
+  })
+
+  it('keeps isWaitingBackground while other background tasks remain', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-1', startedAt: 1000 })
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_started', taskId: 'bg-2', startedAt: 1100 })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_waiting_background', backgroundTaskCount: 2 })
+    })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'background_task_completed', taskId: 'bg-1' })
+    })
+
+    // One task still running → still waiting.
+    expect(result.current.backgroundTasks).toHaveLength(1)
+    expect(result.current.isWaitingBackground).toBe(true)
+  })
+
+  it('clears isWaitingBackground on session_active', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_waiting_background' })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_active' })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(false)
+  })
+
+  it('clears isWaitingBackground on stream_start (new turn)', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'session_waiting_background' })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(true)
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(false)
+  })
+
+  it('restores isWaitingBackground from connected event with backgroundTasks', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'connected',
+        isActive: true,
+        backgroundTasks: [{ taskId: 'bg-1', startedAt: 500 }],
+      })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(true)
+  })
+
+  it('does not set isWaitingBackground from connected event without backgroundTasks', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper: createWrapper() }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+
+    expect(result.current.isWaitingBackground).toBe(false)
   })
 })

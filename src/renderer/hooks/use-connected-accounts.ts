@@ -2,11 +2,12 @@ import { apiFetch } from '@renderer/lib/api'
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import type { Provider } from '@shared/lib/composio/providers'
+import type { Provider } from '@shared/lib/account-providers/service-catalog'
 
 export interface ConnectedAccount {
   id: string
-  composioConnectionId: string
+  providerConnectionId: string
+  providerName: string
   toolkitSlug: string
   displayName: string
   status: 'active' | 'revoked' | 'expired'
@@ -80,6 +81,7 @@ export function useInitiateConnection() {
   const { track } = useAnalyticsTracking()
 
   return useMutation<InitiateConnectionResponse, Error, { providerSlug: string; electron?: boolean; location?: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ providerSlug, electron }) => {
       const res = await apiFetch('/api/connected-accounts/initiate', {
         method: 'POST',
@@ -88,7 +90,7 @@ export function useInitiateConnection() {
       })
 
       if (!res.ok) {
-        const error = await res.json()
+        const error = await res.json().catch(() => ({}))
         throw new Error(error.error || 'Failed to initiate connection')
       }
 
@@ -107,13 +109,14 @@ export function useDeleteConnectedAccount() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (accountId) => {
       const res = await apiFetch(`/api/connected-accounts/${accountId}`, {
         method: 'DELETE',
       })
 
       if (!res.ok) {
-        const error = await res.json()
+        const error = await res.json().catch(() => ({}))
         throw new Error(error.error || 'Failed to delete account')
       }
     },
@@ -133,6 +136,7 @@ export function useRenameConnectedAccount() {
   const queryClient = useQueryClient()
 
   return useMutation<ConnectedAccount, Error, { accountId: string; displayName: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ accountId, displayName }) => {
       const res = await apiFetch(`/api/connected-accounts/${accountId}`, {
         method: 'PATCH',
@@ -141,7 +145,7 @@ export function useRenameConnectedAccount() {
       })
 
       if (!res.ok) {
-        const error = await res.json()
+        const error = await res.json().catch(() => ({}))
         throw new Error(error.error || 'Failed to rename account')
       }
 
@@ -162,6 +166,7 @@ export function useAssignAccountsToAgent() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, { agentSlug: string; accountIds: string[] }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, accountIds }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts`, {
         method: 'POST',
@@ -190,6 +195,7 @@ export function useRemoveAgentConnectedAccount() {
   const queryClient = useQueryClient()
 
   return useMutation<void, Error, { agentSlug: string; accountId: string }>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, accountId }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts/${accountId}`, {
         method: 'DELETE',
