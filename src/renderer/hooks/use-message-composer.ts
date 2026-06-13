@@ -116,10 +116,12 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    // Stop voice recording first — use returned text since React state won't update synchronously
+    // Stop voice recording first and await the final text: stopRecording flushes
+    // buffered audio and waits for the server's trailing transcripts, so a quick
+    // speak-then-Enter doesn't submit before the dictated words are in.
     let voiceText: string | undefined
     if (voiceInput.isRecording || voiceInput.isConnecting) {
-      voiceText = voiceInput.stopRecording()
+      voiceText = await voiceInput.stopRecording()
     }
 
     const effectiveMessage = voiceText ?? message
