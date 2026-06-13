@@ -16,6 +16,7 @@ import { deliverSessionRenderer } from './deliver-session'
 import { requestFileRenderer } from './request-file'
 import { requestRemoteMcpRenderer } from './request-remote-mcp'
 import { requestScriptRunRenderer } from './request-script-run'
+import { requestBrowserInputRenderer } from './request-browser-input'
 import { taskRenderer } from './task'
 import {
   browserOpenRenderer,
@@ -99,6 +100,7 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__user-input__request_file': requestFileRenderer,
   'mcp__user-input__request_remote_mcp': requestRemoteMcpRenderer,
   'mcp__user-input__request_script_run': requestScriptRunRenderer,
+  'mcp__user-input__request_browser_input': requestBrowserInputRenderer,
 
   // MCP tools - browser
   'mcp__browser__browser_open': browserOpenRenderer,

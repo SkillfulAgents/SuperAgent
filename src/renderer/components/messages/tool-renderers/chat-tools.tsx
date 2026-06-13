@@ -13,10 +13,10 @@ function ResultBlock({ result, isError }: { result?: string | null; isError?: bo
   if (!result) return null
   return (
     <pre
-      className={`whitespace-pre-wrap rounded p-2 text-xs ${
+      className={`whitespace-pre-wrap bg-background rounded p-2 text-xs ${
         isError
-          ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200'
-          : 'bg-muted text-foreground/90'
+          ? 'text-red-800 dark:text-red-200'
+          : 'text-foreground/90'
       }`}
     >
       {result}
@@ -38,7 +38,7 @@ function ProviderBadge({ provider }: { provider?: string }) {
 function ListChatProvidersExpandedView({ result, isError }: ToolRendererProps) {
   return (
     <div className="space-y-2">
-      <p className="text-sm text-muted-foreground">Querying available chat providers.</p>
+      <p className="text-xs text-muted-foreground">Querying available chat providers.</p>
       <ResultBlock result={result} isError={isError} />
     </div>
   )
@@ -56,7 +56,7 @@ export const listChatProvidersRenderer: ToolRenderer = {
 function ListChatIntegrationsExpandedView({ result, isError }: ToolRendererProps) {
   return (
     <div className="space-y-2">
-      <p className="text-sm text-muted-foreground">Listing configured chat integrations.</p>
+      <p className="text-xs text-muted-foreground">Listing configured chat integrations.</p>
       <ResultBlock result={result} isError={isError} />
     </div>
   )
@@ -75,7 +75,7 @@ function AddChatIntegrationExpandedView({ input, result, isError }: ToolRenderer
   const { provider, name } = input as AddChatIntegrationInput
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex items-center gap-2 text-xs">
         <ProviderBadge provider={provider} />
         {name && <span className="font-medium">{name}</span>}
       </div>
@@ -98,13 +98,13 @@ function SendChatMessageExpandedView({ input, result, isError }: ToolRendererPro
   return (
     <div className="space-y-2">
       {chat_id && (
-        <div className="text-sm">
+        <div className="text-xs">
           <span className="text-muted-foreground">To:</span>{' '}
-          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{chat_id}</code>
+          <code className="rounded bg-background px-1.5 py-0.5 text-xs">{chat_id}</code>
         </div>
       )}
       {message && (
-        <div className="rounded border-2 border-dashed border-muted bg-muted/20 p-3 text-sm whitespace-pre-wrap">
+        <div className="rounded border border-dashed border-border bg-background p-3 text-xs whitespace-pre-wrap">
           {message}
         </div>
       )}
