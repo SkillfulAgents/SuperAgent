@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
+import { getConnectionsHeaderAddButton } from '../helpers/connections'
 
 const API = 'http://localhost:3000'
 
@@ -27,7 +28,7 @@ test.describe('Connections Page — Policy Modal After OAuth', () => {
     await page.locator('[data-testid="settings-nav-connections"]').click()
 
     // 2. Open the "Add New Connection" directory dialog (APIs tab is default)
-    const addButton = page.locator('[data-testid="connections-add-button"]')
+    const addButton = getConnectionsHeaderAddButton(page)
     await expect(addButton).toBeVisible()
     await addButton.click()
 
@@ -76,10 +77,11 @@ test.describe('Connections Page — Policy Modal After OAuth', () => {
 
     // Navigate to the agent's connections page
     await page.locator('[data-testid="home-connections-open-page"]').click()
-    await expect(page.locator('[data-testid="connections-add-button"]')).toBeVisible()
+    const addButton = getConnectionsHeaderAddButton(page)
+    await expect(addButton).toBeVisible()
 
     // Open the "Add New Connection" dialog
-    await page.locator('[data-testid="connections-add-button"]').click()
+    await addButton.click()
     const dialog = page.getByRole('dialog', { name: 'Add New Connection' })
     await expect(dialog).toBeVisible()
 

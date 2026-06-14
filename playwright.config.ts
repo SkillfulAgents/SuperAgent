@@ -3,6 +3,19 @@ import path from 'path'
 
 // Use a separate data directory for E2E tests to avoid polluting production data
 const e2eDataDir = path.join(__dirname, '.e2e-data')
+const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
+  ? Number(process.env.PLAYWRIGHT_WORKERS)
+  : undefined
+const webTestIgnore = [
+  '**/auth/**',
+  '**/getting-started-wizard.spec.ts',
+  '**/settings.spec.ts',
+  '**/policy-settings.spec.ts',
+]
+
+if (process.env.E2E_SKIP_BROWSER_STREAM === 'true') {
+  webTestIgnore.push('**/browser-stream.spec.ts')
+}
 
 // Resolve Playwright's bundled Chromium path for the browser streaming E2E test.
 // This allows the mock container to launch a real headless browser without requiring
@@ -39,7 +52,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 2 : 2,
+  workers: configuredWorkers && Number.isFinite(configuredWorkers) ? configuredWorkers : (process.env.CI ? 4 : 2),
   reporter: process.env.CI ? [['list']] : [['html', { open: 'never' }], ['list']],
 
   use: {
@@ -71,12 +84,7 @@ export default defineConfig({
     },
     {
       name: 'web-chromium',
-      testIgnore: [
-        '**/auth/**',
-        '**/getting-started-wizard.spec.ts',
-        '**/settings.spec.ts',
-        '**/policy-settings.spec.ts',
-      ],
+      testIgnore: webTestIgnore,
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['global-state'],
     },

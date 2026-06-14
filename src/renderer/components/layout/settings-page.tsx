@@ -61,7 +61,7 @@ export function PageTitle({ title, back, actions }: PageTitleProps) {
       )}
       <div className="flex items-end justify-between gap-4">
         <h2 className="text-xl font-medium">{title}</h2>
-        {actions && <div className="shrink-0">{actions}</div>}
+        {actions && <div className="shrink-0" data-testid="page-title-actions">{actions}</div>}
       </div>
     </div>
   )

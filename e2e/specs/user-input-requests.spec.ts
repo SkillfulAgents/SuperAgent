@@ -1,26 +1,23 @@
 import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
-import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { createAgent, openAgentHome } from '../helpers/agents'
 
 
 test.describe('User Input Requests', () => {
   let appPage: AppPage
-  let agentPage: AgentPage
   let sessionPage: SessionPage
-  let testAgentName: string
 
-  test.beforeEach(async ({ page }, testInfo) => {
+  test.beforeEach(async ({ page, request }, testInfo) => {
     appPage = new AppPage(page)
-    agentPage = new AgentPage(page)
     sessionPage = new SessionPage(page)
+
+    const testAgentName = `Input Agent ${testInfo.workerIndex}-${Date.now()}`
+    const agent = await createAgent(request, testAgentName)
 
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
-
-    // Use unique agent name per test
-    testAgentName = `Input Agent ${testInfo.workerIndex}-${Date.now()}`
-    await agentPage.createAgent(testAgentName)
+    await openAgentHome(page, agent)
   })
 
   test('secret request: provide a secret', async ({ page }) => {

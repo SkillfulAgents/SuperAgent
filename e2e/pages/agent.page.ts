@@ -2,6 +2,10 @@ import { Page, expect } from '@playwright/test'
 
 export type AgentActivityStatus = 'sleeping' | 'idle' | 'working' | 'awaiting_input'
 
+function fallbackNameFromPrompt(prompt: string): string {
+  return prompt.trim().split(/\s+/).slice(0, 5).join(' ').slice(0, 50) || 'New Agent'
+}
+
 /**
  * Page object for agent-related operations
  */
@@ -22,6 +26,8 @@ export class AgentPage {
    * agent-settings-button lives) rather than the first session view.
    */
   async createAgent(prompt: string) {
+    const expectedFallbackName = fallbackNameFromPrompt(prompt)
+
     await this.clickCreateAgent()
 
     // Wait until we've actually landed on the fresh Untitled agent's AgentHome
@@ -31,20 +37,30 @@ export class AgentPage {
     await expect(this.page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
     await this.page.locator('[data-testid="home-message-input"]').fill(prompt)
+    const renameResponsePromise = this.page.waitForResponse((response) => {
+      return response.request().method() === 'PUT'
+        && /\/api\/agents\/[^/?#]+(?:[?#]|$)/.test(response.url())
+    }, { timeout: 30000 })
     await this.page.locator('[data-testid="home-send-button"]').click()
 
     // First submit creates a session and navigates to it. Wait for the session
     // message list so we know navigation landed, then go back to agent-home.
     await expect(this.page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
+    const renameResponse = await renameResponsePromise
+    expect(renameResponse.ok()).toBeTruthy()
+    const renamedAgent = (await renameResponse.json().catch(() => null)) as { name?: string } | null
+    const createdAgentName = renamedAgent?.name?.trim() || expectedFallbackName
+
     await this.page.locator('[data-testid="agent-breadcrumb"]').click()
     await expect(this.page.locator('[data-testid="agent-settings-button"]')).toBeVisible()
 
     // The agent is created as "Untitled" then renamed async after session
-    // creation. Wait for the rename to land so downstream selectAgent(name)
-    // lookups by visible text match. We accept any non-"Untitled" value — in
-    // E2E the LLM is unconfigured so the server fallback yields the prompt's
-    // first ~5 words, matching what the test passed in.
-    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).not.toHaveText('Untitled', { timeout: 15000 })
+    // creation. Treat that sidebar/query reconciliation as part of creation so
+    // downstream tests can immediately select/delete by the visible name.
+    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(createdAgentName, { timeout: 15000 })
+    const agentItem = this.getAgentItem(createdAgentName)
+    await expect(agentItem).toBeVisible({ timeout: 15000 })
+    await agentItem.scrollIntoViewIfNeeded()
   }
 
   /**

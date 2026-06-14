@@ -17,6 +17,20 @@ const user3 = { name: 'Carol Viewer', email: 'carol@test.com', password: 'passwo
 const agentName = 'Auth Test Agent'
 
 test.describe('Auth Flow', () => {
+  test.beforeAll(async ({ authFactories, user1Page, user2Page, user3Page }) => {
+    await authFactories.resetAuthData()
+    await Promise.all([
+      user1Page.context().clearCookies(),
+      user2Page.context().clearCookies(),
+      user3Page.context().clearCookies(),
+    ])
+    await Promise.all([
+      user1Page.goto('http://localhost:3001'),
+      user2Page.goto('http://localhost:3001'),
+      user3Page.goto('http://localhost:3001'),
+    ])
+  })
+
   // ── Signup & Auth Gate ──────────────────────────────────────────────
 
   test('auth gate is visible on fresh start', async ({ user1Page }) => {
@@ -37,8 +51,7 @@ test.describe('Auth Flow', () => {
     await authPage.signUp(user1.name, user1.email, user1.password)
 
     // App should load after signup
-    await appPage.waitForAppLoaded()
-    await appPage.dismissWizardIfVisible()
+    await appPage.waitForAgentsLoaded()
 
     // Verify user name in footer
     await userBar.expectUserName(user1.name)
@@ -62,8 +75,7 @@ test.describe('Auth Flow', () => {
     await authPage.signUp(user2.name, user2.email, user2.password)
 
     // App should load
-    await appPage.waitForAppLoaded()
-    await appPage.dismissWizardIfVisible()
+    await appPage.waitForAgentsLoaded()
 
     // Verify user name
     await userBar.expectUserName(user2.name)
@@ -155,8 +167,7 @@ test.describe('Auth Flow', () => {
     const userBar = new UserBarPage(user3Page)
 
     await authPage.signUp(user3.name, user3.email, user3.password)
-    await appPage.waitForAppLoaded()
-    await appPage.dismissWizardIfVisible()
+    await appPage.waitForAgentsLoaded()
     await userBar.expectUserName(user3.name)
   })
 
@@ -383,7 +394,6 @@ test.describe('Auth Flow', () => {
 
     // Reload to pick up new admin role
     await appPage.reload()
-    await appPage.dismissWizardIfVisible()
 
     // Open settings and verify admin tabs are now visible
     await settingsPage.open()
@@ -411,8 +421,7 @@ test.describe('Auth Flow', () => {
     await authPage.signIn(user2.email, user2.password)
 
     // App should load
-    await appPage.waitForAppLoaded()
-    await appPage.dismissWizardIfVisible()
+    await appPage.waitForAgentsLoaded()
 
     // Verify user name
     await userBar.expectUserName(user2.name)

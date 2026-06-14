@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { startMockMcpServer, type MockMcpServer } from '../helpers/mock-mcp-server'
+import { getConnectionsHeaderAddButton } from '../helpers/connections'
 
 // Serial: cross-checks DB state via the API; sensitive to concurrent writes.
 test.describe.configure({ mode: 'serial' })
@@ -39,7 +40,7 @@ test.describe('Global Settings → Connections — Add MCP flow', () => {
     // The "+ New connection" button is hoisted into the page-level title row
     // via SettingsPageSection.headerActions. Same component as the agent-page
     // button, so it shares the `connections-add-button` test-id.
-    const addButton = page.locator('[data-testid="connections-add-button"]')
+    const addButton = getConnectionsHeaderAddButton(page)
     await expect(addButton).toBeVisible()
 
     // 2. Open the directory dialog and switch to the MCPs tab.
