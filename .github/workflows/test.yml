@@ -87,7 +87,9 @@ jobs:
 
   e2e-tests:
     name: E2E
-    runs-on: e2e-runner
+    runs-on:
+      group: Default
+      labels: e2e-runner
     steps:
       - name: Checkout
         uses: actions/checkout@v6
