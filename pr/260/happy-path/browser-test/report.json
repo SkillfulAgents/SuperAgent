@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the browser-use feature successfully opens a browser, navigates to a URL, retrieves the page title, and displays tool call cards with live browser preview.",
+  "reason": "Successfully tested browser-use feature by sending a message to open https://example.com, agent executed browser tools, and returned the correct page title \"Example Domain\" in the response.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — App loaded successfully with agent list visible.",
-    "Step 2: Clicked \"QA-20260614-210643-riyl\" agent in sidebar — Agent chat view loaded with message input field.",
-    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully sent to the agent.",
-    "Step 4: Waited up to 3 minutes for agent response — Agent completed response in approximately 16 seconds.",
-    "Step 5: Verified response mentions \"Example Domain\" — Response explicitly states \"The page title is 'Example Domain'.\" Tool call cards show successful execution of browser operations (Open Browser and Browser Get State). Live browser preview displays the actual example.com webpage with correct title."
+    "Step 1: Navigated to http://localhost:47891 - Successfully loaded the SuperAgent home page with the agent list visible in the sidebar.",
+    "Step 2: Found the \"QA-20260614-211428-rooo\" agent in the sidebar and clicked it - Successfully opened the agent, displaying the chat interface and agent details panel.",
+    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was successfully entered in the input box and sent via the Send message button.",
+    "Step 4: Waited for response (up to 3 minutes) - Agent completed execution in 19 seconds, well within the timeout limit. The agent executed the following browser operations:",
+    "Step 5: Verified response mentions \"Example Domain\" - Response clearly shows: \"The page title is \"Example Domain\".\" The agent provided a comprehensive summary: \"I opened https://example.com — the page title is \"Example Domain\". Browser closed.\""
   ],
   "bugs": [],
-  "durationMs": 145444,
-  "sessionId": "e40e88c4-3415-47cc-97de-03f3d5592865",
+  "durationMs": 60829,
+  "sessionId": "f49d0b04-0282-43bd-97a8-b24ab9d154f4",
   "cost": {
-    "inputTokens": 336,
-    "outputTokens": 11845,
-    "cacheCreationTokens": 50330,
-    "cacheReadTokens": 942332,
+    "inputTokens": 300,
+    "outputTokens": 8972,
+    "cacheCreationTokens": 57734,
+    "cacheReadTokens": 904557,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.216707
+    "totalCostUsd": 0.207783
   }
 }
