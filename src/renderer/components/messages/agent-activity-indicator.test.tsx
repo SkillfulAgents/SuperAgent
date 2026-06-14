@@ -54,6 +54,12 @@ vi.mock('./insufficient-balance-card', () => ({
   InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
 }))
 
+// Mock the dot-matrix opt-in hook — it reads user settings via React Query, which
+// these tests don't provide. Default to the classic (non-matrix) indicator.
+vi.mock('@renderer/hooks/use-dot-matrix-indicators', () => ({
+  useDotMatrixIndicators: () => false,
+}))
+
 describe('AgentActivityIndicator', () => {
   beforeEach(() => {
     // Reset to defaults

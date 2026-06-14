@@ -2,7 +2,8 @@ import { Moon, CircleDashed } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import type { ContainerStatus } from '@shared/lib/container/types'
 import { type AgentActivityStatus, getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
-import { WorkingDots, AwaitingDot } from './status-indicators'
+import { useDotMatrixIndicators } from '@renderer/hooks/use-dot-matrix-indicators'
+import { WorkingDots, AwaitingDot, IdleDots } from './status-indicators'
 
 const statusLabels: Record<AgentActivityStatus, string> = {
   sleeping: 'sleeping',
@@ -24,6 +25,7 @@ interface AgentStatusProps {
 export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwaitingInput = false, size = 'default', iconOnly = false, workingDotClassName, className }: AgentStatusProps) {
   const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
   const isSmall = size === 'sm'
+  const dotMatrix = useDotMatrixIndicators()
 
   return (
     <div
@@ -44,6 +46,8 @@ export function AgentStatus({ status, hasActiveSessions = false, hasSessionsAwai
         <AwaitingDot />
       ) : activityStatus === 'working' ? (
         <WorkingDots dotClassName={workingDotClassName} />
+      ) : dotMatrix ? (
+        <IdleDots />
       ) : (
         <CircleDashed className="h-2.5 w-2.5 text-muted-foreground" />
       )}

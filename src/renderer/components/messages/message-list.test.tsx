@@ -118,6 +118,12 @@ vi.mock('./subagent-block', () => ({
   SubAgentBlock: ({ toolCall }: any) => <div data-testid="subagent-block">{toolCall.name}</div>,
 }))
 
+// Rendered at the thread tail by MessageList; it has its own data hooks (and is
+// covered by its own tests), so stub it here to keep these tests focused.
+vi.mock('./agent-activity-indicator', () => ({
+  AgentActivityIndicator: () => <div data-testid="agent-activity-indicator" />,
+}))
+
 vi.mock('./message-context-menu', () => ({
   MessageContextMenu: ({ children }: any) => <>{children}</>,
 }))

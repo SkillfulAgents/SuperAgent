@@ -45,7 +45,7 @@ import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
-import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
@@ -152,11 +152,11 @@ function SessionSubItem({
             <span className="flex-1 min-w-0 truncate text-left">{session.name}</span>
             <span className="flex items-center justify-center w-4 shrink-0">
               {isAwaitingInput ? (
-                <AwaitingDot />
+                <AwaitingDot classic />
               ) : isWorking ? (
-                <WorkingDots />
+                <WorkingDots classic />
               ) : hasUnread ? (
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
+                <UnreadDot classic />
               ) : null}
             </span>
           </button>
@@ -474,8 +474,8 @@ function AgentRowIndicator({
   const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
   if (isUnread) {
     return (
-      <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
-        <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+      <span className="flex items-center w-4 justify-center">
+        <UnreadDot />
       </span>
     )
   }
@@ -593,30 +593,33 @@ export const AgentMenuItem = React.forwardRef<
             <SidebarMenuButton
               onClick={handleClick}
               isActive={isSelected}
-              className="justify-between pl-7"
+              className="pl-7"
               data-testid={`agent-item-${agent.slug}`}
             >
               <span className="flex items-center gap-1.5 min-w-0">
                 <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
                 {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
               </span>
-              <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
             </SidebarMenuButton>
           </AgentContextMenu>
           {/*
-            Sibling chevron button overlays its slot in the row so the row stays a
-            single <button> (no nested interactive controls).
+            Sibling button overlays its slot in the row so the row stays a single
+            <button> (no nested interactive controls). The dot matrix indicator
+            sits in the chevron's slot; hovering the slot reveals the chevron.
           */}
           <button
             type="button"
             onClick={handleChevronClick}
             aria-label={isOpen ? 'Collapse' : 'Expand'}
             aria-expanded={isOpen}
-            className="absolute left-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
+            className="group/agent-icon absolute left-1.5 top-1/2 -translate-y-1/2 flex items-center justify-center w-4 h-4 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
           >
+            <span className="group-hover/agent-icon:hidden flex items-center justify-center">
+              <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+            </span>
             <ChevronRight
               className={cn(
-                'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
+                'hidden group-hover/agent-icon:block h-3.5 w-3.5 text-muted-foreground/60 transition-transform',
                 isOpen && 'rotate-90'
               )}
             />

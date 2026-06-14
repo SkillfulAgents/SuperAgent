@@ -1,6 +1,5 @@
 import { type ReactNode } from 'react'
 import { MessageList } from '@renderer/components/messages/message-list'
-import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 
@@ -51,7 +50,6 @@ export function SessionThread({
           onPendingMessageAppeared={onPendingMessageAppeared}
         />
         <div className={footerClassName}>
-          <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
           {footer}
         </div>
       </div>

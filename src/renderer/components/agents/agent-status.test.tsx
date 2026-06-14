@@ -4,6 +4,12 @@ import { render, screen } from '@testing-library/react'
 import { AgentStatus } from './agent-status'
 import { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 
+// The status-indicator dots read user settings via React Query, which these
+// tests don't provide. Default to the classic (non-matrix) indicator.
+vi.mock('@renderer/hooks/use-dot-matrix-indicators', () => ({
+  useDotMatrixIndicators: () => false,
+}))
+
 // Mock cn utility
 vi.mock('@shared/lib/utils/cn', () => ({
   cn: (...args: unknown[]) => {

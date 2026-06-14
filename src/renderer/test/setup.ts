@@ -1,6 +1,17 @@
 import '@testing-library/jest-dom/vitest'
 import { vi } from 'vitest'
 
+// jsdom has no ResizeObserver; recharts' ResponsiveContainer (used by the home
+// page usage sparklines) needs it. Stub it as a no-op so chart-rendering
+// components can mount in tests.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
 const signIn = {
   email: vi.fn(),
   oauth2: vi.fn(),

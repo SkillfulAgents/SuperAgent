@@ -156,6 +156,7 @@ vi.mock('@renderer/components/agents/agent-status', () => ({
 vi.mock('@renderer/components/agents/status-indicators', () => ({
   WorkingDots: () => <span data-testid="working-dots" />,
   AwaitingDot: () => <span data-testid="awaiting-dot" />,
+  UnreadDot: () => <span data-testid="unread-dot" role="img" aria-label="unread notifications" />,
 }))
 
 vi.mock('@renderer/components/agents/agent-context-menu', () => ({

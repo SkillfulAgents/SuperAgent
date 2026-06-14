@@ -180,6 +180,21 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
             }
           />
           <SettingRow
+            name="Dot-matrix status indicators"
+            subtitle="Use a small animated dot matrix in place of the classic status dot for idle, working, and needs-input states"
+            htmlFor="dot-matrix-indicators"
+            right={
+              <Switch
+                id="dot-matrix-indicators"
+                checked={userSettings?.dotMatrixIndicators === true}
+                onCheckedChange={(checked: boolean) => {
+                  updateUserSettings.mutate({ dotMatrixIndicators: checked })
+                }}
+                disabled={isUserSettingsLoading}
+              />
+            }
+          />
+          <SettingRow
             name="Timezone"
             subtitle="Used for interpreting scheduled task times"
             right={

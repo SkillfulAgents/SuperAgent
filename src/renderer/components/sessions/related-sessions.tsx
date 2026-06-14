@@ -232,9 +232,9 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
         <div className="flex-1 min-w-0">
           <div className={`text-xs truncate flex items-center gap-2 ${dateAsTitle ? 'font-normal' : 'font-medium'}`}>
             {session.isAwaitingInput ? (
-              <AwaitingDot />
+              <AwaitingDot classic />
             ) : session.isActive ? (
-              <WorkingDots />
+              <WorkingDots classic />
             ) : session.hasUnreadNotifications ? (
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
             ) : null}

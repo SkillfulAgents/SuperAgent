@@ -41,6 +41,8 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
 const mockAgentsData = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockAgentsData(),
+  useStartAgent: () => ({ mutate: vi.fn(), isPending: false }),
+  useStopAgent: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 vi.mock('@renderer/hooks/use-user-settings', () => ({
@@ -59,10 +61,6 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
   AgentContextMenu: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
 
-vi.mock('@renderer/components/agents/agent-status', () => ({
-  AgentStatus: ({ status }: { status: string }) => <span data-testid="agent-status">{status}</span>,
-  getAgentActivityStatus: () => 'sleeping',
-}))
 
 vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
   useCreateUntitledAgent: () => ({
@@ -263,13 +261,14 @@ describe('HomePage AgentCard', () => {
     expect(screen.getByText(/in about 1 hour/)).toBeInTheDocument()
   })
 
-  it('passes pre-aggregated status to AgentStatus', () => {
+  it('surfaces the aggregated activity status on the card indicator', () => {
     mockAgentsData.mockReturnValue({
       data: [makeAgent({ hasActiveSessions: true, hasSessionsAwaitingInput: true })],
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    // The mocked AgentStatus just renders the status prop
-    expect(screen.getByTestId('agent-status')).toBeInTheDocument()
+    // status='running' + hasSessionsAwaitingInput → getAgentActivityStatus aggregates
+    // to 'awaiting_input', surfaced as the dot-matrix indicator's aria-label.
+    expect(screen.getByRole('img', { name: 'awaiting_input' })).toBeInTheDocument()
   })
 })

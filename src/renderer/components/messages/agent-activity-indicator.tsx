@@ -2,9 +2,11 @@
 import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { useDotMatrixIndicators } from '@renderer/hooks/use-dot-matrix-indicators'
 import { apiFetch } from '@renderer/lib/api'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
+import { DotMatrix } from '@renderer/components/agents/dot-matrix'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import { isTurnStartingUserMessage } from './pending-message'
 import { cn } from '@shared/lib/utils'
@@ -30,6 +32,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
     isThinking, thinkingText,
   } = useMessageStream(sessionId, agentSlug)
+  const dotMatrix = useDotMatrixIndicators()
 
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState(false)
@@ -187,24 +190,20 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   // Show error if present
   if (error) {
     const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
-    return (
-      <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-        {billingUrl ? (
-          <InsufficientBalanceCard billingUrl={billingUrl} data-testid="insufficient-balance-card" />
-        ) : isProviderError ? (
-          <ProviderErrorCard message={error} data-testid="provider-error-card" />
-        ) : (
-          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-destructive" />
-              <span className="text-sm font-medium text-destructive">Error</span>
-            </div>
-            <p className="mt-1 text-sm text-destructive/90">{error}</p>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Send another message to retry.
-            </p>
-          </div>
-        )}
+    return billingUrl ? (
+      <InsufficientBalanceCard billingUrl={billingUrl} data-testid="insufficient-balance-card" />
+    ) : isProviderError ? (
+      <ProviderErrorCard message={error} data-testid="provider-error-card" />
+    ) : (
+      <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-destructive" />
+          <span className="text-sm font-medium text-destructive">Error</span>
+        </div>
+        <p className="mt-1 text-sm text-destructive/90">{error}</p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Send another message to retry.
+        </p>
       </div>
     )
   }
@@ -225,20 +224,30 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           : (activeItem?.activeForm || 'Working...')
 
   return (
-    <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-      <div className="rounded-lg border bg-muted/50 p-3" data-testid="activity-indicator">
+    <div className="pt-4" data-testid="activity-indicator">
         {/* Header with pulsing indicator */}
         <div className="flex items-center gap-2">
-          <span className="relative flex h-3 w-3">
-            <span className={cn(
-              "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
-              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
-            )}></span>
-            <span className={cn(
-              "relative inline-flex rounded-full h-3 w-3",
-              (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
-            )}></span>
-          </span>
+          {dotMatrix ? (
+            <DotMatrix
+              pattern={(isAwaitingInput || apiRetry) ? 'blink' : 'sweep'}
+              size={5}
+              cellPx={3}
+              dotPx={2}
+              dotClassName={(isAwaitingInput || apiRetry) ? 'bg-orange-500' : 'bg-primary'}
+              ariaLabel={(isAwaitingInput || apiRetry) ? 'needs input' : 'working'}
+            />
+          ) : (
+            <span className="relative flex h-3 w-3">
+              <span className={cn(
+                "animate-ping absolute inline-flex h-full w-full rounded-full opacity-75",
+                (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
+              )}></span>
+              <span className={cn(
+                "relative inline-flex rounded-full h-3 w-3",
+                (isAwaitingInput || apiRetry) ? "bg-orange-500" : "bg-primary"
+              )}></span>
+            </span>
+          )}
           <span className="text-sm font-medium">{statusText}</span>
           {isThinking && thinkingTokens > 0 && (
             <span className="text-xs text-muted-foreground tabular-nums">~{thinkingTokens.toLocaleString()} tokens</span>
@@ -393,7 +402,6 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
             </ul>
           )
         })()}
-      </div>
     </div>
   )
 }
