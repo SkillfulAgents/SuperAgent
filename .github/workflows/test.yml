@@ -87,7 +87,7 @@ jobs:
 
   e2e-tests:
     name: E2E
-    runs-on: e2e-runner
+    runs-on: e2e-runner-x64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -111,10 +111,38 @@ jobs:
         env:
           PLAYWRIGHT_WORKERS: ${{ vars.E2E_PLAYWRIGHT_WORKERS || '10' }}
         run: |
-          npx concurrently --kill-others-on-fail --names web,stateful,browser,persistence,auth,a11y --prefix "[{name}]" \
+          npx concurrently --kill-others-on-fail --names web,stateful,browser,persistence,auth --prefix "[{name}]" \
             "PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data/web PLAYWRIGHT_WORKERS=$PLAYWRIGHT_WORKERS npm run test:e2e:web -- --fail-on-flaky-tests" \
             "PORT=3001 SUPERAGENT_DATA_DIR=.e2e-data/stateful PLAYWRIGHT_WORKERS=1 npm run test:e2e:stateful -- --fail-on-flaky-tests" \
             "PORT=3002 SUPERAGENT_DATA_DIR=.e2e-data/browser npm run test:e2e:browser -- --fail-on-flaky-tests" \
             "PORT=3003 SUPERAGENT_DATA_DIR=.e2e-data/persistence npm run test:e2e:persistence -- --fail-on-flaky-tests" \
-            "PORT=3004 SUPERAGENT_DATA_DIR=.e2e-data/auth npm run test:e2e:auth -- --fail-on-flaky-tests" \
-            "PORT=3005 SUPERAGENT_DATA_DIR=.e2e-data/a11y PLAYWRIGHT_WORKERS=1 npm run test:e2e:a11y -- --fail-on-flaky-tests || true"
+            "PORT=3004 SUPERAGENT_DATA_DIR=.e2e-data/auth npm run test:e2e:auth -- --fail-on-flaky-tests"
+
+  e2e-a11y-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Rebuild native modules
+        run: npm rebuild better-sqlite3
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run a11y audit
+        continue-on-error: true
+        env:
+          PORT: 3005
+          SUPERAGENT_DATA_DIR: .e2e-data/a11y
+          PLAYWRIGHT_WORKERS: 1
+        run: npm run test:e2e:a11y -- --fail-on-flaky-tests
