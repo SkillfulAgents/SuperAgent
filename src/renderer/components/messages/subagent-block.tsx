@@ -247,6 +247,7 @@ export function SubAgentBlock({
                   toolCall={item.toolCall}
                   messageCreatedAt={item.messageCreatedAt}
                   agentSlug={agentSlug}
+                  isSessionActive={isSessionActive}
                 />
               )
             )}
