@@ -1,0 +1,24 @@
+{
+  "storyId": "agent-chat",
+  "passed": true,
+  "reason": "Test all 6 steps to verify agent receives message and responds with correct answer to math question.",
+  "steps": [
+    "Navigate to http://localhost:47891 — Page loaded successfully with SuperAgent app displaying two agents in sidebar.",
+    "Find and click \"QA-20260614-160321-z9x7\" agent in sidebar — Agent detail page loaded, showing agent status as \"idle\" with message input field ready.",
+    "Verify agent status is \"running\" or \"idle\" — Agent status confirmed as \"idle\" in the status indicator.",
+    "Send message \"Hello! What is 2+2?\" — Message successfully typed into input field and sent button clicked. Message sent and agent status changed to \"working\".",
+    "Wait up to 3 minutes for response — Agent responded within 1 second with activity indicator showing \"Worked for 1s\".",
+    "Verify response mentions \"4\" and take screenshot — Response clearly displays \"4\" (the correct answer to 2+2), and screenshot captured showing the full chat with user message and agent response."
+  ],
+  "bugs": [],
+  "durationMs": 63221,
+  "sessionId": "1510f892-cce2-488a-9fc2-248e24d22f8e",
+  "cost": {
+    "inputTokens": 261,
+    "outputTokens": 9687,
+    "cacheCreationTokens": 104284,
+    "cacheReadTokens": 725655,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.251617
+  }
+}

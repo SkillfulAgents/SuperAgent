@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ser Get State, Close Browser) and the successful response.\n\n**Test Result:** All steps executed successfully. The browser-use feature is functioning correctly - the agent successfully used browser tools to navigate to the specified URL, retrieve the page title, and report back accurate information.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 83863,
+  "sessionId": "8f385c14-42da-45e4-84bd-395a15e2fdf8",
+  "cost": {
+    "inputTokens": 279,
+    "outputTokens": 9726,
+    "cacheCreationTokens": 56292,
+    "cacheReadTokens": 804750,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.199749
+  }
+}
