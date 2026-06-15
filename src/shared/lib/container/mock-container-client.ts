@@ -124,6 +124,14 @@ export class SimpleTextResponseScenario implements MockScenario {
         timestamp: new Date().toISOString(),
       })
 
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: this.responseText }] },
+        },
+      })
+
       // Then mark session as done (idle) - result event
       client.emitStreamMessage(sessionId, {
         type: 'result',
@@ -418,6 +426,19 @@ export class ToolUseScenario implements MockScenario {
           ],
         },
         timestamp: new Date().toISOString(),
+      })
+
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'tool_use', id: toolId, name: this.toolName, input: this.toolInput },
+              { type: 'text', text: this.finalText },
+            ],
+          },
+        },
       })
 
       // Mark session as done (idle)
