@@ -9,6 +9,7 @@ import {
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { WelcomeStep } from './welcome-step'
 import { ConfigureLLMStep } from './configure-llm-step'
+import { ConfigureModelStep } from './configure-model-step'
 import { DockerSetupStep } from './docker-setup-step'
 import { BrowserSetupStep } from './browser-setup-step'
 import { ComposioStep } from './composio-step'
@@ -16,10 +17,11 @@ import { CreateAgentStep } from './create-agent-step'
 import { PrivacyStep } from './privacy-step'
 import { RibbonWave } from './ribbon-wave'
 
-type WizardStepId = 'llm' | 'browser' | 'composio' | 'runtime' | 'privacy' | 'agent'
+type WizardStepId = 'llm' | 'model' | 'browser' | 'composio' | 'runtime' | 'privacy' | 'agent'
 
 const MANUAL_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = [
   { id: 'llm', label: 'LLM', skippable: false },
+  { id: 'model', label: 'Model', skippable: false },
   { id: 'browser', label: 'Browser', skippable: false },
   { id: 'composio', label: 'Composio', skippable: true },
   { id: 'runtime', label: 'Runtime', skippable: false },
@@ -28,6 +30,7 @@ const MANUAL_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = 
 ]
 
 const PLATFORM_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = [
+  { id: 'model', label: 'Model', skippable: false },
   { id: 'browser', label: 'Browser', skippable: false },
   { id: 'runtime', label: 'Runtime', skippable: false },
   { id: 'privacy', label: 'Privacy', skippable: false },
@@ -195,6 +198,7 @@ export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizar
                 onCanProceedChange={setLlmCanProceed}
               />
             )}
+            {activeStep?.id === 'model' && <ConfigureModelStep />}
             {activeStep?.id === 'browser' && <BrowserSetupStep onCanProceedChange={setBrowserCanProceed} />}
             {activeStep?.id === 'composio' && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
             {activeStep?.id === 'runtime' && <DockerSetupStep onCanProceedChange={setRuntimeCanProceed} />}
