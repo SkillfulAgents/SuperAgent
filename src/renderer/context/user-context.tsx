@@ -17,7 +17,7 @@ interface User {
   mustChangePassword?: boolean
 }
 
-interface UserContextValue {
+export interface UserContextValue {
   user: User | null
   isAuthenticated: boolean
   isAdmin: boolean

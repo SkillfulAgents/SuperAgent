@@ -74,6 +74,7 @@
     "@skillful-agents/agent-computer": "^0.0.11",
     "@slack/bolt": "^4.7.0",
     "@tanstack/react-query": "^5.56.0",
+    "@tanstack/react-router": "1.170.15",
     "@types/react-file-icon": "^1.0.4",
     "analytics": "^0.8.19",
     "archiver": "^7.0.1",
