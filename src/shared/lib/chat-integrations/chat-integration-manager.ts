@@ -32,7 +32,8 @@ import {
   resolveActiveSession,
   getLastDisplayName,
 } from '@shared/lib/services/chat-integration-session-service'
-import { assertPathWithinDir, isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
 import type { EffortLevel } from '@shared/lib/container/types'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
@@ -73,34 +74,10 @@ function isContainerNotRunning(err: unknown): boolean {
 /**
  * True iff `u` is an HTTPS request to Slack (slack.com or a *.slack.com
  * subdomain). Only these hosts may receive the Slack bot token on a redirect
- * hop (SUP-232). Exported for unit testing.
+ * hop (SUP-232).
  */
-export function isTrustedSlackDownloadHost(u: URL): boolean {
-  if (u.protocol !== 'https:') return false
-  const host = u.hostname.toLowerCase()
-  return host === 'slack.com' || host.endsWith('.slack.com')
-}
-
-/**
- * Sanitize an externally-supplied attachment filename into a safe basename.
- *
- * External chat attachment names are attacker-controlled, so we strip any
- * directory components (POSIX and Windows separators), `..` traversal, leading
- * dots and NUL bytes, then replace any remaining unsafe characters. Falls back
- * to `file` when nothing usable remains. Exported for unit testing (SUP-231).
- */
-export function sanitizeUploadFilename(filename: string): string {
-  // Drop NUL bytes, then take the last segment so directory components
-  // (including `..`) cannot survive — split on both `/` and `\`.
-  const raw = String(filename ?? '').replace(/\0/g, '')
-  const segments = raw.split(/[/\\]/)
-  let base = segments[segments.length - 1] ?? ''
-  // Strip leading dots (hidden files, bare `.`/`..`).
-  base = base.replace(/^\.+/, '')
-  // Replace any remaining path-unsafe characters.
-  base = base.replace(/[^A-Za-z0-9._-]/g, '_')
-  if (base === '' || base === '.' || base === '..') return 'file'
-  return base
+function isTrustedSlackDownloadHost(u: URL): boolean {
+  return u.protocol === 'https:' && isHostOrSubdomain(u.hostname, 'slack.com')
 }
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -967,10 +944,8 @@ class ChatIntegrationManager {
    * xoxb token from leaking to an attacker-controlled redirect target.
    */
   private async downloadWithAuth(url: string, token: string): Promise<Buffer | null> {
-    let target: URL
-    try {
-      target = new URL(url)
-    } catch {
+    let target = tryParseUrl(url)
+    if (!target) {
       console.error('[ChatIntegrationManager] Invalid Slack download URL')
       return null
     }
@@ -984,10 +959,9 @@ class ChatIntegrationManager {
     while (response.status >= 300 && response.status < 400 && redirects < 5) {
       const location = response.headers.get('location')
       if (!location) break
-      let next: URL
-      try {
-        next = new URL(location, target) // resolve relative redirects against the current URL
-      } catch {
+      // Resolve relative redirects against the current URL.
+      const next = tryParseUrl(location, target)
+      if (!next) {
         console.error('[ChatIntegrationManager] Invalid redirect location in Slack download')
         return null
       }

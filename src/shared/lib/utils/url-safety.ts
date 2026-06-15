@@ -5,8 +5,10 @@
  *
  * Exposed helpers:
  *   - validateHttpUrl(url): shape check (parseable, http/https only)
+ *   - tryParseUrl(input, base?): parse to URL or null (no throw)
  *   - isPrivateHost(hostname): true for loopback/private/link-local IPs
  *     and the `.local` / `localhost` name families
+ *   - isHostOrSubdomain(hostname, domain): exact-or-subdomain host match
  *   - validateSafeCloneUrl(url, { allowedHostPrefixes? }): full SSRF guard
  */
 
@@ -68,6 +70,18 @@ export function isPrivateHost(hostname: string): boolean {
   return false
 }
 
+/**
+ * True iff `hostname` is exactly `domain` or a subdomain of it (case-insensitive).
+ * Use it for redirect/host allowlists where a sibling that merely shares the
+ * suffix string must NOT match: `isHostOrSubdomain('files.slack.com', 'slack.com')`
+ * is true, but `'evilslack.com'` and `'slack.com.evil.com'` are false.
+ */
+export function isHostOrSubdomain(hostname: string, domain: string): boolean {
+  const host = hostname.toLowerCase()
+  const d = domain.toLowerCase()
+  return host === d || host.endsWith('.' + d)
+}
+
 export function validateHttpUrl(url: string): URL {
   let parsed: URL
   try {
@@ -79,6 +93,19 @@ export function validateHttpUrl(url: string): URL {
     throw new Error(`Unsafe URL protocol: ${parsed.protocol}`)
   }
   return parsed
+}
+
+/**
+ * Parse `input` (optionally against `base`, for relative redirect locations)
+ * into a URL, returning `null` instead of throwing on a malformed value. Lets
+ * callers branch on validity without a local try/catch at each call site.
+ */
+export function tryParseUrl(input: string, base?: string | URL): URL | null {
+  try {
+    return new URL(input, base)
+  } catch {
+    return null
+  }
 }
 
 export interface SafeCloneUrlOptions {
