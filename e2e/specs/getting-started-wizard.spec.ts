@@ -9,13 +9,13 @@ test.describe.configure({ mode: 'serial' })
 
 /**
  * Manual wizard steps (0-indexed):
- *   0: LLM  |  1: Browser  |  2: Composio  |  3: Runtime  |  4: Privacy  |  5: Agent
+ *   0: LLM  |  1: Model  |  2: Browser  |  3: Composio  |  4: Runtime  |  5: Privacy  |  6: Agent
  *
- * Skippable: Composio (2), Agent (5)
+ * Skippable: Composio (3), Agent (6)
  * Gated (Next disabled until configured): LLM (needs key), Runtime (needs available runner)
  *
  * In E2E mock mode the mock API key is pre-configured and the runtime reports READY,
- * so Next is enabled on LLM, Browser, Runtime, and Privacy steps.
+ * so Next is enabled on LLM, Model, Browser, Runtime, and Privacy steps.
  */
 test.describe('Getting Started Wizard', () => {
   let appPage: AppPage
@@ -60,16 +60,18 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectStep(0)
 
     // Dismiss it for cleanup (wait for each step to render before clicking)
-    await wizardPage.clickNext()  // LLM -> Browser
+    await wizardPage.clickNext()  // LLM -> Model
     await wizardPage.expectStep(1)
-    await wizardPage.clickNext()  // Browser -> Composio
+    await wizardPage.clickNext()  // Model -> Browser
     await wizardPage.expectStep(2)
-    await wizardPage.clickSkip()  // Composio -> Runtime
+    await wizardPage.clickNext()  // Browser -> Composio
     await wizardPage.expectStep(3)
-    await wizardPage.clickNext()  // Runtime -> Privacy
+    await wizardPage.clickSkip()  // Composio -> Runtime
     await wizardPage.expectStep(4)
-    await wizardPage.clickNext()  // Privacy -> Agent
+    await wizardPage.clickNext()  // Runtime -> Privacy
     await wizardPage.expectStep(5)
+    await wizardPage.clickNext()  // Privacy -> Agent
+    await wizardPage.expectStep(6)
     await wizardPage.clickSkip()  // Agent (skip = finish)
     await wizardPage.expectNotVisible()
   })
@@ -109,39 +111,44 @@ test.describe('Getting Started Wizard', () => {
     await expect(page.getByText('Connect an LLM provider')).toBeVisible()
     await wizardPage.expectBackEnabled()
 
-    // Step 1: Browser
+    // Step 1: Model
     await wizardPage.clickNext()
     await wizardPage.expectStep(1)
-    await expect(page.getByText('Give your agents browser access')).toBeVisible()
+    await expect(page.getByText('Pick a default model for your agents')).toBeVisible()
 
     // Go back to Step 0: LLM
     await wizardPage.clickBack()
     await wizardPage.expectStep(0)
     await expect(page.getByText('Connect an LLM provider')).toBeVisible()
 
-    // Forward again to Step 1: Browser
+    // Forward again to Step 1: Model
     await wizardPage.clickNext()
     await wizardPage.expectStep(1)
-    await expect(page.getByText('Give your agents browser access')).toBeVisible()
+    await expect(page.getByText('Pick a default model for your agents')).toBeVisible()
 
-    // Step 2: Composio (skippable)
+    // Step 2: Browser
     await wizardPage.clickNext()
     await wizardPage.expectStep(2)
+    await expect(page.getByText('Give your agents browser access')).toBeVisible()
+
+    // Step 3: Composio (skippable)
+    await wizardPage.clickNext()
+    await wizardPage.expectStep(3)
     await expect(page.getByText('Let your agents connect to your apps')).toBeVisible()
 
-    // Step 3: Runtime
+    // Step 4: Runtime
     await wizardPage.clickSkip()
-    await wizardPage.expectStep(3)
+    await wizardPage.expectStep(4)
     await expect(page.getByText('Choose a container runtime')).toBeVisible()
 
-    // Step 4: Privacy
-    await wizardPage.clickNext()
-    await wizardPage.expectStep(4)
-    await expect(page.getByText('Help improve Superagent')).toBeVisible()
-
-    // Step 5: Create Agent (skippable)
+    // Step 5: Privacy
     await wizardPage.clickNext()
     await wizardPage.expectStep(5)
+    await expect(page.getByText('Help improve Superagent')).toBeVisible()
+
+    // Step 6: Create Agent (skippable)
+    await wizardPage.clickNext()
+    await wizardPage.expectStep(6)
     await expect(page.getByRole('heading', { name: /create your first agent/i })).toBeVisible()
 
     // Skip on last step finishes
@@ -158,24 +165,26 @@ test.describe('Getting Started Wizard', () => {
     await appPage.waitForAppLoaded()
     await wizardPage.expectVisible()
 
-    // Choose manual setup, navigate to Composio (step 2) — first skippable step
+    // Choose manual setup, navigate to Composio (step 3) — first skippable step
     await wizardPage.chooseManualSetup()
-    await wizardPage.clickNext() // LLM -> Browser
+    await wizardPage.clickNext() // LLM -> Model
     await wizardPage.expectStep(1)
-    await wizardPage.clickNext() // Browser -> Composio
+    await wizardPage.clickNext() // Model -> Browser
     await wizardPage.expectStep(2)
+    await wizardPage.clickNext() // Browser -> Composio
+    await wizardPage.expectStep(3)
 
     // Skip should advance to Runtime
     await wizardPage.clickSkip()
-    await wizardPage.expectStep(3)
+    await wizardPage.expectStep(4)
 
     // Runtime is not skippable — use Next to advance to Privacy
     await wizardPage.clickNext()
-    await wizardPage.expectStep(4)
+    await wizardPage.expectStep(5)
 
     // Privacy is not skippable — use Next to advance to Agent
     await wizardPage.clickNext()
-    await wizardPage.expectStep(5)
+    await wizardPage.expectStep(6)
 
     // Skip on last step should finish
     await wizardPage.clickSkip()
@@ -193,16 +202,18 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.chooseManualSetup()
 
     // Navigate through and finish (wait for each step to render)
-    await wizardPage.clickNext()  // LLM -> Browser
+    await wizardPage.clickNext()  // LLM -> Model
     await wizardPage.expectStep(1)
-    await wizardPage.clickNext()  // Browser -> Composio
+    await wizardPage.clickNext()  // Model -> Browser
     await wizardPage.expectStep(2)
-    await wizardPage.clickSkip()  // Composio -> Runtime
+    await wizardPage.clickNext()  // Browser -> Composio
     await wizardPage.expectStep(3)
-    await wizardPage.clickNext()  // Runtime -> Privacy
+    await wizardPage.clickSkip()  // Composio -> Runtime
     await wizardPage.expectStep(4)
-    await wizardPage.clickNext()  // Privacy -> Agent
+    await wizardPage.clickNext()  // Runtime -> Privacy
     await wizardPage.expectStep(5)
+    await wizardPage.clickNext()  // Privacy -> Agent
+    await wizardPage.expectStep(6)
     await wizardPage.clickSkip()  // Agent (skip = finish)
     await wizardPage.expectNotVisible()
 
@@ -246,20 +257,23 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectVisible()
     await wizardPage.chooseManualSetup()
 
-    // LLM -> Browser
+    // LLM -> Model
     await wizardPage.clickNext()
     await wizardPage.expectStep(1)
+    // Model -> Browser
+    await wizardPage.clickNext()
+    await wizardPage.expectStep(2)
 
     // Don't click Chrome — the bug is that users rely on the auto-selection.
     // Just advance through the rest of the wizard.
     await wizardPage.clickNext()  // Browser -> Composio
-    await wizardPage.expectStep(2)
-    await wizardPage.clickSkip()  // Composio -> Runtime
     await wizardPage.expectStep(3)
-    await wizardPage.clickNext()  // Runtime -> Privacy
+    await wizardPage.clickSkip()  // Composio -> Runtime
     await wizardPage.expectStep(4)
-    await wizardPage.clickNext()  // Privacy -> Agent
+    await wizardPage.clickNext()  // Runtime -> Privacy
     await wizardPage.expectStep(5)
+    await wizardPage.clickNext()  // Privacy -> Agent
+    await wizardPage.expectStep(6)
     await wizardPage.clickSkip()  // Agent -> finish
     await wizardPage.expectNotVisible()
 
@@ -290,16 +304,18 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectStep(0)
 
     // Dismiss it (wait for each step to render)
-    await wizardPage.clickNext()  // LLM -> Browser
+    await wizardPage.clickNext()  // LLM -> Model
     await wizardPage.expectStep(1)
-    await wizardPage.clickNext()  // Browser -> Composio
+    await wizardPage.clickNext()  // Model -> Browser
     await wizardPage.expectStep(2)
-    await wizardPage.clickSkip()  // Composio -> Runtime
+    await wizardPage.clickNext()  // Browser -> Composio
     await wizardPage.expectStep(3)
-    await wizardPage.clickNext()  // Runtime -> Privacy
+    await wizardPage.clickSkip()  // Composio -> Runtime
     await wizardPage.expectStep(4)
-    await wizardPage.clickNext()  // Privacy -> Agent
+    await wizardPage.clickNext()  // Runtime -> Privacy
     await wizardPage.expectStep(5)
+    await wizardPage.clickNext()  // Privacy -> Agent
+    await wizardPage.expectStep(6)
     await wizardPage.clickSkip()  // Agent (skip = finish)
     await wizardPage.expectNotVisible()
   })
