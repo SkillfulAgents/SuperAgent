@@ -2,11 +2,13 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { startMockMcpServer, type MockMcpServer } from '../helpers/mock-mcp-server'
+import { getConnectionsHeaderAddButton } from '../helpers/connections'
+import { getE2EBaseUrl } from '../helpers/base-url'
 
 // Serial: tests cross-check DB state via the API, sensitive to concurrent writes.
 test.describe.configure({ mode: 'serial' })
 
-const API = 'http://localhost:3000'
+const API = getE2EBaseUrl()
 
 test.describe('Connections Management - Manual Add Flow', () => {
   let appPage: AppPage
@@ -47,10 +49,11 @@ test.describe('Connections Management - Manual Add Flow', () => {
 
     // 1. From agent home, open the connections page.
     await page.locator('[data-testid="home-connections-open-page"]').click()
-    await expect(page.locator('[data-testid="connections-add-button"]')).toBeVisible()
+    const addButton = getConnectionsHeaderAddButton(page)
+    await expect(addButton).toBeVisible()
 
     // 2. Open the "New connection" directory dialog and switch to MCPs.
-    await page.locator('[data-testid="connections-add-button"]').click()
+    await addButton.click()
     await page.locator('[data-testid="directory-tab-mcps"]').click()
 
     // 3. Expand the Custom MCP tile and fill the form (no-auth path).
@@ -68,19 +71,18 @@ test.describe('Connections Management - Manual Add Flow', () => {
     await page.getByRole('button', { name: 'Cancel' }).click()
     await expect(policyDialog).not.toBeVisible({ timeout: 5000 })
 
-    // The mcp row's testid uses the server-assigned id, so match by prefix.
-    const switchLocator = page.locator('[data-testid^="connection-switch-mcp-"]')
-    await expect(switchLocator).toBeVisible({ timeout: 10000 })
-
     // 5. Cross-check that the global MCP record landed in the DB.
     const allMcpsRes = await request.get(`${API}/api/remote-mcps`)
     expect(allMcpsRes.ok()).toBeTruthy()
     const allMcps = await allMcpsRes.json()
     const created = (allMcps.servers as Array<{ id: string; name: string; url: string }>).find(
-      (m) => m.url === mockMcp.url,
+      (m) => m.name === mcpName && m.url === mockMcp.url,
     )
     expect(created, 'newly added MCP missing from /api/remote-mcps').toBeDefined()
     expect(created!.name).toBe(mcpName)
+
+    const switchLocator = page.locator(`[data-testid="connection-switch-mcp-${created!.id}"]`)
+    await expect(switchLocator).toBeVisible({ timeout: 10000 })
 
     // 6. Initially the agent does not have access — verify before toggling.
     const beforeRes = await request.get(`${API}/api/agents/${agentSlug}/remote-mcps`)
@@ -124,7 +126,7 @@ test.describe('Connections Management - Manual Add Flow', () => {
 
     // Add the MCP and turn the toggle on (compressed version of the first test).
     await page.locator('[data-testid="home-connections-open-page"]').click()
-    await page.locator('[data-testid="connections-add-button"]').click()
+    await getConnectionsHeaderAddButton(page).click()
     await page.locator('[data-testid="directory-tab-mcps"]').click()
     await page.locator('[data-testid="directory-connect-mcp-custom"]').click()
     await page.locator('[data-testid="mcp-form-name"]').fill(mcpName)
@@ -137,16 +139,15 @@ test.describe('Connections Management - Manual Add Flow', () => {
     await page.getByRole('button', { name: 'Cancel' }).click()
     await expect(policyDialog).not.toBeVisible({ timeout: 5000 })
 
-    const switchLocator = page.locator('[data-testid^="connection-switch-mcp-"]').first()
+    const allMcps = await (await request.get(`${API}/api/remote-mcps`)).json()
+    const target = (allMcps.servers as Array<{ id: string; name: string; url: string }>).find(
+      (m) => m.name === mcpName && m.url === mockMcp.url,
+    )!
+
+    const switchLocator = page.locator(`[data-testid="connection-switch-mcp-${target.id}"]`)
     await expect(switchLocator).toBeVisible({ timeout: 10000 })
     await switchLocator.click()
     await expect(switchLocator).toHaveAttribute('data-state', 'checked', { timeout: 10000 })
-
-    // Look up the MCP id once for the assertions below.
-    const allMcps = await (await request.get(`${API}/api/remote-mcps`)).json()
-    const target = (allMcps.servers as Array<{ id: string; url: string }>).find(
-      (m) => m.url === mockMcp.url,
-    )!
 
     // Toggle off.
     await switchLocator.click()

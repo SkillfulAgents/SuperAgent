@@ -6,8 +6,11 @@
 import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
+import { getE2EBaseUrl } from '../helpers/base-url'
 
 test.describe.configure({ mode: 'serial' })
+
+const API = getE2EBaseUrl()
 
 test.describe('Search palette', () => {
   let appPage: AppPage
@@ -25,29 +28,40 @@ test.describe('Search palette', () => {
     const agentName = `Search Agent ${stamp}`
     const sessionName = `Refactor Login ${stamp}`
 
-    await agentPage.createAgent(agentName)
-
-    // Agents are created as "Untitled" with a random slug, then renamed
-    // asynchronously. The display name maps to the prompt; the slug does not.
-    // Look up the actual slug from the API by name.
-    const agentsRes = await request.get('http://localhost:3000/api/agents')
-    expect(agentsRes.ok()).toBe(true)
-    const agents = (await agentsRes.json()) as Array<{ slug: string; name: string }>
-    const slug = agents.find((a) => a.name === agentName)?.slug
-    expect(slug, `agent ${agentName} not found in API`).toBeDefined()
+    const createdAgent = await agentPage.createAgent(agentName)
+    const slug = createdAgent.slug
 
     // The auto-created session keeps its default name in mock mode (no real
     // LLM). Rename it via the API so we can match it by a distinctive substring.
-    const sessionsRes = await request.get(`http://localhost:3000/api/agents/${slug}/sessions`)
+    const sessionsRes = await request.get(`${API}/api/agents/${slug}/sessions`)
     expect(sessionsRes.ok()).toBe(true)
     const sessions = (await sessionsRes.json()) as Array<{ id: string }>
     expect(sessions.length).toBeGreaterThan(0)
     const sessionId = sessions[0].id
     const patchRes = await request.patch(
-      `http://localhost:3000/api/agents/${slug}/sessions/${sessionId}`,
+      `${API}/api/agents/${slug}/sessions/${sessionId}`,
       { data: { name: sessionName } }
     )
     expect(patchRes.ok()).toBe(true)
+
+    const lastActivityAt = new Date().toISOString()
+    await page.route('**/api/agents', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback()
+        return
+      }
+
+      await route.fulfill({
+        json: [{
+          slug,
+          name: agentName,
+          createdAt: lastActivityAt,
+          status: 'running',
+          containerPort: null,
+          lastActivityAt,
+        }],
+      })
+    })
 
     // Sessions are cached by React Query — the renderer hasn't seen the rename
     // yet. Reload so the search palette pulls fresh data on first open.
@@ -62,8 +76,8 @@ test.describe('Search palette', () => {
     // Filter case-insensitively by a substring of the session name
     await searchInput.fill('refactor')
     const results = page.locator('[data-testid="search-results"]')
-    await expect(results.getByTestId('search-agent-row').filter({ hasText: agentName })).toBeVisible()
-    await expect(results.getByTestId('search-session-row').filter({ hasText: sessionName })).toBeVisible()
+    await expect(results.getByTestId('search-agent-row').filter({ hasText: agentName })).toBeVisible({ timeout: 10000 })
+    await expect(results.getByTestId('search-session-row').filter({ hasText: sessionName })).toBeVisible({ timeout: 10000 })
 
     // Active row should be the agent (index 0) — ArrowDown moves to the session
     await page.keyboard.press('ArrowDown')
@@ -93,7 +107,83 @@ test.describe('Search palette', () => {
     await expect(page.locator('[data-testid="search-input"]')).not.toBeVisible()
   })
 
-  test('Empty query shows recent agents with expand/collapse for sessions', async ({ page, request }) => {
+  test('Recent-list supports expanding sessions and keyboard navigation', async ({ page, request }, testInfo) => {
+    const stamp = `${testInfo.workerIndex}-${Date.now()}`
+    const agentName = `Search Expand Agent ${stamp}`
+    const sessionName = `Expand Session ${stamp}`
+
+    const createdAgent = await agentPage.createAgent(agentName)
+    const slug = createdAgent.slug
+
+    const lastActivityAt = new Date().toISOString()
+    await page.route('**/api/agents', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback()
+        return
+      }
+
+      await route.fulfill({
+        json: [{
+          slug,
+          name: agentName,
+          createdAt: lastActivityAt,
+          status: 'running',
+          containerPort: null,
+          lastActivityAt,
+        }],
+      })
+    })
+
+    const sessionsRes = await request.get(`${API}/api/agents/${slug}/sessions`)
+    expect(sessionsRes.ok()).toBe(true)
+    const sessions = (await sessionsRes.json()) as Array<{ id: string }>
+    expect(sessions.length).toBeGreaterThan(0)
+    const sessionId = sessions[0].id
+
+    await expect(async () => {
+      const res = await request.patch(
+        `${API}/api/agents/${slug}/sessions/${sessionId}`,
+        { data: { name: sessionName } }
+      )
+      expect(res.ok()).toBe(true)
+    }).toPass({ timeout: 5000 })
+
+    await appPage.reload()
+
+    await page.keyboard.press('ControlOrMeta+k')
+    const searchInput = page.locator('[data-testid="search-input"]')
+    await expect(searchInput).toBeVisible()
+
+    const results = page.locator('[data-testid="search-results"]')
+    const agentRow = results.getByTestId('search-agent-row').filter({ hasText: agentName })
+    const sessionRow = results.getByTestId('search-session-row').filter({ hasText: sessionName })
+    const expandToggle = agentRow.getByTestId('search-agent-expand')
+
+    await expect(agentRow).toBeVisible()
+    await expect(expandToggle).toBeVisible()
+    await expect(sessionRow).not.toBeVisible()
+
+    await agentRow.hover()
+    await page.keyboard.press('ArrowRight')
+    await expect(sessionRow).toBeVisible()
+
+    await page.keyboard.press('ArrowLeft')
+    await expect(sessionRow).not.toBeVisible()
+
+    await expandToggle.click()
+    await expect(sessionRow).toBeVisible()
+
+    await sessionRow.hover()
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-testid="search-input"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName)
+    await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 10000 })
+
+    await page.locator('[data-testid="agent-breadcrumb"]').click()
+    await agentPage.deleteAgent()
+  })
+
+  test('Search query shows matching session with its agent', async ({ page, request }) => {
     const stamp = Date.now()
     const agentName = `Recent Agent ${stamp}`
     const sessionName = `Deploy Pipeline ${stamp}`
@@ -101,14 +191,14 @@ test.describe('Search palette', () => {
     await agentPage.createAgent(agentName)
 
     // Look up the slug
-    const agentsRes = await request.get('http://localhost:3000/api/agents')
+    const agentsRes = await request.get(`${API}/api/agents`)
     expect(agentsRes.ok()).toBe(true)
     const agents = (await agentsRes.json()) as Array<{ slug: string; name: string }>
     const slug = agents.find((a) => a.name === agentName)?.slug
     expect(slug, `agent ${agentName} not found in API`).toBeDefined()
 
     // Wait for the session to finish processing before renaming
-    const sessionsRes = await request.get(`http://localhost:3000/api/agents/${slug}/sessions`)
+    const sessionsRes = await request.get(`${API}/api/agents/${slug}/sessions`)
     expect(sessionsRes.ok()).toBe(true)
     const sessions = (await sessionsRes.json()) as Array<{ id: string }>
     expect(sessions.length).toBeGreaterThan(0)
@@ -117,7 +207,7 @@ test.describe('Search palette', () => {
     // Retry the PATCH in case the session is still being processed
     await expect(async () => {
       const res = await request.patch(
-        `http://localhost:3000/api/agents/${slug}/sessions/${sessionId}`,
+        `${API}/api/agents/${slug}/sessions/${sessionId}`,
         { data: { name: sessionName } }
       )
       expect(res.ok()).toBe(true)
@@ -125,45 +215,24 @@ test.describe('Search palette', () => {
 
     await appPage.reload()
 
-    // Open the search palette with empty query
+    // Open the search palette and filter by this test's unique session. The
+    // empty recent list is global and can legitimately be displaced by other
+    // workers creating newer agents.
     await page.keyboard.press('ControlOrMeta+k')
     const searchInput = page.locator('[data-testid="search-input"]')
     await expect(searchInput).toBeVisible()
+    await searchInput.fill(sessionName)
 
     const results = page.locator('[data-testid="search-results"]')
 
-    // The agent should appear in the recent list without typing anything
     const agentRow = results.getByTestId('search-agent-row').filter({ hasText: agentName })
     const sessionRow = results.getByTestId('search-session-row').filter({ hasText: sessionName })
     await expect(agentRow).toBeVisible()
-
-    // Wait for sessions to load — the expand chevron only renders once sessions
-    // are fetched, so its presence signals the async useQueries completed.
-    await expect(agentRow.getByTestId('search-agent-expand')).toBeVisible()
-
-    // Sessions should be collapsed (not visible yet)
-    await expect(sessionRow).not.toBeVisible()
-
-    // Hover over the agent to set keyboard focus to it (activeIndex).
-    // Other agents from parallel tests may be more recent, so the agent
-    // might not be at index 0.
-    await agentRow.hover()
-
-    // ArrowRight expands the agent's sessions
-    await page.keyboard.press('ArrowRight')
     await expect(sessionRow).toBeVisible()
 
-    // ArrowLeft collapses them
-    await page.keyboard.press('ArrowLeft')
-    await expect(sessionRow).not.toBeVisible()
-
-    // Click the chevron to expand
-    await agentRow.getByTestId('search-agent-expand').click()
-    await expect(sessionRow).toBeVisible()
-
-    // Enter on a session navigates to it (dialog closes, lands on the agent)
-    await page.keyboard.press('ArrowDown')
-    await page.keyboard.press('Enter')
+    // Click the target session row so this test does not depend on the global
+    // activeIndex in a list that can contain agents from parallel specs.
+    await sessionRow.click()
     await expect(page.locator('[data-testid="search-input"]')).not.toBeVisible()
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName)
 

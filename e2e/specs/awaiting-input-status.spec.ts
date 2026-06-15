@@ -116,20 +116,22 @@ test.describe('Awaiting Input Status', () => {
     await agentPage.waitForStatus('idle', 15000)
   })
 
-  test('sidebar session shows question mark icon when awaiting input', async ({ page }) => {
+  test('sidebar session shows question mark icon when awaiting input', async () => {
     await sessionPage.sendMessage('ask secret')
 
     await sessionPage.waitForSecretRequest('OPENAI_API_KEY')
 
-    // The sidebar session sub-item should have a CircleHelp icon (question mark)
-    const sidebar = page.locator('[data-testid="app-sidebar"]')
-    const sessionItems = sidebar.locator('[data-testid^="session-item-"]')
+    // The sidebar session sub-item for this agent should show the needs-input
+    // indicator. Scope to the agent row so parallel workers cannot satisfy this
+    // with another agent's session.
+    await agentPage.expandAgent(testAgentName)
+    const sessionItem = agentPage.getAgentLi(testAgentName).locator('[data-testid^="session-item-"]').first()
 
     // At least one session item should exist
-    await expect(sessionItems.first()).toBeVisible({ timeout: 10000 })
+    await expect(sessionItem).toBeVisible({ timeout: 15000 })
 
     // The session item should contain the "needs input" indicator (orange pulsing dot)
-    const awaitingIndicator = sessionItems.first().getByRole('img', { name: 'needs input' })
+    const awaitingIndicator = sessionItem.getByRole('img', { name: 'needs input' })
     await expect(awaitingIndicator).toBeVisible({ timeout: 10000 })
   })
 })

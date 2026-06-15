@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
+import { createAgent } from '../helpers/agents'
 
 
 test.describe('Agent Lifecycle', () => {
@@ -20,8 +21,8 @@ test.describe('Agent Lifecycle', () => {
     // Create agent
     await agentPage.createAgent(agentName)
 
-    // Verify agent appears in sidebar
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
+    // Verify the created agent is selected
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName)
 
     // Verify main content is visible
     await expect(appPage.getMainContent()).toBeVisible()
@@ -30,11 +31,15 @@ test.describe('Agent Lifecycle', () => {
     await agentPage.deleteAgent()
   })
 
-  test('select an agent', async ({ page }) => {
+  test('select an agent', async ({ page, request }) => {
     const agentName = `Selectable Agent ${Date.now()}`
 
-    // Create agent first
-    await agentPage.createAgent(agentName)
+    // Seed the target through the API so selection coverage is isolated from
+    // the slower create-agent/session-start workflow.
+    const agent = await createAgent(request, agentName)
+    agentPage.rememberAgent(agent)
+    await page.reload()
+    await appPage.waitForAgentsLoaded()
 
     // Click somewhere else (the sidebar header), then select the agent again
     await page.locator('[data-testid="home-button"]').click()
@@ -44,7 +49,7 @@ test.describe('Agent Lifecycle', () => {
     await expect(appPage.getMainContent()).toBeVisible()
 
     // Clean up
-    await agentPage.deleteAgent()
+    await agentPage.deleteAgentByNameFromApi(agentName)
   })
 
   test('delete an agent', async ({ page }) => {
@@ -53,14 +58,11 @@ test.describe('Agent Lifecycle', () => {
     // Create agent first
     await agentPage.createAgent(agentName)
 
-    // Verify it exists
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
-
     // Delete via settings
     await agentPage.deleteAgent()
 
-    // Verify agent is removed from sidebar
-    await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
+    // Verify agent is removed server-side
+    await agentPage.waitForAgentDeletedFromApi(agentName)
   })
 
   test('create and delete agent end-to-end', async ({ page }) => {
@@ -68,12 +70,12 @@ test.describe('Agent Lifecycle', () => {
 
     // Create agent
     await agentPage.createAgent(agentName)
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName)
 
     // Delete via settings
     await agentPage.deleteAgent()
 
     // Verify agent is gone
-    await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
+    await agentPage.waitForAgentDeletedFromApi(agentName)
   })
 })

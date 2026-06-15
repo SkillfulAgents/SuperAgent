@@ -142,9 +142,11 @@ export async function initializeServices() {
   })
 
   // Start account sync service (deferred — syncs OAuth account status with remote providers)
-  accountSyncService.start().catch((error) => {
-    console.error('Failed to start account sync service:', error)
-  })
+  if (process.env.E2E_MOCK !== 'true') {
+    accountSyncService.start().catch((error) => {
+      console.error('Failed to start account sync service:', error)
+    })
+  }
 
   // Refreshes platform account + billing info when connected (no-op otherwise).
   platformService.start()

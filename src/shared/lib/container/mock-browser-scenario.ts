@@ -1,14 +1,15 @@
 /**
  * Browser scenario for E2E testing.
  *
- * Launches a real Chromium (from Playwright) in headless mode, connects via CDP,
- * starts screencast, and streams frames through a mock WS server that the
- * browser-stream-proxy connects to — exercising the full streaming pipeline.
+ * Launches a real Chromium (from Playwright) in headless mode, captures rendered
+ * frames from the page, and streams them through a mock WS server that the
+ * browser-stream-proxy connects to — exercising the full browser preview
+ * pipeline with real browser pixels.
  *
  * This file is only imported when E2E_MOCK=true && E2E_CHROMIUM_PATH is set.
  */
 
-import { spawn, type ChildProcess } from 'child_process'
+import { chromium, type Browser, type Page } from '@playwright/test'
 import { WebSocketServer, WebSocket } from 'ws'
 import http from 'http'
 import net from 'net'
@@ -17,8 +18,9 @@ import type { MockScenario, MockContainerClient } from './mock-container-client'
 interface BrowserState {
   httpServer: http.Server
   wss: WebSocketServer
-  cdpWs: WebSocket | null
-  chromeProcess: ChildProcess | null
+  browser: Browser | null
+  page: Page | null
+  captureTimer: ReturnType<typeof setInterval> | null
   port: number
 }
 
@@ -34,20 +36,6 @@ function findFreePort(): Promise<number> {
     })
     server.on('error', reject)
   })
-}
-
-async function waitForCDP(port: number, timeoutMs = 15000): Promise<void> {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/version`)
-      if (res.ok) return
-    } catch {
-      // CDP not ready yet
-    }
-    await new Promise((r) => setTimeout(r, 200))
-  }
-  throw new Error(`Chrome CDP not ready on port ${port} after ${timeoutMs}ms`)
 }
 
 export class BrowserScenario implements MockScenario {
@@ -79,8 +67,8 @@ export class BrowserScenario implements MockScenario {
       throw new Error('E2E_CHROMIUM_PATH not set — cannot launch browser for E2E test')
     }
 
-    // 1. Find free ports for mock WS server and Chrome CDP
-    const [mockPort, cdpPort] = await Promise.all([findFreePort(), findFreePort()])
+    // 1. Find a free port for the mock WS server
+    const mockPort = await findFreePort()
 
     // 2. Start mock HTTP + WS server that the browser-stream-proxy will connect to
     const httpServer = http.createServer((req, res) => {
@@ -96,7 +84,7 @@ export class BrowserScenario implements MockScenario {
     const wss = new WebSocketServer({ server: httpServer, path: '/browser/stream' })
 
     // Buffer the last frame so late-connecting WS clients (the browser-stream-proxy)
-    // get an immediate frame even if the page is static and CDP stopped sending.
+    // get an immediate frame even if the page is static.
     let lastMetadataJson: string | null = null
     let lastFrameBuffer: Buffer | null = null
 
@@ -119,108 +107,76 @@ export class BrowserScenario implements MockScenario {
     const state: BrowserState = {
       httpServer,
       wss,
-      cdpWs: null,
-      chromeProcess: null,
+      browser: null,
+      page: null,
+      captureTimer: null,
       port: mockPort,
     }
     activeBrowsers.set(sessionId, state)
 
-    // 3. Launch Chromium in headless mode
-    const chrome = spawn(
-      chromiumPath,
-      [
-        `--remote-debugging-port=${cdpPort}`,
-        '--headless=new',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-gpu',
-        '--no-sandbox',
-        `--user-data-dir=/tmp/e2e-browser-${Date.now()}`,
-      ],
-      { detached: false, stdio: 'pipe' },
-    )
+    let publishedFrameCount = 0
+    const publishFrame = (frameBuffer: Buffer, meta: { deviceWidth?: number; deviceHeight?: number } = {}) => {
+      const metadataJson = JSON.stringify({
+        type: 'metadata',
+        deviceWidth: meta.deviceWidth || 1280,
+        deviceHeight: meta.deviceHeight || 720,
+      })
 
-    state.chromeProcess = chrome
-    chrome.on('exit', (code) => {
-      console.log(`[BrowserScenario] Chrome exited with code ${code}`)
-    })
-
-    // 4. Wait for CDP endpoint to become available
-    await waitForCDP(cdpPort)
-
-    // 5. Get a PAGE-level CDP WebSocket URL.
-    //    Page.startScreencast only works on page targets, not the browser target.
-    //    /json returns the list of page targets; /json/version returns the browser target.
-    const pagesRes = await fetch(`http://127.0.0.1:${cdpPort}/json`)
-    const pages = (await pagesRes.json()) as Array<{ webSocketDebuggerUrl: string; type: string }>
-    const pageTarget = pages.find((p) => p.type === 'page')
-    if (!pageTarget) {
-      throw new Error('No page target found in Chrome')
-    }
-
-    // 6. Connect to the page-level CDP target
-    const cdpWs = new WebSocket(pageTarget.webSocketDebuggerUrl)
-    state.cdpWs = cdpWs
-
-    await new Promise<void>((resolve, reject) => {
-      cdpWs.on('open', resolve)
-      cdpWs.on('error', reject)
-    })
-
-    let cmdId = 1
-    const cdpSend = (method: string, params?: Record<string, unknown>) => {
-      cdpWs.send(JSON.stringify({ id: cmdId++, method, params }))
-    }
-
-    // 7. Enable page events and navigate
-    cdpSend('Page.enable')
-    cdpSend('Page.navigate', { url })
-
-    // Wait a moment for navigation
-    await new Promise((r) => setTimeout(r, 2000))
-
-    // 8. Start screencast on the page target
-    cdpSend('Page.startScreencast', {
-      format: 'jpeg',
-      quality: 50,
-      maxWidth: 1280,
-      maxHeight: 720,
-    })
-
-    // 9. Forward screencast frames to connected WS clients (the browser-stream-proxy)
-    cdpWs.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString())
-        if (msg.method === 'Page.screencastFrame') {
-          const frameBuffer = Buffer.from(msg.params.data, 'base64')
-          const meta = msg.params.metadata || {}
-
-          const metadataJson = JSON.stringify({
-            type: 'metadata',
-            deviceWidth: meta.deviceWidth || 1280,
-            deviceHeight: meta.deviceHeight || 720,
-          })
-
-          // Buffer for late-connecting clients
-          lastMetadataJson = metadataJson
-          lastFrameBuffer = frameBuffer
-
-          wss.clients.forEach((ws) => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(metadataJson)
-              ws.send(frameBuffer)
-            }
-          })
-
-          // Ack the frame so CDP keeps sending
-          cdpSend('Page.screencastFrameAck', {
-            sessionId: msg.params.sessionId,
-          })
-        }
-      } catch {
-        // Ignore parse errors
+      // Buffer for late-connecting clients
+      lastMetadataJson = metadataJson
+      lastFrameBuffer = frameBuffer
+      publishedFrameCount += 1
+      if (publishedFrameCount === 1) {
+        console.log(`[BrowserScenario] Published first browser frame (${frameBuffer.length} bytes)`)
       }
+
+      wss.clients.forEach((ws) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(metadataJson)
+          ws.send(frameBuffer)
+        }
+      })
+    }
+
+    // 3. Launch Chromium via Playwright and stream real rendered page frames.
+    // Raw CDP Page.startScreencast currently acknowledges but emits no frames in
+    // headless Chrome for Testing on CI-like hosts. Playwright's screenshot path
+    // still captures actual browser pixels, which keeps this E2E test meaningful
+    // while remaining runnable in GitHub Actions.
+    const browser = await chromium.launch({
+      executablePath: chromiumPath,
+      headless: true,
+      args: ['--no-sandbox'],
     })
+    state.browser = browser
+
+    const page = await browser.newPage({
+      viewport: { width: 1280, height: 720 },
+      deviceScaleFactor: 1,
+    })
+    state.page = page
+    await page.goto(url, { waitUntil: 'load', timeout: 15000 })
+
+    const captureBrowserFrame = async () => {
+      const frameBuffer = await page.screenshot({
+        type: 'jpeg',
+        quality: 50,
+        animations: 'disabled',
+        caret: 'hide',
+      })
+      const viewport = page.viewportSize()
+      publishFrame(frameBuffer, {
+        deviceWidth: viewport?.width,
+        deviceHeight: viewport?.height,
+      })
+    }
+
+    await captureBrowserFrame()
+    state.captureTimer = setInterval(() => {
+      void captureBrowserFrame().catch((error) => {
+        console.error('[BrowserScenario] Playwright screenshot failed:', error)
+      })
+    }, 500)
 
     // 10. Update container manager cached status to point to the mock WS server's port.
     //     browser-stream-proxy reads getCachedInfo() to know where to connect.
@@ -250,7 +206,7 @@ export class BrowserScenario implements MockScenario {
 }
 
 /**
- * Clean up a specific browser scenario (kill Chrome, close WS server).
+ * Clean up a specific browser scenario (close Chromium, close WS server).
  */
 export function cleanupBrowserSession(sessionId: string): void {
   const state = activeBrowsers.get(sessionId)
@@ -259,8 +215,15 @@ export function cleanupBrowserSession(sessionId: string): void {
   console.log(`[BrowserScenario] Cleaning up session ${sessionId}`)
   activeBrowsers.delete(sessionId)
 
-  try { state.cdpWs?.close() } catch { /* best-effort cleanup */ }
-  try { state.chromeProcess?.kill() } catch { /* best-effort cleanup */ }
+  try {
+    if (state.captureTimer) clearInterval(state.captureTimer)
+  } catch { /* best-effort cleanup */ }
+  try {
+    void state.page?.close().catch(() => {})
+  } catch { /* best-effort cleanup */ }
+  try {
+    void state.browser?.close().catch(() => {})
+  } catch { /* best-effort cleanup */ }
   try { state.wss.close() } catch { /* best-effort cleanup */ }
   try { state.httpServer.close() } catch { /* best-effort cleanup */ }
 }

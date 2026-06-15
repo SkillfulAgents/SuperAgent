@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
+import { getE2EBaseUrl } from '../helpers/base-url'
 
 test.describe.configure({ mode: 'serial' })
 
-const API = 'http://localhost:3000'
+const API = getE2EBaseUrl()
 
 test.describe('Account Status & Reconnect', () => {
   let appPage: AppPage

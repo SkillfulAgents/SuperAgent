@@ -32,18 +32,26 @@ test.describe('File & Folder Upload', () => {
     testAgentName = `Upload Agent ${testInfo.workerIndex}-${Date.now()}`
     await agentPage.createAgent(testAgentName)
 
-    // Send an initial message to navigate to the session page (message-input.tsx)
-    // This avoids the landing page's Cmd+Enter requirement
-    await sessionPage.sendMessage('hello')
+    // createAgent already starts the first session, then returns to agent home.
+    // Reopen it from the main sessions list; sidebar expansion is intentionally
+    // not part of the file upload behavior under test.
+    await sessionPage.selectFirstSessionOnAgentHome()
     await sessionPage.waitForResponse(15000)
     await sessionPage.waitForInputEnabled()
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-upload-'))
   })
 
-  test.afterEach(() => {
+  test.afterEach(async () => {
     if (tmpDir) {
       fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+    if (testAgentName) {
+      try {
+        await agentPage.deleteAgentByNameFromApi(testAgentName)
+      } catch {
+        // Keep teardown best-effort so the original failure stays visible.
+      }
     }
   })
 

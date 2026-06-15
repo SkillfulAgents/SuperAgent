@@ -5,11 +5,9 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 
-const e2eDataDir = path.join(__dirname, '..', '..', '.e2e-data')
-
-function getFilePill(page: import('@playwright/test').Page, fileName: string) {
-  return page.getByTestId('file-pill').filter({ hasText: fileName })
-}
+const e2eDataDir = path.resolve(
+  process.env.SUPERAGENT_DATA_DIR ?? path.join(__dirname, '..', '..', '.e2e-data'),
+)
 
 function markdown(page: import('@playwright/test').Page) {
   return page.getByTestId('markdown-renderer')
@@ -19,23 +17,27 @@ function fileTab(page: import('@playwright/test').Page, fileName: string) {
   return page.getByTestId('file-tab').filter({ hasText: fileName })
 }
 
-async function getLatestAgentSlug(page: import('@playwright/test').Page): Promise<string> {
-  const breadcrumb = page.locator('[data-testid="agent-breadcrumb"]')
-  const agentName = await breadcrumb.textContent() || ''
-
-  const response = await page.request.get('http://localhost:3000/api/agents')
-  const agents = await response.json() as Array<{ slug: string; name: string; createdAt: string }>
-  const match = agents.find(a => a.name === agentName.trim())
-  if (match) return match.slug
-
-  agents.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-  return agents[0]?.slug || ''
+function uniqueAgentName(prefix: string) {
+  return `${prefix} ${test.info().workerIndex}-${Date.now()}`
 }
 
 function seedWorkspaceFile(agentSlug: string, relativePath: string, content: string | Buffer) {
   const filePath = path.join(e2eDataDir, 'agents', agentSlug, 'workspace', relativePath)
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, content)
+}
+
+async function sendAndWaitForFilePill(
+  sessionPage: SessionPage,
+  content: string,
+  fileName: string,
+  timeout = 15000,
+) {
+  const filePills = sessionPage.getMessageList().getByTestId('file-pill').filter({ hasText: fileName })
+  const filePillCount = await filePills.count()
+  await sessionPage.sendMessage(content)
+  await expect.poll(() => filePills.count(), { timeout }).toBeGreaterThan(filePillCount)
+  return filePills.last()
 }
 
 test.describe('File Preview', () => {
@@ -53,14 +55,10 @@ test.describe('File Preview', () => {
   })
 
   test('file delivery shows pill and opens preview on click', async ({ page }) => {
-    await agentPage.createAgent(`FilePreview ${Date.now()}`)
-    const agentSlug = await getLatestAgentSlug(page)
-    seedWorkspaceFile(agentSlug, 'output/report.md', '# Test Report\n\nThis is a test with **bold** text.')
+    const agent = await agentPage.createAgent(uniqueAgentName('FilePreview'))
+    seedWorkspaceFile(agent.slug, 'output/report.md', '# Test Report\n\nThis is a test with **bold** text.')
 
-    await sessionPage.sendMessage('deliver file')
-    await sessionPage.waitForResponse(15000)
-
-    const filePill = getFilePill(page, 'report.md').first()
+    const filePill = await sendAndWaitForFilePill(sessionPage, 'deliver file', 'report.md')
     await expect(filePill).toBeVisible({ timeout: 10000 })
 
     await filePill.click()
@@ -70,14 +68,10 @@ test.describe('File Preview', () => {
   })
 
   test('closing last tab closes the tray', async ({ page }) => {
-    await agentPage.createAgent(`FileClose ${Date.now()}`)
-    const agentSlug = await getLatestAgentSlug(page)
-    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report')
+    const agent = await agentPage.createAgent(uniqueAgentName('FileClose'))
+    seedWorkspaceFile(agent.slug, 'output/report.md', '# Report')
 
-    await sessionPage.sendMessage('deliver file')
-    await sessionPage.waitForResponse(15000)
-
-    const filePill = getFilePill(page, 'report.md').first()
+    const filePill = await sendAndWaitForFilePill(sessionPage, 'deliver file', 'report.md')
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
 
@@ -92,24 +86,17 @@ test.describe('File Preview', () => {
   })
 
   test('re-delivering same file refreshes content', async ({ page }) => {
-    await agentPage.createAgent(`FileRedeliver ${Date.now()}`)
-    const agentSlug = await getLatestAgentSlug(page)
-    seedWorkspaceFile(agentSlug, 'output/report.md', '# Version 1')
+    const agent = await agentPage.createAgent(uniqueAgentName('FileRedeliver'))
+    seedWorkspaceFile(agent.slug, 'output/report.md', '# Version 1')
 
-    await sessionPage.sendMessage('deliver file')
-    await sessionPage.waitForResponse(15000)
-
-    const firstPill = getFilePill(page, 'report.md').first()
+    const firstPill = await sendAndWaitForFilePill(sessionPage, 'deliver file', 'report.md')
     await expect(firstPill).toBeVisible({ timeout: 10000 })
     await firstPill.click()
 
     await expect(markdown(page).getByRole('heading', { name: 'Version 1' })).toBeVisible({ timeout: 10000 })
 
-    seedWorkspaceFile(agentSlug, 'output/report.md', '# Version 2')
-    await sessionPage.sendMessage('deliver file')
-    await sessionPage.waitForResponse(15000)
-
-    const secondPill = getFilePill(page, 'report.md').nth(1)
+    seedWorkspaceFile(agent.slug, 'output/report.md', '# Version 2')
+    const secondPill = await sendAndWaitForFilePill(sessionPage, 'deliver file', 'report.md')
     await expect(secondPill).toBeVisible({ timeout: 10000 })
     await secondPill.click()
 
@@ -117,30 +104,25 @@ test.describe('File Preview', () => {
   })
 
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {
-    await agentPage.createAgent(`MultiFile ${Date.now()}`)
-    const agentSlug = await getLatestAgentSlug(page)
-    seedWorkspaceFile(agentSlug, 'output/report.md', '# Report Content\n\nDetails here.')
+    const agent = await agentPage.createAgent(uniqueAgentName('MultiFile'))
+    seedWorkspaceFile(agent.slug, 'output/report.md', '# Report Content\n\nDetails here.')
     // A real 1x1 PNG so the <img> actually loads and is visible (the `deliver
     // image` scenario points at output/chart.png — see mock-container-client).
     const onePxPng = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
       'base64',
     )
-    seedWorkspaceFile(agentSlug, 'output/chart.png', onePxPng)
+    seedWorkspaceFile(agent.slug, 'output/chart.png', onePxPng)
 
     // Deliver and open the markdown file → first tab.
-    await sessionPage.sendMessage('deliver file')
-    await sessionPage.waitForResponse(15000)
-    const reportPill = getFilePill(page, 'report.md').first()
+    const reportPill = await sendAndWaitForFilePill(sessionPage, 'deliver file', 'report.md')
     await expect(reportPill).toBeVisible({ timeout: 10000 })
     await reportPill.click()
     await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
     await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 10000 })
 
     // Deliver and open the image file → second tab, image renderer.
-    await sessionPage.sendMessage('deliver image')
-    await sessionPage.waitForResponse(15000)
-    const chartPill = getFilePill(page, 'chart.png').first()
+    const chartPill = await sendAndWaitForFilePill(sessionPage, 'deliver image', 'chart.png')
     await expect(chartPill).toBeVisible({ timeout: 10000 })
     await chartPill.click()
     await expect(page.locator('img[alt="chart.png"]')).toBeVisible({ timeout: 10000 })

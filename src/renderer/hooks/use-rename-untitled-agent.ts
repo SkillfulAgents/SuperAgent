@@ -27,7 +27,16 @@ export function useRenameUntitledAgent() {
       if (!res.ok) throw new Error('Failed to rename agent')
       return res.json() as Promise<ApiAgent>
     },
-    onSuccess: (_agent, variables) => {
+    onSuccess: (agent, variables) => {
+      if (agent) {
+        queryClient.setQueryData(['agents', variables.slug], agent)
+        queryClient.setQueryData<ApiAgent[]>(['agents'], (agents) => {
+          if (!agents) return agents
+          return agents.map((candidate) => (
+            candidate.slug === agent.slug ? { ...candidate, ...agent } : candidate
+          ))
+        })
+      }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['agents', variables.slug] })
     },

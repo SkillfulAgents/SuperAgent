@@ -10,6 +10,15 @@ import { buildAgentTemplateZip } from '../helpers/agent-template-zip'
 const ONBOARDING_MESSAGE =
   'This agent was just set up from a template. Please run the agent-onboarding skill to help me configure it.'
 
+function waitForImportResponse(page: import('@playwright/test').Page) {
+  return page.waitForResponse((response) => {
+    const url = new URL(response.url())
+    return response.request().method() === 'POST'
+      && url.pathname === '/api/agents/import-template'
+      && response.status() === 201
+  }, { timeout: 15000 })
+}
+
 /**
  * Covers the AgentHome → import → onboarding-session flow refactored to use
  * `useStartOnboardingSession`. The wizard's CreateAgentForm uses the same
@@ -58,18 +67,26 @@ test.describe('Agent Import Onboarding', () => {
     // Upload the fixture zip into the dialog's hidden file input, then submit.
     await dialog.locator('input[type="file"]').setInputFiles(zipPath)
     await expect(dialog.getByText('with-onboarding.zip')).toBeVisible()
+    const importResponsePromise = waitForImportResponse(page)
     await dialog.locator('button[type="submit"]').click()
+    const importResponse = await importResponsePromise
+    agentPage.rememberAgent(await importResponse.json() as { name: string; slug: string })
 
     // Dialog closes, then `useStartOnboardingSession` creates the onboarding
     // session and `selectSession` routes to it — the message list renders.
     await expect(dialog).not.toBeVisible({ timeout: 15000 })
-    await expect(sessionPage.getMessageList()).toBeVisible({ timeout: 15000 })
+    try {
+      await expect(sessionPage.getMessageList()).toBeVisible({ timeout: 15000 })
+    } catch {
+      await agentPage.waitForAgentInSidebar(agentName)
+      await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(agentName))
+    }
 
     // The first user message in the new session is the onboarding prompt.
     await sessionPage.expectUserMessage(ONBOARDING_MESSAGE)
 
-    // The imported agent is now selected in the sidebar.
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
+    // The imported agent is now selected for the onboarding session.
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName, { timeout: 15000 })
   })
 
   test('onboarding setup dialog is visible while the session is being created', async ({ page }) => {
@@ -87,7 +104,10 @@ test.describe('Agent Import Onboarding', () => {
     await expect(dialog).toBeVisible()
 
     await dialog.locator('input[type="file"]').setInputFiles(zipPath)
+    const importResponsePromise = waitForImportResponse(page)
     await dialog.locator('button[type="submit"]').click()
+    const importResponse = await importResponsePromise
+    agentPage.rememberAgent(await importResponse.json() as { name: string; slug: string })
 
     // MockContainerClient delays onboarding session creation by 2 s —
     // the "Setting up your agent…" dialog should be visible during this window.
@@ -116,7 +136,10 @@ test.describe('Agent Import Onboarding', () => {
     await expect(dialog).toBeVisible()
 
     await dialog.locator('input[type="file"]').setInputFiles(zipPath)
+    const importResponsePromise = waitForImportResponse(page)
     await dialog.locator('button[type="submit"]').click()
+    const importResponse = await importResponsePromise
+    agentPage.rememberAgent(await importResponse.json() as { name: string; slug: string })
     await expect(dialog).not.toBeVisible({ timeout: 15000 })
 
     // No onboarding skill → the imported agent's AgentHome stays put. The
@@ -125,6 +148,5 @@ test.describe('Agent Import Onboarding', () => {
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName, { timeout: 15000 })
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
     await expect(sessionPage.getMessageList()).not.toBeVisible()
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
   })
 })

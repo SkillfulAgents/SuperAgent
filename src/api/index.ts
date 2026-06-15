@@ -68,8 +68,16 @@ if (!isAuthMode()) {
 
 // Simple rate limiter for auth endpoints
 const authAttempts = new Map<string, { count: number; resetAt: number }>()
-const RATE_LIMIT_MAX = 100
-const RATE_LIMIT_WINDOW = 15 * 60 * 1000 // 15 minutes
+const configuredAuthRateLimitMax = Number(process.env.AUTH_RATE_LIMIT_MAX)
+const configuredAuthRateLimitWindow = Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS)
+const RATE_LIMIT_MAX =
+  Number.isFinite(configuredAuthRateLimitMax) && configuredAuthRateLimitMax > 0
+    ? configuredAuthRateLimitMax
+    : 100
+const RATE_LIMIT_WINDOW =
+  Number.isFinite(configuredAuthRateLimitWindow) && configuredAuthRateLimitWindow > 0
+    ? configuredAuthRateLimitWindow
+    : 15 * 60 * 1000 // 15 minutes
 
 if (isAuthMode()) {
   app.use('/api/auth/*', async (c, next) => {

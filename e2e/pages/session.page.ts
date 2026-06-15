@@ -73,7 +73,12 @@ export class SessionPage {
    */
   async sendMessage(content: string) {
     await this.typeMessage(content)
-    await this.getSendButton().click()
+    await expect(
+      this.page.locator('[data-testid="agent-home-intro-overlay"]'),
+    ).toBeHidden({ timeout: 5000 })
+    const sendButton = this.getSendButton()
+    await expect(sendButton).toBeEnabled({ timeout: 10000 })
+    await sendButton.click()
   }
 
   /**
@@ -152,7 +157,32 @@ export class SessionPage {
     if (await expandChevron.isVisible({ timeout: 500 }).catch(() => false)) {
       await expandChevron.click()
     }
-    await agentLi.locator(`[data-testid^="session-item-"]`).first().click()
+    const firstSession = agentLi.locator(`[data-testid^="session-item-"]`).first()
+    await expect(firstSession).toBeVisible({ timeout: 15000 })
+    await firstSession.click()
+    await expect(this.getMessageList()).toBeVisible({ timeout: 15000 })
+  }
+
+  /**
+   * Click the first session from AgentHome's main "Sessions" list.
+   * This avoids relying on sidebar expansion when a test creates an agent and
+   * immediately needs to reopen the initial session under high parallelism.
+   */
+  async selectFirstSessionOnAgentHome() {
+    const firstSession = this.page.locator('main').getByRole('button', { name: /New Session/ }).first()
+    await expect(firstSession).toBeVisible({ timeout: 15000 })
+    await firstSession.click()
+    await expect(this.getMessageList()).toBeVisible({ timeout: 15000 })
+  }
+
+  /**
+   * Click a specific session from AgentHome's main "Sessions" list.
+   */
+  async selectSessionOnAgentHome(sessionId: string) {
+    const session = this.page.getByTestId(`agent-home-session-${sessionId}`)
+    await expect(session).toBeVisible({ timeout: 15000 })
+    await session.click()
+    await expect(this.getMessageList()).toBeVisible({ timeout: 15000 })
   }
 
   /**
@@ -470,26 +500,56 @@ export class SessionPage {
     return this.page.locator('[data-testid="computer-use-request"]')
   }
 
+  async waitForComputerUseResolved(status: 'executed' | 'denied', timeout = 15000) {
+    const completed = this.page.locator(`[data-testid="computer-use-request-completed"][data-status="${status}"]`).first()
+
+    await expect.poll(async () => {
+      if (await completed.isVisible().catch(() => false)) return 'completed'
+      if (await this.getComputerUseRequests().count() === 0) return 'gone'
+      return 'pending'
+    }, { timeout }).not.toBe('pending')
+  }
+
+  private async waitForComputerUseActionResponse(action: () => Promise<void>) {
+    const responsePromise = this.page.waitForResponse((response) => {
+      const url = new URL(response.url())
+      return response.request().method() === 'POST' && /\/api\/agents\/[^/]+\/sessions\/[^/]+\/computer-use$/.test(url.pathname)
+    }, { timeout: 15000 })
+
+    await action()
+
+    const response = await responsePromise
+    expect(response.ok()).toBeTruthy()
+  }
+
   async approveComputerUseOnce() {
-    const container = this.page.locator('[data-testid="computer-use-request"]').first()
-    // "Allow Once" is inside a popover opened by the chevron next to "Allow 15 min"
-    await container.locator('[data-testid="computer-use-allow-timed-btn-chevron"]').click()
-    // The popover is portaled to document.body, so locate the button on the page
-    await this.page.locator('[data-testid="computer-use-allow-once-btn"]').click()
+    const container = this.page.locator('[data-testid="computer-use-request"]:visible').first()
+    await this.waitForComputerUseActionResponse(async () => {
+      // "Allow Once" is inside a popover opened by the chevron next to "Allow 15 min"
+      await container.locator('[data-testid="computer-use-allow-timed-btn-chevron"]').click()
+      // The popover is portaled to document.body, so locate the button on the page
+      await this.page.locator('[data-testid="computer-use-allow-once-btn"]').click()
+    })
   }
 
   async approveComputerUseTimed() {
-    const container = this.page.locator('[data-testid="computer-use-request"]').first()
-    await container.locator('[data-testid="computer-use-allow-timed-btn"]').click()
+    const container = this.page.locator('[data-testid="computer-use-request"]:visible').first()
+    await this.waitForComputerUseActionResponse(async () => {
+      await container.locator('[data-testid="computer-use-allow-timed-btn"]').click()
+    })
   }
 
   async approveComputerUseAlways() {
-    const container = this.page.locator('[data-testid="computer-use-request"]').first()
-    await container.locator('[data-testid="computer-use-allow-always-btn"]').click()
+    const container = this.page.locator('[data-testid="computer-use-request"]:visible').first()
+    await this.waitForComputerUseActionResponse(async () => {
+      await container.locator('[data-testid="computer-use-allow-always-btn"]').click()
+    })
   }
 
   async denyComputerUse() {
-    const container = this.page.locator('[data-testid="computer-use-request"]').first()
-    await container.locator('[data-testid="computer-use-deny-btn"]').click()
+    const container = this.page.locator('[data-testid="computer-use-request"]:visible').first()
+    await this.waitForComputerUseActionResponse(async () => {
+      await container.locator('[data-testid="computer-use-deny-btn"]').click()
+    })
   }
 }

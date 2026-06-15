@@ -1,9 +1,10 @@
 import { test, expect, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
+import { getE2EBaseUrl } from '../helpers/base-url'
 
 // web-chromium's request fixture has no baseURL configured, so use an absolute
 // API base (matches connections-page-policy-modal.spec.ts).
-const API = 'http://localhost:3000'
+const API = getE2EBaseUrl()
 
 /**
  * Opens Global Settings → Connections and clicks through to the detail page
@@ -22,16 +23,19 @@ async function openConnectionDetail(page: Page, name: string) {
 }
 
 test.describe('Scope Policy Editor — risk-label grouping', () => {
-  test('groups scopes by risk label and pre-fills the recommended defaults', async ({ page, request }) => {
+  test('groups scopes by risk label and pre-fills the recommended defaults', async ({ page, request }, testInfo) => {
+    const stamp = `${testInfo.workerIndex}-${Date.now()}`
+    const displayName = `E2E Grouping Slack ${stamp}`
+
     // Create a Slack account server-side (same path the OAuth callback uses).
     // Connecting does NOT persist any policy — the editor only pre-fills the
     // recommended baseline ('*read'=allow, '*write'=review, '*destructive'=block)
     // and persists it on Save.
     const res = await request.post(`${API}/api/connected-accounts`, {
       data: {
-        providerConnectionId: `e2e-grouping-${Date.now()}`,
+        providerConnectionId: `e2e-grouping-${stamp}`,
         toolkitSlug: 'slack',
-        displayName: 'E2E Grouping Slack',
+        displayName,
       },
     })
     expect(res.ok()).toBeTruthy()
@@ -46,7 +50,7 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
     await appPage.waitForAgentsLoaded()
 
     // Settings → Connections → open the inline editor via the connection row.
-    await openConnectionDetail(page, 'E2E Grouping Slack')
+    await openConnectionDetail(page, displayName)
 
     // The three risk-label groups render (Slack has read/write/destructive scopes).
     await expect(page.locator('[data-testid="scope-group-read"]')).toBeVisible()
@@ -69,12 +73,15 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
     expect(after.policies).toHaveLength(0)
   })
 
-  test('changing a group default persists and is reflected on reopen', async ({ page, request }) => {
+  test('changing a group default persists and is reflected on reopen', async ({ page, request }, testInfo) => {
+    const stamp = `${testInfo.workerIndex}-${Date.now()}`
+    const displayName = `E2E Grouping Persist Slack ${stamp}`
+
     const res = await request.post(`${API}/api/connected-accounts`, {
       data: {
-        providerConnectionId: `e2e-grouping-persist-${Date.now()}`,
+        providerConnectionId: `e2e-grouping-persist-${stamp}`,
         toolkitSlug: 'slack',
-        displayName: 'E2E Grouping Persist Slack',
+        displayName,
       },
     })
     expect(res.ok()).toBeTruthy()
@@ -85,7 +92,7 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
     await appPage.waitForAgentsLoaded()
 
     // Settings → Connections → open the inline editor via the connection row.
-    await openConnectionDetail(page, 'E2E Grouping Persist Slack')
+    await openConnectionDetail(page, displayName)
 
     const destAllow = () =>
       page.locator('[data-testid="group-default-destructive"] [data-testid="policy-toggle-allow"]')
@@ -110,7 +117,7 @@ test.describe('Scope Policy Editor — risk-label grouping', () => {
     // remounting the inline editor refetches the persisted policies.
     await page.locator('[data-testid="connection-detail-back"]').click()
     const row = page.getByRole('button', {
-      name: 'Open E2E Grouping Persist Slack connection details',
+      name: `Open ${displayName} connection details`,
     })
     await expect(row).toBeVisible({ timeout: 5000 })
     await row.click()

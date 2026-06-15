@@ -5,7 +5,9 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 
-const E2E_DATA_DIR = path.join(__dirname, '..', '..', '.e2e-data')
+const E2E_DATA_DIR = path.resolve(
+  process.env.SUPERAGENT_DATA_DIR ?? path.join(__dirname, '..', '..', '.e2e-data'),
+)
 const RECORDER_FILE = path.join(E2E_DATA_DIR, '.e2e-mock-recorder.jsonl')
 
 interface MockRecord {
@@ -102,11 +104,8 @@ test.describe('Model selection', () => {
 
     // Navigate into the session view by selecting the agent (createAgent leaves us on agent-home).
     // The session was created with the initial message, so just open it.
-    await agentPage.expandAgent(testAgentName)
-    // First session under the agent — click the first session link.
-    const sessionLink = page.locator('[data-testid^="session-item-"]').first()
-    await sessionLink.click()
-    await expect(page.locator('[data-testid="message-list"]')).toBeVisible()
+    await agentPage.waitForAgentInSidebar(testAgentName)
+    await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(testAgentName))
 
     // Initial createSession recorded with first-session Opus default.
     // Filter on initialMessage — agentSlug stays as `untitled-XXXXX` even after

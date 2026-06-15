@@ -35,9 +35,8 @@ test.describe('Computer Use requests', () => {
     // Approve once
     await sessionPage.approveComputerUseOnce()
 
-    // Request should disappear
-    await expect(sessionPage.getComputerUseRequests()).toHaveCount(0, { timeout: 10000 })
-
+    // Request should resolve
+    await sessionPage.waitForComputerUseResolved('executed')
     // Session should complete
     await sessionPage.waitForInputEnabled(15000)
   })
@@ -50,8 +49,8 @@ test.describe('Computer Use requests', () => {
     // Deny
     await sessionPage.denyComputerUse()
 
-    // Request should disappear
-    await expect(sessionPage.getComputerUseRequests()).toHaveCount(0, { timeout: 10000 })
+    // Request should resolve
+    await sessionPage.waitForComputerUseResolved('denied')
 
     // Session should complete
     await sessionPage.waitForInputEnabled(15000)

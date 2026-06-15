@@ -219,6 +219,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
       <div
         role="button"
         tabIndex={0}
+        data-testid={`agent-home-session-${session.id}`}
         className="group relative w-full flex items-center gap-3 py-3 px-1 hover:bg-muted/50 transition-colors text-left cursor-pointer"
         onClick={() => selectSession(session.id)}
         onKeyDown={(e) => {

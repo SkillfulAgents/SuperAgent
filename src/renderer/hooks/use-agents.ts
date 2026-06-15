@@ -107,7 +107,14 @@ export function useUpdateAgent() {
       if (!res.ok) throw new Error('Failed to update agent')
       return res.json() as Promise<ApiAgent>
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (agent, variables) => {
+      queryClient.setQueryData(['agents', variables.slug], agent)
+      queryClient.setQueryData<ApiAgent[]>(['agents'], (agents) => {
+        if (!agents) return agents
+        return agents.map((candidate) => (
+          candidate.slug === agent.slug ? { ...candidate, ...agent } : candidate
+        ))
+      })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['agents', variables.slug] })
     },

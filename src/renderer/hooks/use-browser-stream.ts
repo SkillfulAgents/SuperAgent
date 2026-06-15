@@ -160,6 +160,11 @@ export function useBrowserStream({
           return
         }
 
+        if (event.data instanceof ArrayBuffer) {
+          if (!resizing) renderFrame(new Blob([event.data], { type: 'image/jpeg' }))
+          return
+        }
+
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : null
         if (!data) return
 

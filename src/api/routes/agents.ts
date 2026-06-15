@@ -539,10 +539,18 @@ const generateNameBodySchema = z.object({
   prompt: z.string().min(1, 'Prompt is required'),
 })
 
+function fallbackNameFromPrompt(prompt: string): string {
+  return prompt.trim().split(/\s+/).slice(0, 5).join(' ').slice(0, 50) || 'New Agent'
+}
+
 agents.post('/generate-name', zValidator('json', generateNameBodySchema), async (c) => {
   try {
     const { prompt } = c.req.valid('json')
     const truncatedPrompt = prompt.trim().substring(0, 10_000)
+
+    if (process.env.E2E_MOCK === 'true') {
+      return c.json({ name: fallbackNameFromPrompt(truncatedPrompt) })
+    }
 
     const anthropic = getLlmClient()
     const response = await withRetry(() =>
@@ -651,6 +659,8 @@ async function generateAndUpdateSessionNameAsync(
   message: string,
   agentName: string
 ): Promise<void> {
+  if (process.env.E2E_MOCK === 'true') return
+
   try {
     const anthropic = getLlmClient()
     const response = await withRetry(() =>

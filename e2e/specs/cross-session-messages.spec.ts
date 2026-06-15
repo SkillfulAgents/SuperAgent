@@ -1,56 +1,101 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
-import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { getE2EBaseUrl } from '../helpers/base-url'
+import { createAgent, openAgentHome, type TestAgent } from '../helpers/agents'
 
-// Run serially to avoid conflicts
+const API = getE2EBaseUrl()
+
+// Run this file serially because the two scenarios exercise concurrent sessions
+// against the same browser page shape.
 test.describe.configure({ mode: 'serial' })
 
 test.describe('Cross-Session Message Isolation', () => {
   let appPage: AppPage
-  let agentPage: AgentPage
   let sessionPage: SessionPage
+  let agentsToDelete: TestAgent[]
 
   test.beforeEach(async ({ page }) => {
     appPage = new AppPage(page)
-    agentPage = new AgentPage(page)
     sessionPage = new SessionPage(page)
+    agentsToDelete = []
   })
 
-  function userMessage(text: string) {
-    return sessionPage.getUserMessages().filter({ hasText: text })
+  test.afterEach(async ({ page, request }, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus) {
+      await page.close().catch(() => {})
+    }
+
+    for (const agent of [...agentsToDelete].reverse()) {
+      try {
+        await request.delete(`${API}/api/agents/${agent.slug}`)
+      } catch {
+        // Keep teardown best-effort so the original failure stays visible.
+      }
+    }
+  })
+
+  async function seedAgent(request: APIRequestContext, name: string) {
+    const agent = await createAgent(request, name)
+    agentsToDelete.push(agent)
+    return agent
   }
 
-  test('messages from one agent do not leak into another agent', async ({ page }) => {
-    const ts = Date.now()
-    const agentAName = `Agent A ${ts}`
-    const agentBName = `Agent B ${ts}`
-    const messageA = 'slow response for agent A'
-    const messageB = 'Hello from agent B'
+  async function setupAgents(page: Page, request: APIRequestContext, testId: string) {
+    const agentA = await seedAgent(request, `Agent A ${testId}`)
+    const agentB = await seedAgent(request, `Agent B ${testId}`)
 
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
 
-    // Create two agents
-    await agentPage.createAgent(agentAName)
-    await agentPage.createAgent(agentBName)
+    return { agentA, agentB }
+  }
+
+  async function startSessionFromHome(page: Page, agent: TestAgent, message: string) {
+    const expectedPath = `/api/agents/${agent.slug}/sessions`
+    const responsePromise = page.waitForResponse((response) => {
+      return response.request().method() === 'POST'
+        && response.url().includes(expectedPath)
+    }, { timeout: 15000 })
+
+    await sessionPage.sendMessage(message)
+    const response = await responsePromise
+    expect(response.ok()).toBeTruthy()
+
+    const session = (await response.json()) as { id?: string }
+    expect(session.id).toBeTruthy()
+    await expect(sessionPage.getMessageList()).toBeVisible({ timeout: 15000 })
+
+    return session.id!
+  }
+
+  async function openSession(page: Page, agent: TestAgent, sessionId: string) {
+    await openAgentHome(page, agent)
+    await sessionPage.selectSessionOnAgentHome(sessionId)
+  }
+
+  const userMessage = (text: string) => {
+    return sessionPage.getUserMessages().filter({ hasText: text })
+  }
+
+  test('messages from one agent do not leak into another agent', async ({ page, request }, testInfo) => {
+    const testId = `${testInfo.workerIndex}-${Date.now()}`
+    const messageA = 'slow response for agent A'
+    const messageB = 'Hello from agent B'
+    const { agentA, agentB } = await setupAgents(page, request, testId)
 
     // 1. Go to Agent A and send a slow message (triggers 3s delay)
-    await agentPage.selectAgent(agentAName)
-    await sessionPage.sendMessage(messageA)
+    await openAgentHome(page, agentA)
+    const sessionAId = await startSessionFromHome(page, agentA, messageA)
 
-    // Wait for the message we just sent to appear; the create-agent prompt may
-    // also be present in this first session.
     await expect(userMessage(messageA)).toBeVisible({ timeout: 10000 })
 
     // Verify Agent A is working (slow response takes 3s)
     await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 5000 })
 
     // 2. While Agent A is working, switch to Agent B
-    await agentPage.selectAgent(agentBName)
-
-    // 3. Send a message to Agent B
-    await sessionPage.sendMessage(messageB)
+    await openAgentHome(page, agentB)
+    await startSessionFromHome(page, agentB, messageB)
     await expect(userMessage(messageB)).toBeVisible({ timeout: 10000 })
 
     // Verify Agent B's message list does NOT contain Agent A's message
@@ -58,9 +103,7 @@ test.describe('Cross-Session Message Isolation', () => {
     await expect(messageBList).not.toContainText(messageA)
 
     // 4. Switch back to Agent A and select its session
-    await agentPage.selectAgent(agentAName)
-    // Need to click on the session in the sidebar since switching agent deselects it
-    await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(agentAName))
+    await openSession(page, agentA, sessionAId)
 
     // Wait for message list to appear
     const messageAList = sessionPage.getMessageList()
@@ -69,47 +112,33 @@ test.describe('Cross-Session Message Isolation', () => {
     // 5. Verify Agent A's messages do NOT contain Agent B's message
     await expect(userMessage(messageA)).toBeVisible({ timeout: 10000 })
     await expect(messageAList).not.toContainText(messageB)
-
-    // Cleanup: delete both agents
-    await agentPage.selectAgent(agentAName)
-    try { await agentPage.deleteAgent() } catch { /* ignore */ }
-    await agentPage.selectAgent(agentBName)
-    try { await agentPage.deleteAgent() } catch { /* ignore */ }
+    await sessionPage.waitForInputEnabled(10000)
   })
 
-  test('pending optimistic message is scoped to session', async ({ page }) => {
-    const ts = Date.now()
-    const agentAName = `Pending A ${ts}`
-    const agentBName = `Pending B ${ts}`
+  test('pending optimistic message is scoped to session', async ({ page, request }, testInfo) => {
+    const testId = `pending-${testInfo.workerIndex}-${Date.now()}`
     const messageA = 'slow response test'
     const messageB = 'Quick message B'
-
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
-
-    // Create two agents
-    await agentPage.createAgent(agentAName)
-    await agentPage.createAgent(agentBName)
+    const { agentA, agentB } = await setupAgents(page, request, testId)
 
     // Send slow message to Agent A
-    await agentPage.selectAgent(agentAName)
-    await sessionPage.sendMessage(messageA)
+    await openAgentHome(page, agentA)
+    const sessionAId = await startSessionFromHome(page, agentA, messageA)
     await expect(userMessage(messageA)).toBeVisible({ timeout: 10000 })
 
     // Agent A should be working
     await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 5000 })
 
     // Switch to Agent B and send a message
-    await agentPage.selectAgent(agentBName)
-    await sessionPage.sendMessage(messageB)
+    await openAgentHome(page, agentB)
+    await startSessionFromHome(page, agentB, messageB)
 
     // Agent B should show its own message, not Agent A's
     await expect(userMessage(messageB)).toBeVisible({ timeout: 10000 })
     await expect(sessionPage.getMessageList()).not.toContainText(messageA)
 
     // Switch back to Agent A and select session
-    await agentPage.selectAgent(agentAName)
-    await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(agentAName))
+    await openSession(page, agentA, sessionAId)
 
     // Agent A should show its message
     await expect(userMessage(messageA)).toBeVisible({ timeout: 10000 })
@@ -117,11 +146,6 @@ test.describe('Cross-Session Message Isolation', () => {
     // And should NOT have messageB anywhere
     const messageListA = sessionPage.getMessageList()
     await expect(messageListA).not.toContainText(messageB)
-
-    // Cleanup
-    await agentPage.selectAgent(agentAName)
-    try { await agentPage.deleteAgent() } catch { /* ignore */ }
-    await agentPage.selectAgent(agentBName)
-    try { await agentPage.deleteAgent() } catch { /* ignore */ }
+    await sessionPage.waitForInputEnabled(10000)
   })
 })

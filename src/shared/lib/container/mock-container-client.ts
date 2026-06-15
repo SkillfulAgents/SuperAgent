@@ -124,6 +124,14 @@ export class SimpleTextResponseScenario implements MockScenario {
         timestamp: new Date().toISOString(),
       })
 
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: this.responseText }] },
+        },
+      })
+
       // Then mark session as done (idle) - result event
       client.emitStreamMessage(sessionId, {
         type: 'result',
@@ -418,6 +426,19 @@ export class ToolUseScenario implements MockScenario {
           ],
         },
         timestamp: new Date().toISOString(),
+      })
+
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'tool_use', id: toolId, name: this.toolName, input: this.toolInput },
+              { type: 'text', text: this.finalText },
+            ],
+          },
+        },
       })
 
       // Mark session as done (idle)
@@ -983,8 +1004,14 @@ export class BackgroundBashScenario implements MockScenario {
 // Browser scenario cleanup function — set by dynamic import below
 let cleanupBrowserSessionFn: ((sessionId: string) => void) | null = null
 
-// Register browser scenario only when E2E_CHROMIUM_PATH is available
-if (process.env.E2E_MOCK === 'true' && process.env.E2E_CHROMIUM_PATH) {
+// Register browser scenario only for the browser-stream suite. The general web
+// suite sets E2E_SKIP_BROWSER_STREAM and should not have incidental "browse "
+// text routed into the CDP mock.
+if (
+  process.env.E2E_MOCK === 'true'
+  && process.env.E2E_CHROMIUM_PATH
+  && process.env.E2E_SKIP_BROWSER_STREAM !== 'true'
+) {
   import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
     MockContainerClient.scenarios.set('browse ', new BrowserScenario())
     cleanupBrowserSessionFn = cleanupBrowserSession
@@ -1329,6 +1356,30 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.activeBrowserSessionId = sessionId
   }
 
+  private ensureSessionTranscriptFile(sessionId: string): void {
+    const jsonlPath = getSessionJsonlPath(this.config.agentId, sessionId)
+    try {
+      fs.mkdirSync(path.dirname(jsonlPath), { recursive: true })
+      fs.closeSync(fs.openSync(jsonlPath, 'a'))
+    } catch (error) {
+      console.error(`[MockContainerClient] Failed to create JSONL transcript:`, error)
+    }
+  }
+
+  private runAfterStreamSubscriber(sessionId: string, callback: () => void): void {
+    const maxAttempts = 40
+    const poll = (attempt: number) => {
+      if (!this.sessions.has(sessionId)) return
+      const subscriberCount = this.streamCallbacks.get(sessionId)?.size ?? 0
+      if (subscriberCount > 0 || attempt >= maxAttempts) {
+        callback()
+        return
+      }
+      setTimeout(() => poll(attempt + 1), 25)
+    }
+    setTimeout(() => poll(0), 0)
+  }
+
   /**
    * Write a JSONL entry for a session
    */
@@ -1645,6 +1696,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.sessions.set(sessionId, session)
     this.sessionMessages.set(sessionId, [])
     this.streamCallbacks.set(sessionId, new Set())
+    this.ensureSessionTranscriptFile(sessionId)
 
     console.log(`[MockContainerClient] Created session ${sessionId}`)
 
@@ -1664,9 +1716,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       }
       this.sessionMessages.get(sessionId)?.push(userMessage)
 
-      // Delay message emission to give time for subscription
-      // The API subscribes after createSession returns, so we need to wait
-      setTimeout(() => {
+      // The API subscribes after createSession returns. Wait for that server-side
+      // subscription instead of racing it with a fixed delay.
+      this.runAfterStreamSubscriber(sessionId, () => {
         this.emitStreamMessage(sessionId, {
           type: 'user_message',
           content: { content: options.initialMessage },
@@ -1690,7 +1742,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         // actually relies on (the exact failure that already shipped once).
         this.busySessions.add(sessionId)
         scenario.execute(sessionId, this, options.initialMessage!)
-      }, 100)  // Brief delay to ensure subscription is set up
+      })
     }
 
     return session

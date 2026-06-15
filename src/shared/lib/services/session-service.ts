@@ -240,16 +240,29 @@ export async function getSessionSummary(agentSlug: string): Promise<{
     return { sessionIds: [], sessionCount: 0, lastActivityAt: null }
   }
 
-  const files = await fs.promises.readdir(sessionsDir)
+  let files: string[]
+  try {
+    files = await fs.promises.readdir(sessionsDir)
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { sessionIds: [], sessionCount: 0, lastActivityAt: null }
+    }
+    throw error
+  }
   const jsonlFiles = files.filter((f) => f.endsWith('.jsonl'))
 
   const limit = pLimit(10)
-  const stats = await Promise.all(
+  const stats = (await Promise.all(
     jsonlFiles.map((file) => limit(async () => {
-      const stat = await fs.promises.stat(path.join(sessionsDir, file))
-      return { sessionId: path.basename(file, '.jsonl'), mtimeMs: stat.mtimeMs }
+      try {
+        const stat = await fs.promises.stat(path.join(sessionsDir, file))
+        return { sessionId: path.basename(file, '.jsonl'), mtimeMs: stat.mtimeMs }
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
     }))
-  )
+  )).filter((result): result is { sessionId: string; mtimeMs: number } => result !== null)
 
   let lastActivityAt: Date | null = null
   const sessionIds: string[] = []
@@ -260,7 +273,7 @@ export async function getSessionSummary(agentSlug: string): Promise<{
     }
   }
 
-  return { sessionIds, sessionCount: jsonlFiles.length, lastActivityAt }
+  return { sessionIds, sessionCount: sessionIds.length, lastActivityAt }
 }
 
 /**

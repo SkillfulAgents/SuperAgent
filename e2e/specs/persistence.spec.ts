@@ -2,9 +2,12 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { getE2EBaseUrl } from '../helpers/base-url'
 
 // Serial: tests reload the page and verify DB state, sensitive to concurrent DB writes
 test.describe.configure({ mode: 'serial' })
+
+const API = getE2EBaseUrl()
 
 test.describe('Persistence', () => {
   let appPage: AppPage
@@ -51,7 +54,7 @@ test.describe('Persistence', () => {
     await expect(sessionPage.getAssistantMessages().first()).toBeVisible()
 
     // Get the agent slug from the agents list API
-    const agentsResponse = await request.get('http://localhost:3000/api/agents')
+    const agentsResponse = await request.get(`${API}/api/agents`)
     expect(agentsResponse.ok()).toBeTruthy()
     const agents = await agentsResponse.json()
     const agent = agents.find((a: { name: string }) => a.name === agentName)
@@ -59,7 +62,7 @@ test.describe('Persistence', () => {
     const agentSlug = agent.slug
 
     // Get sessions for this agent via API
-    const sessionsResponse = await request.get(`http://localhost:3000/api/agents/${agentSlug}/sessions`)
+    const sessionsResponse = await request.get(`${API}/api/agents/${agentSlug}/sessions`)
     expect(sessionsResponse.ok()).toBeTruthy()
     const sessions = await sessionsResponse.json()
     expect(sessions.length).toBeGreaterThan(0)
@@ -68,7 +71,7 @@ test.describe('Persistence', () => {
 
     // Get messages for the session via API
     const messagesResponse = await request.get(
-      `http://localhost:3000/api/agents/${agentSlug}/sessions/${sessionId}/messages`
+      `${API}/api/agents/${agentSlug}/sessions/${sessionId}/messages`
     )
     expect(messagesResponse.ok()).toBeTruthy()
     const messages = await messagesResponse.json()
@@ -85,7 +88,7 @@ test.describe('Persistence', () => {
 
     // Verify via API that messages still exist after reload
     const messagesAfterReload = await request.get(
-      `http://localhost:3000/api/agents/${agentSlug}/sessions/${sessionId}/messages`
+      `${API}/api/agents/${agentSlug}/sessions/${sessionId}/messages`
     )
     expect(messagesAfterReload.ok()).toBeTruthy()
     const messagesAfter = await messagesAfterReload.json()

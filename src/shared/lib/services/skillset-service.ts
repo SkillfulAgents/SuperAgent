@@ -667,6 +667,14 @@ export async function refreshSkillset(ref: SkillsetRef): Promise<SkillsetIndex> 
   const hostingProvider = getSkillsetProvider(ref.provider)
   const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
+  if (
+    process.env.E2E_MOCK === 'true' &&
+    ref.skillsetUrl.includes('localhost.invalid') &&
+    await isCacheReady(repoDir, ref.provider)
+  ) {
+    return readIndexJson(repoDir)
+  }
+
   if (!hostingProvider.usesGitCache) {
     await hostingProvider.refreshCache(repoDir, ref)
     return readIndexJson(repoDir)
