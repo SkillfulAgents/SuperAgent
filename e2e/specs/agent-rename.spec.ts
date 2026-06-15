@@ -2,6 +2,31 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 
+function uniqueAgentName(prefix: string) {
+  return `${prefix}${test.info().workerIndex}-${Date.now()}`
+}
+
+async function openAgentSettingsFromContextMenu(
+  page: import('@playwright/test').Page,
+  agentPage: AgentPage,
+  agentName: string,
+) {
+  const sidebarItem = await agentPage.waitForAgentInSidebar(agentName)
+  await expect(sidebarItem).toContainText(agentName, { timeout: 15000 })
+
+  const settingsItem = page.locator('[data-testid="agent-settings-item"]')
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await sidebarItem.click({ button: 'right', force: true })
+    if (await settingsItem.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await settingsItem.click()
+      return
+    }
+  }
+
+  await expect(settingsItem).toBeVisible({ timeout: 5000 })
+  await settingsItem.click()
+}
+
 test.describe('Agent Rename', () => {
   let appPage: AppPage
   let agentPage: AgentPage
@@ -14,17 +39,12 @@ test.describe('Agent Rename', () => {
   })
 
   test('can type spaces in agent name input when settings opened via context menu', async ({ page }) => {
-    const agentName = `RenameTest${Date.now()}`
+    const agentName = uniqueAgentName('RenameTest')
 
     // Create an agent
     await agentPage.createAgent(agentName)
-    await agentPage.waitForAgentInSidebar(agentName)
 
-    // Right-click the agent to open context menu
-    await agentPage.getAgentItem(agentName).click({ button: 'right' })
-
-    // Click "Settings" in the context menu
-    await page.locator('[data-testid="agent-settings-item"]').click()
+    await openAgentSettingsFromContextMenu(page, agentPage, agentName)
 
     // Wait for the settings dialog
     await expect(page.locator('[data-testid="agent-settings-dialog"]')).toBeVisible()
@@ -47,7 +67,7 @@ test.describe('Agent Rename', () => {
   })
 
   test('can rename agent inline from agent home by pressing Enter', async ({ page }) => {
-    const agentName = `InlineEnter${Date.now()}`
+    const agentName = uniqueAgentName('InlineEnter')
     const newName = `${agentName}-Renamed`
 
     await agentPage.createAgent(agentName)
@@ -76,7 +96,7 @@ test.describe('Agent Rename', () => {
   })
 
   test('can rename agent inline from agent home by clicking save button', async ({ page }) => {
-    const agentName = `InlineSave${Date.now()}`
+    const agentName = uniqueAgentName('InlineSave')
     const newName = `${agentName}-Renamed`
 
     await agentPage.createAgent(agentName)
@@ -99,7 +119,7 @@ test.describe('Agent Rename', () => {
   })
 
   test('pressing Escape cancels inline rename without saving', async ({ page }) => {
-    const agentName = `InlineEscape${Date.now()}`
+    const agentName = uniqueAgentName('InlineEscape')
 
     await agentPage.createAgent(agentName)
 
@@ -117,7 +137,7 @@ test.describe('Agent Rename', () => {
   })
 
   test('control: can type spaces in agent name input when settings opened via button', async ({ page }) => {
-    const agentName = `RenameCtrl${Date.now()}`
+    const agentName = uniqueAgentName('RenameCtrl')
 
     // Create an agent
     await agentPage.createAgent(agentName)

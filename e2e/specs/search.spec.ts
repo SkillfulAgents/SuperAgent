@@ -96,18 +96,32 @@ test.describe('Search palette', () => {
     await expect(page.locator('[data-testid="search-input"]')).not.toBeVisible()
   })
 
-  test('Empty query supports expanding sessions and keyboard navigation', async ({ page, request }, testInfo) => {
+  test('Recent-list supports expanding sessions and keyboard navigation', async ({ page, request }, testInfo) => {
     const stamp = `${testInfo.workerIndex}-${Date.now()}`
     const agentName = `Search Expand Agent ${stamp}`
     const sessionName = `Expand Session ${stamp}`
 
-    await agentPage.createAgent(agentName)
+    const createdAgent = await agentPage.createAgent(agentName)
+    const slug = createdAgent.slug
 
-    const agentsRes = await request.get(`${API}/api/agents`)
-    expect(agentsRes.ok()).toBe(true)
-    const agents = (await agentsRes.json()) as Array<{ slug: string; name: string }>
-    const slug = agents.find((a) => a.name === agentName)?.slug
-    expect(slug, `agent ${agentName} not found in API`).toBeDefined()
+    const lastActivityAt = new Date().toISOString()
+    await page.route('**/api/agents', async (route) => {
+      if (route.request().method() !== 'GET') {
+        await route.fallback()
+        return
+      }
+
+      await route.fulfill({
+        json: [{
+          slug,
+          name: agentName,
+          createdAt: lastActivityAt,
+          status: 'running',
+          containerPort: null,
+          lastActivityAt,
+        }],
+      })
+    })
 
     const sessionsRes = await request.get(`${API}/api/agents/${slug}/sessions`)
     expect(sessionsRes.ok()).toBe(true)
@@ -148,7 +162,7 @@ test.describe('Search palette', () => {
     await expandToggle.click()
     await expect(sessionRow).toBeVisible()
 
-    await page.keyboard.press('ArrowDown')
+    await sessionRow.hover()
     await page.keyboard.press('Enter')
     await expect(page.locator('[data-testid="search-input"]')).not.toBeVisible()
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName)

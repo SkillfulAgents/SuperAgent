@@ -105,20 +105,18 @@ test.describe('Connected Accounts - Agent Request Flow', () => {
     await agentPage.waitForStatus('awaiting_input', 10000)
   })
 
-  test('tool call for request_connected_account renders with service info', async ({ page }) => {
+  test('pending connected account request renders with service info', async ({ page }) => {
     const agentName = `Account Tool ${Date.now()}`
     await agentPage.createAgent(agentName)
 
     await sessionPage.sendMessage('ask account for GitHub access')
 
-    // Wait for the tool call to render
-    await sessionPage.expectToolCall('mcp__user-input__request_connected_account', 15000)
+    const requestCard = page.locator('[data-testid="connected-account-request"]')
+    await expect(requestCard).toBeVisible({ timeout: 15000 })
 
-    const toolCall = sessionPage.getToolCall('mcp__user-input__request_connected_account')
-    await expect(toolCall).toBeVisible()
-
-    // Should show the pending user-input indicator
-    await expect(toolCall).toContainText('Waiting for input')
+    await expect(page.getByText('Waiting for input...')).toBeVisible()
+    await expect(requestCard).toContainText('GitHub')
+    await expect(requestCard).toContainText('Need access to your GitHub repositories')
   })
 })
 

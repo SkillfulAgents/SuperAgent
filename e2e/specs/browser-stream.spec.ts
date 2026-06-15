@@ -22,7 +22,7 @@ test.describe('Browser Streaming', () => {
     await agentPage.createAgent(testAgentName)
   })
 
-  test('browser preview shows live screencast from host browser', async ({ page }) => {
+  test('browser preview shows live rendered stream from host browser', async ({ page }) => {
     // Skip if E2E_CHROMIUM_PATH is not set (no browser available)
     // The dev server logs this, but we can also check by sending the message
     // and seeing if the scenario falls back to the default text response.

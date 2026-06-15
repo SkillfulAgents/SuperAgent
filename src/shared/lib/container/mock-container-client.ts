@@ -1004,8 +1004,14 @@ export class BackgroundBashScenario implements MockScenario {
 // Browser scenario cleanup function — set by dynamic import below
 let cleanupBrowserSessionFn: ((sessionId: string) => void) | null = null
 
-// Register browser scenario only when E2E_CHROMIUM_PATH is available
-if (process.env.E2E_MOCK === 'true' && process.env.E2E_CHROMIUM_PATH) {
+// Register browser scenario only for the browser-stream suite. The general web
+// suite sets E2E_SKIP_BROWSER_STREAM and should not have incidental "browse "
+// text routed into the CDP mock.
+if (
+  process.env.E2E_MOCK === 'true'
+  && process.env.E2E_CHROMIUM_PATH
+  && process.env.E2E_SKIP_BROWSER_STREAM !== 'true'
+) {
   import('./mock-browser-scenario').then(({ BrowserScenario, cleanupBrowserSession }) => {
     MockContainerClient.scenarios.set('browse ', new BrowserScenario())
     cleanupBrowserSessionFn = cleanupBrowserSession

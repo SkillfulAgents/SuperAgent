@@ -88,8 +88,36 @@ No frontmatter at all.
 `
 
 /** Helper: create a zip buffer from a map of { path: content } */
-async function makeZip(files: Record<string, string>): Promise<Buffer> {
+async function makeZip(files: Record<string, string | Buffer>): Promise<Buffer> {
   return createZipBuffer(files)
+}
+
+function patchZipEntryUncompressedSize(zipBuffer: Buffer, fileName: string, uncompressedSize: number): Buffer {
+  const patched = Buffer.from(zipBuffer)
+  const encodedFileName = Buffer.from(fileName)
+  let offset = 0
+  let patchedCentralDirectory = false
+
+  while ((offset = patched.indexOf(encodedFileName, offset)) !== -1) {
+    const localHeaderOffset = offset - 30
+    if (localHeaderOffset >= 0 && patched.readUInt32LE(localHeaderOffset) === 0x04034b50) {
+      patched.writeUInt32LE(uncompressedSize, localHeaderOffset + 22)
+    }
+
+    const centralHeaderOffset = offset - 46
+    if (centralHeaderOffset >= 0 && patched.readUInt32LE(centralHeaderOffset) === 0x02014b50) {
+      patched.writeUInt32LE(uncompressedSize, centralHeaderOffset + 24)
+      patchedCentralDirectory = true
+    }
+
+    offset += encodedFileName.length
+  }
+
+  if (!patchedCentralDirectory) {
+    throw new Error(`Could not find central directory entry for ${fileName}`)
+  }
+
+  return patched
 }
 
 // ============================================================================
@@ -644,14 +672,16 @@ describe('validateAgentTemplate (full mode)', () => {
   })
 
   it('enforces size limit including excluded files in full mode', async () => {
-    const largeEnv = 'x'.repeat(10 * 1024 * 1024)
     const files: Record<string, string> = {
       'CLAUDE.md': MINIMAL_CLAUDE_MD,
+      'data/large.env': '',
     }
-    for (let i = 0; i < 51; i++) {
-      files[`data/large-${i}.env`] = largeEnv
-    }
-    const result = await validateAgentTemplate(await makeZip(files), 'full')
+    const zipBuffer = patchZipEntryUncompressedSize(
+      await makeZip(files),
+      'data/large.env',
+      501 * 1024 * 1024,
+    )
+    const result = await validateAgentTemplate(zipBuffer, 'full')
     expect(result.valid).toBe(false)
     expect(result.error).toContain('too large')
   })
