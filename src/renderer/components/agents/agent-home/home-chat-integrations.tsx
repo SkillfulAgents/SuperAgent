@@ -33,6 +33,7 @@ import { HomeCollapsible } from './home-collapsible'
 
 interface HomeChatIntegrationsProps {
   agentSlug: string
+  className?: string
 }
 
 const PROVIDER_TILES: Array<{ slug: ChatProvider; label: string; icon: React.ReactNode | null }> = [
@@ -54,7 +55,7 @@ function statusBadge(status: string) {
   }
 }
 
-export function HomeChatIntegrations({ agentSlug }: HomeChatIntegrationsProps) {
+export function HomeChatIntegrations({ agentSlug, className }: HomeChatIntegrationsProps) {
   const { data: integrations } = useChatIntegrations(agentSlug)
   const { setView } = useSelection()
   const updateIntegration = useUpdateChatIntegration()
@@ -66,7 +67,7 @@ export function HomeChatIntegrations({ agentSlug }: HomeChatIntegrationsProps) {
   const [renameValue, setRenameValue] = useState('')
 
   return (
-    <HomeCollapsible title="Remote Chat">
+    <HomeCollapsible title="Remote Chat" className={className}>
       {rows.length > 0 ? (
         <div className="mt-2 divide-y divide-border/50">
           {rows.map((integration) => {

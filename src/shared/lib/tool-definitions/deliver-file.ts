@@ -16,4 +16,4 @@ function getSummary(input: unknown): string | null {
   return filePath ? getFilename(filePath) : null
 }
 
-export const deliverFileDef = { displayName: 'Deliver File', iconName: 'Download', parseInput, getSummary } as const
+export const deliverFileDef = { displayName: 'Deliver File', parseInput, getSummary } as const

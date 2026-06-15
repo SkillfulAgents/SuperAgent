@@ -559,6 +559,65 @@ describe('MessagePersister', () => {
       expect(completed[0].agentId).toBe('sub1')
     })
 
+    // A background subagent (run_in_background Agent) gets only an immediate
+    // "async_launched" tool_result; its real completion arrives as a
+    // task_notification / task_updated, NOT a second tool_result or a sidechain
+    // 'result'. Without handling these the UI shows it running until turn end.
+    const startBackgroundSubagent = () => {
+      // Stream the Agent tool_use WITH run_in_background so the persister marks
+      // the subagent isBackground=true (the discriminator the completion handlers
+      // gate on — foreground subagents finish via tool_result instead).
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 'bg-tool', name: 'Agent' } },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'input_json_delta', partial_json: '{"subagent_type":"general-purpose","run_in_background":true}' } },
+      })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_stop' } })
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_started', task_id: 'bgsub', tool_use_id: 'bg-tool',
+        subagent_type: 'general-purpose', description: 'Sleep 15 seconds',
+      })
+      sseEvents.length = 0
+    }
+
+    it('completes a background subagent on task_notification (matched by tool_use_id)', () => {
+      startBackgroundSubagent()
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_notification', task_id: 'bgsub', tool_use_id: 'bg-tool',
+        status: 'completed', summary: 'Agent "Sleep 15 seconds" completed',
+      })
+      const completed = sseEvents.filter(e => e.type === 'subagent_completed')
+      expect(completed).toHaveLength(1)
+      expect(completed[0].parentToolId).toBe('bg-tool')
+      expect(completed[0].agentId).toBe('bgsub')
+    })
+
+    it('completes a background subagent on task_updated (matched by agentId)', () => {
+      startBackgroundSubagent()
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_updated', task_id: 'bgsub', patch: { status: 'completed' },
+      })
+      const completed = sseEvents.filter(e => e.type === 'subagent_completed')
+      expect(completed).toHaveLength(1)
+      expect(completed[0].parentToolId).toBe('bg-tool')
+    })
+
+    it('fires subagent completion exactly once when task_updated is followed by task_notification', () => {
+      startBackgroundSubagent()
+      // The real capture emits task_updated then task_notification for the same
+      // subagent — the second must not double-fire (the first removes it).
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_updated', task_id: 'bgsub', patch: { status: 'completed' },
+      })
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_notification', task_id: 'bgsub', tool_use_id: 'bg-tool', status: 'completed',
+      })
+      expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
+    })
+
     it('does not broadcast subagent_completed for non-matching tool_result', () => {
       // Set up Task tool tracking
       mockClient._sendMessage({

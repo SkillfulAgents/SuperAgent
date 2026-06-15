@@ -148,16 +148,13 @@ test.describe('Auth Settings Enforcement', () => {
     // The approval user should appear as pending approval
     const userRow = user1Page.locator(`[data-testid="user-row-${approvalUser.email}"]`)
     await expect(userRow).toBeVisible()
-    await expect(userRow.locator('text=pending approval')).toBeVisible()
+    await expect(userRow.getByText('pending approval')).toBeVisible()
 
     // Click approve
     await user1Page.locator(`[data-testid="user-approve-${approvalUser.email}"]`).click()
 
-    // Wait for approval to take effect
-    await user1Page.waitForTimeout(500)
-
     // The "pending approval" label should disappear
-    await expect(userRow.locator('text=pending approval')).not.toBeVisible()
+    await expect(userRow.getByText('pending approval')).not.toBeVisible()
 
     await settingsPage.close()
   })

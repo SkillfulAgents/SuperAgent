@@ -33,7 +33,7 @@ export class AccessPage {
 
     // Select role
     await this.page.locator('[data-testid="invite-role-select"]').click()
-    await this.page.locator(`[role="option"]:has-text("${role === 'viewer' ? 'Viewer' : role === 'user' ? 'User' : 'Owner'}")`).click()
+    await this.page.getByRole('option', { name: role === 'viewer' ? 'Viewer' : role === 'user' ? 'User' : 'Owner' }).click()
 
     // Click Add
     await this.page.locator('[data-testid="invite-add-button"]').click()
@@ -46,7 +46,8 @@ export class AccessPage {
   async changeRole(userId: string, newRole: 'viewer' | 'user' | 'owner') {
     await this.page.locator(`[data-testid="access-role-${userId}"]`).click()
     const label = newRole === 'viewer' ? 'Viewer' : newRole === 'user' ? 'User' : 'Owner'
-    await this.page.locator(`[role="option"]:has-text("${label}")`).click()
+    await this.page.getByRole('option', { name: label }).click()
+    await expect(this.page.locator(`[data-testid="access-role-${userId}"]`)).toContainText(label)
   }
 
   /** Verify the no-permission overlay is shown */

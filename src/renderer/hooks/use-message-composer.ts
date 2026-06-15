@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useAttachments } from './use-attachments'
 import { useVoiceInput } from './use-voice-input'
 import { useAddMount } from './use-mounts'
@@ -28,6 +29,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const [draft, setDraft] = useDraft<string>(draftKey)
   const [message, setMessage] = useState(draft ?? '')
   const [isUploading, setIsUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
   const addMountMutation = useAddMount()
 
   // Persist local message to the draft store so it survives unmount. Skip the
@@ -114,10 +116,12 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    // Stop voice recording first — use returned text since React state won't update synchronously
+    // Stop voice recording first and await the final text: stopRecording flushes
+    // buffered audio and waits for the server's trailing transcripts, so a quick
+    // speak-then-Enter doesn't submit before the dictated words are in.
     let voiceText: string | undefined
     if (voiceInput.isRecording || voiceInput.isConnecting) {
-      voiceText = voiceInput.stopRecording()
+      voiceText = await voiceInput.stopRecording()
     }
 
     const effectiveMessage = voiceText ?? message
@@ -129,6 +133,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     // Upload attachments first
     if (attachments.length > 0) {
       setIsUploading(true)
+      setUploadError(null)
       try {
         const uploadResults: { path: string }[] = []
         const mountResults: { containerPath: string; hostPath: string }[] = []
@@ -159,6 +164,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
         content = appendAttachedFiles(content, uploadResults.map((r) => r.path))
       } catch (error) {
         console.error('Failed to upload attachments:', error)
+        captureRendererException(error, { tags: { source: 'attachment-upload' }, extra: { agentSlug } })
+        setUploadError(error instanceof Error ? error.message : 'Upload failed. Please try again.')
         setIsUploading(false)
         return
       }
@@ -221,5 +228,9 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     handleSubmit,
     handlePaste,
     canSubmit,
+
+    // Upload error (surfaced to the user; cleared on next submit attempt)
+    uploadError,
+    clearUploadError: useCallback(() => setUploadError(null), []),
   }
 }

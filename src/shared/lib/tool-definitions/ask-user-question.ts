@@ -40,4 +40,4 @@ function getSummary(input: unknown): string | null {
   return questions.length > 1 ? `${truncated} (+ ${questions.length - 1} more)` : truncated
 }
 
-export const askUserQuestionDef = { displayName: 'Question', iconName: 'MessageCircleQuestion', parseInput, getSummary } as const
+export const askUserQuestionDef = { displayName: 'Question', parseInput, getSummary } as const

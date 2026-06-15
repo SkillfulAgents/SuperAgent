@@ -29,9 +29,9 @@ export function FilePreviewTrayContent({ agentSlug, sessionId, onClose }: FilePr
   const activeComments = comments.get(activeFile.filePath) || []
 
   return (
-    <>
+    <div className="contents" data-testid="file-preview-tray">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2 text-sm text-muted-foreground select-none shrink-0">
+      <div className="flex items-center gap-2 px-4 py-2 text-sm text-muted-foreground select-none shrink-0" data-testid="file-preview-header">
         <FileText className="h-4 w-4 shrink-0" />
         <span className="flex-1 text-xs truncate font-medium">Files</span>
         <a
@@ -76,6 +76,6 @@ export function FilePreviewTrayContent({ agentSlug, sessionId, onClose }: FilePr
         agentSlug={agentSlug}
         sessionId={sessionId}
       />
-    </>
+    </div>
   )
 }

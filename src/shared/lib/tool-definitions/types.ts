@@ -7,7 +7,6 @@
 
 export interface ToolDefinition {
   displayName: string
-  iconName: string
   getSummary: (input: unknown) => string | null
 }
 

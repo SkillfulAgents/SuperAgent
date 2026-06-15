@@ -7,6 +7,18 @@ import { SessionPage } from '../pages/session.page'
 
 const e2eDataDir = path.join(__dirname, '..', '..', '.e2e-data')
 
+function getFilePill(page: import('@playwright/test').Page, fileName: string) {
+  return page.getByTestId('file-pill').filter({ hasText: fileName })
+}
+
+function markdown(page: import('@playwright/test').Page) {
+  return page.getByTestId('markdown-renderer')
+}
+
+function fileTab(page: import('@playwright/test').Page, fileName: string) {
+  return page.getByTestId('file-tab').filter({ hasText: fileName })
+}
+
 async function getLatestAgentSlug(page: import('@playwright/test').Page): Promise<string> {
   const breadcrumb = page.locator('[data-testid="agent-breadcrumb"]')
   const agentName = await breadcrumb.textContent() || ''
@@ -48,14 +60,13 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
 
-    const filePill = page.locator('.file-pill').first()
+    const filePill = getFilePill(page, 'report.md').first()
     await expect(filePill).toBeVisible({ timeout: 10000 })
-    await expect(filePill).toContainText('report.md')
 
     await filePill.click()
 
-    await expect(page.locator('text=Files').first()).toBeVisible({ timeout: 5000 })
-    await expect(page.locator('.prose h1')).toContainText('Test Report', { timeout: 10000 })
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(markdown(page).getByRole('heading', { name: 'Test Report' })).toBeVisible({ timeout: 10000 })
   })
 
   test('closing last tab closes the tray', async ({ page }) => {
@@ -66,18 +77,16 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
 
-    const filePill = page.locator('.file-pill').first()
+    const filePill = getFilePill(page, 'report.md').first()
     await expect(filePill).toBeVisible({ timeout: 10000 })
     await filePill.click()
 
-    const trayHeader = page.locator('text=Files').first()
+    const trayHeader = page.getByTestId('file-preview-header')
     await expect(trayHeader).toBeVisible({ timeout: 5000 })
 
-    // Scope to the file tab bar to avoid matching pills in chat
-    const tabBar = page.locator('[data-testid="file-tab-bar"]')
-    const tabButton = tabBar.locator('button', { hasText: 'report.md' })
+    const tabButton = fileTab(page, 'report.md')
     await tabButton.hover()
-    await tabButton.locator('[role="button"]').click({ force: true })
+    await tabButton.getByTestId('file-tab-close').click({ force: true })
 
     await expect(trayHeader).not.toBeVisible({ timeout: 5000 })
   })
@@ -90,21 +99,21 @@ test.describe('File Preview', () => {
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
 
-    const firstPill = page.locator('.file-pill').first()
+    const firstPill = getFilePill(page, 'report.md').first()
     await expect(firstPill).toBeVisible({ timeout: 10000 })
     await firstPill.click()
 
-    await expect(page.locator('.prose h1')).toContainText('Version 1', { timeout: 10000 })
+    await expect(markdown(page).getByRole('heading', { name: 'Version 1' })).toBeVisible({ timeout: 10000 })
 
     seedWorkspaceFile(agentSlug, 'output/report.md', '# Version 2')
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
 
-    const secondPill = page.locator('.file-pill').nth(1)
+    const secondPill = getFilePill(page, 'report.md').nth(1)
     await expect(secondPill).toBeVisible({ timeout: 10000 })
     await secondPill.click()
 
-    await expect(page.locator('.prose h1')).toContainText('Version 2', { timeout: 10000 })
+    await expect(markdown(page).getByRole('heading', { name: 'Version 2' })).toBeVisible({ timeout: 10000 })
   })
 
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {
@@ -122,32 +131,31 @@ test.describe('File Preview', () => {
     // Deliver and open the markdown file → first tab.
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
-    const reportPill = page.locator('.file-pill', { hasText: 'report.md' }).first()
+    const reportPill = getFilePill(page, 'report.md').first()
     await expect(reportPill).toBeVisible({ timeout: 10000 })
     await reportPill.click()
-    await expect(page.locator('text=Files').first()).toBeVisible({ timeout: 5000 })
-    await expect(page.locator('.prose h1')).toContainText('Report Content', { timeout: 10000 })
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 10000 })
 
     // Deliver and open the image file → second tab, image renderer.
     await sessionPage.sendMessage('deliver image')
     await sessionPage.waitForResponse(15000)
-    const chartPill = page.locator('.file-pill', { hasText: 'chart.png' }).first()
+    const chartPill = getFilePill(page, 'chart.png').first()
     await expect(chartPill).toBeVisible({ timeout: 10000 })
     await chartPill.click()
     await expect(page.locator('img[alt="chart.png"]')).toBeVisible({ timeout: 10000 })
 
     // Both files now have tabs.
-    const tabBar = page.locator('[data-testid="file-tab-bar"]')
-    await expect(tabBar.locator('button', { hasText: 'report.md' })).toBeVisible()
-    await expect(tabBar.locator('button', { hasText: 'chart.png' })).toBeVisible()
+    await expect(fileTab(page, 'report.md')).toBeVisible()
+    await expect(fileTab(page, 'chart.png')).toBeVisible()
 
     // Switch back to the markdown tab → markdown content returns, image is gone.
-    await tabBar.locator('button', { hasText: 'report.md' }).click()
-    await expect(page.locator('.prose h1')).toContainText('Report Content', { timeout: 5000 })
+    await fileTab(page, 'report.md').click()
+    await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 5000 })
     await expect(page.locator('img[alt="chart.png"]')).not.toBeVisible()
 
     // Switch forward to the image tab again → image renderer returns.
-    await tabBar.locator('button', { hasText: 'chart.png' }).click()
+    await fileTab(page, 'chart.png').click()
     await expect(page.locator('img[alt="chart.png"]')).toBeVisible({ timeout: 5000 })
   })
 })

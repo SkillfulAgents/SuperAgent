@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
+import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import type { OAuthMetadata, OAuthTokenResponse } from './types'
 
 /**
@@ -82,8 +83,13 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
     let resource: string
 
     if (resourceMetadataMatch) {
-      // RFC 9728: Fetch Protected Resource Metadata
+      // RFC 9728: Fetch Protected Resource Metadata.
+      // SSRF guard (SUP-235): this URL comes straight from the server-controlled
+      // WWW-Authenticate header, so apply the same private/loopback host policy
+      // as the entry path before fetching. Rejection throws -> discovery fails
+      // closed (returns null) instead of fetching an internal address.
       const resourceMetadataUrl = resourceMetadataMatch[1]
+      validateMcpDiscoveryUrl(resourceMetadataUrl)
       const resourceRes = await fetch(resourceMetadataUrl)
       if (!resourceRes.ok) {
         throw new Error(`Failed to fetch resource metadata: ${resourceRes.status}`)
@@ -111,10 +117,20 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
     // https://host/.well-known/oauth-authorization-server/path), not appended.
     // Some servers (e.g. Meta's MCP) only expose the path-aware form.
     // OpenID Connect Discovery 1.0 instead appends to the issuer.
+    // SSRF guard (SUP-235): authServerUrl is server-supplied (either from the
+    // protected-resource metadata's authorization_servers[0] or the MCP
+    // origin). Reject private/loopback auth servers before deriving and
+    // fetching any well-known URLs from them; throwing fails discovery closed.
+    validateMcpDiscoveryUrl(authServerUrl)
+
     const wellKnownUrls = buildAuthServerMetadataUrls(authServerUrl)
 
     for (const url of wellKnownUrls) {
       try {
+        // Defense in depth: re-validate each generated URL so a future change
+        // to buildAuthServerMetadataUrls can never reintroduce an unchecked
+        // fetch. A rejected URL is skipped, not fetched.
+        validateMcpDiscoveryUrl(url)
         const res = await fetch(url)
         if (res.ok) {
           const metadata = (await res.json()) as OAuthMetadata

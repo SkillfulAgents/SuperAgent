@@ -17,6 +17,10 @@ test.describe('Cross-Session Message Isolation', () => {
     sessionPage = new SessionPage(page)
   })
 
+  function userMessage(text: string) {
+    return sessionPage.getUserMessages().filter({ hasText: text })
+  }
+
   test('messages from one agent do not leak into another agent', async ({ page }) => {
     const ts = Date.now()
     const agentAName = `Agent A ${ts}`
@@ -35,8 +39,9 @@ test.describe('Cross-Session Message Isolation', () => {
     await agentPage.selectAgent(agentAName)
     await sessionPage.sendMessage(messageA)
 
-    // Wait for user message to appear
-    await sessionPage.waitForUserMessageCount(1)
+    // Wait for the message we just sent to appear; the create-agent prompt may
+    // also be present in this first session.
+    await expect(userMessage(messageA)).toBeVisible({ timeout: 10000 })
 
     // Verify Agent A is working (slow response takes 3s)
     await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 5000 })
@@ -46,8 +51,7 @@ test.describe('Cross-Session Message Isolation', () => {
 
     // 3. Send a message to Agent B
     await sessionPage.sendMessage(messageB)
-    await sessionPage.waitForUserMessageCount(1)
-    await sessionPage.expectUserMessage(messageB, 0)
+    await expect(userMessage(messageB)).toBeVisible({ timeout: 10000 })
 
     // Verify Agent B's message list does NOT contain Agent A's message
     const messageBList = sessionPage.getMessageList()
@@ -63,13 +67,12 @@ test.describe('Cross-Session Message Isolation', () => {
     await expect(messageAList).toBeVisible({ timeout: 5000 })
 
     // 5. Verify Agent A's messages do NOT contain Agent B's message
-    await sessionPage.expectUserMessage(messageA, 0)
+    await expect(userMessage(messageA)).toBeVisible({ timeout: 10000 })
     await expect(messageAList).not.toContainText(messageB)
 
     // Cleanup: delete both agents
     await agentPage.selectAgent(agentAName)
     try { await agentPage.deleteAgent() } catch { /* ignore */ }
-    await page.waitForTimeout(500)
     await agentPage.selectAgent(agentBName)
     try { await agentPage.deleteAgent() } catch { /* ignore */ }
   })
@@ -91,7 +94,7 @@ test.describe('Cross-Session Message Isolation', () => {
     // Send slow message to Agent A
     await agentPage.selectAgent(agentAName)
     await sessionPage.sendMessage(messageA)
-    await sessionPage.waitForUserMessageCount(1)
+    await expect(userMessage(messageA)).toBeVisible({ timeout: 10000 })
 
     // Agent A should be working
     await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 5000 })
@@ -99,20 +102,17 @@ test.describe('Cross-Session Message Isolation', () => {
     // Switch to Agent B and send a message
     await agentPage.selectAgent(agentBName)
     await sessionPage.sendMessage(messageB)
-    await sessionPage.waitForUserMessageCount(1)
 
     // Agent B should show its own message, not Agent A's
-    await sessionPage.expectUserMessage(messageB, 0)
-    const userMessagesB = sessionPage.getUserMessages()
-    await expect(userMessagesB).toHaveCount(1)
+    await expect(userMessage(messageB)).toBeVisible({ timeout: 10000 })
+    await expect(sessionPage.getMessageList()).not.toContainText(messageA)
 
     // Switch back to Agent A and select session
     await agentPage.selectAgent(agentAName)
     await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(agentAName))
 
     // Agent A should show its message
-    await sessionPage.waitForUserMessageCount(1)
-    await sessionPage.expectUserMessage(messageA, 0)
+    await expect(userMessage(messageA)).toBeVisible({ timeout: 10000 })
 
     // And should NOT have messageB anywhere
     const messageListA = sessionPage.getMessageList()
@@ -121,7 +121,6 @@ test.describe('Cross-Session Message Isolation', () => {
     // Cleanup
     await agentPage.selectAgent(agentAName)
     try { await agentPage.deleteAgent() } catch { /* ignore */ }
-    await page.waitForTimeout(500)
     await agentPage.selectAgent(agentBName)
     try { await agentPage.deleteAgent() } catch { /* ignore */ }
   })

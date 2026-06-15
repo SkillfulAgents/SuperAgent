@@ -30,13 +30,76 @@ import { getSttProvider } from '@shared/lib/stt'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
+import { customEnvVarsSchema } from '@shared/lib/container/reserved-env-vars'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { db } from '@shared/lib/db'
-import { proxyAuditLog, proxyTokens, agentConnectedAccounts, scheduledTasks, notifications, connectedAccounts, userSettings, auditLog } from '@shared/lib/db/schema'
+import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
+import {
+  proxyAuditLog,
+  proxyTokens,
+  agentConnectedAccounts,
+  scheduledTasks,
+  notifications,
+  connectedAccounts,
+  userSettings,
+  auditLog,
+  webhookTriggers,
+  chatIntegrations,
+  chatIntegrationSessions,
+  remoteMcpServers,
+  agentRemoteMcps,
+  mcpAuditLog,
+  mcpToolPolicies,
+  agentAcl,
+  messageAuthor,
+  xAgentPolicies,
+  apiScopePolicies,
+} from '@shared/lib/db/schema'
 import fs from 'fs'
 
 const settings = new Hono()
+
+/**
+ * Canonical set of agent/app-owned relational tables wiped by factory reset.
+ *
+ * Ordered children-before-parents so deletes succeed regardless of FK-cascade
+ * state. Better Auth tables (user, session, account, verification) are
+ * intentionally excluded — a factory reset clears app/agent data but does NOT
+ * delete user accounts.
+ *
+ * Keep this reconciled with the per-agent set in agent-cleanup-service.ts. The
+ * test in factory-reset.sup206.test.ts enumerates the schema dynamically and
+ * fails if a new agent/app-owned table is added without being listed here, so
+ * the set cannot silently drift again.
+ */
+const FACTORY_RESET_TABLES: SQLiteTable[] = [
+  // Leaf / no-FK-to-reset-table audit + attribution rows
+  proxyAuditLog,
+  proxyTokens,
+  mcpAuditLog,
+  messageAuthor,
+  agentAcl,
+  xAgentPolicies,
+  webhookTriggers,
+  notifications,
+  scheduledTasks,
+  // chat integrations (sessions cascade-cascade from integrations)
+  chatIntegrationSessions,
+  chatIntegrations,
+  // connected accounts + dependents (api scope policies + agent mappings cascade)
+  agentConnectedAccounts,
+  apiScopePolicies,
+  connectedAccounts,
+  // remote MCP servers + dependents (tool policies + agent mappings cascade)
+  agentRemoteMcps,
+  mcpToolPolicies,
+  remoteMcpServers,
+  // per-user settings (user row itself is preserved)
+  userSettings,
+  // global app audit log
+  auditLog,
+]
 
 settings.use('*', Authenticated(), IsAdmin())
 
@@ -95,7 +158,7 @@ function buildSettingsResponse(
     voice: getVoiceSettings(),
     tenantId: getTenantId(),
     computerUse: appSettings.computerUse,
-    shareAnalytics: !!appSettings.shareAnalytics,
+    shareAnalytics: appSettings.shareAnalytics !== false,
     analyticsTargets: appSettings.analyticsTargets,
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
@@ -160,6 +223,16 @@ settings.put('/', async (c) => {
       const limaSettings = body.container.runtimeSettings.lima
       if (limaSettings?.vmMemory && !VALID_LIMA_VM_MEMORY_OPTIONS.includes(limaSettings.vmMemory)) {
         return c.json({ error: `Invalid VM memory setting. Must be one of: ${VALID_LIMA_VM_MEMORY_OPTIONS.join(', ')}` }, 400)
+      }
+    }
+
+    // Validate customEnvVars at the write boundary (defense-in-depth for
+    // SUP-210): reject payloads that try to set reserved runtime env vars so
+    // they never reach persisted settings.
+    if (body.customEnvVars !== undefined) {
+      const parsed = customEnvVarsSchema.safeParse(body.customEnvVars)
+      if (!parsed.success) {
+        return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid customEnvVars' }, 400)
       }
     }
 
@@ -554,15 +627,11 @@ settings.post('/factory-reset', async (c) => {
     const agentsDir = getAgentsDataDir()
     await fs.promises.rm(agentsDir, { recursive: true, force: true })
 
-    // Clear all DB tables (order matters for FK constraints)
-    db.delete(proxyAuditLog).run()
-    db.delete(proxyTokens).run()
-    db.delete(agentConnectedAccounts).run()
-    db.delete(scheduledTasks).run()
-    db.delete(notifications).run()
-    db.delete(connectedAccounts).run()
-    db.delete(userSettings).run()
-    db.delete(auditLog).run()
+    // Clear every agent/app-owned relational table (children before parents).
+    // Better Auth tables (user/session/account/verification) are preserved.
+    for (const table of FACTORY_RESET_TABLES) {
+      db.delete(table).run()
+    }
 
     // Delete settings file (includes platform auth token)
     const settingsPath = path.join(getDataDir(), 'settings.json')

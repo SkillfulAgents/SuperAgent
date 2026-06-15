@@ -203,6 +203,46 @@ describe('QuestionRequestItem', () => {
     })
   })
 
+  it('Cmd-Enter in "Other" textarea submits on the last question', async () => {
+    const user = userEvent.setup()
+    mockApiFetch.mockResolvedValueOnce({ ok: true, json: () => ({}) })
+
+    render(
+      <QuestionRequestItem {...defaultProps} questions={singleQuestion} />
+    )
+
+    const textarea = screen.getByPlaceholderText('Type something else')
+    await user.click(textarea)
+    await user.type(textarea, 'SQLite')
+    await user.keyboard('{Meta>}{Enter}{/Meta}')
+
+    await waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          body: expect.stringContaining('SQLite'),
+        })
+      )
+    })
+  })
+
+  it('Cmd-Enter in "Other" textarea advances to the next question', async () => {
+    const user = userEvent.setup()
+    render(
+      <QuestionRequestItem {...defaultProps} questions={twoQuestions} />
+    )
+
+    // Answer the first question via the "Other" textarea, then Cmd-Enter
+    const textarea = screen.getByPlaceholderText('Type something else')
+    await user.click(textarea)
+    await user.type(textarea, 'SQLite')
+    await user.keyboard('{Meta>}{Enter}{/Meta}')
+
+    // Advances to the second question rather than submitting
+    expect(screen.getByText('Which cloud provider?')).toBeInTheDocument()
+    expect(mockApiFetch).not.toHaveBeenCalled()
+  })
+
   it('multi-question: requires all questions to be answered', async () => {
     const user = userEvent.setup()
     render(

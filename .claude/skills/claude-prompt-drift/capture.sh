@@ -38,7 +38,18 @@
 
 set -euo pipefail
 
-MODEL="claude-opus-4-7"
+# Git Bash / MSYS2 rewrites POSIX-looking args to Windows paths before native
+# exes (docker.exe) see them, which corrupts container-side paths like
+# /proxy.mjs → C:\Program Files\Git\proxy.mjs. Exclude exactly the
+# container-path prefixes used in docker args below; host sides of -v mounts
+# are rendered Windows-style via hostpath() so they never look POSIX.
+# Both are no-ops outside MSYS environments.
+export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:-/proxy.mjs;/out;/app}"
+hostpath() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+
+MODEL="claude-opus-4-8"
 AXIS="both"
 FORCE="false"
 ALLOW_DIRTY="false"
@@ -202,8 +213,8 @@ start_proxy() {
   docker run -d --rm \
     --name "$PROXY_NAME" \
     --network "$NET_NAME" \
-    -v "$SKILL_DIR/proxy.mjs:/proxy.mjs:ro" \
-    -v "$out_dir:/out" \
+    -v "$(hostpath "$SKILL_DIR/proxy.mjs"):/proxy.mjs:ro" \
+    -v "$(hostpath "$out_dir"):/out" \
     node:20 \
     node /proxy.mjs --port 9876 --upstream https://api.anthropic.com --out /out >/dev/null
 
@@ -333,9 +344,10 @@ capture_pure_claude() {
   docker run --rm \
     --name "$BASELINE_NAME" \
     --network "$NET_NAME" \
-    -v "$SKILL_DIR/pure-baseline/run.mjs:/app/baseline-driver.mjs:ro" \
+    -v "$(hostpath "$SKILL_DIR/pure-baseline/run.mjs"):/app/baseline-driver.mjs:ro" \
     -e ANTHROPIC_API_KEY="$API_KEY" \
     -e ANTHROPIC_BASE_URL="http://$PROXY_NAME:9876" \
+    -e DRIFT_MODEL="$MODEL" \
     --entrypoint node \
     "$IMAGE_TAG" \
     /app/baseline-driver.mjs >/dev/null 2>&1 || true

@@ -31,10 +31,19 @@ test.describe('Pending request reconnect recovery', () => {
   // Drop and re-establish the SSE connection while staying on the session view.
   async function cycleConnection(page: import('@playwright/test').Page) {
     await page.context().setOffline(true)
-    await page.waitForTimeout(1000)
+    await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false)
     await page.context().setOffline(false)
-    // EventSource native reconnect (~3s) + the /stream connect-time replay.
-    await page.waitForTimeout(5000)
+    await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(true)
+
+    // Native EventSource reconnects are not consistently surfaced through
+    // Playwright response events. Give the browser's reconnect loop one bounded
+    // retry window, then let the card-count assertions below catch missing or
+    // duplicate replay behavior.
+    await page.waitForFunction(
+      () => new Promise((resolve) => setTimeout(resolve, 4000)),
+      undefined,
+      { timeout: 5000 }
+    )
   }
 
   test('secret request survives an SSE reconnect without duplicating', async ({ page }) => {

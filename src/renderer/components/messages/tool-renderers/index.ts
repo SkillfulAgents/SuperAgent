@@ -16,6 +16,7 @@ import { deliverSessionRenderer } from './deliver-session'
 import { requestFileRenderer } from './request-file'
 import { requestRemoteMcpRenderer } from './request-remote-mcp'
 import { requestScriptRunRenderer } from './request-script-run'
+import { requestBrowserInputRenderer } from './request-browser-input'
 import { taskRenderer } from './task'
 import {
   browserOpenRenderer,
@@ -26,9 +27,11 @@ import {
   browserScrollRenderer,
   browserWaitRenderer,
   browserPressRenderer,
+  browserTypeRenderer,
   browserScreenshotRenderer,
   browserSelectRenderer,
   browserHoverRenderer,
+  browserEvalRenderer,
   browserRunRenderer,
 } from './browser-tools'
 import {
@@ -97,6 +100,7 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__user-input__request_file': requestFileRenderer,
   'mcp__user-input__request_remote_mcp': requestRemoteMcpRenderer,
   'mcp__user-input__request_script_run': requestScriptRunRenderer,
+  'mcp__user-input__request_browser_input': requestBrowserInputRenderer,
 
   // MCP tools - browser
   'mcp__browser__browser_open': browserOpenRenderer,
@@ -107,9 +111,11 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__browser__browser_scroll': browserScrollRenderer,
   'mcp__browser__browser_wait': browserWaitRenderer,
   'mcp__browser__browser_press': browserPressRenderer,
+  'mcp__browser__browser_type': browserTypeRenderer,
   'mcp__browser__browser_screenshot': browserScreenshotRenderer,
   'mcp__browser__browser_select': browserSelectRenderer,
   'mcp__browser__browser_hover': browserHoverRenderer,
+  'mcp__browser__browser_eval': browserEvalRenderer,
   'mcp__browser__browser_run': browserRunRenderer,
 
   // MCP tools - dashboards

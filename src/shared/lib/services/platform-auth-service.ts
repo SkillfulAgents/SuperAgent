@@ -152,6 +152,9 @@ function buildEnvManagedStatus(envToken: string, orgId: string | null): Platform
 
 // Verifies PLATFORM_TOKEN against the issuer JWKS at startup; warns on failure.
 export async function initEnvManagedPlatformStatus(): Promise<void> {
+  // The env token (and so the org the introspect resolves against) may have
+  // changed since the cache was filled.
+  enrichedAccountCache.clear()
   if (!isAuthMode()) {
     cachedEnvManagedStatus = null
     return
@@ -186,6 +189,7 @@ export async function initEnvManagedPlatformStatus(): Promise<void> {
 
 export function _resetEnvManagedPlatformStatusForTest(): void {
   cachedEnvManagedStatus = undefined
+  enrichedAccountCache.clear()
 }
 
 function readRecord(): PlatformAuthRecord | null {
@@ -324,6 +328,77 @@ export function getPlatformAuthStatus(userId?: string): PlatformAuthStatus {
     createdAt: null,
     updatedAt: null,
     source: null,
+  }
+}
+
+// The org JWT carries only `orgId`, so email/orgName/role come from a
+// `/v1/account` introspect. `updatedAt` stays null: env connections have no
+// "last changed" anchor, so the introspect time would be meaningless.
+interface EnrichedEnvAccount {
+  email: string | null
+  orgName: string | null
+  role: string | null
+}
+
+// Introspection is memoized per user: the Account screen re-fetches the status
+// on every mount/focus, and the membership it reflects changes rarely.
+// Failures are cached too, so a proxy without `/v1/account` org-JWT support
+// doesn't cost a failing round-trip (and a Sentry event) per page view.
+const ENRICHED_ACCOUNT_TTL_MS = 5 * 60 * 1000
+const enrichedAccountCache = new Map<
+  string,
+  { account: EnrichedEnvAccount | null; expiresAt: number }
+>()
+
+async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvAccount | null> {
+  const token = getPlatformAccessToken()
+  if (!token) return null
+  try {
+    // Dynamic import breaks the module cycle (platform-attribution imports this
+    // service for the token + stored member id).
+    const { runWithRequestUser } = await import('@shared/lib/platform-attribution')
+    const account = await runWithRequestUser(userId, () =>
+      fetchPlatformJson({
+        path: '/v1/account',
+        token,
+        schema: PlatformAccountInfoSchema,
+        area: 'platform-auth',
+        mapStatusError: (status) => ({ message: 'Account introspection failed', status }),
+      }),
+    )
+    return { email: account.email, orgName: account.orgName, role: account.role }
+  } catch (error) {
+    captureException(error, { tags: { area: 'platform-auth', op: 'introspect-env-account' } })
+    return null
+  }
+}
+
+/**
+ * Like {@link getPlatformAuthStatus}, but for env-managed (org-JWT) connections
+ * fills email/orgName/role by introspecting the acting member's account.
+ * Opaque-key (settings) and disconnected statuses are returned as-is.
+ */
+export async function getEnrichedPlatformAuthStatus(userId?: string): Promise<PlatformAuthStatus> {
+  const base = getPlatformAuthStatus(userId)
+  if (base.source !== 'env' || !base.connected || !userId) return base
+
+  let entry = enrichedAccountCache.get(userId)
+  if (!entry || entry.expiresAt <= Date.now()) {
+    entry = {
+      account: await introspectEnvManagedAccount(userId),
+      expiresAt: Date.now() + ENRICHED_ACCOUNT_TTL_MS,
+    }
+    enrichedAccountCache.set(userId, entry)
+  }
+
+  const { account } = entry
+  if (!account) return base
+
+  return {
+    ...base,
+    email: account.email,
+    orgName: account.orgName,
+    role: account.role,
   }
 }
 

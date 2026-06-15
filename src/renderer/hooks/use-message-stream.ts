@@ -4,6 +4,7 @@ import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
+import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 
 interface SecretRequest {
   toolUseId: string
@@ -82,6 +83,20 @@ interface ApiRetryInfo {
   errorStatus?: number
 }
 
+/**
+ * Optimistic copy of a message another user sent in this shared session,
+ * shown until the persisted message (matched by uuid) arrives via refetch.
+ */
+export interface PeerUserMessage {
+  uuid: string
+  content: string
+  sender: { id: string; name?: string; email?: string }
+  /** Sent while the agent was mid-turn — rendered as a queued ghost. */
+  queued?: boolean
+  /** Local arrival time — bounds the text-fallback match so an old identical-text message can't claim this ghost. */
+  receivedAt: number
+}
+
 interface StreamState {
   isActive: boolean // True from user message until query result
   isStreaming: boolean // True while actively receiving tokens
@@ -107,7 +122,7 @@ interface StreamState {
   activeSubagents: SubagentInfo[] // Currently running subagent(s) info
   completedSubagents: Set<string> | null // parentToolIds of completed subagents (for status logic)
   typingUser: { id: string; name?: string } | null // User currently typing (auth mode shared agents)
-  peerUserMessage: { content: string; sender: { id: string; name?: string; email?: string } } | null // User message from another user
+  peerUserMessages: PeerUserMessage[] // Messages from other users not yet seen in fetched messages
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
   backgroundTasks: Array<{ taskId: string; startedAt: number }> // Active background Bash commands
   isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
@@ -149,7 +164,7 @@ const EMPTY_STREAM_STATE: StreamState = {
   activeSubagents: [],
   completedSubagents: null,
   typingUser: null,
-  peerUserMessage: null,
+  peerUserMessages: [],
   apiRetry: null,
   backgroundTasks: [],
   isWaitingBackground: false,
@@ -183,6 +198,69 @@ const sessionAutoApprovedScriptRunIds = new Map<string, Set<string>>()
 // Singleton EventSource connections per session (prevents duplicates from StrictMode/re-renders)
 const eventSources = new Map<string, EventSource>()
 const refCounts = new Map<string, number>()
+
+// Sessions with an in-flight post-idle reconcile loop, so overlapping
+// session_idle events don't spawn duplicate loops for the same session.
+const reconcilingIdleSessions = new Set<string>()
+
+// Does the last persisted assistant message in the messages cache match the
+// just-streamed text? Mirrors MessageList's `isStreamingMessagePersisted` so we
+// stop reconciling at exactly the point the UI considers the turn finalized.
+function lastPersistedAssistantMatches(
+  queryClient: QueryClient,
+  sessionId: string,
+  expectedText: string
+): boolean {
+  const entries = queryClient.getQueriesData<ApiMessageOrBoundary[]>({
+    queryKey: ['messages', sessionId],
+  })
+  for (const [, data] of entries) {
+    if (!Array.isArray(data)) continue
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (data[i].type === 'assistant') {
+        const content = (data[i] as ApiMessage).content as { text?: string } | undefined
+        const persisted = content?.text?.trim() || ''
+        if (!persisted) return false
+        return persisted.startsWith(expectedText) || expectedText.startsWith(persisted)
+      }
+    }
+  }
+  return false
+}
+
+// The session_idle SSE event can arrive before the final assistant line is
+// durably readable in the JSONL transcript (it's written across the container
+// boundary), so the immediate invalidate's refetch may come back without it.
+// No further SSE event follows, so without this the UI would only reconcile on
+// the slow safety-net poll (useMessages, 15s) — the regression where a turn's
+// "Worked for Xs" line takes seconds to appear. Refetch a few times with short
+// backoff until the persisted tail matches the streamed text, then stop.
+// Bounded and self-terminating; the background poll remains the ultimate backstop.
+async function reconcileMessagesAfterIdle(
+  sessionId: string,
+  queryClient: QueryClient,
+  streamingText: string | null
+): Promise<void> {
+  const expected = streamingText?.trim()
+  // Nothing streamed (e.g. a tool-only or interrupted turn) — no text to match
+  // against, so the handler's immediate invalidate is all we can do.
+  if (!expected) return
+  if (reconcilingIdleSessions.has(sessionId)) return
+  reconcilingIdleSessions.add(sessionId)
+  try {
+    // ~1.5s total across 3 tries — long enough to beat the write/read race,
+    // short enough that a genuine mismatch falls through to the poll quickly.
+    for (const delay of [250, 500, 750]) {
+      if (lastPersistedAssistantMatches(queryClient, sessionId, expected)) return
+      await new Promise((resolve) => setTimeout(resolve, delay))
+      // refetchType defaults to 'active': refetches the mounted messages query
+      // (the session being viewed) and resolves once the cache is updated.
+      await queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+    }
+  } finally {
+    reconcilingIdleSessions.delete(sessionId)
+  }
+}
 
 function getOrCreateEventSource(
   sessionId: string,
@@ -241,7 +319,7 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: Array.isArray(data.backgroundTasks) ? data.backgroundTasks : (current?.backgroundTasks ?? []),
           isWaitingBackground: Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
@@ -298,7 +376,7 @@ function getOrCreateEventSource(
           activeSubagents: [],
           completedSubagents: null,
           typingUser: null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
@@ -341,13 +419,18 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: [],
           isWaitingBackground: false,
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        // The immediate invalidate above can refetch before the final assistant
+        // line is durably readable in the JSONL transcript. Beat that race with a
+        // short bounded reconcile so the turn's "Worked for Xs" line appears
+        // promptly instead of waiting for the next safety-net poll.
+        void reconcileMessagesAfterIdle(sessionId, queryClient, current?.streamingMessage ?? null)
       }
       // Agent turn ended but background tasks are still running — allow sending messages
       else if (data.type === 'session_waiting_background') {
@@ -383,7 +466,7 @@ function getOrCreateEventSource(
           activeSubagents: [],
           completedSubagents: null,
           typingUser: null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: [],
           isWaitingBackground: false,
@@ -450,7 +533,7 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: null, // Clear retry state — API call succeeded
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
@@ -481,7 +564,7 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
@@ -528,7 +611,7 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
@@ -569,19 +652,26 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
         })
       }
       else if (data.type === 'user_message') {
-        // Another user sent a message in this shared session
-        streamStates.set(sessionId, {
-          ...current!,
-          peerUserMessage: { content: data.content, sender: data.sender },
-          typingUser: null, // Clear typing since they sent
-        })
+        // Another user sent a message in this shared session. Track it until
+        // the persisted copy (same uuid) shows up in fetched messages — there
+        // may be several at once when users queue messages mid-turn.
+        if (current && data.uuid) {
+          const existing = current.peerUserMessages
+          streamStates.set(sessionId, {
+            ...current,
+            peerUserMessages: existing.some((p) => p.uuid === data.uuid)
+              ? existing
+              : [...existing, { uuid: data.uuid, content: data.content, sender: data.sender, queued: data.queued, receivedAt: Date.now() }],
+            typingUser: null, // Clear typing since they sent
+          })
+        }
         // Refetch to pick up the persisted message shortly
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
@@ -601,6 +691,17 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'messages_updated') {
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+      }
+      else if (data.type === 'turn_output_complete') {
+        // A turn's output finished (the session may or may not settle — e.g.
+        // queued messages or background work can keep it active). Reconcile
+        // the streamed text against the transcript exactly like at idle —
+        // otherwise a follow-up turn's stream_start clears the streaming
+        // bubble before the persisted copy is fetched and the final message
+        // disappears briefly. The reconcile helper is idempotent, so the
+        // session_idle handler's own reconcile coexists harmlessly.
+        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        void reconcileMessagesAfterIdle(sessionId, queryClient, current?.streamingMessage ?? null)
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
         // Message has been persisted - keep streamingMessage visible until refetch completes
@@ -1194,6 +1295,28 @@ export function removeComputerUseRequest(sessionId: string, toolUseId: string): 
         (r) => r.toolUseId !== toolUseId
       ),
     })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
+// Remove a peer user message once its persisted copy is visible in fetched messages
+export function removePeerUserMessage(sessionId: string, uuid: string): void {
+  const current = streamStates.get(sessionId)
+  if (current && current.peerUserMessages.some((p) => p.uuid === uuid)) {
+    streamStates.set(sessionId, {
+      ...current,
+      peerUserMessages: current.peerUserMessages.filter((p) => p.uuid !== uuid),
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
+// Drop all peer user messages (safety net for messages that never persisted,
+// e.g. the agent was interrupted before picking up a queued message)
+export function clearPeerUserMessages(sessionId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current && current.peerUserMessages.length > 0) {
+    streamStates.set(sessionId, { ...current, peerUserMessages: [] })
     streamListeners.get(sessionId)?.forEach((listener) => listener())
   }
 }

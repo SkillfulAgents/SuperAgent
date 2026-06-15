@@ -62,8 +62,8 @@ test.describe('Search palette', () => {
     // Filter case-insensitively by a substring of the session name
     await searchInput.fill('refactor')
     const results = page.locator('[data-testid="search-results"]')
-    await expect(results.getByText(agentName)).toBeVisible()
-    await expect(results.getByText(sessionName)).toBeVisible()
+    await expect(results.getByTestId('search-agent-row').filter({ hasText: agentName })).toBeVisible()
+    await expect(results.getByTestId('search-session-row').filter({ hasText: sessionName })).toBeVisible()
 
     // Active row should be the agent (index 0) — ArrowDown moves to the session
     await page.keyboard.press('ArrowDown')
@@ -133,33 +133,33 @@ test.describe('Search palette', () => {
     const results = page.locator('[data-testid="search-results"]')
 
     // The agent should appear in the recent list without typing anything
-    await expect(results.getByText(agentName)).toBeVisible()
+    const agentRow = results.getByTestId('search-agent-row').filter({ hasText: agentName })
+    const sessionRow = results.getByTestId('search-session-row').filter({ hasText: sessionName })
+    await expect(agentRow).toBeVisible()
 
     // Wait for sessions to load — the expand chevron only renders once sessions
     // are fetched, so its presence signals the async useQueries completed.
-    const agentItem = results.getByText(agentName).locator('..')
-    await expect(agentItem.locator('svg.lucide-chevron-right')).toBeVisible()
+    await expect(agentRow.getByTestId('search-agent-expand')).toBeVisible()
 
     // Sessions should be collapsed (not visible yet)
-    await expect(results.getByText(sessionName)).not.toBeVisible()
+    await expect(sessionRow).not.toBeVisible()
 
     // Hover over the agent to set keyboard focus to it (activeIndex).
     // Other agents from parallel tests may be more recent, so the agent
     // might not be at index 0.
-    await results.getByText(agentName).hover()
+    await agentRow.hover()
 
     // ArrowRight expands the agent's sessions
     await page.keyboard.press('ArrowRight')
-    await expect(results.getByText(sessionName)).toBeVisible()
+    await expect(sessionRow).toBeVisible()
 
     // ArrowLeft collapses them
     await page.keyboard.press('ArrowLeft')
-    await expect(results.getByText(sessionName)).not.toBeVisible()
+    await expect(sessionRow).not.toBeVisible()
 
     // Click the chevron to expand
-    const agentRow = results.getByText(agentName).locator('..')
-    await agentRow.locator('svg').first().click()
-    await expect(results.getByText(sessionName)).toBeVisible()
+    await agentRow.getByTestId('search-agent-expand').click()
+    await expect(sessionRow).toBeVisible()
 
     // Enter on a session navigates to it (dialog closes, lands on the agent)
     await page.keyboard.press('ArrowDown')

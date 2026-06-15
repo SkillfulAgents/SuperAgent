@@ -76,7 +76,7 @@ RUN apt-get update && apt-get install -y \
 # our dashboard screenshot code (via playwright-core) share a single Chromium
 # install under PLAYWRIGHT_BROWSERS_PATH.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
-RUN npm install -g agent-browser@0.25.3 && \
+RUN npm install -g agent-browser@0.27.2 && \
     npx playwright install chromium && \
     chmod -R o+rx /opt/playwright-browsers
 

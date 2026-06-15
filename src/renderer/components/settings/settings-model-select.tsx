@@ -30,7 +30,7 @@ interface SettingsModelSelectProps {
  * persisted settings instead of per-message state. Shared across the LLM and
  * Browser settings tabs.
  *
- * The popover speaks in family aliases ("opus"/"sonnet"/"haiku"), but several
+ * The popover speaks in family aliases ("fable"/"opus"/"sonnet"/"haiku"), but several
  * settings consumers — notably `summarizerModel` (session-name generation, API
  * key validation) — call the Anthropic SDK directly host-side, where an alias
  * 404s ("model: haiku"). So on every pick we persist a *concrete* model id

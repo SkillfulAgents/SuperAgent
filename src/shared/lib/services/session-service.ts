@@ -28,6 +28,7 @@ import {
   JsonlEntry,
   JsonlMessageEntry,
   JsonlSystemEntry,
+  JsonlAttachmentEntry,
   ContentBlock,
 } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
@@ -137,6 +138,42 @@ function isMessageEntry(entry: JsonlEntry): entry is JsonlMessageEntry {
 }
 
 /**
+ * Convert a `queued_command` attachment entry into a synthetic user message
+ * entry. The CLI records user messages that arrive mid-turn (queued/steering
+ * input) this way instead of as regular `user` entries, so without this
+ * conversion queued messages would be invisible in the transcript even though
+ * the agent acted on them. Returns the entry unchanged when it isn't a
+ * user-typed queued command (task notifications, meta/system injections).
+ */
+function normalizeQueuedCommandEntry(entry: JsonlEntry): JsonlEntry {
+  if (entry.type !== 'attachment') return entry
+  const { attachment } = entry as JsonlAttachmentEntry
+  if (
+    !attachment ||
+    attachment.type !== 'queued_command' ||
+    attachment.commandMode !== 'prompt' ||
+    attachment.isMeta ||
+    attachment.prompt === undefined
+  ) {
+    return entry
+  }
+  return {
+    type: 'user',
+    // source_uuid is the CLI's queue-entry id; prefer it since it's also the
+    // uuid the SDK uses when replaying this message on session resume.
+    uuid: attachment.source_uuid ?? entry.uuid,
+    parentUuid: entry.parentUuid ?? null,
+    sessionId: entry.sessionId ?? '',
+    timestamp: entry.timestamp,
+    message: {
+      role: 'user',
+      content: attachment.prompt,
+    },
+    isQueuedCommand: true,
+  } satisfies JsonlMessageEntry
+}
+
+/**
  * Parse session info from JSONL entries
  */
 function parseSessionInfo(
@@ -145,7 +182,9 @@ function parseSessionInfo(
   entries: JsonlEntry[],
   metadata?: SessionMetadata
 ): SessionInfo {
-  const messages = entries.filter(isMessageEntry)
+  // Normalize queued_command attachments so mid-turn messages count toward
+  // naming, messageCount, and activity timestamps like any other user message.
+  const messages = entries.map(normalizeQueuedCommandEntry).filter(isMessageEntry)
 
   // Get timestamps
   let createdAt = new Date()
@@ -354,7 +393,7 @@ export async function getSessionMessages(
   }
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  return entries.filter(isMessageEntry)
+  return entries.map(normalizeQueuedCommandEntry).filter(isMessageEntry)
 }
 
 /**
@@ -385,7 +424,7 @@ export async function getSessionMessagesWithCompact(
   }
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  return entries.filter(isMessageOrSystemDisplayEntry)
+  return entries.map(normalizeQueuedCommandEntry).filter(isMessageOrSystemDisplayEntry)
 }
 
 /**
@@ -549,11 +588,15 @@ export async function removeMessage(
 
   const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
 
-  // Find the target entry by uuid
-  const target = entries.find(
-    (e): e is JsonlMessageEntry =>
-      'uuid' in e && e.uuid === messageUuid
-  )
+  // Find the target entry by id. Regular messages match by top-level uuid;
+  // queued (mid-turn) messages surface in the UI with id = the queued_command
+  // attachment's source_uuid (see normalizeQueuedCommandEntry), so match the
+  // underlying attachment entry as well.
+  const matchesTargetId = (e: JsonlEntry): boolean =>
+    ('uuid' in e && e.uuid === messageUuid) ||
+    (e.type === 'attachment' && (e as JsonlAttachmentEntry).attachment?.source_uuid === messageUuid)
+
+  const target = entries.find(matchesTargetId)
   if (!target) return false
 
   // Collect message IDs and tool_use IDs to remove
@@ -583,11 +626,10 @@ export async function removeMessage(
 
   // Filter entries
   const filtered = entries.filter((entry) => {
+    // Remove the target entry (user message or queued_command attachment)
+    if (matchesTargetId(entry)) return false
     if (!('uuid' in entry)) return true // keep non-message entries
     const e = entry as JsonlMessageEntry
-
-    // Remove the target entry (user message) or all entries with same message.id (assistant)
-    if (e.uuid === messageUuid) return false
     if (e.type === 'assistant' && e.message.id && messageIdsToRemove.has(e.message.id)) return false
 
     // Remove tool_result user entries referencing removed tool calls

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
+import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -92,9 +93,7 @@ export function useExportAgentFull() {
   })
 }
 
-export type ImportProgress = { phase: 'uploading' | 'processing'; percent: number }
-
-const CHUNK_SIZE = 50 * 1024 * 1024 // 50MB — under Cloudflare's 100MB limit
+export type ImportProgress = UploadProgress
 
 export function useImportAgentTemplate() {
   const queryClient = useQueryClient()
@@ -105,62 +104,14 @@ export function useImportAgentTemplate() {
     Error,
     { file: File; mode?: 'template' | 'full'; onProgress?: (p: ImportProgress) => void }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ file, mode, onProgress }) => {
-      if (file.size <= CHUNK_SIZE) {
-        // Small file — single request (existing behavior)
-        const formData = new FormData()
-        formData.append('file', file)
-        if (mode) formData.append('mode', mode)
-
-        onProgress?.({ phase: 'uploading', percent: 100 })
-        const res = await apiFetch('/api/agents/import-template', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!res.ok) {
-          const data = await res.json()
-          throw new Error(data.error || 'Failed to import template')
-        }
-        onProgress?.({ phase: 'processing', percent: 100 })
-        return res.json()
-      }
-
-      // Large file — chunked upload
-      const uploadId = crypto.randomUUID()
-      const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-
-      for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_SIZE
-        const end = Math.min(start + CHUNK_SIZE, file.size)
-        const chunkBlob = file.slice(start, end)
-
-        const formData = new FormData()
-        formData.append('chunk', chunkBlob)
-        formData.append('uploadId', uploadId)
-        formData.append('chunkIndex', String(i))
-        formData.append('totalChunks', String(totalChunks))
-        formData.append('mode', mode || 'template')
-
-        onProgress?.({ phase: 'uploading', percent: (i / totalChunks) * 100 })
-
-        const res = await apiFetch('/api/agents/import-template', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!res.ok) {
-          const data = await res.json()
-          throw new Error(data.error || 'Failed to upload chunk')
-        }
-
-        // Last chunk returns the final agent result
-        if (i === totalChunks - 1) {
-          onProgress?.({ phase: 'processing', percent: 100 })
-          return res.json()
-        }
-      }
-
-      // Should not reach here, but satisfy TypeScript
-      throw new Error('Unexpected end of chunked upload')
+      return uploadFileChunked<ApiAgent & { hasOnboarding?: boolean }>({
+        url: '/api/agents/import-template',
+        file,
+        fields: { mode: mode || 'template' },
+        onProgress,
+      })
     },
     onSuccess: () => {
       track('agent_created', { source: 'file_import' })
@@ -184,6 +135,7 @@ export function useInstallAgentFromSkillset() {
       agentVersion: string
     }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ skillsetId, agentPath, agentName, agentVersion }) => {
       const res = await apiFetch('/api/agents/install-from-skillset', {
         method: 'POST',
@@ -275,6 +227,7 @@ export function useRefreshAgentTemplateStatus() {
     Error,
     { agentSlug: string }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh`, {
         method: 'POST',
@@ -356,6 +309,7 @@ export function useCreateAgentTemplatePR() {
     Error,
     { agentSlug: string; title: string; body: string; newVersion?: string }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, title, body, newVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-create-pr`, {
         method: 'POST',
@@ -417,6 +371,7 @@ export function usePublishAgentTemplate() {
       newVersion?: string
     }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, skillsetId, title, body, newVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-publish`, {
         method: 'POST',

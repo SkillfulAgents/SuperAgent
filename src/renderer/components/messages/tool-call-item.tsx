@@ -1,6 +1,6 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench, StopCircle } from 'lucide-react'
+import { Check, X, Ban, ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react'
 import { useState, useRef, useMemo, memo } from 'react'
 import { getToolRenderer } from './tool-renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
@@ -38,32 +38,66 @@ function isUserInputTool(name: string): boolean {
   return name === 'AskUserQuestion' || name.startsWith('mcp__user-input__')
 }
 
+function ToolNameWithSummary({ name, summary, active = false }: { name: string; summary?: string | null; active?: boolean }) {
+  return (
+    <>
+      <span className={cn(
+        'font-sans font-normal shrink-0 text-sm leading-none transition-colors',
+        active ? 'text-foreground' : 'text-foreground/65 group-hover:text-foreground'
+      )}>
+        {name}
+      </span>
+      {summary && (
+        <>
+          <span aria-hidden className="shrink-0 text-foreground/40 group-hover:text-muted-foreground text-sm leading-none transition-colors">→</span>
+          <span className="text-muted-foreground/70 group-hover:text-muted-foreground truncate text-xs leading-none transition-colors">
+            {summary}
+          </span>
+        </>
+      )}
+    </>
+  )
+}
+
+export function StatusIndicator({ status }: { status: string }) {
+  if (status === 'success' || status === 'completed') {
+    return (
+      <span className="h-4 w-4 shrink-0 rounded-full bg-green-100 dark:bg-green-950/60 flex items-center justify-center">
+        <Check className="h-2.5 w-2.5 text-green-600 dark:text-green-400" strokeWidth={2.5} />
+      </span>
+    )
+  }
+  if (status === 'error') {
+    return (
+      <span className="h-4 w-4 shrink-0 rounded-full bg-zinc-200 dark:bg-zinc-700 flex items-center justify-center">
+        <X className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={2.5} />
+      </span>
+    )
+  }
+  if (status === 'running') {
+    return (
+      <span className="h-4 w-4 shrink-0 flex items-center justify-center">
+        <Loader2 className="h-3 w-3 text-gray-400 animate-spin" />
+      </span>
+    )
+  }
+  return (
+    <span className="h-4 w-4 shrink-0 rounded-full bg-zinc-200 dark:bg-zinc-700 flex items-center justify-center">
+      <Ban className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={2.5} />
+    </span>
+  )
+}
+
 function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
   const renderer = getToolRenderer(toolCall.name)
   const isPendingUserInput = status === 'running' && isUserInputTool(toolCall.name)
   const elapsed = useElapsedTimer(status === 'running' && !isPendingUserInput ? (messageCreatedAt ?? null) : null)
-
-  const StatusIcon = {
-    running: Loader2,
-    success: CheckCircle,
-    error: XCircle,
-    cancelled: StopCircle,
-  }[status]
-
-  const statusColor = {
-    running: 'text-gray-400',
-    success: 'text-green-500',
-    error: 'text-red-500',
-    cancelled: 'text-gray-400',
-  }[status]
-
-  // Get custom icon if available
-  const ToolIcon = renderer?.icon || Wrench
+  const ToolIcon = renderer?.icon || Search
 
   // Get summary for collapsed view
-  const summary = renderer?.getSummary?.(toolCall.input)
+  const summary = useMemo(() => renderer?.getSummary?.(toolCall.input), [renderer, toolCall.input])
 
   // Format input for display (fallback)
   const inputStr = useMemo(
@@ -80,71 +114,56 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
   const CustomExpandedView = renderer?.ExpandedView
 
   return (
-    <div className="border rounded-md bg-muted/30 text-sm" data-testid={`tool-call-${toolCall.name}`}>
-      {/* Header row */}
+    <div className="text-sm border border-border/70 rounded-md overflow-hidden" data-testid={`tool-call-${toolCall.name}`}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors"
+        className={cn('flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
       >
-        {/* Status indicator */}
-        <StatusIcon
-          className={cn(
-            'h-4 w-4 shrink-0',
-            statusColor,
-            status === 'running' && 'animate-spin'
-          )}
-        />
-
-        {/* Tool icon */}
-        <ToolIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-
-        {/* Tool name and summary */}
-        <span className="font-mono font-medium truncate">
-          {renderer?.displayName || formatToolName(toolCall.name)}
-        </span>
-
-        {/* Summary in collapsed view */}
-        {summary && (
-          <span className="text-muted-foreground truncate text-xs">
-            {summary}
-          </span>
-        )}
-
-        {/* Custom collapsed content */}
-        {renderer?.CollapsedContent && (
-          <renderer.CollapsedContent
-            input={toolCall.input}
-            result={resultStr}
-            isError={toolCall.isError ?? false}
-            agentSlug={agentSlug}
-          />
-        )}
-
-        {/* Elapsed timer for running tool calls / waiting label for user input */}
+        <ToolIcon className="h-3.5 w-3.5 shrink-0 text-foreground/45 group-hover:text-foreground transition-colors" />
         {isPendingUserInput && (
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-            waiting for user input
+          <span className="font-sans font-normal shrink-0 text-sm text-foreground/65 group-hover:text-foreground leading-none transition-colors">
+            Waiting for input:
           </span>
+        )}
+        <ToolNameWithSummary
+          name={renderer?.displayName || formatToolName(toolCall.name)}
+          summary={summary}
+        />
+        {renderer?.CollapsedContent && (
+          <>
+            {!summary && <span aria-hidden className="shrink-0 text-muted-foreground/60 group-hover:text-muted-foreground text-sm leading-none transition-colors">→</span>}
+            <renderer.CollapsedContent
+              input={toolCall.input}
+              result={resultStr}
+              isError={toolCall.isError ?? false}
+              agentSlug={agentSlug}
+            />
+          </>
         )}
         {elapsed && (
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+          <span className="shrink-0 text-2xs text-muted-foreground/70 tabular-nums ml-auto">
             {elapsed}
           </span>
         )}
-
-        {/* Expand chevron */}
-        <span className={cn('shrink-0', !elapsed && !isPendingUserInput && 'ml-auto')}>
-          {expanded ? (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-4 w-4 text-muted-foreground" />
-          )}
+        <span className={cn(
+          'relative shrink-0 flex h-4 w-4 items-center justify-center',
+          !elapsed && 'ml-auto'
+        )}>
+          <span className="transition-opacity group-hover:opacity-0">
+            <StatusIndicator status={status} />
+          </span>
+          <span className="absolute inset-0 flex items-center justify-center text-muted-foreground/60 opacity-0 transition-opacity group-hover:text-muted-foreground group-hover:opacity-100">
+            {expanded ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+          </span>
         </span>
       </button>
 
-      {/* Expanded content */}
       {expanded && (
-        <div className="px-3 pb-3">
+        <div className="border-t border-border/70 bg-muted/50 px-3 py-3">
           {CustomExpandedView ? (
             <CustomExpandedView
               input={toolCall.input}
@@ -157,7 +176,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
             <div className="space-y-2">
               {/* Input */}
               <div>
-                <div className="text-xs font-medium text-muted-foreground mb-1">Input</div>
+                <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Input</div>
                 <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto">
                   {inputStr}
                 </pre>
@@ -166,13 +185,13 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
               {/* Output */}
               {resultStr && (
                 <div>
-                  <div className="text-xs font-medium text-muted-foreground mb-1">
+                  <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
                     {toolCall.isError ? 'Error' : 'Output'}
                   </div>
                   <pre
                     className={cn(
-                      'rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto',
-                      toolCall.isError ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200' : 'bg-background'
+                      'bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto',
+                      toolCall.isError && 'text-red-800 dark:text-red-200'
                     )}
                   >
                     {resultStr}
@@ -211,11 +230,9 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
   const elapsed = useElapsedTimer(startTimeRef.current)
   const renderer = getToolRenderer(name)
 
-  // Get custom icon if available
-  const ToolIcon = renderer?.icon || Wrench
-
   // Get custom streaming view if available
   const CustomStreamingView = renderer?.StreamingView
+  const ToolIcon = renderer?.icon || Search
 
   // Parse the partial input at most once and reuse it for both the summary and
   // the pretty-printed fallback. Skip the parse entirely when nothing consumes
@@ -233,42 +250,28 @@ export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallI
   }
 
   return (
-    <div className="border rounded-md bg-muted/30 text-sm">
-      {/* Header row - always expanded during streaming */}
-      <div className="w-full flex items-center gap-2 px-3 py-2">
-        {/* Status indicator - streaming */}
-        <Loader2 className="h-4 w-4 shrink-0 text-gray-400 animate-spin" />
-
-        {/* Tool icon */}
-        <ToolIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-
-        {/* Tool name */}
-        <span className="font-mono font-medium truncate">
-          {renderer?.displayName || formatToolName(name)}
-        </span>
-
-        {/* Summary if available */}
-        {summary && (
-          <span className="text-muted-foreground truncate text-xs">
-            {summary}
-          </span>
-        )}
-
-        {/* Elapsed timer */}
-        <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+    <div className="text-sm border border-border/70 rounded-md overflow-hidden">
+      <div className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 bg-muted/50">
+        <ToolIcon className="h-3.5 w-3.5 shrink-0 text-foreground" />
+        <ToolNameWithSummary
+          name={renderer?.displayName || formatToolName(name)}
+          summary={summary}
+          active
+        />
+        <span className="shrink-0 text-2xs text-muted-foreground/70 tabular-nums ml-auto">
           {elapsed}
         </span>
+        <StatusIndicator status="running" />
       </div>
 
-      {/* Always show input during streaming */}
-      <div className="px-3 pb-3">
+      <div className="border-t border-border/70 bg-muted/50 px-3 py-3">
         {CustomStreamingView ? (
           <CustomStreamingView partialInput={partialInput} />
         ) : (
           // Fallback: generic display
           <div className="space-y-2">
             <div>
-              <div className="text-xs font-medium text-muted-foreground mb-1">Input</div>
+              <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Input</div>
               <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
                 {displayInput || <span className="text-muted-foreground italic">Waiting for input...</span>}
                 <span className="animate-pulse">|</span>

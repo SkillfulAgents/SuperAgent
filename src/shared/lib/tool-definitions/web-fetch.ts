@@ -17,4 +17,4 @@ function getSummary(input: unknown): string | null {
   }
 }
 
-export const webFetchDef = { displayName: 'Web Fetch', iconName: 'ExternalLink', parseInput, getSummary } as const
+export const webFetchDef = { displayName: 'Web Fetch', parseInput, getSummary } as const

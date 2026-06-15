@@ -2,6 +2,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { useState, useCallback, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
 import { MessageContextMenu } from './message-context-menu'
@@ -15,6 +16,7 @@ import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -123,9 +125,11 @@ const MARKDOWN_COMPONENTS: Components = {
 // A single markdown block. Memoized so that, while a response streams, each
 // already-settled block parses exactly once even though later deltas keep
 // re-rendering the parent MessageItem. See split-streaming-markdown.ts.
-const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
+// Exported so the agent-markdown link/scheme handling can be tested directly
+// (SUP-238) without standing up a full MessageItem.
+export const MarkdownBlock = memo(function MarkdownBlock({ text }: { text: string }) {
   return (
-    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={markdownUrlTransform}>
       {text}
     </ReactMarkdown>
   )
@@ -164,6 +168,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
   // Detect assistant messages that failed due to an LLM provider error (from SDK metadata)
   const isProviderErrorMessage = isAssistant && !!message.apiError && PROVIDER_ERROR_CODES.has(message.apiError)
+  const billingUrl = usePlatformBillingUrl(rawText ?? '')
+  const showBillingCard = isAssistant && !!message.apiError && !!billingUrl
 
   // Don't render assistant messages that have no text and no tool calls
   // (and aren't streaming). These are transient empty entries from partially-
@@ -183,7 +189,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
     <div
       className={cn(
         'flex gap-3',
-        isUser && 'flex-row-reverse'
+        isUser && 'flex-row-reverse !my-6'
       )}
       data-testid={isUser ? 'message-user' : isAssistant ? 'message-assistant' : undefined}
     >
@@ -224,15 +230,21 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                 </div>
               )}
 
+              {/* Actionable platform billing error */}
+              {hasText && !isSlashCommand && showBillingCard && (
+                <InsufficientBalanceCard billingUrl={billingUrl!} />
+              )}
+
               {/* LLM provider error display */}
-              {hasText && !isSlashCommand && isProviderErrorMessage && (
+              {hasText && !isSlashCommand && !showBillingCard && isProviderErrorMessage && (
                 <ProviderErrorCard message={text} />
               )}
 
               {/* Text content */}
-              {hasText && !isSlashCommand && !isProviderErrorMessage && (
+              {hasText && !isSlashCommand && !showBillingCard && !isProviderErrorMessage && (
                 <div dir="auto" className={cn(
-                  'prose prose-sm max-w-none min-w-0 break-words font-medium dark:prose-invert'
+                  'prose prose-sm max-w-none min-w-0 break-words font-normal dark:prose-invert',
+                  'prose-strong:font-medium'
                 )}>
                   {streamingSplit ? (
                     <>

@@ -45,6 +45,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
       { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
       { value: 'claude-opus-4-7', label: 'Claude 4.7 Opus' },
       { value: 'claude-opus-4-8', label: 'Claude 4.8 Opus' },
+      { value: 'claude-fable-5', label: 'Claude Fable 5' },
     ]
   }
 

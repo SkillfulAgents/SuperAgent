@@ -47,6 +47,13 @@ vi.mock('@shared/lib/utils', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
 
+// Mock the platform billing card — its usePlatformBillingUrl hook uses React Query,
+// which these tests don't provide. Default to no billing error (returns null).
+vi.mock('./insufficient-balance-card', () => ({
+  usePlatformBillingUrl: () => null,
+  InsufficientBalanceCard: () => <div data-testid="insufficient-balance-card" />,
+}))
+
 describe('AgentActivityIndicator', () => {
   beforeEach(() => {
     // Reset to defaults
@@ -596,5 +603,49 @@ describe('AgentActivityIndicator', () => {
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.queryByText(/background process/)).not.toBeInTheDocument()
+  })
+
+  describe('subagent status', () => {
+    const renderWithSubagent = (opts: { result?: unknown; subagentStatus?: string; completed?: boolean }) => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [{ parentToolId: 'tc-sub', progressSummary: null }]
+      mockStreamState.completedSubagents = opts.completed ? new Set(['tc-sub']) : new Set()
+      mockMessages.push({
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'tc-sub',
+          name: 'Agent',
+          input: { subagent_type: 'Explore', description: 'Explore workspace' },
+          ...(opts.result !== undefined ? { result: opts.result } : {}),
+          ...(opts.subagentStatus ? { subagent: { agentId: 'a1', status: opts.subagentStatus } } : {}),
+        }],
+        createdAt: new Date(),
+      })
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    }
+
+    it('shows a launched background subagent as running, not completed', () => {
+      // The Agent tool returns an immediate async_launched result — that launch
+      // ack must not be mistaken for completion while the subagent still runs.
+      renderWithSubagent({ result: { status: 'async_launched' }, subagentStatus: 'async_launched', completed: false })
+      expect(screen.getByText('Explore')).toBeInTheDocument()
+      expect(screen.queryByText('✓')).not.toBeInTheDocument()
+    })
+
+    it('marks a background subagent completed once the subagent_completed SSE arrives', () => {
+      renderWithSubagent({ result: { status: 'async_launched' }, subagentStatus: 'async_launched', completed: true })
+      expect(screen.getByText('Explore')).toBeInTheDocument()
+      expect(screen.getByText('✓')).toBeInTheDocument()
+    })
+
+    it('marks a foreground subagent completed when its tool result lands', () => {
+      // Synchronous subagents have no async_launched status; their result is completion.
+      renderWithSubagent({ result: 'done', completed: false })
+      expect(screen.getByText('Explore')).toBeInTheDocument()
+      expect(screen.getByText('✓')).toBeInTheDocument()
+    })
   })
 })

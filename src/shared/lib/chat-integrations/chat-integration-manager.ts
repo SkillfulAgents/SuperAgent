@@ -93,7 +93,6 @@ const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024 // 50 MB
-const QUEUE_CLEANUP_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -137,10 +136,11 @@ class ChatIntegrationManager {
   private chatSessions: Map<string, ManagedConnector> = new Map() // key: `${integrationId}:${chatId}`
   private isRunning = false
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
-  private queueCleanupInterval: ReturnType<typeof setInterval> | null = null
   private globalNotificationUnsubscribe: (() => void) | null = null
   private disconnectedSince: Map<string, number> = new Map()
   private consecutiveFailures: Map<string, number> = new Map()
+  // Per-(integration,chat) serialized tail promise. Entries self-evict once their
+  // chain settles (see scheduleQueueEviction), so the map stays bounded.
   private messageQueues: Map<string, Promise<void>> = new Map()
   private lastSessionTouch: Map<string, number> = new Map()
 
@@ -173,11 +173,6 @@ class ChatIntegrationManager {
       })
     }, HEALTH_CHECK_INTERVAL_MS)
 
-    // Periodic cleanup of resolved message queue entries
-    this.queueCleanupInterval = setInterval(() => {
-      this.cleanupResolvedQueues()
-    }, QUEUE_CLEANUP_INTERVAL_MS)
-
     // Subscribe to global notifications for proxy review requests (tool approvals)
     this.globalNotificationUnsubscribe = messagePersister.addGlobalNotificationClient((event: unknown) => {
       this.handleGlobalNotification(event).catch((err) => {
@@ -191,10 +186,6 @@ class ChatIntegrationManager {
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval)
       this.healthCheckInterval = null
-    }
-    if (this.queueCleanupInterval) {
-      clearInterval(this.queueCleanupInterval)
-      this.queueCleanupInterval = null
     }
     this.globalNotificationUnsubscribe?.()
     this.globalNotificationUnsubscribe = null
@@ -260,7 +251,23 @@ class ChatIntegrationManager {
     }
     this.disconnectedSince.delete(id)
     this.consecutiveFailures.delete(id)
-    this.messageQueues.delete(id)
+    // Drop any per-chat message/SSE queues for this integration. Keys are
+    // `${id}:${chatId}` and `sse:${id}:${chatId}`, so the old bare delete(id)
+    // never matched — iterate by prefix. The `:` delimiter plus UUID integration
+    // ids (which contain no `:` and are never the literal "sse") guarantee this
+    // can't false-match a sibling integration's keys.
+    //
+    // Settled chains already self-evict, so this only force-drops STILL-IN-FLIGHT
+    // chains. On a true teardown that is exactly what we want. On the reconnect
+    // path (runHealthChecks → removeIntegration → connectIntegration) it means a
+    // handler still running against the now-dead connection no longer serializes
+    // ahead of the first post-reconnect message — an accepted trade-off, since the
+    // stale connection is going away and new work should not block on it.
+    for (const key of [...this.messageQueues.keys()]) {
+      if (key.startsWith(`${id}:`) || key.startsWith(`sse:${id}:`)) {
+        this.messageQueues.delete(key)
+      }
+    }
   }
 
   /**
@@ -496,6 +503,7 @@ class ChatIntegrationManager {
       })
     )
     this.messageQueues.set(queueKey, next)
+    this.scheduleQueueEviction(queueKey, next)
   }
 
   // ── Health monitoring ───────────────────────────────────────────────
@@ -549,18 +557,22 @@ class ChatIntegrationManager {
     }
   }
 
-  /** Remove resolved entries from the message queue map to prevent unbounded growth. */
-  private cleanupResolvedQueues(): void {
-    const settled = Promise.resolve()
-    for (const [key, promise] of this.messageQueues) {
-      // If the promise is already resolved, the .then fires synchronously in microtask
-      let isSettled = false
-      promise.then(() => { isSettled = true }, () => { isSettled = true })
-      // Check synchronously — if it resolved, the microtask already ran
-      if (promise === settled || isSettled) {
-        this.messageQueues.delete(key)
+  /**
+   * Once `promise` (the tail enqueued for `queueKey`) settles, drop it from the
+   * map so messageQueues stays bounded. The identity check is the crux: a newer
+   * enqueue chains off this promise and replaces the map slot, so we evict only
+   * if the map still holds *this* promise — otherwise we'd delete a live,
+   * still-running successor. In-flight entries are never evicted because their
+   * `.finally` hasn't run yet. This makes a periodic sweep unnecessary: native
+   * Promise state can't be read synchronously, but driving eviction off the
+   * promise's own settlement avoids needing to.
+   */
+  private scheduleQueueEviction(queueKey: string, promise: Promise<void>): void {
+    void promise.finally(() => {
+      if (this.messageQueues.get(queueKey) === promise) {
+        this.messageQueues.delete(queueKey)
       }
-    }
+    })
   }
 
   // ── Message queue (serial per integration+chat) ─────────────────────
@@ -575,6 +587,7 @@ class ChatIntegrationManager {
       })
     )
     this.messageQueues.set(queueKey, next)
+    this.scheduleQueueEviction(queueKey, next)
   }
 
   // ── Incoming message handling ─────────────────────────────────────

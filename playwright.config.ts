@@ -1,8 +1,31 @@
 import { defineConfig, devices, chromium } from '@playwright/test'
 import path from 'path'
 
-// Use a separate data directory for E2E tests to avoid polluting production data
-const e2eDataDir = path.join(__dirname, '.e2e-data')
+// Use a separate data directory for E2E tests to avoid polluting production data.
+// CI can override these so suites can keep isolated state and artifacts.
+const e2eDataDir = path.resolve(process.env.SUPERAGENT_DATA_DIR ?? path.join(__dirname, '.e2e-data'))
+const e2ePort = process.env.PORT ?? process.env.E2E_PORT ?? '3000'
+const e2eBaseUrl = process.env.E2E_BASE_URL ?? `http://localhost:${e2ePort}`
+const playwrightOutputDir = process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results'
+const playwrightHtmlReportDir = process.env.PLAYWRIGHT_HTML_REPORT ?? 'playwright-report'
+const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
+  ? Number(process.env.PLAYWRIGHT_WORKERS)
+  : undefined
+
+const statefulTestMatch = [
+  '**/settings.spec.ts',
+  '**/policy-settings.spec.ts',
+]
+
+const webTestIgnore = [
+  '**/auth/**',
+  '**/getting-started-wizard.spec.ts',
+  ...statefulTestMatch,
+]
+
+if (process.env.E2E_INCLUDE_A11Y !== 'true') {
+  webTestIgnore.push('**/a11y-audit.spec.ts')
+}
 
 // Resolve Playwright's bundled Chromium path for the browser streaming E2E test.
 // This allows the mock container to launch a real headless browser without requiring
@@ -21,7 +44,7 @@ function buildWebServerCommand() {
   const env: Record<string, string> = {
     SUPERAGENT_DATA_DIR: e2eDataDir,
     E2E_MOCK: 'true',
-    PORT: '3000',
+    PORT: e2ePort,
   }
   if (chromiumPath) env.E2E_CHROMIUM_PATH = chromiumPath
 
@@ -36,14 +59,15 @@ function buildWebServerCommand() {
 export default defineConfig({
   testDir: './e2e',
   testIgnore: ['**/auth/**'],  // Auth tests use separate config (playwright.auth.config.ts)
+  outputDir: playwrightOutputDir,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 2 : 2,
-  reporter: process.env.CI ? [['list']] : [['html', { open: 'never' }], ['list']],
+  workers: configuredWorkers && Number.isFinite(configuredWorkers) ? configuredWorkers : 2,
+  reporter: [['list'], ['html', { open: 'never', outputFolder: playwrightHtmlReportDir }]],
 
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: e2eBaseUrl,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
@@ -61,22 +85,14 @@ export default defineConfig({
       // Settings/policy tests modify global settings but don't toggle setupCompleted.
       // Safe to run after wizard tests complete.
       name: 'global-state',
-      testMatch: [
-        '**/settings.spec.ts',
-        '**/policy-settings.spec.ts',
-      ],
+      testMatch: statefulTestMatch,
       use: { ...devices['Desktop Chrome'] },
       fullyParallel: false,
       dependencies: ['wizard'],
     },
     {
       name: 'web-chromium',
-      testIgnore: [
-        '**/auth/**',
-        '**/getting-started-wizard.spec.ts',
-        '**/settings.spec.ts',
-        '**/policy-settings.spec.ts',
-      ],
+      testIgnore: webTestIgnore,
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['global-state'],
     },
@@ -84,7 +100,7 @@ export default defineConfig({
 
   webServer: {
     command: buildWebServerCommand(),
-    url: 'http://localhost:3000/api/settings',  // Wait for API to be ready, not just Vite
+    url: `${e2eBaseUrl}/api/settings`,  // Wait for API to be ready, not just Vite
     reuseExistingServer: false,  // Always start fresh for E2E tests
     timeout: 120000,
     stdout: 'pipe',

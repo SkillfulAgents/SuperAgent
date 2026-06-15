@@ -29,6 +29,12 @@
     "cacheCreation": 3.75,
     "cacheRead": 0.3
   },
+  "claude-fable-5": {
+    "input": 10,
+    "output": 50,
+    "cacheCreation": 12.5,
+    "cacheRead": 1
+  },
   "claude-haiku-4-5": {
     "input": 1,
     "output": 5,

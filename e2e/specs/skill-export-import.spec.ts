@@ -75,7 +75,7 @@ test.describe('Skill Export & Import', () => {
     await dialog.locator('input[type="file"]').setInputFiles(badZipPath)
     await dialog.locator('button[type="submit"]').click()
 
-    await expect(dialog.locator('.text-destructive')).toBeVisible({ timeout: 10000 })
+    await expect(dialog.getByTestId('import-skill-error')).toBeVisible({ timeout: 10000 })
   })
 
   test('export a skill via three-dot menu', async ({ page }) => {

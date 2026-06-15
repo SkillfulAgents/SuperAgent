@@ -19,6 +19,9 @@ export function FileTabBar({ files, activeIndex, onTabClick, onCloseTab }: FileT
         <button
           key={file.filePath}
           onClick={() => onTabClick(index)}
+          data-testid="file-tab"
+          data-file-name={file.displayName}
+          data-file-path={file.filePath}
           className={cn(
             'group flex items-center gap-1.5 px-3 py-1.5 text-xs border-r border-border/30 shrink-0 max-w-[160px] transition-colors',
             index === activeIndex
@@ -31,6 +34,9 @@ export function FileTabBar({ files, activeIndex, onTabClick, onCloseTab }: FileT
           <span
             role="button"
             tabIndex={0}
+            data-testid="file-tab-close"
+            data-file-name={file.displayName}
+            data-file-path={file.filePath}
             onClick={(e) => {
               e.stopPropagation()
               onCloseTab(file.filePath)

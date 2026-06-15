@@ -1,11 +1,28 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page, type APIRequestContext } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 
 test.describe.configure({ mode: 'serial' })
 
+/**
+ * Opens Global Settings → Connections and clicks through to the detail page
+ * for the named connection. The scope/tool policy editor renders inline there
+ * (the per-row policy pill + dialog were removed in the connections redesign).
+ */
+async function openConnectionDetail(page: Page, name: string) {
+  await page.locator('[data-testid="settings-button"]').click()
+  await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+  await page.locator('[data-testid="settings-nav-connections"]').click()
+
+  const row = page.getByRole('button', { name: `Open ${name} connection details` })
+  await expect(row).toBeVisible({ timeout: 5000 })
+  await row.click()
+  await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible()
+}
+
 test.describe('Policy Settings', () => {
   let appPage: AppPage
   let accountId: string
+  const accountName = 'E2E Slack Account'
 
   test.beforeAll(async ({ request }) => {
     // Unique per run so a retry (which re-runs beforeAll in a new worker) does
@@ -15,50 +32,41 @@ test.describe('Policy Settings', () => {
       data: {
         providerConnectionId,
         toolkitSlug: 'slack',
-        displayName: 'E2E Slack Account',
+        displayName: accountName,
       },
     })
     const body = await res.json()
     accountId = body.account.id
   })
 
-  test('settings: connections tab shows policy pill for connected account', async ({ page }) => {
+  // The inline editor has no dialog-close to await after Save, so persistence
+  // is asserted against the API instead of pill text (the pill is gone).
+  const scopePolicies = async (request: APIRequestContext) => {
+    const res = await request.get(`/api/policies/scope/${accountId}`)
+    const body = await res.json()
+    return body.policies as Array<{ scope: string; decision: string }>
+  }
+
+  test('settings: connection row opens the detail page with the inline scope editor', async ({ page }) => {
     appPage = new AppPage(page)
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
 
-    // Open global settings
-    await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await openConnectionDetail(page, accountName)
 
-    // Navigate to Connections tab
-    await page.locator('[data-testid="settings-nav-connections"]').click()
-
-    // Should see the policy pill for our account (no policies yet)
-    const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
-    await expect(pill).toBeVisible({ timeout: 5000 })
-    await expect(pill).toContainText('Protected')
+    // The scope policy editor renders inline in the Permissions column.
+    await expect(page.getByText('Permissions')).toBeVisible()
+    await expect(page.locator('[data-testid="scope-group-write"]')).toBeVisible({ timeout: 5000 })
   })
 
-  test('settings: can open scope policy editor and set a policy', async ({ page }) => {
+  test('settings: can set a scope policy from the detail page', async ({ page, request }) => {
     appPage = new AppPage(page)
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
 
-    // Open settings → Accounts
-    await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-connections"]').click()
+    await openConnectionDetail(page, accountName)
 
-    // Click the policy pill to open scope editor
-    const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
-    await expect(pill).toBeVisible({ timeout: 5000 })
-    await pill.click()
-
-    // Scope policy editor dialog should open
-    await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
-
-    // Find the chat:write scope row and set it to "allow"
+    // Find the chat:write scope row and set it to "allow".
     // The Write group is an accordion collapsed by default — expand it first.
     await page.locator('[data-testid="scope-group-toggle-write"]').click()
     const chatWriteRow = page.locator('[data-testid="scope-row-chat:write"]')
@@ -72,32 +80,22 @@ test.describe('Policy Settings', () => {
     await allowToggle.click()
     await expect(allowToggle).toHaveAttribute('data-active', 'true')
 
-    // Save
+    // Save — the inline editor stays on screen; verify persistence via API.
     await page.locator('[data-testid="scope-policy-save"]').click()
-
-    // Dialog should close
-    await expect(page.getByText('Scope Policies')).not.toBeVisible({ timeout: 5000 })
-
-    // The pill flips from "Protected" to "Protected • Custom" once a policy is set.
-    await expect(pill).toContainText('Custom', { timeout: 5000 })
+    await expect
+      .poll(
+        async () => (await scopePolicies(request)).find((p) => p.scope === 'chat:write')?.decision,
+        { timeout: 5000 },
+      )
+      .toBe('allow')
   })
 
-  test('settings: saved policy persists after reopening editor', async ({ page }) => {
+  test('settings: saved policy persists after reopening the editor', async ({ page }) => {
     appPage = new AppPage(page)
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
 
-    // Open settings → Accounts
-    await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-connections"]').click()
-
-    // Open the policy editor again
-    const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
-    await expect(pill).toBeVisible({ timeout: 5000 })
-    await pill.click()
-
-    await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
+    await openConnectionDetail(page, accountName)
 
     // The chat:write scope should still have allow active (from previous test)
     // The Write group is an accordion collapsed by default — expand it first.
@@ -108,20 +106,12 @@ test.describe('Policy Settings', () => {
     await expect(allowToggle).toHaveAttribute('data-active', 'true')
   })
 
-  test('settings: can change policy from allow to block', async ({ page }) => {
+  test('settings: can change policy from allow to block', async ({ page, request }) => {
     appPage = new AppPage(page)
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
 
-    // Open settings → Accounts → scope editor
-    await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-connections"]').click()
-
-    const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
-    await expect(pill).toBeVisible({ timeout: 5000 })
-    await pill.click()
-    await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
+    await openConnectionDetail(page, accountName)
 
     // The Write group is an accordion collapsed by default — expand it first.
     await page.locator('[data-testid="scope-group-toggle-write"]').click()
@@ -140,25 +130,22 @@ test.describe('Policy Settings', () => {
     await expect(allowToggle).toHaveAttribute('data-active', 'false')
     await expect(blockToggle).toHaveAttribute('data-active', 'true')
 
-    // Save
+    // Save and verify the flip persisted.
     await page.locator('[data-testid="scope-policy-save"]').click()
-    await expect(page.getByText('Scope Policies')).not.toBeVisible({ timeout: 5000 })
+    await expect
+      .poll(
+        async () => (await scopePolicies(request)).find((p) => p.scope === 'chat:write')?.decision,
+        { timeout: 5000 },
+      )
+      .toBe('block')
   })
 
-  test('settings: can deselect to reset to default', async ({ page }) => {
+  test('settings: can deselect to reset to default', async ({ page, request }) => {
     appPage = new AppPage(page)
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
 
-    // Open settings → Accounts → scope editor
-    await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-connections"]').click()
-
-    const pill = page.locator(`[data-testid="policy-pill-${accountId}"]`)
-    await expect(pill).toBeVisible({ timeout: 5000 })
-    await pill.click()
-    await expect(page.getByText('Scope Policies')).toBeVisible({ timeout: 5000 })
+    await openConnectionDetail(page, accountName)
 
     // The Write group is an accordion collapsed by default — expand it first.
     await page.locator('[data-testid="scope-group-toggle-write"]').click()
@@ -178,11 +165,15 @@ test.describe('Policy Settings', () => {
     await expect(chatWriteRow.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-active', 'false')
     await expect(chatWriteRow.locator('[data-testid="policy-toggle-block"]')).toHaveAttribute('data-active', 'false')
 
-    // Save and verify pill drops the "Custom" suffix (= no policies set).
+    // Save and verify the per-scope row is gone from the persisted policies
+    // (label-default rows may remain — only chat:write must be absent).
     await page.locator('[data-testid="scope-policy-save"]').click()
-    await expect(page.getByText('Scope Policies')).not.toBeVisible({ timeout: 5000 })
-    await expect(pill).not.toContainText('Custom', { timeout: 5000 })
-    await expect(pill).toContainText('Protected', { timeout: 5000 })
+    await expect
+      .poll(
+        async () => (await scopePolicies(request)).some((p) => p.scope === 'chat:write'),
+        { timeout: 5000 },
+      )
+      .toBe(false)
   })
 
   test('settings: global default policy toggle works', async ({ page }) => {
@@ -195,8 +186,8 @@ test.describe('Policy Settings', () => {
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
     await page.locator('[data-testid="settings-nav-connections"]').click()
 
-    // Find the global default policy section — the border div containing the label
-    const globalSection = page.locator('div.border').filter({ hasText: 'Default API Request Policy' })
+    // The API default-policy row inside the "Default Policies" card.
+    const globalSection = page.locator('[data-testid="default-policy-api"]')
     const reviewToggle = globalSection.locator('[data-testid="policy-toggle-review"]')
     const allowToggle = globalSection.locator('[data-testid="policy-toggle-allow"]')
 

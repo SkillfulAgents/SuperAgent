@@ -411,4 +411,40 @@ describe('subagent task_started / task_progress replay harness', () => {
       expect(completed.map((e) => e['taskId'])).not.toContain(fgId)
     })
   })
+
+  // Real capture of a run_in_background SUBAGENT (task_type 'local_agent'). Its
+  // completion arrives as task_updated/task_notification (never a second
+  // tool_result, never a sidechain 'result'), so without the dedicated handling
+  // broadcastSubagentCompleted never fires and the UI shows it running until the
+  // whole turn ends. Regression guard: it must complete mid-turn, before idle.
+  describe('background subagent completion (real capture)', () => {
+    it('broadcasts subagent_completed for the background subagent with its agentId', async () => {
+      const { meta, sseEvents } = await replayFixture('background-subagent-completion')
+      const sub = meta.subagents[0]
+
+      // The background subagent must complete exactly once (driven by its
+      // task_updated/task_notification — without the fix it never fires). The
+      // capture also contains a later synchronous Bash step that legitimately
+      // completes via its own tool_result, so filter to the background subagent.
+      const bg = sseEvents.filter(
+        (e) => e['type'] === 'subagent_completed' && e['parentToolId'] === sub.parentToolId
+      )
+      expect(bg).toHaveLength(1)
+      expect(bg[0]['agentId']).toBe(sub.agentId)
+    })
+
+    it('completes the background subagent mid-turn, before the final result is processed', async () => {
+      const { meta, sseEvents } = await replayFixture('background-subagent-completion')
+      const sub = meta.subagents[0]
+
+      const completedIdx = sseEvents.findIndex(
+        (e) => e['type'] === 'subagent_completed' && e['parentToolId'] === sub.parentToolId
+      )
+      // The result-driven turn end is signalled to the renderer as turn_output_complete.
+      const turnEndIdx = sseEvents.findIndex((e) => e['type'] === 'turn_output_complete')
+      expect(completedIdx).toBeGreaterThanOrEqual(0)
+      expect(turnEndIdx).toBeGreaterThanOrEqual(0)
+      expect(completedIdx).toBeLessThan(turnEndIdx)
+    })
+  })
 })

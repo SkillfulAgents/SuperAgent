@@ -117,8 +117,8 @@ test.describe('Connected Accounts - Agent Request Flow', () => {
     const toolCall = sessionPage.getToolCall('mcp__user-input__request_connected_account')
     await expect(toolCall).toBeVisible()
 
-    // Should show waiting for user input
-    await expect(toolCall).toContainText('waiting for user input')
+    // Should show the pending user-input indicator
+    await expect(toolCall).toContainText('Waiting for input')
   })
 })
 

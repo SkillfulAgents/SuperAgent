@@ -37,6 +37,8 @@ import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
+import { openDashboardWindow, installPopupHandler, closeAllDashboardWindows } from './dashboard-window'
+import { safeOpenExternalFromApp } from './safe-open-external'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
 // Setting app.name before getPath('userData') changes the resolved directory.
@@ -88,7 +90,6 @@ if (process.platform === 'darwin') {
 const DEFAULT_API_PORT = 47891
 let actualApiPort: number = DEFAULT_API_PORT
 let mainWindow: BrowserWindow | null = null
-const dashboardWindows: Map<string, BrowserWindow> = new Map()
 let apiServer: ReturnType<typeof serve> | null = null
 let notificationEventSource: EventSource | null = null
 let apiReady = false
@@ -193,32 +194,6 @@ function isNotificationTypeAllowedLocally(notificationType: string | undefined):
     // install, which is worse than the spam from failing open.
     return true
   }
-}
-
-function openDashboardWindow(agentSlug: string, dashboardSlug: string) {
-  const key = `${agentSlug}/${dashboardSlug}`
-
-  // Focus existing window if already open
-  const existing = dashboardWindows.get(key)
-  if (existing && !existing.isDestroyed()) {
-    existing.show()
-    existing.focus()
-    return
-  }
-
-  const url = `http://localhost:${actualApiPort}/api/agents/${agentSlug}/artifacts/${dashboardSlug}/view`
-  const win = new BrowserWindow({
-    width: 1000,
-    height: 700,
-    title: 'SuperAgent Dashboard',
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
-  win.loadURL(url)
-  dashboardWindows.set(key, win)
-  win.on('closed', () => dashboardWindows.delete(key))
 }
 
 // Register custom protocol for OAuth callbacks
@@ -352,17 +327,10 @@ function createWindow() {
     menu.popup()
   })
 
-  // Handle window.open() calls - prevent popup windows
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    // Handle file download URLs - download directly without opening a popup
-    if (url.includes('/api/agents/') && url.includes('/files/')) {
-      mainWindow?.webContents.downloadURL(url)
-      return { action: 'deny' }
-    }
-    // For other URLs (OAuth, external links), open in system browser
-    shell.openExternal(url)
-    return { action: 'deny' }
-  })
+  // Handle window.open() calls - deny popups and route external links / downloads.
+  // installPopupHandler routes external URLs through safeOpenExternal (scheme
+  // validation — SUP-214) and is shared with the dashboard popout (SUP-219).
+  installPopupHandler(mainWindow.webContents)
 
   // Load the app
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -443,9 +411,15 @@ ipcMain.handle('get-api-url', () => {
   return `http://localhost:${actualApiPort}`
 })
 
-// IPC handler for opening URLs in system browser
+// IPC handler for opening URLs in system browser. Renderer-supplied strings are
+// scheme-validated before reaching the OS shell so a hostile/agent-controlled URL
+// can't launch local apps or privileged handlers (file:/javascript:/custom) (SUP-214).
+// First-party app UI also opens well-defined OS deep-links here (sms:/tel: for the
+// iMessage setup link, x-apple.systempreferences: for the computer-use permission
+// helper), so this path uses the slightly broader app allowlist; the popup handler
+// above stays strict (web-only) since it fires for untrusted content.
 ipcMain.handle('open-external', async (_event, url: string) => {
-  await shell.openExternal(url)
+  await safeOpenExternalFromApp(url)
 })
 
 // IPC handler for launching an elevated PowerShell window (Windows only)
@@ -749,7 +723,7 @@ ipcMain.handle('show-emoji-panel', () => {
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
-  openDashboardWindow(agentSlug, dashboardSlug)
+  openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
 })
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
@@ -949,7 +923,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       const agentSlug = decodeURIComponent(parts[0])
       const dashboardSlug = decodeURIComponent(parts[1])
       if (apiReady) {
-        openDashboardWindow(agentSlug, dashboardSlug)
+        openDashboardWindow(agentSlug, dashboardSlug, actualApiPort)
       } else {
         pendingDashboardLinks.push({ agentSlug, dashboardSlug })
       }
@@ -1278,7 +1252,7 @@ async function startApp() {
   // Mark API as ready and process any queued dashboard deep links
   apiReady = true
   for (const link of pendingDashboardLinks) {
-    openDashboardWindow(link.agentSlug, link.dashboardSlug)
+    openDashboardWindow(link.agentSlug, link.dashboardSlug, actualApiPort)
   }
   pendingDashboardLinks.length = 0
   processPendingProtocolUrls()
@@ -1389,10 +1363,7 @@ async function gracefulShutdown() {
   stopNotificationListener()
 
   // Close all dashboard windows
-  for (const win of dashboardWindows.values()) {
-    if (!win.isDestroyed()) win.close()
-  }
-  dashboardWindows.clear()
+  closeAllDashboardWindows()
 
   // Destroy tray and app menu
   destroyTray()

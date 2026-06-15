@@ -179,15 +179,6 @@
   border-color: transparent !important;
 }
 
-/* In dark mode, user message bubbles have a light background (primary flips to white),
-   so reset prose-invert to use dark text matching primary-foreground */
-.dark .prose-user-message {
-  --tw-prose-body: hsl(var(--primary-foreground));
-  --tw-prose-headings: hsl(var(--primary-foreground));
-  --tw-prose-bold: hsl(var(--primary-foreground));
-  --tw-prose-code: hsl(var(--primary-foreground));
-}
-
 /* Electron window drag regions */
 .app-drag-region {
   -webkit-app-region: drag;
@@ -376,7 +367,8 @@
 .agent-home-intro .intro-step-5,
 .agent-home-intro .intro-step-6,
 .agent-home-intro .intro-step-7,
-.agent-home-intro .intro-step-8 {
+.agent-home-intro .intro-step-8,
+.agent-home-intro .intro-step-9 {
   animation-name: agent-home-slide-in-bottom;
   animation-duration: 400ms;
 }
@@ -388,6 +380,7 @@
 .agent-home-intro .intro-step-6 { animation-delay: 380ms; }
 .agent-home-intro .intro-step-7 { animation-delay: 490ms; }
 .agent-home-intro .intro-step-8 { animation-delay: 600ms; }
+.agent-home-intro .intro-step-9 { animation-delay: 710ms; }
 @media (prefers-reduced-motion: reduce) {
   .agent-home-intro .intro-step {
     animation: none;

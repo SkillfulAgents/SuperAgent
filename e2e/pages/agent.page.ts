@@ -103,12 +103,7 @@ export class AgentPage {
    * Get the agent item element
    */
   getAgentItem(name: string) {
-    const slug = this.getSlugFromName(name)
-    // Try data-testid first, fall back to button with name text
-    const byTestId = this.page.locator(`[data-testid="agent-item-${slug}"]`)
-    const byText = this.page.locator(`button:has-text("${name}")`, { hasText: name }).first()
-    // Use or() to try both selectors
-    return byTestId.or(byText)
+    return this.page.locator('[data-testid^="agent-item-"]', { hasText: name }).first()
   }
 
   /**

@@ -44,6 +44,12 @@
         "local-rules/no-unhandled-throwing-builtins": "off",
         "local-rules/no-path-containment-startswith": "off"
       }
+    },
+    {
+      "files": ["e2e/**/*.ts"],
+      "rules": {
+        "local-rules/no-brittle-playwright-selectors": "error"
+      }
     }
   ],
   "settings": {

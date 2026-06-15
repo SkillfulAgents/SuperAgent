@@ -37,6 +37,10 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function attachmentName(attachment: Attachment): string {
+  return attachment.type === 'file' ? attachment.file.name : attachment.folderName
+}
+
 export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewProps) {
   if (attachments.length === 0) return null
 
@@ -46,6 +50,9 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
         <div
           key={attachment.id}
           className="flex items-center gap-2 rounded-md border bg-muted/50 px-2 py-1.5 text-xs"
+          data-testid="attachment-preview"
+          data-attachment-name={attachmentName(attachment)}
+          data-attachment-type={attachment.type}
         >
           {attachment.type === 'mount' ? (
             <>
@@ -99,6 +106,8 @@ export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewPr
             type="button"
             onClick={() => onRemove(attachment.id)}
             className="ml-1 rounded-full p-0.5 hover:bg-muted text-muted-foreground hover:text-foreground"
+            data-testid="attachment-remove"
+            data-attachment-name={attachmentName(attachment)}
           >
             <X className="h-3 w-3" />
           </button>

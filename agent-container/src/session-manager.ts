@@ -280,6 +280,15 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  /**
+   * Whether the session is live in memory right now. Unlike getSession(),
+   * never resumes from persistence — used for browser-lock liveness checks
+   * where resurrecting a session would defeat the purpose.
+   */
+  hasActiveSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
   async getSession(sessionId: string): Promise<Session | null> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -351,6 +360,17 @@ export class SessionManager extends EventEmitter {
 
     // Send to Claude Code process (messages are stored via handleMessage)
     await sessionData.process.sendMessage(content, uuid, options);
+  }
+
+  /**
+   * Cancel a queued (not yet picked up) message. Returns false when the
+   * session isn't live or the message was already dequeued for execution —
+   * a session that needs resuming has no queue, so nothing to cancel.
+   */
+  async cancelQueuedMessage(sessionId: string, uuid: UUID): Promise<boolean> {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData) return false;
+    return sessionData.process.cancelQueuedMessage(uuid);
   }
 
   getMessages(sessionId: string): SDKMessage[] {

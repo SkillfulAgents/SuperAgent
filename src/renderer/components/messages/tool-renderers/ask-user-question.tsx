@@ -1,5 +1,5 @@
 
-import { MessageCircleQuestion } from 'lucide-react'
+import { CircleHelp } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps } from './types'
 import { askUserQuestionDef, type AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
 
@@ -44,11 +44,11 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
           )}
 
           {/* Question text */}
-          <div className="text-sm font-medium">{q.question}</div>
+          <div className="text-xs font-medium">{q.question}</div>
 
           {/* Answer */}
           {answers[q.question] && (
-            <div className="bg-green-50 dark:bg-green-950 text-green-800 dark:text-green-200 rounded px-2 py-1 text-xs">
+            <div className="bg-background text-green-800 dark:text-green-200 rounded px-2 py-1 text-xs">
               {answers[q.question]}
             </div>
           )}
@@ -80,7 +80,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 
       {/* Error case */}
       {isError && result && (
-        <div className="bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200 rounded p-2 text-xs">
+        <div className="bg-background text-red-800 dark:text-red-200 rounded p-2 text-xs">
           {result}
         </div>
       )}
@@ -90,7 +90,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
 
 export const askUserQuestionRenderer: ToolRenderer = {
   displayName: 'Question',
-  icon: MessageCircleQuestion,
+  icon: CircleHelp,
   getSummary,
   ExpandedView,
 }

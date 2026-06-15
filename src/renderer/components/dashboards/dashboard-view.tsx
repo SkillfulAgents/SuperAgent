@@ -6,6 +6,7 @@ import { useKeepAlive } from '@renderer/hooks/use-keep-alive'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
 import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
 import { AddToDockDialog } from './add-to-dock-dialog'
 import { PendingAgentReviews } from './pending-agent-reviews'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -32,7 +33,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const isDashboardRunning = dashboard?.status === 'running'
 
   const baseUrl = getApiBaseUrl()
-  const iframeSrc = `${baseUrl}/api/agents/${agentSlug}/artifacts/${dashboardSlug}/`
+  const iframeSrc = `${baseUrl}${buildDashboardArtifactPath(agentSlug, dashboardSlug)}`
 
   const handleRefresh = useCallback(() => {
     if (iframeRef.current) {
@@ -135,7 +136,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
         src={iframeSrc}
         className="flex-1 w-full border-0"
         title={dashboard?.name || dashboardSlug}
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"
         allow="microphone; camera"
       />
     </div>

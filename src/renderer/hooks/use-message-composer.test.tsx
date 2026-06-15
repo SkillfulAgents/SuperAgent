@@ -239,6 +239,25 @@ describe('useMessageComposer', () => {
     expect(opts.onSubmit).toHaveBeenCalledWith('partial text')
   })
 
+  it('awaits the async stop so a late-flushed transcript is the submitted text', async () => {
+    mockVoiceInput.isRecording = true
+    // stopRecording resolves only once its trailing-transcript flush completes
+    let resolveStop!: (text: string) => void
+    mockVoiceInput.stopRecording.mockReturnValue(new Promise<string>((res) => { resolveStop = res }))
+    const opts = defaultOptions()
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+
+    await act(async () => {
+      const submit = result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+      // Still flushing — must not submit before the tail arrives
+      expect(opts.onSubmit).not.toHaveBeenCalled()
+      resolveStop('flushed tail text')
+      await submit
+    })
+
+    expect(opts.onSubmit).toHaveBeenCalledWith('flushed tail text')
+  })
+
   // --- File upload orchestration ---
 
   it('uploads file attachments and appends paths to message', async () => {

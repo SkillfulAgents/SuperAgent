@@ -1,25 +1,29 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
-import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { createAgent, openAgentHome } from '../helpers/agents'
+
+async function setupToolTest(
+  page: Page,
+  request: APIRequestContext,
+  testInfo: TestInfo,
+  label: string,
+) {
+  const appPage = new AppPage(page)
+  const sessionPage = new SessionPage(page)
+  const agentName = `Tool Agent ${label} ${testInfo.workerIndex}-${testInfo.repeatEachIndex}-${Date.now()}`
+  const agent = await createAgent(request, agentName)
+
+  await appPage.goto()
+  await appPage.waitForAgentsLoaded()
+  await openAgentHome(page, agent)
+
+  return { sessionPage }
+}
 
 test.describe('Tool Call Rendering', () => {
-  let appPage: AppPage
-  let agentPage: AgentPage
-  let sessionPage: SessionPage
-
-  test.beforeEach(async ({ page }) => {
-    appPage = new AppPage(page)
-    agentPage = new AgentPage(page)
-    sessionPage = new SessionPage(page)
-
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
-  })
-
-  test('renders Bash tool call with terminal display', async ({ page }) => {
-    const agentName = `Tool Agent Bash ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('renders Bash tool call with terminal display', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'Bash')
 
     // Trigger the existing "list files" scenario which uses Bash tool
     await sessionPage.sendMessage('list files in the current directory')
@@ -34,12 +38,11 @@ test.describe('Tool Call Rendering', () => {
     await toolCall.locator('button').first().click()
 
     // Verify terminal-style display (black background)
-    await expect(toolCall.locator('.bg-black')).toBeVisible()
+    await expect(toolCall.getByTestId('bash-terminal')).toBeVisible()
   })
 
-  test('renders Read tool call with file path summary', async ({ page }) => {
-    const agentName = `Tool Agent Read ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('renders Read tool call with file path summary', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'Read')
 
     await sessionPage.sendMessage('read file please')
     await sessionPage.waitForResponse(15000)
@@ -53,9 +56,8 @@ test.describe('Tool Call Rendering', () => {
     await expect(toolCall).toContainText('src/index.ts')
   })
 
-  test('renders Write tool call', async ({ page }) => {
-    const agentName = `Tool Agent Write ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('renders Write tool call', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'Write')
 
     await sessionPage.sendMessage('write file for me')
     await sessionPage.waitForResponse(15000)
@@ -69,9 +71,8 @@ test.describe('Tool Call Rendering', () => {
     await expect(toolCall).toContainText('hello.ts')
   })
 
-  test('renders Grep tool call with search pattern', async ({ page }) => {
-    const agentName = `Tool Agent Grep ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('renders Grep tool call with search pattern', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'Grep')
 
     await sessionPage.sendMessage('search code for TODOs')
     await sessionPage.waitForResponse(15000)
@@ -82,9 +83,8 @@ test.describe('Tool Call Rendering', () => {
     await expect(toolCall).toBeVisible()
   })
 
-  test('renders Glob tool call', async ({ page }) => {
-    const agentName = `Tool Agent Glob ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('renders Glob tool call', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'Glob')
 
     await sessionPage.sendMessage('find files matching pattern')
     await sessionPage.waitForResponse(15000)
@@ -93,9 +93,8 @@ test.describe('Tool Call Rendering', () => {
     await sessionPage.expectToolCall('Glob', 15000)
   })
 
-  test('renders WebSearch tool call', async ({ page }) => {
-    const agentName = `Tool Agent WebSearch ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('renders WebSearch tool call', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'WebSearch')
 
     await sessionPage.sendMessage('search web for TypeScript tips')
     await sessionPage.waitForResponse(15000)
@@ -109,9 +108,8 @@ test.describe('Tool Call Rendering', () => {
     await expect(toolCall).toContainText('TypeScript best practices')
   })
 
-  test('tool call expand/collapse works', async ({ page }) => {
-    const agentName = `Tool Agent Expand ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('tool call expand/collapse works', async ({ page, request }, testInfo) => {
+    const { sessionPage } = await setupToolTest(page, request, testInfo, 'Expand')
 
     await sessionPage.sendMessage('list files in the current directory')
     await sessionPage.waitForResponse(15000)
@@ -120,14 +118,14 @@ test.describe('Tool Call Rendering', () => {
     await expect(toolCall).toBeVisible()
 
     // Initially collapsed - no expanded content
-    await expect(toolCall.locator('.bg-black')).not.toBeVisible()
+    await expect(toolCall.getByTestId('bash-terminal')).not.toBeVisible()
 
     // Click to expand
     await toolCall.locator('button').first().click()
-    await expect(toolCall.locator('.bg-black')).toBeVisible()
+    await expect(toolCall.getByTestId('bash-terminal')).toBeVisible()
 
     // Click to collapse
     await toolCall.locator('button').first().click()
-    await expect(toolCall.locator('.bg-black')).not.toBeVisible()
+    await expect(toolCall.getByTestId('bash-terminal')).not.toBeVisible()
   })
 })

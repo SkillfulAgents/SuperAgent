@@ -9,6 +9,7 @@ import type { ComposerModelFamily } from '@shared/lib/llm-provider'
 import type { ComposerOptionsState } from './composer-options'
 
 const FAMILY_LABEL: Record<ComposerModelFamily, string> = {
+  fable: 'Fable 5',
   opus: 'Opus 4.8',
   sonnet: 'Sonnet 4.6',
   haiku: 'Haiku 4.5',
@@ -17,7 +18,8 @@ const FAMILY_LABEL: Record<ComposerModelFamily, string> = {
 const FAMILY_BLURB: Record<ComposerModelFamily, string> = {
   haiku: 'Fastest and cheapest. Good for quick or simple tasks.',
   sonnet: 'Balanced speed and capability.',
-  opus: 'Most capable. Best for complex, long-horizon work.',
+  opus: 'Highly capable. Great for complex, long-horizon work.',
+  fable: 'Most capable frontier model. Premium pricing.',
 }
 
 const EFFORT_META: Record<EffortLevel, { label: string; blurb: string }> = {
@@ -29,8 +31,8 @@ const EFFORT_META: Record<EffortLevel, { label: string; blurb: string }> = {
 }
 
 const EFFORT_FAMILY_REQUIREMENTS: Partial<Record<EffortLevel, ComposerModelFamily[]>> = {
-  xhigh: ['opus'],
-  max: ['opus'],
+  xhigh: ['fable', 'opus'],
+  max: ['fable', 'opus'],
 }
 
 function isEffortAllowed(level: EffortLevel, family: ComposerModelFamily | undefined): boolean {
@@ -47,6 +49,7 @@ function isEffortAllowed(level: EffortLevel, family: ComposerModelFamily | undef
 // composer's `composerModels` are keyed by alias).
 export function inferFamily(model: string | undefined): ComposerModelFamily | undefined {
   if (!model) return undefined
+  if (model.includes('fable')) return 'fable'
   if (model.includes('opus')) return 'opus'
   if (model.includes('sonnet')) return 'sonnet'
   if (model.includes('haiku')) return 'haiku'

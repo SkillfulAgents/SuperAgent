@@ -37,6 +37,7 @@ import {
   _resetEnvManagedPlatformStatusForTest,
   getPlatformAccessToken,
   getPlatformAuthStatus,
+  getEnrichedPlatformAuthStatus,
   initEnvManagedPlatformStatus,
   savePlatformAuth,
   refreshStoredPlatformAccount,
@@ -505,6 +506,124 @@ describe('platform-auth-service', () => {
     const status = getPlatformAuthStatus()
     expect(status.userId).toBeNull()
     expect(mockDbGet).not.toHaveBeenCalled()
+  })
+
+  // ---------------------------------------------------------------------------
+  // Env-managed (org-JWT) account enrichment via /v1/account introspection
+  // ---------------------------------------------------------------------------
+
+  it('enriches env-managed status with email/orgName/role from /v1/account', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const status = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(fetchSpy).toHaveBeenCalledWith('http://proxy.test/v1/account', expect.anything())
+    expect(status).toMatchObject({
+      source: 'env',
+      email: 'owner@example.com',
+      orgName: 'Acme Inc',
+      role: 'owner',
+    })
+    // env-managed connections have no "last changed" anchor; updatedAt stays null.
+    expect(status.updatedAt).toBeNull()
+  })
+
+  it('falls back to the base env-managed status when introspection fails', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: 'nope' } }), { status: 401 }),
+    )
+
+    const status = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(status).toMatchObject({
+      source: 'env',
+      email: null,
+      orgName: null,
+      role: null,
+    })
+  })
+
+  it('memoizes introspection per user within the TTL (second read does not re-fetch)', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    await getEnrichedPlatformAuthStatus('ba-user')
+    const second = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(second).toMatchObject({ email: 'owner@example.com', orgName: 'Acme Inc', role: 'owner' })
+  })
+
+  it('caches a failed introspection so it is not retried within the TTL', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: 'nope' } }), { status: 401 }),
+    )
+
+    await getEnrichedPlatformAuthStatus('ba-user')
+    const second = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(second).toMatchObject({ source: 'env', email: null, orgName: null, role: null })
+  })
+
+  it('does not introspect for settings-stored (opaque key) connections', async () => {
+    await savePlatformAuth('local', {
+      token: 'plat_superagent_token_1234567890abcdef',
+      email: 'stored@example.com',
+      orgId: 'org_stored',
+      orgName: 'Stored Org',
+      role: 'member',
+    })
+
+    const fetchSpy = vi.spyOn(global, 'fetch')
+
+    const status = await getEnrichedPlatformAuthStatus('local')
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(status).toMatchObject({ source: 'settings', orgName: 'Stored Org', email: 'stored@example.com' })
   })
 
   // Helpers for the org-switch / lifecycle tests below.

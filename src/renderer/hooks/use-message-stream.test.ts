@@ -767,6 +767,102 @@ describe('useMessageStream', () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
   })
 
+  // The session_idle SSE can arrive before the final assistant line is durably
+  // readable in the JSONL transcript, so the handler's immediate invalidate may
+  // refetch stale data. A bounded reconcile loop refetches a few more times until
+  // the persisted tail matches the streamed text, so finalization (the "Worked
+  // for Xs" line) doesn't wait for the slow safety-net poll.
+  const countMessageInvalidations = (spy: ReturnType<typeof vi.spyOn>): number =>
+    spy.mock.calls.filter((call: unknown[]) => {
+      const key = (call[0] as { queryKey?: unknown[] } | undefined)?.queryKey
+      return Array.isArray(key) && key[0] === 'messages' && key[1] === 'session-1'
+    }).length
+
+  it('reconciles messages after session_idle when the transcript lags, then stops', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_start' })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'Final answer' })
+      })
+
+      // Persisted transcript does NOT yet contain the final assistant line.
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], [
+        { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+      ])
+
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
+      // Immediate invalidate from the handler.
+      expect(countMessageInvalidations(spy)).toBe(1)
+
+      // First backoff tick: still no match → an extra refetch fires.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300)
+      })
+      expect(countMessageInvalidations(spy)).toBeGreaterThan(1)
+
+      // Drain well past the reconcile window — it must self-terminate (bounded:
+      // 1 immediate + at most 3 reconcile attempts).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBeLessThanOrEqual(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not reconcile after session_idle when the persisted message already matches', async () => {
+    vi.useFakeTimers()
+    try {
+      const { useMessageStream } = await getHookModule()
+      const wrapper = createWrapper()
+      const qc = wrapper.queryClient
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper })
+
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+      })
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'stream_delta', text: 'Final answer' })
+      })
+
+      // Transcript already has the final assistant line (no write/read race).
+      qc.setQueryData(['messages', 'session-1', 'agent-1'], [
+        { id: 'u1', type: 'user', content: { text: 'hi' }, createdAt: '2026-01-01T00:00:00Z' },
+        { id: 'a1', type: 'assistant', content: { text: 'Final answer' }, toolCalls: [], createdAt: '2026-01-01T00:00:01Z' },
+      ])
+
+      spy.mockClear()
+      act(() => {
+        MockEventSource.instances[0].simulateMessage({ type: 'session_idle' })
+      })
+
+      // Only the handler's immediate invalidate — the reconcile sees a match and bails.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+      })
+      expect(countMessageInvalidations(spy)).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('invalidates messages and sessions queries on session_error', async () => {
     const { useMessageStream } = await getHookModule()
     const wrapper = createWrapper()
@@ -1899,6 +1995,129 @@ describe('useMessageStream', () => {
 
       expect(result.current.pendingScriptRunRequests[0].toolUseId).toBe('tool-prompt')
       expect(result.current.autoApprovedScriptRunIds.has('tool-prompt')).toBe(false)
+    })
+  })
+
+  // ---- Peer user messages (shared sessions / message queueing) ----
+
+  describe('peer user messages', () => {
+    async function setupHook(sessionId: string) {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+      const { result } = renderHook(
+        () => mod.useMessageStream(sessionId, 'agent-1'),
+        { wrapper }
+      )
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+      return { mod, result, es }
+    }
+
+    it('appends peer messages with uuid, sender, and queued flag', async () => {
+      const { result, es } = await setupHook('peer-s1')
+
+      act(() => {
+        es.simulateMessage({
+          type: 'user_message',
+          uuid: 'peer-uuid-1',
+          content: 'Hello from Alice',
+          sender: { id: 'u2', name: 'Alice' },
+          queued: true,
+        })
+      })
+
+      expect(result.current.peerUserMessages).toEqual([
+        { uuid: 'peer-uuid-1', content: 'Hello from Alice', sender: { id: 'u2', name: 'Alice' }, queued: true, receivedAt: expect.any(Number) },
+      ])
+    })
+
+    it('accumulates multiple peer messages and dedupes by uuid', async () => {
+      const { result, es } = await setupHook('peer-s2')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+        es.simulateMessage({ type: 'user_message', uuid: 'p2', content: 'second', sender: { id: 'u2' }, queued: true })
+        // Duplicate broadcast of p1 (e.g. SSE redelivery) must not double up
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+      })
+
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p1', 'p2'])
+    })
+
+    it('ignores user_message events without a uuid', async () => {
+      const { result, es } = await setupHook('peer-s3')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', content: 'legacy broadcast', sender: { id: 'u2' } })
+      })
+
+      expect(result.current.peerUserMessages).toEqual([])
+    })
+
+    it('clears the typing indicator when the peer message arrives', async () => {
+      const { result, es } = await setupHook('peer-s4')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_typing', sender: { id: 'u2', name: 'Alice' } })
+      })
+      expect(result.current.typingUser).toEqual({ id: 'u2', name: 'Alice' })
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'done typing', sender: { id: 'u2', name: 'Alice' } })
+      })
+      expect(result.current.typingUser).toBeNull()
+    })
+
+    it('preserves peer messages across unrelated stream events', async () => {
+      const { result, es } = await setupHook('peer-s5')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'sticky', sender: { id: 'u2' }, queued: true })
+        es.simulateMessage({ type: 'stream_start' })
+        es.simulateMessage({ type: 'stream_delta', text: 'agent output' })
+        es.simulateMessage({ type: 'session_active' })
+      })
+
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p1'])
+    })
+
+    it('removePeerUserMessage removes only the matching entry', async () => {
+      const { mod, result, es } = await setupHook('peer-s6')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+        es.simulateMessage({ type: 'user_message', uuid: 'p2', content: 'second', sender: { id: 'u2' } })
+      })
+
+      act(() => {
+        mod.removePeerUserMessage('peer-s6', 'p1')
+      })
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p2'])
+
+      // Removing an unknown uuid is a no-op
+      act(() => {
+        mod.removePeerUserMessage('peer-s6', 'does-not-exist')
+      })
+      expect(result.current.peerUserMessages.map((p) => p.uuid)).toEqual(['p2'])
+    })
+
+    it('clearPeerUserMessages drops all entries', async () => {
+      const { mod, result, es } = await setupHook('peer-s7')
+
+      act(() => {
+        es.simulateMessage({ type: 'user_message', uuid: 'p1', content: 'first', sender: { id: 'u2' } })
+        es.simulateMessage({ type: 'user_message', uuid: 'p2', content: 'second', sender: { id: 'u2' }, queued: true })
+      })
+
+      act(() => {
+        mod.clearPeerUserMessages('peer-s7')
+      })
+      expect(result.current.peerUserMessages).toEqual([])
     })
   })
 

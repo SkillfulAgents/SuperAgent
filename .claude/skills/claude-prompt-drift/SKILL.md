@@ -131,6 +131,8 @@ Real signal fields like `cc_version=...` and `cc_entrypoint=` are kept.
 - `raw.json` and `.seen-models.json` are produced during capture but excluded from diffs.
 - `pure-baseline/run.mjs` uses the SDK that's already installed inside the agent-container image (no separate `npm install`), avoiding the glibc/musl mismatch that broke earlier attempts at running the baseline under `node:20-alpine`.
 - Working tree state matters. When pointing at the working repo directly, the script reads `git rev-parse HEAD` and `git status --porcelain` — make sure that's what you mean to capture (typically `origin/main` or a PR head, not a stale local branch).
+- `--model` must match what agent-container actually puts on the wire. The container ignores the session's requested model and uses its own default (currently `claude-opus-4-8`); if `--model` names anything else, the proxy writes the snapshot under the real model's dir while the script polls the wrong path and times out. The pure axis honors `--model` via the `DRIFT_MODEL` env var.
+- Windows/Git Bash: capture.sh disables MSYS path conversion for container-side docker args (`MSYS2_ARG_CONV_EXCL`) and renders host mount paths via `cygpath -m` — required, or the `-v` mounts get rewritten to `C:\Program Files\Git\...` and the proxy crash-loops. Needs `jq` on PATH (not bundled with Git for Windows).
 
 ## Known caveat: local build ≠ GHCR image
 

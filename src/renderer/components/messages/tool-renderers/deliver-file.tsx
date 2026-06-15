@@ -1,4 +1,4 @@
-import { Download } from 'lucide-react'
+import { ArrowDownToLine, Download } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
@@ -22,12 +22,12 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
   return (
     <div className="space-y-2">
       {description && (
-        <p className="text-sm text-muted-foreground">{description}</p>
+        <p className="text-xs text-muted-foreground">{description}</p>
       )}
       {filePath && (
         <div className="flex items-center gap-2">
           <FileTypeIcon filename={getFilename(filePath)} size={20} />
-          <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+          <code className="bg-background px-1.5 py-0.5 rounded text-xs">
             {getFilename(filePath)}
           </code>
           {!isError && agentSlug && (
@@ -45,7 +45,7 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
       )}
       {result && (
         <div
-          className={`text-xs rounded p-2 ${isError ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}
+          className={`bg-background text-xs rounded p-2 ${isError ? 'text-red-800 dark:text-red-200' : 'text-green-800 dark:text-green-200'}`}
         >
           {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
         </div>
@@ -59,7 +59,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
     const partial = JSON.parse(partialInput)
     if (partial.filePath) {
       return (
-        <div className="text-sm text-muted-foreground">
+        <div className="text-xs text-muted-foreground">
           Delivering: {getFilename(partial.filePath)}
         </div>
       )
@@ -67,12 +67,25 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
   } catch {
     // partial JSON, ignore
   }
-  return <div className="text-sm text-muted-foreground">Preparing file...</div>
+  return <div className="text-xs text-muted-foreground">Preparing file...</div>
 }
 
 function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) {
   const { filePath } = input as DeliverFileInput
-  if (!filePath || !agentSlug || isError) return null
+  if (!filePath) return null
+
+  // Failed delivery: surface an explicit error marker instead of returning null
+  // (which would leave a dangling separator in the collapsed row).
+  if (isError) {
+    return (
+      <span className="inline-flex min-w-0 items-center gap-1 text-xs text-red-800 dark:text-red-200">
+        <FileTypeIcon filename={getFilename(filePath)} size={14} />
+        <span className="truncate">delivery failed</span>
+      </span>
+    )
+  }
+
+  if (!agentSlug) return null
 
   return (
     <FileDownloadPill
@@ -85,7 +98,7 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
 
 export const deliverFileRenderer: ToolRenderer = {
   displayName: 'Deliver File',
-  icon: Download,
+  icon: ArrowDownToLine,
   getSummary: (input: unknown) => deliverFileDef.getSummary(input),
   ExpandedView,
   StreamingView,

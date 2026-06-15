@@ -6,6 +6,17 @@ import { Page, expect } from '@playwright/test'
 export class SettingsPage {
   constructor(private page: Page) {}
 
+  private async waitForSettingsUpdate(action: () => Promise<unknown>) {
+    await Promise.all([
+      this.page.waitForResponse((res) =>
+        res.url().includes('/api/settings') &&
+        res.request().method() === 'PUT' &&
+        res.ok()
+      ),
+      action(),
+    ])
+  }
+
   /** Open settings via sidebar footer button */
   async open() {
     await this.page.locator('[data-testid="settings-button"]').click()
@@ -48,23 +59,29 @@ export class SettingsPage {
 
   /** Set the signup mode via the select dropdown */
   async setSignupMode(mode: 'open' | 'domain_restricted' | 'invitation_only' | 'closed') {
-    await this.page.locator('[data-testid="auth-signup-mode"]').click()
     const labels: Record<string, string> = {
       open: 'Open',
       domain_restricted: 'Domain Restricted',
       invitation_only: 'Invitation Only',
       closed: 'Closed',
     }
-    await this.page.locator(`[role="option"]:has-text("${labels[mode]}")`).click()
-    // Wait for mutation to settle
-    await this.page.waitForTimeout(300)
+    const trigger = this.page.locator('[data-testid="auth-signup-mode"]')
+    if ((await trigger.textContent())?.includes(labels[mode])) return
+
+    await trigger.click()
+    await this.waitForSettingsUpdate(() =>
+      this.page.getByRole('option', { name: labels[mode] }).click()
+    )
+    await expect(trigger).toContainText(labels[mode])
   }
 
   /** Add an allowed signup domain (only visible when domain_restricted) */
   async addAllowedDomain(domain: string) {
     await this.page.locator('[data-testid="auth-add-domain-input"]').fill(domain)
-    await this.page.locator('[data-testid="auth-add-domain-button"]').click()
-    await this.page.waitForTimeout(300)
+    await this.waitForSettingsUpdate(() =>
+      this.page.locator('[data-testid="auth-add-domain-button"]').click()
+    )
+    await expect(this.page.getByText(domain)).toBeVisible()
   }
 
   /** Toggle a switch by data-testid */
@@ -73,17 +90,15 @@ export class SettingsPage {
     const current = await sw.getAttribute('data-state')
     const isChecked = current === 'checked'
     if (isChecked !== checked) {
-      await sw.click()
-      await this.page.waitForTimeout(300)
+      await this.waitForSettingsUpdate(() => sw.click())
+      await expect(sw).toHaveAttribute('data-state', checked ? 'checked' : 'unchecked')
     }
   }
 
   /** Set a number input by data-testid */
   async setNumberInput(testId: string, value: number) {
     const input = this.page.locator(`[data-testid="${testId}"]`)
-    await input.fill(String(value))
-    // Trigger change by pressing Tab
-    await input.press('Tab')
-    await this.page.waitForTimeout(300)
+    await this.waitForSettingsUpdate(() => input.fill(String(value)))
+    await expect(input).toHaveValue(String(value))
   }
 }

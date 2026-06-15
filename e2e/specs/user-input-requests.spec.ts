@@ -295,10 +295,12 @@ test.describe('User Input Requests', () => {
     // Wait for the script run request UI to appear
     await sessionPage.waitForScriptRunRequest()
 
-    // Verify content is shown
+    // Verify content is shown. The mock scenario picks a platform-valid
+    // script type (persister auto-rejects mismatches), so assert per platform.
+    const expectedScript = process.platform === 'win32' ? 'Get-ComputerInfo' : 'sw_vers'
     const request = sessionPage.getScriptRunRequests().first()
-    await expect(request).toContainText('sw_vers')
-    await expect(request).toContainText('Check macOS version')
+    await expect(request).toContainText(expectedScript)
+    await expect(request).toContainText('Check OS version')
 
     // Approve execution
     await sessionPage.approveScriptRun()

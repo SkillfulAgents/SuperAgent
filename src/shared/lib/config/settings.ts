@@ -377,7 +377,7 @@ export function loadSettings(): AppSettings {
         },
         voice: loaded.voice,
         computerUse: loaded.computerUse,
-        shareAnalytics: loaded.shareAnalytics ?? false,
+        shareAnalytics: loaded.shareAnalytics ?? true,
         analyticsTargets: loaded.analyticsTargets,
         shareErrorReports: loaded.shareErrorReports,
         platformAuth: loaded.platformAuth,

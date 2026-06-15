@@ -126,7 +126,6 @@ function AppShell() {
     </TrayNavigationHandler>
   )
 }
-
 export default function App() {
   return (
     <QueryProvider>

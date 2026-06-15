@@ -179,8 +179,8 @@ describe('tool definition getSummary', () => {
     it('Read: strips /workspace/ prefix', () => {
       expect(summary('Read', { file_path: '/workspace/src/index.ts' })).toBe('src/index.ts')
     })
-    it('Write: returns path with arrow', () => {
-      expect(summary('Write', { file_path: '/workspace/out.txt' })).toBe('→ out.txt')
+    it('Write: returns path', () => {
+      expect(summary('Write', { file_path: '/workspace/out.txt' })).toBe('out.txt')
     })
     it('Glob: returns pattern', () => {
       expect(summary('Glob', { pattern: '**/*.ts' })).toBe('**/*.ts')

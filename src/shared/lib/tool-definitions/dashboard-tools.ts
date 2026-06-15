@@ -13,7 +13,7 @@ export interface DashboardSlugInput {
 }
 
 export const createDashboardDef: ToolDefinition = {
-  displayName: 'Create Dashboard', iconName: 'LayoutDashboard',
+  displayName: 'Create Dashboard',
   getSummary: (input) => {
     const { name, framework } = input as CreateDashboardInput
     if (!name) return null
@@ -22,16 +22,16 @@ export const createDashboardDef: ToolDefinition = {
 }
 
 export const startDashboardDef: ToolDefinition = {
-  displayName: 'Start Dashboard', iconName: 'Play',
+  displayName: 'Start Dashboard',
   getSummary: (input) => (input as DashboardSlugInput).slug ?? null,
 }
 
 export const listDashboardsDef: ToolDefinition = {
-  displayName: 'List Dashboards', iconName: 'List',
+  displayName: 'List Dashboards',
   getSummary: () => null,
 }
 
 export const getDashboardLogsDef: ToolDefinition = {
-  displayName: 'Dashboard Logs', iconName: 'ScrollText',
+  displayName: 'Dashboard Logs',
   getSummary: (input) => (input as DashboardSlugInput).slug ?? null,
 }

@@ -320,13 +320,20 @@ export function HasNotificationAccess(): MiddlewareHandler {
 /**
  * IsAgent — validates synthetic bearer token from a container.
  * Works in both auth and non-auth modes (containers always use proxy tokens).
+ *
+ * Stashes the resolved agent slug on the context as `agentSlug` so route
+ * handlers can bind their action to the token's agent instead of trusting an
+ * attacker-controlled body/param (see SUP-216). Each agent has exactly one
+ * proxy token, so the token uniquely identifies the agent.
  */
 export function IsAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     const token = c.req.header('Authorization')?.replace('Bearer ', '')
-    if (!token || !(await validateProxyToken(token))) {
+    const agentSlug = token ? await validateProxyToken(token) : null
+    if (!token || !agentSlug) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
+    c.set('agentSlug' as never, agentSlug as never)
     return next()
   }
 }

@@ -34,9 +34,11 @@ import {
   browserScrollDef,
   browserWaitDef,
   browserPressDef,
+  browserTypeDef,
   browserScreenshotDef,
   browserSelectDef,
   browserHoverDef,
+  browserEvalDef,
   browserRunDef,
 } from './browser-tools'
 import {
@@ -110,9 +112,11 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__browser__browser_scroll': browserScrollDef,
   'mcp__browser__browser_wait': browserWaitDef,
   'mcp__browser__browser_press': browserPressDef,
+  'mcp__browser__browser_type': browserTypeDef,
   'mcp__browser__browser_screenshot': browserScreenshotDef,
   'mcp__browser__browser_select': browserSelectDef,
   'mcp__browser__browser_hover': browserHoverDef,
+  'mcp__browser__browser_eval': browserEvalDef,
   'mcp__browser__browser_run': browserRunDef,
 
   // MCP tools - dashboards

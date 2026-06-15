@@ -344,7 +344,9 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
               </div>
 
               {importSkill.error && (
-                <p className="text-sm text-destructive">{importSkill.error.message}</p>
+                <p className="text-sm text-destructive" data-testid="import-skill-error">
+                  {importSkill.error.message}
+                </p>
               )}
             </div>
 

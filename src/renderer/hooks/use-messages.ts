@@ -1,4 +1,5 @@
 import { apiFetch } from '@renderer/lib/api'
+import { uploadFileChunked } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -54,26 +55,37 @@ export function useSendMessage() {
         }),
       })
       if (!res.ok) throw new Error('Failed to send message')
-      return res.json()
+      // uuid is the server-assigned message id, used to materialize the
+      // optimistic pending copy by exact id match.
+      return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
     },
     // No onSuccess - we'll handle the pending message via props
+  })
+}
+
+export function useCancelQueuedMessage() {
+  return useMutation({
+    mutationFn: async (data: { sessionId: string; agentSlug: string; uuid: string }) => {
+      const res = await apiFetch(
+        `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/queued-messages/${encodeURIComponent(data.uuid)}`,
+        { method: 'DELETE' }
+      )
+      if (!res.ok) throw new Error('Failed to cancel queued message')
+      // cancelled: false = the agent already picked the message up; the
+      // caller leaves the ghost alone and lets it materialize normally.
+      return res.json() as Promise<{ cancelled: boolean }>
+    },
   })
 }
 
 export function useUploadFile() {
   return useMutation({
     mutationFn: async (data: { sessionId: string; agentSlug: string; file: File; relativePath?: string }) => {
-      const formData = new FormData()
-      formData.append('file', data.file)
-      if (data.relativePath) {
-        formData.append('relativePath', data.relativePath)
-      }
-      const res = await apiFetch(
-        `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
-        { method: 'POST', body: formData }
-      )
-      if (!res.ok) throw new Error('Failed to upload file')
-      return res.json() as Promise<{ path: string; filename: string; size: number }>
+      return uploadFileChunked<{ path: string; filename: string; size: number }>({
+        url: `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
+        file: data.file,
+        fields: data.relativePath ? { relativePath: data.relativePath } : undefined,
+      })
     },
   })
 }

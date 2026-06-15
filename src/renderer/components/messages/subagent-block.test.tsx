@@ -14,11 +14,16 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 
 // Mock ToolCallItem
 vi.mock('./tool-call-item', () => ({
-  ToolCallItem: ({ toolCall }: { toolCall: ApiToolCall }) => (
-    <div data-testid={`sub-tool-${toolCall.name}`}>{toolCall.name}</div>
+  ToolCallItem: ({ toolCall, isSessionActive }: { toolCall: ApiToolCall; isSessionActive?: boolean }) => (
+    <div data-testid={`sub-tool-${toolCall.name}`} data-session-active={String(!!isSessionActive)}>
+      {toolCall.name}
+    </div>
   ),
   StreamingToolCallItem: ({ name }: { name: string }) => (
     <div data-testid="sub-streaming-tool">{name}</div>
+  ),
+  StatusIndicator: ({ status }: { status: string }) => (
+    <span data-testid="status-indicator">{status}</span>
   ),
 }))
 
@@ -93,7 +98,7 @@ describe('SubAgentBlock', () => {
       result: undefined,
     })
 
-    const { container } = render(
+    render(
       <SubAgentBlock
         toolCall={tc}
         sessionId="s-1"
@@ -113,8 +118,8 @@ describe('SubAgentBlock', () => {
       />
     )
 
-    // Running status shows spinner
-    expect(container.querySelector('.animate-spin')).toBeTruthy()
+    // Running status is indicated
+    expect(screen.getByText('running')).toBeTruthy()
   })
 
   it('renders subagent messages when expanded', async () => {
@@ -142,6 +147,47 @@ describe('SubAgentBlock', () => {
 
     expect(screen.getByText('I found the config file.')).toBeInTheDocument()
     expect(screen.getByTestId('sub-tool-Read')).toBeInTheDocument()
+  })
+
+  it('passes isSessionActive to in-flight subagent tools so they show running, not cancelled', () => {
+    const tc = createToolCall({
+      name: 'Task',
+      input: { subagent_type: 'Explore', description: 'Working' },
+      result: undefined,
+    })
+
+    // In-flight tool inside the subagent (no result yet)
+    mockSubMessages = [
+      createAssistantMessage({
+        id: 'sub-msg-1',
+        content: { text: 'snapshotting' },
+        toolCalls: [createToolCall({ name: 'Bash', result: undefined })],
+      }),
+    ]
+
+    render(
+      <SubAgentBlock
+        toolCall={tc}
+        sessionId="s-1"
+        agentSlug="agent-1"
+        isSessionActive
+        activeSubagent={{
+          parentToolId: tc.id,
+          agentId: 'sub-1',
+          streamingMessage: null,
+          streamingToolUse: null,
+          progressSummary: null,
+          subagentType: null,
+          description: null,
+          usage: null,
+          lastToolName: null,
+        }}
+      />
+    )
+
+    // Running subagent auto-expands; the in-flight tool must be told the session
+    // is active, otherwise getStatus() resolves it to 'cancelled' (the Ban icon).
+    expect(screen.getByTestId('sub-tool-Bash')).toHaveAttribute('data-session-active', 'true')
   })
 
   it('shows "Sub-agent is working..." when running with no messages', async () => {

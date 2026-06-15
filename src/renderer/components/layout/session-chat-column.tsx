@@ -8,42 +8,41 @@ import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watche
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
 import type { EffortLevel } from '@shared/lib/container/types'
-
-interface PendingMessage {
-  text: string
-  sentAt: number
-  sender?: { id: string; name: string; email: string }
-}
+import type { PendingMessage } from '@renderer/components/messages/pending-message'
 
 interface SessionChatColumnProps {
   sessionId: string
   agentSlug: string
-  pendingUserMessage: PendingMessage | null
+  pendingUserMessages: PendingMessage[]
   isViewOnly: boolean
   contextPercent: number | null
   effort?: EffortLevel
   model?: string
-  onPendingMessageAppeared: () => void
-  onMessageSent: (content: string) => void
+  onPendingMessageAppeared: (localId: string) => void
+  onMessageSent: (content: string, localId: string, queued: boolean) => void
+  onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
+  onMessageFailed: (localId: string) => void
 }
 
 export function SessionChatColumn({
   sessionId,
   agentSlug,
-  pendingUserMessage,
+  pendingUserMessages,
   isViewOnly,
   contextPercent,
   effort,
   model,
   onPendingMessageAppeared,
   onMessageSent,
+  onMessageUuidAssigned,
+  onMessageFailed,
 }: SessionChatColumnProps) {
   const { isActive, browserActive } = useMessageStream(sessionId, agentSlug)
   useFileDeliveryWatcher(sessionId, agentSlug)
   const { items: pendingRequestItems, count: pendingRequestCount } = usePendingRequests({
     sessionId,
     agentSlug,
-    pendingUserMessage,
+    pendingUserMessages,
   })
 
   const renderCtx: RenderContext = { sessionId, agentSlug, readOnly: isViewOnly }
@@ -53,7 +52,7 @@ export function SessionChatColumn({
       sessionId={sessionId}
       agentSlug={agentSlug}
       browserActive={browserActive}
-      pendingUserMessage={pendingUserMessage}
+      pendingUserMessages={pendingUserMessages}
       pendingRequestCount={pendingRequestCount}
       onPendingMessageAppeared={onPendingMessageAppeared}
       footerClassName="bg-background max-w-[740px] mx-auto w-full"
@@ -71,6 +70,8 @@ export function SessionChatColumn({
               sessionId={sessionId}
               agentSlug={agentSlug}
               onMessageSent={onMessageSent}
+              onMessageUuidAssigned={onMessageUuidAssigned}
+              onMessageFailed={onMessageFailed}
               initialEffort={effort}
               initialModel={model}
             />

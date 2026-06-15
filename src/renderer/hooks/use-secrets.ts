@@ -23,6 +23,7 @@ export function useCreateSecret() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({
       agentSlug,
       key,

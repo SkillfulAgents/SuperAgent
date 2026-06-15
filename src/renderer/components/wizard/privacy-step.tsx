@@ -9,7 +9,8 @@ export function PrivacyStep() {
   const [shareAnalytics, setShareAnalytics] = useState(true)
   const initializedRef = useRef(false)
 
-  // Initialize from current settings on first load (defaults to true for fresh installs)
+  // Initialize from current settings on first load. The API resolves unset values
+  // to true (default-on), so fresh installs arrive here with both already true.
   useEffect(() => {
     if (!settings || initializedRef.current) return
     initializedRef.current = true
@@ -17,21 +18,15 @@ export function PrivacyStep() {
     setShareAnalytics(settings.shareAnalytics ?? true)
   }, [settings])
 
-  // Only persist after the user interacts (skip the initialization render)
-  const userHasInteracted = useRef(false)
-  useEffect(() => {
-    if (!initializedRef.current) return
-    if (!userHasInteracted.current) { userHasInteracted.current = true; return }
-    updateSettings.mutate({ shareErrorReports })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shareErrorReports])
+  const handleErrorReportsChange = (checked: boolean) => {
+    setShareErrorReports(checked)
+    updateSettings.mutate({ shareErrorReports: checked })
+  }
 
-  useEffect(() => {
-    if (!initializedRef.current) return
-    if (!userHasInteracted.current) { userHasInteracted.current = true; return }
-    updateSettings.mutate({ shareAnalytics })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shareAnalytics])
+  const handleAnalyticsChange = (checked: boolean) => {
+    setShareAnalytics(checked)
+    updateSettings.mutate({ shareAnalytics: checked })
+  }
 
   return (
     <div className="space-y-6">
@@ -52,7 +47,7 @@ export function PrivacyStep() {
             <Switch
               id="privacy-error-reports"
               checked={shareErrorReports}
-              onCheckedChange={setShareErrorReports}
+              onCheckedChange={handleErrorReportsChange}
             />
           </div>
           <p className="text-xs text-muted-foreground mt-1 max-w-sm">
@@ -69,7 +64,7 @@ export function PrivacyStep() {
             <Switch
               id="privacy-analytics"
               checked={shareAnalytics}
-              onCheckedChange={setShareAnalytics}
+              onCheckedChange={handleAnalyticsChange}
             />
           </div>
           <p className="text-xs text-muted-foreground mt-1 max-w-sm">

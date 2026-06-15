@@ -10,8 +10,8 @@ export interface ModelOption {
 
 export type ModelPurpose = 'agent' | 'summarizer' | 'browser'
 
-/** Three Claude families exposed in the per-message model selector. */
-export const COMPOSER_MODEL_FAMILIES = ['opus', 'sonnet', 'haiku'] as const
+/** Claude families exposed in the per-message model selector. */
+export const COMPOSER_MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'] as const
 export type ComposerModelFamily = typeof COMPOSER_MODEL_FAMILIES[number]
 
 export interface ComposerModel {
@@ -60,7 +60,7 @@ export abstract class BaseLlmProvider {
 
   /**
    * Models surfaced in the composer's per-message family selector
-   * (Haiku / Sonnet / Opus). The wire format is the family alias because
+   * (Haiku / Sonnet / Opus / Fable). The wire format is the family alias because
    * the agent container's toModelAlias() collapses every pinned or
    * region-prefixed ID to the alias before the SDK call — so all providers
    * we support today (Anthropic, OpenRouter, Platform, Bedrock) share the
@@ -70,6 +70,7 @@ export abstract class BaseLlmProvider {
    */
   getComposerModels(): ComposerModel[] {
     return [
+      { family: 'fable', modelId: 'fable', label: 'Fable' },
       { family: 'opus', modelId: 'opus', label: 'Opus' },
       { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
       { family: 'haiku', modelId: 'haiku', label: 'Haiku' },

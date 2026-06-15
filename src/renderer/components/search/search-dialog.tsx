@@ -195,6 +195,9 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
                     <button
                       type="button"
                       data-index={agentIdx}
+                      data-testid="search-agent-row"
+                      data-agent-name={g.agent.name}
+                      data-agent-slug={g.agent.slug}
                       onClick={() => handleSelect({ kind: 'agent', agent: g.agent })}
                       onMouseEnter={() => setActiveIndex(agentIdx)}
                       className={cn(
@@ -204,6 +207,8 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
                     >
                       {!isSearchMode && hasSessions && (
                         <ChevronRight
+                          data-testid="search-agent-expand"
+                          data-agent-slug={g.agent.slug}
                           className={cn(
                             'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
                             isExpanded && 'rotate-90'
@@ -234,6 +239,11 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
                           key={s.id}
                           type="button"
                           data-index={sessionIdx}
+                          data-testid="search-session-row"
+                          data-agent-name={g.agent.name}
+                          data-agent-slug={g.agent.slug}
+                          data-session-name={s.name}
+                          data-session-id={s.id}
                           onClick={() => handleSelect({ kind: 'session', agent: g.agent, session: s })}
                           onMouseEnter={() => setActiveIndex(sessionIdx)}
                           className={cn(

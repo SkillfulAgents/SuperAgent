@@ -1,5 +1,6 @@
 
 import { useState } from 'react'
+import { toast } from 'sonner'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
@@ -70,6 +71,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
       handleAgentDeleted(agentSlug)
     } catch (error) {
       console.error('Failed to delete agent:', error)
+      toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
     } finally {
       setIsDeleting(false)
     }

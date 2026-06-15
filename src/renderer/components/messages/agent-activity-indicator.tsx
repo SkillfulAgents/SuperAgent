@@ -4,7 +4,9 @@ import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { apiFetch } from '@renderer/lib/api'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
 import { PROVIDER_ERROR_CODES } from '@shared/lib/types/api'
+import { isTurnStartingUserMessage } from './pending-message'
 import { cn } from '@shared/lib/utils'
 import { AlertTriangle, Monitor, X } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
@@ -33,6 +35,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   const [revokeError, setRevokeError] = useState(false)
   const [showAllTodos, setShowAllTodos] = useState(false)
 
+  // Non-null only for a platform billing 402 the workspace can act on (see hook).
+  const billingUrl = usePlatformBillingUrl(error ?? '')
+
   // Rough token estimate for the streamed reasoning (~4 chars/token). UI-only.
   const thinkingTokens = thinkingText ? Math.ceil(thinkingText.length / 4) : 0
   const handleRevokeComputerUse = useCallback(async () => {
@@ -60,11 +65,13 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
 
   // Use activeStartTime from SSE (set when session_active fires) as primary source.
   // Falls back to last persisted user message timestamp (for page refresh recovery).
+  // Queued (mid-turn) messages don't start a turn — skipping them keeps the
+  // elapsed timer anchored to the turn-starting prompt after a refresh.
   const timerStartTime = useMemo(() => {
     if (activeStartTime) return new Date(activeStartTime)
     if (!messages) return null
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].type === 'user') {
+      if (isTurnStartingUserMessage(messages[i])) {
         return new Date(messages[i].createdAt)
       }
     }
@@ -84,7 +91,13 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
         if ((tc.name === 'Agent' || tc.name === 'Task') && activeMap.has(tc.id)) {
           if (tc.isError) continue
           const input = tc.input as { subagent_type?: string; description?: string }
-          const isCompleted = completedSubagents?.has(tc.id) || tc.result != null
+          // A background agent returns an immediate "async_launched" tool result
+          // — that's the launch ack, NOT completion. It only finishes when the
+          // sidechain result fires the subagent_completed SSE (completedSubagents).
+          // Foreground agents complete when their tool result lands. (Mirrors
+          // subagent-block.tsx so the activity block and the thread block agree.)
+          const isAsyncLaunched = tc.subagent?.status === 'async_launched'
+          const isCompleted = (completedSubagents?.has(tc.id) ?? false) || (!isAsyncLaunched && tc.result != null)
           const sub = activeMap.get(tc.id)
           items.push({
             id: tc.id,
@@ -176,7 +189,9 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     const isProviderError = apiErrorCode != null && PROVIDER_ERROR_CODES.has(apiErrorCode)
     return (
       <div className="mx-auto mb-2 w-full max-w-[740px] px-4">
-        {isProviderError ? (
+        {billingUrl ? (
+          <InsufficientBalanceCard billingUrl={billingUrl} data-testid="insufficient-balance-card" />
+        ) : isProviderError ? (
           <ProviderErrorCard message={error} data-testid="provider-error-card" />
         ) : (
           <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 select-text" data-testid="error-card">

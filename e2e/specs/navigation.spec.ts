@@ -51,8 +51,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.createAgent(agentName)
 
     // Open API Logs from agent-home extras
-    await page.locator('button:has-text("API Logs")').first().click()
-    await expect(page.getByText(/API Logs/i).first()).toBeVisible()
+    await page.getByTestId('home-api-logs-open-page').click()
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
     // Back → agent home (large composer visible, no message-list)
@@ -89,7 +88,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.createAgent(agentName)
 
     // Open API Logs
-    await page.locator('button:has-text("API Logs")').first().click()
+    await page.getByTestId('home-api-logs-open-page').click()
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
     // Switch to Connections via the sidebar's agent-home (back first, then connections)
@@ -101,7 +100,7 @@ test.describe('Navigation — discriminated AgentView', () => {
 
     // Switch back to API Logs
     await page.locator('[data-testid="connections-back-button"]').click()
-    await page.locator('button:has-text("API Logs")').first().click()
+    await page.getByTestId('home-api-logs-open-page').click()
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
     await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
 
@@ -121,7 +120,7 @@ test.describe('Navigation — discriminated AgentView', () => {
 
     // On agent B, open API Logs
     await agentPage.selectAgent(b)
-    await page.locator('button:has-text("API Logs")').first().click()
+    await page.getByTestId('home-api-logs-open-page').click()
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
     // Switch to agent A — should land on A's home, not on API Logs
@@ -163,7 +162,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.createAgent(agentName)
 
     // Navigate into API Logs
-    await page.locator('button:has-text("API Logs")').first().click()
+    await page.getByTestId('home-api-logs-open-page').click()
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
     // Reload

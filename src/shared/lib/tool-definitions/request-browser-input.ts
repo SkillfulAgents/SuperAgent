@@ -13,4 +13,4 @@ function getSummary(input: unknown): string | null {
   return message.length > 60 ? message.slice(0, 57) + '...' : message
 }
 
-export const requestBrowserInputDef = { displayName: 'Browser Input', iconName: 'Globe', parseInput, getSummary } as const
+export const requestBrowserInputDef = { displayName: 'Browser Input', parseInput, getSummary } as const

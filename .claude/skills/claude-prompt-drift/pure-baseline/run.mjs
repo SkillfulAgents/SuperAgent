@@ -15,7 +15,7 @@ const q = query({
   prompt: 'say hi',
   options: {
     systemPrompt: { type: 'preset', preset: 'claude_code' },
-    model: 'claude-opus-4-7',
+    model: process.env.DRIFT_MODEL || 'claude-opus-4-7',
     permissionMode: 'bypassPermissions',
     cwd: '/tmp',
   },

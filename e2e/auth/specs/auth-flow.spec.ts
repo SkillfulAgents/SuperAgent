@@ -142,7 +142,6 @@ test.describe('Auth Flow', () => {
 
     // Reload to get fresh agent list
     await appPage.reload()
-    await user1Page.waitForTimeout(500)
 
     // User2's agent should NOT be visible to user1
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
@@ -181,7 +180,6 @@ test.describe('Auth Flow', () => {
 
     // Reload to pick up new roles
     await appPage.reload()
-    await user3Page.waitForTimeout(500)
 
     // Agent should now be visible
     await expect(agentPage.getAgentItem(agentName)).toBeVisible()
@@ -259,8 +257,6 @@ test.describe('Auth Flow', () => {
 
     await accessPage.changeRole(userId, 'viewer')
 
-    // Wait for role change to persist
-    await user2Page.waitForTimeout(500)
     await accessPage.closeSettings()
   })
 
@@ -270,7 +266,6 @@ test.describe('Auth Flow', () => {
 
     // Reload to pick up role change
     await appPage.reload()
-    await user3Page.waitForTimeout(500)
 
     // Agent should still be visible
     await expect(agentPage.getAgentItem(agentName)).toBeVisible()
@@ -327,7 +322,6 @@ test.describe('Auth Flow', () => {
 
     // Reload to pick up access removal
     await appPage.reload()
-    await user3Page.waitForTimeout(500)
 
     // Agent should no longer be visible
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
@@ -349,7 +343,6 @@ test.describe('Auth Flow', () => {
 
     // Reload to pick up re-invite
     await appPage.reload()
-    await user3Page.waitForTimeout(500)
 
     // Agent should be visible again
     await expect(agentPage.getAgentItem(agentName)).toBeVisible()
@@ -364,7 +357,6 @@ test.describe('Auth Flow', () => {
 
     // Wait for dialog to close and agent to disappear
     await expect(user3Page.locator('[data-testid="confirm-leave-agent-dialog"]')).not.toBeVisible()
-    await user3Page.waitForTimeout(500)
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
   })
 
@@ -380,10 +372,8 @@ test.describe('Auth Flow', () => {
     const user2Row = user1Page.locator(`[data-testid="user-row-${user2.email}"]`)
     await expect(user2Row).toBeVisible()
     await user2Row.locator(`[data-testid="user-role-${user2.email}"]`).click()
-    await user1Page.locator('[role="option"]:has-text("admin")').click()
-
-    // Wait for role change to persist
-    await user1Page.waitForTimeout(500)
+    await user1Page.getByRole('option', { name: 'admin' }).click()
+    await expect(user2Row.locator(`[data-testid="user-role-${user2.email}"]`)).toContainText('admin')
     await settingsPage.close()
   })
 
@@ -394,7 +384,6 @@ test.describe('Auth Flow', () => {
     // Reload to pick up new admin role
     await appPage.reload()
     await appPage.dismissWizardIfVisible()
-    await user2Page.waitForTimeout(500)
 
     // Open settings and verify admin tabs are now visible
     await settingsPage.open()

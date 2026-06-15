@@ -350,9 +350,9 @@ test.describe('Custom environment variables', () => {
     await expect(page.locator('input[disabled][value="MY_TEST_VAR"]')).toBeVisible()
 
     // Delete the variable via the X button next to it
-    const row = page.locator('input[disabled][value="MY_TEST_VAR"]').locator('..')
+    const row = page.locator('[data-testid="custom-env-var-row"][data-env-var-key="MY_TEST_VAR"]')
     const deletePromise = waitForSettingsSave(page)
-    await row.locator('button').click()
+    await row.getByTestId('custom-env-var-delete').click()
     await deletePromise
 
     // Variable should be gone
@@ -373,8 +373,8 @@ test.describe('Custom environment variables', () => {
     await addPromise
 
     // Find the value input (sibling of the key input)
-    const row = page.locator('input[disabled][value="EDIT_TEST_VAR"]').locator('..')
-    const valueInput = row.locator('input:not([disabled])').first()
+    const row = page.locator('[data-testid="custom-env-var-row"][data-env-var-key="EDIT_TEST_VAR"]')
+    const valueInput = row.getByTestId('custom-env-var-value')
 
     // Persist on blur, matching the runtime tab behavior.
     await valueInput.fill('hello-world')
@@ -386,13 +386,13 @@ test.describe('Custom environment variables', () => {
     await closeSettings(page)
     await openSettings(page)
     await goToTab(page, 'runtime')
-    const persistedRow = page.locator('input[disabled][value="EDIT_TEST_VAR"]').locator('..')
-    const persistedValue = persistedRow.locator('input:not([disabled])').first()
+    const persistedRow = page.locator('[data-testid="custom-env-var-row"][data-env-var-key="EDIT_TEST_VAR"]')
+    const persistedValue = persistedRow.getByTestId('custom-env-var-value')
     await expect(persistedValue).toHaveValue('hello-world')
 
     // Clean up: delete the variable
     const deletePromise = waitForSettingsSave(page)
-    await persistedRow.locator('button').click()
+    await persistedRow.getByTestId('custom-env-var-delete').click()
     await deletePromise
   })
 })

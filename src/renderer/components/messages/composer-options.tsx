@@ -23,7 +23,7 @@ const DEFAULT_EFFORT: EffortLevel = 'medium'
 export interface ComposerOptionsState {
   effort: EffortLevel
   setEffort: (e: EffortLevel) => void
-  /** Family alias ("opus" | "sonnet" | "haiku"), or undefined while settings load. */
+  /** Family alias ("fable" | "opus" | "sonnet" | "haiku"), or undefined while settings load. */
   model: string | undefined
   setModel: (m: string) => void
   /** Family options for the active provider; empty for providers with no family UX. */

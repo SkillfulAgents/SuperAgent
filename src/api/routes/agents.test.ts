@@ -58,12 +58,14 @@ vi.mock('../middleware/auth', () => ({
 // Container manager
 const mockContainerFetch = vi.fn()
 const mockSendMessage = vi.fn()
+const mockCancelQueuedMessage = vi.fn()
 const mockKeepAlive = vi.fn()
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     getClient: () => ({
       fetch: (...args: unknown[]) => mockContainerFetch(...args),
       sendMessage: (...args: unknown[]) => mockSendMessage(...args),
+      cancelQueuedMessage: (...args: unknown[]) => mockCancelQueuedMessage(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
@@ -137,6 +139,7 @@ const mockDbDeleteWhere = vi.fn()
 const mockDbUpdateSet = vi.fn()
 
 const mockDbOnConflictDoUpdate = vi.fn()
+const mockDbOnConflictDoNothing = vi.fn()
 const mockDbInsertTable = vi.fn()
 
 vi.mock('@shared/lib/db', () => ({
@@ -147,7 +150,10 @@ vi.mock('@shared/lib/db', () => ({
       return {
         values: (...args: unknown[]) => {
           mockDbInsertValues(...args)
-          return { onConflictDoUpdate: (...cargs: unknown[]) => mockDbOnConflictDoUpdate(...cargs) }
+          return {
+            onConflictDoUpdate: (...cargs: unknown[]) => mockDbOnConflictDoUpdate(...cargs),
+            onConflictDoNothing: (...cargs: unknown[]) => mockDbOnConflictDoNothing(...cargs),
+          }
         },
       }
     },
@@ -220,6 +226,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
 
 vi.mock('@shared/lib/services/secrets-service', () => ({
   listSecrets: vi.fn(),
+  listUserSecrets: vi.fn(),
   getSecret: vi.fn(),
   setSecret: vi.fn(),
   deleteSecret: vi.fn(),
@@ -265,6 +272,7 @@ vi.mock('@shared/lib/services/chat-integration-service', () => ({
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
+  deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -368,7 +376,9 @@ import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-servi
 import { listSessions, getSessionMessagesWithCompact, getSessionSummary, sessionExists, deleteSession, getSession } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
+import { listUserSecrets, setSecret, getSecret, keyToEnvVar } from '@shared/lib/services/secrets-service'
 
 // ============================================================================
 // Test Helpers
@@ -1989,20 +1999,23 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     mockSendMessage.mockResolvedValue(undefined)
   })
 
-  it('does not generate UUID or insert messageAuthor in non-auth mode', async () => {
+  it('generates a server uuid, returns it, and skips messageAuthor in non-auth mode', async () => {
     mockIsAuthMode.mockReturnValue(false)
 
     const res = await postJson(app, URL, { content: 'hello' })
     expect(res.status).toBe(201)
 
-    // sendMessage called with only sessionId and content (no uuid, no runtime options)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, {})
+    // Server always generates the uuid and returns it for ghost matching
+    const body = await res.json()
+    expect(typeof body.uuid).toBe('string')
+    expect(body.queued).toBe(false)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, {})
 
-    // No DB insert for message author
+    // No DB insert for message author outside auth mode
     expect(mockDbInsertValues).not.toHaveBeenCalled()
   })
 
-  it('generates UUID, inserts messageAuthor, and passes UUID to sendMessage in auth mode', async () => {
+  it('generates UUID, inserts messageAuthor, passes it to sendMessage, and returns it in auth mode', async () => {
     mockIsAuthMode.mockReturnValue(true)
 
     const res = await postJson(app, URL, { content: 'hello from user' })
@@ -2019,8 +2032,25 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(insertedValues.id).toBeDefined()
     expect(typeof insertedValues.id).toBe('string')
 
-    // sendMessage should receive the same UUID and empty runtime options (not provided in test payload)
+    // sendMessage and the response both carry the same server uuid
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello from user', insertedValues.id, {})
+    const body = await res.json()
+    expect(body.uuid).toBe(insertedValues.id)
+  })
+
+  it('ignores a client-supplied uuid — the attribution PK is always server-generated', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    const clientUuid = '123e4567-e89b-12d3-a456-426614174000'
+
+    const res = await postJson(app, URL, { content: 'hello', uuid: clientUuid })
+    expect(res.status).toBe(201)
+
+    // A client-chosen id could collide with another user's messageAuthor row
+    // (silent misattribution) — the server must never honor it.
+    expect(mockDbInsertValues.mock.calls[0][0].id).not.toBe(clientUuid)
+    const body = await res.json()
+    expect(body.uuid).not.toBe(clientUuid)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', body.uuid, {})
   })
 
   // ---- Runtime options forwarding ----
@@ -2030,7 +2060,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const res = await postJson(app, URL, { content: 'hello', effort: 'low' })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, { effort: 'low' })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { effort: 'low' })
   })
 
   it('forwards model to sendMessage when present in body', async () => {
@@ -2038,7 +2068,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
 
     const res = await postJson(app, URL, { content: 'hello', model: 'claude-haiku-4-5' })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, { model: 'claude-haiku-4-5' })
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), { model: 'claude-haiku-4-5' })
   })
 
   it('forwards both effort and model when both are present', async () => {
@@ -2050,7 +2080,7 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       model: 'claude-opus-4-7',
     })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, {
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {
       effort: 'medium',
       model: 'claude-opus-4-7',
     })
@@ -2065,9 +2095,27 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
       model: 'claude-sonnet-4-6',
     })
     expect(res.status).toBe(201)
-    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', undefined, {
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {
       model: 'claude-sonnet-4-6',
     })
+  })
+
+  it('strips model/effort when the session is already active (mid-turn send)', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    // The container interprets a changed effort/model as interrupt/restart of
+    // the in-flight query — the server must not forward them on queued sends,
+    // regardless of what the (possibly stale) client included.
+    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+
+    const res = await postJson(app, URL, {
+      content: 'hello',
+      effort: 'low',
+      model: 'claude-opus-4-7',
+    })
+    expect(res.status).toBe(201)
+    const body = await res.json()
+    expect(body.queued).toBe(true)
+    expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {})
   })
 })
 
@@ -2191,6 +2239,18 @@ describe('DELETE /:id/sessions/:sessionId', () => {
     expect(deleteSession).toHaveBeenCalledWith('test-agent', 'sess-1')
   })
 
+  it('cleans up notification rows for the deleted session (both modes)', async () => {
+    // SUP-228: deleting a session must not leave stale notification history
+    // pointing at it. Notifications exist in non-auth mode too, so this runs
+    // even with auth mode off.
+    vi.mocked(deleteSession).mockResolvedValue(true)
+
+    const res = await deleteReq(app, URL)
+
+    expect(res.status).toBe(204)
+    expect(deleteNotificationsBySessionIds).toHaveBeenCalledWith(['sess-1'])
+  })
+
   it('deletes a dangling session whose transcript JSONL is gone (no getSession gate)', async () => {
     // getSession returns null when the JSONL is missing — the route must NOT
     // gate on it, or dangling sessions become impossible to remove.
@@ -2236,7 +2296,22 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
       type: 'user_message',
       content: 'hello everyone',
       sender: { id: 'test-user-id', name: 'Test User' },
+      uuid: expect.any(String),
+      queued: false,
     })
+  })
+
+  it('broadcasts queued=true when the session is already active (mid-turn send)', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+
+    const res = await postJson(app, URL, { content: 'queued message' })
+    expect(res.status).toBe(201)
+
+    expect(messagePersister.broadcastSessionEvent).toHaveBeenCalledWith('sess-1', expect.objectContaining({
+      type: 'user_message',
+      queued: true,
+    }))
   })
 
   it('does not broadcast user_message in non-auth mode', async () => {
@@ -2246,6 +2321,40 @@ describe('user message SSE broadcast — POST /:id/sessions/:sessionId/messages'
     expect(res.status).toBe(201)
 
     expect(messagePersister.broadcastSessionEvent).not.toHaveBeenCalled()
+  })
+})
+
+describe('cancel queued message — DELETE /:id/sessions/:sessionId/queued-messages/:uuid', () => {
+  let app: ReturnType<typeof createApp>
+  const UUID = '123e4567-e89b-12d3-a456-426614174000'
+  const URL = `/api/agents/test-agent/sessions/sess-1/queued-messages/${UUID}`
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('forwards to the container and returns cancelled: true', async () => {
+    mockCancelQueuedMessage.mockResolvedValue(true)
+
+    const res = await deleteReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ cancelled: true })
+    expect(mockCancelQueuedMessage).toHaveBeenCalledWith('sess-1', UUID)
+  })
+
+  it('returns cancelled: false when the message was already picked up', async () => {
+    mockCancelQueuedMessage.mockResolvedValue(false)
+
+    const res = await deleteReq(app, URL)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ cancelled: false })
+  })
+
+  it('rejects a malformed uuid with 400 without calling the container', async () => {
+    const res = await deleteReq(app, '/api/agents/test-agent/sessions/sess-1/queued-messages/not-a-uuid')
+    expect(res.status).toBe(400)
+    expect(mockCancelQueuedMessage).not.toHaveBeenCalled()
   })
 })
 
@@ -2975,5 +3084,100 @@ describe('POST /api/agents/:id/skills/import-zip', () => {
 
     const body = await res.json()
     expect(body.error).toBe('SKILL.md not found in package')
+  })
+})
+
+// ============================================================================
+// Secrets routes — reserved-env-var enforcement (SUP-239 bugs 2 & 3)
+// ============================================================================
+
+describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  describe('GET /:id/secrets (bug 3 — reserved runtime vars are not user secrets)', () => {
+    it('surfaces exactly what listUserSecrets returns (filtered upstream)', async () => {
+      // The container writes CONNECTED_ACCOUNTS into the same .env; listUserSecrets
+      // strips it, and the route must use that filtered list — never listSecrets.
+      vi.mocked(listUserSecrets).mockResolvedValue([
+        { envVar: 'GITHUB_TOKEN', value: 'x', key: 'GitHub Token' },
+      ])
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets')
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual([
+        { id: 'GITHUB_TOKEN', key: 'GitHub Token', envVar: 'GITHUB_TOKEN', hasValue: true },
+      ])
+      expect(listUserSecrets).toHaveBeenCalledWith('my-agent')
+    })
+  })
+
+  describe('POST /:id/secrets (bug 2 — reject reserved names)', () => {
+    it('rejects a reserved env var (CONNECTED_ACCOUNTS) with 400 and never writes', async () => {
+      vi.mocked(keyToEnvVar).mockReturnValue('CONNECTED_ACCOUNTS')
+
+      const res = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: 'Connected Accounts',
+        value: 'spoofed',
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('CONNECTED_ACCOUNTS')
+      expect(body.error).toContain('reserved')
+      expect(setSecret).not.toHaveBeenCalled()
+    })
+
+    it('rejects another reserved name (PROXY_TOKEN)', async () => {
+      vi.mocked(keyToEnvVar).mockReturnValue('PROXY_TOKEN')
+
+      const res = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: 'proxy token',
+        value: 'x',
+      })
+
+      expect(res.status).toBe(400)
+      expect(setSecret).not.toHaveBeenCalled()
+    })
+
+    it('allows a non-reserved secret through to setSecret', async () => {
+      vi.mocked(keyToEnvVar).mockReturnValue('MY_API_KEY')
+      vi.mocked(getSecret).mockResolvedValue(null)
+      vi.mocked(setSecret).mockResolvedValue(undefined)
+
+      const res = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: 'My API Key',
+        value: 'k',
+      })
+
+      expect(res.status).toBe(201)
+      expect(setSecret).toHaveBeenCalledWith('my-agent', {
+        key: 'My API Key',
+        envVar: 'MY_API_KEY',
+        value: 'k',
+      })
+    })
+  })
+
+  describe('PUT /:id/secrets/:secretId (bug 2 — reject renaming onto reserved)', () => {
+    it('rejects renaming a secret onto a reserved env var with 400 and never writes', async () => {
+      vi.mocked(getSecret).mockResolvedValue({ envVar: 'MY_API_KEY', value: 'k', key: 'My API Key' })
+      vi.mocked(keyToEnvVar).mockReturnValue('REMOTE_MCPS')
+
+      const res = await app.request('http://localhost/api/agents/my-agent/secrets/MY_API_KEY', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'Remote MCPs', value: 'k' }),
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('REMOTE_MCPS')
+      expect(setSecret).not.toHaveBeenCalled()
+    })
   })
 })

@@ -82,6 +82,20 @@ interface StreamingState {
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
   activeBackgroundTasks: Map<string, { startedAt: number }> // Background Bash commands still running (keyed by task ID)
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
+  // True when the runtime publishes session_state_changed events — then IT is
+  // the idle authority: a 'result' alone does not end the session (queued
+  // messages or background work may keep the runtime non-idle, and it knows —
+  // we don't). Set by the container's stream `capabilities` announcement (sent
+  // on WebSocket connect, so it always precedes any relayed result), with
+  // observed state events as a fallback signal. Discovery-by-first-event alone
+  // is NOT sufficient: a CLI run starts in 'running' and publishes its first
+  // transition — idle — only at the END of its first turn, which is too late
+  // when a queued message makes the runtime continue past the first result.
+  // When false (older container builds), results drive idle as before.
+  stateEventsAuthority: boolean
+  // Subtype of the most recent result — gates the completion notification when
+  // idle arrives via session_state_changed (resume-exits pause, not finish).
+  lastResultSubtype: string | null
 }
 
 // Lazy import to break circular dependency: container-manager -> message-persister
@@ -174,6 +188,8 @@ class MessagePersister {
       lastApiErrorCode: null,
       activeBackgroundTasks: priorBackgroundTasks,
       pendingDeliverFiles: new Map(),
+      stateEventsAuthority: prior?.stateEventsAuthority ?? false,
+      lastResultSubtype: null,
     })
 
     // Store container client for reconnection checks
@@ -206,6 +222,20 @@ class MessagePersister {
     }
     this.streamingStates.delete(sessionId)
     this.containerClients.delete(sessionId)
+  }
+
+  // Single idle finalizer — flips state and broadcasts to session + global
+  // listeners. Used by the result handler (legacy result-driven idle), the
+  // session_state_changed handler (authoritative idle), and markSessionInactive.
+  private finalizeIdle(sessionId: string, state: StreamingState): void {
+    state.isActive = false
+    this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
+    this.broadcastGlobal({
+      type: 'session_idle',
+      sessionId,
+      agentSlug: state.agentSlug,
+      isActive: false,
+    })
   }
 
   // Check if a session is currently active (processing user request)
@@ -518,6 +548,8 @@ class MessagePersister {
         lastApiErrorCode: null,
         activeBackgroundTasks: new Map(),
         pendingDeliverFiles: new Map(),
+        stateEventsAuthority: false,
+        lastResultSubtype: null,
       }
       this.streamingStates.set(sessionId, state)
       if (this.capture && agentSlug) {
@@ -530,6 +562,10 @@ class MessagePersister {
     state.isInterrupted = false // Reset interrupted flag on new message
     state.isAwaitingInput = false // Reset awaiting input on new message
     state.lastApiErrorCode = null // Clear previous API error on new message
+    // Clear the previous turn's result subtype so a late idle from an
+    // already-finished (or interrupted) run can't fire a stale "success"
+    // completion notification against the turn this message is starting.
+    state.lastResultSubtype = null
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -732,10 +768,23 @@ class MessagePersister {
                   }
                 }
 
-                // Background agents get an immediate "async_launched" tool_result that is NOT
-                // the real completion — their actual completion comes via sidechain 'result'.
-                if (!sub.isBackground) {
-                  // Extract result text to include in the completion broadcast
+                // A background (run_in_background) Agent returns an immediate
+                // "async_launched" ack as its tool_result; its REAL completion
+                // arrives later as task_updated/task_notification (handled in the
+                // system switch), never a second tool_result or a sidechain
+                // 'result'. Detect the ack authoritatively from tool_use_result
+                // here and mark the subagent background — the streamed
+                // run_in_background input is unreliable (interleaved content
+                // blocks + the complete assistant message can clear currentToolUse
+                // before it's parsed, leaving isBackground=false). Marking it here
+                // both prevents the ack from completing the subagent and lets the
+                // later task event complete it.
+                const tur = content.tool_use_result as { status?: string; isAsync?: boolean } | undefined
+                const isAsyncLaunchAck = tur?.status === 'async_launched' || tur?.isAsync === true
+                if (isAsyncLaunchAck) {
+                  sub.isBackground = true
+                } else {
+                  // Foreground subagent: the tool_result IS the completion.
                   let resultText: string | undefined
                   if (typeof block.content === 'string') {
                     resultText = block.content
@@ -823,6 +872,14 @@ class MessagePersister {
             state.isCompacting = true
             this.broadcastToSSE(sessionId, { type: 'compact_start' })
           }
+          if (content.status === 'requesting') {
+            // The CLI is composing the next model request — the moment it
+            // drains its command queue. Queued (mid-turn) messages picked up
+            // here are persisted as queued_command attachments with no stream
+            // event of their own, so broadcast a refetch to materialize their
+            // ghosts promptly.
+            this.broadcastToSSE(sessionId, { type: 'messages_updated' })
+          }
         } else if (content.subtype === 'compact_boundary') {
           // Fallback for SDK paths that surface compaction via boundary without an earlier status.
           if (!state.isCompacting) {
@@ -889,38 +946,105 @@ class MessagePersister {
           // See the background-bash-busy-completion replay fixture.
           const taskId = content.task_id as string | undefined
           const status = (content.patch as { status?: string } | undefined)?.status
-          if (
-            taskId &&
-            (status === 'completed' || status === 'failed' || status === 'killed') &&
-            state.activeBackgroundTasks.has(taskId)
-          ) {
+          const isTerminal = status === 'completed' || status === 'failed' || status === 'killed'
+          if (taskId && isTerminal && state.activeBackgroundTasks.has(taskId)) {
             state.activeBackgroundTasks.delete(taskId)
             this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
             this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
           }
+          // A background *subagent* (task_type 'local_agent') settles via a
+          // task_updated whose task_id equals the subagent's agentId. The busy
+          // path can deliver this without a matching task_notification, so finish
+          // the subagent here too. Scoped to isBackground: foreground subagents
+          // complete via their tool_result (see the 'user' case) and also emit
+          // these task events — acting on them here would fire an early
+          // completion with an unresolved (null) agentId. Idempotent:
+          // broadcastSubagentCompleted removes it, so a trailing task_notification
+          // no-ops.
+          if (taskId && isTerminal) {
+            for (const [parentToolId, sub] of state.activeSubagents) {
+              if (sub.isBackground && sub.agentId === taskId) {
+                this.broadcastSubagentCompleted(sessionId, state, parentToolId)
+                break
+              }
+            }
+          }
+        } else if (content.subtype === 'task_notification') {
+          // A background *subagent* reports completion via task_notification
+          // carrying the launching Agent tool's id (background Bash tasks settle
+          // through the activeBackgroundTasks path near the top of handleMessage).
+          // Without this, broadcastSubagentCompleted never fires for a background
+          // subagent — its tool_result stays the 'async_launched' ack and no
+          // sidechain 'result' arrives — so the UI shows it running until the
+          // whole turn ends. Scoped to isBackground for the same reason as the
+          // task_updated branch above (foreground subagents finish via tool_result).
+          const toolUseId = content.tool_use_id as string | undefined
+          const status = content.status as string | undefined
+          const sub = toolUseId ? state.activeSubagents.get(toolUseId) : undefined
+          if (
+            sub?.isBackground &&
+            (status === 'completed' || status === 'failed' || status === 'killed')
+          ) {
+            const summary = typeof content.summary === 'string' ? content.summary : undefined
+            this.broadcastSubagentCompleted(sessionId, state, toolUseId!, summary)
+          }
+        } else if (content.subtype === 'capabilities') {
+          // The container announces its stream contract when the WebSocket
+          // connects, before relaying any SDK message. `session_state_events`
+          // means this build runs the CLI with
+          // CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, so session_state_changed
+          // is the idle authority from the session's very first turn — which
+          // matters because the CLI's first state TRANSITION (idle) only
+          // arrives at the end of the first turn, after the first result.
+          if (content.session_state_events === true) {
+            state.stateEventsAuthority = true
+          }
         } else if (content.subtype === 'session_state_changed') {
-          // Self-healing backstop. `idle` is the SDK's authoritative "session fully
-          // settled" state — background work keeps the session non-idle (the runtime
-          // distinguishes "done" from "paused waiting for background work"), so reaching
-          // `idle` while we still track background tasks means a per-task terminal signal
-          // (task_notification / task_updated) was missed. Clearing the phantoms here
-          // prevents the result handler from pinning the session in
-          // `session_waiting_background` forever — the original failure mode. No-op in
-          // healthy flows (tasks are already cleared by the time idle arrives). Emitted
-          // via CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS (set in agent-container claude-code.ts).
-          if (content.state === 'idle' && state.activeBackgroundTasks.size > 0) {
-            for (const taskId of [...state.activeBackgroundTasks.keys()]) {
-              state.activeBackgroundTasks.delete(taskId)
-              this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
-              this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+          // The runtime's own session state — `idle` is the SDK's authoritative
+          // "fully settled" signal: it fires only after heldBackResult flushes
+          // and the bg-agent loop exits, so it correctly stays away while
+          // queued (mid-turn) messages or background work keep the session
+          // running. Once a session emits these events, they are the idle
+          // authority and 'result' no longer decides. (Normally announced
+          // up-front via the `capabilities` message; observing one directly
+          // covers builds that emit state events but predate that handshake.)
+          state.stateEventsAuthority = true
+          if (content.state === 'idle') {
+            // Only treat idle as authoritative when a result was actually seen
+            // for this turn (lastResultSubtype is cleared on every new send).
+            // A bare idle with no preceding result — a stale idle from a prior
+            // or interrupted run racing a fresh message, or an event before any
+            // turn output — must not finalize, or it fires a spurious
+            // session_idle (and a bogus completion notification).
+            if (state.isActive && state.lastResultSubtype !== null) {
+              // Any background tasks still tracked here are phantoms — the
+              // runtime distinguishes "done" from "paused waiting for background
+              // work", so a per-task terminal signal was missed. Clear them.
+              for (const taskId of [...state.activeBackgroundTasks.keys()]) {
+                state.activeBackgroundTasks.delete(taskId)
+                this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
+                this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+              }
+              this.finalizeIdle(sessionId, state)
+              // Completion notification at the real end of the work. Skip
+              // resume-exits: the session is pausing for a resume, not done.
+              if (state.lastResultSubtype === 'success' && state.agentSlug) {
+                notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+                  console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+                })
+              }
             }
-            // If we were only staying active to wait on those (now-cleared) phantom
-            // tasks, finalize idle the same way the result handler would.
-            if (state.isActive && !state.isStreaming) {
-              state.isActive = false
-              this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
-              this.broadcastGlobal({ type: 'session_idle', sessionId, agentSlug: state.agentSlug, isActive: false })
-            }
+          } else if (content.state === 'running' && !state.isActive) {
+            // The runtime started a turn we didn't initiate via POST (e.g. a
+            // queued message picked up after an out-of-order idle) — self-heal.
+            state.isActive = true
+            this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
+            this.broadcastGlobal({
+              type: 'session_active',
+              sessionId,
+              agentSlug: state.agentSlug,
+              isActive: true,
+            })
           }
         } else if (content.subtype === 'memory_recall') {
           // Memory recall — agent is reading memory files
@@ -936,25 +1060,15 @@ class MessagePersister {
         state.isStreaming = false
         state.isAwaitingInput = false
         state.currentText = ''
+        state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
 
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)
 
-        // If background tasks are still running, keep the session active so
-        // the UI stays in "working" state and auto-sleep is prevented.
-        if (state.activeBackgroundTasks.size > 0) {
-          this.broadcastToSSE(sessionId, {
-            type: 'session_waiting_background',
-            backgroundTaskCount: state.activeBackgroundTasks.size,
-          })
-          break
-        }
-
-        // No pending background tasks — session is no longer active
-        state.isActive = false
-
-        // Check if this is an error result
+        // Check if this is an error result. Errors end the user-visible work
+        // immediately in both lifecycle modes.
         if (content.subtype === 'error_during_execution' || content.subtype === 'error') {
+          state.isActive = false
           const errorMessage = content.error || content.message || 'An error occurred during execution'
           // Use SDK error code from the preceding assistant message (e.g., 'authentication_failed', 'rate_limit')
           const apiErrorCode = state.lastApiErrorCode || null
@@ -979,25 +1093,47 @@ class MessagePersister {
             console.log(`[MessagePersister] Fatal error for agent ${state.agentSlug}, requesting container stop`)
             this.onStopContainerRequested(state.agentSlug)
           }
-        } else {
-          this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
-          // Also broadcast globally so sidebar updates
-          this.broadcastGlobal({
-            type: 'session_idle',
-            sessionId,
-            agentSlug: state.agentSlug,
-            isActive: false,
+          break
+        }
+
+        // The turn's output is complete (whether or not the session settles).
+        // Let the renderer reconcile the just-streamed text against the
+        // transcript (the JSONL write can lag the stream) — otherwise a
+        // follow-up turn's stream_start can wipe the streaming bubble before
+        // its persisted copy is fetched and the final message blinks out.
+        this.broadcastToSSE(sessionId, { type: 'turn_output_complete' })
+
+        // UI hint: background tasks outlive the turn output.
+        if (state.activeBackgroundTasks.size > 0) {
+          this.broadcastToSSE(sessionId, {
+            type: 'session_waiting_background',
+            backgroundTaskCount: state.activeBackgroundTasks.size,
           })
-          // Trigger session complete notification. Whether to *show* an OS
-          // notification (vs just creating the DB record) is the renderer's
-          // call — it knows about window focus, per-user viewing, and the
-          // `notifyWhenUnfocused` toggle. Skip for 'resume' exits — the
-          // session is pausing for a resume, not truly finished.
-          if (content.subtype !== 'resume' && state.agentSlug) {
-            notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
-              console.error('[MessagePersister] Failed to trigger session complete notification:', err)
-            })
-          }
+        }
+
+        // When the runtime publishes session_state_changed events, IT decides
+        // when the session is settled — a result alone doesn't: queued
+        // (mid-turn) messages or background work may keep it running, and the
+        // runtime holds that state, not us. session_state_changed:'idle'
+        // finalizes (and fires the completion notification).
+        if (state.stateEventsAuthority) {
+          break
+        }
+
+        // Legacy containers (no state events): result-driven idle as before.
+        if (state.activeBackgroundTasks.size > 0) {
+          break
+        }
+        this.finalizeIdle(sessionId, state)
+        // Trigger session complete notification. Whether to *show* an OS
+        // notification (vs just creating the DB record) is the renderer's
+        // call — it knows about window focus, per-user viewing, and the
+        // `notifyWhenUnfocused` toggle. Skip for 'resume' exits — the
+        // session is pausing for a resume, not truly finished.
+        if (content.subtype !== 'resume' && state.agentSlug) {
+          notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+            console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+          })
         }
         break
       }
@@ -1085,20 +1221,13 @@ class MessagePersister {
   // Mark a session as inactive and broadcast the update
   private markSessionInactive(sessionId: string, state: StreamingState): void {
     state.isStreaming = false
-    state.isActive = false
     state.isAwaitingInput = false
     state.currentText = ''
     state.currentToolUse = null
     state.currentToolInput = ''
     state.activeSubagents.clear()
     state.activeBackgroundTasks.clear()
-    this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
-    this.broadcastGlobal({
-      type: 'session_idle',
-      sessionId,
-      agentSlug: state.agentSlug,
-      isActive: false,
-    })
+    this.finalizeIdle(sessionId, state)
   }
 
   // Handle sidechain (subagent) messages — filter them out of main streaming state

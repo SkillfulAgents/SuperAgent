@@ -1,3 +1,6 @@
+// TODO(delete): Grep was dropped from the Claude Agent SDK default toolset on
+// 2026-06-09 (SDK 0.3.170), so this renderer no longer fires for new sessions.
+// Kept only so old transcripts still render; safe to remove in a few months.
 export interface GrepInput {
   pattern?: string
   path?: string
@@ -15,4 +18,4 @@ function getSummary(input: unknown): string | null {
   return parts.join(' ')
 }
 
-export const grepDef = { displayName: 'Grep', iconName: 'Search', parseInput, getSummary } as const
+export const grepDef = { displayName: 'Grep', parseInput, getSummary } as const

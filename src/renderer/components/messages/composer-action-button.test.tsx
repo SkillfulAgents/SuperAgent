@@ -20,10 +20,14 @@ describe('ComposerActionButton', () => {
     expect(screen.queryByTestId('stop-button')).not.toBeInTheDocument()
   })
 
-  it('renders the stop button when active', () => {
+  it('renders both stop and a queue-send button when active', () => {
+    // Mid-turn the composer keeps a send button (labelled "Queue message") so
+    // the user can queue a follow-up while the agent works.
     render(<ComposerActionButton {...baseProps} isActive />)
     expect(screen.getByTestId('stop-button')).toBeInTheDocument()
-    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+    const send = screen.getByTestId('send-button')
+    expect(send).toBeInTheDocument()
+    expect(send).toHaveAttribute('aria-label', 'Queue message')
   })
 
   it('disables the send button when canSubmit is false', () => {

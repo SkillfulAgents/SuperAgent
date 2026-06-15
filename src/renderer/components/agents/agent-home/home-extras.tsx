@@ -50,7 +50,7 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
         <ExtrasButton label={directoryLabel} onClick={handleOpenDirectory} hoverIcon={directoryHoverIcon} />
         <ExtrasButton label="Secrets" onClick={() => onOpenSettings?.('secrets')} />
-        <ExtrasButton label="API Logs" onClick={() => setView({ kind: 'apiLogs' })} />
+        <ExtrasButton label="API Logs" onClick={() => setView({ kind: 'apiLogs' })} testId="home-api-logs-open-page" />
       </div>
       {error && (
         <p className="px-4 pt-2 text-xs text-destructive" role="alert">{error}</p>
@@ -59,11 +59,12 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
   )
 }
 
-function ExtrasButton({ label, onClick, hoverIcon }: { label: string; onClick: () => void; hoverIcon?: ReactNode }) {
+function ExtrasButton({ label, onClick, hoverIcon, testId }: { label: string; onClick: () => void; hoverIcon?: ReactNode; testId?: string }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      data-testid={testId}
       className="group flex w-full items-center justify-between py-3 px-4 text-left hover:bg-muted/50 transition-colors"
     >
       <span className="text-sm font-medium text-muted-foreground">{label}</span>
