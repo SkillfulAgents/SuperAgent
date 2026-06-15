@@ -273,7 +273,10 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
       )}
     >
       {introStagger && !introPlaying && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background">
+        <div
+          className="absolute inset-0 z-10 flex items-center justify-center bg-background"
+          data-testid="agent-home-intro-overlay"
+        >
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             Creating

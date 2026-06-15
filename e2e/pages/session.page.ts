@@ -73,6 +73,9 @@ export class SessionPage {
    */
   async sendMessage(content: string) {
     await this.typeMessage(content)
+    await expect(
+      this.page.locator('[data-testid="agent-home-intro-overlay"]'),
+    ).toBeHidden({ timeout: 5000 })
     const sendButton = this.getSendButton()
     await expect(sendButton).toBeEnabled({ timeout: 10000 })
     await sendButton.click()
