@@ -1,4 +1,5 @@
-import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { useSettings, useUpdateSettings, type GlobalSettingsResponse } from '@renderer/hooks/use-settings'
+import { useQueryClient } from '@tanstack/react-query'
 import { inferFamily } from '@renderer/components/messages/composer-options-popover'
 import type { ComposerModelFamily } from '@shared/lib/llm-provider'
 
@@ -14,28 +15,48 @@ const MODEL_OPTIONS: Array<{
     label: 'Opus',
     tag: 'Most capable',
     description: 'Best for complex, multi-step tasks.',
-    subdescription: 'Slower, and uses 5x more tokens than Sonnet.',
+    subdescription: 'Slower, and uses 5x more credits than Sonnet.',
   },
   {
     family: 'sonnet',
     label: 'Sonnet',
     tag: 'Fast & efficient',
     description: 'Best for everyday tasks and most agent work.',
-    subdescription: 'Far lower token cost than Opus.',
+    subdescription: 'Far lower credit cost than Opus.',
   },
 ]
 
 export function ConfigureModelStep() {
   const { data: settings } = useSettings()
   const updateSettings = useUpdateSettings()
+  const queryClient = useQueryClient()
 
   // The global "Default model" setting (LLM tab) persists `models.agentModel`
   // as a bare family alias (emit="family"). Mirror that here so onboarding and
   // settings stay in sync. Fall back to the persisted default ('opus').
   const selectedFamily = inferFamily(settings?.models?.agentModel) ?? 'opus'
 
-  const handleSelect = (family: ComposerModelFamily) => {
-    updateSettings.mutate({ models: { agentModel: family } })
+  const handleSelect = async (family: ComposerModelFamily) => {
+    if (family === selectedFamily) return
+    // Optimistically reflect the choice in the settings cache so the card
+    // updates instantly. The mutation's onSuccess invalidation refetches to
+    // reconcile with the server; onError rolls back to the previous value.
+    await queryClient.cancelQueries({ queryKey: ['settings'] })
+    const previous = queryClient.getQueryData<GlobalSettingsResponse>(['settings'])
+    if (previous) {
+      queryClient.setQueryData<GlobalSettingsResponse>(['settings'], {
+        ...previous,
+        models: { ...previous.models, agentModel: family },
+      })
+    }
+    updateSettings.mutate(
+      { models: { agentModel: family } },
+      {
+        onError: () => {
+          if (previous) queryClient.setQueryData(['settings'], previous)
+        },
+      },
+    )
   }
 
   return (
@@ -47,7 +68,7 @@ export function ConfigureModelStep() {
         </p>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-3" role="radiogroup" aria-label="Default model">
         {MODEL_OPTIONS.map((option) => {
           const isSelected = selectedFamily === option.family
           return (
@@ -59,6 +80,8 @@ export function ConfigureModelStep() {
             >
               <button
                 type="button"
+                role="radio"
+                aria-checked={isSelected}
                 className="w-full flex items-start gap-3 p-3 text-left"
                 onClick={() => handleSelect(option.family)}
                 data-testid={`wizard-model-${option.family}`}
