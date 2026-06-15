@@ -75,8 +75,12 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
 export function decodeLocation(snap: RouteSnapshot): AppLocation {
   const p = snap.params
   const search = snap.search
+  // Index routes report a trailing-slash fullPath (the agent home is
+  // '/agents/$slug/', verified against the built route tree); normalize it away
+  // so the templates below stay canonical (root '/' is preserved).
+  const to = snap.to.length > 1 && snap.to.endsWith('/') ? snap.to.slice(0, -1) : snap.to
 
-  switch (snap.to) {
+  switch (to) {
     case '/':
       return { selectedAgentSlug: null, view: { kind: 'home' } }
     case '/notifications':

@@ -1,17 +1,25 @@
 import { Outlet } from '@tanstack/react-router'
+import { AppContent } from '@renderer/components/layout/app-content'
+import { SelectionBridge } from './selection-bridge'
 
 /**
- * R1 SCAFFOLDING — placeholder route components.
- *
- * These exist only so the code-based route tree in `routes.ts` typechecks as
- * additive dead code. The tree is NOT mounted until R3, so none of these render
- * during R1/R2. Each is replaced with real wiring in the phase noted in its
- * comment; do not build features on these stubs.
+ * Route components. R3 mounts the router: `RootLayout` now renders the
+ * URL→Selection bridge plus the existing `AppContent`, so the router owns the
+ * URL while the legacy SelectionContext switch still renders the UI. The rest
+ * are R1 placeholder stubs, replaced in the phase noted in each comment — and
+ * NOT rendered yet (RootLayout intentionally omits `<Outlet/>` in R3, so the
+ * nested leaves match for the bridge but stay hidden behind AppContent).
  */
 
-// Layout routes render an <Outlet/> so nested routes show once mounted (R3/R4).
+// R3: render the bridge + the existing app. No <Outlet/> until R4 begins
+// decomposing AppContent into the nested shell routes.
 export function RootLayout() {
-  return <Outlet />
+  return (
+    <>
+      <SelectionBridge />
+      <AppContent />
+    </>
+  )
 }
 export function AppShellLayout() {
   return <Outlet />

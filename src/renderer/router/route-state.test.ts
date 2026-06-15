@@ -68,4 +68,11 @@ describe('route-state codec', () => {
       view: { kind: 'home' },
     })
   })
+
+  it('normalizes the agent-home index trailing slash (real fullPath is /agents/$slug/)', () => {
+    expect(decodeLocation({ to: '/agents/$slug/', params: { slug: 'x' }, search: {} })).toEqual({
+      selectedAgentSlug: 'x',
+      view: { kind: 'home' },
+    })
+  })
 })
