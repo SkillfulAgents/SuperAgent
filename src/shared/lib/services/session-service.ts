@@ -322,11 +322,20 @@ export async function listSessions(
         continue
       }
 
+      // Prefer metadata createdAt; birthtime is unsupported (epoch 0) on
+      // network filesystems like S3 Files / EFS used by the k8s runtime.
+      const metaCreatedAt = metadata[sessionId]?.createdAt
+      const createdAt = metaCreatedAt
+        ? new Date(metaCreatedAt)
+        : stat.birthtimeMs > 0
+          ? stat.birthtime
+          : new Date(stat.mtimeMs)
+
       sessions.push({
         id: sessionId,
         agentSlug,
         name: metadata[sessionId]?.name || 'New Session',
-        createdAt: stat.birthtime,
+        createdAt,
         lastActivityAt: new Date(stat.mtimeMs),
         messageCount: 0,
       })

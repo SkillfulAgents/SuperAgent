@@ -27,6 +27,7 @@ vi.mock('./client-factory', () => ({
     getStats: mockGetStats,
     isHealthy: (...args: unknown[]) => mockIsHealthy(...args),
     fetch: vi.fn(),
+    getHostApiBaseUrl: () => `http://${mockGetContainerHostUrl()}:${mockGetAppPort()}`,
     buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...(args as [string, string])),
   }),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),

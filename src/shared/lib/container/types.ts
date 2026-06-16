@@ -142,6 +142,9 @@ export interface ContainerClient {
   // Throws if container is not running
   fetch(path: string, init?: RequestInit): Promise<Response>
 
+  getWebSocketBaseUrl(port: number): string
+  getHostApiBaseUrl(): string
+
   // Health checks
   waitForHealthy(timeoutMs?: number, knownPort?: number): Promise<boolean>
   isHealthy(knownPort?: number): Promise<boolean>
