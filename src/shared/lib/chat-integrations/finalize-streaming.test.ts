@@ -166,6 +166,53 @@ describe('TelegramConnector.sendRichOrHtml', () => {
     expect(mockSendMessage).toHaveBeenCalledWith('123', expect.stringContaining('<strong>hi</strong>'), expect.objectContaining({ parse_mode: 'HTML' }))
     expect(id).toBe('22')
   })
+
+  it('re-splits the HTML fallback to the 4096 sink limit for long bodies', async () => {
+    // Body is chunked for the 32768 rich ceiling; the HTML sink caps at 4096, so a
+    // long fallback must split into multiple sends instead of being rejected.
+    mockSendRich.mockRejectedValue(new Error('rich rejected'))
+    const long = 'a'.repeat(5000) + '\n\n' + 'b'.repeat(5000)
+    await (connector as any).sendRichOrHtml('123', long)
+    expect(mockSendMessage.mock.calls.length).toBeGreaterThan(1)
+    for (const call of mockSendMessage.mock.calls) {
+      expect((call[1] as string).length).toBeLessThanOrEqual(4096)
+    }
+  })
+})
+
+describe('TelegramConnector.editRichOrHtml', () => {
+  let connector: TelegramConnector
+  let mockEditRich: ReturnType<typeof vi.fn>
+  let mockEditHtml: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    connector = new TelegramConnector({ botToken: 'fake:token' })
+    mockEditRich = vi.fn().mockResolvedValue(true)
+    mockEditHtml = vi.fn().mockResolvedValue(true)
+    ;(connector as any).bot = {
+      api: { raw: { editMessageText: mockEditRich }, editMessageText: mockEditHtml },
+    }
+  })
+
+  it('edits rich and does not touch the HTML path on success', async () => {
+    await (connector as any).editRichOrHtml('123', '50', 'hello')
+    expect(mockEditRich).toHaveBeenCalledWith(expect.objectContaining({
+      chat_id: 123, message_id: 50, rich_message: { markdown: 'hello' },
+    }))
+    expect(mockEditHtml).not.toHaveBeenCalled()
+  })
+
+  it('falls back to legacy HTML when the rich edit throws', async () => {
+    mockEditRich.mockRejectedValueOnce(new Error('rich rejected'))
+    await (connector as any).editRichOrHtml('123', '50', '**hi**')
+    expect(mockEditHtml).toHaveBeenCalledWith('123', 50, expect.stringContaining('<strong>hi</strong>'), expect.objectContaining({ parse_mode: 'HTML' }))
+  })
+
+  it('treats "message is not modified" as success without an HTML fallback', async () => {
+    mockEditRich.mockRejectedValueOnce(new Error('Bad Request: message is not modified'))
+    await (connector as any).editRichOrHtml('123', '50', 'same')
+    expect(mockEditHtml).not.toHaveBeenCalled()
+  })
 })
 
 describe('TelegramConnector.sendMessage (rich)', () => {

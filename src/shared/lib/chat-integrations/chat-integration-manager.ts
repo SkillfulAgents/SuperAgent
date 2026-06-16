@@ -125,7 +125,7 @@ export interface ManagedConnector {
   }
   currentToolInput: string
   pendingToolMessages: Array<{ messageId: string; text: string }>
-  /** Heartbeat re-sending the "Thinking…" draft until the first token streams. */
+  /** Animation timer editing the posted "Thinking…" message until the first token streams. */
   thinkingTimer: ReturnType<typeof setInterval> | null
 }
 
@@ -243,6 +243,7 @@ class ChatIntegrationManager {
     for (const [key, session] of this.chatSessions) {
       if (key.startsWith(`${id}:`)) {
         session.sseUnsubscribe?.()
+        stopThinking(session)
         this.chatSessions.delete(key)
       }
     }
@@ -885,6 +886,7 @@ class ChatIntegrationManager {
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession?.id === sessionId) {
         managed.sseUnsubscribe?.()
+        stopThinking(managed)
         this.chatSessions.delete(key)
         break
       }
@@ -1452,9 +1454,10 @@ export async function processSSEEvent(
 export const THINKING_FRAME_MS = 1000
 
 /**
- * Animate the "Thinking…" indicator until the first token streams. The connector
- * cycles draft frames under the streaming draft id; stopThinking ends it and the
- * first streamed token replaces the draft in place.
+ * Animate the "Thinking…" indicator until the first token streams. Each tick calls
+ * the connector's showTypingIndicator, which posts a real indicator message and then
+ * edits it to the next frame so only the dots animate; stopThinking ends the timer
+ * and tells the connector to delete the message as the response takes over.
  */
 export function startThinking(managed: ManagedConnector): void {
   stopThinking(managed)

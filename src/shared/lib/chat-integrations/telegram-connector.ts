@@ -14,7 +14,7 @@ import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
-import { markdownToRichMessage, splitForRichLimits, THINKING_FRAMES } from './telegram-rich-message'
+import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, THINKING_FRAMES } from './telegram-rich-message'
 import type { InputRichMessage } from './telegram-rich-message-schema'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -379,8 +379,9 @@ export class TelegramConnector extends ChatClientConnector {
     // Group/channel edit path.
     if (!existingMessageId) {
       if (this.useRich && STREAM_RICH_INTERMEDIATES) {
-        const sent = await this.bot.api.raw.sendRichMessage({ chat_id: Number(chatId), rich_message: this.richMessage(body) })
-        return String(sent.message_id)
+        // Via sendRichOrHtml so a rich-send failure falls back to HTML like every
+        // other send path, instead of throwing and aborting the stream.
+        return this.sendRichOrHtml(chatId, body)
       }
       const sent = await this.bot.api.sendMessage(chatId, this.markdownToHtml(body), { parse_mode: 'HTML' })
       return String(sent.message_id)
@@ -722,11 +723,19 @@ export class TelegramConnector extends ChatClientConnector {
         captureException(err, { tags: { component: 'chat-integration', operation: 'rich-send-fallback' }, extra: { provider: 'telegram', chatId } })
       }
     }
-    const sent = await this.bot.api.sendMessage(chatId, this.markdownToHtml(md), {
-      parse_mode: 'HTML',
-      ...(other as object),
-    })
-    return String(sent.message_id)
+    // The legacy HTML sink caps at 4096 chars, but `md` was chunked for the 32768
+    // rich ceiling — re-split here so a long body (richMessages rollback or a
+    // rich-send fallback) isn't rejected. Reply params ride only the first chunk.
+    const htmlChunks = splitForHtmlLimits(md)
+    let lastId = ''
+    for (let i = 0; i < htmlChunks.length; i++) {
+      const sent = await this.bot.api.sendMessage(chatId, this.markdownToHtml(htmlChunks[i]), {
+        parse_mode: 'HTML',
+        ...(i === 0 ? (other as object) : {}),
+      })
+      lastId = String(sent.message_id)
+    }
+    return lastId
   }
 
   /** Edit a message to rich; on any rich-edit failure, edit via legacy HTML. */
