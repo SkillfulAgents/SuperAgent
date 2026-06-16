@@ -18,6 +18,9 @@ import { captureException } from '@shared/lib/error-reporting'
 export interface TelegramConfig {
   botToken: string
   chatId?: string
+  richMessages?: boolean
+  draftStreaming?: boolean
+  skipEntityDetection?: boolean
 }
 
 // ── Telegram limits ─────────────────────────────────────────────────────

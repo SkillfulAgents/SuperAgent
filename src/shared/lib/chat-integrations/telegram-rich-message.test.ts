@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { inputRichMessageSchema } from './telegram-rich-message-schema'
+import { telegramConfigSchema } from './config-schema'
 import {
   markdownToRichMessage,
   splitForRichLimits,
@@ -63,5 +64,24 @@ describe('THINKING_RICH_MESSAGE', () => {
   it('is a draft-only tg-thinking placeholder with no reasoning content', () => {
     expect(THINKING_RICH_MESSAGE.html).toContain('<tg-thinking')
     expect(THINKING_RICH_MESSAGE.markdown).toBeUndefined()
+  })
+})
+
+describe('telegramConfigSchema rich flags', () => {
+  it('accepts the rich flags', () => {
+    const r = telegramConfigSchema.parse({
+      botToken: 't',
+      richMessages: false,
+      draftStreaming: false,
+      skipEntityDetection: true,
+    })
+    expect(r.richMessages).toBe(false)
+    expect(r.draftStreaming).toBe(false)
+    expect(r.skipEntityDetection).toBe(true)
+  })
+
+  it('leaves the flags undefined when omitted (defaults applied in connector)', () => {
+    const r = telegramConfigSchema.parse({ botToken: 't' })
+    expect(r.richMessages).toBeUndefined()
   })
 })
