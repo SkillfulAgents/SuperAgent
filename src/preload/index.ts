@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // Channel-wide reset — removes EVERY oauth-callback listener. Prefer the
+  // unsubscribe returned by onOAuthCallback for per-component cleanup.
+  removeOAuthCallback: () => {
+    ipcRenderer.removeAllListeners('oauth-callback')
+  },
+
   // MCP OAuth callback handling - receives result from main process after token exchange
   onMcpOAuthCallback: (callback: (params: {
     success: boolean
@@ -37,6 +43,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => {
       ipcRenderer.removeListener('mcp-oauth-callback', handler)
     }
+  },
+
+  // Channel-wide reset — prefer the unsubscribe returned by onMcpOAuthCallback.
+  removeMcpOAuthCallback: () => {
+    ipcRenderer.removeAllListeners('mcp-oauth-callback')
   },
 
   onPlatformAuthCallback: (callback: (params: {
@@ -51,6 +62,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onPlatformAuthCallback.
+  removePlatformAuthCallback: () => {
+    ipcRenderer.removeAllListeners('platform-auth-callback')
+  },
+
   // Full screen state handling
   onFullScreenChange: (callback: (isFullScreen: boolean) => void): (() => void) => {
     const handler = (_event: unknown, isFullScreen: unknown) => callback(isFullScreen as boolean)
@@ -58,6 +74,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => {
       ipcRenderer.removeListener('fullscreen-change', handler)
     }
+  },
+
+  // Channel-wide reset — prefer the unsubscribe returned by onFullScreenChange.
+  removeFullScreenChange: () => {
+    ipcRenderer.removeAllListeners('fullscreen-change')
   },
 
   // Get initial full screen state
@@ -85,6 +106,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('window-maximized-change', handler)
     }
   },
+  // Channel-wide reset — prefer the unsubscribe returned by onWindowMaximizedChange.
+  removeWindowMaximizedChange: () => {
+    ipcRenderer.removeAllListeners('window-maximized-change')
+  },
 
   // Open URL in system default browser
   openExternal: (url: string): Promise<void> => {
@@ -106,6 +131,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onNavigateToAgent.
+  removeNavigateToAgent: () => {
+    ipcRenderer.removeAllListeners('navigate-to-agent')
+  },
+
   // Menu commands - open settings
   onOpenSettings: (callback: () => void): (() => void) => {
     const handler = () => callback()
@@ -115,6 +145,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onOpenSettings.
+  removeOpenSettings: () => {
+    ipcRenderer.removeAllListeners('open-settings')
+  },
+
   // Menu commands - open create agent dialog
   onOpenCreateAgent: (callback: () => void): (() => void) => {
     const handler = () => callback()
@@ -122,6 +157,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => {
       ipcRenderer.removeListener('open-create-agent', handler)
     }
+  },
+
+  // Channel-wide reset — prefer the unsubscribe returned by onOpenCreateAgent.
+  removeOpenCreateAgent: () => {
+    ipcRenderer.removeAllListeners('open-create-agent')
   },
 
   // Reclaim window focus (e.g. after Chrome steals it by opening a new tab)
@@ -284,20 +324,28 @@ declare global {
       platform: string
       osVersion: string
       onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => () => void
+      removeOAuthCallback: () => void
       onMcpOAuthCallback: (callback: (params: { success: boolean; mcpId?: string | null; error?: string | null }) => void) => () => void
+      removeMcpOAuthCallback: () => void
       onPlatformAuthCallback: (callback: (params: { success: boolean; email?: string | null; error?: string | null }) => void) => () => void
+      removePlatformAuthCallback: () => void
       onFullScreenChange: (callback: (isFullScreen: boolean) => void) => () => void
+      removeFullScreenChange: () => void
       getFullScreenState: () => Promise<boolean>
       minimizeWindow: () => void
       toggleMaximizeWindow: () => void
       closeWindow: () => void
       getWindowMaximizedState: () => Promise<boolean>
       onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void
+      removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
       onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
+      removeNavigateToAgent: () => void
       onOpenSettings: (callback: () => void) => () => void
+      removeOpenSettings: () => void
       onOpenCreateAgent: (callback: () => void) => () => void
+      removeOpenCreateAgent: () => void
       setSidebarCollapsed: (collapsed: boolean) => void
       setTrayVisible: (visible: boolean) => Promise<void>
       showNotification: (
