@@ -125,7 +125,7 @@ test.describe('Stale Session Prompt', () => {
     // with the seeded lastUsage and React has re-rendered.  Wait for it before
     // submitting to avoid a race between cached (unseeded) state and fresh data.
     await openSessionById(page, agent, sessionId)
-    await expect(page.locator('text=Context Usage')).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 8000 })
     await sessionPage.waitForInputEnabled(5000)
 
     // --- First send: stale prompt must open ---
@@ -158,12 +158,10 @@ test.describe('Stale Session Prompt', () => {
     await page.locator('[data-testid="message-input"]').fill('Second message')
     await page.locator('[data-testid="send-button"]').click()
 
-    // Give the dialog 2 s to (not) appear
-    await page.waitForTimeout(2000)
-    await expect(dialog).not.toBeVisible()
-
-    // Confirm the second message was actually sent (no intercept)
+    // The second message sends straight through (proves the prompt did NOT intercept).
     await sessionPage.waitForUserMessageCount(3, 10000)
+    // And the stale prompt never re-opened (dismissal persisted).
+    await expect(dialog).not.toBeVisible()
   })
 
   // -------------------------------------------------------------------------
@@ -195,7 +193,7 @@ test.describe('Stale Session Prompt', () => {
     seedStaleSession(agent.slug, sessionId)
     await openSessionById(page, agent, sessionId)
     // Same race-guard as scenario 1: wait for seeded lastUsage to appear in UI
-    await expect(page.locator('text=Context Usage')).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 8000 })
     await sessionPage.waitForInputEnabled(5000)
 
     await page.locator('[data-testid="message-input"]').fill('Continue this conversation')
@@ -303,11 +301,9 @@ test.describe('Stale Session Prompt', () => {
     // Immediately send a second message — neither threshold is met
     await sessionPage.sendMessage('Second message right away')
 
-    // Give 2 s for any modal to (not) appear, then assert it never showed
-    await page.waitForTimeout(2000)
-    await expect(page.getByRole('alertdialog')).not.toBeVisible()
-
-    // Confirm the message was sent (not intercepted by the stale prompt)
+    // The message sends straight through (proves the prompt did NOT intercept).
     await sessionPage.waitForUserMessageCount(2, 10000)
+    // And no stale prompt dialog ever appeared (neither threshold met).
+    await expect(page.getByRole('alertdialog')).not.toBeVisible()
   })
 })
