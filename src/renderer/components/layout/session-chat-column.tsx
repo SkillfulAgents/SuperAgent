@@ -10,6 +10,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@rende
 import { DonutChart } from '@renderer/components/ui/donut-chart'
 import type { EffortLevel } from '@shared/lib/container/types'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
+import type { SessionUsage } from '@shared/lib/types/agent'
 
 interface SessionChatColumnProps {
   sessionId: string
@@ -23,6 +24,10 @@ interface SessionChatColumnProps {
   onMessageSent: (content: string, localId: string, queued: boolean) => void
   onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
   onMessageFailed: (localId: string) => void
+  lastActivityAt?: Date | null
+  contextUsage?: SessionUsage | null
+  stalePromptDismissed?: boolean
+  agentName?: string
 }
 
 export function SessionChatColumn({
@@ -37,6 +42,10 @@ export function SessionChatColumn({
   onMessageSent,
   onMessageUuidAssigned,
   onMessageFailed,
+  lastActivityAt,
+  contextUsage,
+  stalePromptDismissed,
+  agentName,
 }: SessionChatColumnProps) {
   const { isActive, browserActive } = useMessageStream(sessionId, agentSlug)
   useFileDeliveryWatcher(sessionId, agentSlug)
@@ -86,6 +95,10 @@ export function SessionChatColumn({
               onMessageFailed={onMessageFailed}
               initialEffort={effort}
               initialModel={model}
+              lastActivityAt={lastActivityAt}
+              contextUsage={contextUsage}
+              stalePromptDismissed={stalePromptDismissed}
+              agentName={agentName}
             />
             <div className="flex justify-between items-center gap-1.5 px-6 py-3">
               {contextPercent != null ? (
