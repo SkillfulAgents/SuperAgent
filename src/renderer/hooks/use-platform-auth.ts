@@ -116,9 +116,9 @@ function usePlatformAuthCallbackListener(
       callbackRef.current?.(params)
     }
 
-    window.electronAPI.onPlatformAuthCallback(handleCallback)
+    const unsubscribe = window.electronAPI.onPlatformAuthCallback(handleCallback)
     return () => {
-      window.electronAPI?.removePlatformAuthCallback?.()
+      unsubscribe?.()
     }
   }, [queryClient])
 }

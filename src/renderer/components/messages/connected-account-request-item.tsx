@@ -127,7 +127,7 @@ export function ConnectedAccountRequestItem({
 
     // Electron: use IPC callback with structured params
     if (window.electronAPI) {
-      window.electronAPI.onOAuthCallback(async (params) => {
+      const unsubscribe = window.electronAPI.onOAuthCallback(async (params) => {
         // Only handle callbacks for this toolkit
         if (params.toolkit && params.toolkit !== toolkit) return
 
@@ -161,8 +161,10 @@ export function ConnectedAccountRequestItem({
           handleOAuthComplete(false, 'Missing OAuth callback parameters')
         }
       })
+      // Remove only this component's listener so concurrent OAuth subscribers
+      // (other toolkits / reconnect flows) keep receiving their callbacks.
       return () => {
-        window.electronAPI?.removeOAuthCallback()
+        unsubscribe?.()
       }
     }
 

@@ -783,9 +783,9 @@ export function AppSidebar() {
   // Electron menu → New Agent
   useEffect(() => {
     if (!window.electronAPI?.onOpenCreateAgent) return
-    window.electronAPI.onOpenCreateAgent(() => { void createUntitledAgent() })
+    const unsubscribe = window.electronAPI.onOpenCreateAgent(() => { void createUntitledAgent() })
     return () => {
-      window.electronAPI?.removeOpenCreateAgent?.()
+      unsubscribe?.()
     }
   }, [createUntitledAgent])
   const { clearSelection, selectedAgentSlug } = useSelection()

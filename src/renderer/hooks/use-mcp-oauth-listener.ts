@@ -24,15 +24,16 @@ export function useMcpOAuthListener(active: boolean, onComplete: (result: McpOAu
 
     window.addEventListener('message', handleMessage)
 
+    let unsubscribe: (() => void) | undefined
     if (window.electronAPI) {
-      window.electronAPI.onMcpOAuthCallback((params) => {
+      unsubscribe = window.electronAPI.onMcpOAuthCallback((params) => {
         callbackRef.current({ success: !!params.success, error: params.error ?? undefined })
       })
     }
 
     return () => {
       window.removeEventListener('message', handleMessage)
-      window.electronAPI?.removeMcpOAuthCallback()
+      unsubscribe?.()
     }
   }, [active])
 }

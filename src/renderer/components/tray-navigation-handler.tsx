@@ -17,12 +17,12 @@ export function TrayNavigationHandler({ children }: TrayNavigationHandlerProps) 
       return
     }
 
-    window.electronAPI.onNavigateToAgent((agentSlug, sessionId) => {
+    const unsubscribe = window.electronAPI.onNavigateToAgent((agentSlug, sessionId) => {
       setAgent(agentSlug, sessionId ? { kind: 'session', id: sessionId } : { kind: 'home' })
     })
 
     return () => {
-      window.electronAPI?.removeNavigateToAgent?.()
+      unsubscribe?.()
     }
   }, [setAgent])
 
