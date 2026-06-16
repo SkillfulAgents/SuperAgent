@@ -10,7 +10,7 @@ import { getConfiguredLlmClient } from '../llm-provider/helpers'
 import { getEffectiveModels } from '../config/settings'
 import { withRetry } from '@shared/lib/utils/retry'
 import { summaryPayloadSchema } from '../stale-session/stale-session-schema'
-import { SUMMARY_INPUT_BUDGET_TOKENS, SUMMARY_MAX_TOKENS } from '../stale-session/stale-session-config'
+import { SUMMARY_INPUT_BUDGET_TOKENS, SUMMARY_MAX_TOKENS, BRANCH_PREAMBLE_SENTINEL } from '../stale-session/stale-session-config'
 import { getSessionJsonlPath, readJsonlFile } from '@shared/lib/utils/file-storage'
 import type {
   JsonlEntry,
@@ -133,7 +133,7 @@ export async function buildBranchInitialMessage(args: {
   const summary = await summarize(slice, args.priorBoundarySummary)
 
   return [
-    'This conversation is continued from a previous session. The summary below covers the earlier context.',
+    `${BRANCH_PREAMBLE_SENTINEL} The summary below covers the earlier context.`,
     '',
     summary,
     '',

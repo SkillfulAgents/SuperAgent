@@ -6,6 +6,7 @@
  */
 
 import { ContentBlock, JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import { BRANCH_PREAMBLE_SENTINEL } from '@shared/lib/stale-session/stale-session-config'
 
 export interface TransformedMessage {
   id: string
@@ -44,6 +45,8 @@ export interface TransformedCompactBoundary {
   trigger: string
   preTokens?: number
   createdAt: Date
+  /** Optional display label overriding the default "Compacted" button text. */
+  label?: string
 }
 
 export interface TransformedMemoryRecall {
@@ -388,6 +391,39 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
           text = parsed.content
         }
       }
+    }
+
+    // Split a branched-session injected first message into a collapsed context card
+    // plus the user's real typed message. Detection uses startsWith because the full
+    // first line is longer than the sentinel (it has " The summary below…" appended).
+    if (entry.type === 'user' && text.startsWith(BRANCH_PREAMBLE_SENTINEL)) {
+      const lines = text.split('\n')
+      const separatorIdx = lines.findIndex((line) => line === '---')
+      if (separatorIdx !== -1) {
+        const contextBlock = lines.slice(0, separatorIdx).join('\n').trimEnd()
+        const userText = lines.slice(separatorIdx + 1).join('\n').trimStart()
+
+        result.push({
+          id: `${entry.uuid}-ctx`,
+          type: 'compact_boundary',
+          summary: contextBlock,
+          trigger: 'branch',
+          label: 'Continued from previous session',
+          createdAt: new Date(entry.timestamp),
+        })
+
+        if (userText) {
+          result.push({
+            id: entry.uuid,
+            type: 'user',
+            content: { text: userText },
+            toolCalls: [],
+            createdAt: new Date(entry.timestamp),
+          })
+        }
+        continue
+      }
+      // Defensive: no separator found — fall through to render the message normally
     }
 
     result.push({

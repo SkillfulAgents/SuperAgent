@@ -5,6 +5,7 @@ import {
   isTaskNotificationMessage,
   parseCommandMessage,
   TransformedMessage,
+  TransformedCompactBoundary,
 } from './message-transform'
 import { JsonlMessageEntry, ContentBlock } from '@shared/lib/types/agent'
 
@@ -1216,6 +1217,88 @@ describe('transformMessages', () => {
       // Normal assistant response
       expect(asMessage(result[2]).type).toBe('assistant')
       expect(asMessage(result[2]).content.text).toBe('I can see your context items.')
+    })
+  })
+
+  // ============================================================================
+  // transformMessages - Branch Preamble Split Tests
+  // ============================================================================
+
+  describe('branch preamble split', () => {
+    const SENTINEL = 'This conversation is continued from a previous session.'
+
+    function buildInjected(userMessage: string, summary = 'Was working on auth.'): string {
+      return [
+        `${SENTINEL} The summary below covers the earlier context.`,
+        '',
+        summary,
+        '',
+        'If you need exact details, read the full transcript at: .claude/projects/-workspace/sess-1.jsonl',
+        'Continue directly from where it left off. Do not recap or acknowledge this summary.',
+        '',
+        '---',
+        userMessage,
+      ].join('\n')
+    }
+
+    it('splits into a context card and the real user message', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', buildInjected('add rate limiting'), '2026-01-24T10:00:00.000Z'),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result).toHaveLength(2)
+
+      // First item: the collapsed context card
+      const card = result[0] as TransformedCompactBoundary
+      expect(card.type).toBe('compact_boundary')
+      expect(card.label).toBe('Continued from previous session')
+      expect(card.trigger).toBe('branch')
+      expect(card.summary).toContain(SENTINEL)
+      expect(card.summary).toContain('Was working on auth.')
+
+      // Second item: the real user message
+      expect(result[1].type).toBe('user')
+      expect(asMessage(result[1]).content.text).toBe('add rate limiting')
+      expect(result[1].id).toBe('uuid-1')
+    })
+
+    it('assigns uuid-ctx id to the card and uuid to the real message', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('my-uuid', buildInjected('my message')),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result[0].id).toBe('my-uuid-ctx')
+      expect(result[1].id).toBe('my-uuid')
+    })
+
+    it('falls back to normal rendering when no --- separator is found', () => {
+      const text = `${SENTINEL} The summary below covers the earlier context.\n\nSome summary with no separator.`
+
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', text),
+      ]
+
+      const result = transformMessages(entries)
+
+      // Falls back: renders as a single normal user message without crashing
+      expect(result).toHaveLength(1)
+      expect(result[0].type).toBe('user')
+      expect(asMessage(result[0]).content.text).toBe(text)
+    })
+
+    it('does not split regular user messages that lack the sentinel', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', 'Just a normal message\n---\nwith a separator'),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result).toHaveLength(1)
+      expect(result[0].type).toBe('user')
     })
   })
 })

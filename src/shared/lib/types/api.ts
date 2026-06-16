@@ -183,6 +183,9 @@ export interface ApiCompactBoundary {
   trigger: string
   preTokens?: number
   createdAt: Date
+  /** Optional display label overriding the default "Compacted" button text.
+   *  Set to "Continued from previous session" for branched-session context cards. */
+  label?: string
 }
 
 /**

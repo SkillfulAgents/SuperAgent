@@ -36,7 +36,7 @@ export function CompactBoundaryItem({ boundary, isCompacting }: CompactBoundaryI
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
           <Minimize2 className="h-3 w-3" />
-          <span>Compacted</span>
+          <span>{boundary.label ?? 'Compacted'}</span>
           {expanded ? (
             <ChevronDown className="h-3 w-3" />
           ) : (
