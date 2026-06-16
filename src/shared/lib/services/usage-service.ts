@@ -58,6 +58,19 @@ interface CountedUsage {
 // When costUSD is present in the JSONL entry, it takes precedence over this table.
 import MODEL_PRICING from './model-pricing.json'
 
+/** Per-model pricing shape (rates are per million tokens). */
+export interface ModelPricing {
+  input: number
+  output: number
+  cacheCreation: number
+  cacheRead: number
+}
+
+/** Returns the per-million-token pricing for a known model, or undefined if unknown. */
+export function getModelPricing(model: string): ModelPricing | undefined {
+  return (MODEL_PRICING as Record<string, ModelPricing>)[model]
+}
+
 /**
  * Calculate cost from token counts using hardcoded pricing.
  * Returns 0 for unknown models.
