@@ -57,10 +57,17 @@ async function openSessionById(
     )
     .first()
 
-  // Expand the session sub-list if the chevron is present (isOpen = false)
-  const chevron = agentLi.locator('button[aria-label="Expand"]').first()
-  if (await chevron.isVisible({ timeout: 1500 }).catch(() => false)) {
-    await chevron.click()
+  // Session sub-items live inside a Radix CollapsibleContent and are UNMOUNTED
+  // while the agent row is collapsed — clicking one before expanding auto-waits
+  // for an element that never attaches and hangs until the test times out.
+  // Wait for the (collapsed-state) Expand chevron to actually render before
+  // clicking it: isVisible() samples once and never retries, so a slow cold-start
+  // render after reload would report false, skip the expand, and leave the
+  // session-item unmounted.
+  const expandChevron = agentLi.locator('button[aria-label="Expand"]').first()
+  await expandChevron.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {})
+  if (await expandChevron.isVisible().catch(() => false)) {
+    await expandChevron.click()
   }
 
   await page.locator(`[data-testid="session-item-${sessionId}"]`).click()
