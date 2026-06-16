@@ -5,7 +5,7 @@ import { remoteMcpServers, agentRemoteMcps } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
 import { initiateOAuthFlow, initiateNewServerOAuth, completeOAuthFlow, discoverOAuthMetadata } from '@shared/lib/mcp/oauth'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
-import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
+import { getAppBaseUrl, getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -313,9 +313,10 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       ? body.clientSecret.trim()
       : undefined
 
-  const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
+  // Desktop uses an http loopback (RFC 8252); some auth servers reject the
+  // custom scheme at /authorize. /oauth-bridge bounces back to superagent://.
   const redirectUri = body.electron
-    ? `${protocol}://mcp-oauth-callback`
+    ? `${getAppBaseUrl()}/api/remote-mcps/oauth-bridge`
     : `${getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
 
   if (body.mcpId) {
@@ -367,6 +368,13 @@ remoteMcps.post('/initiate-oauth', async (c) => {
   } else {
     return c.json({ error: 'Either mcpId or name+url is required' }, 400)
   }
+})
+
+// Bounce the http loopback callback to superagent:// (before /:id, no shadow).
+remoteMcps.get('/oauth-bridge', (c) => {
+  const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
+  const query = new URL(c.req.url).search
+  return c.redirect(`${protocol}://mcp-oauth-callback${query}`)
 })
 
 // OAuth callback handler (must be before /:id to avoid route shadowing)
