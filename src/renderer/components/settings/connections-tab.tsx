@@ -22,7 +22,12 @@ export function ConnectionsTab() {
   const { data: accountsData, isLoading: isLoadingAccounts } = useConnectedAccounts()
   const { data: mcpsData, isLoading: isLoadingMcps } = useRemoteMcps()
   const { data: triggerCounts } = useTriggerCountsPerAccount()
-  const { reconnect: oauthReconnect, pendingAccountId } = useOAuthReconnect()
+  const {
+    reconnect: oauthReconnect,
+    pendingAccountId,
+    canCancelPendingReconnect,
+    cancelReconnect,
+  } = useOAuthReconnect()
 
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null)
 
@@ -68,6 +73,11 @@ export function ConnectionsTab() {
         onReconnect={
           row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
             ? () => oauthReconnect(row.id, row.toolkit!)
+            : undefined
+        }
+        onCancelReconnect={
+          pendingAccountId === row.id && canCancelPendingReconnect
+            ? cancelReconnect
             : undefined
         }
         reconnecting={pendingAccountId === row.id}

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, act } from '@testing-library/react'
+import { screen, waitFor, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { NewIntegrationButton } from './connections-list'
+import { OAUTH_ABORT_DELAY_MS } from '@renderer/hooks/use-delayed-oauth-abort'
 
 const MOCK_ACCOUNT_ID = 'new-account-123'
 
@@ -12,8 +13,13 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
+const popupMocks = vi.hoisted(() => ({
+  navigate: vi.fn(),
+  close: vi.fn(),
+}))
+
 vi.mock('@renderer/lib/oauth-popup', () => ({
-  prepareOAuthPopup: () => ({ navigate: vi.fn(), close: vi.fn() }),
+  prepareOAuthPopup: () => ({ navigate: popupMocks.navigate, close: popupMocks.close }),
 }))
 
 vi.mock('@shared/lib/account-providers', () => ({
@@ -42,6 +48,16 @@ function mockFetchResponses() {
         }),
       }
     }
+    if (url === '/api/connected-accounts/initiate') {
+      return {
+        ok: true,
+        json: async () => ({
+          connectionId: 'pending-conn-123',
+          redirectUrl: 'https://oauth.example.test/authorize',
+          providerSlug: 'slack',
+        }),
+      }
+    }
     if (url === '/api/connected-accounts/complete') {
       return {
         ok: true,
@@ -61,10 +77,13 @@ function mockFetchResponses() {
 beforeEach(() => {
   originalElectronAPI = window.electronAPI
   vi.clearAllMocks()
+  popupMocks.navigate.mockReset()
+  popupMocks.close.mockReset()
   mockFetchResponses()
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   window.electronAPI = originalElectronAPI
   capturedOAuthCallback = null
 })
@@ -85,6 +104,8 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
     await waitFor(() => {
       expect(screen.getByText('Slack')).toBeInTheDocument()
     })
+
+    await userEvent.click(screen.getByTestId('directory-connect-api-slack'))
 
     expect(capturedOAuthCallback).not.toBeNull()
 
@@ -113,6 +134,8 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
       expect(screen.getByText('Slack')).toBeInTheDocument()
     })
 
+    await userEvent.click(screen.getByTestId('directory-connect-api-slack'))
+
     await act(async () => {
       window.postMessage(
         { type: 'oauth-callback', success: true, accountId: MOCK_ACCOUNT_ID, toolkitSlug: 'slack' },
@@ -138,6 +161,8 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
       expect(screen.getByText('Slack')).toBeInTheDocument()
     })
 
+    await userEvent.click(screen.getByTestId('directory-connect-api-slack'))
+
     await act(async () => {
       window.postMessage(
         { type: 'oauth-callback', success: true },
@@ -151,5 +176,45 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
       expect(screen.queryByText('Add New Connection')).not.toBeInTheDocument()
     })
     expect(screen.queryByText(/Successfully Connected/i)).not.toBeInTheDocument()
+  })
+
+  it('shows delayed cancel during Electron OAuth and removes the pending listener', async () => {
+    const user = userEvent.setup()
+    const unsubscribe = vi.fn()
+    window.electronAPI = {
+      onOAuthCallback: vi.fn((cb: any) => { capturedOAuthCallback = cb; return unsubscribe }),
+      openExternal: vi.fn(),
+    } as any
+
+    renderWithProviders(<NewIntegrationButton />)
+
+    await user.click(screen.getByTestId('connections-add-button'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Slack')).toBeInTheDocument()
+    })
+
+    vi.useFakeTimers()
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('directory-connect-api-slack'))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(capturedOAuthCallback).not.toBeNull()
+    expect(screen.queryByTestId('directory-cancel-api-slack')).not.toBeInTheDocument()
+
+    act(() => {
+      vi.advanceTimersByTime(OAUTH_ABORT_DELAY_MS)
+    })
+
+    expect(screen.getByTestId('directory-cancel-api-slack')).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('directory-cancel-api-slack'))
+      await Promise.resolve()
+    })
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+    expect(popupMocks.close).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('directory-connect-api-slack')).not.toBeDisabled()
   })
 })

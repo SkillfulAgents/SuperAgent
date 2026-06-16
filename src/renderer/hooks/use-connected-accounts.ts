@@ -1,5 +1,6 @@
 import { apiFetch } from '@renderer/lib/api'
 
+import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { Provider } from '@shared/lib/account-providers/service-catalog'
@@ -245,7 +246,7 @@ export function useTriggerCountsPerAccount() {
 export function useInvalidateConnectedAccounts() {
   const queryClient = useQueryClient()
 
-  return () => {
+  return useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
-  }
+  }, [queryClient])
 }

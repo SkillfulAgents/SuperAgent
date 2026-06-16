@@ -38,8 +38,10 @@ import {
   useInvalidateRemoteMcps,
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
+import { useDelayedOAuthAbort } from '@renderer/hooks/use-delayed-oauth-abort'
 import type { Provider } from '@shared/lib/account-providers/service-catalog'
 import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common-servers'
+import { OAuthFlowCancel } from './oauth-flow-cancel'
 
 export type DirectoryTab = 'apis' | 'mcps'
 
@@ -149,11 +151,29 @@ function ApisPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
   const [connecting, setConnecting] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const connectingRef = useRef(connecting)
+  const popupRef = useRef<ReturnType<typeof prepareOAuthPopup> | null>(null)
   connectingRef.current = connecting
+  const showOAuthCancel = useDelayedOAuthAbort(connecting !== null)
+
+  const cancelOAuthFlow = useCallback(() => {
+    popupRef.current?.close()
+    popupRef.current = null
+    setConnecting(null)
+    setError(null)
+  }, [])
+
+  useEffect(() => () => {
+    popupRef.current?.close()
+    popupRef.current = null
+  }, [])
 
   useEffect(() => {
+    if (!connecting) return
+
     const handleComplete = (success: boolean, accountId?: string, toolkit?: string) => {
       const resolvedToolkit = toolkit || connectingRef.current
+      popupRef.current?.close()
+      popupRef.current = null
       setConnecting(null)
       if (success) {
         invalidateAccounts()
@@ -167,6 +187,7 @@ function ApisPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
 
     if (window.electronAPI) {
       const unsubscribe = window.electronAPI.onOAuthCallback(async (params) => {
+        if (params.toolkit && params.toolkit !== connectingRef.current) return
         if (params.error || params.status === 'failed') {
           handleComplete(false)
           return
@@ -199,12 +220,13 @@ function ApisPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
 
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'oauth-callback') {
+        if (event.data.toolkitSlug && event.data.toolkitSlug !== connectingRef.current) return
         handleComplete(event.data.success, event.data.accountId, event.data.toolkitSlug)
       }
     }
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [invalidateAccounts, onConnected, fallbackClose])
+  }, [connecting, invalidateAccounts, onConnected, fallbackClose])
 
   const filtered = useMemo(() => {
     const providers = Array.isArray(providersData?.providers) ? providersData.providers : []
@@ -221,6 +243,7 @@ function ApisPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
     setConnecting(slug)
     setError(null)
     const popup = prepareOAuthPopup()
+    popupRef.current = popup
     try {
       const isElectron = !!window.electronAPI
       const result = await initiateConnection.mutateAsync({
@@ -231,6 +254,7 @@ function ApisPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
       await popup.navigate(result.redirectUrl)
     } catch (err) {
       popup.close()
+      popupRef.current = null
       setError(err instanceof Error ? err.message : 'Failed to connect')
       setConnecting(null)
     }
@@ -264,21 +288,28 @@ function ApisPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
                   name={<HighlightMatch text={provider.displayName} query={filter} />}
                   subtitle={provider.description}
                   right={
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      className="h-7 w-7"
-                      onClick={() => handleConnect(provider.slug)}
-                      disabled={connecting !== null}
-                      aria-label={`Connect ${provider.displayName}`}
-                      data-testid={`directory-connect-api-${provider.slug}`}
-                    >
-                      {pending ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Plus className="h-3.5 w-3.5" />
-                      )}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <OAuthFlowCancel
+                        visible={pending && showOAuthCancel}
+                        onCancel={cancelOAuthFlow}
+                        testId={`directory-cancel-api-${provider.slug}`}
+                      />
+                      <Button
+                        size="icon"
+                        variant="outline"
+                        className="h-7 w-7"
+                        onClick={() => handleConnect(provider.slug)}
+                        disabled={connecting !== null}
+                        aria-label={`Connect ${provider.displayName}`}
+                        data-testid={`directory-connect-api-${provider.slug}`}
+                      >
+                        {pending ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Plus className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                    </div>
                   }
                 />
               )
@@ -313,7 +344,22 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
   const [submitting, setSubmitting] = useState(false)
   const [oauthPending, setOauthPending] = useState(false)
   const draftRef = useRef(draft)
+  const mcpOAuthPopupRef = useRef<ReturnType<typeof prepareOAuthPopup> | null>(null)
   draftRef.current = draft
+  const showMcpOAuthCancel = useDelayedOAuthAbort(oauthPending)
+
+  const cancelMcpOAuth = useCallback(() => {
+    mcpOAuthPopupRef.current?.close()
+    mcpOAuthPopupRef.current = null
+    setOauthPending(false)
+    setSubmitting(false)
+    setError(null)
+  }, [])
+
+  useEffect(() => () => {
+    mcpOAuthPopupRef.current?.close()
+    mcpOAuthPopupRef.current = null
+  }, [])
 
   const handleMcpReady = useCallback((server: RemoteMcpServer) => {
     invalidateRemoteMcps()
@@ -322,6 +368,8 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
   }, [invalidateRemoteMcps, onConnected])
 
   useMcpOAuthListener(oauthPending, ({ success, error: oauthError }) => {
+    mcpOAuthPopupRef.current?.close()
+    mcpOAuthPopupRef.current = null
     setOauthPending(false)
     setSubmitting(false)
     if (success) {
@@ -385,6 +433,7 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
   }
 
   const cancelDraft = () => {
+    cancelMcpOAuth()
     setDraft(null)
     setError(null)
   }
@@ -401,9 +450,11 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
     const valid = parsed.data
 
     setSubmitting(true)
+    let waitingForOAuth = false
     try {
       if (valid.authType === 'oauth') {
         const popup = prepareOAuthPopup()
+        mcpOAuthPopupRef.current = popup
         try {
           const isElectron = !!window.electronAPI
           const clientNameOverride = valid.clientName.trim()
@@ -419,15 +470,23 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
           })
           if (result.redirectUrl) {
             setOauthPending(true)
-            await popup.navigate(result.redirectUrl)
+            try {
+              await popup.navigate(result.redirectUrl)
+              waitingForOAuth = true
+            } catch (err) {
+              setOauthPending(false)
+              throw err
+            }
             // Keep dialog open and spinner running until useMcpOAuthListener fires.
             return
           }
           popup.close()
+          mcpOAuthPopupRef.current = null
           setDraft(null)
           fallbackClose()
         } catch (err) {
           popup.close()
+          mcpOAuthPopupRef.current = null
           throw err
         }
       } else {
@@ -445,7 +504,7 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
     } finally {
       // Only clear submitting if we're not waiting on OAuth — the listener
       // clears both states itself.
-      if (!oauthPending) setSubmitting(false)
+      if (!waitingForOAuth) setSubmitting(false)
     }
   }
 
@@ -553,7 +612,12 @@ function McpsPanel({ filter, onConnected, fallbackClose }: { filter: string; onC
             {error}
           </div>
         )}
-        <div className="flex justify-end pt-2">
+        <div className="flex items-center justify-end gap-3 pt-2">
+          <OAuthFlowCancel
+            visible={showMcpOAuthCancel}
+            onCancel={cancelMcpOAuth}
+            testId="directory-cancel-mcp-oauth"
+          />
           <Button size="sm" onClick={submitDraft} disabled={!canSubmit || busy} data-testid="mcp-form-submit">
             {busy ? (
               <>

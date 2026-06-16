@@ -23,6 +23,8 @@ interface ConnectionRowProps {
   ariaLabel?: string
   /** Called when the user clicks the status badge to reconnect. */
   onReconnect?: () => void
+  /** Called when the user cancels an in-flight reconnect. */
+  onCancelReconnect?: () => void
   /** Show spinner on the status badge while reconnecting. */
   reconnecting?: boolean
 }
@@ -35,6 +37,7 @@ export function ConnectionRow({
   onActivate,
   ariaLabel,
   onReconnect,
+  onCancelReconnect,
   reconnecting,
 }: ConnectionRowProps) {
   return (
@@ -48,7 +51,12 @@ export function ConnectionRow({
       nameBadge={
         <>
           <McpStatusPill status={row.mcpStatus} errorMessage={row.mcpErrorMessage} />
-          <AccountStatusBadge status={row.accountStatus} onReconnect={onReconnect} loading={reconnecting} />
+          <AccountStatusBadge
+            status={row.accountStatus}
+            onReconnect={onReconnect}
+            onCancelReconnect={onCancelReconnect}
+            loading={reconnecting}
+          />
         </>
       }
       subtitle={

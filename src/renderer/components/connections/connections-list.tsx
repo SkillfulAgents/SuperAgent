@@ -118,7 +118,12 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
   const removeAccount = useRemoveAgentConnectedAccount()
   const assignMcp = useAssignMcpToAgent()
   const removeMcp = useRemoveMcpFromAgent()
-  const { reconnect: oauthReconnect, pendingAccountId } = useOAuthReconnect()
+  const {
+    reconnect: oauthReconnect,
+    pendingAccountId,
+    canCancelPendingReconnect,
+    cancelReconnect,
+  } = useOAuthReconnect()
 
   // Optimistic overrides keyed by row.key. Keeps the row visually in its new
   // section while the mutation is in-flight so the View Transition can animate
@@ -257,6 +262,11 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
         onReconnect={row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
           ? () => oauthReconnect(row.id, row.toolkit!)
           : undefined}
+        onCancelReconnect={
+          pendingAccountId === row.id && canCancelPendingReconnect
+            ? cancelReconnect
+            : undefined
+        }
         reconnecting={pendingAccountId === row.id}
         right={
           <>
