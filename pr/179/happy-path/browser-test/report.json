@@ -1,26 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title, and report it as \"Example Domain\"",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result in the chat.",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully with SuperAgent interface showing \"Your Agents\" sidebar",
-    "Found and clicked the \"QA-20260616-171642-gfku\" agent in the sidebar - Agent view opened with chat interface ready for messaging",
-    "Clicked on the message input textbox - Textbox became active and ready for input",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message appeared correctly in the input field",
-    "Clicked the \"Send message\" button - Message was sent, agent status changed to \"working\", and a new session \"Browser Navigation and Page Title Check\" was created",
-    "Waited for agent response with 3-minute timeout - Response completed in approximately 19 seconds when the \"Working...\" indicator disappeared",
-    "Verified response mentions \"Example Domain\" - The agent's response explicitly states: \"The page title is 'Example Domain'\" and confirms \"The page at https://example.com loaded successfully and its title is 'Example Domain'\"",
-    "Took final screenshot showing complete response - Screenshot captured showing the full chat interaction with the agent's successful browser navigation and page title retrieval"
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the SuperAgent homepage with agents list visible in sidebar.",
+    "Step 2: Clicked on the \"QA-20260616-190615-1464\" agent in the sidebar — Successfully opened the agent page showing chat interface and agent configuration.",
+    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted and displayed in the chat.",
+    "Step 4: Waited for agent response — Agent completed processing within 25 seconds, well within the 3-minute timeout. Browser session was created and executed successfully.",
+    "Step 5: Verified response mentions \"Example Domain\" — The agent's response clearly states: \"The page title is \"Example Domain\".\" Additionally, the response confirms: \"Done. The page at https://example.com displays the heading \"Example Domain\" with text noting it's for use in documentation examples. Browser closed.\""
   ],
   "bugs": [],
-  "durationMs": 65407,
-  "sessionId": "9ea0edb2-6627-4a59-8dd5-2b4d187fa356",
+  "durationMs": 90097,
+  "sessionId": "8fe64c5b-cca6-4168-9c8d-edffdf7668d3",
   "cost": {
-    "inputTokens": 309,
-    "outputTokens": 10261,
-    "cacheCreationTokens": 62127,
-    "cacheReadTokens": 948187,
+    "inputTokens": 369,
+    "outputTokens": 11441,
+    "cacheCreationTokens": 68664,
+    "cacheReadTokens": 1153403,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.224091
+    "totalCostUsd": 0.258744
   }
 }
