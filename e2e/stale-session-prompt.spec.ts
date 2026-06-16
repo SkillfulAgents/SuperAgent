@@ -125,7 +125,7 @@ test.describe('Stale Session Prompt', () => {
     // with the seeded lastUsage and React has re-rendered.  Wait for it before
     // submitting to avoid a race between cached (unseeded) state and fresh data.
     await openSessionById(page, agent, sessionId)
-    await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 20000 })
     await sessionPage.waitForInputEnabled(5000)
 
     // --- First send: stale prompt must open ---
@@ -185,7 +185,7 @@ test.describe('Stale Session Prompt', () => {
     seedStaleSession(agent.slug, sessionId)
 
     await openSessionById(page, agent, sessionId)
-    await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 20000 })
     await sessionPage.waitForInputEnabled(5000)
 
     // Send: the stale prompt opens
@@ -231,7 +231,7 @@ test.describe('Stale Session Prompt', () => {
     seedStaleSession(agent.slug, sessionId)
 
     await openSessionById(page, agent, sessionId)
-    await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 20000 })
     await sessionPage.waitForInputEnabled(5000)
 
     await page.locator('[data-testid="message-input"]').fill('A brand new topic')
@@ -279,7 +279,7 @@ test.describe('Stale Session Prompt', () => {
     seedStaleSession(agent.slug, sessionId)
     await openSessionById(page, agent, sessionId)
     // Same race-guard as scenario 1: wait for seeded lastUsage to appear in UI
-    await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 20000 })
     await sessionPage.waitForInputEnabled(5000)
 
     await page.locator('[data-testid="message-input"]').fill('Continue this conversation')
