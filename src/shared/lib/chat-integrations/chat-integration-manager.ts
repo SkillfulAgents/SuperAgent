@@ -34,7 +34,7 @@ import {
 } from '@shared/lib/services/chat-integration-session-service'
 import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, ContainerClient } from '@shared/lib/container/types'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -654,12 +654,6 @@ class ChatIntegrationManager {
     if (!chatSession) {
       // New chat — create a new agent session
       try {
-        const { getEffectiveModels } = await import('@shared/lib/config/settings')
-        const { getSecretEnvVars } = await import('@shared/lib/services/secrets-service')
-        const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
-
-        const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
-
         const { text: messageText, failedFiles } = await this.buildMessageContent(integration, message)
 
         if (failedFiles.length > 0 && !messageText.trim()) {
@@ -676,47 +670,7 @@ class ChatIntegrationManager {
           })
         }
 
-        const models = getEffectiveModels()
-        const containerSession = await client.createSession({
-          availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-          initialMessage: messageText,
-          model: integration.model || models.agentModel,
-          browserModel: models.browserModel,
-          ...(integration.effort ? { effort: integration.effort as EffortLevel } : {}),
-          ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
-        })
-
-        const sessionId = containerSession.id
-        breadcrumb('New chat session created', { integrationId, sessionId, provider: integration.provider })
-
-        const displayName = this.deriveDisplayName(integration.provider, message)
-
-        const sessionName = buildSessionName(
-          integration.name,
-          integration.provider,
-          displayName,
-          integration.sessionTimeout,
-        )
-
-        await registerSession(integration.agentSlug, sessionId, sessionName)
-
-        await updateSessionMetadata(integration.agentSlug, sessionId, {
-          isChatIntegrationSession: true,
-          chatIntegrationId: integrationId,
-          ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
-        })
-
-        createChatIntegrationSession({
-          integrationId,
-          externalChatId: chatId,
-          sessionId,
-          displayName,
-        })
-
-        await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
-        messagePersister.markSessionActive(sessionId, integration.agentSlug)
-        this.subscribeChatSession(integrationId, chatId, sessionId)
-
+        await this.startNewChatSession(integration, client, chatId, message, messageText)
         return // initialMessage already sent via createSession
       } catch (err) {
         console.error(`[ChatIntegrationManager] Failed to create new session for ${integrationId}:`, err)
@@ -738,6 +692,8 @@ class ChatIntegrationManager {
 
     const sessionId = chatSession.sessionId
 
+    // Hoisted so the catch can reuse it for self-heal without re-downloading.
+    let messageText = ''
     try {
       if (!messagePersister.isSubscribed(sessionId)) {
         await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
@@ -746,7 +702,9 @@ class ChatIntegrationManager {
       // Ensure SSE → chat forwarding is active (may have been torn down by reconnect)
       this.subscribeChatSession(integrationId, chatId, sessionId)
 
-      const { text: messageText, failedFiles } = await this.buildMessageContent(integration, message)
+      const built = await this.buildMessageContent(integration, message)
+      messageText = built.text
+      const failedFiles = built.failedFiles
 
       if (failedFiles.length > 0 && !messageText.trim()) {
         const names = failedFiles.join(', ')
@@ -771,6 +729,32 @@ class ChatIntegrationManager {
         this.lastSessionTouch.set(chatSession.id, now)
       }
     } catch (err) {
+      // Self-heal: the container no longer has this agent session (e.g. it was
+      // evicted and could not be resumed). Without recovery, resolveActiveSession
+      // keeps returning this dead row, so EVERY future message to this chat would
+      // fail. Archive the stale mapping and transparently start a fresh session
+      // with the same message. Transient failures (dead container, network) are
+      // NOT session-gone, so they keep the retry prompt below.
+      if (this.isSessionGoneError(err)) {
+        console.warn(`[ChatIntegrationManager] Agent session ${sessionId} gone in container; rotating chat ${chatId} to a fresh session`)
+        breadcrumb('Chat agent session gone, self-healing', { integrationId, chatId, sessionId })
+        this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
+        try {
+          // messageText is already built unless we failed before it (e.g. the
+          // subscribe threw); rebuild in that rare case so the message isn't lost.
+          if (!messageText) {
+            messageText = (await this.buildMessageContent(integration, message)).text
+          }
+          await this.startNewChatSession(integration, client, chatId, message, messageText)
+          return
+        } catch (healErr) {
+          console.error(`[ChatIntegrationManager] Self-heal failed for ${integrationId}/${chatId}:`, healErr)
+          reportError(healErr, 'send-message-selfheal', { integrationId, chatId, provider: integration.provider }, isContainerNotRunning(healErr) ? 'warning' : 'error')
+          await conn.connector.sendMessage(chatId, { text: 'Error: Failed to send your message to the agent. Please try again.' }).catch(() => {})
+          return
+        }
+      }
+
       console.error(`[ChatIntegrationManager] Failed to send message for ${integrationId}/${sessionId}:`, err)
       // Recovered path (user is told to retry); a dead container is expected and
       // self-healing, so downgrade it to a warning to cut Sentry noise.
@@ -782,6 +766,80 @@ class ChatIntegrationManager {
     // Show typing indicator
     this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
       ?.connector.showTypingIndicator(chatId).catch(() => {})
+  }
+
+  /**
+   * Create a fresh agent session for a chat, persist the (integration, chat) →
+   * session mapping, and wire up SSE forwarding. `messageText` is sent as the
+   * session's initial message via createSession. Callers build messageText (and
+   * surface any failed-download warnings) and archive any prior session for this
+   * chat first. Shared by the new-chat path and the send-time self-heal.
+   */
+  private async startNewChatSession(
+    integration: ChatIntegration,
+    client: ContainerClient,
+    chatId: string,
+    message: IncomingMessage,
+    messageText: string,
+  ): Promise<void> {
+    const { getEffectiveModels } = await import('@shared/lib/config/settings')
+    const { getSecretEnvVars } = await import('@shared/lib/services/secrets-service')
+    const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
+
+    const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
+    const models = getEffectiveModels()
+
+    const containerSession = await client.createSession({
+      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+      initialMessage: messageText,
+      model: integration.model || models.agentModel,
+      browserModel: models.browserModel,
+      ...(integration.effort ? { effort: integration.effort as EffortLevel } : {}),
+      ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
+    })
+
+    const sessionId = containerSession.id
+    breadcrumb('New chat session created', { integrationId: integration.id, sessionId, provider: integration.provider })
+
+    const displayName = this.deriveDisplayName(integration.provider, message)
+    const sessionName = buildSessionName(
+      integration.name,
+      integration.provider,
+      displayName,
+      integration.sessionTimeout,
+    )
+
+    await registerSession(integration.agentSlug, sessionId, sessionName)
+    await updateSessionMetadata(integration.agentSlug, sessionId, {
+      isChatIntegrationSession: true,
+      chatIntegrationId: integration.id,
+      ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
+    })
+
+    createChatIntegrationSession({
+      integrationId: integration.id,
+      externalChatId: chatId,
+      sessionId,
+      displayName,
+    })
+
+    await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
+    messagePersister.markSessionActive(sessionId, integration.agentSlug)
+    this.subscribeChatSession(integration.id, chatId, sessionId)
+  }
+
+  /**
+   * True when a container call failed because the agent session no longer exists
+   * there (evicted / not resumable) — as opposed to a transient container or
+   * network error. Gates the send-time self-heal so only genuinely-gone sessions
+   * are rotated, while transient errors still surface a retry prompt.
+   */
+  private isSessionGoneError(err: unknown): boolean {
+    if (!(err instanceof Error)) return false
+    // Matches both shapes the container surfaces: the 404 guard's generic
+    // "Session not found" (host client: "Failed to send message: Session not
+    // found") and the resume-failure form "Session <id> not found".
+    return /session(\s+\S+)?\s+not\s+found/i.test(err.message)
   }
 
   private teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): void {

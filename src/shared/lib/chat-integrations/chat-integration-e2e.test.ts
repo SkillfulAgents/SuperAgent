@@ -92,6 +92,7 @@ vi.mock('./telegram-connector', () => ({
 
 import { chatIntegrationManager } from './chat-integration-manager'
 import { createChatIntegration, getChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { listChatIntegrationSessions } from '@shared/lib/services/chat-integration-session-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
@@ -268,6 +269,78 @@ describe('Chat integration E2E', () => {
       await waitForCondition(() => MockContainerClient.createSessionCalls.length === 2)
 
       expect(MockContainerClient.createSessionCalls[1].initialMessage).toBe('After clear')
+    })
+  })
+
+  describe('session self-heal (container lost the session)', () => {
+    it('archives the dead session and starts a fresh one instead of failing forever', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      // First message establishes a real session: DB row + live container session.
+      mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length === 1)
+      await waitForCondition(
+        () => mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0,
+        3000,
+      )
+
+      // Simulate the container EVICTING the session (e.g. dev container recreated):
+      // the DB row stays non-archived but the container no longer has the session,
+      // so the next sendMessage 404s with "Session not found".
+      const deadSessionId = [...(mockContainerClient as any).sessions.keys()][0] as string
+      await mockContainerClient.deleteSession(deadSessionId)
+
+      // Next message to the same chat — the manager should self-heal: archive the
+      // dead row and transparently start a fresh session with the same message,
+      // instead of dead-ending on every future message.
+      mockConnector.simulateIncomingMessage('Still there?', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length === 2)
+
+      // The user's message was carried into the fresh session as its first message.
+      expect(MockContainerClient.createSessionCalls[1].initialMessage).toBe('Still there?')
+
+      // The dead row is archived; a fresh non-archived row now serves this chat.
+      const rows = listChatIntegrationSessions(integrationId).filter((r) => r.externalChatId === 'chat-1')
+      const dead = rows.find((r) => r.sessionId === deadSessionId)
+      const fresh = rows.find((r) => r.sessionId !== deadSessionId && !r.archivedAt)
+      expect(dead?.archivedAt).toBeTruthy()
+      expect(fresh).toBeDefined()
+    })
+
+    it('does NOT rotate the session on a transient (non-session-gone) error', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length === 1)
+      await waitForCondition(
+        () => mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0,
+        3000,
+      )
+
+      const liveSessionId = [...(mockContainerClient as any).sessions.keys()][0] as string
+
+      // Next send fails with a TRANSIENT error (not "session not found").
+      const sendSpy = vi
+        .spyOn(mockContainerClient, 'sendMessage')
+        .mockRejectedValueOnce(new Error('Container is not running'))
+
+      const createBefore = MockContainerClient.createSessionCalls.length
+      const sentBefore = mockConnector.sentMessages.length
+      mockConnector.simulateIncomingMessage('Transient please', 'chat-1', 'user-1')
+
+      // Manager surfaces a retry prompt and does NOT rotate the session.
+      await waitForCondition(
+        () => mockConnector.sentMessages.slice(sentBefore).some((m) => /try again/i.test(m.message.text ?? '')),
+        3000,
+      )
+      expect(MockContainerClient.createSessionCalls.length).toBe(createBefore)
+
+      const rows = listChatIntegrationSessions(integrationId).filter((r) => r.externalChatId === 'chat-1')
+      expect(rows.find((r) => r.sessionId === liveSessionId)?.archivedAt).toBeFalsy()
+
+      sendSpy.mockRestore()
     })
   })
 
