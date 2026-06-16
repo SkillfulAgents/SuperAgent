@@ -195,3 +195,31 @@ describe('TelegramConnector.sendMessage (rich)', () => {
     expect(id).toBe('7')
   })
 })
+
+describe('TelegramConnector.sendUserRequestCard (rich)', () => {
+  let connector: TelegramConnector
+  let mockSendRich: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    connector = new TelegramConnector({ botToken: 'fake:token' })
+    mockSendRich = vi.fn().mockResolvedValue({ message_id: 5 })
+    ;(connector as any).bot = { api: { raw: { sendRichMessage: mockSendRich }, sendMessage: vi.fn() } }
+  })
+
+  it('sends a single question as rich with an inline keyboard', async () => {
+    await connector.sendUserRequestCard('123', {
+      type: 'user_question_request',
+      toolUseId: 't1',
+      questions: [{ question: 'Pick one', header: 'Choice', options: [{ label: 'A' }, { label: 'B' }] }],
+    } as any)
+    const call = mockSendRich.mock.calls[0][0]
+    expect(call.rich_message.markdown).toContain('Pick one')
+    expect(call.reply_markup.inline_keyboard.length).toBe(2)
+  })
+
+  it('sends tool_status as rich', async () => {
+    await connector.sendUserRequestCard('123', {
+      type: 'tool_status', toolUseId: 't2', toolName: 'Bash', summary: 'ran ls', status: 'success',
+    } as any)
+    expect(mockSendRich.mock.calls[0][0].rich_message.markdown).toContain('Bash')
+  })
+})

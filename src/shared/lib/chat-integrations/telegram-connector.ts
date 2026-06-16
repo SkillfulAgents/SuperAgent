@@ -407,8 +407,7 @@ export class TelegramConnector extends ChatClientConnector {
     if (!this.bot) throw new Error('Bot not connected')
 
     if (isUnsupportedInChat(event)) {
-      const sent = await this.bot.api.sendMessage(chatId, `<i>${this.escapeHtml(describeUnsupportedRequest(event))}</i>`, { parse_mode: 'HTML' })
-      return String(sent.message_id)
+      return this.sendRichOrHtml(chatId, `_${describeUnsupportedRequest(event)}_`)
     }
 
     switch (event.type) {
@@ -425,8 +424,8 @@ export class TelegramConnector extends ChatClientConnector {
 
         // Send each question as its own message with its own keyboard
         for (const q of event.questions) {
-          const header = q.header ? `<b>${this.escapeHtml(q.header)}</b>\n` : ''
-          const text = `${header}${this.escapeHtml(q.question)}`
+          const header = q.header ? `**${q.header}**\n` : ''
+          const text = `${header}${q.question}`
 
           const keyboard: Array<Array<{ text: string; callback_data: string }>> = []
           if (q.options && q.options.length > 0) {
@@ -440,46 +439,39 @@ export class TelegramConnector extends ChatClientConnector {
             }
           }
 
-          const sent = await this.bot.api.sendMessage(chatId, text, {
-            parse_mode: 'HTML',
-            ...(keyboard.length > 0 ? { reply_markup: { inline_keyboard: keyboard } } : {}),
-          })
-          lastMessageId = String(sent.message_id)
+          lastMessageId = await this.sendRichOrHtml(
+            chatId,
+            text,
+            keyboard.length > 0 ? { reply_markup: { inline_keyboard: keyboard } } : undefined,
+          )
         }
 
         return lastMessageId
       }
 
       case 'secret_request': {
-        const text = `<b>Secret requested:</b> <code>${this.escapeHtml(event.secretName)}</code>\n${event.reason ? `\nReason: ${this.escapeHtml(event.reason)}` : ''}\n\nPlease reply with the secret value.`
-        const sent = await this.bot.api.sendMessage(chatId, text, { parse_mode: 'HTML' })
-        return String(sent.message_id)
+        const text = `**Secret requested:** \`${event.secretName}\`\n${event.reason ? `\nReason: ${event.reason}` : ''}\n\nPlease reply with the secret value.`
+        return this.sendRichOrHtml(chatId, text)
       }
 
       case 'file_request': {
-        const text = `<b>File requested:</b>\n${this.escapeHtml(event.description)}${event.fileTypes ? `\n\nAccepted types: ${this.escapeHtml(event.fileTypes)}` : ''}\n\nPlease upload the file.`
-        const sent = await this.bot.api.sendMessage(chatId, text, { parse_mode: 'HTML' })
-        return String(sent.message_id)
+        const text = `**File requested:**\n${event.description}${event.fileTypes ? `\n\nAccepted types: ${event.fileTypes}` : ''}\n\nPlease upload the file.`
+        return this.sendRichOrHtml(chatId, text)
       }
 
       case 'file_delivery': {
         // File transfer from container to chat is not yet supported — show metadata only
-        const text = `<b>File delivered:</b> <code>${this.escapeHtml(event.filePath)}</code>${event.description ? `\n${this.escapeHtml(event.description)}` : ''}\n\n<i>File download not yet supported — view in the app.</i>`
-        const sent = await this.bot.api.sendMessage(chatId, text, { parse_mode: 'HTML' })
-        return String(sent.message_id)
+        const text = `**File delivered:** \`${event.filePath}\`${event.description ? `\n${event.description}` : ''}\n\n_File download not yet supported — view in the app._`
+        return this.sendRichOrHtml(chatId, text)
       }
 
       case 'tool_status': {
         const emoji = event.status === 'success' ? '✅' : event.status === 'error' ? '❌' : event.status === 'cancelled' ? '⛔' : '⏳'
-        const text = `🔧 <b>${this.escapeHtml(event.toolName)}</b> — ${this.escapeHtml(event.summary)} ${emoji}`
-        const sent = await this.bot.api.sendMessage(chatId, text, { parse_mode: 'HTML' })
-        return String(sent.message_id)
+        return this.sendRichOrHtml(chatId, `🔧 **${event.toolName}** — ${event.summary} ${emoji}`)
       }
 
-      default: {
-        const sent = await this.bot.api.sendMessage(chatId, `<i>${this.escapeHtml(describeUnsupportedRequest(event))}</i>`, { parse_mode: 'HTML' })
-        return String(sent.message_id)
-      }
+      default:
+        return this.sendRichOrHtml(chatId, `_${describeUnsupportedRequest(event)}_`)
     }
   }
 
