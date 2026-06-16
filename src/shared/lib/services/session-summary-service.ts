@@ -78,7 +78,7 @@ const SUMMARY_INSTRUCTION =
 
 /**
  * Call the summarizerModel and return the extracted summary string.
- * Throws (SyntaxError or ZodError) on a malformed response so the caller can
+ * Throws on a malformed/non-JSON response (or ZodError) so the caller can
  * detect failure and fall back gracefully.
  */
 export async function summarize(
@@ -102,8 +102,15 @@ export async function summarize(
     .map((c: { type: string; text?: string }) => (c.type === 'text' ? (c.text ?? '') : ''))
     .join('')
 
-  // Both JSON.parse (SyntaxError) and .parse (ZodError) propagate to the caller.
-  return summaryPayloadSchema.parse(JSON.parse(text)).summary
+  // JSON.parse errors are caught and rethrown with a clear message; ZodError propagates as-is.
+  // Both error types cause the caller to detect failure and return 502.
+  let parsedJson: unknown
+  try {
+    parsedJson = JSON.parse(text)
+  } catch {
+    throw new Error(`Summarizer returned non-JSON response: ${text.slice(0, 120)}`)
+  }
+  return summaryPayloadSchema.parse(parsedJson).summary
 }
 
 // ============================================================================

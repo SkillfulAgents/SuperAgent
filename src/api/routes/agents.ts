@@ -1429,9 +1429,9 @@ agents.post('/:id/sessions/branch', AgentUser(), async (c) => {
     // Inherit model/effort from source session when not provided in the request body.
     // Only persist explicit choices (body or source session), not global defaults.
     const sourceMetadata = await getSessionMetadata(slug, fromSessionId)
-    const effectiveModel = runtimeOptions.model ?? sourceMetadata?.model
-    const effectiveEffort = runtimeOptions.effort ?? sourceMetadata?.effort
-    const sessionModel = effectiveModel ?? getEffectiveModels().agentModel
+    const persistedModel = runtimeOptions.model ?? sourceMetadata?.model
+    const persistedEffort = runtimeOptions.effort ?? sourceMetadata?.effort
+    const sessionModel = persistedModel ?? getEffectiveModels().agentModel
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
@@ -1445,7 +1445,7 @@ agents.post('/:id/sessions/branch', AgentUser(), async (c) => {
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-      effort: effectiveEffort,
+      effort: persistedEffort,
     })
     const sessionId = containerSession.id
 
@@ -1466,8 +1466,8 @@ agents.post('/:id/sessions/branch', AgentUser(), async (c) => {
     // masquerade as a user choice — otherwise a later change to the default wouldn't
     // be reflected when the composer reloads.
     const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
-    if (effectiveEffort) initialMetadata.effort = effectiveEffort
-    if (effectiveModel) initialMetadata.model = effectiveModel
+    if (persistedEffort) initialMetadata.effort = persistedEffort
+    if (persistedModel) initialMetadata.model = persistedModel
     if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
     if (Object.keys(initialMetadata).length > 0) {
       updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)

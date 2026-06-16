@@ -33,7 +33,7 @@ describe('buildBranchInitialMessage', () => {
     expect(out.toLowerCase()).toContain('continue')                       // continue-silently framing
   })
 
-  it('throws on a malformed model response (Zod) so the caller can fall back', async () => {
+  it('throws on a non-JSON model response so the caller can fall back', async () => {
     mockCreate.mockResolvedValueOnce({
       content: [{ type: 'text', text: 'sorry I cannot do that' }],
     })
@@ -48,7 +48,7 @@ describe('buildBranchInitialMessage', () => {
           { role: 'assistant', text: 'done' },
         ],
       }),
-    ).rejects.toThrow(SyntaxError)
+    ).rejects.toThrow(/non-JSON response/)
   })
 })
 
