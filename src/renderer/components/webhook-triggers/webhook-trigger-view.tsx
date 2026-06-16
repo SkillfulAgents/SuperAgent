@@ -20,6 +20,7 @@ import {
   useUpdateWebhookTriggerRuntimeOptions,
 } from '@renderer/hooks/use-webhook-triggers'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
@@ -55,6 +56,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const updatePrompt = useUpdateWebhookTriggerPrompt()
   const updateRuntimeOptions = useUpdateWebhookTriggerRuntimeOptions()
   const { handleWebhookTriggerDeleted, setView } = useSelection()
+  const navigate = useNavigate()
   const { canUseAgent } = useUser()
   const { data: settings } = useSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
@@ -97,7 +99,10 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const handleCancel = async () => {
     try {
       await cancelTrigger.mutateAsync({ id: triggerId, agentSlug })
+      // Deleting the trigger we're viewing → up-nav to the agent home (the
+      // webhook route no longer resolves). setView keeps Selection consistent.
       handleWebhookTriggerDeleted(triggerId)
+      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to cancel webhook trigger:', err)
     }
@@ -190,7 +195,10 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
       <PageTitle
         title={trigger.name || trigger.triggerType}
         back={{
-          onClick: () => setView({ kind: 'home' }),
+          onClick: () => {
+            setView({ kind: 'home' })
+            void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+          },
           testId: 'webhook-trigger-back-button',
         }}
         actions={headerActions}

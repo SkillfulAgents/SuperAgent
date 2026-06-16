@@ -88,7 +88,10 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
               <button
                 type="button"
                 className={`flex items-center gap-1 transition-colors app-no-drag ${isLeaf ? 'text-muted-foreground cursor-default' : 'text-muted-foreground hover:text-foreground'}`}
-                onClick={() => setView({ kind: 'task', id: taskCrumbId })}
+                onClick={() => {
+                  setView({ kind: 'task', id: taskCrumbId })
+                  void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug, taskId: taskCrumbId } })
+                }}
                 disabled={isLeaf}
               >
                 <Clock className="h-4 w-4" />
@@ -110,7 +113,10 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
               <button
                 type="button"
                 className={`flex items-center gap-1 transition-colors app-no-drag ${isLeaf ? 'text-muted-foreground cursor-default' : 'text-muted-foreground hover:text-foreground'}`}
-                onClick={() => setView({ kind: 'webhook', id: webhookCrumbId })}
+                onClick={() => {
+                  setView({ kind: 'webhook', id: webhookCrumbId })
+                  void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug, webhookId: webhookCrumbId } })
+                }}
                 disabled={isLeaf}
               >
                 <Zap className="h-4 w-4" />

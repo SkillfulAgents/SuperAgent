@@ -534,8 +534,14 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               className="intro-step intro-step-4"
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
-              onSelectTask={(taskId: string) => setView({ kind: 'task', id: taskId })}
-              onSelectWebhook={(webhookId: string) => setView({ kind: 'webhook', id: webhookId })}
+              onSelectTask={(taskId: string) => {
+                setView({ kind: 'task', id: taskId })
+                void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agent.slug, taskId } })
+              }}
+              onSelectWebhook={(webhookId: string) => {
+                setView({ kind: 'webhook', id: webhookId })
+                void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agent.slug, webhookId } })
+              }}
             />
             <HomeConnections className="intro-step intro-step-5" agentSlug={agent.slug} />
             <HomeSkills className="intro-step intro-step-6" agentSlug={agent.slug} onRunSkill={(skillPath) => {

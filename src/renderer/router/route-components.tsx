@@ -1,6 +1,8 @@
 import { useParams, useSearch } from '@tanstack/react-router'
 import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
+import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
+import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 
 /**
  * Leaf route components for the agent sub-views. The shared header chrome +
@@ -41,9 +43,22 @@ export function ConnectionsRoute() {
   return <ConnectionsView agentSlug={slug} detail={detail} />
 }
 
+// R6 — task / webhook are real leaf routes; ids + slug come from the URL.
+export function TaskRoute() {
+  const slug = useAgentSlug()
+  const { taskId } = useParams({ strict: false }) as { taskId?: string }
+  if (!slug || !taskId) return null
+  return <ScheduledTaskView taskId={taskId} agentSlug={slug} />
+}
+
+export function WebhookRoute() {
+  const slug = useAgentSlug()
+  const { webhookId } = useParams({ strict: false }) as { webhookId?: string }
+  if (!slug || !webhookId) return null
+  return <WebhookTriggerView triggerId={webhookId} agentSlug={slug} />
+}
+
 export const SessionRoute = NullRoute // R9
-export const TaskRoute = NullRoute // R6
-export const WebhookRoute = NullRoute // R6
 export const ChatRoute = NullRoute // R8
 export const DashboardRoute = NullRoute // R7
 export const SettingsRoute = NullRoute // R12

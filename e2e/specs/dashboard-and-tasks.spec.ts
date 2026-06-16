@@ -76,4 +76,29 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await expect(main.getByRole('button', { name: 'Triggers' })).toBeVisible({ timeout: 5000 })
     await expect(main.getByText('Daily Issue Summary')).toBeVisible({ timeout: 10000 })
   })
+
+  test('opening a scheduled task navigates to its own route and back returns home (R6)', async ({ page }) => {
+    const agentName = `Task Route ${Date.now()}`
+    await agentPage.createAgent(agentName)
+
+    await sessionPage.sendMessage('schedule task for daily issues')
+    await sessionPage.waitForResponse(15000)
+    await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
+
+    // Land on agent home where the task lives under "Triggers"
+    await agentPage.selectAgent(agentName)
+    const main = appPage.getMainContent()
+    const taskRow = main.getByText('Daily Issue Summary')
+    await expect(taskRow).toBeVisible({ timeout: 10000 })
+
+    // Open the task → it's a real URL route now (R6)
+    await taskRow.click()
+    await expect(page).toHaveURL(/\/tasks\/[^/]+$/)
+    await expect(page.locator('[data-testid="scheduled-task-back-button"]')).toBeVisible()
+
+    // Back → agent home
+    await page.locator('[data-testid="scheduled-task-back-button"]').click()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+  })
 })

@@ -33,6 +33,7 @@ import {
   useResumeScheduledTask,
 } from '@renderer/hooks/use-scheduled-tasks'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import {
@@ -73,6 +74,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const updatePrompt = useUpdateScheduledTaskPrompt()
   const updateRuntimeOptions = useUpdateScheduledTaskRuntimeOptions()
   const { handleScheduledTaskDeleted, setView } = useSelection()
+  const navigate = useNavigate()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
   const humanizedCron = useHumanizedCron(task?.isRecurring ? task.scheduleExpression : null)
@@ -118,7 +120,10 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const handleCancel = async () => {
     try {
       await cancelTask.mutateAsync({ id: taskId, agentSlug })
+      // Deleting the task we're viewing → up-nav to the agent home (the task
+      // route no longer resolves). setView keeps Selection consistent for R14.
       handleScheduledTaskDeleted(taskId)
+      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to cancel scheduled task:', err)
     }
@@ -127,7 +132,12 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const handleRunNow = async () => {
     try {
       const result = await runNow.mutateAsync({ taskId, agentSlug })
+      // The new session is still SelectionContext-driven (sessions become routes
+      // at R9): set it, then leave the task route for the agent index, which
+      // renders the session from Selection. Becomes a direct session-route
+      // navigate at R9.
       setView({ kind: 'session', id: result.sessionId })
+      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to run scheduled task:', err)
     }
@@ -289,7 +299,10 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
       <PageTitle
         title={task.name || 'Scheduled Task'}
         back={{
-          onClick: () => setView({ kind: 'home' }),
+          onClick: () => {
+            setView({ kind: 'home' })
+            void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+          },
           testId: 'scheduled-task-back-button',
         }}
         actions={headerActions}

@@ -3,8 +3,6 @@ import { SessionChatColumn } from './session-chat-column'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
-import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
-import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
@@ -12,7 +10,7 @@ import { ChevronLeft, CalendarClock, Zap } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { useSession } from '@renderer/hooks/use-sessions'
-import { useParams } from '@tanstack/react-router'
+import { useParams, useNavigate } from '@tanstack/react-router'
 import { useSelection } from '@renderer/context/selection-context'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { usePendingMessages } from '@renderer/context/pending-messages-context'
@@ -38,6 +36,7 @@ export function AgentBody() {
   // Selection until each one becomes a route (R6–R10).
   const agentSlug = (useParams({ strict: false }) as { slug?: string }).slug ?? null
   const { view, setView } = useSelection()
+  const navigate = useNavigate()
   const sessionId = view.kind === 'session' ? view.id : null
   const dashboardSlug = view.kind === 'dashboard' ? view.slug : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
@@ -108,7 +107,11 @@ export function AgentBody() {
         <div className="shrink-0 border-b bg-background px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <button
-              onClick={() => setView({ kind: 'task', id: session.scheduledTaskId! })}
+              onClick={() => {
+                const taskId = session.scheduledTaskId!
+                setView({ kind: 'task', id: taskId })
+                void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agentSlug, taskId } })
+              }}
               className="inline-flex items-center gap-1 text-primary hover:underline shrink-0"
             >
               <ChevronLeft className="h-3 w-3" />
@@ -126,7 +129,11 @@ export function AgentBody() {
         <div className="shrink-0 border-b bg-background px-4 py-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <button
-              onClick={() => setView({ kind: 'webhook', id: session.webhookTriggerId! })}
+              onClick={() => {
+                const webhookId = session.webhookTriggerId!
+                setView({ kind: 'webhook', id: webhookId })
+                void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agentSlug, webhookId } })
+              }}
               className="inline-flex items-center gap-1 text-primary hover:underline shrink-0"
             >
               <ChevronLeft className="h-3 w-3" />
@@ -143,10 +150,6 @@ export function AgentBody() {
 
       {view.kind === 'dashboard' ? (
         <DashboardView agentSlug={agentSlug} dashboardSlug={view.slug} />
-      ) : view.kind === 'task' ? (
-        <ScheduledTaskView taskId={view.id} agentSlug={agentSlug} />
-      ) : view.kind === 'webhook' ? (
-        <WebhookTriggerView triggerId={view.id} agentSlug={agentSlug} />
       ) : view.kind === 'chat' ? (
         <ChatIntegrationView integrationId={view.integrationId} agentSlug={agentSlug} />
       ) : view.kind === 'session' ? (
@@ -186,8 +189,9 @@ export function AgentBody() {
           />
         )
       ) : (
-        /* apiLogs / connections render via their own leaf routes (R5); this
-           branch is only hit transiently before the route transition lands. */
+        /* apiLogs/connections (R5) and task/webhook (R6) render via their own
+           leaf routes; this branch is only hit transiently before the route
+           transition lands. */
         null
       )}
 
