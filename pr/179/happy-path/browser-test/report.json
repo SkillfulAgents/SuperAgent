@@ -1,23 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported the result in the chat.",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, and retrieved the page title \"Example Domain\" as requested.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the SuperAgent homepage with agents list visible in sidebar.",
-    "Step 2: Clicked on the \"QA-20260616-190615-1464\" agent in the sidebar — Successfully opened the agent page showing chat interface and agent configuration.",
-    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted and displayed in the chat.",
-    "Step 4: Waited for agent response — Agent completed processing within 25 seconds, well within the 3-minute timeout. Browser session was created and executed successfully.",
-    "Step 5: Verified response mentions \"Example Domain\" — The agent's response clearly states: \"The page title is \"Example Domain\".\" Additionally, the response confirms: \"Done. The page at https://example.com displays the heading \"Example Domain\" with text noting it's for use in documentation examples. Browser closed.\""
+    "Navigated to http://localhost:47891 — Successfully loaded the Super Agent home page with the agent list visible.",
+    "Found the agent \"QA-20260616-212409-zqcr\" in the sidebar under \"Your Agents\" — Agent was visible in the agent list.",
+    "Clicked on the agent \"QA-20260616-212409-zqcr\" in the sidebar — Agent interface opened successfully, showing the message input field and various configuration options.",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message was successfully entered into the textbox.",
+    "Clicked the \"Send message\" button — Message was sent successfully and the agent started working on the task.",
+    "Waited for the agent to complete its work — Agent completed the task in 16 seconds (well within the 3-minute timeout).",
+    "Verified the response mentions \"Example Domain\" — Agent successfully reported: \"The page title is \"Example Domain\".\" The agent executed the following:"
   ],
   "bugs": [],
-  "durationMs": 90097,
-  "sessionId": "8fe64c5b-cca6-4168-9c8d-edffdf7668d3",
+  "durationMs": 137479,
+  "sessionId": "0df8a38f-137e-43a8-898f-28c16f8ac381",
   "cost": {
-    "inputTokens": 369,
-    "outputTokens": 11441,
-    "cacheCreationTokens": 68664,
-    "cacheReadTokens": 1153403,
+    "inputTokens": 519,
+    "outputTokens": 15182,
+    "cacheCreationTokens": 84881,
+    "cacheReadTokens": 1731571,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.258744
+    "totalCostUsd": 0.355687
   }
 }
