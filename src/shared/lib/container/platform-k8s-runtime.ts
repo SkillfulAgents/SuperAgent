@@ -96,7 +96,9 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
   }
 
   static async isAvailable(): Promise<boolean> {
-    return Boolean(resolveKubeConfigOrNull())
+    // HOST_PUBLIC_URL is required: container-manager always calls
+    // getHostApiBaseUrl(), which throws without it.
+    return Boolean(resolveKubeConfigOrNull()) && Boolean(process.env.HOST_PUBLIC_URL?.trim())
   }
 
   static async isRunning(): Promise<boolean> {
@@ -123,6 +125,7 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     if (!(await this.waitForHealthy(60_000, CONTAINER_INTERNAL_PORT))) {
       const logs = await this.getLogs(30)
       const logsSnippet = logs ? `\n\nPod logs:\n${logs}` : ''
+      await this.teardownResources(kube.namespace)
       throw new Error(`Platform k8s agent pod ${this.podName()} failed to become healthy${logsSnippet}`)
     }
   }
@@ -130,9 +133,14 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
   async stop(_options?: StopOptions): Promise<StopResult> {
     this.terminateWebSocketConnections()
     const { namespace } = getKubeConfig()
+    await this.teardownResources(namespace)
+    await waitForPodGone(namespace, this.podName(), 60_000)
+    return { forceStopUsed: false, stopped: true }
+  }
+
+  private async teardownResources(namespace: string): Promise<void> {
     await deleteResource(`/api/v1/namespaces/${namespace}/pods/${this.podName()}`)
     await deleteResource(`/api/v1/namespaces/${namespace}/services/${this.serviceName()}`)
-    return { forceStopUsed: false, stopped: true }
   }
 
   stopSync(): void {
@@ -143,7 +151,10 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
   async getInfoFromRuntime(): Promise<ContainerInfo> {
     const { namespace } = getKubeConfig()
     try {
-      const pod = await requestJson<{ status?: KubePodStatus }>('GET', `/api/v1/namespaces/${namespace}/pods/${this.podName()}`, undefined, [200])
+      const pod = await requestJson<{ metadata?: { deletionTimestamp?: string }; status?: KubePodStatus }>('GET', `/api/v1/namespaces/${namespace}/pods/${this.podName()}`, undefined, [200])
+      // A Terminating pod keeps phase=Running until its container exits; treat it
+      // as stopped so it is never routed to or cached as running.
+      if (pod.metadata?.deletionTimestamp) return { status: 'stopped', port: null }
       const phase = pod.status?.phase
       const ready = pod.status?.containerStatuses?.some((status) => status.ready === true)
       if (phase === 'Running' && ready) return { status: 'running', port: CONTAINER_INTERNAL_PORT }
@@ -568,6 +579,20 @@ async function waitForPodReady(namespace: string, podName: string, timeoutMs: nu
     await new Promise((resolve) => setTimeout(resolve, 1_000))
   }
   throw new Error(`Timed out waiting for platform k8s agent pod ${podName} to become ready`)
+}
+
+async function waitForPodGone(namespace: string, podName: string, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      await requestJson('GET', `/api/v1/namespaces/${namespace}/pods/${podName}`, undefined, [200])
+    } catch (error) {
+      if (error instanceof KubeApiError && error.statusCode === 404) return
+      throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+  }
+  throw new Error(`Timed out waiting for platform k8s agent pod ${podName} to terminate`)
 }
 
 // statusCode 0 = transport/network failure (no HTTP response).

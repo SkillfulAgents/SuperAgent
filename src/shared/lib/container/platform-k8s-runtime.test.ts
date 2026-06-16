@@ -467,4 +467,38 @@ describe('PlatformK8sRuntimeClient operability', () => {
     await expect(client.getInfoFromRuntime()).resolves.toEqual({ status: 'stopped', port: null })
     expect(mockCaptureException).not.toHaveBeenCalled()
   })
+
+  it('treats a Terminating pod (deletionTimestamp set) as stopped', async () => {
+    installHttpsMock(() => ({
+      statusCode: 200,
+      body: JSON.stringify({
+        metadata: { deletionTimestamp: '2026-06-16T21:00:00Z' },
+        status: { phase: 'Running', containerStatuses: [{ name: 'agent', ready: true }] },
+      }),
+    }))
+    const client = new PlatformK8sRuntimeClient({ agentId: 'agent-a', envVars: {} })
+    await expect(client.getInfoFromRuntime()).resolves.toEqual({ status: 'stopped', port: null })
+  })
+
+  it('isAvailable is false without HOST_PUBLIC_URL and true with it', async () => {
+    delete process.env.HOST_PUBLIC_URL
+    await expect(PlatformK8sRuntimeClient.isAvailable()).resolves.toBe(false)
+    process.env.HOST_PUBLIC_URL = 'https://org.example.com'
+    await expect(PlatformK8sRuntimeClient.isAvailable()).resolves.toBe(true)
+  })
+
+  it('stop waits until the pod is actually gone before resolving', async () => {
+    let podCallCount = 0
+    installHttpsMock((path) => {
+      if (path.includes('/services/')) return { statusCode: 200, body: '{}' }
+      // pod path: DELETE accepted, then GET polls present-once before 404.
+      podCallCount++
+      if (podCallCount === 1) return { statusCode: 202, body: '{}' }
+      if (podCallCount === 2) return { statusCode: 200, body: JSON.stringify({ status: { phase: 'Running' } }) }
+      return { statusCode: 404, body: 'not found' }
+    })
+    const client = new PlatformK8sRuntimeClient({ agentId: 'agent-a', envVars: {} })
+    await expect(client.stop()).resolves.toEqual({ forceStopUsed: false, stopped: true })
+    expect(podCallCount).toBeGreaterThanOrEqual(3)
+  })
 })
