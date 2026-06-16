@@ -185,4 +185,27 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.selectAgent(agentName)
     await agentPage.deleteAgent()
   })
+
+  test('Dashboard leaf route resolves on a cold deep-link without crashing (R7)', async ({ page }) => {
+    // Mock mode has no real dashboards (artifacts=[]), so we can't click a card —
+    // but we can verify the dashboard leaf route resolves into the shared agent
+    // shell and renders DashboardView's fallback without a page crash.
+    const errors: string[] = []
+    page.on('pageerror', (e) => errors.push(e.message))
+
+    const agentName = `Nav Dash ${Date.now()}`
+    await agentPage.createAgent(agentName)
+    const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
+    expect(slug).toBeTruthy()
+
+    await page.goto(`/agents/${slug}/dashboards/sample-dashboard`)
+    await expect(page).toHaveURL(/\/dashboards\/sample-dashboard$/)
+    // The shared agent header rendered → the route matched AgentShell, no crash.
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+    expect(errors).toEqual([])
+
+    // Cleanup
+    await agentPage.selectAgent(agentName)
+    await agentPage.deleteAgent()
+  })
 })

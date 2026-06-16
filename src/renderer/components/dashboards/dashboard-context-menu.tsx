@@ -18,6 +18,7 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate, useParams } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
@@ -41,6 +42,11 @@ export function DashboardContextMenu({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const { handleDashboardDeleted } = useSelection()
+  const navigate = useNavigate()
+  // strict:false → undefined when the menu is opened off the dashboard route
+  // (e.g. from the sidebar list), so the up-nav only fires when we're actually
+  // viewing the dashboard being deleted.
+  const params = useParams({ strict: false }) as { dashSlug?: string }
   const { canAdminAgent } = useUser()
   const queryClient = useQueryClient()
   const isOwner = canAdminAgent(agentSlug)
@@ -61,6 +67,9 @@ export function DashboardContextMenu({
       }
       setShowDeleteDialog(false)
       handleDashboardDeleted(artifactSlug)
+      if (params.dashSlug === artifactSlug) {
+        void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+      }
       queryClient.invalidateQueries({ queryKey: ['artifacts', agentSlug] })
     } catch (error) {
       console.error('Failed to delete dashboard:', error)

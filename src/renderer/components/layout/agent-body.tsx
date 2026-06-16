@@ -5,7 +5,6 @@ import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-di
 import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
-import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { ChevronLeft, CalendarClock, Zap } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useAgent } from '@renderer/hooks/use-agents'
@@ -148,9 +147,7 @@ export function AgentBody() {
         </div>
       )}
 
-      {view.kind === 'dashboard' ? (
-        <DashboardView agentSlug={agentSlug} dashboardSlug={view.slug} />
-      ) : view.kind === 'chat' ? (
+      {view.kind === 'chat' ? (
         <ChatIntegrationView integrationId={view.integrationId} agentSlug={agentSlug} />
       ) : view.kind === 'session' ? (
         <FilePreviewProvider>
@@ -189,9 +186,9 @@ export function AgentBody() {
           />
         )
       ) : (
-        /* apiLogs/connections (R5) and task/webhook (R6) render via their own
-           leaf routes; this branch is only hit transiently before the route
-           transition lands. */
+        /* apiLogs/connections (R5), task/webhook (R6) and dashboard (R7) render
+           via their own leaf routes; this branch is only hit transiently before
+           the route transition lands. */
         null
       )}
 

@@ -339,7 +339,10 @@ function DashboardSubItem({
   const navigate = useNavigate()
   const handleClick = () => {
     setAgent(agentSlug, { kind: 'dashboard', slug: artifact.slug })
-    void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+    void navigate({
+      to: '/agents/$slug/dashboards/$dashSlug',
+      params: { slug: agentSlug, dashSlug: artifact.slug },
+    })
   }
 
   const handleDoubleClick = () => {

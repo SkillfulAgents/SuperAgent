@@ -3,6 +3,7 @@ import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
+import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 
 /**
  * Leaf route components for the agent sub-views. The shared header chrome +
@@ -58,8 +59,15 @@ export function WebhookRoute() {
   return <WebhookTriggerView triggerId={webhookId} agentSlug={slug} />
 }
 
+// R7 — dashboard is a real leaf route; dashSlug + slug come from the URL.
+export function DashboardRoute() {
+  const slug = useAgentSlug()
+  const { dashSlug } = useParams({ strict: false }) as { dashSlug?: string }
+  if (!slug || !dashSlug) return null
+  return <DashboardView agentSlug={slug} dashboardSlug={dashSlug} />
+}
+
 export const SessionRoute = NullRoute // R9
 export const ChatRoute = NullRoute // R8
-export const DashboardRoute = NullRoute // R7
 export const SettingsRoute = NullRoute // R12
 export const SettingsTabRoute = NullRoute // R12

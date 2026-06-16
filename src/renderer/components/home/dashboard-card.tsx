@@ -34,7 +34,10 @@ export function DashboardCard({
 
   const handleClick = () => {
     setAgent(agentSlug, { kind: 'dashboard', slug: dashboard.slug })
-    void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+    void navigate({
+      to: '/agents/$slug/dashboards/$dashSlug',
+      params: { slug: agentSlug, dashSlug: dashboard.slug },
+    })
   }
 
   const screenshotUrl = dashboard.hasScreenshot
