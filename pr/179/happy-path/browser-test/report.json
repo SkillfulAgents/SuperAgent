@@ -1,24 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully verified that the agent can execute browser tools, navigate to a URL, retrieve the page title, and return a response containing \"Example Domain\"",
+  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title, and report it as \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — App loaded successfully showing the Super Agent interface with list of agents",
-    "Clicked on the \"QA-20260612-224719-zqnn\" agent in the main content area — Agent opened with chat interface visible and a session \"Browser Navigation and Page Title Check\" was created",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message entered and visible in the textbox",
-    "Clicked the \"Send message\" button — Message sent successfully, agent changed status from idle to working",
-    "Waited up to 3 minutes for response using browser wait mechanism — Agent completed processing in approximately 12 seconds",
-    "Verified response mentions \"Example Domain\" and captured screenshot — Agent's final response clearly states: \"The page title is \"Example Domain\".\" Multiple browser tools executed successfully (ToolSearch, Open Browser, Browser MCP: Browser Get State, Close Browser)"
+    "Navigated to http://localhost:47891 - Page loaded successfully with SuperAgent interface showing \"Your Agents\" sidebar",
+    "Found and clicked the \"QA-20260616-171642-gfku\" agent in the sidebar - Agent view opened with chat interface ready for messaging",
+    "Clicked on the message input textbox - Textbox became active and ready for input",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message appeared correctly in the input field",
+    "Clicked the \"Send message\" button - Message was sent, agent status changed to \"working\", and a new session \"Browser Navigation and Page Title Check\" was created",
+    "Waited for agent response with 3-minute timeout - Response completed in approximately 19 seconds when the \"Working...\" indicator disappeared",
+    "Verified response mentions \"Example Domain\" - The agent's response explicitly states: \"The page title is 'Example Domain'\" and confirms \"The page at https://example.com loaded successfully and its title is 'Example Domain'\"",
+    "Took final screenshot showing complete response - Screenshot captured showing the full chat interaction with the agent's successful browser navigation and page title retrieval"
   ],
   "bugs": [],
-  "durationMs": 79873,
-  "sessionId": "f1f82974-5bdd-45ad-bc52-284935ff5ef9",
+  "durationMs": 65407,
+  "sessionId": "9ea0edb2-6627-4a59-8dd5-2b4d187fa356",
   "cost": {
-    "inputTokens": 408,
-    "outputTokens": 13638,
-    "cacheCreationTokens": 74411,
-    "cacheReadTokens": 1367895,
+    "inputTokens": 309,
+    "outputTokens": 10261,
+    "cacheCreationTokens": 62127,
+    "cacheReadTokens": 948187,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.298401
+    "totalCostUsd": 0.224091
   }
 }
