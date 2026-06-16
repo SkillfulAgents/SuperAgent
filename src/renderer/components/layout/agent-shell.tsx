@@ -3,8 +3,16 @@ import { useCallback, useRef, useState } from 'react'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
+import { useSidebar } from '@renderer/components/ui/sidebar'
+import { useFullScreen } from '@renderer/hooks/use-fullscreen'
+import { isElectron, getPlatform } from '@renderer/lib/env'
+import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { PendingMessagesProvider, type PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
+import { ContentShell } from './content-shell'
+import { AgentHeader } from './agent-header'
+import { AgentBanners } from './agent-banners'
 
 // Stable empty array so a session without pending messages doesn't re-render consumers.
 const EMPTY_PENDING_MESSAGES: PendingMessage[] = []
@@ -13,7 +21,12 @@ const EMPTY_PENDING_MESSAGES: PendingMessage[] = []
  * The `/agents/$slug` layout route. Mount-survival anchor #2 (migration plan
  * §8.1/§8.2): it stays mounted across the agent's sub-views, so it owns the
  * optimistic `pendingMessagesRef` and `useMessageStream` (holder #1), exposing
- * them to the agent body via PendingMessagesContext, and renders `<Outlet/>`.
+ * them to the agent body via PendingMessagesContext.
+ *
+ * It is also the shared layout — it owns the agent header chrome (`AgentHeader`)
+ * and agent-level banners (`AgentBanners`) above a single `<Outlet/>`, so every
+ * sub-view (the agent body index, plus the api-logs/connections leaf routes from
+ * R5 onward) inherits one mounted header instead of re-rendering its own.
  *
  * The agent slug comes from the route (URL-authoritative). The active sessionId
  * still comes from SelectionContext in R4 (sub-views are Selection-driven until
@@ -26,7 +39,14 @@ export function AgentShell() {
   const { view, setView } = useSelection()
   const activeSessionId = view.kind === 'session' ? view.id : null
 
-  const { user, isAuthMode } = useUser()
+  const { user, isAuthMode, canUseAgent } = useUser()
+  const isViewOnly = slug ? !canUseAgent(slug) : false
+  const startAgent = useStartAgent()
+  const stopAgent = useStopAgent()
+  const { state: sidebarState } = useSidebar()
+  const isFullScreen = useFullScreen()
+  const needsTrafficLightPadding =
+    isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
   const pendingMessagesRef = useRef(new Map<string, PendingMessage[]>())
   const [, forceUpdate] = useState(0)
 
@@ -127,7 +147,19 @@ export function AgentShell() {
 
   return (
     <PendingMessagesProvider value={value}>
-      <Outlet />
+      <ContentShell
+        needsTrafficLightPadding={needsTrafficLightPadding}
+        headerContent={
+          slug ? (
+            <AgentHeader slug={slug} isViewOnly={isViewOnly} startAgent={startAgent} stopAgent={stopAgent} />
+          ) : null
+        }
+      >
+        {slug && <AgentBanners slug={slug} startAgent={startAgent} />}
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
+      </ContentShell>
     </PendingMessagesProvider>
   )
 }

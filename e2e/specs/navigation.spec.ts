@@ -50,12 +50,14 @@ test.describe('Navigation — discriminated AgentView', () => {
     const agentName = `Nav APILogs ${Date.now()}`
     await agentPage.createAgent(agentName)
 
-    // Open API Logs from agent-home extras
+    // Open API Logs from agent-home extras — now a real URL route
     await page.getByTestId('home-api-logs-open-page').click()
+    await expect(page).toHaveURL(/\/api-logs$/)
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
     // Back → agent home (large composer visible, no message-list)
     await page.locator('[data-testid="api-logs-back-button"]').click()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
     await expect(page.locator('[data-testid="message-list"]')).not.toBeVisible()
 
@@ -72,10 +74,12 @@ test.describe('Navigation — discriminated AgentView', () => {
     await expect(manageBtn).toBeVisible()
     await manageBtn.click()
 
+    await expect(page).toHaveURL(/\/connections$/)
     await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
 
     // Back → agent home
     await page.locator('[data-testid="connections-back-button"]').click()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
     // Cleanup
@@ -87,13 +91,15 @@ test.describe('Navigation — discriminated AgentView', () => {
     const agentName = `Nav Mutex ${Date.now()}`
     await agentPage.createAgent(agentName)
 
-    // Open API Logs
+    // Open API Logs — the URL itself enforces mutual exclusion (one leaf path).
     await page.getByTestId('home-api-logs-open-page').click()
+    await expect(page).toHaveURL(/\/api-logs$/)
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
     // Switch to Connections via the sidebar's agent-home (back first, then connections)
     await page.locator('[data-testid="api-logs-back-button"]').click()
     await page.locator('[data-testid="home-connections-open-page"]').click()
+    await expect(page).toHaveURL(/\/connections$/)
     await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
     // API Logs back-button must not be present at the same time
     await expect(page.locator('[data-testid="api-logs-back-button"]')).not.toBeVisible()
@@ -101,6 +107,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     // Switch back to API Logs
     await page.locator('[data-testid="connections-back-button"]').click()
     await page.getByTestId('home-api-logs-open-page').click()
+    await expect(page).toHaveURL(/\/api-logs$/)
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
     await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
 
@@ -121,10 +128,12 @@ test.describe('Navigation — discriminated AgentView', () => {
     // On agent B, open API Logs
     await agentPage.selectAgent(b)
     await page.getByTestId('home-api-logs-open-page').click()
+    await expect(page).toHaveURL(/\/api-logs$/)
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
     // Switch to agent A — should land on A's home, not on API Logs
     await agentPage.selectAgent(a)
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
     await expect(page.locator('[data-testid="api-logs-back-button"]')).not.toBeVisible()
 
@@ -153,27 +162,24 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Page reload retains the agent (URL-driven) but resets sub-views to agent home', async ({ page }) => {
-    // R4: agent navigation is URL-driven, so a hard reload restores the agent
-    // view from the URL (the agent slug is durable in the path). Sub-views (API
-    // Logs etc.) are still SelectionContext-only — not yet in the URL — so they
-    // reset to the agent home on reload. Full sub-view restore lands as each view
-    // migrates to its own route (R5–R10). (This brings forward part of the R16
-    // reload-contract change, a direct consequence of converting agent nav in R4.)
+  test('Page reload retains the deep-linked sub-view (URL is the source of truth)', async ({ page }) => {
+    // R5: api-logs and connections are real URL routes now, so a hard reload
+    // restores them from the path (deep-linkable). The Selection-only sub-views
+    // (session/task/webhook/chat/dashboard) still reset on reload until they
+    // migrate to their own routes (R6–R10) and the full reload contract lands (R16).
     const agentName = `Nav Reload ${Date.now()}`
     await agentPage.createAgent(agentName)
 
-    // Navigate into API Logs (a sub-view)
+    // Navigate into API Logs (now a real route → durable in the URL)
     await page.getByTestId('home-api-logs-open-page').click()
+    await expect(page).toHaveURL(/\/api-logs$/)
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
-    // Reload
+    // Reload — the URL is durable, so API Logs is restored, not reset to home.
     await appPage.reload()
-
-    // The agent is retained (its breadcrumb shows), but the sub-view reset to the
-    // agent home — API Logs is no longer shown.
+    await expect(page).toHaveURL(/\/api-logs$/)
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
-    await expect(page.locator('[data-testid="api-logs-back-button"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
     // Cleanup
     await agentPage.selectAgent(agentName)
