@@ -39,6 +39,8 @@ import {
   removeToolCall,
 } from '@shared/lib/services/session-service'
 import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory } from '@shared/lib/utils/file-storage'
+import { loadTranscript, buildBranchInitialMessage } from '@shared/lib/services/session-summary-service'
+import { branchSessionRequestSchema } from '@shared/lib/stale-session/stale-session-schema'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import {
   listUserSecrets,
@@ -1370,6 +1372,137 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     )
   } catch (error) {
     console.error('Failed to create session:', error)
+    return c.json({ error: 'Failed to create session' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/branch - Create a new session branched from an existing session
+// Loads the source session's transcript, summarizes it, and injects context as the initial message.
+// Returns 502 {"error":"summary_failed"} without creating a session if summarization fails,
+// so the caller can surface a Retry option without losing the user's typed message.
+agents.post('/:id/sessions/branch', AgentUser(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const body = await c.req.json()
+    const parsed = branchSessionRequestSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid request', details: parsed.error.format() }, 400)
+    }
+    const { fromSessionId, message } = parsed.data
+    // Use parseRuntimeOptions for effort/model so they carry the EffortLevel union type,
+    // matching the shape that createSession and updateSessionMetadata expect.
+    const runtimeOptions = parseRuntimeOptions(body)
+
+    const agent = await getAgent(slug)
+    if (!agent) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+
+    // Load transcript and build the injected initial message (includes user's typed message after ---)
+    // If this fails for any reason, bail out before creating a session — the client retains the message.
+    let initialMessage: string
+    try {
+      const { transcript, priorBoundarySummary } = await loadTranscript(slug, fromSessionId)
+      initialMessage = await buildBranchInitialMessage({
+        agentSlug: slug,
+        fromSessionId,
+        userMessage: message,
+        transcript,
+        priorBoundarySummary,
+      })
+    } catch (error) {
+      console.error('Failed to load transcript or build branch initial message:', error)
+      return c.json({ error: 'summary_failed' }, 502)
+    }
+
+    const client = await containerManager.ensureRunning(slug)
+    const availableEnvVars = await getSecretEnvVars(slug)
+
+    const agentLimits = getEffectiveAgentLimits()
+    const customEnvVars = getCustomEnvVars()
+
+    // Server-generated uuid for the initial message (never client-supplied —
+    // it keys the messageAuthor attribution row). Returned in the response so
+    // the client can materialize its optimistic copy by exact id match.
+    const initialMessageUuid = randomUUID()
+
+    // Inherit model/effort from source session when not provided in the request body.
+    // Only persist explicit choices (body or source session), not global defaults.
+    const sourceMetadata = await getSessionMetadata(slug, fromSessionId)
+    const effectiveModel = runtimeOptions.model ?? sourceMetadata?.model
+    const effectiveEffort = runtimeOptions.effort ?? sourceMetadata?.effort
+    const sessionModel = effectiveModel ?? getEffectiveModels().agentModel
+
+    const containerSession = await client.createSession({
+      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+      initialMessage,
+      initialMessageUuid,
+      model: sessionModel,
+      browserModel: getEffectiveModels().browserModel,
+      maxOutputTokens: agentLimits.maxOutputTokens,
+      maxThinkingTokens: agentLimits.maxThinkingTokens,
+      maxTurns: agentLimits.maxTurns,
+      maxBudgetUsd: agentLimits.maxBudgetUsd,
+      customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+      maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+      effort: effectiveEffort,
+    })
+    const sessionId = containerSession.id
+
+    // Record author for initial message after we know the sessionId
+    if (isAuthMode()) {
+      const userId = getCurrentUserId(c)
+      await db.insert(messageAuthor).values({
+        id: initialMessageUuid,
+        sessionId,
+        agentSlug: slug,
+        userId,
+      })
+    }
+
+    await registerSession(slug, sessionId, 'New Session')
+    // Persist only explicit choices (body-supplied or inherited from source session).
+    // The server-side global default is applied at session creation but should not
+    // masquerade as a user choice — otherwise a later change to the default wouldn't
+    // be reflected when the composer reloads.
+    const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
+    if (effectiveEffort) initialMetadata.effort = effectiveEffort
+    if (effectiveModel) initialMetadata.model = effectiveModel
+    if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
+    if (Object.keys(initialMetadata).length > 0) {
+      updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
+    }
+    await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
+    // Store slash commands from container's init event (captured during session creation)
+    if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
+      messagePersister.setSlashCommands(sessionId, containerSession.slashCommands)
+      updateSessionMetadata(slug, sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
+    }
+    messagePersister.markSessionActive(sessionId, slug)
+
+    // Name the session from the user's original typed message (not the full injected initialMessage)
+    generateAndUpdateSessionNameAsync(
+      slug,
+      sessionId,
+      message.trim(),
+      agent.frontmatter.name
+    ).catch(console.error)
+
+    return c.json(
+      {
+        id: sessionId,
+        agentSlug: slug,
+        name: 'New Session',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        messageCount: 0,
+        isActive: true,
+        initialMessageUuid,
+      },
+      201
+    )
+  } catch (error) {
+    console.error('Failed to create branch session:', error)
     return c.json({ error: 'Failed to create session' }, 500)
   }
 })
