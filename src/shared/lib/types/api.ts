@@ -102,6 +102,8 @@ export interface ApiSession {
   effort?: EffortLevel
   // Last model used on this session (seeds the composer selector)
   model?: string
+  // Set when user dismisses the stale-session prompt for this session
+  stalePromptDismissed?: boolean
 }
 
 // ============================================================================

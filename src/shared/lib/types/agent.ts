@@ -78,6 +78,8 @@ export interface SessionUsage {
 export interface SessionMetadata {
   name?: string
   starred?: boolean
+  // Set when user dismisses the stale-session prompt for this session
+  stalePromptDismissed?: boolean
   createdAt?: string // ISO date string - set when session is first created
   createdByUserId?: string
   // Scheduled task fields - present when session was created from a scheduled task

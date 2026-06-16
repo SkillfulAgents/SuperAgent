@@ -1812,6 +1812,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       webhookTriggerName: metadata?.webhookTriggerName,
       effort: metadata?.effort,
       model: metadata?.model,
+      stalePromptDismissed: metadata?.stalePromptDismissed,
     })
   } catch (error) {
     console.error('Failed to fetch session:', error)
@@ -1824,9 +1825,11 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
-    const body = await c.req.json()
-    const { name } = body
-
+    const bodySchema = z.object({
+      name: z.string().optional(),
+      stalePromptDismissed: z.boolean().optional(),
+    })
+    const { name, stalePromptDismissed } = bodySchema.parse(await c.req.json())
 
     const session = await getSession(agentSlug, sessionId)
 
@@ -1836,6 +1839,10 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
 
     if (name?.trim()) {
       await updateSessionName(agentSlug, sessionId, name.trim())
+    }
+
+    if (stalePromptDismissed !== undefined) {
+      await updateSessionMetadata(agentSlug, sessionId, { stalePromptDismissed })
     }
 
     const updated = await getSession(agentSlug, sessionId)
