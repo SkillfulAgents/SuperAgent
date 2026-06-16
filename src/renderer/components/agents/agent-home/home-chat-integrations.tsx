@@ -29,6 +29,7 @@ import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { ChatIntegrationSetupDialog } from '@renderer/components/chat-integrations/chat-integration-setup-dialog'
 import { IntegrationSettingsMenu } from '@renderer/components/chat-integrations/integration-settings-menu'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { HomeCollapsible } from './home-collapsible'
 
 interface HomeChatIntegrationsProps {
@@ -58,6 +59,7 @@ function statusBadge(status: string) {
 export function HomeChatIntegrations({ agentSlug, className }: HomeChatIntegrationsProps) {
   const { data: integrations } = useChatIntegrations(agentSlug)
   const { setView } = useSelection()
+  const navigate = useNavigate()
   const updateIntegration = useUpdateChatIntegration()
   const deleteIntegration = useDeleteChatIntegration()
   const rows = Array.isArray(integrations) ? integrations : []
@@ -82,7 +84,13 @@ export function HomeChatIntegrations({ agentSlug, className }: HomeChatIntegrati
                 subtitle={
                   <span className="capitalize">{formatProviderName(integration.provider)}</span>
                 }
-                onActivate={() => setView({ kind: 'chat', integrationId: integration.id })}
+                onActivate={() => {
+                  setView({ kind: 'chat', integrationId: integration.id })
+                  void navigate({
+                    to: '/agents/$slug/chat/$integrationId',
+                    params: { slug: agentSlug, integrationId: integration.id },
+                  })
+                }}
                 right={
                   <Popover>
                     <PopoverTrigger asChild>

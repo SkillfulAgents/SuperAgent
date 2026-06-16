@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
-import { useNavigate } from '@tanstack/react-router'
+import { router } from '@renderer/router'
 import { apiFetch } from '@renderer/lib/api'
 import type { ApiSession } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils/cn'
@@ -29,7 +29,6 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const { setAgent } = useSelection()
-  const navigate = useNavigate()
   const { data: agents } = useAgents()
 
   const sessionQueries = useQueries({
@@ -117,7 +116,11 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
     } else {
       setAgent(item.agent.slug, { kind: 'session', id: item.session.id })
     }
-    void navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
+    // The SearchDialog is rendered by SearchProvider ABOVE the RouterProvider, so
+    // the useNavigate() hook would warn ("useRouter must be used inside a
+    // RouterProvider"). Navigate the module-singleton router directly — the exact
+    // pattern the singleton exists for (off-router navigators, §7.8).
+    void router.navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

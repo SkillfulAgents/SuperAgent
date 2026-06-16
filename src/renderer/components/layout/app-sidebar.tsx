@@ -188,12 +188,19 @@ function ChatIntegrationSubItem({
   const navigate = useNavigate()
   const handleClick = () => {
     setAgent(agentSlug, { kind: 'chat', integrationId: integration.id })
-    void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+    void navigate({
+      to: '/agents/$slug/chat/$integrationId',
+      params: { slug: agentSlug, integrationId: integration.id },
+    })
   }
 
   const handleSessionClick = (sessionId: string) => {
     setAgent(agentSlug, { kind: 'chat', integrationId: integration.id, sessionId })
-    void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+    void navigate({
+      to: '/agents/$slug/chat/$integrationId',
+      params: { slug: agentSlug, integrationId: integration.id },
+      search: { session: sessionId },
+    })
   }
 
   const statusDot = integration.status === 'active' ? 'bg-green-500' :

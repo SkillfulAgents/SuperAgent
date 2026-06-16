@@ -23,6 +23,7 @@ import {
 } from '@renderer/hooks/use-chat-integrations'
 import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import {
   Dialog,
@@ -49,17 +50,21 @@ import { formatProviderName } from '@shared/lib/chat-integrations/utils'
 interface ChatIntegrationViewProps {
   integrationId: string
   agentSlug: string
+  /** Active sub-session from the route's `?session=` search (null = latest). */
+  chatSessionId: string | null
 }
 
-export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegrationViewProps) {
+export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }: ChatIntegrationViewProps) {
   const { data: integration, isLoading, error } = useChatIntegration(integrationId)
   const { data: status } = useChatIntegrationStatus(integrationId)
   const { data: sessions } = useChatIntegrationSessions(integrationId)
   const deleteIntegration = useDeleteChatIntegration()
   const updateIntegration = useUpdateChatIntegration()
   const clearSession = useClearChatSession()
-  const { view, handleChatIntegrationDeleted, setView } = useSelection()
-  const selectedChatSessionId = view.kind === 'chat' ? view.sessionId ?? null : null
+  const { handleChatIntegrationDeleted, setView } = useSelection()
+  const navigate = useNavigate()
+  // The active sub-session comes from the URL search now (deep-linkable).
+  const selectedChatSessionId = chatSessionId
   const { canUseAgent } = useUser()
   const canManage = canUseAgent(agentSlug)
   const [clearError, setClearError] = useState<string | null>(null)
@@ -70,7 +75,10 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
   const handleDelete = async () => {
     try {
       await deleteIntegration.mutateAsync({ id: integrationId, agentSlug })
+      // Always invoked while viewing this integration's route → up-nav home.
+      // setView keeps Selection consistent until R14.
       handleChatIntegrationDeleted(integrationId)
+      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to delete chat integration:', err)
     }
@@ -187,7 +195,17 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
                   <div className="flex items-center gap-2 flex-1 min-w-0">
                     <select
                       value={activeSessionId}
-                      onChange={(e) => setView({ kind: 'chat', integrationId, sessionId: e.target.value })}
+                      onChange={(e) => {
+                        const sessionId = e.target.value
+                        // Push (not replace): each sub-session is a real history
+                        // entry so Back walks them (migration plan §7.3).
+                        setView({ kind: 'chat', integrationId, sessionId })
+                        void navigate({
+                          to: '/agents/$slug/chat/$integrationId',
+                          params: { slug: agentSlug, integrationId },
+                          search: { session: sessionId },
+                        })
+                      }}
                       aria-label="Select chat session"
                       className="bg-transparent border rounded px-1.5 py-0.5 text-xs text-muted-foreground cursor-pointer"
                     >

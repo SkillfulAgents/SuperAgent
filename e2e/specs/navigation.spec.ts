@@ -208,4 +208,27 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.selectAgent(agentName)
     await agentPage.deleteAgent()
   })
+
+  test('Chat leaf route resolves on a cold deep-link with ?session= search (R8)', async ({ page }) => {
+    // Mock mode has no chat integrations, so we can't click one — but we can
+    // verify the chat leaf route (path param + ?session= search) resolves into
+    // the shared agent shell and renders its fallback without a page crash.
+    const errors: string[] = []
+    page.on('pageerror', (e) => errors.push(e.message))
+
+    const agentName = `Nav Chat ${Date.now()}`
+    await agentPage.createAgent(agentName)
+    const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
+    expect(slug).toBeTruthy()
+
+    await page.goto(`/agents/${slug}/chat/sample-integration?session=sample-session`)
+    await expect(page).toHaveURL(/\/chat\/sample-integration\?session=sample-session$/)
+    // The shared agent header rendered → the route matched AgentShell, no crash.
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+    expect(errors).toEqual([])
+
+    // Cleanup
+    await agentPage.selectAgent(agentName)
+    await agentPage.deleteAgent()
+  })
 })

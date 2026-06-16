@@ -4,6 +4,7 @@ import { ConnectionsView } from '@renderer/components/connections/connections-vi
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
+import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 
 /**
  * Leaf route components for the agent sub-views. The shared header chrome +
@@ -67,7 +68,17 @@ export function DashboardRoute() {
   return <DashboardView agentSlug={slug} dashboardSlug={dashSlug} />
 }
 
+// R8 — chat is a real leaf route; integrationId is a path param and the optional
+// active sub-session travels in the URL search (`?session=`).
+export function ChatRoute() {
+  const slug = useAgentSlug()
+  const { integrationId } = useParams({ strict: false }) as { integrationId?: string }
+  const search = useSearch({ strict: false }) as { session?: unknown }
+  const chatSessionId = typeof search.session === 'string' ? search.session : null
+  if (!slug || !integrationId) return null
+  return <ChatIntegrationView integrationId={integrationId} agentSlug={slug} chatSessionId={chatSessionId} />
+}
+
 export const SessionRoute = NullRoute // R9
-export const ChatRoute = NullRoute // R8
 export const SettingsRoute = NullRoute // R12
 export const SettingsTabRoute = NullRoute // R12

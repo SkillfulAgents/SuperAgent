@@ -3,7 +3,6 @@ import { SessionChatColumn } from './session-chat-column'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
-import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { ChevronLeft, CalendarClock, Zap } from 'lucide-react'
 import { useState, useEffect } from 'react'
@@ -147,9 +146,7 @@ export function AgentBody() {
         </div>
       )}
 
-      {view.kind === 'chat' ? (
-        <ChatIntegrationView integrationId={view.integrationId} agentSlug={agentSlug} />
-      ) : view.kind === 'session' ? (
+      {view.kind === 'session' ? (
         <FilePreviewProvider>
           <div className="flex-1 flex flex-col min-h-0">
             <SessionSearchBar search={search} />
@@ -186,9 +183,9 @@ export function AgentBody() {
           />
         )
       ) : (
-        /* apiLogs/connections (R5), task/webhook (R6) and dashboard (R7) render
-           via their own leaf routes; this branch is only hit transiently before
-           the route transition lands. */
+        /* apiLogs/connections (R5), task/webhook (R6), dashboard (R7) and chat
+           (R8) render via their own leaf routes; this branch is only hit
+           transiently before the route transition lands. */
         null
       )}
 
