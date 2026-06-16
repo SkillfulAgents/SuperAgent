@@ -29,6 +29,13 @@ vi.mock('@renderer/hooks/use-messages', () => ({
 const mockStreamState = {
   isActive: false,
   slashCommands: [] as Array<{ name: string; description: string; argumentHint: string }>,
+  isWaitingBackground: false,
+  pendingSecretRequests: [] as unknown[],
+  pendingConnectedAccountRequests: [] as unknown[],
+  pendingQuestionRequests: [] as unknown[],
+  pendingFileRequests: [] as unknown[],
+  pendingRemoteMcpRequests: [] as unknown[],
+  pendingBrowserInputRequests: [] as unknown[],
 }
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
