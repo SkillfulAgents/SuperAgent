@@ -143,12 +143,15 @@ export function usePendingRequests({
             })
           }
         } else if (toolCall.name === 'mcp__user-input__request_browser_input') {
-          const input = toolCall.input as { message?: string; requirements?: string[] }
+          const input = toolCall.input as { message?: string; requirements?: unknown }
           if (input.message) {
             browserInputRequests.push({
               toolUseId: toolCall.id,
               message: input.message,
-              requirements: input.requirements || [],
+              // Model-controlled: coerce a non-array (e.g. a bare string) to []
+              // so downstream `.map()` can't crash the request card. `|| []`
+              // would let a non-empty string through.
+              requirements: Array.isArray(input.requirements) ? input.requirements : [],
             })
           }
         } else if (toolCall.name === 'mcp__user-input__request_script_run') {

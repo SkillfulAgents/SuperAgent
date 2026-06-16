@@ -826,7 +826,10 @@ function getOrCreateEventSource(
           const newRequest: BrowserInputRequest = {
             toolUseId: data.toolUseId,
             message: data.message,
-            requirements: data.requirements || [],
+            // Guard against the model emitting a non-array (e.g. a bare string):
+            // `|| []` only catches falsy values, so a string would survive and
+            // crash `.map()` in the renderer. See SUP browser-input crash.
+            requirements: Array.isArray(data.requirements) ? data.requirements : [],
           }
           streamStates.set(sessionId, {
             ...current,
