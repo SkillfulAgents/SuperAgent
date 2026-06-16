@@ -91,59 +91,48 @@ describe('SlackConnector.finalizeStreamingMessage', () => {
 
 describe('TelegramConnector.finalizeStreamingMessage', () => {
   let connector: TelegramConnector
-  let mockEditMessageText: ReturnType<typeof vi.fn>
-  let mockSendMessage: ReturnType<typeof vi.fn>
+  let raw: { editMessageText: ReturnType<typeof vi.fn>; sendRichMessage: ReturnType<typeof vi.fn> }
 
   beforeEach(() => {
     connector = new TelegramConnector({ botToken: 'fake:token' })
-    mockEditMessageText = vi.fn().mockResolvedValue(true)
-    mockSendMessage = vi.fn().mockResolvedValue({ message_id: 999 })
-    // Inject mock bot
+    raw = {
+      editMessageText: vi.fn().mockResolvedValue(true),
+      sendRichMessage: vi.fn().mockResolvedValue({ message_id: 999 }),
+    }
     ;(connector as any).bot = {
-      api: {
-        editMessageText: mockEditMessageText,
-        sendMessage: mockSendMessage,
-      },
+      api: { raw, editMessageText: vi.fn(), sendMessage: vi.fn() },
     }
   })
 
-  it('edits the existing message for short text', async () => {
+  it('edits the existing message rich for short text', async () => {
     await connector.finalizeStreamingMessage('12345', '100', 'short reply')
-
-    expect(mockEditMessageText).toHaveBeenCalledTimes(1)
-    expect(mockEditMessageText).toHaveBeenCalledWith('12345', 100, expect.any(String), expect.objectContaining({
-      parse_mode: 'HTML',
+    expect(raw.editMessageText).toHaveBeenCalledTimes(1)
+    expect(raw.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
+      chat_id: 12345,
+      message_id: 100,
+      rich_message: expect.objectContaining({ markdown: 'short reply' }),
     }))
-    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(raw.sendRichMessage).not.toHaveBeenCalled()
   })
 
-  it('splits long messages: edits first chunk, sends the rest', async () => {
-    // Telegram limit is 4096
-    const longText = 'a'.repeat(3000) + '\n\n' + 'b'.repeat(3000)
-
+  it('splits content over the rich ceiling: edits the first chunk rich, sends the rest rich', async () => {
+    const longText = 'a'.repeat(20000) + '\n\n' + 'b'.repeat(20000) // > 32768
     await connector.finalizeStreamingMessage('12345', '100', longText)
-
-    expect(mockEditMessageText).toHaveBeenCalledTimes(1)
-    expect(mockSendMessage).toHaveBeenCalledTimes(1)
-    expect(mockSendMessage).toHaveBeenCalledWith('12345', expect.any(String), expect.objectContaining({
-      parse_mode: 'HTML',
-    }))
+    expect(raw.editMessageText).toHaveBeenCalledTimes(1)
+    expect(raw.sendRichMessage).toHaveBeenCalledTimes(1)
   })
 
-  it('does not truncate — full content is preserved across chunks', async () => {
-    const para1 = 'a'.repeat(3500)
-    const para2 = 'b'.repeat(3500)
+  it('does not truncate — full content is preserved across rich chunks', async () => {
+    const para1 = 'a'.repeat(20000)
+    const para2 = 'b'.repeat(20000)
     const longText = `${para1}\n\n${para2}`
-
     await connector.finalizeStreamingMessage('12345', '100', longText)
-
-    const editText: string = mockEditMessageText.mock.calls[0][2]
-    const sendText: string = mockSendMessage.mock.calls[0][1]
-    const combined = editText + sendText
-
+    const editMd: string = raw.editMessageText.mock.calls[0][0].rich_message.markdown
+    const sendMd: string = raw.sendRichMessage.mock.calls[0][0].rich_message.markdown
+    const combined = editMd + sendMd
     expect(combined).not.toContain('truncated')
-    expect(combined).toContain('a'.repeat(3500))
-    expect(combined).toContain('b'.repeat(3500))
+    expect(combined).toContain('a'.repeat(20000))
+    expect(combined).toContain('b'.repeat(20000))
   })
 })
 
@@ -221,5 +210,39 @@ describe('TelegramConnector.sendUserRequestCard (rich)', () => {
       type: 'tool_status', toolUseId: 't2', toolName: 'Bash', summary: 'ran ls', status: 'success',
     } as any)
     expect(mockSendRich.mock.calls[0][0].rich_message.markdown).toContain('Bash')
+  })
+})
+
+describe('TelegramConnector streaming (group, rich)', () => {
+  let connector: TelegramConnector
+  let raw: { sendRichMessage: ReturnType<typeof vi.fn>; editMessageText: ReturnType<typeof vi.fn>; sendRichMessageDraft: ReturnType<typeof vi.fn> }
+  beforeEach(() => {
+    connector = new TelegramConnector({ botToken: 'fake:token' })
+    raw = {
+      sendRichMessage: vi.fn().mockResolvedValue({ message_id: 100 }),
+      editMessageText: vi.fn().mockResolvedValue(true),
+      sendRichMessageDraft: vi.fn().mockResolvedValue(true),
+    }
+    ;(connector as any).bot = { api: { raw, sendMessage: vi.fn(), editMessageText: vi.fn() } }
+  })
+
+  it('creates the message with sendRichMessage on first update (negative chat id)', async () => {
+    const id = await connector.sendStreamingUpdate('-1001', 'partial')
+    expect(raw.sendRichMessage).toHaveBeenCalledWith(expect.objectContaining({ chat_id: -1001 }))
+    expect(raw.sendRichMessageDraft).not.toHaveBeenCalled()
+    expect(id).toBe('100')
+  })
+
+  it('edits rich on subsequent updates', async () => {
+    await connector.sendStreamingUpdate('-1001', 'more', '100')
+    expect(raw.editMessageText).toHaveBeenCalledWith(expect.objectContaining({ chat_id: -1001, message_id: 100 }))
+  })
+
+  it('finalizes by editing the persisted message rich', async () => {
+    await connector.finalizeStreamingMessage('-1001', '100', 'final brief')
+    expect(raw.editMessageText).toHaveBeenCalledWith(expect.objectContaining({
+      message_id: 100,
+      rich_message: expect.objectContaining({ markdown: 'final brief' }),
+    }))
   })
 })

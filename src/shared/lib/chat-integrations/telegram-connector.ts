@@ -29,6 +29,9 @@ export interface TelegramConfig {
 
 const MAX_MESSAGE_LENGTH = 4096
 const FIRST_POLL_BATCH_DELAY_MS = 500
+const RICH_DRAFT_SENTINEL_PREFIX = 'draft:'
+// Q4 A/B switch: true = stream rich intermediates (group path); false = stream legacy HTML, finalize rich.
+const STREAM_RICH_INTERMEDIATES = true
 
 // ── Markdown → Telegram HTML ─────────────────────────────────────────────
 
@@ -342,28 +345,31 @@ export class TelegramConnector extends ChatClientConnector {
 
   async sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
+    const body = text || 'Thinking...'
 
-    const truncated = text.length > MAX_MESSAGE_LENGTH
-      ? text.slice(0, MAX_MESSAGE_LENGTH - 60) + '\n\n... (full response will appear when done)'
-      : text
-    const displayText = this.markdownToHtml(truncated || 'Thinking...')
+    // DM animated draft path (Task 9 fills in driveDraftStream).
+    if (this.useRich && this.config.draftStreaming !== false && this.isPrivateChat(chatId)) {
+      return this.driveDraftStream(chatId, body)
+    }
 
+    // Group/channel edit path.
     if (!existingMessageId) {
-      // First chunk — create the message
-      const sent = await this.bot.api.sendMessage(chatId, displayText, { parse_mode: 'HTML' })
+      if (this.useRich && STREAM_RICH_INTERMEDIATES) {
+        const sent = await this.bot.api.raw.sendRichMessage({ chat_id: Number(chatId), rich_message: this.richMessage(body) } as never)
+        return String((sent as { message_id: number }).message_id)
+      }
+      const sent = await this.bot.api.sendMessage(chatId, this.markdownToHtml(body), { parse_mode: 'HTML' })
       return String(sent.message_id)
     }
 
-    // Edit existing message
-    try {
-      await this.bot.api.editMessageText(chatId, Number(existingMessageId), displayText, {
-        parse_mode: 'HTML',
-      })
-    } catch (err: unknown) {
-      // "message is not modified" is expected when text hasn't changed
-      const errMsg = err instanceof Error ? err.message : String(err)
-      if (!errMsg.includes('message is not modified')) {
-        throw err
+    if (this.useRich && STREAM_RICH_INTERMEDIATES) {
+      await this.editRichOrHtml(chatId, existingMessageId, body)
+    } else {
+      try {
+        await this.bot.api.editMessageText(chatId, Number(existingMessageId), this.markdownToHtml(body), { parse_mode: 'HTML' })
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        if (!errMsg.includes('message is not modified')) throw err
       }
     }
     return existingMessageId
@@ -371,17 +377,19 @@ export class TelegramConnector extends ChatClientConnector {
 
   async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void> {
     if (!this.bot) return
+    const text = finalText || '(empty response)'
 
-    const html = this.markdownToHtml(finalText || '(empty response)')
-    const chunks = splitChatMessage(html, MAX_MESSAGE_LENGTH)
+    // DM draft path: commit the ephemeral draft as a real persisted message.
+    if (messageId.startsWith(RICH_DRAFT_SENTINEL_PREFIX)) {
+      await this.commitDraft(chatId, text)
+      return
+    }
 
+    const chunks = splitForRichLimits(text)
     try {
-      await this.bot.api.editMessageText(chatId, Number(messageId), chunks[0], {
-        parse_mode: 'HTML',
-      })
-
+      await this.editRichOrHtml(chatId, messageId, chunks[0])
       for (let i = 1; i < chunks.length; i++) {
-        await this.bot.api.sendMessage(chatId, chunks[i], { parse_mode: 'HTML' })
+        await this.sendRichOrHtml(chatId, chunks[i])
       }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
@@ -390,6 +398,15 @@ export class TelegramConnector extends ChatClientConnector {
         captureException(err, { tags: { component: 'chat-integration', operation: 'finalize-message' }, extra: { provider: 'telegram', chatId, messageId } })
       }
     }
+  }
+
+  // TEMP (replaced in Task 9): behave like a group create so this task's tests pass.
+  private async driveDraftStream(chatId: string, body: string): Promise<string> {
+    const sent = await this.bot!.api.raw.sendRichMessage({ chat_id: Number(chatId), rich_message: this.richMessage(body) } as never)
+    return String((sent as { message_id: number }).message_id)
+  }
+  private async commitDraft(chatId: string, text: string): Promise<void> {
+    await this.sendRichOrHtml(chatId, text)
   }
 
   async showTypingIndicator(chatId: string): Promise<void> {
