@@ -1305,6 +1305,30 @@ describe('transformMessages', () => {
       expect(asMessage(result[0]).content.text).toBe(text)
     })
 
+    it('splits at the real separator even when the LLM summary contains a "---" line', () => {
+      // A summary that itself contains a bare '---' line — the old first-findIndex logic
+      // would split here instead of at the real separator after the transcript-path line.
+      const summaryWithHR = 'Was working on auth.\n---\nThen moved to the config system.'
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', buildInjected('add rate limiting', summaryWithHR)),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result).toHaveLength(2)
+
+      // Card summary should include the full summary text, including the embedded '---'
+      const card = result[0] as TransformedCompactBoundary
+      expect(card.type).toBe('compact_boundary')
+      expect(card.summary).toContain('Was working on auth.')
+      expect(card.summary).toContain('---')
+      expect(card.summary).toContain('Then moved to the config system.')
+
+      // Real user message must be only the trailing user text, not summary fragments
+      expect(result[1].type).toBe('user')
+      expect(asMessage(result[1]).content.text).toBe('add rate limiting')
+    })
+
     it('does not split regular user messages that lack the sentinel', () => {
       const entries: JsonlMessageEntry[] = [
         createUserMessage('uuid-1', 'Just a normal message\n---\nwith a separator'),

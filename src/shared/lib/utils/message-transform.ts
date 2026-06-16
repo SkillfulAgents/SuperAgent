@@ -400,7 +400,12 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     // first line is longer than the sentinel (it has " The summary below…" appended).
     if (entry.type === 'user' && text.startsWith(BRANCH_PREAMBLE_SENTINEL)) {
       const lines = text.split('\n')
-      const separatorIdx = lines.findIndex((line) => line === '---')
+      // Anchor the search to the fixed transcript-path instruction line so that a
+      // '---' line inside the LLM summary does not trigger an early split.
+      const pathLineIdx = lines.findIndex((line) => line.includes('.claude/projects/-workspace/'))
+      const separatorIdx = pathLineIdx !== -1
+        ? lines.findIndex((line, i) => i > pathLineIdx && line === '---')
+        : -1
       if (separatorIdx !== -1) {
         const contextBlock = lines.slice(0, separatorIdx).join('\n').trimEnd()
         const userText = lines.slice(separatorIdx + 1).join('\n').trimStart()
@@ -426,7 +431,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         }
         // separator found but userText empty: fall through to normal rendering below
       }
-      // Defensive: no separator found — fall through to render the message normally
+      // Defensive: path-line marker or separator not found — fall through to render normally
     }
 
     result.push({
