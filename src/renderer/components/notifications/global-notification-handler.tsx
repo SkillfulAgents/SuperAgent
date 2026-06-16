@@ -16,6 +16,7 @@ import { getApiBaseUrl, isElectron } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
 import { showOSNotification } from '@renderer/lib/os-notifications'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
@@ -47,6 +48,7 @@ export function GlobalNotificationHandler() {
   useRenderTracker('GlobalNotificationHandler')
   const queryClient = useQueryClient()
   const { view, setAgent } = useSelection()
+  const navigate = useNavigate()
   const selectedSessionId = view.kind === 'session' ? view.id : null
   const { data: unreadData } = useUnreadNotificationCount()
   const { data: userSettings } = useUserSettings()
@@ -147,12 +149,13 @@ export function GlobalNotificationHandler() {
           nav.agentSlug,
           nav.sessionId ? { kind: 'session', id: nav.sessionId } : { kind: 'home' },
         )
+        void navigate({ to: '/agents/$slug', params: { slug: nav.agentSlug } })
       }
       for (const evt of events) {
         dispatchNotificationEvent(evt)
       }
     })
-  }, [dispatchNotificationEvent, setAgent])
+  }, [dispatchNotificationEvent, setAgent, navigate])
 
   useEffect(() => {
     const baseUrl = getApiBaseUrl()

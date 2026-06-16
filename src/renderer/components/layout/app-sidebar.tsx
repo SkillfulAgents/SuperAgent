@@ -50,6 +50,7 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
 import { useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import { useSelection } from '@renderer/context/selection-context'
 import { useSearch } from '@renderer/context/search-context'
@@ -129,8 +130,10 @@ function SessionSubItem({
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
 
+  const navigate = useNavigate()
   const handleClick = () => {
     setAgent(agentSlug, { kind: 'session', id: session.id })
+    void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
   }
 
   return (
@@ -182,12 +185,15 @@ function ChatIntegrationSubItem({
   const hasSelectedSession = viewingThisIntegration && selectedChatSessionId != null
   const [isOpen, setIsOpen] = useState(viewingThisIntegration || hasSelectedSession)
 
+  const navigate = useNavigate()
   const handleClick = () => {
     setAgent(agentSlug, { kind: 'chat', integrationId: integration.id })
+    void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
   }
 
   const handleSessionClick = (sessionId: string) => {
     setAgent(agentSlug, { kind: 'chat', integrationId: integration.id, sessionId })
+    void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
   }
 
   const statusDot = integration.status === 'active' ? 'bg-green-500' :
@@ -330,8 +336,10 @@ function DashboardSubItem({
   const isSelected = view.kind === 'dashboard' && view.slug === artifact.slug
   const [isRenaming, setIsRenaming] = useState(false)
 
+  const navigate = useNavigate()
   const handleClick = () => {
     setAgent(agentSlug, { kind: 'dashboard', slug: artifact.slug })
+    void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
   }
 
   const handleDoubleClick = () => {
@@ -571,8 +579,10 @@ export const AgentMenuItem = React.forwardRef<
     }
   }, [isOpen, agent.slug, queryClient])
 
+  const navigate = useNavigate()
   const handleClick = () => {
     setAgent(agent.slug)
+    void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
   }
 
   const handleChevronClick = (e: React.MouseEvent) => {
@@ -696,13 +706,17 @@ function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const unreadCount = countData?.count ?? 0
   const { view, setView } = useSelection()
+  const navigate = useNavigate()
   const isActive = view.kind === 'notifications'
 
   return (
     <SidebarMenuButton
       data-testid="notifications-button"
       isActive={isActive}
-      onClick={() => setView({ kind: 'notifications' })}
+      onClick={() => {
+        setView({ kind: 'notifications' })
+        void navigate({ to: '/notifications' })
+      }}
     >
       <Bell className="h-4 w-4" />
       <span>Notifications</span>
@@ -789,6 +803,7 @@ export function AppSidebar() {
     }
   }, [createUntitledAgent])
   const { clearSelection, selectedAgentSlug } = useSelection()
+  const navigate = useNavigate()
   const { openSearch } = useSearch()
   const { data: agents, isLoading, error } = useAgents()
   const { data: discoverableAgents } = useDiscoverableAgents()
@@ -954,7 +969,10 @@ export function AppSidebar() {
               <SidebarMenu className="gap-0.5 py-2">
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    onClick={clearSelection}
+                    onClick={() => {
+                      clearSelection()
+                      void navigate({ to: '/' })
+                    }}
                     isActive={!selectedAgentSlug}
                     data-testid="home-button"
                   >

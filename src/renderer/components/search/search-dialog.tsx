@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import type { ApiSession } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils/cn'
@@ -28,6 +29,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const { setAgent } = useSelection()
+  const navigate = useNavigate()
   const { data: agents } = useAgents()
 
   const sessionQueries = useQueries({
@@ -107,12 +109,15 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   }
 
   const handleSelect = (item: FlatItem) => {
+    // Close the dialog BEFORE navigating: the route transition otherwise strands
+    // the Radix overlay open (it intercepts pointer events on the page beneath).
+    onOpenChange(false)
     if (item.kind === 'agent') {
       setAgent(item.agent.slug)
     } else {
       setAgent(item.agent.slug, { kind: 'session', id: item.session.id })
     }
-    onOpenChange(false)
+    void navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

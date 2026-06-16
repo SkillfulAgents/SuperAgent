@@ -1,13 +1,13 @@
+import { Outlet } from '@tanstack/react-router'
 import { useState, useEffect, useRef } from 'react'
 import { DialogProvider, useDialogs } from '@renderer/context/dialog-context'
 import { UpdateStatusProvider } from '@renderer/context/update-status-context'
 import { UpdateToastNotifier } from '@renderer/components/update-toast-notifier'
 import { AppSidebar } from '@renderer/components/layout/app-sidebar'
-import { MainContent } from '@renderer/components/layout/main-content'
 import { WindowControls } from '@renderer/components/layout/window-controls'
 import { GlobalSettingsPage } from '@renderer/components/settings/global-settings-page'
 import { ContainerSetupHandler } from '@renderer/components/settings/container-setup-handler'
-import { SidebarProvider, SidebarInset } from '@renderer/components/ui/sidebar'
+import { SidebarProvider, SidebarInset, useSidebar } from '@renderer/components/ui/sidebar'
 import { TrayNavigationHandler } from '@renderer/components/tray-navigation-handler'
 import { GlobalNotificationHandler } from '@renderer/components/notifications/global-notification-handler'
 import { OnboardingProvider } from '@renderer/context/onboarding-context'
@@ -15,22 +15,20 @@ import { GettingStartedWizard } from '@renderer/components/wizard/getting-starte
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useTheme } from '@renderer/hooks/use-theme'
 import { useInsetRadius } from '@renderer/hooks/use-inset-radius'
+import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSettings } from '@renderer/hooks/use-settings'
+import { isElectron, getPlatform } from '@renderer/lib/env'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
+import { SelectionBridge } from '@renderer/router/selection-bridge'
 
 /**
- * The existing app UI (window chrome, wizard gate, sidebar + main content, and
- * the global settings page). Rendered by the router's root route (RootLayout) so
- * it sits INSIDE RouterProvider — this is what lets its descendants adopt router
- * hooks (`<AppLink>`, `useNavigate`) as views convert in R5+.
- *
- * Extracted verbatim from App.tsx in R3 to keep `route-components.tsx` from
- * importing the app entry (which would create a cycle). It dissolves into
- * dedicated route components across R4–R13.
+ * Root route: the always-mounted chrome (window controls, update toaster), the
+ * app-level providers, the URL→Selection bridge, and the wizard gate. Renders
+ * `<Outlet/>` for the app shell. Decomposed from App.tsx's AppContent in R4.
  */
-export function AppContent() {
+export function RootLayout() {
   useTheme()
   useInsetRadius()
 
@@ -42,12 +40,10 @@ export function AppContent() {
   const { identify } = useAnalyticsTracking()
   const hasAutoOpened = useRef(false)
 
-  // Identify user on app open
   useEffect(() => {
     identify()
   }, [identify])
 
-  // Sync error reporting settings
   const shareErrorReports = globalSettings?.shareErrorReports
   useEffect(() => {
     if (shareErrorReports !== undefined) {
@@ -55,7 +51,6 @@ export function AppContent() {
     }
   }, [shareErrorReports])
 
-  // Set user identity on error reports when logged in with platform
   useEffect(() => {
     if (user) {
       setRendererErrorReportingUser({ id: user.id, email: user.email })
@@ -89,12 +84,13 @@ export function AppContent() {
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
       <UpdateStatusProvider>
         <OnboardingProvider>
+          <SelectionBridge />
           <WindowControls />
           <UpdateToastNotifier />
           {wizardOpen ? (
             <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
           ) : (
-            <AppShell />
+            <Outlet />
           )}
         </OnboardingProvider>
       </UpdateStatusProvider>
@@ -102,7 +98,28 @@ export function AppContent() {
   )
 }
 
-function AppShell() {
+/**
+ * Keeps Electron's traffic-light position synced to the sidebar collapsed state.
+ * Must live inside SidebarProvider. Relocated from main-content.tsx in R4 so it
+ * runs for every shell route, not just agent views.
+ */
+function SidebarCollapsedSync() {
+  const { state: sidebarState } = useSidebar()
+  const isFullScreen = useFullScreen()
+  useEffect(() => {
+    if (!isElectron() || getPlatform() !== 'darwin') return
+    window.electronAPI?.setSidebarCollapsed(sidebarState === 'collapsed' && !isFullScreen)
+  }, [sidebarState, isFullScreen])
+  return null
+}
+
+/**
+ * App shell (pathless layout, mount-survival anchor #1): the sidebar + inset
+ * that stays mounted as the `<Outlet/>` swaps between home, notifications, and an
+ * agent. Settings still replaces the whole shell via DialogContext in R4 (it
+ * becomes a sibling route at R12). Decomposed from App.tsx's AppShell.
+ */
+export function AppShellLayout() {
   const { settingsOpen, setSettingsOpen, settingsTab, openWizard } = useDialogs()
 
   return (
@@ -117,9 +134,10 @@ function AppShell() {
         />
       ) : (
         <SidebarProvider className="h-screen">
+          <SidebarCollapsedSync />
           <AppSidebar />
           <SidebarInset className="min-w-0">
-            <MainContent />
+            <Outlet />
           </SidebarInset>
         </SidebarProvider>
       )}

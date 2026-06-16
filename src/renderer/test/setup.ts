@@ -33,3 +33,15 @@ vi.mock('@renderer/context/analytics-context', () => ({
   useAnalyticsTracking: () => ({ track: vi.fn(), identify: vi.fn() }),
   AnalyticsProvider: ({ children }: { children: React.ReactNode }) => children,
 }))
+
+// Many components now call useNavigate() (router-driven navigation). Renderer
+// unit tests render leaf components WITHOUT a RouterProvider, so stub navigation
+// to a no-op — these tests assert SelectionContext/behavior, not real route
+// changes (which are covered by router unit tests + E2E). Without this, the real
+// useNavigate returns a rejected promise outside a router, surfacing as a
+// mis-attributed unhandled rejection. File-level vi.mock of the module overrides
+// this where a test needs different behavior.
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return { ...actual, useNavigate: () => () => {} }
+})

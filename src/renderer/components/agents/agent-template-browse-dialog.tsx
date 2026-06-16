@@ -10,6 +10,7 @@ import { AgentTemplateBrowseContent } from './agent-template-browse-content'
 import { TemplateInstallDialog } from './template-install-dialog'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useQueryClient } from '@tanstack/react-query'
@@ -26,6 +27,7 @@ export function AgentTemplateBrowseDialog({
 }: AgentTemplateBrowseDialogProps) {
   const { data: discoverableAgents } = useDiscoverableAgents()
   const { setAgent } = useSelection()
+  const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
   const queryClient = useQueryClient()
@@ -40,12 +42,13 @@ export function AgentTemplateBrowseDialog({
       track('agent_created', { source: 'skillset', num_skills_added_at_creation: 0 })
       await queryClient.refetchQueries({ queryKey: ['agents'] })
       setAgent(agent.slug)
+      void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
       if (meta.hasOnboarding) {
         await startOnboardingSession(agent.slug)
       }
       onOpenChange(false)
     },
-    [track, queryClient, setAgent, startOnboardingSession, onOpenChange],
+    [track, queryClient, setAgent, navigate, startOnboardingSession, onOpenChange],
   )
 
   const hasTemplates = discoverableAgents && discoverableAgents.length > 0

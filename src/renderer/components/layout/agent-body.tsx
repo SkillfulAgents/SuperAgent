@@ -4,22 +4,19 @@ import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
-import { HomePage } from '@renderer/components/home/home-page'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
-import { NotificationsView } from '@renderer/components/notifications/notifications-view'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
-import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { Power, Square, ChevronLeft, Clock, Loader2, AlertCircle, AlertTriangle, X, CalendarClock, Zap } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
 import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
 import { useRemoteMcps } from '@renderer/hooks/use-remote-mcps'
@@ -27,27 +24,38 @@ import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { useWebhookTrigger } from '@renderer/hooks/use-webhook-triggers'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { useParams } from '@tanstack/react-router'
 import { useSelection } from '@renderer/context/selection-context'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
-import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { usePendingMessages } from '@renderer/context/pending-messages-context'
+import { ContentShell } from './content-shell'
 import { useUser } from '@renderer/context/user-context'
 import { useMountWarnings } from '@renderer/hooks/use-mount-warnings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { computeContextPercent } from '@shared/lib/utils/context-usage'
 import { useSessionSearch } from '@renderer/hooks/use-session-search'
 import { SessionSearchBar } from '@renderer/components/messages/session-search-bar'
-import type { PendingMessage } from '@renderer/components/messages/pending-message'
 
-// Stable empty array so a session without pending messages doesn't re-render consumers.
-const EMPTY_PENDING_MESSAGES: PendingMessage[] = []
-
-export function MainContent() {
-  useRenderTracker('MainContent')
-  const { selectedAgentSlug: agentSlug, view, setView } = useSelection()
+/**
+ * The agent view body: header (breadcrumb + start/stop), banners, and the
+ * per-view switch (dashboard/api-logs/connections/task/webhook/chat/session/home),
+ * plus the agent-scoped dialogs. Rendered by the agent index route (agentHomeRoute)
+ * inside AgentShell, which owns the stream + pending store (consumed via context).
+ *
+ * Sub-views are still SelectionContext-driven in R4 — each migrates to its own
+ * route in R5–R10, peeling its branch out of the switch below.
+ */
+export function AgentBody() {
+  useRenderTracker('AgentBody')
+  // Agent slug comes from the URL (authoritative) so the body survives a reload /
+  // deep-link where the bridge hasn't mirrored it into Selection yet. The sub-view
+  // still comes from Selection until sub-views become routes (R5–R10).
+  const agentSlug = (useParams({ strict: false }) as { slug?: string }).slug ?? null
+  const { view, setView } = useSelection()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
@@ -58,11 +66,6 @@ export function MainContent() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
-  // Pending user messages per session — survives navigation between sessions.
-  // Multiple entries per session: the user can queue messages while the agent
-  // is working; each is removed individually when it materializes (by uuid).
-  const pendingMessagesRef = useRef(new Map<string, PendingMessage[]>())
-  const [, forceUpdate] = useState(0)
   const { data: agent } = useAgent(agentSlug)
   const { data: sessions } = useSessions(agentSlug)
   const { data: session } = useSession(sessionId, agentSlug)
@@ -75,8 +78,15 @@ export function MainContent() {
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
-  const { contextUsage: streamContextUsage } = useMessageStream(sessionId ?? null, agentSlug ?? null)
-  const { canUseAgent, user, isAuthMode } = useUser()
+  const {
+    getPendingMessages,
+    onMessageSent,
+    onMessageUuidAssigned,
+    onPendingMessageAppeared,
+    onSessionCreated,
+    streamContextUsage,
+  } = usePendingMessages()
+  const { canUseAgent } = useUser()
   const isViewOnly = agentSlug ? !canUseAgent(agentSlug) : false
   const { warning: mountWarning, dismiss: dismissMountWarning } = useMountWarnings(agentSlug ?? null)
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
@@ -125,90 +135,9 @@ export function MainContent() {
   // Add left padding for macOS traffic lights when sidebar is collapsed in Electron (not in full screen)
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
-  // Re-center macOS traffic lights vertically with the 48px header when sidebar is collapsed.
-  useEffect(() => {
-    if (!isElectron() || getPlatform() !== 'darwin') return
-    window.electronAPI?.setSidebarCollapsed(sidebarState === 'collapsed' && !isFullScreen)
-  }, [sidebarState, isFullScreen])
-
-  const pendingUserMessages = sessionId ? (pendingMessagesRef.current.get(sessionId) ?? EMPTY_PENDING_MESSAGES) : EMPTY_PENDING_MESSAGES
-
-  const handleMessageSent = useCallback((content: string, localId: string, queued: boolean) => {
-    if (sessionId) {
-      const existing = pendingMessagesRef.current.get(sessionId) ?? []
-      pendingMessagesRef.current.set(sessionId, [...existing, {
-        localId,
-        text: content,
-        sentAt: Date.now(),
-        queued,
-        sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
-      }])
-      forceUpdate((n) => n + 1)
-    }
-  }, [sessionId, isAuthMode, user])
-
-  // The POST response carries the server-assigned message uuid and its
-  // authoritative queued decision — attach both to the optimistic entry. The
-  // uuid materializes a non-queued copy by exact id match; correcting `queued`
-  // (our send-time guess can be wrong) keeps the ghost's label/placement honest
-  // and enables the text-fallback match that a server-queued message needs.
-  const handleMessageUuidAssigned = useCallback((localId: string, uuid: string, queued: boolean) => {
-    if (sessionId) {
-      const existing = pendingMessagesRef.current.get(sessionId)
-      if (!existing?.some((m) => m.localId === localId)) return
-      pendingMessagesRef.current.set(sessionId, existing.map((m) => (m.localId === localId ? { ...m, uuid, queued } : m)))
-      forceUpdate((n) => n + 1)
-    }
-  }, [sessionId])
-
-  const handlePendingMessageAppeared = useCallback((localId: string) => {
-    if (sessionId) {
-      const existing = pendingMessagesRef.current.get(sessionId)
-      if (!existing?.some((m) => m.localId === localId)) return
-      const remaining = existing.filter((m) => m.localId !== localId)
-      if (remaining.length > 0) {
-        pendingMessagesRef.current.set(sessionId, remaining)
-      } else {
-        pendingMessagesRef.current.delete(sessionId)
-      }
-      forceUpdate((n) => n + 1)
-    }
-  }, [sessionId])
-
-  // Callback for AgentHome when a new session is created with initial message.
-  // The uuid is server-assigned (from the create response), so it's known
-  // up-front — no re-keying needed on this path.
-  const handleSessionCreated = useCallback((newSessionId: string, initialMessage: string, messageUuid: string) => {
-    pendingMessagesRef.current.set(newSessionId, [{
-      localId: messageUuid,
-      uuid: messageUuid,
-      text: initialMessage,
-      sentAt: Date.now(),
-      sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
-    }])
-    setView({ kind: 'session', id: newSessionId })
-  }, [setView, isAuthMode, user])
-
-  if (view.kind === 'notifications') {
-    return (
-      <ContentShell
-        needsTrafficLightPadding={needsTrafficLightPadding}
-        headerContent={
-          <span className="truncate text-sm font-light text-foreground">
-            Notifications
-          </span>
-        }
-      >
-        <ErrorBoundary>
-          <NotificationsView />
-        </ErrorBoundary>
-      </ContentShell>
-    )
-  }
-
-  if (!agentSlug) {
-    return <HomePage />
-  }
+  // Defensive: AgentBody only renders under the agent route, so the slug is set
+  // (the bridge mirrors it from the URL). Bail rather than render a broken shell.
+  if (!agentSlug) return null
 
   const showSessionCrumb = !!(sessionId && session?.agentSlug === agentSlug)
   const showTaskCrumb = !!(scheduledTaskId && scheduledTask)
@@ -502,15 +431,15 @@ export function MainContent() {
               <SessionChatColumn
                 sessionId={view.id}
                 agentSlug={agentSlug}
-                pendingUserMessages={pendingUserMessages}
+                pendingUserMessages={getPendingMessages(view.id)}
                 isViewOnly={isViewOnly}
                 contextPercent={contextPercent}
                 effort={session?.effort}
                 model={session?.model}
-                onPendingMessageAppeared={handlePendingMessageAppeared}
-                onMessageSent={handleMessageSent}
-                onMessageUuidAssigned={handleMessageUuidAssigned}
-                onMessageFailed={handlePendingMessageAppeared}
+                onPendingMessageAppeared={onPendingMessageAppeared}
+                onMessageSent={onMessageSent}
+                onMessageUuidAssigned={onMessageUuidAssigned}
+                onMessageFailed={onPendingMessageAppeared}
               />
             </div>
           </FilePreviewProvider>
@@ -520,7 +449,7 @@ export function MainContent() {
             <AgentHome
               key={agent.slug}
               agent={agent}
-              onSessionCreated={handleSessionCreated}
+              onSessionCreated={onSessionCreated}
               onOpenSettings={(tab?: string) => {
                 if (tab === 'system-prompt') {
                   setSystemPromptOpen(true)
@@ -613,31 +542,6 @@ function ConnectionsCrumbs({
   )
 }
 
-function ContentShell({
-  needsTrafficLightPadding,
-  headerContent,
-  children,
-}: {
-  needsTrafficLightPadding: boolean
-  headerContent: React.ReactNode
-  children: React.ReactNode
-}) {
-  return (
-    <div className="h-full flex flex-col" data-testid="main-content">
-      <header
-        className={`shrink-0 flex min-h-12 py-1.5 md:py-0 md:h-12 items-center gap-2 border-b bg-background pl-4 pr-2 ${isElectron() ? 'app-drag-region' : ''}`}
-      >
-        <SidebarTrigger
-          className={`app-no-drag ${needsTrafficLightPadding ? 'ml-16' : '-ml-1'}`}
-        />
-        <Separator orientation="vertical" className="h-5 hidden md:block" />
-        {headerContent}
-      </header>
-      {children}
-    </div>
-  )
-}
-
 if (__RENDER_TRACKING__) {
-  (MainContent as any).whyDidYouRender = true
+  (AgentBody as any).whyDidYouRender = true
 }

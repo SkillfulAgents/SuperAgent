@@ -18,7 +18,7 @@ import { decodeLocation, type RouteSnapshot } from './route-state'
  * contract. Deep-link restore is deferred to R12.
  */
 export function SelectionBridge() {
-  const { setAgent, setView } = useSelection()
+  const { setAgent, setView, clearSelection, selectedAgentSlug } = useSelection()
 
   // Deepest matched route → snapshot for decodeLocation. Params/search are
   // merged across all matches so the leaf sees ancestor params (slug) too,
@@ -42,6 +42,8 @@ export function SelectionBridge() {
   const key = `${snapshot.to}|${JSON.stringify(snapshot.params)}|${JSON.stringify(snapshot.search)}`
   const snapshotRef = useRef(snapshot)
   snapshotRef.current = snapshot
+  const currentSlugRef = useRef(selectedAgentSlug)
+  currentSlugRef.current = selectedAgentSlug
   const lastKey = useRef<string | null>(null)
 
   useEffect(() => {
@@ -54,11 +56,19 @@ export function SelectionBridge() {
 
     const loc = decodeLocation(snapshotRef.current)
     if (loc.selectedAgentSlug === null) {
-      setView(loc.view) // global views (home / notifications)
+      // Global routes: '/' clears the agent; '/notifications' shows notifications.
+      if (loc.view.kind === 'notifications') setView({ kind: 'notifications' })
+      else clearSelection()
+    } else if (loc.view.kind === 'home') {
+      // Agent index (/agents/$slug). Sub-views are Selection-driven until they
+      // become routes (R5+), so set the agent but PRESERVE the current sub-view
+      // for the same agent — only reset to home when the URL switches agents.
+      if (currentSlugRef.current !== loc.selectedAgentSlug) setAgent(loc.selectedAgentSlug)
     } else {
+      // A real sub-view route (R5+): the URL fully specifies the view.
       setAgent(loc.selectedAgentSlug, loc.view)
     }
-  }, [key, setAgent, setView])
+  }, [key, setAgent, setView, clearSelection])
 
   return null
 }

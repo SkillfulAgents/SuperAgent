@@ -12,6 +12,7 @@ import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/r
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
@@ -53,6 +54,7 @@ interface AgentHomeProps {
 export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
   useRenderTracker('AgentHome')
   const { setView, setAgent, consumePendingDraft, justCreatedSlug, setJustCreatedSlug } = useSelection()
+  const navigate = useNavigate()
   const [introStagger] = useState(() => {
     if (justCreatedSlug !== agent.slug) return false
     return !window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -247,6 +249,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const handleImportComplete = useCallback(
     async ({ agent: imported, hasOnboarding }: ImportResult) => {
       setAgent(imported.slug)
+      void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
       if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
         deleteAgent.mutate(agent.slug)
       }
@@ -254,7 +257,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         await startOnboardingSession(imported.slug)
       }
     },
-    [setAgent, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
+    [setAgent, navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(

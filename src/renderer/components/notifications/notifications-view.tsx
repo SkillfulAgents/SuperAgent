@@ -10,6 +10,7 @@ import {
   type ApiNotification,
 } from '@renderer/hooks/use-notifications'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { cn } from '@shared/lib/utils'
@@ -31,6 +32,7 @@ function NotificationRow({
 }) {
   const markRead = useMarkNotificationRead()
   const { setAgent } = useSelection()
+  const navigate = useNavigate()
 
   const handleClick = () => {
     if (notification.type === 'session_chat_integration') {
@@ -38,6 +40,7 @@ function NotificationRow({
     } else {
       setAgent(notification.agentSlug, { kind: 'session', id: notification.sessionId })
     }
+    void navigate({ to: '/agents/$slug', params: { slug: notification.agentSlug } })
     if (!notification.isRead) {
       markRead.mutate(notification.id)
     }
@@ -124,7 +127,8 @@ const PAGE_SIZE = 15
 
 export function NotificationsView() {
   useRenderTracker('NotificationsView')
-  const { setView } = useSelection()
+  const { setView, selectedAgentSlug } = useSelection()
+  const navigate = useNavigate()
   const [page, setPage] = useState(0)
   const offset = page * PAGE_SIZE
   const { data, isLoading } = useNotifications(PAGE_SIZE, offset)
@@ -148,7 +152,14 @@ export function NotificationsView() {
       <PageTitle
         title="Notifications"
         back={{
-          onClick: () => setView({ kind: 'home' }),
+          onClick: () => {
+            setView({ kind: 'home' })
+            void navigate(
+              selectedAgentSlug
+                ? { to: '/agents/$slug', params: { slug: selectedAgentSlug } }
+                : { to: '/' },
+            )
+          },
           testId: 'notifications-back-button',
         }}
         actions={

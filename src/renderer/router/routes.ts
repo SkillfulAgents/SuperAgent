@@ -4,17 +4,16 @@ import { z } from 'zod'
 import type { UserContextValue } from '@renderer/context/user-context'
 import { lenient } from './zod-search'
 import { chatSearchSchema, connectionsSearchSchema, rootSearchSchema, settingsTabSchema } from './search-schemas'
+import { HomePage } from '@renderer/components/home/home-page'
+import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
+import { NotificationsRoute } from '@renderer/components/layout/notifications-route'
+import { AgentShell } from '@renderer/components/layout/agent-shell'
+import { AgentBody } from '@renderer/components/layout/agent-body'
 import {
-  AgentHomeRoute,
-  AgentShell,
   ApiLogsRoute,
-  AppShellLayout,
   ChatRoute,
   ConnectionsRoute,
   DashboardRoute,
-  HomeRoute,
-  NotificationsRoute,
-  RootLayout,
   SessionRoute,
   SettingsRoute,
   SettingsTabRoute,
@@ -54,7 +53,7 @@ export const appShellRoute = createRoute({
 export const homeRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: '/',
-  component: HomeRoute,
+  component: HomePage,
 })
 
 export const notificationsRoute = createRoute({
@@ -72,10 +71,10 @@ export const agentLayoutRoute = createRoute({
 })
 
 export const agentHomeRoute = createRoute({
-  // INDEX of /agents/$slug
+  // INDEX of /agents/$slug — renders the agent body (the catch-all view switch).
   getParentRoute: () => agentLayoutRoute,
   path: '/',
-  component: AgentHomeRoute,
+  component: AgentBody,
 })
 
 export const sessionRoute = createRoute({

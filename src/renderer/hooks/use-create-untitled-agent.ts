@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { toast } from 'sonner'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
+import { useNavigate } from '@tanstack/react-router'
 import { useSelection } from '@renderer/context/selection-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
@@ -9,6 +10,7 @@ export const UNTITLED_AGENT_NAME = 'Untitled'
 export function useCreateUntitledAgent() {
   const createAgent = useCreateAgent()
   const { setAgent, setJustCreatedSlug } = useSelection()
+  const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
 
   const createUntitledAgent = useCallback(async () => {
@@ -18,6 +20,7 @@ export function useCreateUntitledAgent() {
 
       setJustCreatedSlug(agent.slug)
       setAgent(agent.slug)
+      void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
 
       return agent
     } catch (error) {
@@ -27,7 +30,7 @@ export function useCreateUntitledAgent() {
       })
       return null
     }
-  }, [createAgent, setAgent, setJustCreatedSlug, track])
+  }, [createAgent, setAgent, setJustCreatedSlug, navigate, track])
 
   return {
     createUntitledAgent,

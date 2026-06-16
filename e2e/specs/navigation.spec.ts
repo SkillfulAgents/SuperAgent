@@ -153,25 +153,27 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Page reload does not retain selected view (safe default to home)', async ({ page }) => {
-    // The selection state is in-memory (no URL sync, no persistence). After a
-    // hard reload, the user lands on the global Home. This is the intended
-    // contract — pinning it so any future URL/persistence work doesn't
-    // silently change behavior.
+  test('Page reload retains the agent (URL-driven) but resets sub-views to agent home', async ({ page }) => {
+    // R4: agent navigation is URL-driven, so a hard reload restores the agent
+    // view from the URL (the agent slug is durable in the path). Sub-views (API
+    // Logs etc.) are still SelectionContext-only — not yet in the URL — so they
+    // reset to the agent home on reload. Full sub-view restore lands as each view
+    // migrates to its own route (R5–R10). (This brings forward part of the R16
+    // reload-contract change, a direct consequence of converting agent nav in R4.)
     const agentName = `Nav Reload ${Date.now()}`
     await agentPage.createAgent(agentName)
 
-    // Navigate into API Logs
+    // Navigate into API Logs (a sub-view)
     await page.getByTestId('home-api-logs-open-page').click()
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
 
     // Reload
     await appPage.reload()
 
-    // Should be on global home (no agent breadcrumb visible). The agent still
-    // exists in the sidebar.
-    await expect(page.locator('[data-testid="agent-breadcrumb"]')).not.toBeVisible()
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
+    // The agent is retained (its breadcrumb shows), but the sub-view reset to the
+    // agent home — API Logs is no longer shown.
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+    await expect(page.locator('[data-testid="api-logs-back-button"]')).not.toBeVisible()
 
     // Cleanup
     await agentPage.selectAgent(agentName)

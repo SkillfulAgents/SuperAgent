@@ -1,4 +1,5 @@
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { SquareMousePointer, ArrowUpRight } from 'lucide-react'
 import type { ApiAgentDashboard } from '@shared/lib/types/api'
@@ -29,9 +30,11 @@ export function DashboardCard({
   variant?: 'overlay' | 'push'
 }) {
   const { setAgent } = useSelection()
+  const navigate = useNavigate()
 
   const handleClick = () => {
     setAgent(agentSlug, { kind: 'dashboard', slug: dashboard.slug })
+    void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
   }
 
   const screenshotUrl = dashboard.hasScreenshot
