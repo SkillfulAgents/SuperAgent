@@ -18,6 +18,8 @@ export interface StaleSessionPromptProps {
   isSummarizing: boolean
   isStartingNewTopic?: boolean
   error: string | null
+  /** True only when the summary/branch action itself failed — not when new-topic failed. */
+  summaryFailed?: boolean
   onContinueSummary: () => void
   onNewTopic: () => void
   onSendHere: () => void
@@ -40,6 +42,7 @@ export function StaleSessionPrompt({
   isSummarizing,
   isStartingNewTopic = false,
   error,
+  summaryFailed = false,
   onContinueSummary,
   onNewTopic,
   onSendHere,
@@ -68,20 +71,20 @@ export function StaleSessionPrompt({
           {/* Option 1: Continue from a summary (recommended) */}
           <button
             type="button"
-            onClick={error ? onRetry : onContinueSummary}
-            disabled={isSummarizing && !error}
+            onClick={summaryFailed ? onRetry : onContinueSummary}
+            disabled={isSummarizing && !summaryFailed}
             className="flex flex-col rounded-lg border p-3 text-left hover:bg-muted/50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <div className="flex items-center gap-2 text-sm font-medium leading-none">
-              {isSummarizing && !error ? (
+              {isSummarizing && !summaryFailed ? (
                 <>
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground shrink-0" />
                   <span>Carrying over context...</span>
                 </>
               ) : (
                 <>
-                  <span>{error ? 'Retry summary' : 'Continue from a summary'}</span>
-                  {!error && (
+                  <span>{summaryFailed ? 'Retry summary' : 'Continue from a summary'}</span>
+                  {!summaryFailed && (
                     <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-normal leading-none text-muted-foreground">
                       Recommended
                     </span>
@@ -89,7 +92,7 @@ export function StaleSessionPrompt({
                 </>
               )}
             </div>
-            {(!isSummarizing || error) && (
+            {(!isSummarizing || summaryFailed) && (
               <p className="text-xs text-muted-foreground mt-1.5">
                 Fresh, fast chat. A short summary carries the thread, drops the cost.
               </p>

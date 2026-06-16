@@ -57,6 +57,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const [isSummarizing, setIsSummarizing] = useState(false)
   const actionActiveRef = useRef(false)
   const [staleError, setStaleError] = useState<string | null>(null)
+  const [failedAction, setFailedAction] = useState<'summary' | 'newTopic' | null>(null)
   const composerOptions = useComposerOptions({ initialEffort, initialModel })
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sendMessage = useSendMessage()
@@ -212,6 +213,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const handleContinueSummary = async () => {
     actionActiveRef.current = true
     setStaleError(null)
+    setFailedAction(null)
     setIsSummarizing(true)
     const content = pendingContent
     let timeoutId: ReturnType<typeof setTimeout> | undefined
@@ -234,6 +236,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       actionActiveRef.current = false
     } catch {
       setStaleError("Couldn't summarize right now")
+      setFailedAction('summary')
     } finally {
       clearTimeout(timeoutId)
       setIsSummarizing(false)
@@ -242,6 +245,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
 
   const handleNewTopic = async () => {
     actionActiveRef.current = true
+    setFailedAction(null)
     const content = pendingContent
     try {
       const res = await createSession.mutateAsync({ agentSlug, message: content })
@@ -253,6 +257,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       actionActiveRef.current = false
     } catch {
       setStaleError("Couldn't start a new session right now")
+      setFailedAction('newTopic')
     }
   }
 
@@ -338,6 +343,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         isSummarizing={isSummarizing}
         isStartingNewTopic={createSession.isPending}
         error={staleError}
+        summaryFailed={failedAction === 'summary'}
         onContinueSummary={handleContinueSummary}
         onNewTopic={handleNewTopic}
         onSendHere={handleSendHere}
@@ -350,6 +356,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
             if (pendingContent) composer.setMessage(pendingContent)
             setPendingContent('')
             setStaleError(null)
+            setFailedAction(null)
             setIsSummarizing(false)
           }
         }}
