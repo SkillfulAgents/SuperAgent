@@ -1216,6 +1216,11 @@ agents.post('/:id/keep-alive', AgentRead(), async (c) => {
 // POST /api/agents/:id/open-directory - Get workspace path, optionally open in system file manager
 const OpenDirectoryBody = z.object({ open: z.boolean().optional() })
 
+const patchSessionBodySchema = z.object({
+  name: z.string().optional(),
+  stalePromptDismissed: z.boolean().optional(),
+})
+
 agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
   try {
     const slug = c.req.param('id')
@@ -1825,11 +1830,11 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const sessionId = c.req.param('sessionId')
-    const bodySchema = z.object({
-      name: z.string().optional(),
-      stalePromptDismissed: z.boolean().optional(),
-    })
-    const { name, stalePromptDismissed } = bodySchema.parse(await c.req.json())
+    const parsed = patchSessionBodySchema.safeParse(await c.req.json())
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid request', details: parsed.error.format() }, 400)
+    }
+    const { name, stalePromptDismissed } = parsed.data
 
     const session = await getSession(agentSlug, sessionId)
 
