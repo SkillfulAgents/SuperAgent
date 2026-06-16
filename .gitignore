@@ -59,3 +59,6 @@ tsconfig.tsbuildinfo
 # scope-labeling workflow working artifacts (intermediate, regenerated on demand)
 scripts/.scope-input.json
 scripts/.scope-labels.json
+
+# Superpowers AI plan/spec artifacts (brainstorm/plan output, not shipped docs)
+docs/superpowers/
