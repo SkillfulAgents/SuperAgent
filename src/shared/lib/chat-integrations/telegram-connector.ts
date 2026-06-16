@@ -12,6 +12,8 @@ import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
+import { markdownToRichMessage, splitForRichLimits, THINKING_RICH_MESSAGE } from './telegram-rich-message'
+import type { InputRichMessage } from './telegram-rich-message-schema'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -577,6 +579,73 @@ export class TelegramConnector extends ChatClientConnector {
 
   private markdownToHtml(md: string): string {
     return markdownToTelegramHtml(md)
+  }
+
+  // ── Rich send helpers ───────────────────────────────────────────────
+
+  /** Telegram private-chat ids are positive; groups/channels are negative. */
+  private isPrivateChat(chatId: string): boolean {
+    return Number(chatId) > 0
+  }
+
+  private get useRich(): boolean {
+    return this.config.richMessages !== false
+  }
+
+  private richMessage(md: string): InputRichMessage {
+    return markdownToRichMessage(md, { skipEntityDetection: this.config.skipEntityDetection === true })
+  }
+
+  /** Send a new rich message; on any rich-send failure, resend via legacy HTML. */
+  private async sendRichOrHtml(
+    chatId: string,
+    md: string,
+    other?: { reply_markup?: unknown; reply_parameters?: { message_id: number } },
+  ): Promise<string> {
+    if (!this.bot) throw new Error('Bot not connected')
+    if (this.useRich) {
+      try {
+        const sent = await this.bot.api.raw.sendRichMessage({
+          chat_id: Number(chatId),
+          rich_message: this.richMessage(md),
+          ...(other as object),
+        } as never)
+        return String((sent as { message_id: number }).message_id)
+      } catch (err) {
+        console.error('[TelegramConnector] rich send failed, falling back to HTML:', err)
+        captureException(err, { tags: { component: 'chat-integration', operation: 'rich-send-fallback' }, extra: { provider: 'telegram', chatId } })
+      }
+    }
+    const sent = await this.bot.api.sendMessage(chatId, this.markdownToHtml(md), {
+      parse_mode: 'HTML',
+      ...(other as object),
+    } as never)
+    return String(sent.message_id)
+  }
+
+  /** Edit a message to rich; on any rich-edit failure, edit via legacy HTML. */
+  private async editRichOrHtml(chatId: string, messageId: string, md: string): Promise<void> {
+    if (!this.bot) return
+    if (this.useRich) {
+      try {
+        await this.bot.api.raw.editMessageText({
+          chat_id: Number(chatId),
+          message_id: Number(messageId),
+          rich_message: this.richMessage(md),
+        } as never)
+        return
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        if (errMsg.includes('message is not modified')) return
+        console.error('[TelegramConnector] rich edit failed, falling back to HTML:', err)
+      }
+    }
+    try {
+      await this.bot.api.editMessageText(chatId, Number(messageId), this.markdownToHtml(md), { parse_mode: 'HTML' })
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      if (!errMsg.includes('message is not modified')) throw err
+    }
   }
 
 }

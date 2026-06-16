@@ -146,3 +146,35 @@ describe('TelegramConnector.finalizeStreamingMessage', () => {
     expect(combined).toContain('b'.repeat(3500))
   })
 })
+
+describe('TelegramConnector.sendRichOrHtml', () => {
+  let connector: TelegramConnector
+  let mockSendRich: ReturnType<typeof vi.fn>
+  let mockSendMessage: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    connector = new TelegramConnector({ botToken: 'fake:token' })
+    mockSendRich = vi.fn().mockResolvedValue({ message_id: 11 })
+    mockSendMessage = vi.fn().mockResolvedValue({ message_id: 22 })
+    ;(connector as any).bot = {
+      api: { raw: { sendRichMessage: mockSendRich }, sendMessage: mockSendMessage },
+    }
+  })
+
+  it('sends rich and returns its message id', async () => {
+    const id = await (connector as any).sendRichOrHtml('123', 'hello')
+    expect(mockSendRich).toHaveBeenCalledWith(expect.objectContaining({
+      chat_id: 123,
+      rich_message: { markdown: 'hello' },
+    }))
+    expect(id).toBe('11')
+    expect(mockSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('falls back to legacy HTML when the rich send throws', async () => {
+    mockSendRich.mockRejectedValueOnce(new Error('rich rejected'))
+    const id = await (connector as any).sendRichOrHtml('123', '**hi**')
+    expect(mockSendMessage).toHaveBeenCalledWith('123', expect.stringContaining('<strong>hi</strong>'), expect.objectContaining({ parse_mode: 'HTML' }))
+    expect(id).toBe('22')
+  })
+})
