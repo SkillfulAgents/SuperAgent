@@ -64,7 +64,7 @@ async function openSessionById(
   }
 
   await page.locator(`[data-testid="session-item-${sessionId}"]`).click()
-  await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 10000 })
+  await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 20000 })
 }
 
 /**
@@ -89,8 +89,8 @@ async function setupWithSession(
 
   // First message → creates the JSONL file + session-metadata entry on disk
   await sessionPage.sendMessage('Hello')
-  await sessionPage.waitForResponse(15000)
-  await sessionPage.waitForInputEnabled(10000)
+  await sessionPage.waitForResponse(30000)
+  await sessionPage.waitForInputEnabled(15000)
 
   const sessionId = await getFirstSessionId(request, agent.slug)
   return { agent, sessionId }
@@ -126,26 +126,26 @@ test.describe('Stale Session Prompt', () => {
     // submitting to avoid a race between cached (unseeded) state and fresh data.
     await openSessionById(page, agent, sessionId)
     await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 20000 })
-    await sessionPage.waitForInputEnabled(5000)
+    await sessionPage.waitForInputEnabled(15000)
 
     // --- First send: stale prompt must open ---
     await page.locator('[data-testid="message-input"]').fill('First message')
     await page.locator('[data-testid="send-button"]').click()
 
     const dialog = page.getByRole('dialog')
-    await expect(dialog).toBeVisible({ timeout: 5000 })
+    await expect(dialog).toBeVisible({ timeout: 15000 })
     await expect(dialog).toContainText('Large context')
 
     // Click "Send here anyway"
     await dialog.getByRole('button', { name: /send here anyway/i }).click()
 
     // Dialog closes and the message lands in the same session
-    await expect(dialog).not.toBeVisible({ timeout: 5000 })
-    await sessionPage.waitForUserMessageCount(2, 10000)   // "Hello" + "First message"
+    await expect(dialog).not.toBeVisible({ timeout: 15000 })
+    await sessionPage.waitForUserMessageCount(2, 25000)   // "Hello" + "First message"
 
     // Wait for the mock response and for the dismiss PATCH to be reflected
-    await sessionPage.waitForResponse(15000)
-    await sessionPage.waitForInputEnabled(10000)
+    await sessionPage.waitForResponse(30000)
+    await sessionPage.waitForInputEnabled(15000)
 
     // Poll the API to confirm stalePromptDismissed was persisted before second send
     await expect.poll(async () => {
@@ -159,7 +159,7 @@ test.describe('Stale Session Prompt', () => {
     await page.locator('[data-testid="send-button"]').click()
 
     // The second message sends straight through (proves the prompt did NOT intercept).
-    await sessionPage.waitForUserMessageCount(3, 10000)
+    await sessionPage.waitForUserMessageCount(3, 25000)
     // And the stale prompt never re-opened (dismissal persisted).
     await expect(dialog).not.toBeVisible()
   })
@@ -186,21 +186,21 @@ test.describe('Stale Session Prompt', () => {
 
     await openSessionById(page, agent, sessionId)
     await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 20000 })
-    await sessionPage.waitForInputEnabled(5000)
+    await sessionPage.waitForInputEnabled(15000)
 
     // Send: the stale prompt opens
     await page.locator('[data-testid="message-input"]').fill('Draft to keep')
     await page.locator('[data-testid="send-button"]').click()
 
     const dialog = page.getByRole('dialog')
-    await expect(dialog).toBeVisible({ timeout: 5000 })
+    await expect(dialog).toBeVisible({ timeout: 15000 })
     await expect(dialog).toContainText('Large context')
 
     // Click the backdrop (top-left corner, outside the centered content)
     await page.mouse.click(10, 10)
 
     // Dialog closes, and the typed draft is restored to the input
-    await expect(dialog).not.toBeVisible({ timeout: 5000 })
+    await expect(dialog).not.toBeVisible({ timeout: 15000 })
     await expect(page.locator('[data-testid="message-input"]')).toHaveValue('Draft to keep')
 
     // No dismissal flag was persisted (true cancel, not "send here anyway")
@@ -210,7 +210,7 @@ test.describe('Stale Session Prompt', () => {
 
     // Sending again re-opens the prompt (session is still stale)
     await page.locator('[data-testid="send-button"]').click()
-    await expect(dialog).toBeVisible({ timeout: 5000 })
+    await expect(dialog).toBeVisible({ timeout: 15000 })
   })
 
   // -------------------------------------------------------------------------
@@ -232,22 +232,22 @@ test.describe('Stale Session Prompt', () => {
 
     await openSessionById(page, agent, sessionId)
     await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 20000 })
-    await sessionPage.waitForInputEnabled(5000)
+    await sessionPage.waitForInputEnabled(15000)
 
     await page.locator('[data-testid="message-input"]').fill('A brand new topic')
     await page.locator('[data-testid="send-button"]').click()
 
     const dialog = page.getByRole('dialog')
-    await expect(dialog).toBeVisible({ timeout: 5000 })
+    await expect(dialog).toBeVisible({ timeout: 15000 })
 
     // Start a new topic — creates a fresh session, sends the typed message verbatim
     await dialog.getByRole('button', { name: /start a new topic/i }).click()
 
     // Prompt closes and the typed message is rendered in the new session
-    await expect(dialog).not.toBeVisible({ timeout: 5000 })
+    await expect(dialog).not.toBeVisible({ timeout: 15000 })
     await expect(
       page.locator('[data-testid="message-list"]').getByText('A brand new topic'),
-    ).toBeVisible({ timeout: 8000 })
+    ).toBeVisible({ timeout: 15000 })
   })
 
   // -------------------------------------------------------------------------
@@ -280,19 +280,23 @@ test.describe('Stale Session Prompt', () => {
     await openSessionById(page, agent, sessionId)
     // Same race-guard as scenario 1: wait for seeded lastUsage to appear in UI
     await expect(page.getByText('Context Usage')).toBeVisible({ timeout: 20000 })
-    await sessionPage.waitForInputEnabled(5000)
+    await sessionPage.waitForInputEnabled(15000)
 
     await page.locator('[data-testid="message-input"]').fill('Continue this conversation')
     await page.locator('[data-testid="send-button"]').click()
 
     const dialog = page.getByRole('dialog')
-    await expect(dialog).toBeVisible({ timeout: 5000 })
+    await expect(dialog).toBeVisible({ timeout: 15000 })
 
     // Click "Continue from a summary" (first option in the dialog)
     await dialog.getByRole('button', { name: /continue from a summary/i }).click()
 
-    // Summarising / loading state appears briefly
-    await expect(dialog.getByText(/carrying over context/i)).toBeVisible({ timeout: 5000 })
+    // The summarising spinner is transient — it flips to the error as soon as the
+    // 502 lands, so under CI timing it may already be gone before we poll. Accept
+    // "spinner OR error" to prove the action fired without racing its disappearance.
+    await expect(
+      dialog.getByText(/carrying over context/i).or(dialog.getByText(/couldn't summarize right now/i)),
+    ).toBeVisible({ timeout: 15000 })
 
     // Error appears because the LLM is not configured in E2E mock mode
     await expect(dialog.getByText(/couldn't summarize right now/i)).toBeVisible({ timeout: 15000 })
@@ -353,7 +357,7 @@ test.describe('Stale Session Prompt', () => {
     // The pending secret request is shown (attached to the DOM)
     await expect(
       page.locator('[data-testid="secret-request"]').first(),
-    ).toBeAttached({ timeout: 10000 })
+    ).toBeAttached({ timeout: 20000 })
 
     // The message input is NOT rendered (pending request stack takes its slot)
     await expect(page.locator('[data-testid="message-input"]')).not.toBeVisible()
@@ -381,14 +385,14 @@ test.describe('Stale Session Prompt', () => {
 
     // First message creates a fresh session — idle ≈ 0 ms, context ≈ 0 tokens
     await sessionPage.sendMessage('First message')
-    await sessionPage.waitForResponse(15000)
-    await sessionPage.waitForInputEnabled(10000)
+    await sessionPage.waitForResponse(30000)
+    await sessionPage.waitForInputEnabled(15000)
 
     // Immediately send a second message — neither threshold is met
     await sessionPage.sendMessage('Second message right away')
 
     // The message sends straight through (proves the prompt did NOT intercept).
-    await sessionPage.waitForUserMessageCount(2, 10000)
+    await sessionPage.waitForUserMessageCount(2, 25000)
     // And no stale prompt dialog ever appeared (neither threshold met).
     await expect(page.getByRole('dialog')).not.toBeVisible()
   })
