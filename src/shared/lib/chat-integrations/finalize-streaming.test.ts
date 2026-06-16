@@ -246,3 +246,43 @@ describe('TelegramConnector streaming (group, rich)', () => {
     }))
   })
 })
+
+describe('TelegramConnector streaming (DM, draft)', () => {
+  let connector: TelegramConnector
+  let raw: { sendRichMessageDraft: ReturnType<typeof vi.fn>; sendRichMessage: ReturnType<typeof vi.fn> }
+  beforeEach(() => {
+    connector = new TelegramConnector({ botToken: 'fake:token' })
+    raw = {
+      sendRichMessageDraft: vi.fn().mockResolvedValue(true),
+      sendRichMessage: vi.fn().mockResolvedValue({ message_id: 200 }),
+    }
+    ;(connector as any).bot = { api: { raw, sendMessage: vi.fn() } }
+  })
+
+  it('streams via sendRichMessageDraft and returns a draft sentinel (positive chat id)', async () => {
+    const id = await connector.sendStreamingUpdate('999', 'partial brief')
+    expect(raw.sendRichMessageDraft).toHaveBeenCalledWith(expect.objectContaining({
+      chat_id: 999,
+      rich_message: { markdown: 'partial brief' },
+    }))
+    expect(raw.sendRichMessageDraft.mock.calls[0][0].draft_id).toBeGreaterThan(0)
+    expect(id).toBe('draft:999')
+  })
+
+  it('reuses the same draft_id across updates for the same chat', async () => {
+    await connector.sendStreamingUpdate('999', 'a')
+    await connector.sendStreamingUpdate('999', 'a b', 'draft:999')
+    const first = raw.sendRichMessageDraft.mock.calls[0][0].draft_id
+    const second = raw.sendRichMessageDraft.mock.calls[1][0].draft_id
+    expect(second).toBe(first)
+  })
+
+  it('commits the draft with sendRichMessage on finalize and clears state', async () => {
+    await connector.sendStreamingUpdate('999', 'partial')
+    await connector.finalizeStreamingMessage('999', 'draft:999', 'final brief')
+    expect(raw.sendRichMessage).toHaveBeenCalledWith(expect.objectContaining({
+      chat_id: 999, rich_message: expect.objectContaining({ markdown: 'final brief' }),
+    }))
+    expect((connector as any).activeDrafts.has('999')).toBe(false)
+  })
+})

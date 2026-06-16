@@ -130,6 +130,10 @@ export class TelegramConnector extends ChatClientConnector {
     answers: Record<string, string> // { questionText: selectedAnswer }
   }> = new Map()
 
+  // Animated DM draft streaming: per-chat non-zero draft id.
+  private nextDraftId = 1
+  private activeDrafts: Map<string, number> = new Map()
+
   constructor(private config: TelegramConfig) {
     super()
   }
@@ -302,6 +306,7 @@ export class TelegramConnector extends ChatClientConnector {
     this.flushAllPendingBatches()
     this.callbackDataMap.clear()
     this.pendingQuestions.clear()
+    this.activeDrafts.clear()
 
     if (this.bot) {
       await this.bot.stop()
@@ -400,13 +405,31 @@ export class TelegramConnector extends ChatClientConnector {
     }
   }
 
-  // TEMP (replaced in Task 9): behave like a group create so this task's tests pass.
-  private async driveDraftStream(chatId: string, body: string): Promise<string> {
-    const sent = await this.bot!.api.raw.sendRichMessage({ chat_id: Number(chatId), rich_message: this.richMessage(body) } as never)
-    return String((sent as { message_id: number }).message_id)
+  private draftIdFor(chatId: string): number {
+    let id = this.activeDrafts.get(chatId)
+    if (id === undefined) {
+      id = this.nextDraftId++
+      this.activeDrafts.set(chatId, id)
+    }
+    return id
   }
+
+  private async driveDraftStream(chatId: string, body: string): Promise<string> {
+    if (!this.bot) throw new Error('Bot not connected')
+    await this.bot.api.raw.sendRichMessageDraft({
+      chat_id: Number(chatId),
+      draft_id: this.draftIdFor(chatId),
+      rich_message: this.richMessage(body),
+    } as never)
+    return `${RICH_DRAFT_SENTINEL_PREFIX}${chatId}`
+  }
+
   private async commitDraft(chatId: string, text: string): Promise<void> {
-    await this.sendRichOrHtml(chatId, text)
+    this.activeDrafts.delete(chatId)
+    const chunks = splitForRichLimits(text)
+    for (const chunk of chunks) {
+      await this.sendRichOrHtml(chatId, chunk)
+    }
   }
 
   async showTypingIndicator(chatId: string): Promise<void> {
