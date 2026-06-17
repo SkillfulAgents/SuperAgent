@@ -44,6 +44,10 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (token: string) => mockValidateProxyToken(token),
 }))
 
+// Set a known secret so getOrCreateAuthSecret() returns a deterministic value
+// without touching the filesystem in any of the composition tests below.
+process.env.BETTER_AUTH_SECRET = 'test-secret-for-auth-tests-1234567'
+
 // Import after mocks
 import {
   Authenticated,
@@ -60,6 +64,11 @@ import {
   Or,
   EntityAgentRole,
 } from './auth'
+import { TelegramDashboardSession } from './telegram-dashboard'
+import {
+  signDashboardCookie,
+  DASHBOARD_COOKIE_NAME,
+} from '@shared/lib/telegram/dashboard-cookie'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1272,6 +1281,111 @@ describe('Auth Middleware', () => {
       expect(res.status).toBe(200)
       expect(mockGetSession).not.toHaveBeenCalled()
       expect(mockSelect).not.toHaveBeenCalled()
+    })
+  })
+
+  // =========================================================================
+  // Authenticated() — Telegram dashboard cookie short-circuit
+  // =========================================================================
+
+  describe('Authenticated() — dashboard cookie short-circuit', () => {
+    // Case 1: upstream middleware pre-set a trusted user — getSession must NOT be consulted
+    it('short-circuits when upstream middleware pre-set user in context', async () => {
+      const getSessionSpy = vi.fn()
+      // Configure getSession to throw to prove it is never called
+      getSessionSpy.mockRejectedValue(new Error('getSession must not be called'))
+      vi.mocked(mockGetSession).mockImplementation(getSessionSpy)
+
+      let capturedUser: unknown = null
+      const app = new Hono()
+      // Upstream middleware sets a trusted user
+      app.use('*', async (c, next) => {
+        c.set('user' as never, { id: 'u1' } as never)
+        return next()
+      })
+      app.get('/', Authenticated(), (c) => {
+        capturedUser = c.get('user' as never)
+        return c.json({ ok: true })
+      })
+
+      const res = await app.request('http://localhost/')
+      expect(res.status).toBe(200)
+      expect((capturedUser as { id: string }).id).toBe('u1')
+      expect(getSessionSpy).not.toHaveBeenCalled()
+    })
+
+    // Case 2: no session, no pre-set user → 401
+    it('returns 401 when no pre-set user and getSession returns null', async () => {
+      mockGetSession.mockResolvedValue(null)
+
+      const app = new Hono()
+      app.get('/', Authenticated(), (c) => c.json({ ok: true }))
+
+      const res = await app.request('http://localhost/')
+      expect(res.status).toBe(401)
+      expect(await res.json()).toEqual({ error: 'Unauthorized' })
+    })
+
+    // Case 3: valid session (no pre-set user) → handler reached with session user
+    it('reaches handler and sets user when getSession returns a valid session', async () => {
+      mockGetSession.mockResolvedValue({ user: { id: 'u2', role: 'user' } })
+
+      let capturedUser: unknown = null
+      const app = new Hono()
+      app.get('/', Authenticated(), (c) => {
+        capturedUser = c.get('user' as never)
+        return c.json({ ok: true })
+      })
+
+      const res = await app.request('http://localhost/')
+      expect(res.status).toBe(200)
+      expect((capturedUser as { id: string }).id).toBe('u2')
+    })
+
+    // Case 4: end-to-end composition — TelegramDashboardSession runs before Authenticated
+    //
+    // Mirrors the index.ts wiring: app.use('/api/agents/:id/artifacts/*', TelegramDashboardSession())
+    // followed by Authenticated() inside the sub-route.
+    //
+    // AgentRead() is intentionally excluded — it requires DB-seeded agentAcl rows.
+    // Its ACL contract is covered by its own unit tests; Task 11 E2E covers the
+    // full stack with a real agent.
+    it('composition: valid tg_dash cookie bypasses Authenticated() and reaches handler', async () => {
+      // Configure getSession to return null so only the cookie path can succeed
+      mockGetSession.mockResolvedValue(null)
+
+      // Sign a real cookie using the same secret set at module level
+      const exp = Math.floor(Date.now() / 1000) + 900
+      const secret = process.env.BETTER_AUTH_SECRET!
+      const cookieValue = signDashboardCookie(
+        { userId: 'u1', agentSlug: 'sales', integrationId: 'int-1', exp },
+        secret,
+      )
+
+      let capturedUser: unknown = null
+      const app = new Hono()
+
+      // Wire it the same way index.ts does
+      app.use('/api/agents/:id/artifacts/*', TelegramDashboardSession())
+      app.get('/api/agents/:id/artifacts/*', Authenticated(), (c) => {
+        capturedUser = c.get('user' as never)
+        return c.json({ user: capturedUser })
+      })
+
+      // With a valid cookie for the matching agent slug → should reach the handler
+      const resOk = await app.request(
+        'http://localhost/api/agents/sales/artifacts/x/index.html',
+        { headers: { Cookie: `${DASHBOARD_COOKIE_NAME}=${cookieValue}` } },
+      )
+      expect(resOk.status).toBe(200)
+      expect((capturedUser as { id: string }).id).toBe('u1')
+      expect(mockGetSession).not.toHaveBeenCalled()
+
+      // Without the cookie → Authenticated() has no pre-set user, getSession returns null → 401
+      const resUnauth = await app.request(
+        'http://localhost/api/agents/sales/artifacts/x/index.html',
+      )
+      expect(resUnauth.status).toBe(401)
     })
   })
 
