@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully verified that the agent can execute browser commands and retrieve the page title from example.com, confirming the response mentions \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing SuperAgent interface with agent list in sidebar",
+    "Clicked on agent \"QA-20260617-225342-fqkp\" in the sidebar — Agent interface opened with chat input area ready",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the chat input — Message successfully entered in the textbox",
+    "Clicked \"Send message\" button — Message was sent and agent status changed to \"working\", new session \"Browser Page Title Lookup\" was created",
+    "Waited for agent response with polling every 2 seconds — Agent completed its work after approximately 17 seconds",
+    "Verified response mentions \"Example Domain\" by taking snapshot — Response clearly visible stating \"The page title is \"Example Domain\".\" and final summary confirms \"Done. The page at https://example.com has the title \"Example Domain\"\"",
+    "Took full-page screenshot of the response — Screenshot successfully captured showing complete agent interaction and response with multiple confirmations of \"Example Domain\" text"
+  ],
+  "bugs": [],
+  "durationMs": 80316,
+  "sessionId": "1cb74ed9-d8de-4ef0-82ae-a485383d0753",
+  "cost": {
+    "inputTokens": 288,
+    "outputTokens": 10515,
+    "cacheCreationTokens": 63046,
+    "cacheReadTokens": 858783,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.217549
+  }
+}
