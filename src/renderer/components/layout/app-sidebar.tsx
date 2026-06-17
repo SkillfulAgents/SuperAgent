@@ -50,7 +50,7 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
 import { useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useParams, useRouterState } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import { useSelection } from '@renderer/context/selection-context'
 import { useSearch } from '@renderer/context/search-context'
@@ -123,8 +123,12 @@ function SessionSubItem({
   agentSlug: string
 }) {
   useRenderTracker('SessionSubItem')
-  const { view, setAgent } = useSelection()
-  const isSelected = view.kind === 'session' && view.id === session.id
+  const { setAgent } = useSelection()
+  // Active state is route-derived (URL is authoritative) so the highlight + the
+  // stream subscription are correct on a cold reload, not just after the bridge
+  // mirrors Selection (which skips the initial mount until R12).
+  const { slug: routeSlug, sessionId: routeSessionId } = useParams({ strict: false }) as { slug?: string; sessionId?: string }
+  const isSelected = routeSlug === agentSlug && routeSessionId === session.id
   const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
@@ -513,10 +517,14 @@ export const AgentMenuItem = React.forwardRef<
   { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
-  const { selectedAgentSlug, setAgent, view } = useSelection()
+  const { setAgent, view } = useSelection()
   const { agentMemberCount } = useUser()
   const queryClient = useQueryClient()
-  const isSelected = agent.slug === selectedAgentSlug
+  // Route-derived selection (URL is authoritative — correct on a cold reload,
+  // and inherently false on the global notifications/home views since they carry
+  // no slug). Drives the highlight AND the submenu auto-expand below.
+  const { slug: routeSlug } = useParams({ strict: false }) as { slug?: string }
+  const isSelected = agent.slug === routeSlug
   // Auto-expand on selection only if the agent has content to show. Brand-new
   // agents (no sessions / dashboards / chat integrations yet) start collapsed
   // — the empty submenu would just be visual noise.
@@ -612,9 +620,7 @@ export const AgentMenuItem = React.forwardRef<
           <AgentContextMenu agent={agent}>
             <SidebarMenuButton
               onClick={handleClick}
-              // Don't keep the agent lit while viewing the global notifications
-              // list (navigating there leaves selectedAgentSlug set).
-              isActive={isSelected && view.kind !== 'notifications'}
+              isActive={isSelected}
               className="justify-between pl-7"
               data-testid={`agent-item-${agent.slug}`}
             >
@@ -717,9 +723,10 @@ if (__RENDER_TRACKING__) {
 function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const unreadCount = countData?.count ?? 0
-  const { view, setView } = useSelection()
+  const { setView } = useSelection()
   const navigate = useNavigate()
-  const isActive = view.kind === 'notifications'
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const isActive = pathname === '/notifications'
 
   return (
     <SidebarMenuButton
@@ -814,8 +821,9 @@ export function AppSidebar() {
       window.electronAPI?.removeOpenCreateAgent?.()
     }
   }, [createUntitledAgent])
-  const { clearSelection, selectedAgentSlug, view } = useSelection()
+  const { clearSelection } = useSelection()
   const navigate = useNavigate()
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
   const { openSearch } = useSearch()
   const { data: agents, isLoading, error } = useAgents()
   const { data: discoverableAgents } = useDiscoverableAgents()
@@ -985,9 +993,9 @@ export function AppSidebar() {
                       clearSelection()
                       void navigate({ to: '/' })
                     }}
-                    // Notifications is a global view too (selectedAgentSlug stays
-                    // null), so guard against Home lighting up alongside it.
-                    isActive={!selectedAgentSlug && view.kind !== 'notifications'}
+                    // Route-derived: active only on the exact home route, so it
+                    // never lights up on /notifications or an agent route.
+                    isActive={pathname === '/'}
                     data-testid="home-button"
                   >
                     <LayoutGrid className="h-4 w-4" />

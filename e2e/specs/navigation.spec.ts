@@ -285,4 +285,38 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.selectAgent(agentName)
     await agentPage.deleteAgent()
   })
+
+  test('Sidebar highlights the agent on a cold reload (route-driven active, R11)', async ({ page }) => {
+    // The sidebar active state is route-derived now, so it reflects the URL
+    // immediately on a hard reload — it no longer waits for the bridge (which
+    // skips the initial mount until R12).
+    const agentName = `Nav Sidebar Active ${Date.now()}`
+    await agentPage.createAgent(agentName)
+    const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
+    expect(slug).toBeTruthy()
+
+    await appPage.reload()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
+    await expect(page.locator(`[data-testid="agent-item-${slug}"]`)).toHaveAttribute('data-active', 'true')
+    await expect(page.locator('[data-testid="home-button"]')).toHaveAttribute('data-active', 'false')
+
+    // Cleanup
+    await agentPage.deleteAgent()
+  })
+
+  test('Notifications route lights up only the Notifications nav item (R11)', async ({ page }) => {
+    const agentName = `Nav Notif Active ${Date.now()}`
+    await agentPage.createAgent(agentName)
+    const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
+
+    await page.locator('[data-testid="notifications-button"]').click()
+    await expect(page).toHaveURL(/\/notifications$/)
+    await expect(page.locator('[data-testid="notifications-button"]')).toHaveAttribute('data-active', 'true')
+    await expect(page.locator('[data-testid="home-button"]')).toHaveAttribute('data-active', 'false')
+    await expect(page.locator(`[data-testid="agent-item-${slug}"]`)).toHaveAttribute('data-active', 'false')
+
+    // Cleanup
+    await agentPage.selectAgent(agentName)
+    await agentPage.deleteAgent()
+  })
 })

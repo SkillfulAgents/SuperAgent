@@ -103,6 +103,23 @@ vi.mock('@renderer/context/selection-context', () => ({
   SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+// Sidebar active state is route-derived now (R11) — mock the router hooks so
+// tests can drive the URL. `mockRouteParams.slug` marks the active agent;
+// `mockRoutePathname` drives Home/Notifications. useNavigate stays a no-op
+// (matches the global setup mock, which this file-level mock replaces).
+let mockRouteParams: Record<string, string | undefined> = {}
+let mockRoutePathname = '/'
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return {
+    ...actual,
+    useNavigate: () => () => {},
+    useParams: () => mockRouteParams,
+    useRouterState: (opts?: { select?: (s: { location: { pathname: string } }) => unknown }) =>
+      opts?.select ? opts.select({ location: { pathname: mockRoutePathname } }) : undefined,
+  }
+})
+
 vi.mock('@renderer/context/search-context', () => ({
   useSearch: () => ({ open: false, openSearch: vi.fn(), closeSearch: vi.fn() }),
   SearchProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -291,6 +308,8 @@ beforeEach(() => {
     selectedAgentSlug: null,
     view: { kind: 'home' } as MockView,
   })
+  mockRouteParams = {}
+  mockRoutePathname = '/'
   mockUseAgents.mockReturnValue({
     data: [makeAgent(), makeAgent({ slug: 'other-agent', name: 'Other Agent', status: 'stopped', sessionCount: 0 })],
     isLoading: false,
@@ -316,20 +335,19 @@ describe('AppSidebar — layout & top nav', () => {
     expect(screen.getByTestId('new-agent-button')).toBeInTheDocument()
   })
 
-  it('lights up only Notifications (not Home) when viewing the global notifications list', () => {
-    // Regression: Notifications is a global view too (selectedAgentSlug stays
-    // null), so Home must not stay active alongside it.
-    mockSelectionContext.view = { kind: 'notifications' }
+  it('lights up only Notifications (not Home) on the notifications route', () => {
+    // Active state is route-derived: on /notifications, Home (exact '/') is off.
+    mockRoutePathname = '/notifications'
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('home-button')).toHaveAttribute('data-active', 'false')
     expect(screen.getByTestId('notifications-button')).toHaveAttribute('data-active', 'true')
   })
 
-  it('does not keep an agent lit when viewing the global notifications list', () => {
-    // Navigating agent → notifications leaves selectedAgentSlug set; the agent
-    // row must still not show as active while notifications is up.
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
-    mockSelectionContext.view = { kind: 'notifications' }
+  it('does not light up an agent on the notifications route', () => {
+    // /notifications carries no slug param, so the agent row is route-inactive
+    // even if Selection still references it.
+    mockRoutePathname = '/notifications'
+    mockRouteParams = {}
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('agent-item-test-agent')).toHaveAttribute('data-active', 'false')
     expect(screen.getByTestId('notifications-button')).toHaveAttribute('data-active', 'true')
@@ -417,13 +435,13 @@ describe('AppSidebar — agent rows', () => {
   })
 
   it('renders session sub-items when an agent is the selected one (auto-expanded)', () => {
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
+    mockRouteParams = { slug: 'test-agent' }
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Session 1')).toBeInTheDocument()
   })
 
   it('selects agent and session on session click', async () => {
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
+    mockRouteParams = { slug: 'test-agent' }
     const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
     await user.click(screen.getByTestId('session-item-session-1'))
@@ -431,7 +449,7 @@ describe('AppSidebar — agent rows', () => {
   })
 
   it('shows an unread dot on a session sub-item with hasUnreadNotifications', () => {
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
+    mockRouteParams = { slug: 'test-agent' }
     mockUseSessions.mockImplementation((slug: string | null) => ({
       data: slug === 'test-agent' ? [makeSession({ hasUnreadNotifications: true })] : [],
       isLoading: false,
@@ -487,7 +505,7 @@ describe('AppSidebar — agent row indicator', () => {
       data: slug === 'test-agent' ? [makeSession({ isAwaitingInput: true /* fresh */ })] : [],
       isLoading: false,
     }))
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
+    mockRouteParams = { slug: 'test-agent' }
 
     renderWithProviders(<AppSidebar />)
     // Agent is selected (expanded) so AgentRowIndicator suppresses
@@ -520,7 +538,7 @@ describe('AppSidebar — agent row indicator', () => {
       isLoading: false,
       error: null,
     })
-    mockSelectionContext.selectedAgentSlug = 'test-agent'
+    mockRouteParams = { slug: 'test-agent' }
 
     renderWithProviders(<AppSidebar />)
     // The agent row's unread dot is suppressed because the agent is expanded.
