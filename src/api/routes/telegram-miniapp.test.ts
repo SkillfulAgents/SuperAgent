@@ -64,6 +64,18 @@ function signInitData(fields: Record<string, string>): string {
 // Tests
 // ============================================================================
 
+describe('GET /', () => {
+  it('returns 200 HTML shell referencing the SDK, session endpoint, and an iframe', async () => {
+    const res = await app.request('/', { method: 'GET' })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/html')
+    const body = await res.text()
+    expect(body).toContain('telegram-web-app.js')
+    expect(body).toContain('/api/telegram-miniapp/session')
+    expect(body).toContain('<iframe')
+  })
+})
+
 describe('POST /session', () => {
   it('returns 200 and sets tg_dash cookie for a valid, bound user', async () => {
     const authDate = Math.floor(Date.now() / 1000)

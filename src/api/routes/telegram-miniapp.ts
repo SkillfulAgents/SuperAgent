@@ -14,7 +14,108 @@ import { getChatIntegrationSession } from '@shared/lib/services/chat-integration
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
 
+const SHELL_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dashboard</title>
+<style>
+  body { margin: 0; background: #000; }
+  #frame {
+    position: fixed; inset: 0;
+    width: 100vw; height: 100vh;
+    border: 0;
+    display: none;
+  }
+  #status {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 12px;
+    color: #fff; font-family: sans-serif; font-size: 15px;
+    text-align: center; padding: 24px;
+  }
+  #open-in-browser {
+    margin-top: 8px; padding: 8px 20px;
+    background: transparent; color: #aaa;
+    border: 1px solid #555; border-radius: 6px;
+    font-size: 13px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<iframe id="frame"></iframe>
+<div id="status">
+  <span id="status-msg">Loading&hellip;</span>
+  <button id="open-in-browser">Open in external browser</button>
+</div>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+(function () {
+  var status = document.getElementById('status');
+  var frame  = document.getElementById('frame');
+
+  function showError(msg) {
+    document.getElementById('status-msg').textContent = msg;
+    status.style.display = 'flex';
+    frame.style.display  = 'none';
+  }
+
+  var params       = new URLSearchParams(window.location.search);
+  var integrationId  = params.get('i') || '';
+  var agentSlug    = params.get('a') || '';
+  var dashboardSlug = params.get('d') || '';
+
+  var twa = window.Telegram && window.Telegram.WebApp;
+  var initData = twa ? twa.initData : '';
+
+  function postSession(onOk, onFail) {
+    fetch('/api/telegram-miniapp/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: initData, integrationId: integrationId, agentSlug: agentSlug, dashboardSlug: dashboardSlug }),
+    })
+      .then(function (res) {
+        if (res.status === 401) { onFail(401); return; }
+        if (res.status === 403) { onFail(403); return; }
+        if (!res.ok)            { onFail(0);   return; }
+        res.json().then(function (body) { onOk(body); }).catch(function () { onFail(0); });
+      })
+      .catch(function () { onFail(0); });
+  }
+
+  postSession(
+    function (body) {
+      frame.src = body.artifactPath;
+      frame.style.display = 'block';
+      status.style.display = 'none';
+      if (twa) { twa.ready(); twa.expand(); }
+      // Silent cookie refresh at ~70 % of the 15-minute TTL (630 000 ms)
+      setInterval(function () {
+        postSession(function () {}, function () {
+          showError('Session expired. Reopen from the chat.');
+        });
+      }, 630000);
+    },
+    function (code) {
+      if (code === 401) { showError("Couldn’t verify this Telegram session. Reopen from the chat."); }
+      else if (code === 403) { showError("You don’t have access to this dashboard."); }
+      else { showError("Couldn’t load the dashboard."); }
+    }
+  );
+
+  document.getElementById('open-in-browser').addEventListener('click', function () {
+    // wired in Task 10
+  });
+})();
+</script>
+</body>
+</html>`
+
 const app = new Hono()
+
+app.get('/', (c) => c.html(SHELL_HTML))
 
 app.post('/session', async (c) => {
   // 1. Parse + validate JSON body
