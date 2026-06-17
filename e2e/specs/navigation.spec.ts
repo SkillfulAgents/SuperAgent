@@ -162,11 +162,65 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
+  test('Session is a durable URL route — a hard reload restores it (R9)', async ({ page }) => {
+    const agentName = `Nav Session Reload ${Date.now()}`
+    await agentPage.createAgent(agentName)
+
+    // Send from agent-home → creates a session and navigates to its OWN route
+    // (R9: sessions are URL-durable now, not Selection-only).
+    await sessionPage.sendMessage('hello session route')
+    await expect(page).toHaveURL(/\/sessions\/[^/]+$/)
+    await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
+
+    // Reload — the router restores the session straight from the path, no Selection.
+    await appPage.reload()
+    await expect(page).toHaveURL(/\/sessions\/[^/]+$/)
+    await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+
+    // Cleanup
+    await page.locator('[data-testid="agent-breadcrumb"]').click()
+    await agentPage.deleteAgent()
+  })
+
+  test('Session survives a sibling round-trip with the agent shell mounted (R9)', async ({ page }) => {
+    // Mount-survival (§11.7): leaving the session leaf for a sibling (agent home)
+    // and returning must NOT unmount AgentShell — it anchors the chat/SSE stream
+    // and the optimistic pendingMessagesRef. The session re-renders its persisted
+    // messages on return with no page crash.
+    const errors: string[] = []
+    page.on('pageerror', (e) => errors.push(e.message))
+
+    const agentName = `Nav Session Survive ${Date.now()}`
+    await agentPage.createAgent(agentName)
+
+    await sessionPage.sendMessage('survive me')
+    await expect(page).toHaveURL(/\/sessions\/[^/]+$/)
+    await sessionPage.waitForResponse(15000)
+    await sessionPage.expectUserMessage('survive me')
+
+    // Leave for the agent-home sibling leaf…
+    await page.locator('[data-testid="agent-breadcrumb"]').click()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
+
+    // …then return to the same session via the sidebar.
+    await agentPage.expandAgent(agentName)
+    await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(agentName))
+    await expect(page).toHaveURL(/\/sessions\/[^/]+$/)
+    await sessionPage.expectUserMessage('survive me')
+    expect(errors).toEqual([])
+
+    // Cleanup
+    await page.locator('[data-testid="agent-breadcrumb"]').click()
+    await agentPage.deleteAgent()
+  })
+
   test('Page reload retains the deep-linked sub-view (URL is the source of truth)', async ({ page }) => {
-    // R5: api-logs and connections are real URL routes now, so a hard reload
-    // restores them from the path (deep-linkable). The Selection-only sub-views
-    // (session/task/webhook/chat/dashboard) still reset on reload until they
-    // migrate to their own routes (R6–R10) and the full reload contract lands (R16).
+    // Every agent sub-view is its own route now (api-logs/connections R5,
+    // task/webhook R6, dashboard R7, chat R8, session R9), so a hard reload
+    // restores it from the path. Only the bridge un-skip + full reload contract
+    // (sidebar highlight on cold reload, settings/notifications) remain for R12/R16.
     const agentName = `Nav Reload ${Date.now()}`
     await agentPage.createAgent(agentName)
 

@@ -43,7 +43,7 @@ function SessionLink({ slug, sessionId }: { slug: string; sessionId: string }) {
       type="button"
       onClick={() => {
         setAgent(slug, { kind: 'session', id: sessionId })
-        void navigate({ to: '/agents/$slug', params: { slug } })
+        void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug, sessionId } })
       }}
       className="inline-flex items-center gap-1 font-mono text-xs text-primary hover:underline"
     >

@@ -35,12 +35,16 @@ function NotificationRow({
   const navigate = useNavigate()
 
   const handleClick = () => {
-    if (notification.type === 'session_chat_integration') {
-      setAgent(notification.agentSlug, { kind: 'home' })
-    } else {
+    if (notification.type !== 'session_chat_integration' && notification.sessionId) {
       setAgent(notification.agentSlug, { kind: 'session', id: notification.sessionId })
+      void navigate({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: notification.agentSlug, sessionId: notification.sessionId },
+      })
+    } else {
+      setAgent(notification.agentSlug, { kind: 'home' })
+      void navigate({ to: '/agents/$slug', params: { slug: notification.agentSlug } })
     }
-    void navigate({ to: '/agents/$slug', params: { slug: notification.agentSlug } })
     if (!notification.isRead) {
       markRead.mutate(notification.id)
     }

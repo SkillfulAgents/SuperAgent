@@ -133,7 +133,7 @@ function SessionSubItem({
   const navigate = useNavigate()
   const handleClick = () => {
     setAgent(agentSlug, { kind: 'session', id: session.id })
-    void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+    void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: session.id } })
   }
 
   return (

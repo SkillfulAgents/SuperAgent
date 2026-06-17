@@ -21,7 +21,11 @@ export function TrayNavigationHandler({ children }: TrayNavigationHandlerProps) 
 
     window.electronAPI.onNavigateToAgent((agentSlug, sessionId) => {
       setAgent(agentSlug, sessionId ? { kind: 'session', id: sessionId } : { kind: 'home' })
-      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+      if (sessionId) {
+        void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId } })
+      } else {
+        void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+      }
     })
 
     return () => {

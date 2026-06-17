@@ -242,7 +242,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
             <button
               onClick={() => {
                 setAgent(agent.slug, { kind: 'session', id: session.id })
-                void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
+                void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agent.slug, sessionId: session.id } })
               }}
               className={`w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 ${colors}`}
             >

@@ -5,16 +5,16 @@ import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/schedule
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
+import { SessionView } from '@renderer/components/layout/session-view'
 
 /**
  * Leaf route components for the agent sub-views. The shared header chrome +
  * agent-level banners live in the AgentShell layout, so each leaf renders only
  * its body inside AgentShell's `<Outlet/>`.
  *
- * Views not yet migrated (session/task/webhook/chat/dashboard) stay
- * SelectionContext-driven and render through the agent body (agentHomeRoute) —
- * the URL stays at `/agents/$slug`, so these leaf routes are never matched. They
- * become real routes in R6–R10. Settings becomes a real route at R12.
+ * api-logs/connections (R5), task/webhook (R6), dashboard (R7), chat (R8) and
+ * session (R9) are real leaf routes. The agent `home` index still renders
+ * through the agent body (agentHomeRoute). Settings becomes a real route at R12.
  */
 function NullRoute() {
   return null
@@ -79,6 +79,15 @@ export function ChatRoute() {
   return <ChatIntegrationView integrationId={integrationId} agentSlug={slug} chatSessionId={chatSessionId} />
 }
 
-export const SessionRoute = NullRoute // R9
+// R9 — session is a real leaf route; sessionId + slug come from the URL. The
+// session body lives in SessionView (next to the other layout components) since
+// it's substantial; this wrapper only resolves the params.
+export function SessionRoute() {
+  const slug = useAgentSlug()
+  const { sessionId } = useParams({ strict: false }) as { sessionId?: string }
+  if (!slug || !sessionId) return null
+  return <SessionView agentSlug={slug} sessionId={sessionId} />
+}
+
 export const SettingsRoute = NullRoute // R12
 export const SettingsTabRoute = NullRoute // R12

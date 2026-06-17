@@ -36,7 +36,7 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
   const handleOpen = () => {
     if (!targetSlug || !session_id) return
     setAgent(targetSlug, { kind: 'session', id: session_id })
-    void navigate({ to: '/agents/$slug', params: { slug: targetSlug } })
+    void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: targetSlug, sessionId: session_id } })
   }
 
   return (
@@ -103,7 +103,7 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
       onClick={(e) => {
         e.stopPropagation()
         setAgent(targetSlug, { kind: 'session', id: session_id })
-        void navigate({ to: '/agents/$slug', params: { slug: targetSlug } })
+        void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: targetSlug, sessionId: session_id } })
       }}
       className="inline-flex min-w-0 max-w-full items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted whitespace-nowrap"
     >

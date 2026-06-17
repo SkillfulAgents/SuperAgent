@@ -1,4 +1,4 @@
-import { Outlet, useParams } from '@tanstack/react-router'
+import { Outlet, useParams, useNavigate } from '@tanstack/react-router'
 import { useCallback, useRef, useState } from 'react'
 import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
@@ -28,16 +28,18 @@ const EMPTY_PENDING_MESSAGES: PendingMessage[] = []
  * sub-view (the agent body index, plus the api-logs/connections leaf routes from
  * R5 onward) inherits one mounted header instead of re-rendering its own.
  *
- * The agent slug comes from the route (URL-authoritative). The active sessionId
- * still comes from SelectionContext in R4 (sub-views are Selection-driven until
- * they become routes in R5–R10); this read flips to `useParams` at R9.
+ * The agent slug AND the active sessionId both come from the route now (R9):
+ * `useParams({ strict: false })` returns the deepest match's params, so on the
+ * session leaf it surfaces the child `sessionId` to this parent layout, driving
+ * holder #1 of the two-holder EventSource directly off the URL.
  */
 export function AgentShell() {
-  const params = useParams({ strict: false }) as { slug?: string }
+  const params = useParams({ strict: false }) as { slug?: string; sessionId?: string }
   const slug = params.slug ?? null
+  const activeSessionId = params.sessionId ?? null
 
-  const { view, setView } = useSelection()
-  const activeSessionId = view.kind === 'session' ? view.id : null
+  const { setView } = useSelection()
+  const navigate = useNavigate()
 
   const { user, isAuthMode, canUseAgent } = useUser()
   const isViewOnly = slug ? !canUseAgent(slug) : false
@@ -110,6 +112,10 @@ export function AgentShell() {
 
   // New session created with an initial message: the uuid is server-assigned
   // (from the create response), so it's known up-front — no re-keying needed.
+  // Seed the optimistic ghost into the ref (which lives here, so it survives the
+  // index→session-leaf swap), then navigate to the session route. AgentShell
+  // stays mounted across that navigation, so the ghost is intact when the leaf
+  // reads it via getPendingMessages (migration plan §8.3).
   const onSessionCreated = useCallback(
     (newSessionId: string, initialMessage: string, messageUuid: string) => {
       pendingMessagesRef.current.set(newSessionId, [
@@ -122,8 +128,14 @@ export function AgentShell() {
         },
       ])
       setView({ kind: 'session', id: newSessionId })
+      if (slug) {
+        void navigate({
+          to: '/agents/$slug/sessions/$sessionId',
+          params: { slug, sessionId: newSessionId },
+        })
+      }
     },
-    [setView, isAuthMode, user],
+    [setView, navigate, slug, isAuthMode, user],
   )
 
   // Orphan cleanup: drop a deleted session's optimistic entry (migration plan §8.3).

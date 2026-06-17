@@ -132,12 +132,10 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const handleRunNow = async () => {
     try {
       const result = await runNow.mutateAsync({ taskId, agentSlug })
-      // The new session is still SelectionContext-driven (sessions become routes
-      // at R9): set it, then leave the task route for the agent index, which
-      // renders the session from Selection. Becomes a direct session-route
-      // navigate at R9.
+      // Leave the task route for the new run's session route. setView keeps
+      // Selection consistent for the bridge until R14.
       setView({ kind: 'session', id: result.sessionId })
-      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+      void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: result.sessionId } })
     } catch (err) {
       console.error('Failed to run scheduled task:', err)
     }

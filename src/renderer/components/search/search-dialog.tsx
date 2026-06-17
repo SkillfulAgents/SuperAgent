@@ -111,16 +111,20 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
     // Close the dialog BEFORE navigating: the route transition otherwise strands
     // the Radix overlay open (it intercepts pointer events on the page beneath).
     onOpenChange(false)
-    if (item.kind === 'agent') {
-      setAgent(item.agent.slug)
-    } else {
-      setAgent(item.agent.slug, { kind: 'session', id: item.session.id })
-    }
     // The SearchDialog is rendered by SearchProvider ABOVE the RouterProvider, so
     // the useNavigate() hook would warn ("useRouter must be used inside a
     // RouterProvider"). Navigate the module-singleton router directly — the exact
     // pattern the singleton exists for (off-router navigators, §7.8).
-    void router.navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
+    if (item.kind === 'agent') {
+      setAgent(item.agent.slug)
+      void router.navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
+    } else {
+      setAgent(item.agent.slug, { kind: 'session', id: item.session.id })
+      void router.navigate({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: item.agent.slug, sessionId: item.session.id },
+      })
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

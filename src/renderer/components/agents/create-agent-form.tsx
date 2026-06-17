@@ -91,7 +91,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
         })
         track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
         setAgent(newAgent.slug, { kind: 'session', id: session.id })
-        void navigate({ to: '/agents/$slug', params: { slug: newAgent.slug } })
+        void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.slug, sessionId: session.id } })
         await onAgentCreated?.()
       } catch (error) {
         console.error('Failed to create agent:', error)

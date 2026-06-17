@@ -31,6 +31,7 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useDeleteSession, useUpdateSessionName } from '@renderer/hooks/use-sessions'
 import { apiFetch } from '@renderer/lib/api'
@@ -162,8 +163,14 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
 
 function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, searchQuery, dateAsTitle = false, formatSubtext }: { session: SessionItem; showIcon: boolean; formatDate: (date: string) => string; agentSlug?: string; searchQuery?: string; dateAsTitle?: boolean; formatSubtext?: (date: string) => string }) {
   const { setView, selectedAgentSlug, handleSessionDeleted } = useSelection()
-  const selectSession = (id: string) => setView({ kind: 'session', id })
+  const navigate = useNavigate()
   const agentSlug = agentSlugProp ?? selectedAgentSlug
+  const selectSession = (id: string) => {
+    setView({ kind: 'session', id })
+    if (agentSlug) {
+      void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: id } })
+    }
+  }
   const { canAdminAgent } = useUser()
   const isOwner = agentSlug ? canAdminAgent(agentSlug) : false
   const deleteSession = useDeleteSession()

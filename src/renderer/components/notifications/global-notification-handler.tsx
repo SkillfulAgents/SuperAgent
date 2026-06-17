@@ -149,7 +149,11 @@ export function GlobalNotificationHandler() {
           nav.agentSlug,
           nav.sessionId ? { kind: 'session', id: nav.sessionId } : { kind: 'home' },
         )
-        void navigate({ to: '/agents/$slug', params: { slug: nav.agentSlug } })
+        if (nav.sessionId) {
+          void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: nav.agentSlug, sessionId: nav.sessionId } })
+        } else {
+          void navigate({ to: '/agents/$slug', params: { slug: nav.agentSlug } })
+        }
       }
       for (const evt of events) {
         dispatchNotificationEvent(evt)
