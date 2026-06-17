@@ -11,6 +11,7 @@ import {
 } from '@renderer/hooks/use-notifications'
 import { useSelection } from '@renderer/context/selection-context'
 import { useNavigate } from '@tanstack/react-router'
+import { AppLink } from '@renderer/components/ui/app-link'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { cn } from '@shared/lib/utils'
@@ -32,19 +33,19 @@ function NotificationRow({
 }) {
   const markRead = useMarkNotificationRead()
   const { setAgent } = useSelection()
-  const navigate = useNavigate()
+
+  // A chat-integration notification has no session to open — it lands on the
+  // agent home; every other notification opens its session.
+  const sessionId =
+    notification.type !== 'session_chat_integration' ? notification.sessionId : null
 
   const handleClick = () => {
-    if (notification.type !== 'session_chat_integration' && notification.sessionId) {
-      setAgent(notification.agentSlug, { kind: 'session', id: notification.sessionId })
-      void navigate({
-        to: '/agents/$slug/sessions/$sessionId',
-        params: { slug: notification.agentSlug, sessionId: notification.sessionId },
-      })
-    } else {
-      setAgent(notification.agentSlug, { kind: 'home' })
-      void navigate({ to: '/agents/$slug', params: { slug: notification.agentSlug } })
-    }
+    // Keep feeding SelectionContext for the bridge (until R14); the <AppLink>
+    // owns the actual navigation now (real <a href> → web new-tab on cmd-click).
+    setAgent(
+      notification.agentSlug,
+      sessionId ? { kind: 'session', id: sessionId } : { kind: 'home' },
+    )
     if (!notification.isRead) {
       markRead.mutate(notification.id)
     }
@@ -52,11 +53,10 @@ function NotificationRow({
 
   const dateLabel = formatNotificationDate(new Date(notification.createdAt))
 
-  return (
-    <button
-      onClick={handleClick}
-      className="group relative block w-full text-left focus-visible:outline-none"
-    >
+  const rowClassName = 'group relative block w-full text-left focus-visible:outline-none'
+
+  const content = (
+    <>
       <span
         aria-hidden
         className="absolute inset-y-0 -left-6 -right-2 rounded-md group-hover:bg-accent/40 group-focus-visible:ring-2 group-focus-visible:ring-ring transition-colors"
@@ -123,7 +123,29 @@ function NotificationRow({
           </span>
         </span>
       </span>
-    </button>
+    </>
+  )
+
+  // Two static AppLink targets (the union keeps `to`/`params` correlated) — the
+  // session route when there's a session, else the agent home.
+  return sessionId ? (
+    <AppLink
+      to="/agents/$slug/sessions/$sessionId"
+      params={{ slug: notification.agentSlug, sessionId }}
+      onClick={handleClick}
+      className={rowClassName}
+    >
+      {content}
+    </AppLink>
+  ) : (
+    <AppLink
+      to="/agents/$slug"
+      params={{ slug: notification.agentSlug }}
+      onClick={handleClick}
+      className={rowClassName}
+    >
+      {content}
+    </AppLink>
   )
 }
 

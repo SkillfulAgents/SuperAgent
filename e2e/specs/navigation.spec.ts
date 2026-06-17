@@ -345,4 +345,30 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.selectAgent(agentName)
     await agentPage.deleteAgent()
   })
+
+  test('Notifications is a durable top-level route — survives a hard reload (R13)', async ({ page }) => {
+    // /notifications is its own top-level route (R4) and all entry points
+    // navigate to it (sidebar R11, OS/tray R9). R13 pins the durability: a hard
+    // reload restores the notifications page straight from the URL, and the
+    // back button still navigates out (to global home — no agent scope after a
+    // cold reload, since /notifications carries no slug).
+    const agentName = `Nav Notif Reload ${Date.now()}`
+    await agentPage.createAgent(agentName)
+
+    await page.locator('[data-testid="notifications-button"]').click()
+    await expect(page).toHaveURL(/\/notifications$/)
+    await expect(page.locator('[data-testid="notifications-back-button"]')).toBeVisible()
+
+    await appPage.reload()
+    await expect(page).toHaveURL(/\/notifications$/)
+    await expect(page.locator('[data-testid="notifications-back-button"]')).toBeVisible()
+
+    // Back leaves the notifications route.
+    await page.locator('[data-testid="notifications-back-button"]').click()
+    await expect(page).not.toHaveURL(/\/notifications/)
+
+    // Cleanup
+    await agentPage.selectAgent(agentName)
+    await agentPage.deleteAgent()
+  })
 })
