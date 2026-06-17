@@ -1,0 +1,49 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { XAgentError } from './host-client'
+import { shareDashboardHandler, shareDashboardInput } from './share-dashboard'
+
+vi.mock('./host-client', async (orig) => ({
+  ...(await orig()),
+  callChatHost: vi.fn(),
+}))
+
+import { callChatHost } from './host-client'
+
+describe('shareDashboardHandler', () => {
+  beforeEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it('success: calls callChatHost with correct args and returns success result mentioning slug', async () => {
+    vi.mocked(callChatHost).mockResolvedValue({ ok: true, chatId: 'chat1' })
+
+    const result = await shareDashboardHandler({ slug: 'weekly-report' })
+
+    expect(callChatHost).toHaveBeenCalledWith('share-dashboard', {
+      slug: 'weekly-report',
+      integration_id: undefined,
+      chat_id: undefined,
+    })
+    expect(result.isError).toBeFalsy()
+    expect(result.content[0].text).toContain('weekly-report')
+  })
+
+  it('server error: returns isError result containing the server message', async () => {
+    vi.mocked(callChatHost).mockRejectedValue(new XAgentError(400, 'No active Telegram integration for this agent'))
+
+    const result = await shareDashboardHandler({ slug: 'x' })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('No active Telegram integration for this agent')
+  })
+})
+
+describe('shareDashboardInput slug validation', () => {
+  it('rejects slugs with uppercase or spaces', () => {
+    expect(shareDashboardInput.slug.safeParse('Bad Slug').success).toBe(false)
+  })
+
+  it('accepts valid lowercase-hyphenated slugs', () => {
+    expect(shareDashboardInput.slug.safeParse('weekly-report').success).toBe(true)
+  })
+})

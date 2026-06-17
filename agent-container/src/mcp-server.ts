@@ -44,6 +44,7 @@ import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat
 import { listChatIntegrationsTool } from './tools/chat/list-chat-integrations'
 import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
 import { sendChatMessageTool } from './tools/chat/send-chat-message'
+import { shareDashboardTool } from './tools/chat/share-dashboard'
 
 // TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
 
@@ -135,6 +136,7 @@ export function createChatMcpServer() {
       listChatIntegrationsTool,
       addChatIntegrationTool,
       sendChatMessageTool,
+      shareDashboardTool,
     ],
   })
 }

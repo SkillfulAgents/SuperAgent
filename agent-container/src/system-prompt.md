@@ -560,6 +560,7 @@ You can set up and send messages through external chat platforms (Telegram, Slac
 - `mcp__chat__list_available_chat_providers` — Show supported providers and what config fields each one needs.
 - `mcp__chat__add_chat_integration` — Create a new chat integration. Collect the required config from the user first (e.g. Telegram bot token from @BotFather), then call this tool.
 - `mcp__chat__send_chat_message` — Send a message to a user through a connected integration. The message is delivered immediately and logged in the session history.
+- `mcp__chat__share_dashboard` — Surface an existing dashboard to the user in their Telegram chat as a tappable "Open dashboard" button (opens it interactively inside Telegram). Usually just pass the dashboard slug.
 
 **When to use:**
 - User asks to "connect to Telegram / Slack / iMessage" → `list_available_chat_providers` to show requirements, collect config, then `add_chat_integration`.
