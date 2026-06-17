@@ -13,9 +13,11 @@ import { decodeLocation, type RouteSnapshot } from './route-state'
  * changes the URL); it goes live as views convert in R5+. Deleted wholesale at
  * R14 once the router is the sole source of truth.
  *
- * Skips the initial mount so a fresh load / reload does NOT override the
- * SelectionContext default (home) — keeping R3 behavior-neutral on the reload
- * contract. Deep-link restore is deferred to R12.
+ * R12: now runs on the INITIAL mount too (the R3–R11 skip is removed), so a
+ * cold reload / deep link rehydrates the agent + sub-view FROM the URL — which
+ * keeps the still-Selection-driven chrome (e.g. the agent-header sub-crumbs,
+ * which read `view`) correct on a hard refresh instead of snapping to the
+ * SelectionContext default (home).
  */
 export function SelectionBridge() {
   const { setAgent, setView, clearSelection, selectedAgentSlug } = useSelection()
@@ -44,13 +46,12 @@ export function SelectionBridge() {
   snapshotRef.current = snapshot
   const currentSlugRef = useRef(selectedAgentSlug)
   currentSlugRef.current = selectedAgentSlug
+  // `null` on the very first run so the initial mount applies (R12); the dedup
+  // guard below still collapses no-op re-renders (useRouterState emits a fresh
+  // object each time).
   const lastKey = useRef<string | null>(null)
 
   useEffect(() => {
-    if (lastKey.current === null) {
-      lastKey.current = key // skip the initial mount (behavior-neutral reload)
-      return
-    }
     if (key === lastKey.current) return
     lastKey.current = key
 

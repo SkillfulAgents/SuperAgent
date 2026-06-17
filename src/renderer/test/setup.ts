@@ -55,7 +55,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 vi.mock('@renderer/components/ui/app-link', () => ({
   // Strip the link-specific props so they don't land as DOM attributes; forward
   // the rest (onClick/className/data-testid) to a plain anchor.
-  AppLink: ({ children, to: _to, params: _params, search: _search, activeClassName: _ac, noDrag: _nd, ...props }: Record<string, unknown> & { children?: unknown }) =>
+  AppLink: ({ children, to: _to, params: _params, search: _search, activeClassName: _ac, activeOptions: _ao, noDrag: _nd, ...props }: Record<string, unknown> & { children?: unknown }) =>
     createElement('a', { href: '#', ...props }, children as never),
 }))
 

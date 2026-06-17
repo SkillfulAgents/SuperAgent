@@ -183,6 +183,31 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
+  test('Cold reload restores the Selection-driven session sub-crumb (bridge un-skip, R12)', async ({ page }) => {
+    // R12 un-skips the URL→Selection bridge on the INITIAL mount, so a hard
+    // reload on a sub-view route rehydrates `view` from the path. The header
+    // crumbs are still Selection-driven (which crumb shows reads `view`), so
+    // before the un-skip the session-name crumb was MISSING on a cold reload
+    // (view snapped to the `home` default) even though the message list — which
+    // is route-driven — still rendered. This pins the crumb back.
+    const agentName = `Nav Crumb Restore ${Date.now()}`
+    await agentPage.createAgent(agentName)
+
+    await sessionPage.sendMessage('restore my crumb')
+    await expect(page).toHaveURL(/\/sessions\/[^/]+$/)
+    await expect(page.locator('[data-testid="session-breadcrumb"]')).toBeVisible({ timeout: 15000 })
+
+    // Hard reload — the bridge restores view.kind='session' from the URL, so the
+    // Selection-driven session crumb comes back (not just the route-driven body).
+    await appPage.reload()
+    await expect(page).toHaveURL(/\/sessions\/[^/]+$/)
+    await expect(page.locator('[data-testid="session-breadcrumb"]')).toBeVisible({ timeout: 15000 })
+
+    // Cleanup
+    await page.locator('[data-testid="agent-breadcrumb"]').click()
+    await agentPage.deleteAgent()
+  })
+
   test('Session survives a sibling round-trip with the agent shell mounted (R9)', async ({ page }) => {
     // Mount-survival (§11.7): leaving the session leaf for a sibling (agent home)
     // and returning must NOT unmount AgentShell — it anchors the chat/SSE stream
@@ -287,9 +312,10 @@ test.describe('Navigation — discriminated AgentView', () => {
   })
 
   test('Sidebar highlights the agent on a cold reload (route-driven active, R11)', async ({ page }) => {
-    // The sidebar active state is route-derived now, so it reflects the URL
-    // immediately on a hard reload — it no longer waits for the bridge (which
-    // skips the initial mount until R12).
+    // The sidebar active state is route-derived (useParams/pathname), so it
+    // reflects the URL immediately on a hard reload — it never depended on the
+    // Selection bridge, which is why it highlighted correctly even before R12
+    // un-skipped the bridge's initial mount.
     const agentName = `Nav Sidebar Active ${Date.now()}`
     await agentPage.createAgent(agentName)
     const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]

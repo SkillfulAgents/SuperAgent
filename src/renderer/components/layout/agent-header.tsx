@@ -1,6 +1,6 @@
-import { useNavigate } from '@tanstack/react-router'
 import { Power, Square, Clock, Loader2, Zap } from 'lucide-react'
 import { useSelection } from '@renderer/context/selection-context'
+import { AppLink } from '@renderer/components/ui/app-link'
 import { useAgent, type useStartAgent, type useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
@@ -24,14 +24,15 @@ interface AgentHeaderProps {
 /**
  * The agent header chrome (breadcrumb + start/stop) rendered by the shared
  * AgentShell layout, so it stays mounted across every agent sub-view (migration
- * plan §8.1 — "AgentShell owns the agent header chrome"). The active sub-view
- * still comes from SelectionContext (bridge-synced from the URL) until each view
- * migrates to its own route; the agent crumb navigates by URL because home,
- * api-logs and connections are now real routes.
+ * plan §8.1 — "AgentShell owns the agent header chrome"). Which crumbs show
+ * still comes from SelectionContext (bridge-synced from the URL, restored on a
+ * cold reload after the R12 bridge un-skip) until each view migrates to its own
+ * route; the crumbs themselves are now `<AppLink>`s (real `<a href>` — §7.4), so
+ * the agent-name crumb's active styling is route-derived (`data-status`) and
+ * survives a reload with no hand-computed leaf flag.
  */
 export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHeaderProps) {
   const { view, setView } = useSelection()
-  const navigate = useNavigate()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
@@ -51,31 +52,25 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
   const isPulling = readiness?.status === 'PULLING_IMAGE'
   const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
-  const showSessionCrumb = !!(sessionId && session?.agentSlug === slug)
-  const showTaskCrumb = !!(scheduledTaskId && scheduledTask)
-  const showWebhookCrumb = !!(webhookTriggerId && webhookTrigger)
-  const isAgentLeaf = !showSessionCrumb && !showTaskCrumb && !showWebhookCrumb && !apiLogsOpen && !connectionsOpen
-
-  // The agent crumb returns to the agent home. home / api-logs / connections are
-  // real routes now, so leaving them requires a URL change; setView keeps the
-  // Selection-driven crumbs honest for views still on the index (R6–R10).
-  const goAgentHome = () => {
-    setView({ kind: 'home' })
-    void navigate({ to: '/agents/$slug', params: { slug } })
-  }
-
   return (
     <>
       <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-1.5 min-w-0 flex-1">
         <div className="flex items-center gap-2 min-w-0">
-          <button
-            type="button"
-            className={`text-sm font-light truncate transition-colors app-no-drag ${isAgentLeaf ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            onClick={goAgentHome}
+          <AppLink
+            to="/agents/$slug"
+            params={{ slug }}
+            activeOptions={{ exact: true }}
+            // The agent home is the same slug, so the bridge preserves the
+            // current sub-view (slug-only sync) — force `home` explicitly here.
+            onClick={() => setView({ kind: 'home' })}
+            noDrag
+            // Route-derived leaf styling: foreground only when this link is the
+            // exact active route (`data-status=active`), muted/clickable otherwise.
+            className="text-sm font-light truncate transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
             data-testid="agent-breadcrumb"
           >
             {agent?.name || 'Loading...'}
-          </button>
+          </AppLink>
         </div>
         {(() => {
           const taskCrumbId = scheduledTaskId ?? (sessionId ? session?.scheduledTaskId ?? null : null)
@@ -85,20 +80,27 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
           return (
             <div className="flex items-center gap-1.5 min-w-0">
               <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-              <button
-                type="button"
-                className={`flex items-center gap-1 transition-colors app-no-drag ${isLeaf ? 'text-muted-foreground cursor-default' : 'text-muted-foreground hover:text-foreground'}`}
-                onClick={() => {
-                  setView({ kind: 'task', id: taskCrumbId })
-                  void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug, taskId: taskCrumbId } })
-                }}
-                disabled={isLeaf}
-              >
-                <Clock className="h-4 w-4" />
-                <span className={`truncate text-sm font-light ${isLeaf ? 'text-foreground' : ''}`}>
-                  {taskCrumbName || 'Scheduled Task'}
+              {isLeaf ? (
+                <span className="flex items-center gap-1 text-muted-foreground app-no-drag">
+                  <Clock className="h-4 w-4" />
+                  <span className="truncate text-sm font-light text-foreground">
+                    {taskCrumbName || 'Scheduled Task'}
+                  </span>
                 </span>
-              </button>
+              ) : (
+                <AppLink
+                  to="/agents/$slug/tasks/$taskId"
+                  params={{ slug, taskId: taskCrumbId }}
+                  onClick={() => setView({ kind: 'task', id: taskCrumbId })}
+                  noDrag
+                  className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Clock className="h-4 w-4" />
+                  <span className="truncate text-sm font-light">
+                    {taskCrumbName || 'Scheduled Task'}
+                  </span>
+                </AppLink>
+              )}
             </div>
           )
         })()}
@@ -110,20 +112,27 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
           return (
             <div className="flex items-center gap-1.5 min-w-0">
               <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
-              <button
-                type="button"
-                className={`flex items-center gap-1 transition-colors app-no-drag ${isLeaf ? 'text-muted-foreground cursor-default' : 'text-muted-foreground hover:text-foreground'}`}
-                onClick={() => {
-                  setView({ kind: 'webhook', id: webhookCrumbId })
-                  void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug, webhookId: webhookCrumbId } })
-                }}
-                disabled={isLeaf}
-              >
-                <Zap className="h-4 w-4" />
-                <span className={`truncate text-sm font-light ${isLeaf ? 'text-foreground' : ''}`}>
-                  {webhookCrumbName || 'Webhook Trigger'}
+              {isLeaf ? (
+                <span className="flex items-center gap-1 text-muted-foreground app-no-drag">
+                  <Zap className="h-4 w-4" />
+                  <span className="truncate text-sm font-light text-foreground">
+                    {webhookCrumbName || 'Webhook Trigger'}
+                  </span>
                 </span>
-              </button>
+              ) : (
+                <AppLink
+                  to="/agents/$slug/webhooks/$webhookId"
+                  params={{ slug, webhookId: webhookCrumbId }}
+                  onClick={() => setView({ kind: 'webhook', id: webhookCrumbId })}
+                  noDrag
+                  className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Zap className="h-4 w-4" />
+                  <span className="truncate text-sm font-light">
+                    {webhookCrumbName || 'Webhook Trigger'}
+                  </span>
+                </AppLink>
+              )}
             </div>
           )
         })()}
@@ -135,7 +144,10 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
               sessionName={session?.name || 'Session'}
               agentSlug={slug}
             >
-              <span className="text-sm font-light text-foreground truncate cursor-context-menu app-no-drag">
+              <span
+                className="text-sm font-light text-foreground truncate cursor-context-menu app-no-drag"
+                data-testid="session-breadcrumb"
+              >
                 {session?.name || 'Loading...'}
               </span>
             </SessionContextMenu>
@@ -149,11 +161,9 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
         )}
         {connectionsOpen && (
           <ConnectionsCrumbs
+            slug={slug}
             detail={view.kind === 'connections' ? view.detail ?? null : null}
-            onOpenList={() => {
-              setView({ kind: 'connections' })
-              void navigate({ to: '/agents/$slug/connections', params: { slug } })
-            }}
+            onOpenList={() => setView({ kind: 'connections' })}
           />
         )}
       </div>
@@ -236,9 +246,11 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
  * was opened from the list, so a home-card deep link reads "Agent / Account".
  */
 function ConnectionsCrumbs({
+  slug,
   detail,
   onOpenList,
 }: {
+  slug: string
   detail: { rowKey: string; source: 'home' | 'list' } | null
   onOpenList: () => void
 }) {
@@ -270,14 +282,17 @@ function ConnectionsCrumbs({
       {detail.source === 'list' && (
         <div className="flex items-center gap-1.5 min-w-0">
           {separator}
-          <button
-            type="button"
-            className="truncate text-sm font-light text-muted-foreground hover:text-foreground transition-colors app-no-drag"
+          <AppLink
+            to="/agents/$slug/connections"
+            params={{ slug }}
+            // No `search` → drops `?detail`/`?source`, returning to the list.
             onClick={onOpenList}
+            noDrag
+            className="truncate text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
             data-testid="connections-breadcrumb"
           >
             Connections
-          </button>
+          </AppLink>
         </div>
       )}
       <div className="flex items-center gap-1.5 min-w-0">
