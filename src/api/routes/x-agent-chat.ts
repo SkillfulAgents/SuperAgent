@@ -25,6 +25,8 @@ import {
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
+import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { shareDashboardRequestSchema } from './x-agent-chat-schema'
 
 type XAgentChatVariables = { callerSlug: string }
 
@@ -251,6 +253,68 @@ xAgentChat.post('/send', async (c) => {
     captureException(error, { tags: { component: 'x-agent-chat', operation: 'send' } })
     return c.json({ error: 'Failed to send chat message' }, 500)
   }
+})
+
+// POST /share-dashboard — share a dashboard artifact to a Telegram chat
+xAgentChat.post('/share-dashboard', async (c) => {
+  const callerSlug = c.get('callerSlug')
+  const rawBody = await c.req.json().catch(() => null)
+  const parsed = shareDashboardRequestSchema.safeParse(rawBody)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  const { slug, integration_id, chat_id } = parsed.data
+
+  // Resolve integration
+  let integration: Awaited<ReturnType<typeof getChatIntegration>>
+  if (integration_id) {
+    const found = getChatIntegration(integration_id)
+    if (!found) return c.json({ error: 'Chat integration not found' }, 404)
+    if (found.agentSlug !== callerSlug) return c.json({ error: 'Forbidden' }, 403)
+    if (found.provider !== 'telegram') return c.json({ error: 'Dashboards are only supported on Telegram' }, 400)
+    integration = found
+  } else {
+    const active = listChatIntegrations(callerSlug).filter(
+      (i) => i.provider === 'telegram' && i.status === 'active',
+    )
+    if (active.length === 0) return c.json({ error: 'No active Telegram integration for this agent' }, 400)
+    if (active.length > 1) return c.json({ error: 'Multiple Telegram integrations; specify integration_id' }, 400)
+    integration = active[0]
+  }
+
+  // Resolve chat
+  let resolvedChatId: string
+  if (chat_id) {
+    resolvedChatId = chat_id
+  } else {
+    const sessions = listChatIntegrationSessions(integration.id)
+    const active = sessions.filter((s) => !s.archivedAt)
+    if (active.length === 0) return c.json({ error: 'No active chat for this integration' }, 400)
+    if (active.length > 1) return c.json({ error: 'Multiple active chats; specify chat_id' }, 400)
+    resolvedChatId = active[0].externalChatId
+  }
+
+  // Validate dashboard existence
+  const artifacts = await listArtifactsFromFilesystem(integration.agentSlug)
+  const dash = artifacts.find((a) => a.slug === slug)
+  if (!dash) return c.json({ error: 'Dashboard not found' }, 404)
+  const name = dash.name || slug
+
+  try {
+    await chatIntegrationManager.shareDashboard(integration.id, resolvedChatId, {
+      agentSlug: integration.agentSlug,
+      dashboardSlug: slug,
+      name,
+    })
+  } catch (err) {
+    if (err instanceof Error && err.message === 'Integration not connected') {
+      return c.json({ error: 'Integration not connected' }, 503)
+    }
+    captureException(err, { tags: { component: 'x-agent-chat', operation: 'share-dashboard' } })
+    return c.json({ error: 'Failed to share dashboard' }, 500)
+  }
+
+  return c.json({ ok: true, chatId: resolvedChatId })
 })
 
 // --- Helpers ---
