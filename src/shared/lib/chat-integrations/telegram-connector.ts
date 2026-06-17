@@ -16,6 +16,7 @@ import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
+import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -588,6 +589,25 @@ export class TelegramConnector extends ChatClientConnector {
       // Single question — emit immediately
       this.emitInteractiveResponse(mapping.toolUseId, mapping.value, chatId)
     }
+  }
+
+  // ── Dashboard cards ─────────────────────────────────────────────────
+
+  async sendDashboardCard(
+    chatId: string,
+    opts: { integrationId: string; agentSlug: string; dashboardSlug: string; name: string },
+  ): Promise<void> {
+    if (!this.bot) throw new Error('Bot not connected')
+    const base = getPlatformBaseUrl()
+    if (!base) {
+      await this.bot.api.sendMessage(chatId, opts.name)
+      console.warn('[telegram] dashboard sharing needs a public HTTPS base URL (web/server mode); sent plain text without the Open dashboard button')
+      return
+    }
+    const url = `${base.replace(/\/$/, '')}/api/telegram-miniapp?i=${encodeURIComponent(opts.integrationId)}&a=${encodeURIComponent(opts.agentSlug)}&d=${encodeURIComponent(opts.dashboardSlug)}`
+    await this.bot.api.sendMessage(chatId, opts.name, {
+      reply_markup: { inline_keyboard: [[{ text: 'Open dashboard', web_app: { url } }]] },
+    })
   }
 
   // ── First-poll batching ─────────────────────────────────────────────

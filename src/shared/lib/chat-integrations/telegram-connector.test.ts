@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TelegramConnector } from './telegram-connector'
 import type { IncomingMessage } from './base-connector'
+import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 
 // ── grammY mock ────────────────────────────────────────────────────────────────
 // The photo/document handlers are inline closures registered inside connect(),
@@ -20,6 +21,11 @@ vi.mock('grammy', () => ({
     start(opts: { onStart?: () => void }): Promise<void> { opts?.onStart?.(); return Promise.resolve() }
     async stop(): Promise<void> {}
   },
+}))
+
+vi.mock('@shared/lib/platform-auth/config', async (orig) => ({
+  ...(await orig<typeof import('@shared/lib/platform-auth/config')>()),
+  getPlatformBaseUrl: vi.fn(),
 }))
 
 // ── Minimal ctx mock ──────────────────────────────────────────────────────────
@@ -238,4 +244,64 @@ describe('TelegramConnector — media handlers (photo/document)', () => {
       expect(emitted[0].files?.[0]?.name).toBe('report.pdf')
     })
   }
+})
+
+describe('TelegramConnector.sendDashboardCard', () => {
+  let connector: TelegramConnector
+  let sendMessage: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    connector = new TelegramConnector({ botToken: 'x' })
+    sendMessage = vi.fn().mockResolvedValue({ message_id: 1 })
+    ;(connector as any).bot = { api: { sendMessage } }
+  })
+
+  it('sends a web_app button with the correct URL when base URL is set', async () => {
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+
+    await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+    })
+
+    expect(sendMessage).toHaveBeenCalledOnce()
+
+    const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]
+    expect(chatIdArg).toBe('chat1')
+    expect(textArg).toBe('Weekly')
+
+    const webAppUrl: string = optsArg.reply_markup.inline_keyboard[0][0].web_app.url
+    expect(webAppUrl).toContain('https://host.example/api/telegram-miniapp')
+    expect(webAppUrl).toContain('i=int1')
+    expect(webAppUrl).toContain('a=sales')
+    expect(webAppUrl).toContain('d=weekly-report')
+  })
+
+  it('sends plain text with no web_app button when base URL is unset', async () => {
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+    })
+
+    expect(sendMessage).toHaveBeenCalledOnce()
+
+    const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]
+    expect(chatIdArg).toBe('chat1')
+    expect(textArg).toBe('Weekly')
+    // No web_app button — either no options arg, or reply_markup is absent
+    expect(optsArg?.reply_markup).toBeUndefined()
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('public HTTPS base URL'),
+    )
+
+    warnSpy.mockRestore()
+  })
 })
