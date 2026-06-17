@@ -192,7 +192,7 @@ class ChatIntegrationManager {
 
     // Clean up all chat session SSE subscriptions
     for (const [, session] of this.chatSessions) {
-      session.sseUnsubscribe?.()
+      this.stopSession(session)
     }
     this.chatSessions.clear()
 
@@ -239,7 +239,7 @@ class ChatIntegrationManager {
     // Remove all chat sessions for this integration
     for (const [key, session] of this.chatSessions) {
       if (key.startsWith(`${id}:`)) {
-        session.sseUnsubscribe?.()
+        this.stopSession(session)
         this.chatSessions.delete(key)
       }
     }
@@ -763,9 +763,9 @@ class ChatIntegrationManager {
       return
     }
 
-    // Show typing indicator
-    this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
-      ?.connector.showTypingIndicator(chatId).catch(() => {})
+    // Show the "Thinking…" indicator (the connector keeps it alive) until the first token streams.
+    const dispatched = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+    if (dispatched) dispatched.connector.startWorking(dispatched.chatId).catch(() => {})
   }
 
   /**
@@ -842,10 +842,16 @@ class ChatIntegrationManager {
     return /session(\s+\S+)?\s+not\s+found/i.test(err.message)
   }
 
+  /** Stop a chat session's live streaming: drop the SSE subscription and the working indicator. */
+  private stopSession(session: ManagedConnector): void {
+    session.sseUnsubscribe?.()
+    session.connector.stopWorking(session.chatId).catch(() => {})
+  }
+
   private teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): void {
     const key = this.getChatSessionKey(integrationId, chatId)
     const managed = this.chatSessions.get(key)
-    managed?.sseUnsubscribe?.()
+    if (managed) this.stopSession(managed)
     this.chatSessions.delete(key)
     if (opts?.archive) {
       this.lastSessionTouch.delete(opts.archive)
@@ -879,7 +885,7 @@ class ChatIntegrationManager {
       const [integrationId, chatId] = key.split(':')
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession?.id === sessionId) {
-        managed.sseUnsubscribe?.()
+        this.stopSession(managed)
         this.chatSessions.delete(key)
         break
       }
@@ -1306,6 +1312,12 @@ export async function processSSEEvent(
     case 'stream_delta': {
       const text = data.text as string
       if (!text) break
+      // First token of this segment: the response is streaming now, so drop "Thinking…".
+      // Guard on the empty accumulator so stopWorking fires once on the transition,
+      // not on every streamed token.
+      if (managed.streamingState.accumulatedText === '') {
+        managed.connector.stopWorking(managed.chatId).catch(() => {})
+      }
       managed.streamingState.accumulatedText += text
 
       const now = Date.now()
@@ -1333,14 +1345,9 @@ export async function processSSEEvent(
       } catch (err) {
         console.error('[ChatIntegrationManager] Failed to finalize on stream_start:', err)
       }
-      managed.connector.showTypingIndicator(managed.chatId).catch(() => {})
-      break
-    }
-
-    case 'messages_updated': {
-      if (managed.streamingState.accumulatedText) {
-        managed.connector.showTypingIndicator(managed.chatId).catch(() => {})
-      }
+      // "Thinking…" again for the next segment. startWorking self-keep-alives, so a
+      // long gap before the next token no longer drops it; the first token replaces it.
+      managed.connector.startWorking(managed.chatId).catch(() => {})
       break
     }
 
@@ -1429,6 +1436,7 @@ export async function processSSEEvent(
     }
 
     case 'session_idle': {
+      managed.connector.stopWorking(managed.chatId).catch(() => {})
       try {
         await finalizeStreaming(managed)
         await resolvePendingToolMessages(managed)

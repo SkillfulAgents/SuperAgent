@@ -202,7 +202,7 @@ xAgentChat.post('/send', async (c) => {
       resolvedChatId = activeChats[0].externalChatId
     }
 
-    // Send through connector (with brief typing indicator first)
+    // Send through connector (with a brief "working" indicator first)
     let connector = chatIntegrationManager.getConnector(integration_id)
     if (!connector) {
       // Connector not live — attempt to reconnect
@@ -220,10 +220,12 @@ xAgentChat.post('/send', async (c) => {
     }
 
     const typingDelay = 100 + Math.random() * 1100
-    await connector.showTypingIndicator(resolvedChatId).catch(() => {})
+    await connector.startWorking(resolvedChatId).catch(() => {})
     await new Promise((resolve) => setTimeout(resolve, typingDelay))
 
     await connector.sendMessage(resolvedChatId, { text: message })
+    // One-shot send (no streaming follow-up), so clear the indicator we started.
+    await connector.stopWorking(resolvedChatId).catch(() => {})
 
     // Notify the chat session's agent so it knows a message was sent on its behalf.
     // Uses shouldQuery: false so the message enters the agent's context without

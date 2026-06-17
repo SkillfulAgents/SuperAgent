@@ -65,8 +65,19 @@ export abstract class ChatClientConnector {
   /** Finalize a streaming message (last edit with final text). */
   abstract finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void>
 
-  /** Show typing / processing indicator. */
-  abstract showTypingIndicator(chatId: string): Promise<void>
+  /**
+   * Signal that the agent is working (processing, no output yet). The connector
+   * owns the representation AND any keep-alive needed to survive provider-side
+   * expiry. Idempotent — safe to call repeatedly for the same chat.
+   */
+  abstract startWorking(chatId: string): Promise<void>
+
+  /**
+   * Stop the working indicator as the response takes over. Idempotent — safe to
+   * call repeatedly. Default no-op for connectors whose indicator is ephemeral
+   * and self-expires.
+   */
+  async stopWorking(_chatId: string): Promise<void> {}
 
   /**
    * Send a file to the chat. Returns the external message ID.
