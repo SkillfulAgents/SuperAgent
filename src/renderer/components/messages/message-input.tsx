@@ -13,6 +13,7 @@ import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -50,6 +51,12 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const isOnline = useIsOnline()
   const isOffline = !isOnline
   const { track } = useAnalyticsTracking()
+  // Block sends while the container runtime is still coming up (checking,
+  // pulling image, unavailable). A message sent then has nothing to run it,
+  // so the agent would silently drop it. `isPending` is the initial query
+  // load — treat it as ready to avoid a disabled-input flash on mount.
+  const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
+  const isRuntimeReady = isRuntimePending || runtimeStatus?.runtimeReadiness?.status === 'READY'
 
   const composer = useMessageComposer({
     agentSlug,
@@ -91,7 +98,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       }
       track('message_sent')
     }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
-    submitDisabled: sendMessage.isPending || isOffline,
+    submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
     draftKey: `session:${sessionId}`,
   })
 
@@ -188,7 +195,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     }
   }
 
-  const isDisabled = sendMessage.isPending || composer.isUploading || isOffline
+  const isDisabled = sendMessage.isPending || composer.isUploading || isOffline || !isRuntimeReady
 
 
   if (isViewOnly) {
