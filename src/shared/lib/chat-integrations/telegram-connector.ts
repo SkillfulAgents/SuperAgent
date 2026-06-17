@@ -15,7 +15,7 @@ import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
-import type { InputRichMessage } from './telegram-rich-message-schema'
+import type { InputRichMessage } from 'grammy/types'
 
 // ── Config ──────────────────────────────────────────────────────────────
 

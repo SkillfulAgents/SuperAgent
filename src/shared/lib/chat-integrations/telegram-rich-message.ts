@@ -6,7 +6,7 @@
  * rich blocks server-side; we do NOT build RichBlock objects.
  */
 import { splitChatMessage } from './utils'
-import type { InputRichMessage } from './telegram-rich-message-schema'
+import type { InputRichMessage } from 'grammy/types'
 
 /** Max UTF-8 chars in a rich message (Bot API 10.1). */
 export const RICH_MAX_LENGTH = 32768
