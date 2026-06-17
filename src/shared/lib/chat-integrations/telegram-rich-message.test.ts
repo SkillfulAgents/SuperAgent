@@ -5,6 +5,8 @@ import {
   markdownToRichMessage,
   splitForRichLimits,
   RICH_MAX_LENGTH,
+  escapeMarkdown,
+  codeSpan,
 } from './telegram-rich-message'
 
 describe('inputRichMessageSchema', () => {
@@ -43,6 +45,36 @@ describe('markdownToRichMessage', () => {
 
   it('sets skip_entity_detection when requested', () => {
     expect(markdownToRichMessage('hi', { skipEntityDetection: true }).skip_entity_detection).toBe(true)
+  })
+})
+
+describe('escapeMarkdown', () => {
+  it('escapes the inline-formatting metacharacters', () => {
+    expect(escapeMarkdown('a*b_c~d`e[f]g\\h')).toBe('a\\*b\\_c\\~d\\`e\\[f\\]g\\\\h')
+  })
+
+  it('leaves block-level punctuation untouched', () => {
+    expect(escapeMarkdown('v0.3 (build #4) - done.')).toBe('v0.3 (build #4) - done.')
+  })
+
+  it('neutralizes a value that would otherwise format', () => {
+    // `**KEY**` would render bold; escaped, the asterisks stay literal.
+    expect(escapeMarkdown('**KEY**')).toBe('\\*\\*KEY\\*\\*')
+  })
+})
+
+describe('codeSpan', () => {
+  it('wraps a plain value in single backticks', () => {
+    expect(codeSpan('/tmp/file.txt')).toBe('`/tmp/file.txt`')
+  })
+
+  it('uses a longer fence when the value contains a backtick', () => {
+    // A single internal backtick can no longer close the span.
+    expect(codeSpan('weird`name')).toBe('``weird`name``')
+  })
+
+  it('pads when the value starts or ends with a backtick', () => {
+    expect(codeSpan('`leading')).toBe('`` `leading ``')
   })
 })
 

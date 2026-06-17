@@ -14,7 +14,7 @@ import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
-import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits } from './telegram-rich-message'
+import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from './telegram-rich-message-schema'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -500,7 +500,7 @@ export class TelegramConnector extends ChatClientConnector {
     if (!this.bot) throw new Error('Bot not connected')
 
     if (isUnsupportedInChat(event)) {
-      return this.sendRichOrHtml(chatId, `_${describeUnsupportedRequest(event)}_`)
+      return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event))}_`)
     }
 
     switch (event.type) {
@@ -517,8 +517,8 @@ export class TelegramConnector extends ChatClientConnector {
 
         // Send each question as its own message with its own keyboard
         for (const q of event.questions) {
-          const header = q.header ? `**${q.header}**\n` : ''
-          const text = `${header}${q.question}`
+          const header = q.header ? `**${escapeMarkdown(q.header)}**\n` : ''
+          const text = `${header}${escapeMarkdown(q.question)}`
 
           const keyboard: Array<Array<{ text: string; callback_data: string }>> = []
           if (q.options && q.options.length > 0) {
@@ -543,28 +543,28 @@ export class TelegramConnector extends ChatClientConnector {
       }
 
       case 'secret_request': {
-        const text = `**Secret requested:** \`${event.secretName}\`\n${event.reason ? `\nReason: ${event.reason}` : ''}\n\nPlease reply with the secret value.`
+        const text = `**Secret requested:** ${codeSpan(event.secretName)}\n${event.reason ? `\nReason: ${escapeMarkdown(event.reason)}` : ''}\n\nPlease reply with the secret value.`
         return this.sendRichOrHtml(chatId, text)
       }
 
       case 'file_request': {
-        const text = `**File requested:**\n${event.description}${event.fileTypes ? `\n\nAccepted types: ${event.fileTypes}` : ''}\n\nPlease upload the file.`
+        const text = `**File requested:**\n${escapeMarkdown(event.description)}${event.fileTypes ? `\n\nAccepted types: ${escapeMarkdown(event.fileTypes)}` : ''}\n\nPlease upload the file.`
         return this.sendRichOrHtml(chatId, text)
       }
 
       case 'file_delivery': {
         // File transfer from container to chat is not yet supported — show metadata only
-        const text = `**File delivered:** \`${event.filePath}\`${event.description ? `\n${event.description}` : ''}\n\n_File download not yet supported — view in the app._`
+        const text = `**File delivered:** ${codeSpan(event.filePath)}${event.description ? `\n${escapeMarkdown(event.description)}` : ''}\n\n_File download not yet supported — view in the app._`
         return this.sendRichOrHtml(chatId, text)
       }
 
       case 'tool_status': {
         const emoji = event.status === 'success' ? '✅' : event.status === 'error' ? '❌' : event.status === 'cancelled' ? '⛔' : '⏳'
-        return this.sendRichOrHtml(chatId, `🔧 **${event.toolName}** — ${event.summary} ${emoji}`)
+        return this.sendRichOrHtml(chatId, `🔧 **${escapeMarkdown(event.toolName)}** — ${escapeMarkdown(event.summary)} ${emoji}`)
       }
 
       default:
-        return this.sendRichOrHtml(chatId, `_${describeUnsupportedRequest(event)}_`)
+        return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event))}_`)
     }
   }
 
