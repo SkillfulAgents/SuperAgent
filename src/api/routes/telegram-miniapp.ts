@@ -216,7 +216,7 @@ app.post('/session', async (c) => {
   )
 
   // 12. Set cookie — secure only on https so local http round-trips still work
-  const secure = new URL(c.req.url).protocol === 'https:'
+  const secure = c.req.url.startsWith('https:')
   setCookie(c, DASHBOARD_COOKIE_NAME, token, {
     httpOnly: true,
     secure,
@@ -292,7 +292,7 @@ app.get('/browser', async (c) => {
     { userId: payload.userId, agentSlug: payload.agentSlug, integrationId: payload.integrationId, exp },
     getOrCreateAuthSecret(),
   )
-  const secure = new URL(c.req.url).protocol === 'https:'
+  const secure = c.req.url.startsWith('https:')
   setCookie(c, DASHBOARD_COOKIE_NAME, cookie, {
     httpOnly: true,
     secure,
