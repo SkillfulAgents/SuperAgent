@@ -1,9 +1,18 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { cloneElement, isValidElement, type ReactElement } from 'react'
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
+
+// Sidebar items render real AppLinks (R11 pt2) — stub it as a plain anchor that
+// forwards the props the tests inspect (data-testid, onClick, className).
+vi.mock('@renderer/components/ui/app-link', () => ({
+  AppLink: ({ children, to, params, search, onClick, onDoubleClick, className, ...props }: any) => (
+    <a href="#" onClick={onClick} onDoubleClick={onDoubleClick} className={className} {...props}>{children}</a>
+  ),
+}))
 
 vi.stubGlobal('__APP_VERSION__', '0.1.0-test')
 vi.stubGlobal('__RENDER_TRACKING__', false)
@@ -217,13 +226,19 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
   SidebarGroupContent: ({ children }: any) => <div>{children}</div>,
   SidebarGroupLabel: ({ children, className }: any) => <span className={className}>{children}</span>,
   SidebarMenu: ({ children }: any) => <ul>{children}</ul>,
-  SidebarMenuButton: ({ children, onClick, isActive, ...props }: any) => (
-    <button onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>
-  ),
+  // Honor asChild (Slot): merge data-active + our props onto the child element so
+  // the link carries the testid/active state and keeps its own onClick.
+  SidebarMenuButton: ({ children, onClick, isActive, asChild, ...props }: any) =>
+    asChild && isValidElement(children)
+      ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
+      : <button onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>,
   SidebarMenuItem: ({ children, onMouseEnter }: any) => <li onMouseEnter={onMouseEnter}>{children}</li>,
   SidebarMenuSkeleton: () => <div data-testid="skeleton" />,
   SidebarMenuSub: ({ children }: any) => <ul>{children}</ul>,
-  SidebarMenuSubButton: ({ children, ...props }: any) => <div {...props}>{children}</div>,
+  SidebarMenuSubButton: ({ children, isActive, asChild, ...props }: any) =>
+    asChild && isValidElement(children)
+      ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
+      : <div data-active={isActive ? 'true' : 'false'} {...props}>{children}</div>,
   SidebarMenuSubItem: ({ children }: any) => <li>{children}</li>,
   SidebarRail: () => null,
 }))

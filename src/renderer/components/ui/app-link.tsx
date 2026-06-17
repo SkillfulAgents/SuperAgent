@@ -11,6 +11,7 @@ type AppLinkProps = LinkProps & {
   noDrag?: boolean
   children?: ReactNode
   onClick?: MouseEventHandler<HTMLAnchorElement>
+  onDoubleClick?: MouseEventHandler<HTMLAnchorElement>
   title?: string
   'aria-label'?: string
   'data-testid'?: string

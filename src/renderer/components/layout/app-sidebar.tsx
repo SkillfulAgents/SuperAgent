@@ -3,6 +3,7 @@ import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle,
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
+import { AppLink } from '@renderer/components/ui/app-link'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { useDialogs } from '@renderer/context/dialog-context'
@@ -50,7 +51,7 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
 import { useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams, useRouterState } from '@tanstack/react-router'
+import { useParams, useRouterState, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import { useSelection } from '@renderer/context/selection-context'
 import { useSearch } from '@renderer/context/search-context'
@@ -134,10 +135,8 @@ function SessionSubItem({
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
 
-  const navigate = useNavigate()
-  const handleClick = () => {
+  const handleSelect = () => {
     setAgent(agentSlug, { kind: 'session', id: session.id })
-    void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: session.id } })
   }
 
   return (
@@ -151,8 +150,10 @@ function SessionSubItem({
           asChild
           isActive={isSelected}
         >
-          <button
-            onClick={handleClick}
+          <AppLink
+            to="/agents/$slug/sessions/$sessionId"
+            params={{ slug: agentSlug, sessionId: session.id }}
+            onClick={handleSelect}
             className="flex items-center gap-2 w-full"
             data-testid={`session-item-${session.id}`}
           >
@@ -166,7 +167,7 @@ function SessionSubItem({
                 <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
               ) : null}
             </span>
-          </button>
+          </AppLink>
         </SidebarMenuSubButton>
       </SessionContextMenu>
     </SidebarMenuSubItem>
@@ -181,30 +182,24 @@ function ChatIntegrationSubItem({
   integration: ChatIntegration
   agentSlug: string
 }) {
-  const { view, setAgent } = useSelection()
+  const { setAgent } = useSelection()
   const { data: sessions } = useChatIntegrationSessions(integration.id)
-  const viewingThisIntegration = view.kind === 'chat' && view.integrationId === integration.id
-  const selectedChatSessionId = view.kind === 'chat' ? view.sessionId ?? null : null
+  // Route-derived active state (URL-authoritative; correct on cold reload).
+  const { slug: routeSlug, integrationId: routeIntegrationId } = useParams({ strict: false }) as { slug?: string; integrationId?: string }
+  const chatSearch = useRouteSearch({ strict: false }) as { session?: unknown }
+  const viewingThisIntegration = routeSlug === agentSlug && routeIntegrationId === integration.id
+  const selectedChatSessionId = viewingThisIntegration && typeof chatSearch.session === 'string' ? chatSearch.session : null
   const isSelected = viewingThisIntegration && !selectedChatSessionId
   const hasSelectedSession = viewingThisIntegration && selectedChatSessionId != null
   const [isOpen, setIsOpen] = useState(viewingThisIntegration || hasSelectedSession)
 
-  const navigate = useNavigate()
-  const handleClick = () => {
+  // AppLink navigates; these keep Selection in sync for the bridge until R14.
+  const handleSelect = () => {
     setAgent(agentSlug, { kind: 'chat', integrationId: integration.id })
-    void navigate({
-      to: '/agents/$slug/chat/$integrationId',
-      params: { slug: agentSlug, integrationId: integration.id },
-    })
   }
 
-  const handleSessionClick = (sessionId: string) => {
+  const handleSessionSelect = (sessionId: string) => {
     setAgent(agentSlug, { kind: 'chat', integrationId: integration.id, sessionId })
-    void navigate({
-      to: '/agents/$slug/chat/$integrationId',
-      params: { slug: agentSlug, integrationId: integration.id },
-      search: { session: sessionId },
-    })
   }
 
   const statusDot = integration.status === 'active' ? 'bg-green-500' :
@@ -218,6 +213,8 @@ function ChatIntegrationSubItem({
     <SidebarMenuSubItem>
       {hasSessions ? (
         <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+          {/* Chevron is a SIBLING of the row link (not nested) so the row can be
+              a single <a> — no interactive controls inside an anchor. */}
           <div className="flex items-center">
             <SidebarMenuSubButton
               asChild
@@ -225,24 +222,27 @@ function ChatIntegrationSubItem({
               title={tooltip}
               className="flex-1"
             >
-              <button
-                onClick={handleClick}
+              <AppLink
+                to="/agents/$slug/chat/$integrationId"
+                params={{ slug: agentSlug, integrationId: integration.id }}
+                onClick={handleSelect}
                 className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
               >
                 <span className="truncate">
                   {integration.name || formatProviderName(integration.provider)}
                 </span>
                 <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${statusDot}`} />
-                <CollapsibleTrigger asChild>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen) }}
-                    className="ml-auto p-0.5"
-                  >
-                    <ChevronRight className="h-3 w-3 shrink-0 transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'none' }} />
-                  </button>
-                </CollapsibleTrigger>
-              </button>
+              </AppLink>
             </SidebarMenuSubButton>
+            <CollapsibleTrigger asChild>
+              <button
+                onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen) }}
+                aria-label={isOpen ? 'Collapse' : 'Expand'}
+                className="p-0.5 shrink-0"
+              >
+                <ChevronRight className="h-3 w-3 shrink-0 transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'none' }} />
+              </button>
+            </CollapsibleTrigger>
           </div>
           <CollapsibleContent>
             <SidebarMenuSub>
@@ -254,8 +254,11 @@ function ChatIntegrationSubItem({
                       asChild
                       isActive={selectedChatSessionId === session.sessionId}
                     >
-                      <button
-                        onClick={() => handleSessionClick(session.sessionId)}
+                      <AppLink
+                        to="/agents/$slug/chat/$integrationId"
+                        params={{ slug: agentSlug, integrationId: integration.id }}
+                        search={{ session: session.sessionId }}
+                        onClick={() => handleSessionSelect(session.sessionId)}
                         className={`flex items-center gap-2 w-full text-muted-foreground ${isArchived ? 'opacity-40' : 'opacity-70'}`}
                       >
                         <span className="truncate text-xs">
@@ -269,7 +272,7 @@ function ChatIntegrationSubItem({
                         {isArchived && (
                           <span className="ml-auto text-2xs text-muted-foreground/50 shrink-0">archived</span>
                         )}
-                      </button>
+                      </AppLink>
                     </SidebarMenuSubButton>
                   </SidebarMenuSubItem>
                 )
@@ -283,15 +286,17 @@ function ChatIntegrationSubItem({
           isActive={isSelected}
           title={tooltip}
         >
-          <button
-            onClick={handleClick}
+          <AppLink
+            to="/agents/$slug/chat/$integrationId"
+            params={{ slug: agentSlug, integrationId: integration.id }}
+            onClick={handleSelect}
             className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
           >
             <span className="truncate">
               {integration.name || formatProviderName(integration.provider)}
             </span>
             <span className={`ml-auto h-1.5 w-1.5 rounded-full shrink-0 ${statusDot}`} />
-          </button>
+          </AppLink>
         </SidebarMenuSubButton>
       )}
     </SidebarMenuSubItem>
@@ -343,17 +348,14 @@ function DashboardSubItem({
   artifact: ArtifactInfo
   agentSlug: string
 }) {
-  const { view, setAgent } = useSelection()
-  const isSelected = view.kind === 'dashboard' && view.slug === artifact.slug
+  const { setAgent } = useSelection()
+  const { slug: routeSlug, dashSlug: routeDashSlug } = useParams({ strict: false }) as { slug?: string; dashSlug?: string }
+  const isSelected = routeSlug === agentSlug && routeDashSlug === artifact.slug
   const [isRenaming, setIsRenaming] = useState(false)
 
-  const navigate = useNavigate()
-  const handleClick = () => {
+  // AppLink navigates; keep Selection in sync for the bridge until R14.
+  const handleSelect = () => {
     setAgent(agentSlug, { kind: 'dashboard', slug: artifact.slug })
-    void navigate({
-      to: '/agents/$slug/dashboards/$dashSlug',
-      params: { slug: agentSlug, dashSlug: artifact.slug },
-    })
   }
 
   const handleDoubleClick = () => {
@@ -373,8 +375,10 @@ function DashboardSubItem({
           isActive={isSelected}
           title={`${artifact.description || artifact.name} (double-click to open in new window)`}
         >
-          <button
-            onClick={handleClick}
+          <AppLink
+            to="/agents/$slug/dashboards/$dashSlug"
+            params={{ slug: agentSlug, dashSlug: artifact.slug }}
+            onClick={handleSelect}
             onDoubleClick={handleDoubleClick}
             className="flex items-center gap-2 w-full"
           >
@@ -389,7 +393,7 @@ function DashboardSubItem({
             ) : (
               <span className="truncate">{artifact.name}</span>
             )}
-          </button>
+          </AppLink>
         </SidebarMenuSubButton>
       </DashboardContextMenu>
     </SidebarMenuSubItem>
@@ -597,10 +601,10 @@ export const AgentMenuItem = React.forwardRef<
     }
   }, [isOpen, agent.slug, queryClient])
 
-  const navigate = useNavigate()
-  const handleClick = () => {
+  // AppLink handles the navigation; this keeps Selection in sync for the bridge
+  // until R14 (the highlight itself is route-derived now).
+  const handleSelect = () => {
     setAgent(agent.slug)
-    void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
   }
 
   const handleChevronClick = (e: React.MouseEvent) => {
@@ -619,16 +623,18 @@ export const AgentMenuItem = React.forwardRef<
         <div className="relative">
           <AgentContextMenu agent={agent}>
             <SidebarMenuButton
-              onClick={handleClick}
+              asChild
               isActive={isSelected}
               className="justify-between pl-7"
               data-testid={`agent-item-${agent.slug}`}
             >
-              <span className="flex items-center gap-1.5 min-w-0">
-                <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
-              </span>
-              <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+              <AppLink to="/agents/$slug" params={{ slug: agent.slug }} onClick={handleSelect}>
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+                  {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
+                </span>
+                <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+              </AppLink>
             </SidebarMenuButton>
           </AgentContextMenu>
           {/*
@@ -724,27 +730,21 @@ function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const unreadCount = countData?.count ?? 0
   const { setView } = useSelection()
-  const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isActive = pathname === '/notifications'
 
   return (
-    <SidebarMenuButton
-      data-testid="notifications-button"
-      isActive={isActive}
-      onClick={() => {
-        setView({ kind: 'notifications' })
-        void navigate({ to: '/notifications' })
-      }}
-    >
-      <Bell className="h-4 w-4" />
-      <span>Notifications</span>
-      {unreadCount > 0 && (
-        <span
-          className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500"
-          aria-label={`${unreadCount} unread`}
-        />
-      )}
+    <SidebarMenuButton asChild data-testid="notifications-button" isActive={isActive}>
+      <AppLink to="/notifications" onClick={() => setView({ kind: 'notifications' })}>
+        <Bell className="h-4 w-4" />
+        <span>Notifications</span>
+        {unreadCount > 0 && (
+          <span
+            className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500"
+            aria-label={`${unreadCount} unread`}
+          />
+        )}
+      </AppLink>
     </SidebarMenuButton>
   )
 }
@@ -822,7 +822,6 @@ export function AppSidebar() {
     }
   }, [createUntitledAgent])
   const { clearSelection } = useSelection()
-  const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const { openSearch } = useSearch()
   const { data: agents, isLoading, error } = useAgents()
@@ -989,17 +988,16 @@ export function AppSidebar() {
               <SidebarMenu className="gap-0.5 py-2">
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    onClick={() => {
-                      clearSelection()
-                      void navigate({ to: '/' })
-                    }}
+                    asChild
                     // Route-derived: active only on the exact home route, so it
                     // never lights up on /notifications or an agent route.
                     isActive={pathname === '/'}
                     data-testid="home-button"
                   >
-                    <LayoutGrid className="h-4 w-4" />
-                    <span>Home</span>
+                    <AppLink to="/" onClick={() => clearSelection()}>
+                      <LayoutGrid className="h-4 w-4" />
+                      <span>Home</span>
+                    </AppLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
