@@ -1,14 +1,16 @@
 import { Hono } from 'hono'
-import { setCookie } from 'hono/cookie'
-import { miniAppSessionRequestSchema } from './telegram-miniapp-schema'
+import { setCookie, getCookie } from 'hono/cookie'
+import { miniAppSessionRequestSchema, browserLinkRequestSchema } from './telegram-miniapp-schema'
 import { getChatIntegration } from '@shared/lib/services/chat-integration-service'
 import { parseChatIntegrationConfig, type TelegramConfig } from '@shared/lib/chat-integrations/config-schema'
 import { verifyInitData } from '@shared/lib/telegram/init-data'
 import {
   signDashboardCookie,
+  verifyDashboardCookie,
   DASHBOARD_COOKIE_NAME,
   DASHBOARD_COOKIE_TTL_SECONDS,
 } from '@shared/lib/telegram/dashboard-cookie'
+import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 import { getOrCreateAuthSecret } from '@shared/lib/auth/secret'
 import { getChatIntegrationSession } from '@shared/lib/services/chat-integration-session-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
@@ -105,8 +107,20 @@ const SHELL_HTML = `<!DOCTYPE html>
     }
   );
 
-  document.getElementById('open-in-browser').addEventListener('click', function () {
-    // wired in Task 10
+  document.getElementById('open-in-browser').addEventListener('click', async function () {
+    try {
+      var res = await fetch('/api/telegram-miniapp/browser-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dashboardSlug: dashboardSlug })
+      });
+      if (!res.ok) return;
+      var data = await res.json();
+      if (data && data.url) {
+        if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.openLink) window.Telegram.WebApp.openLink(data.url);
+        else window.open(data.url, '_blank');
+      }
+    } catch (e) { /* ignore */ }
   });
 })();
 </script>
@@ -213,6 +227,100 @@ app.post('/session', async (c) => {
 
   // 13. Respond with the artifact path the Mini App should load
   return c.json({ ok: true, artifactPath: buildDashboardArtifactPath(integration.agentSlug, dashboardSlug) })
+})
+
+app.post('/browser-link', async (c) => {
+  // 1. Verify existing tg_dash cookie
+  const raw = getCookie(c, DASHBOARD_COOKIE_NAME)
+  const payload = raw ? verifyDashboardCookie(raw, getOrCreateAuthSecret()) : null
+  if (!payload) {
+    return c.json({ ok: false, reason: 'unauthorized' }, 401)
+  }
+
+  // 2. Parse body
+  let rawBody: unknown
+  try {
+    rawBody = await c.req.json()
+  } catch {
+    return c.json({ ok: false, reason: 'bad_request' }, 400)
+  }
+  const parsed = browserLinkRequestSchema.safeParse(rawBody)
+  if (!parsed.success) {
+    return c.json({ ok: false, reason: 'bad_request' }, 400)
+  }
+  const { dashboardSlug } = parsed.data
+
+  // 3. Require a public base URL
+  const base = getPlatformBaseUrl()
+  if (!base) {
+    return c.json({ ok: false, reason: 'no_public_url' }, 400)
+  }
+
+  // 4. Mint a short-TTL link token (120s)
+  const exp = Math.floor(Date.now() / 1000) + 120
+  const token = signDashboardCookie(
+    { userId: payload.userId, agentSlug: payload.agentSlug, integrationId: payload.integrationId, exp },
+    getOrCreateAuthSecret(),
+  )
+
+  // 5. Build absolute browser URL
+  const url = `${base.replace(/\/$/, '')}/api/telegram-miniapp/browser?token=${encodeURIComponent(token)}&d=${encodeURIComponent(dashboardSlug)}`
+  return c.json({ ok: true, url })
+})
+
+app.get('/browser', async (c) => {
+  const token = c.req.query('token')
+  const d = c.req.query('d')
+
+  // 1. Both params required
+  if (!token || !d) {
+    return c.text('Missing token or d parameter', 400)
+  }
+
+  // 2. Verify link token
+  const payload = verifyDashboardCookie(token, getOrCreateAuthSecret())
+  if (!payload) {
+    return new Response(
+      '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Link expired</title></head><body>This link has expired. Reopen the dashboard from your Telegram chat.</body></html>',
+      { status: 401, headers: { 'Content-Type': 'text/html' } },
+    )
+  }
+
+  // 3. Mint a fresh full-TTL tg_dash cookie from the trusted token payload
+  const exp = Math.floor(Date.now() / 1000) + DASHBOARD_COOKIE_TTL_SECONDS
+  const cookie = signDashboardCookie(
+    { userId: payload.userId, agentSlug: payload.agentSlug, integrationId: payload.integrationId, exp },
+    getOrCreateAuthSecret(),
+  )
+  const secure = new URL(c.req.url).protocol === 'https:'
+  setCookie(c, DASHBOARD_COOKIE_NAME, cookie, {
+    httpOnly: true,
+    secure,
+    sameSite: 'Lax',
+    path: '/api',
+    maxAge: DASHBOARD_COOKIE_TTL_SECONDS,
+  })
+
+  // 4. Build artifact path server-side from trusted payload + d param
+  const artifactPath = buildDashboardArtifactPath(payload.agentSlug, d)
+
+  // 5. Serve browser shell — full-viewport iframe, no Telegram SDK, no refresh
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dashboard</title>
+<style>
+  body { margin: 0; }
+  iframe { position: fixed; inset: 0; width: 100vw; height: 100vh; border: 0; }
+</style>
+</head>
+<body>
+<iframe src="${artifactPath}"></iframe>
+</body>
+</html>`
+  return c.html(html)
 })
 
 export default app

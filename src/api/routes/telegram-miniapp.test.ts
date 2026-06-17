@@ -45,8 +45,15 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
   ]),
 }))
 
+vi.mock('@shared/lib/platform-auth/config', async (orig) => ({
+  ...(await orig()),
+  getPlatformBaseUrl: vi.fn(() => 'https://host.example'),
+}))
+
 // Import the router AFTER mocks are declared
 import app from './telegram-miniapp'
+import { signDashboardCookie, DASHBOARD_COOKIE_NAME } from '@shared/lib/telegram/dashboard-cookie'
+import { getOrCreateAuthSecret } from '@shared/lib/auth/secret'
 
 // ============================================================================
 // Helper — produce a correctly-signed Telegram initData string
@@ -152,6 +159,81 @@ describe('POST /session', () => {
     expect(res.status).toBe(403)
     const body = await res.json()
     expect(body).toMatchObject({ ok: false, reason: 'not_bound' })
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+})
+
+describe('POST /browser-link', () => {
+  it('returns 200 with a url containing the browser endpoint, token, and d param when cookie is valid', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const cookieValue = signDashboardCookie(
+      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp: now + 900 },
+      getOrCreateAuthSecret(),
+    )
+
+    const res = await app.request('/browser-link', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: `${DASHBOARD_COOKIE_NAME}=${cookieValue}`,
+      },
+      body: JSON.stringify({ dashboardSlug: 'weekly-report' }),
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.ok).toBe(true)
+    expect(body.url).toContain('/api/telegram-miniapp/browser?token=')
+    expect(body.url).toContain('d=weekly-report')
+  })
+
+  it('returns 401 when no tg_dash cookie is present', async () => {
+    const res = await app.request('/browser-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dashboardSlug: 'weekly-report' }),
+    })
+
+    expect(res.status).toBe(401)
+    const body = await res.json()
+    expect(body).toMatchObject({ ok: false })
+  })
+})
+
+describe('GET /browser', () => {
+  it('returns 200 HTML with Set-Cookie, iframe, and artifact path for a valid short-TTL token', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const token = signDashboardCookie(
+      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp: now + 120 },
+      getOrCreateAuthSecret(),
+    )
+
+    const res = await app.request(`/browser?token=${encodeURIComponent(token)}&d=weekly-report`, {
+      method: 'GET',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/html')
+    const setCookieHeader = res.headers.get('set-cookie')
+    expect(setCookieHeader).toBeTruthy()
+    expect(setCookieHeader).toContain('tg_dash=')
+    const body = await res.text()
+    expect(body).toContain('/api/agents/sales/artifacts/weekly-report/')
+    expect(body).toContain('<iframe')
+  })
+
+  it('returns 401 HTML with no Set-Cookie for an expired token', async () => {
+    const past = Math.floor(Date.now() / 1000) - 1
+    const token = signDashboardCookie(
+      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp: past },
+      getOrCreateAuthSecret(),
+    )
+
+    const res = await app.request(`/browser?token=${encodeURIComponent(token)}&d=weekly-report`, {
+      method: 'GET',
+    })
+
+    expect(res.status).toBe(401)
     expect(res.headers.get('set-cookie')).toBeNull()
   })
 })
