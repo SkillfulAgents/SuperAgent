@@ -8,8 +8,8 @@ import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 import { NotificationsRoute } from '@renderer/components/layout/notifications-route'
 import { AgentShell } from '@renderer/components/layout/agent-shell'
-import { AgentBody } from '@renderer/components/layout/agent-body'
 import {
+  AgentHomeRoute,
   ApiLogsRoute,
   ChatRoute,
   ConnectionsRoute,
@@ -71,10 +71,11 @@ export const agentLayoutRoute = createRoute({
 })
 
 export const agentHomeRoute = createRoute({
-  // INDEX of /agents/$slug — renders the agent body (the catch-all view switch).
+  // INDEX of /agents/$slug — the agent home (R10). Every other sub-view is its
+  // own sibling route, so this leaf is just AgentHome.
   getParentRoute: () => agentLayoutRoute,
   path: '/',
-  component: AgentBody,
+  component: AgentHomeRoute,
 })
 
 export const sessionRoute = createRoute({

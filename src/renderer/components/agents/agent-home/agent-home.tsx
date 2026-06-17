@@ -12,8 +12,11 @@ import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/r
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useSelection } from '@renderer/context/selection-context'
+import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
+import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
+import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
 import { uploadFileChunked } from '@renderer/lib/upload'
@@ -48,12 +51,15 @@ const INTRO_ANIMATION_MS = 2200
 interface AgentHomeProps {
   agent: ApiAgent
   onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string) => void
-  onOpenSettings?: (tab?: string) => void
 }
 
-export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
+export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { setView, setAgent, consumePendingDraft, justCreatedSlug, setJustCreatedSlug } = useSelection()
+  const { setView, setAgent } = useSelection()
+  // The new-agent morph tag + composer pre-fill one-shots live in
+  // NavTransientContext now (R10) — above the router, so they survive in-app nav
+  // and die on hard reload. justCreatedSlug producer = use-create-untitled-agent.
+  const { consumePendingDraft, justCreatedSlug, setJustCreatedSlug } = useNavTransient()
   const navigate = useNavigate()
   const [introStagger] = useState(() => {
     if (justCreatedSlug !== agent.slug) return false
@@ -101,6 +107,21 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const nameAssignedRef = useRef(false)
   const [isEditingName, setIsEditingName] = useState(false)
   const [editedName, setEditedName] = useState(agent.name)
+
+  // Agent-scoped settings dialogs (§6.6) — opened from the settings button and
+  // HomeExtras (system-prompt/secrets). NOT the global /settings route; they
+  // stay local dialog state here, exactly as before (moved out of AgentBody in R10).
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false)
+  const handleOpenSettings = useCallback((tab?: string) => {
+    if (tab === 'system-prompt') {
+      setSystemPromptOpen(true)
+      return
+    }
+    setSettingsTab(tab)
+    setSettingsOpen(true)
+  }, [])
 
   const handleStartRename = () => {
     setEditedName(agent.name)
@@ -268,6 +289,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const showRightColumn = isOwner
 
   return (
+    <>
     <div
       className={cn(
         'flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background',
@@ -337,7 +359,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 {agent.name}
               </h1>
             )}
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => onOpenSettings?.()} aria-label="Agent settings" data-testid="agent-settings-button">
+            <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">
               <Settings2 className="h-4 w-4" />
             </Button>
           </div>
@@ -558,10 +580,23 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
             }} />
             <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
-            <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+            <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
           </div>
         )}
       </div>
     </div>
+
+      <AgentSettingsDialog
+        agent={agent}
+        open={settingsOpen}
+        onOpenChange={(open) => { setSettingsOpen(open); if (!open) setSettingsTab(undefined) }}
+        initialTab={settingsTab}
+      />
+      <SystemPromptDialog
+        agent={agent}
+        open={systemPromptOpen}
+        onOpenChange={setSystemPromptOpen}
+      />
+    </>
   )
 }

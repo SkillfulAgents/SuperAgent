@@ -72,9 +72,33 @@ vi.mock('@renderer/context/selection-context', () => ({
     view: { kind: 'home' },
     setAgent: vi.fn(),
     setView: vi.fn(),
-    consumePendingDraft: vi.fn(() => null),
   }),
   SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+// The morph one-shots live in NavTransientContext now (R10). Controllable so the
+// intro-morph test can flip justCreatedSlug and assert the clear.
+let mockJustCreatedSlug: string | null = null
+const mockSetJustCreatedSlug = vi.fn()
+
+vi.mock('@renderer/context/nav-transient-context', () => ({
+  useNavTransient: () => ({
+    pendingDraft: null,
+    setPendingDraft: vi.fn(),
+    consumePendingDraft: vi.fn(() => null),
+    justCreatedSlug: mockJustCreatedSlug,
+    setJustCreatedSlug: mockSetJustCreatedSlug,
+  }),
+  NavTransientProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+// The agent-scoped settings dialogs render inside AgentHome now (§6.6). Stub them
+// — their internals aren't under test here and would pull in extra hooks.
+vi.mock('@renderer/components/agents/agent-settings-dialog', () => ({
+  AgentSettingsDialog: () => null,
+}))
+vi.mock('@renderer/components/agents/system-prompt-dialog', () => ({
+  SystemPromptDialog: () => null,
 }))
 
 const mockComposer = {
@@ -179,6 +203,7 @@ describe('AgentHome', () => {
     mockCanAdminAgent = false
     capturedComposerOptions = undefined
     mockSessionsData = []
+    mockJustCreatedSlug = null
   })
 
   // --- Rendering ---
@@ -203,6 +228,37 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTestId('home-send-button')).toBeInTheDocument()
+  })
+
+  // --- New-agent intro morph (R10) ---
+
+  it('plays the new-agent intro morph once when justCreatedSlug matches, then clears the tag', () => {
+    // jsdom lacks matchMedia; the morph reads prefers-reduced-motion.
+    const originalMatchMedia = window.matchMedia
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia
+    vi.useFakeTimers()
+    try {
+      mockJustCreatedSlug = testAgent.slug
+      const { unmount } = renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
+      // The intro overlay is showing.
+      expect(screen.getByText('Creating')).toBeInTheDocument()
+      // After the intro window the one-shot tag is cleared so it can't replay.
+      act(() => { vi.advanceTimersByTime(2200) })
+      expect(mockSetJustCreatedSlug).toHaveBeenCalledWith(null)
+      unmount()
+
+      // A second mount with the tag cleared does NOT replay the morph.
+      mockJustCreatedSlug = null
+      renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
+      expect(screen.queryByText('Creating')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+      window.matchMedia = originalMatchMedia
+    }
   })
 
   // --- Send button disabled state ---

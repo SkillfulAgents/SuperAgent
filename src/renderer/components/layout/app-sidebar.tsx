@@ -612,7 +612,9 @@ export const AgentMenuItem = React.forwardRef<
           <AgentContextMenu agent={agent}>
             <SidebarMenuButton
               onClick={handleClick}
-              isActive={isSelected}
+              // Don't keep the agent lit while viewing the global notifications
+              // list (navigating there leaves selectedAgentSlug set).
+              isActive={isSelected && view.kind !== 'notifications'}
               className="justify-between pl-7"
               data-testid={`agent-item-${agent.slug}`}
             >
@@ -812,7 +814,7 @@ export function AppSidebar() {
       window.electronAPI?.removeOpenCreateAgent?.()
     }
   }, [createUntitledAgent])
-  const { clearSelection, selectedAgentSlug } = useSelection()
+  const { clearSelection, selectedAgentSlug, view } = useSelection()
   const navigate = useNavigate()
   const { openSearch } = useSearch()
   const { data: agents, isLoading, error } = useAgents()
@@ -983,7 +985,9 @@ export function AppSidebar() {
                       clearSelection()
                       void navigate({ to: '/' })
                     }}
-                    isActive={!selectedAgentSlug}
+                    // Notifications is a global view too (selectedAgentSlug stays
+                    // null), so guard against Home lighting up alongside it.
+                    isActive={!selectedAgentSlug && view.kind !== 'notifications'}
                     data-testid="home-button"
                   >
                     <LayoutGrid className="h-4 w-4" />

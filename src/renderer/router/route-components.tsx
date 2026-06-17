@@ -6,15 +6,18 @@ import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhoo
 import { DashboardView } from '@renderer/components/dashboards/dashboard-view'
 import { ChatIntegrationView } from '@renderer/components/chat-integrations/chat-integration-view'
 import { SessionView } from '@renderer/components/layout/session-view'
+import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
+import { useAgent } from '@renderer/hooks/use-agents'
+import { usePendingMessages } from '@renderer/context/pending-messages-context'
 
 /**
  * Leaf route components for the agent sub-views. The shared header chrome +
  * agent-level banners live in the AgentShell layout, so each leaf renders only
  * its body inside AgentShell's `<Outlet/>`.
  *
+ * Every agent sub-view is a real leaf route now: home (R10),
  * api-logs/connections (R5), task/webhook (R6), dashboard (R7), chat (R8) and
- * session (R9) are real leaf routes. The agent `home` index still renders
- * through the agent body (agentHomeRoute). Settings becomes a real route at R12.
+ * session (R9). Settings becomes a real route at R12.
  */
 function NullRoute() {
   return null
@@ -22,6 +25,18 @@ function NullRoute() {
 
 function useAgentSlug(): string | null {
   return (useParams({ strict: false }) as { slug?: string }).slug ?? null
+}
+
+// R10 — the agent `home` index leaf. AgentHome owns its own agent-scoped dialogs
+// (§6.6) and the new-agent morph (via NavTransientContext); this wrapper just
+// resolves the agent + the optimistic-message creator from context. `key` on the
+// slug remounts AgentHome per agent so the morph's first-mount read fires (§8.5).
+export function AgentHomeRoute() {
+  const slug = useAgentSlug()
+  const { data: agent } = useAgent(slug)
+  const { onSessionCreated } = usePendingMessages()
+  if (!slug || !agent) return null
+  return <AgentHome key={agent.slug} agent={agent} onSessionCreated={onSessionCreated} />
 }
 
 // R5 — api-logs is now a real leaf route. The agent slug is read from the URL.

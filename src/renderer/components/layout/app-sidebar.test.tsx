@@ -200,8 +200,8 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
   SidebarGroupContent: ({ children }: any) => <div>{children}</div>,
   SidebarGroupLabel: ({ children, className }: any) => <span className={className}>{children}</span>,
   SidebarMenu: ({ children }: any) => <ul>{children}</ul>,
-  SidebarMenuButton: ({ children, onClick, ...props }: any) => (
-    <button onClick={onClick} {...props}>{children}</button>
+  SidebarMenuButton: ({ children, onClick, isActive, ...props }: any) => (
+    <button onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>
   ),
   SidebarMenuItem: ({ children, onMouseEnter }: any) => <li onMouseEnter={onMouseEnter}>{children}</li>,
   SidebarMenuSkeleton: () => <div data-testid="skeleton" />,
@@ -314,6 +314,25 @@ describe('AppSidebar — layout & top nav', () => {
     expect(screen.getByTestId('home-button')).toBeInTheDocument()
     expect(screen.getByTestId('notifications-button')).toBeInTheDocument()
     expect(screen.getByTestId('new-agent-button')).toBeInTheDocument()
+  })
+
+  it('lights up only Notifications (not Home) when viewing the global notifications list', () => {
+    // Regression: Notifications is a global view too (selectedAgentSlug stays
+    // null), so Home must not stay active alongside it.
+    mockSelectionContext.view = { kind: 'notifications' }
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('home-button')).toHaveAttribute('data-active', 'false')
+    expect(screen.getByTestId('notifications-button')).toHaveAttribute('data-active', 'true')
+  })
+
+  it('does not keep an agent lit when viewing the global notifications list', () => {
+    // Navigating agent → notifications leaves selectedAgentSlug set; the agent
+    // row must still not show as active while notifications is up.
+    mockSelectionContext.selectedAgentSlug = 'test-agent'
+    mockSelectionContext.view = { kind: 'notifications' }
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('agent-item-test-agent')).toHaveAttribute('data-active', 'false')
+    expect(screen.getByTestId('notifications-button')).toHaveAttribute('data-active', 'true')
   })
 
   it('renders the "Your Agents" group label', () => {
