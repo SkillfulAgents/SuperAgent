@@ -154,44 +154,7 @@ export class TelegramConnector extends ChatClientConnector {
     this.bot.on('message:text', (ctx) => this.handleTextMessage(ctx))
 
     // Handle callback queries (inline keyboard button clicks)
-    this.bot.on('callback_query:data', async (ctx) => {
-      await ctx.answerCallbackQuery()
-      const data = ctx.callbackQuery.data
-      const mapping = this.callbackDataMap.get(data)
-      if (mapping) {
-        const val = mapping.value as { question: string; answer: string }
-
-        // Update the message to show the selected answer and remove the keyboard
-        const originalText = ctx.callbackQuery.message?.text || ''
-        try {
-          await ctx.editMessageText(`${originalText}\n\n✅ <b>${this.escapeHtml(val.answer)}</b>`, {
-            parse_mode: 'HTML',
-          })
-        } catch {
-          try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
-        }
-
-        this.callbackDataMap.delete(data)
-
-        // Accumulate answer for multi-question requests
-        const pending = this.pendingQuestions.get(mapping.toolUseId)
-        if (pending) {
-          pending.answers[val.question] = val.answer
-          if (Object.keys(pending.answers).length >= pending.totalQuestions) {
-            // All questions answered — emit the combined response
-            this.emitInteractiveResponse(mapping.toolUseId, {
-              question: '_all',
-              answer: '_all',
-              answers: pending.answers,
-            })
-            this.pendingQuestions.delete(mapping.toolUseId)
-          }
-        } else {
-          // Single question — emit immediately
-          this.emitInteractiveResponse(mapping.toolUseId, mapping.value)
-        }
-      }
-    })
+    this.bot.on('callback_query:data', (ctx) => this.handleCallbackQuery(ctx))
 
     // Handle photo messages (images sent directly, not as documents)
     this.bot.on('message:photo', async (ctx) => {
@@ -566,6 +529,49 @@ export class TelegramConnector extends ChatClientConnector {
     }
   }
 
+  /** Handle an inline-keyboard button click: confirm the choice and emit the answer. */
+  private async handleCallbackQuery(ctx: GrammyContext): Promise<void> {
+    await ctx.answerCallbackQuery()
+    const data = ctx.callbackQuery?.data
+    if (!data) return
+    const mapping = this.callbackDataMap.get(data)
+    if (!mapping) return
+    const val = mapping.value as { question: string; answer: string }
+
+    // Update the message to show the selected answer and remove the keyboard.
+    // Route through editRichOrHtml so the edit matches the connector's mode
+    // (a rich edit in rich mode, HTML otherwise) instead of always HTML.
+    const originalText = ctx.callbackQuery?.message?.text || ''
+    const chatId = String(ctx.chat?.id ?? '')
+    const messageId = String(ctx.callbackQuery?.message?.message_id ?? '')
+    const confirmation = `${escapeMarkdown(originalText)}\n\n✅ **${escapeMarkdown(val.answer)}**`
+    try {
+      await this.editRichOrHtml(chatId, messageId, confirmation)
+    } catch {
+      try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
+    }
+
+    this.callbackDataMap.delete(data)
+
+    // Accumulate answer for multi-question requests
+    const pending = this.pendingQuestions.get(mapping.toolUseId)
+    if (pending) {
+      pending.answers[val.question] = val.answer
+      if (Object.keys(pending.answers).length >= pending.totalQuestions) {
+        // All questions answered — emit the combined response
+        this.emitInteractiveResponse(mapping.toolUseId, {
+          question: '_all',
+          answer: '_all',
+          answers: pending.answers,
+        })
+        this.pendingQuestions.delete(mapping.toolUseId)
+      }
+    } else {
+      // Single question — emit immediately
+      this.emitInteractiveResponse(mapping.toolUseId, mapping.value)
+    }
+  }
+
   // ── First-poll batching ─────────────────────────────────────────────
 
   private handleTextMessage(ctx: GrammyContext): void {
@@ -653,10 +659,6 @@ export class TelegramConnector extends ChatClientConnector {
     const id = `cb_${this.nextCallbackId++}`
     this.callbackDataMap.set(id, { toolUseId, value, ts: now })
     return id
-  }
-
-  private escapeHtml(text: string): string {
-    return escapeHtml(text)
   }
 
   private markdownToHtml(md: string): string {

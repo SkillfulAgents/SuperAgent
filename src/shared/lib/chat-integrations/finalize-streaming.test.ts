@@ -271,6 +271,35 @@ describe('TelegramConnector.sendUserRequestCard (rich)', () => {
   })
 })
 
+describe('TelegramConnector.handleCallbackQuery', () => {
+  it('confirms the answer via the rich edit path, with the value escaped', async () => {
+    const connector = new TelegramConnector({ botToken: 'fake:token' })
+    const editRich = vi.fn().mockResolvedValue(true)
+    const editHtml = vi.fn().mockResolvedValue(true)
+    ;(connector as any).bot = { api: { raw: { editMessageText: editRich }, editMessageText: editHtml } }
+
+    // Register a single-question callback and grab its callback_data id.
+    const cbId = (connector as any).registerCallback('tool-1', { question: 'Pick one', answer: 'a*b' })
+    const ctx = {
+      answerCallbackQuery: vi.fn().mockResolvedValue(true),
+      editMessageReplyMarkup: vi.fn().mockResolvedValue(true),
+      callbackQuery: { data: cbId, message: { text: 'Question?', message_id: 50 } },
+      chat: { id: 123 },
+    }
+
+    await (connector as any).handleCallbackQuery(ctx)
+
+    // Edited through the rich path (rich_message), never the HTML sink.
+    expect(editRich).toHaveBeenCalledTimes(1)
+    expect(editHtml).not.toHaveBeenCalled()
+    const call = editRich.mock.calls[0][0]
+    // The answer's asterisk is escaped so it can't render as bold.
+    expect(call.rich_message.markdown).toContain('✅ **a\\*b**')
+    // No reply_markup on the text edit, so Telegram removes the keyboard.
+    expect(call.reply_markup).toBeUndefined()
+  })
+})
+
 describe('TelegramConnector streaming (group, rich)', () => {
   let connector: TelegramConnector
   let raw: { sendRichMessage: ReturnType<typeof vi.fn>; editMessageText: ReturnType<typeof vi.fn>; sendRichMessageDraft: ReturnType<typeof vi.fn> }
