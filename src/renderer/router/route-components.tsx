@@ -1,4 +1,4 @@
-import { useParams, useSearch } from '@tanstack/react-router'
+import { Outlet, useParams, useSearch } from '@tanstack/react-router'
 import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
@@ -9,6 +9,8 @@ import { SessionView } from '@renderer/components/layout/session-view'
 import { AgentHome } from '@renderer/components/agents/agent-home/agent-home'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { usePendingMessages } from '@renderer/context/pending-messages-context'
+import { GlobalSettingsPage } from '@renderer/components/settings/global-settings-page'
+import { useDialogs } from '@renderer/context/dialog-context'
 
 /**
  * Leaf route components for the agent sub-views. The shared header chrome +
@@ -16,13 +18,9 @@ import { usePendingMessages } from '@renderer/context/pending-messages-context'
  * its body inside AgentShell's `<Outlet/>`.
  *
  * Every agent sub-view is a real leaf route now: home (R10),
- * api-logs/connections (R5), task/webhook (R6), dashboard (R7), chat (R8) and
- * session (R9). Settings becomes a real route at R12.
+ * api-logs/connections (R5), task/webhook (R6), dashboard (R7), chat (R8),
+ * session (R9) and settings (R12) are all real routes now.
  */
-function NullRoute() {
-  return null
-}
-
 function useAgentSlug(): string | null {
   return (useParams({ strict: false }) as { slug?: string }).slug ?? null
 }
@@ -104,5 +102,25 @@ export function SessionRoute() {
   return <SessionView agentSlug={slug} sessionId={sessionId} />
 }
 
-export const SettingsRoute = NullRoute // R12
-export const SettingsTabRoute = NullRoute // R12
+// R12 — global settings is a top-level route now (`/settings`, `/settings/$tab`,
+// sibling of the app shell, so it replaces the whole shell — same as the old
+// boolean). Close pushes back to the captured `?from=` origin via DialogContext.
+// settingsRoute is a LAYOUT (just an <Outlet/>) so the `$tab` child actually
+// renders; the index route handles `/settings` (no tab).
+function SettingsPageView({ tab }: { tab?: string }) {
+  const { closeSettings, openWizard } = useDialogs()
+  return <GlobalSettingsPage onClose={closeSettings} onOpenWizard={openWizard} initialSection={tab} />
+}
+
+export function SettingsLayout() {
+  return <Outlet />
+}
+
+export function SettingsIndexRoute() {
+  return <SettingsPageView />
+}
+
+export function SettingsTabRoute() {
+  const { tab } = useParams({ strict: false }) as { tab?: string }
+  return <SettingsPageView tab={tab} />
+}

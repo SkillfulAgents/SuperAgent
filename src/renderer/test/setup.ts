@@ -53,6 +53,17 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 // inspect (onClick, className, data-testid). A file-level vi.mock overrides this
 // where a test needs the real link.
 vi.mock('@renderer/components/ui/app-link', () => ({
-  AppLink: ({ children, to, params, search, activeClassName, noDrag, ...props }: Record<string, unknown> & { children?: unknown }) =>
+  // Strip the link-specific props so they don't land as DOM attributes; forward
+  // the rest (onClick/className/data-testid) to a plain anchor.
+  AppLink: ({ children, to: _to, params: _params, search: _search, activeClassName: _ac, noDrag: _nd, ...props }: Record<string, unknown> & { children?: unknown }) =>
     createElement('a', { href: '#', ...props }, children as never),
+}))
+
+// DialogContext drives global settings via the router now (R12). Renderer unit
+// tests have no RouterProvider, so stub it — DialogProvider passes children
+// through and useDialogs returns no-ops. A file-level mock overrides where a test
+// needs to assert on these (e.g. app-sidebar.test).
+vi.mock('@renderer/context/dialog-context', () => ({
+  DialogProvider: ({ children }: { children: React.ReactNode }) => children,
+  useDialogs: () => ({ openSettings: vi.fn(), closeSettings: vi.fn(), openWizard: vi.fn() }),
 }))

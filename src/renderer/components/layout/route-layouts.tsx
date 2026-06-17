@@ -1,11 +1,10 @@
 import { Outlet } from '@tanstack/react-router'
 import { useState, useEffect, useRef } from 'react'
-import { DialogProvider, useDialogs } from '@renderer/context/dialog-context'
+import { DialogProvider } from '@renderer/context/dialog-context'
 import { UpdateStatusProvider } from '@renderer/context/update-status-context'
 import { UpdateToastNotifier } from '@renderer/components/update-toast-notifier'
 import { AppSidebar } from '@renderer/components/layout/app-sidebar'
 import { WindowControls } from '@renderer/components/layout/window-controls'
-import { GlobalSettingsPage } from '@renderer/components/settings/global-settings-page'
 import { ContainerSetupHandler } from '@renderer/components/settings/container-setup-handler'
 import { SidebarProvider, SidebarInset, useSidebar } from '@renderer/components/ui/sidebar'
 import { TrayNavigationHandler } from '@renderer/components/tray-navigation-handler'
@@ -119,31 +118,22 @@ function SidebarCollapsedSync() {
 /**
  * App shell (pathless layout, mount-survival anchor #1): the sidebar + inset
  * that stays mounted as the `<Outlet/>` swaps between home, notifications, and an
- * agent. Settings still replaces the whole shell via DialogContext in R4 (it
- * becomes a sibling route at R12). Decomposed from App.tsx's AppShell.
+ * agent. Settings is its own top-level route now (R12), a sibling of this shell,
+ * so it replaces the whole shell via the router rather than a boolean here.
+ * Decomposed from App.tsx's AppShell.
  */
 export function AppShellLayout() {
-  const { settingsOpen, setSettingsOpen, settingsTab, openWizard } = useDialogs()
-
   return (
     <TrayNavigationHandler>
       <GlobalNotificationHandler />
       <ContainerSetupHandler />
-      {settingsOpen ? (
-        <GlobalSettingsPage
-          onClose={() => setSettingsOpen(false)}
-          onOpenWizard={openWizard}
-          initialSection={settingsTab}
-        />
-      ) : (
-        <SidebarProvider className="h-screen">
-          <SidebarCollapsedSync />
-          <AppSidebar />
-          <SidebarInset className="min-w-0">
-            <Outlet />
-          </SidebarInset>
-        </SidebarProvider>
-      )}
+      <SidebarProvider className="h-screen">
+        <SidebarCollapsedSync />
+        <AppSidebar />
+        <SidebarInset className="min-w-0">
+          <Outlet />
+        </SidebarInset>
+      </SidebarProvider>
     </TrayNavigationHandler>
   )
 }

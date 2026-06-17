@@ -808,7 +808,7 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
 
 export function AppSidebar() {
   useRenderTracker('AppSidebar')
-  const { setSettingsOpen, openSettings } = useDialogs()
+  const { openSettings } = useDialogs()
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
   const updateStatus = useUpdateStatus()
   const updateAvailable = updateStatus.state === 'available' || updateStatus.state === 'downloaded'
@@ -1074,7 +1074,7 @@ export function AppSidebar() {
         <UserMenu />
         <div className="flex items-center justify-between gap-2">
           <SidebarMenuButton
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => openSettings()}
             className="w-auto"
             data-testid="settings-button"
           >

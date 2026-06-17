@@ -30,13 +30,21 @@ export const connectionsSearchSchema = z
     message: 'detail and source must be set together',
   })
 
-// Open-redirect-safe internal path for deep-link-through-login (migration plan
-// §9). Internal absolute path only: rejects `//evil.com` and `https://evil.com`.
+// Open-redirect-safe internal path: an absolute path only — rejects `//evil.com`
+// and `https://evil.com`. Shared by the post-login `redirect` (§9) and the
+// settings `from` close-target (§10.1).
+const internalPath = z.string().regex(/^\/(?!\/)/)
+
+// Deep-link-through-login target (migration plan §9).
 export const rootSearchSchema = z.object({
-  redirect: z
-    .string()
-    .regex(/^\/(?!\/)/)
-    .optional(),
+  redirect: internalPath.optional(),
+})
+
+// Settings close-target: the path the gear was opened FROM, so closing returns
+// there. A query param (not an in-memory stash) so it SURVIVES a refresh inside
+// settings (§10.1).
+export const settingsSearchSchema = z.object({
+  from: internalPath.optional(),
 })
 
 // The 18 GLOBAL settings tabs (settings/global-settings-page.tsx user/admin/auth

@@ -3,7 +3,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 import type { UserContextValue } from '@renderer/context/user-context'
 import { lenient } from './zod-search'
-import { chatSearchSchema, connectionsSearchSchema, rootSearchSchema, settingsTabSchema } from './search-schemas'
+import { chatSearchSchema, connectionsSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 import { NotificationsRoute } from '@renderer/components/layout/notifications-route'
@@ -15,7 +15,8 @@ import {
   ConnectionsRoute,
   DashboardRoute,
   SessionRoute,
-  SettingsRoute,
+  SettingsLayout,
+  SettingsIndexRoute,
   SettingsTabRoute,
   TaskRoute,
   WebhookRoute,
@@ -128,17 +129,26 @@ export const connectionsRoute = createRoute({
 })
 
 // ── SETTINGS: SIBLING of app-shell → replaces the whole shell (App.tsx) ───────
+// LAYOUT (just an <Outlet/>): so the `$tab` child renders. `?from=` close-target
+// (open-redirect-safe) lives here and is inherited by both children.
 export const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: 'settings',
-  component: SettingsRoute,
+  validateSearch: lenient(settingsSearchSchema),
+  component: SettingsLayout,
+})
+
+export const settingsIndexRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: '/',
+  component: SettingsIndexRoute,
 })
 
 export const settingsTabRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '$tab',
-  // Strict: a junk `/settings/garbage` throws → handled by an error boundary /
-  // redirect in R12 (NOT lenient — bad tab should not silently render default).
+  // Strict tab validation against the enum (a junk `/settings/garbage` throws).
+  // The graceful junk→/settings redirect is a deferred R12 refinement.
   params: { parse: (raw) => ({ tab: settingsTabSchema.parse(raw.tab) }) },
   component: SettingsTabRoute,
 })
@@ -158,5 +168,5 @@ export const routeTree = rootRoute.addChildren([
       connectionsRoute,
     ]),
   ]),
-  settingsRoute.addChildren([settingsTabRoute]),
+  settingsRoute.addChildren([settingsIndexRoute, settingsTabRoute]),
 ])

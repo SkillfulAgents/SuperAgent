@@ -6,13 +6,8 @@ import userEvent from '@testing-library/user-event'
 import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
-// Sidebar items render real AppLinks (R11 pt2) — stub it as a plain anchor that
-// forwards the props the tests inspect (data-testid, onClick, className).
-vi.mock('@renderer/components/ui/app-link', () => ({
-  AppLink: ({ children, to, params, search, onClick, onDoubleClick, className, ...props }: any) => (
-    <a href="#" onClick={onClick} onDoubleClick={onDoubleClick} className={className} {...props}>{children}</a>
-  ),
-}))
+// AppLink (the sidebar item links) is stubbed globally in test/setup.ts — no
+// file-level mock needed. DialogContext is mocked below to control settings.
 
 vi.stubGlobal('__APP_VERSION__', '0.1.0-test')
 vi.stubGlobal('__RENDER_TRACKING__', false)
@@ -152,9 +147,8 @@ vi.mock('@renderer/context/connectivity-context', () => ({
 }))
 
 const mockDialogContext = {
-  settingsOpen: false,
-  setSettingsOpen: vi.fn(),
-  settingsTab: undefined,
+  openSettings: vi.fn(),
+  closeSettings: vi.fn(),
   openWizard: vi.fn(),
 }
 vi.mock('@renderer/context/onboarding-context', () => ({

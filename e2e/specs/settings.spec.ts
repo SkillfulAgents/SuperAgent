@@ -555,3 +555,61 @@ test.describe('Settings deep-link reset', () => {
     await request.delete(`http://localhost:3000/api/agents/${agent.slug}`)
   })
 })
+
+// ---------------------------------------------------------------------------
+// R12 §11.6 — settings is a route; close pushes back to the captured ?from=
+// origin (a durable query param, not history.back), or home on a cold deep-link.
+// ---------------------------------------------------------------------------
+
+test.describe('Settings ?from= close-target (R12)', () => {
+  test('close pushes to the captured ?from origin', async ({ page, request }) => {
+    await request.put('http://localhost:3000/api/user-settings', { data: { setupCompleted: true } })
+    const createRes = await request.post('http://localhost:3000/api/agents', { data: { name: 'Settings From Origin' } })
+    const agent = await createRes.json() as { slug: string }
+
+    const appPage = new AppPage(page)
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
+    await page.locator(`[data-testid="agent-item-${agent.slug}"]`).click()
+    await expect(page).toHaveURL(new RegExp(`/agents/${agent.slug}$`))
+    const origin = page.url()
+
+    await page.locator('[data-testid="settings-button"]').click()
+    await expect(page).toHaveURL(/\/settings(\/|\?|$)/)
+    await page.locator('[data-testid="settings-back"]').click()
+    await expect(page).toHaveURL(origin)
+
+    await request.delete(`http://localhost:3000/api/agents/${agent.slug}`)
+  })
+
+  test('cold deep-link to /settings/general closes to home (no ?from)', async ({ page, request }) => {
+    await request.put('http://localhost:3000/api/user-settings', { data: { setupCompleted: true } })
+    await page.goto('/settings/general')
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-nav-general"]')).toHaveAttribute('data-active', 'true')
+    await page.locator('[data-testid="settings-back"]').click()
+    await expect(page).toHaveURL(/\/$/)
+  })
+
+  test('settings survives a refresh and still closes to origin (?from= is durable)', async ({ page, request }) => {
+    await request.put('http://localhost:3000/api/user-settings', { data: { setupCompleted: true } })
+    const createRes = await request.post('http://localhost:3000/api/agents', { data: { name: 'Settings Refresh From' } })
+    const agent = await createRes.json() as { slug: string }
+
+    const appPage = new AppPage(page)
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
+    await page.locator(`[data-testid="agent-item-${agent.slug}"]`).click()
+    await expect(page).toHaveURL(new RegExp(`/agents/${agent.slug}$`))
+    const origin = page.url()
+
+    await page.locator('[data-testid="settings-button"]').click()
+    await expect(page).toHaveURL(/\/settings(\/|\?|$)/)
+    await page.reload()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await page.locator('[data-testid="settings-back"]').click()
+    await expect(page).toHaveURL(origin)
+
+    await request.delete(`http://localhost:3000/api/agents/${agent.slug}`)
+  })
+})
