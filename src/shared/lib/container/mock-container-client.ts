@@ -1218,6 +1218,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'File delivered successfully (size: 2048 bytes)',
       'Here is the sales chart.'
     )],
+    ['deliver csv', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/data.csv', description: 'Contacts export' },
+      'File delivered successfully (size: 256 bytes)',
+      'Here is the contacts export.'
+    )],
     // API error scenarios
     ['auth error', new ApiErrorScenario('authentication_failed', 'Invalid API key')],
     ['rate limit error', new ApiErrorScenario('rate_limit', 'Rate limit exceeded, please try again later')],

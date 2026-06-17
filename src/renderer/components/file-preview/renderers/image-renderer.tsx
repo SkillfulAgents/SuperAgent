@@ -1,8 +1,9 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
 import { CommentPin } from '../comments/comment-pin'
 import { CommentOverlay } from '../comments/comment-overlay'
+import { useDismissOnOutsideClick } from '../comments/use-dismiss-on-outside-click'
 
 interface ImageRendererProps {
   url: string
@@ -15,6 +16,8 @@ interface ClickPoint {
   rect: DOMRect
 }
 
+const IMAGE_DISMISS_IGNORE = ['[data-comment-overlay]']
+
 export function ImageRenderer({ url, filePath }: ImageRendererProps) {
   const [loaded, setLoaded] = useState(false)
   const [clickPoint, setClickPoint] = useState<ClickPoint | null>(null)
@@ -23,15 +26,7 @@ export function ImageRenderer({ url, filePath }: ImageRendererProps) {
   const fileComments = comments.get(filePath) || []
   const imageComments = fileComments.filter((c): c is FileComment & { x: number; y: number } => c.x != null && c.y != null)
 
-  useEffect(() => {
-    if (!clickPoint) return
-    const handleMouseDown = (e: MouseEvent) => {
-      if ((e.target as HTMLElement).closest?.('[data-comment-overlay]')) return
-      setClickPoint(null)
-    }
-    document.addEventListener('mousedown', handleMouseDown)
-    return () => document.removeEventListener('mousedown', handleMouseDown)
-  }, [clickPoint])
+  useDismissOnOutsideClick(clickPoint != null, () => setClickPoint(null), IMAGE_DISMISS_IGNORE)
 
   const handleImageClick = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
     const img = e.currentTarget
