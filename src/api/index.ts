@@ -168,7 +168,18 @@ app.get('/api/llm/anthropic-sdk.js', (c) => {
 
 // Telegram dashboard cookie: run before each sub-router's Authenticated() guard so
 // a valid tg_dash cookie populates c.get('user') ahead of the guard.
-app.use('/api/agents/:id/artifacts/*', TelegramDashboardSession())
+// Mount is scoped to :artifactSlug/* — NOT the bare :artifactSlug path.
+// The bare path carries the AgentAdmin-guarded DELETE/PATCH management endpoints; a
+// dashboard cookie must not authorize those destructive operations.
+// Note: Hono 4's /* wildcard also matches the bare :artifactSlug path, so we guard explicitly.
+const dashboardSession = TelegramDashboardSession()
+app.use('/api/agents/:id/artifacts/:artifactSlug/*', async (c, next) => {
+  // Skip on the bare management path (no trailing content after the slug)
+  if (c.req.path === `/api/agents/${c.req.param('id')}/artifacts/${c.req.param('artifactSlug')}`) {
+    return next()
+  }
+  return dashboardSession(c, next)
+})
 app.use('/api/llm/*', TelegramDashboardSession())
 app.use('/api/stt/*', TelegramDashboardSession())
 

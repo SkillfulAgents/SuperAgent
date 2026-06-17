@@ -215,8 +215,9 @@ app.post('/session', async (c) => {
     getOrCreateAuthSecret(),
   )
 
-  // 12. Set cookie — secure only on https so local http round-trips still work
-  const secure = c.req.url.startsWith('https:')
+  // 12. Set cookie — secure only on https so local http round-trips still work.
+  // Honor x-forwarded-proto so the flag is set correctly behind a TLS-terminating proxy.
+  const secure = c.req.header('x-forwarded-proto') === 'https' || c.req.url.startsWith('https:')
   setCookie(c, DASHBOARD_COOKIE_NAME, token, {
     httpOnly: true,
     secure,
@@ -292,7 +293,8 @@ app.get('/browser', async (c) => {
     { userId: payload.userId, agentSlug: payload.agentSlug, integrationId: payload.integrationId, exp },
     getOrCreateAuthSecret(),
   )
-  const secure = c.req.url.startsWith('https:')
+  // Honor x-forwarded-proto so the flag is set correctly behind a TLS-terminating proxy.
+  const secure = c.req.header('x-forwarded-proto') === 'https' || c.req.url.startsWith('https:')
   setCookie(c, DASHBOARD_COOKIE_NAME, cookie, {
     httpOnly: true,
     secure,

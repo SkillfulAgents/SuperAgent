@@ -112,6 +112,35 @@ describe('POST /session', () => {
     expect(setCookieHeader).toContain('HttpOnly')
     expect(setCookieHeader).toContain('SameSite=Lax')
     expect(setCookieHeader).toContain('Path=/api')
+    // No x-forwarded-proto → http → must NOT set Secure
+    expect(setCookieHeader).not.toContain('Secure')
+  })
+
+  it('sets Secure on the tg_dash cookie when x-forwarded-proto is https', async () => {
+    const authDate = Math.floor(Date.now() / 1000)
+    const initData = signInitData({
+      auth_date: String(authDate),
+      user: JSON.stringify({ id: 42, username: 'alice' }),
+    })
+
+    const res = await app.request('/session', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-forwarded-proto': 'https',
+      },
+      body: JSON.stringify({
+        initData,
+        integrationId: 'int1',
+        agentSlug: 'sales',
+        dashboardSlug: 'weekly-report',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    const setCookieHeader = res.headers.get('set-cookie')
+    expect(setCookieHeader).toBeTruthy()
+    expect(setCookieHeader).toContain('Secure')
   })
 
   it('returns 401 with reason=signature for tampered initData', async () => {
