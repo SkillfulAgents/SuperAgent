@@ -134,6 +134,35 @@ describe('TelegramConnector.finalizeStreamingMessage', () => {
     expect(combined).toContain('a'.repeat(20000))
     expect(combined).toContain('b'.repeat(20000))
   })
+
+  it('fallback (richMessages off): splits a >4096 reply across edit + sends, no truncation', async () => {
+    // HTML fallback edits cap at 4096, not the 32768 rich ceiling. A rich-sized
+    // first chunk would overflow the edit and silently drop the tail — guard that
+    // the reply is split to the HTML limit and delivered in full instead.
+    const fallback = new TelegramConnector({ botToken: 'fake:token', richMessages: false })
+    const editHtml = vi.fn().mockResolvedValue(true)
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 22 })
+    ;(fallback as any).bot = {
+      api: { raw: { editMessageText: vi.fn(), sendRichMessage: vi.fn() }, editMessageText: editHtml, sendMessage },
+    }
+
+    const longText = 'a'.repeat(3000) + '\n\n' + 'b'.repeat(3000) // > 4096, under the 32768 rich ceiling
+
+    await fallback.finalizeStreamingMessage('12345', '100', longText)
+
+    // chunk[0] edits the streamed message; the overflow goes out as new messages
+    expect(editHtml).toHaveBeenCalledTimes(1)
+    expect(sendMessage.mock.calls.length).toBeGreaterThan(0)
+
+    // every message stays within Telegram's 4096 single-message limit
+    const bodies = [editHtml.mock.calls[0][2] as string, ...sendMessage.mock.calls.map((call) => call[1] as string)]
+    for (const body of bodies) expect(body.length).toBeLessThanOrEqual(4096)
+
+    // nothing dropped: both ends of the reply survive across the split
+    const combined = bodies.join('')
+    expect(combined).toContain('a'.repeat(3000))
+    expect(combined).toContain('b'.repeat(3000))
+  })
 })
 
 describe('TelegramConnector.sendRichOrHtml', () => {

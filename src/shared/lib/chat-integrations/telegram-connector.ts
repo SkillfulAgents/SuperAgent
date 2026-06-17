@@ -368,9 +368,16 @@ export class TelegramConnector extends ChatClientConnector {
       return
     }
 
-    const chunks = splitForRichLimits(text)
+    // Split for the active sink: rich edits hold 32768, but the HTML fallback
+    // edit (richMessages rollback, or a rich-edit failure) tops out at 4096. A
+    // rich-sized first chunk would blow past the HTML edit limit and the overflow
+    // would be silently dropped, so size chunk[0] to whatever this connector edits.
+    const chunks = this.useRich ? splitForRichLimits(text) : splitForHtmlLimits(text)
     try {
       await this.editRichOrHtml(chatId, messageId, chunks[0])
+      // Overflow chunks are sent whole, not streamed — only chunk[0] (the
+      // already-streamed message) animates. Streaming the tail would need a
+      // rolling multi-message stream; not worth it for this overflow case.
       for (let i = 1; i < chunks.length; i++) {
         await this.sendRichOrHtml(chatId, chunks[i])
       }
