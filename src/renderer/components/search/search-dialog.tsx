@@ -5,7 +5,8 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useSelection } from '@renderer/context/selection-context'
-import { router } from '@renderer/router'
+import { useSearch } from '@renderer/context/search-context'
+import { useNavigate } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import type { ApiSession } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils/cn'
@@ -17,12 +18,14 @@ function formatLastRun(date: Date | string | null | undefined): string | null {
   return `Last run ${formatDistanceToNow(new Date(date), { addSuffix: true })}`
 }
 
-interface SearchDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
-
-export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
+/**
+ * Rendered from RootLayout (R11) — INSIDE the router, so it uses the `useNavigate`
+ * hook directly (reverting the R8 off-router singleton workaround). Open state
+ * comes from SearchContext (`open`/`closeSearch`), which lives above the router.
+ */
+export function SearchDialog() {
+  const { open, closeSearch } = useSearch()
+  const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const [expandedSlugs, setExpandedSlugs] = useState<Set<string>>(new Set())
@@ -110,17 +113,13 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   const handleSelect = (item: FlatItem) => {
     // Close the dialog BEFORE navigating: the route transition otherwise strands
     // the Radix overlay open (it intercepts pointer events on the page beneath).
-    onOpenChange(false)
-    // The SearchDialog is rendered by SearchProvider ABOVE the RouterProvider, so
-    // the useNavigate() hook would warn ("useRouter must be used inside a
-    // RouterProvider"). Navigate the module-singleton router directly — the exact
-    // pattern the singleton exists for (off-router navigators, §7.8).
+    closeSearch()
     if (item.kind === 'agent') {
       setAgent(item.agent.slug)
-      void router.navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
+      void navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
     } else {
       setAgent(item.agent.slug, { kind: 'session', id: item.session.id })
-      void router.navigate({
+      void navigate({
         to: '/agents/$slug/sessions/$sessionId',
         params: { slug: item.agent.slug, sessionId: item.session.id },
       })
@@ -163,7 +162,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) closeSearch() }}>
       <DialogContent
         className="max-w-xl p-0 gap-0 overflow-hidden [&>button]:top-3 [&>button]:right-3"
         onKeyDown={handleKeyDown}

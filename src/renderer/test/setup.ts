@@ -1,5 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 import { vi } from 'vitest'
+import { createElement } from 'react'
 
 const signIn = {
   email: vi.fn(),
@@ -45,3 +46,13 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return { ...actual, useNavigate: () => () => {} }
 })
+
+// `AppLink` (ui/app-link) imports the router singleton — which pulls in
+// history.ts/`__WEB__` and needs a RouterProvider at render. Renderer unit tests
+// have neither, so stub it as a plain anchor that forwards the props tests
+// inspect (onClick, className, data-testid). A file-level vi.mock overrides this
+// where a test needs the real link.
+vi.mock('@renderer/components/ui/app-link', () => ({
+  AppLink: ({ children, to, params, search, activeClassName, noDrag, ...props }: Record<string, unknown> & { children?: unknown }) =>
+    createElement('a', { href: '#', ...props }, children as never),
+}))

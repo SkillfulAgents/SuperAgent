@@ -2,7 +2,7 @@ import { SquareGanttChart, SquarePlus, SquareArrowRight, MessagesSquare, ArrowUp
 import type { ToolRenderer, ToolRendererProps } from './types'
 import { ResultBlock } from './shared'
 import { useSelection } from '@renderer/context/selection-context'
-import { useNavigate } from '@tanstack/react-router'
+import { AppLink } from '@renderer/components/ui/app-link'
 import {
   listAgentsDef,
   createAgentDef,
@@ -19,37 +19,31 @@ import {
 
 function AgentLink({ slug, label }: { slug: string; label?: string }) {
   const { setAgent } = useSelection()
-  const navigate = useNavigate()
   return (
-    <button
-      type="button"
-      onClick={() => {
-        setAgent(slug)
-        void navigate({ to: '/agents/$slug', params: { slug } })
-      }}
+    <AppLink
+      to="/agents/$slug"
+      params={{ slug }}
+      onClick={() => setAgent(slug)}
       className="inline-flex items-center gap-1 text-primary hover:underline"
     >
       {label ?? slug}
       <ArrowUpRight className="h-3 w-3" />
-    </button>
+    </AppLink>
   )
 }
 
 function SessionLink({ slug, sessionId }: { slug: string; sessionId: string }) {
   const { setAgent } = useSelection()
-  const navigate = useNavigate()
   return (
-    <button
-      type="button"
-      onClick={() => {
-        setAgent(slug, { kind: 'session', id: sessionId })
-        void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug, sessionId } })
-      }}
+    <AppLink
+      to="/agents/$slug/sessions/$sessionId"
+      params={{ slug, sessionId }}
+      onClick={() => setAgent(slug, { kind: 'session', id: sessionId })}
       className="inline-flex items-center gap-1 font-mono text-xs text-primary hover:underline"
     >
       {sessionId.slice(0, 12)}…
       <ArrowUpRight className="h-3 w-3" />
-    </button>
+    </AppLink>
   )
 }
 

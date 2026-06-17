@@ -6,7 +6,7 @@ import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useUsageData } from '@renderer/hooks/use-usage'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { useSelection } from '@renderer/context/selection-context'
-import { useNavigate } from '@tanstack/react-router'
+import { AppLink } from '@renderer/components/ui/app-link'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
@@ -113,7 +113,6 @@ function StatusTab({ status, hasActiveSessions, hasSessionsAwaitingInput }: {
 }
 
 function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyUsageEntry[] }) {
-  const navigate = useNavigate()
   useRenderTracker('AgentCard')
   const { setAgent } = useSelection()
   const lastWorked = agent.lastActivityAt ? formatDistanceToNow(new Date(agent.lastActivityAt), { addSuffix: true }) : null
@@ -154,11 +153,10 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
   return (
     <div className="flex flex-col">
       <AgentContextMenu agent={agent}>
-        <button
-          onClick={() => {
-            setAgent(agent.slug)
-            void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
-          }}
+        <AppLink
+          to="/agents/$slug"
+          params={{ slug: agent.slug }}
+          onClick={() => setAgent(agent.slug)}
           className="relative text-left p-4 rounded-lg border bg-card hover:border-accent-foreground/20 transition-colors flex flex-col gap-3 z-10 h-24 overflow-hidden"
         >
           {/* Spark chart background */}
@@ -218,7 +216,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
               )}
             </div>
           </div>
-        </button>
+        </AppLink>
       </AgentContextMenu>
 
       {/* Session appendages — each tucks up behind the rounded corners of the one above */}
@@ -239,11 +237,10 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
             className="relative px-1"
             style={{ marginTop: -6, zIndex: visibleSessions.length + 1 - i }}
           >
-            <button
-              onClick={() => {
-                setAgent(agent.slug, { kind: 'session', id: session.id })
-                void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agent.slug, sessionId: session.id } })
-              }}
+            <AppLink
+              to="/agents/$slug/sessions/$sessionId"
+              params={{ slug: agent.slug, sessionId: session.id }}
+              onClick={() => setAgent(agent.slug, { kind: 'session', id: session.id })}
               className={`w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 ${colors}`}
             >
               {isAwaiting ? (
@@ -257,7 +254,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
               <span className="ml-auto shrink-0 text-muted-foreground">
                 {isAwaiting ? 'needs input' : isWorking ? 'working' : 'new message'}
               </span>
-            </button>
+            </AppLink>
           </div>
         )
       })}
@@ -268,16 +265,15 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
           className="relative px-1"
           style={{ marginTop: -6, zIndex: 0 }}
         >
-          <button
-            onClick={() => {
-            setAgent(agent.slug)
-            void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
-          }}
+          <AppLink
+            to="/agents/$slug"
+            params={{ slug: agent.slug }}
+            onClick={() => setAgent(agent.slug)}
             className="w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800"
           >
             <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
             <span className="font-medium">{collapsedUnreadCount} more notification{collapsedUnreadCount !== 1 ? 's' : ''}</span>
-          </button>
+          </AppLink>
         </div>
       )}
     </div>

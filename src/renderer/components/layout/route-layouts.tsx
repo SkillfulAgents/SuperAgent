@@ -12,6 +12,7 @@ import { TrayNavigationHandler } from '@renderer/components/tray-navigation-hand
 import { GlobalNotificationHandler } from '@renderer/components/notifications/global-notification-handler'
 import { OnboardingProvider } from '@renderer/context/onboarding-context'
 import { GettingStartedWizard } from '@renderer/components/wizard/getting-started-wizard'
+import { SearchDialog } from '@renderer/components/search/search-dialog'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useTheme } from '@renderer/hooks/use-theme'
 import { useInsetRadius } from '@renderer/hooks/use-inset-radius'
@@ -87,6 +88,8 @@ export function RootLayout() {
           <SelectionBridge />
           <WindowControls />
           <UpdateToastNotifier />
+          {/* Rendered here (inside the router) so it can use useNavigate — R11 §7.7. */}
+          <SearchDialog />
           {wizardOpen ? (
             <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
           ) : (
