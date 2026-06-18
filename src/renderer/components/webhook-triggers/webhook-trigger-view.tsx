@@ -5,7 +5,7 @@
  * trigger fires, run history, status toggle, and a delete option.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Trash2, Loader2, AlertTriangle, Settings as SettingsIcon, Pencil } from 'lucide-react'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
@@ -19,7 +19,7 @@ import {
   useUpdateWebhookTriggerPrompt,
   useUpdateWebhookTriggerRuntimeOptions,
 } from '@renderer/hooks/use-webhook-triggers'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
@@ -54,11 +54,25 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const resumeTrigger = useResumeWebhookTrigger()
   const updatePrompt = useUpdateWebhookTriggerPrompt()
   const updateRuntimeOptions = useUpdateWebhookTriggerRuntimeOptions()
-  const { handleWebhookTriggerDeleted, setView } = useSelection()
+  const navigate = useNavigate()
   const { canUseAgent } = useUser()
   const { data: settings } = useSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
   const canCancel = canUseAgent(agentSlug)
+
+  // Canonicalize: triggers are addressed globally by id, so /agents/<wrong>/webhooks/<id>
+  // would render this trigger under the wrong agent's shell (mismatched chrome,
+  // back-links, and canUseAgent gating). Redirect to the trigger's true agent.
+  useEffect(() => {
+    if (trigger && trigger.agentSlug !== agentSlug) {
+      void navigate({
+        to: '/agents/$slug/webhooks/$webhookId',
+        params: { slug: trigger.agentSlug, webhookId: triggerId },
+        replace: true,
+      })
+    }
+  }, [trigger, agentSlug, triggerId, navigate])
+
   const isActive = trigger?.status === 'active' || trigger?.status === 'paused'
   const isPaused = trigger?.status === 'paused'
   const hasLocalComposioKey = settings?.apiKeyStatus?.composio?.isConfigured ?? false
@@ -97,7 +111,9 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const handleCancel = async () => {
     try {
       await cancelTrigger.mutateAsync({ id: triggerId, agentSlug })
-      handleWebhookTriggerDeleted(triggerId)
+      // Deleting the trigger we're viewing → up-nav to the agent home (the
+      // webhook route no longer resolves).
+      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to cancel webhook trigger:', err)
     }
@@ -115,6 +131,16 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
     return (
       <div className="flex-1 flex items-center justify-center text-destructive">
         Failed to load webhook trigger
+      </div>
+    )
+  }
+
+  // Mismatched shell → the effect above is redirecting; don't render B's trigger
+  // (or its wrong-slug nested fetches) under A's chrome in the meantime.
+  if (trigger.agentSlug !== agentSlug) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+        Loading webhook trigger...
       </div>
     )
   }
@@ -190,7 +216,9 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
       <PageTitle
         title={trigger.name || trigger.triggerType}
         back={{
-          onClick: () => setView({ kind: 'home' }),
+          onClick: () => {
+            void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+          },
           testId: 'webhook-trigger-back-button',
         }}
         actions={headerActions}

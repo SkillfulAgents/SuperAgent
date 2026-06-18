@@ -19,7 +19,7 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate, useParams } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
 import { apiFetch } from '@renderer/lib/api'
@@ -44,7 +44,11 @@ export function AgentContextMenu({
   const [isDeleting, setIsDeleting] = useState(false)
   const [isLeaving, setIsLeaving] = useState(false)
   const deleteAgent = useDeleteAgent()
-  const { handleAgentDeleted } = useSelection()
+  const navigate = useNavigate()
+  // strict:false → undefined when the menu is opened off the agent route (e.g.
+  // from the sidebar list), so the up-nav only fires when we're actually viewing
+  // the agent being deleted/left.
+  const params = useParams({ strict: false }) as { slug?: string }
   const { canAdminAgent, isAuthMode } = useUser()
   const queryClient = useQueryClient()
   const isOwner = canAdminAgent(agent.slug)
@@ -71,7 +75,9 @@ export function AgentContextMenu({
     try {
       await deleteAgent.mutateAsync(agent.slug)
       setShowDeleteDialog(false)
-      handleAgentDeleted(agent.slug)
+      if (params.slug === agent.slug) {
+        void navigate({ to: '/' })
+      }
     } catch (error) {
       console.error('Failed to delete agent:', error)
       toast.error(error instanceof Error ? error.message : 'Failed to delete agent')
@@ -90,7 +96,9 @@ export function AgentContextMenu({
         return
       }
       setShowLeaveDialog(false)
-      handleAgentDeleted(agent.slug)
+      if (params.slug === agent.slug) {
+        void navigate({ to: '/' })
+      }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     } catch (error) {

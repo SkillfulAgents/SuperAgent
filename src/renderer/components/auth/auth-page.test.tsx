@@ -9,6 +9,9 @@ const { apiFetch } = vi.hoisted(() => ({
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch,
+  // redirect-stash helpers used by the email/OAuth sign-in handlers.
+  consumeRedirectStash: () => null,
+  peekRedirectStash: () => '/',
 }))
 
 import { AuthPage } from './auth-page'

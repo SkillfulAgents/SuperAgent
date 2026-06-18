@@ -16,7 +16,9 @@ test.describe('Public Skillset Provider', () => {
 
   test('public skillset appears in Settings > Skillsets with Public badge', async ({ page }) => {
     await page.locator('[data-testid="settings-button"]').click()
-    await page.getByRole('button', { name: 'Skillsets' }).click()
+    // Settings nav items are now links (URL-driven tabs), so target the stable
+    // testid rather than a button role.
+    await page.locator('[data-testid="settings-nav-skillsets"]').click()
 
     const publicRow = page.locator('div.flex.items-start.gap-3').filter({ hasText: 'E2E Public Skillset' })
     await expect(publicRow).toBeVisible({ timeout: 10000 })

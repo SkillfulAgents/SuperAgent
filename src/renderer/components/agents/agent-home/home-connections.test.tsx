@@ -12,16 +12,12 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-// Capture setView so we can assert on the deep link into the connections page.
-const mockSetView = vi.fn()
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({
-    view: { kind: 'home' },
-    setView: mockSetView,
-    setAgent: vi.fn(),
-    consumePendingDraft: vi.fn(() => null),
-  }),
-  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+// Capture navigate so we can assert the deep link into the connections page
+// (the rows navigate directly).
+const mockNavigate = vi.fn()
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useNavigate: () => mockNavigate,
 }))
 
 const ACCOUNT = {
@@ -49,7 +45,7 @@ function jsonResponse(body: unknown, ok = true): Response {
 describe('HomeConnections — row navigation', () => {
   beforeEach(() => {
     mockApiFetch.mockReset()
-    mockSetView.mockReset()
+    mockNavigate.mockReset()
 
     mockApiFetch.mockImplementation((path: string, init?: { method?: string }) => {
       const method = init?.method ?? 'GET'
@@ -74,9 +70,10 @@ describe('HomeConnections — row navigation', () => {
 
     // The row key matches the UnifiedRow key format used by the connections
     // page; source 'home' makes Back (and the header breadcrumb) skip the list.
-    expect(mockSetView).toHaveBeenCalledWith({
-      kind: 'connections',
-      detail: { rowKey: 'account-acc-1', source: 'home' },
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/connections',
+      params: { slug: 'test-agent' },
+      search: { detail: 'account-acc-1', source: 'home' },
     })
   })
 
@@ -88,6 +85,6 @@ describe('HomeConnections — row navigation', () => {
 
     await user.click(screen.getByTestId('home-connections-open-page'))
 
-    expect(mockSetView).toHaveBeenCalledWith({ kind: 'connections' })
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/agents/$slug/connections', params: { slug: 'test-agent' } })
   })
 })
