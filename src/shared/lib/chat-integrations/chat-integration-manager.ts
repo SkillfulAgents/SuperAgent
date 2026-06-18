@@ -404,11 +404,14 @@ class ChatIntegrationManager {
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
 
-    // Restore SSE subscriptions for ACTIVE chat sessions only. Archived/cleared/
-    // timed-out sessions must not be re-subscribed, or stale agent output could
-    // be forwarded back to the external chat (SUP-233).
+    // Restore SSE subscriptions for ACTIVE, allowed chat sessions only. Archived/
+    // cleared/timed-out sessions must not be re-subscribed, or stale agent output
+    // could be forwarded back to the external chat (SUP-233); unapproved chats are
+    // skipped by the access check below.
     const existingSessions = listActiveChatIntegrationSessions(integration.id)
     for (const session of existingSessions) {
+      if (session.archivedAt) continue
+      if (!isChatAllowed(integration.id, session.externalChatId)) continue
       this.subscribeChatSession(integration.id, session.externalChatId, session.sessionId)
     }
   }
