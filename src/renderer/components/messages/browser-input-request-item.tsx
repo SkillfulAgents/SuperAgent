@@ -34,7 +34,7 @@ export function BrowserInputRequestItem({
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [submittingAction, setSubmittingAction] = useState<SubmittingAction | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
+  const [sessionDraft, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
 
   const submitBrowserInput = async (
     body: object,
@@ -87,7 +87,8 @@ export function BrowserInputRequestItem({
         )
         if (!res.ok) throw new Error('Failed to send your reason to the agent')
       } catch (err: unknown) {
-        setSessionDraft(reason)
+        // Preserve any text already in the composer instead of overwriting it.
+        setSessionDraft(sessionDraft ? `${sessionDraft}\n${reason}` : reason)
         setError(err instanceof Error ? err.message : 'Failed to send your reason to the agent')
       }
     }
