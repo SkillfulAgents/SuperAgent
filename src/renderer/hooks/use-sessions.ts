@@ -124,21 +124,3 @@ export function useBranchSession() {
   })
 }
 
-export function useDismissStalePrompt() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ agentSlug, sessionId }: { agentSlug: string; sessionId: string }) => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stalePromptDismissed: true }),
-      })
-      if (!res.ok) throw new Error('Failed to dismiss stale prompt')
-      return res.json() as Promise<ApiSession>
-    },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['session', variables.sessionId, variables.agentSlug] })
-    },
-  })
-}

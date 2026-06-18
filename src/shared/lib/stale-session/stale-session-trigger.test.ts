@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { evaluateStalePrompt } from './stale-session-trigger'
 import { STALE_TIME_GAP_MS, STALE_CONTEXT_TOKENS } from './stale-session-config'
 
-const base = { idleMs: 0, contextTokens: 0, isAwaitingInput: false, isRunning: false, dismissed: false }
+const base = { idleMs: 0, contextTokens: 0, isAwaitingInput: false, isRunning: false }
 
 const stale = { idleMs: STALE_TIME_GAP_MS + 1, contextTokens: STALE_CONTEXT_TOKENS + 1 }
 
@@ -24,8 +24,5 @@ describe('evaluateStalePrompt', () => {
   })
   it('suppresses while actively running', () => {
     expect(evaluateStalePrompt({ ...base, ...stale, isRunning: true }).shouldPrompt).toBe(false)
-  })
-  it('suppresses once dismissed for the session', () => {
-    expect(evaluateStalePrompt({ ...base, ...stale, dismissed: true }).shouldPrompt).toBe(false)
   })
 })

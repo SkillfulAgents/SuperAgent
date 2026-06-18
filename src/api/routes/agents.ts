@@ -1218,7 +1218,6 @@ const OpenDirectoryBody = z.object({ open: z.boolean().optional() })
 
 const patchSessionBodySchema = z.object({
   name: z.string().optional(),
-  stalePromptDismissed: z.boolean().optional(),
 })
 
 agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
@@ -1817,7 +1816,6 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       webhookTriggerName: metadata?.webhookTriggerName,
       effort: metadata?.effort,
       model: metadata?.model,
-      stalePromptDismissed: metadata?.stalePromptDismissed,
     })
   } catch (error) {
     console.error('Failed to fetch session:', error)
@@ -1834,7 +1832,7 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
     if (!parsed.success) {
       return c.json({ error: 'Invalid request', details: parsed.error.format() }, 400)
     }
-    const { name, stalePromptDismissed } = parsed.data
+    const { name } = parsed.data
 
     const session = await getSession(agentSlug, sessionId)
 
@@ -1844,10 +1842,6 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
 
     if (name?.trim()) {
       await updateSessionName(agentSlug, sessionId, name.trim())
-    }
-
-    if (stalePromptDismissed !== undefined) {
-      await updateSessionMetadata(agentSlug, sessionId, { stalePromptDismissed })
     }
 
     const updated = await getSession(agentSlug, sessionId)

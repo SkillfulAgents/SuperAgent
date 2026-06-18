@@ -102,8 +102,6 @@ export interface ApiSession {
   effort?: EffortLevel
   // Last model used on this session (seeds the composer selector)
   model?: string
-  // Set when user dismisses the stale-session prompt for this session
-  stalePromptDismissed?: boolean
 }
 
 // ============================================================================
@@ -184,10 +182,10 @@ export interface ApiCompactBoundary {
   preTokens?: number
   createdAt: Date
   /** Optional display label overriding the default "Compacted" button text.
-   *  Set to "Continued from previous session" for branched-session context cards. */
+   *  Set to "Continued from previous conversation" for branched-session context cards. */
   label?: string
   /** Optional header shown in the expanded panel, overriding the default "Compaction Summary".
-   *  Set to "Session context" for branched-session context cards. */
+   *  Set to "Conversation context" for branched-session context cards. */
   summaryLabel?: string
   /** Source session id when this is a branched-session context card ('branch' trigger).
    *  Lets the UI link back to the session the summary came from. */
