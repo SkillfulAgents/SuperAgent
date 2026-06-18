@@ -29,6 +29,7 @@ export interface CreateChatIntegrationParams {
   name?: string
   config: Record<string, unknown>
   showToolCalls?: boolean
+  requireApproval?: boolean
   sessionTimeout?: number | null
   model?: string | null
   effort?: string | null
@@ -39,6 +40,7 @@ export interface UpdateChatIntegrationParams {
   name?: string
   config?: Record<string, unknown>
   showToolCalls?: boolean
+  requireApproval?: boolean
   sessionTimeout?: number | null
   model?: string | null
   effort?: string | null
@@ -67,6 +69,7 @@ export function createChatIntegration(params: CreateChatIntegrationParams): stri
     name: params.name ?? null,
     config: JSON.stringify(params.config),
     showToolCalls: params.showToolCalls ?? false,
+    requireApproval: params.requireApproval ?? true,
     sessionTimeout: params.sessionTimeout ?? null,
     model: params.model ?? null,
     effort: params.effort ?? null,
@@ -232,6 +235,7 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
   if (params.name !== undefined) updates.name = params.name
   if (params.config !== undefined) updates.config = JSON.stringify(params.config)
   if (params.showToolCalls !== undefined) updates.showToolCalls = params.showToolCalls
+  if (params.requireApproval !== undefined) updates.requireApproval = params.requireApproval
   if (params.sessionTimeout !== undefined) updates.sessionTimeout = params.sessionTimeout
   if (params.model !== undefined) updates.model = params.model
   if (params.effort !== undefined) updates.effort = params.effort

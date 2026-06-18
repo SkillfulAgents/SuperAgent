@@ -945,6 +945,31 @@ class ChatIntegrationManager {
     }
   }
 
+  /**
+   * Send the "you're approved" notice to an external chat.
+   * Best-effort: exceptions are captured but do NOT roll back the approval.
+   */
+  async notifyChatApproved(integrationId: string, externalChatId: string): Promise<void> {
+    const conn = this.connections.get(integrationId)
+    if (!conn) return
+    try {
+      await conn.connector.sendMessage(externalChatId, { text: "You're approved. Send a message to start." })
+    } catch (e) {
+      captureException(e, { tags: { component: COMPONENT, operation: 'approve-notice' }, level: 'warning' })
+    }
+  }
+
+  /**
+   * Tear down the managed chat session for a revoked external chat:
+   * unsubscribes SSE delivery and archives the DB session row.
+   */
+  async tearDownChatSession(integrationId: string, externalChatId: string): Promise<void> {
+    const session = getChatIntegrationSession(integrationId, externalChatId)
+    if (!session) return
+    this.teardownManagedSession(integrationId, externalChatId)
+    archiveChatIntegrationSession(session.id)
+  }
+
   private deriveDisplayName(_provider: string, message: IncomingMessage): string | undefined {
     const baseName = deriveDisplayName(message)
 
