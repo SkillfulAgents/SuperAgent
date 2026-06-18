@@ -9,15 +9,19 @@ import { SettingsModelSelect } from '@renderer/components/settings/settings-mode
 import type { EffortLevel } from '@shared/lib/container/types'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
-function ToggleRow({ label, checked, onCheckedChange, disabled }: {
+function ToggleRow({ label, helperText, checked, onCheckedChange, disabled }: {
   label: string
+  helperText?: string
   checked: boolean
   onCheckedChange: (checked: boolean) => void
   disabled?: boolean
 }) {
   return (
     <div className="flex w-full items-center justify-between px-2 py-1.5">
-      <span className="text-xs">{label}</span>
+      <div className={helperText ? 'flex flex-col gap-0.5' : undefined}>
+        <span className="text-xs">{label}</span>
+        {helperText && <span className="text-xs text-muted-foreground/70">{helperText}</span>}
+      </div>
       <Switch
         className="scale-75 origin-right"
         checked={checked}
@@ -132,6 +136,15 @@ export function IntegrationSettingsMenu({ integration, onRename, onDelete }: Int
         disabled={updateIntegration.isPending}
         onCheckedChange={(checked) =>
           updateIntegration.mutate({ id: integration.id, showToolCalls: checked })
+        }
+      />
+      <ToggleRow
+        label="Require approval for new conversations"
+        helperText="Off makes this a public bot — anyone can message it."
+        checked={!!integration.requireApproval}
+        disabled={updateIntegration.isPending}
+        onCheckedChange={(checked) =>
+          updateIntegration.mutate({ id: integration.id, requireApproval: checked })
         }
       />
       <SessionTimeoutInput

@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useState } from 'react'
-import { MessageCircle, MoreVertical, Loader2, ExternalLink, RotateCcw, AlertTriangle } from 'lucide-react'
+import { MessageCircle, MoreVertical, Loader2, ExternalLink, RotateCcw, AlertTriangle, ChevronRight } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
@@ -20,6 +20,11 @@ import {
   useChatIntegrationStatus,
   useChatIntegrationSessions,
   useClearChatSession,
+  useChatIntegrationAccess,
+  useApproveChatAccess,
+  useDenyChatAccess,
+  useRevokeChatAccess,
+  type ChatIntegrationAccess,
 } from '@renderer/hooks/use-chat-integrations'
 import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
 import { useNavigate } from '@tanstack/react-router'
@@ -45,6 +50,158 @@ import {
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { IntegrationSettingsMenu } from '@renderer/components/chat-integrations/integration-settings-menu'
 import { formatProviderName } from '@shared/lib/chat-integrations/utils'
+
+// ── Access management sections ────────────────────────────────────────────
+
+function DeniedSection({ denied, integrationId, canManage, approve }: {
+  denied: ChatIntegrationAccess[]
+  integrationId: string
+  canManage: boolean
+  approve: ReturnType<typeof useApproveChatAccess>
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <section className="px-6 py-3">
+      <button
+        className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+        onClick={() => setExpanded(e => !e)}
+      >
+        <ChevronRight className={`h-3 w-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        Denied ({denied.length})
+      </button>
+      {expanded && (
+        <ul className="mt-2 space-y-1.5">
+          {denied.map(row => (
+            <li key={row.id} className="flex items-center justify-between gap-3">
+              <p className="text-sm truncate text-muted-foreground">
+                {row.title ?? `Conversation ${row.externalChatId.slice(-6)}`}
+              </p>
+              {canManage && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-2 text-xs shrink-0"
+                  disabled={approve.isPending}
+                  onClick={() => approve.mutate({ integrationId, accessId: row.id })}
+                >
+                  Allow
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function ChatAccessSections({ integrationId, canManage }: { integrationId: string; canManage: boolean }) {
+  const { data: access } = useChatIntegrationAccess(integrationId)
+  const approve = useApproveChatAccess()
+  const deny = useDenyChatAccess()
+  const revoke = useRevokeChatAccess()
+
+  if (!access || access.length === 0) return null
+
+  const pending = access.filter(a => a.status === 'pending')
+  const allowed = access.filter(a => a.status === 'allowed')
+  const denied = access.filter(a => a.status === 'denied')
+
+  if (pending.length === 0 && allowed.length === 0 && denied.length === 0) return null
+
+  return (
+    <div className="shrink-0 border-b divide-y divide-border max-h-64 overflow-y-auto">
+      {pending.length > 0 && (
+        <section className="px-6 py-3">
+          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+            Pending requests
+          </h3>
+          <ul className="space-y-2">
+            {pending.map(row => (
+              <li key={row.id} className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">
+                    {row.title ?? `Conversation ${row.externalChatId.slice(-6)}`}
+                  </p>
+                  {row.firstMessagePreview && (
+                    <p className="text-xs text-muted-foreground truncate">{row.firstMessagePreview}</p>
+                  )}
+                </div>
+                {canManage && (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-2 text-xs"
+                      disabled={approve.isPending || deny.isPending}
+                      onClick={() => approve.mutate({ integrationId, accessId: row.id })}
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
+                      disabled={approve.isPending || deny.isPending}
+                      onClick={() => deny.mutate({ integrationId, accessId: row.id })}
+                    >
+                      Deny
+                    </Button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {allowed.length > 0 && (
+        <section className="px-6 py-3">
+          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+            Allowed
+          </h3>
+          <ul className="space-y-2">
+            {allowed.map(row => (
+              <li key={row.id} className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex items-center gap-2 flex-wrap">
+                  <p className="text-sm truncate">
+                    {row.title ?? `Conversation ${row.externalChatId.slice(-6)}`}
+                  </p>
+                  {row.approvalSource === 'auto_first_contact' && (
+                    <span className="shrink-0 inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                      Auto-approved as first contact
+                    </span>
+                  )}
+                </div>
+                {canManage && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-xs text-muted-foreground hover:text-destructive shrink-0"
+                    disabled={revoke.isPending}
+                    onClick={() => revoke.mutate({ integrationId, accessId: row.id })}
+                  >
+                    Revoke
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {denied.length > 0 && (
+        <DeniedSection
+          denied={denied}
+          integrationId={integrationId}
+          canManage={canManage}
+          approve={approve}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface ChatIntegrationViewProps {
   integrationId: string
@@ -184,6 +341,11 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
           )}
         </div>
       </div>
+
+      {/* Access management — shown when require-approval is on and there are access rows */}
+      {integration.requireApproval && canManage && (
+        <ChatAccessSections integrationId={integrationId} canManage={canManage} />
+      )}
 
       {/* Session thread (read-only) or empty state */}
       {(() => {
