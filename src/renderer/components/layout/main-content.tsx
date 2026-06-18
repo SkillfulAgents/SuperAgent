@@ -513,8 +513,6 @@ export function MainContent() {
                 onMessageFailed={handlePendingMessageAppeared}
                 lastActivityAt={session?.lastActivityAt ? new Date(session.lastActivityAt) : null}
                 contextUsage={contextUsage}
-                stalePromptDismissed={session?.stalePromptDismissed ?? false}
-                agentName={agent?.name ?? ''}
                 onSessionCreated={handleSessionCreated}
               />
             </div>
