@@ -117,6 +117,7 @@ const channels: Array<{ name: string; on: string; channel: string; payload: unkn
   { name: 'onNavigateToAgent', on: 'onNavigateToAgent', channel: 'navigate-to-agent', payload: ['agent-slug', 'session-id'] },
   { name: 'onOpenSettings', on: 'onOpenSettings', channel: 'open-settings', payload: [] },
   { name: 'onOpenCreateAgent', on: 'onOpenCreateAgent', channel: 'open-create-agent', payload: [] },
+  { name: 'onHistoryNavigationCommand', on: 'onHistoryNavigationCommand', channel: 'history-navigation-command', payload: ['back'] },
   // Window-state channels: these had the most concurrent subscribers (useFullScreen
   // is mounted in ~5 places; window-maximized-change is shared by WindowControls +
   // useInsetRadius), so they must honor per-listener unsubscribe too.

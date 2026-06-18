@@ -372,6 +372,19 @@ function createWindow() {
     mainWindow?.webContents.send('window-maximized-change', false)
   })
 
+  // Browser-style hardware buttons (e.g. mouse Back/Forward) arrive as app
+  // commands on Windows/Linux. Forward them to the renderer so TanStack Router's
+  // history, not Electron's document history, owns app navigation.
+  mainWindow.on('app-command', (event, command) => {
+    if (command === 'browser-backward') {
+      event.preventDefault()
+      mainWindow?.webContents.send('history-navigation-command', 'back')
+    } else if (command === 'browser-forward') {
+      event.preventDefault()
+      mainWindow?.webContents.send('history-navigation-command', 'forward')
+    }
+  })
+
   processPendingProtocolUrls()
 }
 

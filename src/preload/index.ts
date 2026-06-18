@@ -164,6 +164,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('open-create-agent')
   },
 
+  onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void): (() => void) => {
+    const handler = (_event: unknown, command: unknown) => {
+      if (command === 'back' || command === 'forward') callback(command)
+    }
+    ipcRenderer.on('history-navigation-command', handler)
+    return () => {
+      ipcRenderer.removeListener('history-navigation-command', handler)
+    }
+  },
+
+  // Channel-wide reset — prefer the unsubscribe returned by onHistoryNavigationCommand.
+  removeHistoryNavigationCommand: () => {
+    ipcRenderer.removeAllListeners('history-navigation-command')
+  },
+
   // Reclaim window focus (e.g. after Chrome steals it by opening a new tab)
   focusWindow: () => {
     ipcRenderer.send('focus-window')
@@ -359,6 +374,8 @@ declare global {
       removeOpenSettings: () => void
       onOpenCreateAgent: (callback: () => void) => () => void
       removeOpenCreateAgent: () => void
+      onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => () => void
+      removeHistoryNavigationCommand: () => void
       setSidebarCollapsed: (collapsed: boolean) => void
       setTrayVisible: (visible: boolean) => Promise<void>
       showNotification: (

@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
@@ -54,6 +54,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useParams, useRouterState, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import { useRouteLocation } from '@renderer/router/use-route-location'
+import { useHistoryNavigation } from '@renderer/router/use-history-navigation'
 import { useSearch } from '@renderer/context/search-context'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import { useChatIntegrations, useChatIntegrationSessions, type ChatIntegration } from '@renderer/hooks/use-chat-integrations'
@@ -773,6 +774,48 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
   )
 }
 
+function HistoryNavigationButtons() {
+  const { canGoBack, canGoForward, back, forward } = useHistoryNavigation()
+  const buttonClassName =
+    'h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground transition-colors ' +
+    'hover:bg-foreground/10 hover:text-foreground disabled:cursor-default disabled:text-muted-foreground/30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/30'
+
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={back}
+            disabled={!canGoBack}
+            aria-label="Back"
+            className={buttonClassName}
+            data-testid="history-back-button"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Back</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={forward}
+            disabled={!canGoForward}
+            aria-label="Forward"
+            className={buttonClassName}
+            data-testid="history-forward-button"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Forward</TooltipContent>
+      </Tooltip>
+    </>
+  )
+}
+
 export function AppSidebar() {
   useRenderTracker('AppSidebar')
   const { openSettings } = useDialogs()
@@ -849,6 +892,7 @@ export function AppSidebar() {
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !animatedFullScreen
   const isWindowsElectron = isElectron() && getPlatform() === 'win32'
   const showHeaderBar = needsTrafficLightPadding
+  const showHistoryNavigation = !__WEB__ && isElectron()
 
   return (
     <>
@@ -899,25 +943,28 @@ export function AppSidebar() {
                   <ChevronDown className="h-4 w-4 text-foreground/60" />
                 </button>
               )}
-              <TooltipProvider delayDuration={200}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={openSearch}
-                      aria-label="Search"
-                      className="app-no-drag ml-auto -mr-2 h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
-                      data-testid="search-button"
-                    >
-                      <Search className="h-4 w-4 -translate-y-[1px]" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="flex items-center gap-2">
-                    <span>Search</span>
-                    <span className="opacity-70">{getPlatform() === 'darwin' ? '⌘K' : 'Ctrl+K'}</span>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <div className="app-no-drag ml-auto -mr-2 flex items-center gap-0.5">
+                <TooltipProvider delayDuration={200}>
+                  {showHistoryNavigation && <HistoryNavigationButtons />}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={openSearch}
+                        aria-label="Search"
+                        className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
+                        data-testid="search-button"
+                      >
+                        <Search className="h-4 w-4 -translate-y-[1px]" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="flex items-center gap-2">
+                      <span>Search</span>
+                      <span className="opacity-70">{getPlatform() === 'darwin' ? '⌘K' : 'Ctrl+K'}</span>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
             </div>
 
             {/* Status banners — render under the wordmark so they sit inside the

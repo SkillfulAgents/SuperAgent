@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { cloneElement, isValidElement, type ReactElement } from 'react'
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppSidebar } from './app-sidebar'
 import { renderWithProviders } from '@renderer/test/test-utils'
@@ -12,10 +12,14 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 vi.stubGlobal('__APP_VERSION__', '0.1.0-test')
 vi.stubGlobal('__RENDER_TRACKING__', false)
 
+const mockIsElectron = vi.hoisted(() => vi.fn(() => false))
+const mockGetPlatform = vi.hoisted(() => vi.fn(() => 'web'))
+const mockOpenDashboardExternal = vi.hoisted(() => vi.fn())
+
 vi.mock('@renderer/lib/env', () => ({
-  isElectron: () => false,
-  getPlatform: () => 'web',
-  openDashboardExternal: vi.fn(),
+  isElectron: mockIsElectron,
+  getPlatform: mockGetPlatform,
+  openDashboardExternal: mockOpenDashboardExternal,
   getApiBaseUrl: () => 'http://localhost:3000',
 }))
 
@@ -91,10 +95,24 @@ vi.mock('@renderer/hooks/use-fullscreen', () => ({
 // (matches the global setup mock, which this file-level mock replaces).
 let mockRouteParams: Record<string, string | undefined> = {}
 let mockRoutePathname = '/'
+let mockHistorySubscribers: Array<(opts: { action: { type: string } }) => void> = []
+const mockHistory = {
+  location: { state: { __TSR_index: 0 } },
+  canGoBack: vi.fn(() => false),
+  back: vi.fn(),
+  forward: vi.fn(),
+  subscribe: vi.fn((cb: (opts: { action: { type: string } }) => void) => {
+    mockHistorySubscribers.push(cb)
+    return () => {
+      mockHistorySubscribers = mockHistorySubscribers.filter((subscriber) => subscriber !== cb)
+    }
+  }),
+}
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
   return {
     ...actual,
+    useRouter: () => ({ history: mockHistory }),
     useNavigate: () => () => {},
     useParams: () => mockRouteParams,
     useRouterState: (opts?: { select?: (s: { location: { pathname: string } }) => unknown }) =>
@@ -289,10 +307,24 @@ function makeSession(overrides: Record<string, any> = {}) {
   }
 }
 
+function setMockHistoryIndex(index: number) {
+  mockHistory.location = { state: { __TSR_index: index } }
+  mockHistory.canGoBack.mockImplementation(() => index > 0)
+}
+
+function notifyHistory(actionType: string) {
+  mockHistorySubscribers.forEach((subscriber) => subscriber({ action: { type: actionType } }))
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.stubGlobal('__WEB__', true)
+  mockIsElectron.mockReturnValue(false)
+  mockGetPlatform.mockReturnValue('web')
   mockRouteParams = {}
   mockRoutePathname = '/'
+  mockHistorySubscribers = []
+  setMockHistoryIndex(0)
   mockUseAgents.mockReturnValue({
     data: [makeAgent(), makeAgent({ slug: 'other-agent', name: 'Other Agent', status: 'stopped', sessionCount: 0 })],
     isLoading: false,
@@ -365,6 +397,42 @@ describe('AppSidebar — layout & top nav', () => {
     const header = screen.getByTestId('sidebar-header')
     expect(header.className).toMatch(/h-0/)
     expect(header.className).not.toMatch(/h-12\b/)
+  })
+
+  it('does not render history navigation controls in web mode', () => {
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('history-back-button')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('history-forward-button')).not.toBeInTheDocument()
+  })
+
+  it('renders Electron history controls and syncs their enabled state', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('__WEB__', false)
+    mockIsElectron.mockReturnValue(true)
+    mockGetPlatform.mockReturnValue('darwin')
+
+    renderWithProviders(<AppSidebar />)
+
+    const backButton = screen.getByTestId('history-back-button')
+    const forwardButton = screen.getByTestId('history-forward-button')
+    expect(backButton).toBeDisabled()
+    expect(forwardButton).toBeDisabled()
+
+    setMockHistoryIndex(1)
+    act(() => notifyHistory('PUSH'))
+    expect(backButton).toBeEnabled()
+    expect(forwardButton).toBeDisabled()
+
+    await user.click(backButton)
+    expect(mockHistory.back).toHaveBeenCalledTimes(1)
+
+    setMockHistoryIndex(0)
+    act(() => notifyHistory('BACK'))
+    expect(backButton).toBeDisabled()
+    expect(forwardButton).toBeEnabled()
+
+    await user.click(forwardButton)
+    expect(mockHistory.forward).toHaveBeenCalledTimes(1)
   })
 })
 
