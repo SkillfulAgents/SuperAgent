@@ -54,10 +54,10 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  // The new-agent morph tag + composer pre-fill one-shots live in
-  // NavTransientContext now (R10) — above the router, so they survive in-app nav
-  // and die on hard reload. justCreatedSlug producer = use-create-untitled-agent.
-  const { consumePendingDraft, justCreatedSlug, setJustCreatedSlug } = useNavTransient()
+  // The new-agent morph tag lives in NavTransientContext now (R10) — above the
+  // router, so it survives in-app nav and dies on hard reload. justCreatedSlug
+  // producer = use-create-untitled-agent.
+  const { justCreatedSlug, setJustCreatedSlug } = useNavTransient()
   const navigate = useNavigate()
   const [introStagger] = useState(() => {
     if (justCreatedSlug !== agent.slug) return false
@@ -211,15 +211,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
   })
-
-  // Consume any pending draft from voice agent flow
-  useEffect(() => {
-    const draft = consumePendingDraft()
-    if (draft) {
-      composer.setMessage(draft)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- only run on mount
-  }, [])
 
   // Reset the manual-collapse flag once the message clears.
   useEffect(() => {

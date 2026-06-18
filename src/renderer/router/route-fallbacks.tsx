@@ -76,3 +76,43 @@ export function SessionNotFound({ agentSlug }: { agentSlug: string }) {
     </div>
   )
 }
+
+/**
+ * Router-level defaults (wired as `defaultNotFoundComponent` /
+ * `defaultErrorComponent` on `createRouter`). Without these, an unmatched
+ * non-agent URL (e.g. a mistyped `/garbage`) or an unexpected throw on a route
+ * that defines no fallback of its own would hit TanStack's bare, unstyled "Not
+ * Found" (review §3.6). Routes with their own fallbacks (the agent layout) still
+ * win. Kept DEAD-SIMPLE on purpose — a fallback that itself throws is swallowed
+ * by the sibling error boundary (migration gotcha).
+ */
+export function RouteNotFound() {
+  return (
+    <div
+      data-testid="route-not-found"
+      className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center"
+    >
+      <h2 className="text-lg font-medium">Page not found</h2>
+      <p className="max-w-sm text-sm text-muted-foreground">This page doesn’t exist.</p>
+      <AppLink to="/" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
+        Back to home
+      </AppLink>
+    </div>
+  )
+}
+
+export function RouteError() {
+  const router = useRouter()
+  return (
+    <div
+      data-testid="route-error"
+      className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center"
+    >
+      <h2 className="text-lg font-medium">Something went wrong</h2>
+      <p className="max-w-sm text-sm text-muted-foreground">An unexpected error occurred.</p>
+      <Button variant="outline" size="sm" onClick={() => void router.invalidate()}>
+        Retry
+      </Button>
+    </div>
+  )
+}

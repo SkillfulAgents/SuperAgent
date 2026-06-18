@@ -39,7 +39,7 @@ const REDIRECT_KEY = 'superagent.redirect'
  * pass browser-normalized `window.location.*`; this is the open-redirect backstop
  * for any future caller that stashes a hand-built path.
  */
-function isSafeInternalPath(p: string | null): p is string {
+export function isSafeInternalPath(p: string | null): p is string {
   if (!p) return false
   if (!/^\/(?![/\\])/.test(p)) return false // single leading slash only
   if (/^\/(?:%2f|%5c)/i.test(p)) return false // encoded separator right after it

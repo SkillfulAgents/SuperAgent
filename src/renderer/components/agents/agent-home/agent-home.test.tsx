@@ -74,9 +74,6 @@ const mockSetJustCreatedSlug = vi.fn()
 
 vi.mock('@renderer/context/nav-transient-context', () => ({
   useNavTransient: () => ({
-    pendingDraft: null,
-    setPendingDraft: vi.fn(),
-    consumePendingDraft: vi.fn(() => null),
     justCreatedSlug: mockJustCreatedSlug,
     setJustCreatedSlug: mockSetJustCreatedSlug,
   }),

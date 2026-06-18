@@ -15,6 +15,11 @@ import { decodeLocation, type AppLocation, type RouteSnapshot } from './route-st
  */
 export function useRouteLocation(): AppLocation {
   return useRouterState({
+    // Dedupe the selector output by structure so consumers only re-render on a
+    // real view change, not on every router-store tick during a loader's
+    // pending/loading transitions (review §3.1). AppLocation is JSON-compatible,
+    // satisfying the structural-sharing constraint.
+    structuralSharing: true,
     select: (state): AppLocation => {
       const params: Record<string, string | undefined> = {}
       const search: Record<string, unknown> = {}

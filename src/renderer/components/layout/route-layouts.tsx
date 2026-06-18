@@ -83,15 +83,26 @@ export function RootLayout() {
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
       <UpdateStatusProvider>
         <OnboardingProvider>
-          <WindowControls />
-          <UpdateToastNotifier />
-          {/* Rendered here (inside the router) so it can use useNavigate — R11 §7.7. */}
-          <SearchDialog />
-          {wizardOpen ? (
-            <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
-          ) : (
-            <Outlet />
-          )}
+          {/* Real-time + native-nav handlers live HERE (root, above the
+              shell⇄settings switch) so they stay mounted while /settings is open.
+              Previously in AppShellLayout, which /settings replaces — so opening
+              settings unmounted them, dropping the notification SSE + OS popups,
+              the container-setup stream, and any tray navigate-to-agent IPC fired
+              while in settings (review §4.1). All three only need useNavigate /
+              useUser / useUserSettings, available at the root route. */}
+          <TrayNavigationHandler>
+            <GlobalNotificationHandler />
+            <ContainerSetupHandler />
+            <WindowControls />
+            <UpdateToastNotifier />
+            {/* Rendered here (inside the router) so it can use useNavigate — R11 §7.7. */}
+            <SearchDialog />
+            {wizardOpen ? (
+              <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
+            ) : (
+              <Outlet />
+            )}
+          </TrayNavigationHandler>
         </OnboardingProvider>
       </UpdateStatusProvider>
     </DialogProvider>
@@ -122,16 +133,12 @@ function SidebarCollapsedSync() {
  */
 export function AppShellLayout() {
   return (
-    <TrayNavigationHandler>
-      <GlobalNotificationHandler />
-      <ContainerSetupHandler />
-      <SidebarProvider className="h-screen">
-        <SidebarCollapsedSync />
-        <AppSidebar />
-        <SidebarInset className="min-w-0">
-          <Outlet />
-        </SidebarInset>
-      </SidebarProvider>
-    </TrayNavigationHandler>
+    <SidebarProvider className="h-screen">
+      <SidebarCollapsedSync />
+      <AppSidebar />
+      <SidebarInset className="min-w-0">
+        <Outlet />
+      </SidebarInset>
+    </SidebarProvider>
   )
 }

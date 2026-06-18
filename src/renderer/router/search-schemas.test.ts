@@ -100,19 +100,21 @@ describe('settingsSearchSchema (from close-target)', () => {
   })
 })
 
-// The schema regex `/^\/(?!\/)/` only blocks protocol-relative `//host`. It
-// deliberately ACCEPTS backslash-UNC `/\host` and a leading encoded `/%2fhost`
-// that the REAL open-redirect backstop — api.ts `isSafeInternalPath`, pinned in
-// api.test.ts — rejects. This pins that asymmetry so nobody mistakes the search
-// schema (a shape gate) for the sanitizer (applied on the actual redirect path).
-describe('rootSearchSchema vs api.ts isSafeInternalPath (intentional asymmetry)', () => {
-  it('ACCEPTS backslash-UNC `/\\host` that isSafeInternalPath rejects', () => {
-    expect(rootSearchSchema.safeParse({ redirect: '/\\evil.com' }).success).toBe(true)
+// rootSearchSchema.redirect and settingsSearchSchema.from now share ONE guard
+// with api.ts `isSafeInternalPath` (§3.3 unified them), so the schema rejects
+// every open-redirect form the sanitizer does — no asymmetry left to drift.
+describe('rootSearchSchema.redirect == api.ts isSafeInternalPath (unified guard)', () => {
+  it('rejects backslash-UNC `/\\host`', () => {
+    expect(rootSearchSchema.safeParse({ redirect: '/\\evil.com' }).success).toBe(false)
   })
-  it('ACCEPTS a leading encoded separator `/%2fhost` that isSafeInternalPath rejects', () => {
-    expect(rootSearchSchema.safeParse({ redirect: '/%2fevil' }).success).toBe(true)
+  it('rejects a leading encoded separator `/%2fhost`', () => {
+    expect(rootSearchSchema.safeParse({ redirect: '/%2fevil' }).success).toBe(false)
   })
-  it('still rejects the protocol-relative `//host` the regex DOES catch', () => {
+  it('rejects protocol-relative `//host`', () => {
     expect(rootSearchSchema.safeParse({ redirect: '//evil.com' }).success).toBe(false)
+  })
+  it('still accepts a normal internal path and a deeper (non-leading) encoded separator', () => {
+    expect(rootSearchSchema.safeParse({ redirect: '/agents/foo' }).success).toBe(true)
+    expect(rootSearchSchema.safeParse({ redirect: '/settings/general?from=%2Fagents%2Ffoo' }).success).toBe(true)
   })
 })

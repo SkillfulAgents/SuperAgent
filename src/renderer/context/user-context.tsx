@@ -1,4 +1,4 @@
-import { createContext, useContext, useCallback, useMemo, type ReactNode } from 'react'
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSession, signOut as authSignOut } from '@renderer/lib/auth-client'
 import { apiFetch, clearRedirectStash } from '@renderer/lib/api'
@@ -73,6 +73,28 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const isAuthenticated = isAuthMode && sessionUser !== null
   const isAdmin = isAuthenticated && sessionUser?.role === 'admin'
   const mustChangePassword = isAuthenticated && sessionUser?.mustChangePassword === true
+
+  // Clear the React Query cache whenever an authenticated session is LOST — the
+  // manual signOut() below does this, but the 401 auto-sign-out in api.ts calls
+  // better-auth's signOut directly and bypasses it. Without this, the agent route
+  // loader's ensureQueryData could serve a previous user's warm-cached agent to
+  // the next user on a shared tab without a server re-check (review §2.1). Guard
+  // on a genuine true→false transition so a cold signed-out load never clears.
+  //
+  // Caveat: better-auth nulls session.data on ANY /get-session error (no retry),
+  // so a transient network blip can also flip isAuthenticated false and clear the
+  // cache. Acceptable: AuthGate already swaps the whole app to <AuthPage/> on that
+  // same data=null, so the only incremental cost is a cold-cache reload (vs warm
+  // re-render) once the session refetch re-succeeds — not a correctness issue.
+  const wasAuthenticatedRef = useRef(false)
+  useEffect(() => {
+    if (isAuthenticated) {
+      wasAuthenticatedRef.current = true
+    } else if (wasAuthenticatedRef.current) {
+      wasAuthenticatedRef.current = false
+      queryClient.clear()
+    }
+  }, [isAuthenticated, queryClient])
 
   // Fetch agent roles when authenticated
   const { data: agentRoles, isFetched: rolesFetched } = useAgentRoles(isAuthenticated)

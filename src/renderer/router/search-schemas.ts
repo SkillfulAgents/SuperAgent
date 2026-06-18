@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isSafeInternalPath } from '@renderer/lib/api'
 
 /**
  * Zod schemas for the router's URL boundary (search params + the settings tab
@@ -30,10 +31,12 @@ export const connectionsSearchSchema = z
     message: 'detail and source must be set together',
   })
 
-// Open-redirect-safe internal path: an absolute path only — rejects `//evil.com`
-// and `https://evil.com`. Shared by the post-login `redirect` (§9) and the
-// settings `from` close-target (§10.1).
-const internalPath = z.string().regex(/^\/(?!\/)/)
+// Open-redirect-safe internal path. ONE definition for the whole app: the same
+// `isSafeInternalPath` backstop applied on the actual stash/redirect path in
+// api.ts (rejects `//host`, `/\host`, and a leading encoded `/%2f`/`/%5c`), so
+// the schema gate and the sanitizer can't drift (review §3.3). Shared by the
+// post-login `redirect` (§9) and the settings `from` close-target (§10.1).
+const internalPath = z.string().refine(isSafeInternalPath, { message: 'must be a safe internal path' })
 
 // Deep-link-through-login target (migration plan §9).
 export const rootSearchSchema = z.object({
