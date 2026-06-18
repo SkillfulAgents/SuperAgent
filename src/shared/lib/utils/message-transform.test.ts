@@ -1253,7 +1253,7 @@ describe('transformMessages', () => {
       // First item: the collapsed context card
       const card = result[0] as TransformedCompactBoundary
       expect(card.type).toBe('compact_boundary')
-      expect(card.label).toBe('Continued from previous session')
+      expect(card.label).toBe('Continued from previous conversation')
       expect(card.trigger).toBe('branch')
       expect(card.summary).toContain(SENTINEL)
       expect(card.summary).toContain('Was working on auth.')

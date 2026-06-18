@@ -57,19 +57,19 @@ describe('CompactBoundaryItem', () => {
     expect(screen.queryByText('Compaction Summary')).not.toBeInTheDocument()
   })
 
-  it('shows a "View original session" link for a branch card and calls onViewSource with the source id', async () => {
+  it('shows a "View original conversation" link for a branch card and calls onViewSource with the source id', async () => {
     const user = userEvent.setup()
     const onViewSource = vi.fn()
     const boundary = createCompactBoundary({
       summary: 'Carried-over context.',
       trigger: 'branch',
-      label: 'Continued from previous session',
+      label: 'Continued from previous conversation',
       fromSessionId: 'sess-src',
     })
     render(<CompactBoundaryItem boundary={boundary} onViewSource={onViewSource} />)
 
-    await user.click(screen.getByText('Continued from previous session'))
-    await user.click(screen.getByText('View original session'))
+    await user.click(screen.getByText('Continued from previous conversation'))
+    await user.click(screen.getByText('View original conversation'))
     expect(onViewSource).toHaveBeenCalledWith('sess-src')
   })
 
@@ -79,7 +79,7 @@ describe('CompactBoundaryItem', () => {
     render(<CompactBoundaryItem boundary={boundary} onViewSource={vi.fn()} />)
 
     await user.click(screen.getByText('Compacted'))
-    expect(screen.queryByText('View original session')).not.toBeInTheDocument()
+    expect(screen.queryByText('View original conversation')).not.toBeInTheDocument()
   })
 
   it('prefers compacting indicator over boundary when both are set', () => {

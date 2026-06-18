@@ -63,7 +63,7 @@ export function CompactBoundaryItem({ boundary, isCompacting, onViewSource }: Co
               className="mt-3 inline-flex items-center gap-1 text-xs text-primary hover:underline"
             >
               <ArrowUpRight className="h-3 w-3" />
-              View original session
+              View original conversation
             </button>
           )}
         </div>

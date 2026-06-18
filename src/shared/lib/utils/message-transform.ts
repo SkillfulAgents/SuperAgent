@@ -431,8 +431,8 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
             type: 'compact_boundary',
             summary: contextBlock,
             trigger: 'branch',
-            label: 'Continued from previous session',
-            summaryLabel: 'Session context',
+            label: 'Continued from previous conversation',
+            summaryLabel: 'Conversation context',
             ...(fromSessionId ? { fromSessionId } : {}),
             createdAt: new Date(entry.timestamp),
           })
