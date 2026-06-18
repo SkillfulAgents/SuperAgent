@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useCallback } from 'react'
+import { createContext, useContext, useCallback } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { settingsSearchSchema } from '@renderer/router/search-schemas'
 
@@ -54,16 +54,9 @@ export function DialogProvider({
     onOpenWizard()
   }, [onOpenWizard])
 
-  // Electron app-menu → Settings.
-  useEffect(() => {
-    if (!window.electronAPI) return
-    window.electronAPI.onOpenSettings?.(() => {
-      openSettings()
-    })
-    return () => {
-      window.electronAPI?.removeOpenSettings?.()
-    }
-  }, [openSettings])
+  // Menu command "open-settings" is handled centrally by MenuCommandHandler
+  // (which calls openSettings) — keeping the menu→action mapping in one place
+  // and, post-SUP-264, draining commands queued while the window was closed.
 
   return (
     <DialogContext.Provider value={{ openSettings, closeSettings, openWizard }}>

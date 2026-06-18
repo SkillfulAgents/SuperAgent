@@ -2,7 +2,9 @@
  * TelegramConnector — Telegram Bot API integration via grammY.
  *
  * Uses long polling (no webhooks) for Electron compatibility.
- * Supports streaming via editMessageText with throttling.
+ * Streams Bot API 10.1 rich messages: animated sendRichMessageDraft in DMs,
+ * throttled sendRichMessage + editMessageText in groups, with a markdownToTelegramHtml
+ * fallback for the rich-send error path and the richMessages rollback flag.
  * User request cards rendered as inline keyboards.
  */
 
@@ -10,20 +12,29 @@ import { Bot, type Context as GrammyContext } from 'grammy'
 import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
-import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
+import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
+import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
+import type { InputRichMessage } from 'grammy/types'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
 export interface TelegramConfig {
   botToken: string
   chatId?: string
+  richMessages?: boolean
+  draftStreaming?: boolean
+  skipEntityDetection?: boolean
 }
 
 // ── Telegram limits ─────────────────────────────────────────────────────
 
-const MAX_MESSAGE_LENGTH = 4096
 const FIRST_POLL_BATCH_DELAY_MS = 500
+const RICH_DRAFT_SENTINEL_PREFIX = 'draft:'
+// Telegram's "working" indicators are ephemeral — rich drafts expire ~30s, the
+// typing action ~5s — so startWorking re-sends on this heartbeat until the
+// response takes over. ~1s stays within Telegram's per-chat send cadence.
+const WORKING_REFRESH_MS = 1000
 
 // ── Markdown → Telegram HTML ─────────────────────────────────────────────
 
@@ -122,6 +133,12 @@ export class TelegramConnector extends ChatClientConnector {
     answers: Record<string, string> // { questionText: selectedAnswer }
   }> = new Map()
 
+  // Animated DM draft streaming: per-chat non-zero draft id.
+  private nextDraftId = 1
+  private activeDrafts: Map<string, number> = new Map()
+  // Keep-alive timers re-sending the "working" indicator, one per chat.
+  private workingTimers: Map<string, ReturnType<typeof setInterval>> = new Map()
+
   constructor(private config: TelegramConfig) {
     super()
   }
@@ -137,44 +154,7 @@ export class TelegramConnector extends ChatClientConnector {
     this.bot.on('message:text', (ctx) => this.handleTextMessage(ctx))
 
     // Handle callback queries (inline keyboard button clicks)
-    this.bot.on('callback_query:data', async (ctx) => {
-      await ctx.answerCallbackQuery()
-      const data = ctx.callbackQuery.data
-      const mapping = this.callbackDataMap.get(data)
-      if (mapping) {
-        const val = mapping.value as { question: string; answer: string }
-
-        // Update the message to show the selected answer and remove the keyboard
-        const originalText = ctx.callbackQuery.message?.text || ''
-        try {
-          await ctx.editMessageText(`${originalText}\n\n✅ <b>${this.escapeHtml(val.answer)}</b>`, {
-            parse_mode: 'HTML',
-          })
-        } catch {
-          try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
-        }
-
-        this.callbackDataMap.delete(data)
-
-        // Accumulate answer for multi-question requests
-        const pending = this.pendingQuestions.get(mapping.toolUseId)
-        if (pending) {
-          pending.answers[val.question] = val.answer
-          if (Object.keys(pending.answers).length >= pending.totalQuestions) {
-            // All questions answered — emit the combined response
-            this.emitInteractiveResponse(mapping.toolUseId, {
-              question: '_all',
-              answer: '_all',
-              answers: pending.answers,
-            })
-            this.pendingQuestions.delete(mapping.toolUseId)
-          }
-        } else {
-          // Single question — emit immediately
-          this.emitInteractiveResponse(mapping.toolUseId, mapping.value)
-        }
-      }
-    })
+    this.bot.on('callback_query:data', (ctx) => this.handleCallbackQuery(ctx))
 
     // Handle photo messages (images sent directly, not as documents)
     this.bot.on('message:photo', async (ctx) => {
@@ -294,6 +274,9 @@ export class TelegramConnector extends ChatClientConnector {
     this.flushAllPendingBatches()
     this.callbackDataMap.clear()
     this.pendingQuestions.clear()
+    this.activeDrafts.clear()
+    for (const timer of this.workingTimers.values()) clearInterval(timer)
+    this.workingTimers.clear()
 
     if (this.bot) {
       await this.bot.stop()
@@ -311,16 +294,15 @@ export class TelegramConnector extends ChatClientConnector {
   async sendMessage(chatId: string, message: OutgoingMessage): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
 
-    const html = this.markdownToHtml(message.text || '(empty message)')
-    const chunks = splitChatMessage(html, MAX_MESSAGE_LENGTH)
+    const chunks = splitForRichLimits(message.text || '(empty message)')
+    const replyParams = message.replyToExternalId
+      ? { reply_parameters: { message_id: Number(message.replyToExternalId) } }
+      : undefined
 
     let lastMessageId = ''
-    for (const chunk of chunks) {
-      const sent = await this.bot.api.sendMessage(chatId, chunk, {
-        parse_mode: 'HTML',
-        ...(message.replyToExternalId ? { reply_parameters: { message_id: Number(message.replyToExternalId) } } : {}),
-      })
-      lastMessageId = String(sent.message_id)
+    for (let i = 0; i < chunks.length; i++) {
+      // Only the first chunk carries the reply-to.
+      lastMessageId = await this.sendRichOrHtml(chatId, chunks[i], i === 0 ? replyParams : undefined)
     }
     return lastMessageId
   }
@@ -338,28 +320,39 @@ export class TelegramConnector extends ChatClientConnector {
 
   async sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string): Promise<string> {
     if (!this.bot) throw new Error('Bot not connected')
+    const body = text || 'Thinking...'
 
-    const truncated = text.length > MAX_MESSAGE_LENGTH
-      ? text.slice(0, MAX_MESSAGE_LENGTH - 60) + '\n\n... (full response will appear when done)'
-      : text
-    const displayText = this.markdownToHtml(truncated || 'Thinking...')
+    // DM animated draft path — only for the streaming-response flow (no real
+    // message yet, or an existing draft). A real message id (e.g. a tool-status
+    // pill posted via sendMessage) must be edited, not replaced by a new draft.
+    if (
+      this.useRich &&
+      this.config.draftStreaming !== false &&
+      this.isPrivateChat(chatId) &&
+      (!existingMessageId || existingMessageId.startsWith(RICH_DRAFT_SENTINEL_PREFIX))
+    ) {
+      return this.driveDraftStream(chatId, body)
+    }
 
+    // Group/channel edit path.
     if (!existingMessageId) {
-      // First chunk — create the message
-      const sent = await this.bot.api.sendMessage(chatId, displayText, { parse_mode: 'HTML' })
+      if (this.useRich) {
+        // Via sendRichOrHtml so a rich-send failure falls back to HTML like every
+        // other send path, instead of throwing and aborting the stream.
+        return this.sendRichOrHtml(chatId, body)
+      }
+      const sent = await this.bot.api.sendMessage(chatId, this.markdownToHtml(body), { parse_mode: 'HTML' })
       return String(sent.message_id)
     }
 
-    // Edit existing message
-    try {
-      await this.bot.api.editMessageText(chatId, Number(existingMessageId), displayText, {
-        parse_mode: 'HTML',
-      })
-    } catch (err: unknown) {
-      // "message is not modified" is expected when text hasn't changed
-      const errMsg = err instanceof Error ? err.message : String(err)
-      if (!errMsg.includes('message is not modified')) {
-        throw err
+    if (this.useRich) {
+      await this.editRichOrHtml(chatId, existingMessageId, body)
+    } else {
+      try {
+        await this.bot.api.editMessageText(chatId, Number(existingMessageId), this.markdownToHtml(body), { parse_mode: 'HTML' })
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        if (!errMsg.includes('message is not modified')) throw err
       }
     }
     return existingMessageId
@@ -367,17 +360,26 @@ export class TelegramConnector extends ChatClientConnector {
 
   async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void> {
     if (!this.bot) return
+    const text = finalText || '(empty response)'
 
-    const html = this.markdownToHtml(finalText || '(empty response)')
-    const chunks = splitChatMessage(html, MAX_MESSAGE_LENGTH)
+    // DM draft path: commit the ephemeral draft as a real persisted message.
+    if (messageId.startsWith(RICH_DRAFT_SENTINEL_PREFIX)) {
+      await this.commitDraft(chatId, text)
+      return
+    }
 
+    // Split for the active sink: rich edits hold 32768, but the HTML fallback
+    // edit (richMessages rollback, or a rich-edit failure) tops out at 4096. A
+    // rich-sized first chunk would blow past the HTML edit limit and the overflow
+    // would be silently dropped, so size chunk[0] to whatever this connector edits.
+    const chunks = this.useRich ? splitForRichLimits(text) : splitForHtmlLimits(text)
     try {
-      await this.bot.api.editMessageText(chatId, Number(messageId), chunks[0], {
-        parse_mode: 'HTML',
-      })
-
+      await this.editRichOrHtml(chatId, messageId, chunks[0])
+      // Overflow chunks are sent whole, not streamed — only chunk[0] (the
+      // already-streamed message) animates. Streaming the tail would need a
+      // rolling multi-message stream; not worth it for this overflow case.
       for (let i = 1; i < chunks.length; i++) {
-        await this.bot.api.sendMessage(chatId, chunks[i], { parse_mode: 'HTML' })
+        await this.sendRichOrHtml(chatId, chunks[i])
       }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
@@ -388,12 +390,75 @@ export class TelegramConnector extends ChatClientConnector {
     }
   }
 
-  async showTypingIndicator(chatId: string): Promise<void> {
+  private draftIdFor(chatId: string): number {
+    let id = this.activeDrafts.get(chatId)
+    if (id === undefined) {
+      id = this.nextDraftId++
+      this.activeDrafts.set(chatId, id)
+    }
+    return id
+  }
+
+  private async driveDraftStream(chatId: string, body: string): Promise<string> {
+    if (!this.bot) throw new Error('Bot not connected')
+    await this.bot.api.raw.sendRichMessageDraft({
+      chat_id: Number(chatId),
+      draft_id: this.draftIdFor(chatId),
+      rich_message: this.richMessage(body),
+    })
+    return `${RICH_DRAFT_SENTINEL_PREFIX}${chatId}`
+  }
+
+  private async commitDraft(chatId: string, text: string): Promise<void> {
+    this.activeDrafts.delete(chatId)
+    const chunks = splitForRichLimits(text)
+    for (const chunk of chunks) {
+      await this.sendRichOrHtml(chatId, chunk)
+    }
+  }
+
+  async startWorking(chatId: string): Promise<void> {
+    if (!this.bot) return
+    // Send once now, then keep it alive on a heartbeat (drafts/typing self-expire)
+    // until stopWorking. Idempotent: one timer per chat.
+    await this.sendWorkingIndicator(chatId)
+    if (this.workingTimers.has(chatId)) return
+    this.workingTimers.set(chatId, setInterval(() => {
+      void this.sendWorkingIndicator(chatId)
+    }, WORKING_REFRESH_MS))
+  }
+
+  async stopWorking(chatId: string): Promise<void> {
+    const timer = this.workingTimers.get(chatId)
+    if (timer) {
+      clearInterval(timer)
+      this.workingTimers.delete(chatId)
+    }
+    // The streaming response shares the draft_id and replaces the draft in place,
+    // so there is nothing else to tear down.
+  }
+
+  /** Post the "working" indicator once: a native draft in rich DMs, else typing. */
+  private async sendWorkingIndicator(chatId: string): Promise<void> {
     if (!this.bot) return
     try {
+      if (this.useRich && this.config.draftStreaming !== false && this.isPrivateChat(chatId)) {
+        // Native Telegram "Thinking…" placeholder (RichBlockThinking / <tg-thinking>).
+        // Draft-only, so DM-only. Static ✨: the animated AIActions custom emoji only
+        // render when the bot's owner has Telegram Premium (otherwise Telegram strips the
+        // entity), so we use a plain sparkle that renders for everyone. The keep-alive
+        // timer re-sends it (drafts expire ~30s) and it shares the streaming draft_id, so
+        // the response replaces it.
+        await this.bot.api.raw.sendRichMessageDraft({
+          chat_id: Number(chatId),
+          draft_id: this.draftIdFor(chatId),
+          rich_message: { html: '<tg-thinking>✨ Thinking…</tg-thinking>' },
+        })
+        return
+      }
       await this.bot.api.sendChatAction(chatId, 'typing')
     } catch {
-      // Non-critical
+      // Non-critical; the keep-alive timer re-sends on the next tick.
     }
   }
 
@@ -403,8 +468,7 @@ export class TelegramConnector extends ChatClientConnector {
     if (!this.bot) throw new Error('Bot not connected')
 
     if (isUnsupportedInChat(event)) {
-      const sent = await this.bot.api.sendMessage(chatId, `<i>${this.escapeHtml(describeUnsupportedRequest(event))}</i>`, { parse_mode: 'HTML' })
-      return String(sent.message_id)
+      return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event))}_`)
     }
 
     switch (event.type) {
@@ -421,8 +485,8 @@ export class TelegramConnector extends ChatClientConnector {
 
         // Send each question as its own message with its own keyboard
         for (const q of event.questions) {
-          const header = q.header ? `<b>${this.escapeHtml(q.header)}</b>\n` : ''
-          const text = `${header}${this.escapeHtml(q.question)}`
+          const header = q.header ? `**${escapeMarkdown(q.header)}**\n` : ''
+          const text = `${header}${escapeMarkdown(q.question)}`
 
           const keyboard: Array<Array<{ text: string; callback_data: string }>> = []
           if (q.options && q.options.length > 0) {
@@ -436,46 +500,82 @@ export class TelegramConnector extends ChatClientConnector {
             }
           }
 
-          const sent = await this.bot.api.sendMessage(chatId, text, {
-            parse_mode: 'HTML',
-            ...(keyboard.length > 0 ? { reply_markup: { inline_keyboard: keyboard } } : {}),
-          })
-          lastMessageId = String(sent.message_id)
+          lastMessageId = await this.sendRichOrHtml(
+            chatId,
+            text,
+            keyboard.length > 0 ? { reply_markup: { inline_keyboard: keyboard } } : undefined,
+          )
         }
 
         return lastMessageId
       }
 
       case 'secret_request': {
-        const text = `<b>Secret requested:</b> <code>${this.escapeHtml(event.secretName)}</code>\n${event.reason ? `\nReason: ${this.escapeHtml(event.reason)}` : ''}\n\nPlease reply with the secret value.`
-        const sent = await this.bot.api.sendMessage(chatId, text, { parse_mode: 'HTML' })
-        return String(sent.message_id)
+        const text = `**Secret requested:** ${codeSpan(event.secretName)}\n${event.reason ? `\nReason: ${escapeMarkdown(event.reason)}` : ''}\n\nPlease reply with the secret value.`
+        return this.sendRichOrHtml(chatId, text)
       }
 
       case 'file_request': {
-        const text = `<b>File requested:</b>\n${this.escapeHtml(event.description)}${event.fileTypes ? `\n\nAccepted types: ${this.escapeHtml(event.fileTypes)}` : ''}\n\nPlease upload the file.`
-        const sent = await this.bot.api.sendMessage(chatId, text, { parse_mode: 'HTML' })
-        return String(sent.message_id)
+        const text = `**File requested:**\n${escapeMarkdown(event.description)}${event.fileTypes ? `\n\nAccepted types: ${escapeMarkdown(event.fileTypes)}` : ''}\n\nPlease upload the file.`
+        return this.sendRichOrHtml(chatId, text)
       }
 
       case 'file_delivery': {
         // File transfer from container to chat is not yet supported — show metadata only
-        const text = `<b>File delivered:</b> <code>${this.escapeHtml(event.filePath)}</code>${event.description ? `\n${this.escapeHtml(event.description)}` : ''}\n\n<i>File download not yet supported — view in the app.</i>`
-        const sent = await this.bot.api.sendMessage(chatId, text, { parse_mode: 'HTML' })
-        return String(sent.message_id)
+        const text = `**File delivered:** ${codeSpan(event.filePath)}${event.description ? `\n${escapeMarkdown(event.description)}` : ''}\n\n_File download not yet supported — view in the app._`
+        return this.sendRichOrHtml(chatId, text)
       }
 
       case 'tool_status': {
         const emoji = event.status === 'success' ? '✅' : event.status === 'error' ? '❌' : event.status === 'cancelled' ? '⛔' : '⏳'
-        const text = `🔧 <b>${this.escapeHtml(event.toolName)}</b> — ${this.escapeHtml(event.summary)} ${emoji}`
-        const sent = await this.bot.api.sendMessage(chatId, text, { parse_mode: 'HTML' })
-        return String(sent.message_id)
+        return this.sendRichOrHtml(chatId, `🔧 **${escapeMarkdown(event.toolName)}** — ${escapeMarkdown(event.summary)} ${emoji}`)
       }
 
-      default: {
-        const sent = await this.bot.api.sendMessage(chatId, `<i>${this.escapeHtml(describeUnsupportedRequest(event))}</i>`, { parse_mode: 'HTML' })
-        return String(sent.message_id)
+      default:
+        return this.sendRichOrHtml(chatId, `_${escapeMarkdown(describeUnsupportedRequest(event))}_`)
+    }
+  }
+
+  /** Handle an inline-keyboard button click: confirm the choice and emit the answer. */
+  private async handleCallbackQuery(ctx: GrammyContext): Promise<void> {
+    await ctx.answerCallbackQuery()
+    const data = ctx.callbackQuery?.data
+    if (!data) return
+    const mapping = this.callbackDataMap.get(data)
+    if (!mapping) return
+    const val = mapping.value as { question: string; answer: string }
+
+    // Update the message to show the selected answer and remove the keyboard.
+    // Route through editRichOrHtml so the edit matches the connector's mode
+    // (a rich edit in rich mode, HTML otherwise) instead of always HTML.
+    const originalText = ctx.callbackQuery?.message?.text || ''
+    const chatId = String(ctx.chat?.id ?? '')
+    const messageId = String(ctx.callbackQuery?.message?.message_id ?? '')
+    const confirmation = `${escapeMarkdown(originalText)}\n\n✅ **${escapeMarkdown(val.answer)}**`
+    try {
+      await this.editRichOrHtml(chatId, messageId, confirmation)
+    } catch {
+      try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
+    }
+
+    this.callbackDataMap.delete(data)
+
+    // Accumulate answer for multi-question requests
+    const pending = this.pendingQuestions.get(mapping.toolUseId)
+    if (pending) {
+      pending.answers[val.question] = val.answer
+      if (Object.keys(pending.answers).length >= pending.totalQuestions) {
+        // All questions answered — emit the combined response
+        this.emitInteractiveResponse(mapping.toolUseId, {
+          question: '_all',
+          answer: '_all',
+          answers: pending.answers,
+        })
+        this.pendingQuestions.delete(mapping.toolUseId)
       }
+    } else {
+      // Single question — emit immediately
+      this.emitInteractiveResponse(mapping.toolUseId, mapping.value)
     }
   }
 
@@ -568,12 +668,83 @@ export class TelegramConnector extends ChatClientConnector {
     return id
   }
 
-  private escapeHtml(text: string): string {
-    return escapeHtml(text)
-  }
-
   private markdownToHtml(md: string): string {
     return markdownToTelegramHtml(md)
+  }
+
+  // ── Rich send helpers ───────────────────────────────────────────────
+
+  /** Telegram private-chat ids are positive; groups/channels are negative. */
+  private isPrivateChat(chatId: string): boolean {
+    return Number(chatId) > 0
+  }
+
+  private get useRich(): boolean {
+    return this.config.richMessages !== false
+  }
+
+  private richMessage(md: string): InputRichMessage {
+    return markdownToRichMessage(md, { skipEntityDetection: this.config.skipEntityDetection === true })
+  }
+
+  /** Send a new rich message; on any rich-send failure, resend via legacy HTML. */
+  private async sendRichOrHtml(
+    chatId: string,
+    md: string,
+    other?: { reply_markup?: unknown; reply_parameters?: { message_id: number } },
+  ): Promise<string> {
+    if (!this.bot) throw new Error('Bot not connected')
+    if (this.useRich) {
+      try {
+        const sent = await this.bot.api.raw.sendRichMessage({
+          chat_id: Number(chatId),
+          rich_message: this.richMessage(md),
+          ...(other as object),
+        })
+        return String(sent.message_id)
+      } catch (err) {
+        console.error('[TelegramConnector] rich send failed, falling back to HTML:', err)
+        captureException(err, { tags: { component: 'chat-integration', operation: 'rich-send-fallback' }, extra: { provider: 'telegram', chatId } })
+      }
+    }
+    // The legacy HTML sink caps at 4096 chars, but `md` was chunked for the 32768
+    // rich ceiling — re-split here so a long body (richMessages rollback or a
+    // rich-send fallback) isn't rejected. Reply params ride only the first chunk.
+    const htmlChunks = splitForHtmlLimits(md)
+    let lastId = ''
+    for (let i = 0; i < htmlChunks.length; i++) {
+      const sent = await this.bot.api.sendMessage(chatId, this.markdownToHtml(htmlChunks[i]), {
+        parse_mode: 'HTML',
+        ...(i === 0 ? (other as object) : {}),
+      })
+      lastId = String(sent.message_id)
+    }
+    return lastId
+  }
+
+  /** Edit a message to rich; on any rich-edit failure, edit via legacy HTML. */
+  private async editRichOrHtml(chatId: string, messageId: string, md: string): Promise<void> {
+    if (!this.bot) return
+    if (this.useRich) {
+      try {
+        await this.bot.api.raw.editMessageText({
+          chat_id: Number(chatId),
+          message_id: Number(messageId),
+          rich_message: this.richMessage(md),
+        })
+        return
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        if (errMsg.includes('message is not modified')) return
+        console.error('[TelegramConnector] rich edit failed, falling back to HTML:', err)
+      }
+    }
+    try {
+      await this.bot.api.editMessageText(chatId, Number(messageId), this.markdownToHtml(md), { parse_mode: 'HTML' })
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      if (!errMsg.includes('message is not modified')) throw err
+    }
   }
 
 }

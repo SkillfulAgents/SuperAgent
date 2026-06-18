@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, act } from '@testing-library/react'
+import { screen, act, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AgentHome } from './agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
@@ -23,6 +23,24 @@ const mockCreateSession = {
   mutateAsync: vi.fn().mockResolvedValue({ id: 'session-123', initialMessageUuid: 'srv-msg-uuid' }),
   isPending: false,
 }
+
+const mockUpdateAgentMutate = vi.fn()
+const mockUpdateAgentMutateAsync = vi.fn()
+const mockDeleteAgentMutate = vi.fn()
+
+vi.mock('@renderer/hooks/use-agents', () => ({
+  useAgent: () => ({ data: { ...testAgent, mounts: [] } }),
+  useAgents: () => ({ data: [testAgent] }),
+  useUpdateAgent: () => ({
+    mutate: mockUpdateAgentMutate,
+    mutateAsync: mockUpdateAgentMutateAsync,
+    isPending: false,
+  }),
+  useDeleteAgent: () => ({
+    mutate: mockDeleteAgentMutate,
+    isPending: false,
+  }),
+}))
 
 // Default to "loaded, empty" — most tests don't care, and the new
 // first-session Opus tests want this state. Specific tests that need a
@@ -145,6 +163,9 @@ vi.mock('@renderer/hooks/use-agent-skills', () => ({
   useAgentSkills: () => ({ data: [] }),
   useDiscoverableSkills: () => ({ data: [] }),
   useRefreshAgentSkills: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateSkill: () => ({ mutate: vi.fn(), isPending: false }),
+  useExportSkill: () => ({ mutate: vi.fn(), isPending: false }),
+  useImportSkillZip: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
 const mockRuntimeStatus = {
@@ -179,6 +200,7 @@ describe('AgentHome', () => {
     vi.clearAllMocks()
     mockCreateSession.isPending = false
     mockCreateSession.mutateAsync.mockResolvedValue({ id: 'session-123', initialMessageUuid: 'srv-msg-uuid' })
+    mockUpdateAgentMutateAsync.mockResolvedValue({ ...testAgent })
     mockComposer.message = ''
     mockComposer.attachments = []
     mockComposer.isUploading = false
@@ -201,6 +223,27 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
+  })
+
+  it('renames the agent inline for owners', async () => {
+    const user = userEvent.setup()
+    mockCanAdminAgent = true
+
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await user.click(screen.getByTestId('agent-name'))
+    await user.clear(screen.getByTestId('agent-name-input'))
+    await user.type(screen.getByTestId('agent-name-input'), 'Renamed Agent')
+    await user.click(screen.getByTestId('agent-name-save'))
+
+    await waitFor(() => {
+      expect(mockUpdateAgentMutateAsync).toHaveBeenCalledWith({
+        slug: 'test-agent',
+        name: 'Renamed Agent',
+      })
+    })
   })
 
   it('renders textarea with placeholder', () => {

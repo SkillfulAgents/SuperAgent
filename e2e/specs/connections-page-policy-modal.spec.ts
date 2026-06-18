@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 
-const API = 'http://localhost:3000'
+const API = ''
 
 test.describe('Connections Page — Policy Modal After OAuth', () => {
   let appPage: AppPage

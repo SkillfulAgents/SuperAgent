@@ -9,6 +9,7 @@ const mockMarkTaskExecuted = vi.fn()
 const mockRecordManualExecution = vi.fn()
 const mockUpdateScheduleExpression = vi.fn()
 const mockUpdateTaskPrompt = vi.fn()
+const mockUpdateTaskName = vi.fn()
 const mockUpdateTaskRuntimeOptions = vi.fn()
 const mockPauseScheduledTask = vi.fn()
 const mockResumeScheduledTask = vi.fn()
@@ -22,6 +23,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   recordManualExecution: (...args: unknown[]) => mockRecordManualExecution(...args),
   updateScheduleExpression: (...args: unknown[]) => mockUpdateScheduleExpression(...args),
   updateTaskPrompt: (...args: unknown[]) => mockUpdateTaskPrompt(...args),
+  updateTaskName: (...args: unknown[]) => mockUpdateTaskName(...args),
   updateTaskRuntimeOptions: (...args: unknown[]) => mockUpdateTaskRuntimeOptions(...args),
   pauseScheduledTask: (...args: unknown[]) => mockPauseScheduledTask(...args),
   resumeScheduledTask: (...args: unknown[]) => mockResumeScheduledTask(...args),
@@ -176,6 +178,7 @@ describe('scheduled-tasks route', () => {
     mockPauseScheduledTask.mockResolvedValue(true)
     mockResumeScheduledTask.mockResolvedValue(true)
     mockUpdateScheduleExpression.mockResolvedValue(true)
+    mockUpdateTaskName.mockResolvedValue(true)
   })
 
   it('returns task sessions with live activity from the message persister', async () => {
@@ -265,6 +268,54 @@ describe('scheduled-tasks route', () => {
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: 'Invalid cron expression' })
     expect(mockUpdateScheduleExpression).not.toHaveBeenCalled()
+  })
+
+  it('renames a scheduled task title', async () => {
+    mockUpdateTaskName.mockImplementation(async (_taskId: string, name: string) => {
+      task = createTask({ name })
+      return true
+    })
+
+    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/name', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '  Weekly digest  ' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ id: 'task-1', name: 'Weekly digest' })
+    expect(mockUpdateTaskName).toHaveBeenCalledWith('task-1', 'Weekly digest')
+    expect(mockLogAuditEvent).toHaveBeenCalledWith(expect.objectContaining({
+      object: 'task',
+      objectId: 'task-1',
+      action: 'updated',
+      details: { field: 'name' },
+    }))
+  })
+
+  it('rejects blank scheduled task names', async () => {
+    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/name', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '   ' }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'name is required and must be a non-empty string' })
+    expect(mockUpdateTaskName).not.toHaveBeenCalled()
+  })
+
+  it('returns 404 when a scheduled task name cannot be updated', async () => {
+    mockUpdateTaskName.mockResolvedValue(false)
+
+    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/name', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Weekly digest' }),
+    })
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Task not found or not editable' })
   })
 
   it('returns 422 when the LLM generates an invalid cron expression', async () => {

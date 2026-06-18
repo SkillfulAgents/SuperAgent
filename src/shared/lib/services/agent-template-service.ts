@@ -345,7 +345,7 @@ export interface TemplateValidationResult {
  * Validate ZIP entry metadata without extracting file contents.
  * Checks file count, declared uncompressed size, and path traversal.
  */
-function validateEntries(
+export function validateTemplateEntries(
   entries: ZipEntryMeta[],
   mode: 'template' | 'full',
 ): Omit<TemplateValidationResult, 'agentName'> {
@@ -402,7 +402,7 @@ export async function validateAgentTemplate(zipBuffer: Buffer, mode: 'template' 
   try {
     reader = await openZipFromBuffer(zipBuffer)
 
-    const result = validateEntries(reader.entries, mode)
+    const result = validateTemplateEntries(reader.entries, mode)
     if (!result.valid) return { ...result, agentName: undefined }
 
     const claudeMdFileName = reader.entries.find((e) => {
@@ -442,7 +442,7 @@ export async function importAgentFromTemplate(
 ): Promise<ApiAgent> {
   const reader = await openZipFromBuffer(zipBuffer)
   try {
-    const validation = validateEntries(reader.entries, mode)
+    const validation = validateTemplateEntries(reader.entries, mode)
     if (!validation.valid) {
       throw new Error(validation.error || 'Invalid template')
     }

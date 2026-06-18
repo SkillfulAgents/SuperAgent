@@ -118,7 +118,7 @@ describe('ToolCallItem', () => {
       render(<ToolCallItem toolCall={tc} />)
 
       // Click to expand
-      await user.click(screen.getByText('Bash'))
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       expect(screen.getByText('Input')).toBeInTheDocument()
       expect(screen.getByText('Output')).toBeInTheDocument()
     })
@@ -128,7 +128,7 @@ describe('ToolCallItem', () => {
       const tc = createToolCall({ result: 'command not found', isError: true })
       render(<ToolCallItem toolCall={tc} />)
 
-      await user.click(screen.getByText('Bash'))
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       expect(screen.getByText('Error')).toBeInTheDocument()
       expect(screen.queryByText('Output')).not.toBeInTheDocument()
     })
@@ -138,10 +138,10 @@ describe('ToolCallItem', () => {
       const tc = createToolCall({ result: 'output' })
       render(<ToolCallItem toolCall={tc} />)
 
-      await user.click(screen.getByText('Bash'))
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       expect(screen.getByText('Input')).toBeInTheDocument()
 
-      await user.click(screen.getByText('Bash'))
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       expect(screen.queryByText('Input')).not.toBeInTheDocument()
     })
   })
@@ -152,7 +152,7 @@ describe('ToolCallItem', () => {
       const tc = createToolCall({ input: { command: 'echo hello' }, result: 'hello' })
       render(<ToolCallItem toolCall={tc} />)
 
-      await user.click(screen.getByText('Bash'))
+      await user.click(screen.getByTestId('tool-call-toggle-Bash'))
       // JSON.stringify with indentation
       expect(screen.getByText(/echo hello/)).toBeInTheDocument()
     })

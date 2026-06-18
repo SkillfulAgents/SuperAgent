@@ -540,11 +540,11 @@ test.describe('Settings validation errors', () => {
 test.describe('Settings deep-link reset', () => {
   test('voice-button deep link does not stick after close', async ({ page, request }) => {
     // Skip the first-launch wizard so the app renders straight to the agent view.
-    await request.put('http://localhost:3000/api/user-settings', {
+    await request.put('/api/user-settings', {
       data: { setupCompleted: true },
     })
     // Seed an agent via API so the home message-input (which hosts the voice button) renders.
-    const createRes = await request.post('http://localhost:3000/api/agents', {
+    const createRes = await request.post('/api/agents', {
       data: { name: 'Voice Deep Link Test' },
     })
     const agent = await createRes.json() as { slug: string }
@@ -570,7 +570,7 @@ test.describe('Settings deep-link reset', () => {
     await expect(page.locator('[data-testid="settings-nav-voice"]')).toHaveAttribute('data-active', 'false')
 
     // Clean up: delete the seeded agent via API so other tests aren't affected.
-    await request.delete(`http://localhost:3000/api/agents/${agent.slug}`)
+    await request.delete(`/api/agents/${agent.slug}`)
   })
 })
 

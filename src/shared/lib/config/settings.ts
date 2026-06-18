@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { getDataDir } from './data-dir'
+import { isRunningInKubernetes } from '@shared/lib/container/runtime-env'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
@@ -276,6 +277,7 @@ export interface GlobalSettingsResponse {
  * WSL2 on Windows (bundled, no install needed), Docker elsewhere.
  */
 function getDefaultContainerRunner(): string {
+  if (isRunningInKubernetes()) return 'kubernetes'
   const p = os.platform()
   if (p === 'darwin') return 'lima'
   if (p === 'win32') return 'wsl2'

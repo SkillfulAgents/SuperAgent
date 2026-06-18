@@ -9,6 +9,18 @@ export interface FileTab {
   version: number
 }
 
+export interface CellRef {
+  /** 1-based data row index (header row excluded). */
+  row: number
+  /** 0-based column index, used to place the comment pin in the grid. */
+  col: number
+  /** Column header name (or "Column N" when the header is blank). */
+  column: string
+  /** Current cell value, included as context for the agent. */
+  value?: string
+}
+
+// TODO should create specific types for CSV / Image (x,y) and text, and FileComment can be a union of those with a `type` field. Deeper validation - if we have x we need y etc...
 export interface FileComment {
   id: string
   filePath: string
@@ -16,6 +28,7 @@ export interface FileComment {
   selectedText?: string
   x?: number
   y?: number
+  cell?: CellRef
 }
 
 interface FilePreviewContextType {

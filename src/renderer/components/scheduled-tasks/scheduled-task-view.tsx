@@ -10,6 +10,7 @@ import { Trash2, Play, Pencil, Loader2, Settings as SettingsIcon } from 'lucide-
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
+import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { Label } from '@renderer/components/ui/label'
 import { TimezonePicker } from '@renderer/components/ui/timezone-picker'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
@@ -28,6 +29,7 @@ import {
   useParseSchedule,
   useUpdateSchedule,
   useUpdateScheduledTaskPrompt,
+  useUpdateScheduledTaskName,
   useUpdateScheduledTaskRuntimeOptions,
   usePauseScheduledTask,
   useResumeScheduledTask,
@@ -55,6 +57,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/settings-page'
+import { toast } from 'sonner'
 
 interface ScheduledTaskViewProps {
   taskId: string
@@ -71,6 +74,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const pauseTask = usePauseScheduledTask()
   const resumeTask = useResumeScheduledTask()
   const updatePrompt = useUpdateScheduledTaskPrompt()
+  const updateName = useUpdateScheduledTaskName()
   const updateRuntimeOptions = useUpdateScheduledTaskRuntimeOptions()
   const navigate = useNavigate()
   const { canUseAgent } = useUser()
@@ -127,6 +131,8 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   }
 
   const taskTzLabel = task?.timezone?.replace(/_/g, ' ') || 'UTC'
+  const taskTitle = task?.name || 'Scheduled Task'
+  const canEditTaskName = Boolean(isActive && canCancel)
 
   const handleCancel = async () => {
     try {
@@ -147,6 +153,10 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
     } catch (err) {
       console.error('Failed to run scheduled task:', err)
     }
+  }
+
+  const handleSaveName = async (name: string) => {
+    await updateName.mutateAsync({ taskId, agentSlug, name })
   }
 
   const handleOpenEditSchedule = async () => {
@@ -313,7 +323,29 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   return (
     <SettingsPageContainer fullScreen>
       <PageTitle
-        title={task.name || 'Scheduled Task'}
+        title={
+          <InlineEditableTitle
+            value={taskTitle}
+            canEdit={canEditTaskName}
+            isSaving={updateName.isPending}
+            onSave={handleSaveName}
+            onError={(err) => {
+              console.error('Failed to rename scheduled task:', err)
+              toast.error('Failed to rename cron', {
+                description: err instanceof Error ? err.message : 'Please try again.',
+              })
+            }}
+            displayClassName="text-xl font-medium"
+            inputClassName="h-9 text-xl font-medium"
+            saveButtonClassName="h-8 w-8"
+            readOnlyAs="h2"
+            ariaLabel="Rename cron"
+            saveAriaLabel="Save cron name"
+            displayTestId="scheduled-task-title"
+            inputTestId="scheduled-task-title-input"
+            saveButtonTestId="scheduled-task-title-save"
+          />
+        }
         back={{
           onClick: () => {
             void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })

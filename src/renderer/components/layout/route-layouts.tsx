@@ -7,7 +7,7 @@ import { AppSidebar } from '@renderer/components/layout/app-sidebar'
 import { WindowControls } from '@renderer/components/layout/window-controls'
 import { ContainerSetupHandler } from '@renderer/components/settings/container-setup-handler'
 import { SidebarProvider, SidebarInset, useSidebar } from '@renderer/components/ui/sidebar'
-import { TrayNavigationHandler } from '@renderer/components/tray-navigation-handler'
+import { MenuCommandHandler } from '@renderer/components/menu-command-handler'
 import { GlobalNotificationHandler } from '@renderer/components/notifications/global-notification-handler'
 import { OnboardingProvider } from '@renderer/context/onboarding-context'
 import { GettingStartedWizard } from '@renderer/components/wizard/getting-started-wizard'
@@ -87,22 +87,23 @@ export function RootLayout() {
               shell⇄settings switch) so they stay mounted while /settings is open.
               Previously in AppShellLayout, which /settings replaces — so opening
               settings unmounted them, dropping the notification SSE + OS popups,
-              the container-setup stream, and any tray navigate-to-agent IPC fired
-              while in settings (review §4.1). All three only need useNavigate /
-              useUser / useUserSettings, available at the root route. */}
-          <TrayNavigationHandler>
-            <GlobalNotificationHandler />
-            <ContainerSetupHandler />
-            <WindowControls />
-            <UpdateToastNotifier />
-            {/* Rendered here (inside the router) so it can use useNavigate — R11 §7.7. */}
-            <SearchDialog />
-            {wizardOpen ? (
-              <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
-            ) : (
-              <Outlet />
-            )}
-          </TrayNavigationHandler>
+              the container-setup stream, and any native menu/tray command fired
+              while in settings (review §4.1). MenuCommandHandler also drains the
+              window-closed menu-command queue (SUP-264). All only need
+              useNavigate / useDialogs / useUser / useUserSettings — available at
+              the root route. */}
+          <MenuCommandHandler />
+          <GlobalNotificationHandler />
+          <ContainerSetupHandler />
+          <WindowControls />
+          <UpdateToastNotifier />
+          {/* Rendered here (inside the router) so it can use useNavigate — R11 §7.7. */}
+          <SearchDialog />
+          {wizardOpen ? (
+            <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
+          ) : (
+            <Outlet />
+          )}
         </OnboardingProvider>
       </UpdateStatusProvider>
     </DialogProvider>

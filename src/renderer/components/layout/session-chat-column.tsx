@@ -2,6 +2,7 @@ import { MessageInput } from '@renderer/components/messages/message-input'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { PendingRequestStack } from '@renderer/components/messages/pending-request-stack'
 import { renderPendingRequest, type RenderContext } from '@renderer/components/messages/pending-request-renderer'
+import { PendingRequestErrorBoundary } from '@renderer/components/messages/pending-request-error-boundary'
 import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watcher'
@@ -60,7 +61,18 @@ export function SessionChatColumn({
         pendingRequestCount > 0 ? (
           <div className="px-4 pb-4" data-testid="pending-request-slot">
             <PendingRequestStack>
-              {pendingRequestItems.map((d) => renderPendingRequest(d, renderCtx))}
+              {pendingRequestItems.map((d) => (
+                <PendingRequestErrorBoundary
+                  key={d.key}
+                  sessionId={sessionId}
+                  agentSlug={agentSlug}
+                  onDismiss={d.onComplete}
+                  itemId={d.key}
+                  kind={d.kind}
+                >
+                  {renderPendingRequest(d, renderCtx)}
+                </PendingRequestErrorBoundary>
+              ))}
             </PendingRequestStack>
           </div>
         ) : (

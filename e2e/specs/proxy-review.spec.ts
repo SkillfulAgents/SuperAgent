@@ -119,7 +119,7 @@ test.describe('X-Agent Review Requests', () => {
     await appPage.waitForAgentsLoaded()
 
     testAgentName = `XAgent Review Agent ${testInfo.workerIndex}-${Date.now()}`
-    await agentPage.createAgent(testAgentName)
+    await agentPage.createAgent(testAgentName, { waitForSidebarName: false })
   })
 
   test('x-agent review: interrupt dismisses the review card', async ({ page }) => {

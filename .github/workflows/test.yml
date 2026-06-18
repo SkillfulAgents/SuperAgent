@@ -86,7 +86,7 @@ jobs:
         run: ./agent-container/test-browser-integration.sh superagent-container
 
   e2e-tests:
-    runs-on: ubuntu-latest
+    runs-on: e2e-runner-x64
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -106,8 +106,23 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
-      - name: Run E2E tests
-        run: npm run test:e2e
+      - name: Run Playwright E2E suites
+        env:
+          PLAYWRIGHT_WORKERS: '2'
+        run: |
+          PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data PLAYWRIGHT_WORKERS=1 PLAYWRIGHT_OUTPUT_DIR=test-results/stateful PLAYWRIGHT_HTML_REPORT=playwright-report/stateful npm run test:e2e:stateful -- --fail-on-flaky-tests
+          PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data PLAYWRIGHT_WORKERS=$PLAYWRIGHT_WORKERS PLAYWRIGHT_OUTPUT_DIR=test-results/web PLAYWRIGHT_HTML_REPORT=playwright-report/web npm run test:e2e:web -- --fail-on-flaky-tests
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-playwright-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
 
   e2e-auth-tests:
     runs-on: ubuntu-latest
@@ -131,7 +146,23 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run Auth E2E tests
-        run: npm run test:e2e:auth
+        env:
+          PORT: '3001'
+          SUPERAGENT_DATA_DIR: .e2e-data/auth
+          PLAYWRIGHT_OUTPUT_DIR: test-results/auth
+          PLAYWRIGHT_HTML_REPORT: playwright-report/auth
+        run: npm run test:e2e:auth -- --fail-on-flaky-tests
+
+      - name: Upload auth Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-auth-playwright-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
 
   e2e-a11y-audit:
     runs-on: ubuntu-latest
@@ -156,4 +187,21 @@ jobs:
 
       - name: Run a11y audit
         continue-on-error: true
-        run: E2E_MOCK=true npx playwright test e2e/specs/a11y-audit.spec.ts --project=web-chromium
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/a11y
+          PLAYWRIGHT_WORKERS: '1'
+          PLAYWRIGHT_OUTPUT_DIR: test-results/a11y
+          PLAYWRIGHT_HTML_REPORT: playwright-report/a11y
+        run: npm run test:e2e:a11y -- --fail-on-flaky-tests
+
+      - name: Upload a11y Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-a11y-playwright-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

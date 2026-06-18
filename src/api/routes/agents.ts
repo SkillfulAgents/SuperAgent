@@ -119,7 +119,7 @@ import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
-import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -3881,7 +3881,10 @@ async function writeUploadedFile(agentSlug: string, filename: string, buffer: Bu
     const normalized = path.normalize(relativePath).replace(/^(\.\.[/\\])+/, '')
     uploadPath = `uploads/${normalized}`
   } else {
-    uploadPath = `uploads/${Date.now()}-${filename}`
+    // Single-file upload: collapse the untrusted name to a safe basename
+    // (shared with the chat-attachment write path). isPathWithinDir below is
+    // the defense-in-depth backstop.
+    uploadPath = `uploads/${Date.now()}-${sanitizeUploadFilename(filename)}`
   }
 
   const workspaceDir = getAgentWorkspaceDir(agentSlug)

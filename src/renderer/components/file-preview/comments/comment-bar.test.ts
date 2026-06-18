@@ -56,6 +56,86 @@ describe('formatComments', () => {
     expect(result).toContain('At position (50%, 10%)')
   })
 
+  it('formats cell comments with a Row:Col_Name identifier, column position and value', () => {
+    const comments: FileComment[] = [
+      {
+        id: '1',
+        filePath: '/workspace/contacts.csv',
+        text: 'This email looks malformed',
+        cell: { row: 3, col: 2, column: 'Email', value: 'john@@example' },
+      },
+    ]
+    const result = formatComments('/workspace/contacts.csv', comments)
+    expect(result).toContain('File feedback on `contacts.csv`')
+    expect(result).toContain('At cell 3:Email (col 3, value: "john@@example"):')
+    expect(result).toContain('This email looks malformed')
+  })
+
+  it('formats cell comments without a value', () => {
+    const comments: FileComment[] = [
+      {
+        id: '1',
+        filePath: '/workspace/data.csv',
+        text: 'Missing value here',
+        cell: { row: 5, col: 0, column: 'Name' },
+      },
+    ]
+    const result = formatComments('/workspace/data.csv', comments)
+    expect(result).toContain('At cell 5:Name (col 1):')
+    expect(result).not.toContain('value:')
+  })
+
+  it('marks a comment on an empty cell as empty rather than dropping it', () => {
+    const comments: FileComment[] = [
+      {
+        id: '1',
+        filePath: '/workspace/data.csv',
+        text: 'should not be blank',
+        cell: { row: 2, col: 1, column: 'Email', value: '' },
+      },
+    ]
+    const result = formatComments('/workspace/data.csv', comments)
+    expect(result).toContain('At cell 2:Email (col 2, empty cell):')
+  })
+
+  it('escapes double quotes inside a cell value', () => {
+    const comments: FileComment[] = [
+      {
+        id: '1',
+        filePath: '/workspace/specs.csv',
+        text: 'check this',
+        cell: { row: 4, col: 0, column: 'Size', value: '27" monitor' },
+      },
+    ]
+    const result = formatComments('/workspace/specs.csv', comments)
+    expect(result).toContain('value: "27\\" monitor"')
+  })
+
+  it('disambiguates duplicate column names via the column position', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/d.csv', text: 'a', cell: { row: 1, col: 1, column: 'Email', value: 'x' } },
+      { id: '2', filePath: '/d.csv', text: 'b', cell: { row: 1, col: 2, column: 'Email', value: 'y' } },
+    ]
+    const result = formatComments('/d.csv', comments)
+    expect(result).toContain('At cell 1:Email (col 2, value: "x"):')
+    expect(result).toContain('At cell 1:Email (col 3, value: "y"):')
+  })
+
+  it('truncates very long cell values', () => {
+    const long = 'x'.repeat(500)
+    const comments: FileComment[] = [
+      {
+        id: '1',
+        filePath: '/workspace/data.csv',
+        text: 'too long',
+        cell: { row: 1, col: 0, column: 'Blob', value: long },
+      },
+    ]
+    const result = formatComments('/workspace/data.csv', comments)
+    expect(result).toContain('…')
+    expect(result).not.toContain(long)
+  })
+
   it('extracts filename from full path', () => {
     const result = formatComments('/workspace/deep/nested/file.pdf', [
       { id: '1', filePath: '/workspace/deep/nested/file.pdf', text: 'test' },

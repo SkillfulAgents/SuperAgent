@@ -1,9 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 
-// web-chromium's request fixture has no baseURL configured, so use an absolute
-// API base (matches connections-page-policy-modal.spec.ts).
-const API = 'http://localhost:3000'
+const API = ''
 
 /**
  * Opens Global Settings → Connections and clicks through to the detail page

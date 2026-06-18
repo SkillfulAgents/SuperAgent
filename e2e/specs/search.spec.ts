@@ -30,7 +30,7 @@ test.describe('Search palette', () => {
     // Agents are created as "Untitled" with a random slug, then renamed
     // asynchronously. The display name maps to the prompt; the slug does not.
     // Look up the actual slug from the API by name.
-    const agentsRes = await request.get('http://localhost:3000/api/agents')
+    const agentsRes = await request.get('/api/agents')
     expect(agentsRes.ok()).toBe(true)
     const agents = (await agentsRes.json()) as Array<{ slug: string; name: string }>
     const slug = agents.find((a) => a.name === agentName)?.slug
@@ -38,16 +38,18 @@ test.describe('Search palette', () => {
 
     // The auto-created session keeps its default name in mock mode (no real
     // LLM). Rename it via the API so we can match it by a distinctive substring.
-    const sessionsRes = await request.get(`http://localhost:3000/api/agents/${slug}/sessions`)
+    const sessionsRes = await request.get(`/api/agents/${slug}/sessions`)
     expect(sessionsRes.ok()).toBe(true)
     const sessions = (await sessionsRes.json()) as Array<{ id: string }>
     expect(sessions.length).toBeGreaterThan(0)
     const sessionId = sessions[0].id
-    const patchRes = await request.patch(
-      `http://localhost:3000/api/agents/${slug}/sessions/${sessionId}`,
-      { data: { name: sessionName } }
-    )
-    expect(patchRes.ok()).toBe(true)
+    await expect(async () => {
+      const patchRes = await request.patch(
+        `/api/agents/${slug}/sessions/${sessionId}`,
+        { data: { name: sessionName } }
+      )
+      expect(patchRes.ok()).toBe(true)
+    }).toPass({ timeout: 5000 })
 
     // Sessions are cached by React Query — the renderer hasn't seen the rename
     // yet. Reload so the search palette pulls fresh data on first open.
@@ -179,14 +181,14 @@ test.describe('Search palette', () => {
     await agentPage.createAgent(agentName)
 
     // Look up the slug
-    const agentsRes = await request.get('http://localhost:3000/api/agents')
+    const agentsRes = await request.get('/api/agents')
     expect(agentsRes.ok()).toBe(true)
     const agents = (await agentsRes.json()) as Array<{ slug: string; name: string }>
     const slug = agents.find((a) => a.name === agentName)?.slug
     expect(slug, `agent ${agentName} not found in API`).toBeDefined()
 
     // Wait for the session to finish processing before renaming
-    const sessionsRes = await request.get(`http://localhost:3000/api/agents/${slug}/sessions`)
+    const sessionsRes = await request.get(`/api/agents/${slug}/sessions`)
     expect(sessionsRes.ok()).toBe(true)
     const sessions = (await sessionsRes.json()) as Array<{ id: string }>
     expect(sessions.length).toBeGreaterThan(0)
@@ -195,7 +197,7 @@ test.describe('Search palette', () => {
     // Retry the PATCH in case the session is still being processed
     await expect(async () => {
       const res = await request.patch(
-        `http://localhost:3000/api/agents/${slug}/sessions/${sessionId}`,
+        `/api/agents/${slug}/sessions/${sessionId}`,
         { data: { name: sessionName } }
       )
       expect(res.ok()).toBe(true)

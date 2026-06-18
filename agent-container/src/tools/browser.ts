@@ -497,12 +497,12 @@ const browserEvalTool = tool(
   'browser_eval',
   `Run JavaScript in the page and return the result. Prefer this over browser_run("eval ...").
 
-- Evaluated as an expression; await is supported. Bare function expressions are automatically invoked for you.
+- A single expression returns its value (e.g. document.title). A multi-line/statement body runs in a fresh scope — use \`return\` to produce a value (top-level return and await are supported; const/let won't collide across calls). Bare function expressions are auto-invoked.
 - Return JSON-serializable data — for structured results, end with JSON.stringify(...).
 - TOP FRAME ONLY: elements inside cross-origin iframes (e.g. Stripe payment frames) are unreachable from JavaScript. For those, click the field by coordinates and type with browser_type.
 - Output is capped at ~8000 chars — query only the fields you need instead of dumping HTML.`,
   {
-    script: z.string().describe('JavaScript to evaluate in the page, e.g. document.title or (() => JSON.stringify({n: document.querySelectorAll("a").length}))()'),
+    script: z.string().describe('JavaScript to evaluate. An expression (document.title) returns its value; a statement body should use return, e.g. "const n = document.querySelectorAll(\'a\').length; return n;"'),
   },
   async (args) => {
     const result = await browserFetch('eval', { script: args.script })
@@ -510,7 +510,7 @@ const browserEvalTool = tool(
     const data = result.data as Record<string, unknown>
     let text = data.output ? String(data.output) : '(no output)'
     if (data.wrapped) {
-      text += '\n(note: your script was a bare function expression — it was auto-invoked as (fn)())'
+      text += '\n(note: ran in a fresh function scope — add `return` if you expected a value back)'
     }
     text += getTabWarning()
     return {

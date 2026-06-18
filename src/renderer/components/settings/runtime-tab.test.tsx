@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, within } from '@testing-library/react'
+import { fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { RuntimeTab } from './runtime-tab'
 import { renderWithProviders } from '@renderer/test/test-utils'
@@ -87,12 +87,10 @@ describe('RuntimeTab', () => {
   })
 
   it('disables save when agent image is blank', async () => {
-    const user = userEvent.setup()
     renderWithProviders(<RuntimeTab />)
 
     const agentImageInput = screen.getByLabelText('Agent Image')
-    await user.clear(agentImageInput)
-    await user.type(agentImageInput, '   ')
+    fireEvent.change(agentImageInput, { target: { value: '   ' } })
 
     expect(screen.getByText('Agent image is required.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()

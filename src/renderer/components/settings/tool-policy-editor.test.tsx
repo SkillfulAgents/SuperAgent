@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ToolPolicyEditor } from './tool-policy-editor'
 import { renderWithProviders, screen, waitFor, within } from '@renderer/test/test-utils'
+import type { ComponentProps } from 'react'
 
 // Route apiFetch: GET returns the configured policies fixture; PUT captures its body.
 let policiesFixture: Array<{ toolName: string; decision: string }> = []
@@ -26,9 +27,19 @@ const TOOLS = [
 const toolToggle = (tool: string, decision: 'allow' | 'review' | 'block') =>
   within(screen.getByTestId(`tool-row-${tool}`)).getByTestId(`policy-toggle-${decision}`)
 
-const renderEditor = (mcpId: string) =>
+const renderEditor = (
+  mcpId: string,
+  props: Partial<ComponentProps<typeof ToolPolicyEditor>> = {},
+) =>
   renderWithProviders(
-    <ToolPolicyEditor mcpId={mcpId} mcpName="Test MCP" tools={TOOLS} open onOpenChange={() => {}} />,
+    <ToolPolicyEditor
+      mcpId={mcpId}
+      mcpName="Test MCP"
+      tools={TOOLS}
+      open
+      onOpenChange={() => {}}
+      {...props}
+    />,
   )
 
 describe('ToolPolicyEditor — Save enable/disable', () => {
@@ -62,6 +73,17 @@ describe('ToolPolicyEditor — Save enable/disable', () => {
 
     toolToggle('send', 'block').click()
     await waitFor(() => expect(screen.getByTestId('tool-policy-save')).toBeEnabled())
+  })
+
+  it('allows setup flow to save defaults for a fresh MCP', async () => {
+    policiesFixture = []
+    renderEditor('mcp-new', { allowSaveWithoutChanges: true })
+    await waitFor(() => expect(screen.getByTestId('tool-row-send')).toBeInTheDocument())
+
+    expect(screen.getByTestId('tool-policy-save')).toBeEnabled()
+
+    screen.getByTestId('tool-policy-save').click()
+    await waitFor(() => expect(lastPutBody).toEqual({ policies: [] }))
   })
 
   it('re-disables Save after a successful save', async () => {
