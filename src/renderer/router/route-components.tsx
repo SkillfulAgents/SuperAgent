@@ -16,19 +16,15 @@ import { useDialogs } from '@renderer/context/dialog-context'
  * Leaf route components for the agent sub-views. The shared header chrome +
  * agent-level banners live in the AgentShell layout, so each leaf renders only
  * its body inside AgentShell's `<Outlet/>`.
- *
- * Every agent sub-view is a real leaf route now: home (R10),
- * api-logs/connections (R5), task/webhook (R6), dashboard (R7), chat (R8),
- * session (R9) and settings (R12) are all real routes now.
  */
 function useAgentSlug(): string | null {
   return (useParams({ strict: false }) as { slug?: string }).slug ?? null
 }
 
-// R10 — the agent `home` index leaf. AgentHome owns its own agent-scoped dialogs
-// (§6.6) and the new-agent morph (via NavTransientContext); this wrapper just
-// resolves the agent + the optimistic-message creator from context. `key` on the
-// slug remounts AgentHome per agent so the morph's first-mount read fires (§8.5).
+// The agent `home` index leaf. AgentHome owns its own agent-scoped dialogs and
+// the new-agent morph (via NavTransientContext); this wrapper just resolves the
+// agent + the optimistic-message creator from context. `key` on the slug remounts
+// AgentHome per agent so the morph's first-mount read fires.
 export function AgentHomeRoute() {
   const slug = useAgentSlug()
   const { data: agent } = useAgent(slug)
@@ -37,16 +33,16 @@ export function AgentHomeRoute() {
   return <AgentHome key={agent.slug} agent={agent} onSessionCreated={onSessionCreated} />
 }
 
-// R5 — api-logs is now a real leaf route. The agent slug is read from the URL.
+// api-logs route: the agent slug is read from the URL.
 export function ApiLogsRoute() {
   const slug = useAgentSlug()
   if (!slug) return null
   return <ApiLogsView agentSlug={slug} />
 }
 
-// R5 — connections is a real leaf route; the open detail overlay travels in the
-// URL search (`?detail&source`), validated/coerced here exactly like the codec
-// (decodeLocation): both must be present and well-formed, else fall back to list.
+// The open detail overlay travels in the URL search (`?detail&source`),
+// validated/coerced here exactly like the codec (decodeLocation): both must be
+// present and well-formed, else fall back to list.
 export function ConnectionsRoute() {
   const slug = useAgentSlug()
   const search = useSearch({ strict: false }) as { detail?: unknown; source?: unknown }
@@ -58,7 +54,7 @@ export function ConnectionsRoute() {
   return <ConnectionsView agentSlug={slug} detail={detail} />
 }
 
-// R6 — task / webhook are real leaf routes; ids + slug come from the URL.
+// task / webhook routes: ids + slug come from the URL.
 export function TaskRoute() {
   const slug = useAgentSlug()
   const { taskId } = useParams({ strict: false }) as { taskId?: string }
@@ -73,7 +69,7 @@ export function WebhookRoute() {
   return <WebhookTriggerView triggerId={webhookId} agentSlug={slug} />
 }
 
-// R7 — dashboard is a real leaf route; dashSlug + slug come from the URL.
+// dashboard route: dashSlug + slug come from the URL.
 export function DashboardRoute() {
   const slug = useAgentSlug()
   const { dashSlug } = useParams({ strict: false }) as { dashSlug?: string }
@@ -81,8 +77,8 @@ export function DashboardRoute() {
   return <DashboardView agentSlug={slug} dashboardSlug={dashSlug} />
 }
 
-// R8 — chat is a real leaf route; integrationId is a path param and the optional
-// active sub-session travels in the URL search (`?session=`).
+// integrationId is a path param and the optional active sub-session travels in
+// the URL search (`?session=`).
 export function ChatRoute() {
   const slug = useAgentSlug()
   const { integrationId } = useParams({ strict: false }) as { integrationId?: string }
@@ -92,9 +88,9 @@ export function ChatRoute() {
   return <ChatIntegrationView integrationId={integrationId} agentSlug={slug} chatSessionId={chatSessionId} />
 }
 
-// R9 — session is a real leaf route; sessionId + slug come from the URL. The
-// session body lives in SessionView (next to the other layout components) since
-// it's substantial; this wrapper only resolves the params.
+// sessionId + slug come from the URL. The session body lives in SessionView
+// (next to the other layout components) since it's substantial; this wrapper
+// only resolves the params.
 export function SessionRoute() {
   const slug = useAgentSlug()
   const { sessionId } = useParams({ strict: false }) as { sessionId?: string }
@@ -102,11 +98,11 @@ export function SessionRoute() {
   return <SessionView agentSlug={slug} sessionId={sessionId} />
 }
 
-// R12 — global settings is a top-level route now (`/settings`, `/settings/$tab`,
-// sibling of the app shell, so it replaces the whole shell — same as the old
-// boolean). Close pushes back to the captured `?from=` origin via DialogContext.
-// settingsRoute is a LAYOUT (just an <Outlet/>) so the `$tab` child actually
-// renders; the index route handles `/settings` (no tab).
+// Global settings is a top-level route (`/settings`, `/settings/$tab`), sibling
+// of the app shell, so it replaces the whole shell. Close pushes back to the
+// captured `?from=` origin via DialogContext. settingsRoute is a LAYOUT (just an
+// <Outlet/>) so the `$tab` child actually renders; the index route handles
+// `/settings` (no tab).
 function SettingsPageView({ tab }: { tab?: string }) {
   const { closeSettings, openWizard } = useDialogs()
   const navigate = useNavigate()
@@ -115,10 +111,10 @@ function SettingsPageView({ tab }: { tab?: string }) {
       onClose={closeSettings}
       onOpenWizard={openWizard}
       initialSection={tab}
-      // Switching tabs drives the URL → /settings/$tab (R17 URL-driven tabs),
-      // preserving `?from=` so the close-target survives a tab switch. The nav
-      // items render as real <a href> links to this target so cmd/middle-click
-      // opens a tab in a new window (web); a plain click navigates in place.
+      // Switching tabs drives the URL → /settings/$tab, preserving `?from=` so
+      // the close-target survives a tab switch. The nav items render as real
+      // <a href> links to this target so cmd/middle-click opens a tab in a new
+      // window (web); a plain click navigates in place.
       sectionLinkProps={(id) => ({ to: '/settings/$tab', params: { tab: id }, search: (prev) => prev })}
       onSectionChange={(id) => navigate({ to: '/settings/$tab', params: { tab: id }, search: (prev) => prev })}
     />

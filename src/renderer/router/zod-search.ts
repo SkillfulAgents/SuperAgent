@@ -10,7 +10,7 @@ import type { z } from 'zod'
  * segment SHOULD redirect/error (see `routes.ts`).
  *
  * Returns `Partial<z.output<S>>` so the `{}` fallback is well-typed WITHOUT an
- * unchecked `as T` cast (review §3.2): a search schema with a required field
+ * unchecked `as T` cast: a search schema with a required field
  * would otherwise typecheck here while silently dropping that field at runtime.
  * In practice every schema passed has all-optional fields, so `Partial` is the
  * same shape the route components already read.

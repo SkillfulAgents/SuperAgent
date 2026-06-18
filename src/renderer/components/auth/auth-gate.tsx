@@ -29,7 +29,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   // so no API call fires and the 401 handler never stashes the target. Stash it
   // here once the session check settles unauthenticated, so OAuth (via
   // peekRedirectStash → callbackURL) and email login both return to the deep link
-  // instead of home (§9.1). Guard on `!wasAuthenticatedRef`: stashing on a SIGN-OUT
+  // instead of home. Guard on `!wasAuthenticatedRef`: stashing on a SIGN-OUT
   // would persist the signed-out user's private path and leak it into the next
   // user's session on a shared tab (the sign-out path also clears the stash).
   useEffect(() => {

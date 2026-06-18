@@ -26,7 +26,7 @@ export function SearchProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // The dialog itself renders from RootLayout (inside the router) so it can use
-  // the useNavigate hook (R11 §7.7); this provider just owns the open state + the
+  // the useNavigate hook; this provider just owns the open state + the
   // cmd/ctrl-K shortcut.
   return (
     <SearchContext.Provider value={{ open, openSearch, closeSearch }}>

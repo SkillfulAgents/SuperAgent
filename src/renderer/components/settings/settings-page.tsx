@@ -87,7 +87,7 @@ interface SettingsPageProps {
   /**
    * When provided, selecting a section calls this instead of relying solely on
    * internal state — the global settings page uses it to drive the URL
-   * (`/settings/$tab`) so the active tab is shareable + back/forward-able (R17).
+   * (`/settings/$tab`) so the active tab is shareable + back/forward-able.
    */
   onSectionChange?: (id: string) => void
   /**
@@ -156,7 +156,7 @@ function SettingsPageContent({
   const handleSectionClick = (id: string) => {
     setActive(id)
     if (isMobile) setMobileView('content')
-    // Drive the URL too when wired (R17); the effect above re-syncs `active`
+    // Drive the URL too when wired; the effect above re-syncs `active`
     // from the resulting `initialSection`, so the two never diverge.
     onSectionChange?.(id)
   }

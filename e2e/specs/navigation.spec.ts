@@ -72,7 +72,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     const agentName = `Nav APILogs ${Date.now()}`
     await agentPage.createAgent(agentName)
 
-    // Open API Logs from agent-home extras — now a real URL route
+    // Open API Logs from agent-home extras
     await page.getByTestId('home-api-logs-open-page').click()
     await expect(page).toHaveURL(/\/api-logs$/)
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
@@ -139,11 +139,11 @@ test.describe('Navigation — discriminated AgentView', () => {
   })
 
   test('Browser back/forward walks agent sub-view transitions in lockstep with the URL', async ({ page }) => {
-    // Headline migration promise: each sub-view nav is a real history PUSH, so
-    // the browser back/forward buttons replay them in order. A navigate() that
-    // mistakenly used `replace: true`, or a sub-view that double-pushed, would
-    // break this silently while every forward-nav test still passed — so this
-    // is the only e2e that drives page.goBack()/goForward().
+    // Each sub-view nav is a real history PUSH, so the browser back/forward
+    // buttons replay them in order. A navigate() that mistakenly used
+    // `replace: true`, or a sub-view that double-pushed, would break this
+    // silently while every forward-nav test still passed — so this is the only
+    // e2e that drives page.goBack()/goForward().
     const errors: string[] = []
     page.on('pageerror', (e) => errors.push(e.message))
 
@@ -270,12 +270,11 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Session is a durable URL route — a hard reload restores it (R9)', async ({ page }) => {
+  test('Session is a durable URL route — a hard reload restores it', async ({ page }) => {
     const agentName = `Nav Session Reload ${Date.now()}`
     await agentPage.createAgent(agentName)
 
-    // Send from agent-home → creates a session and navigates to its OWN route
-    // (R9: sessions are URL-durable now, not Selection-only).
+    // Send from agent-home → creates a session and navigates to its OWN route.
     await sessionPage.sendMessage('hello session route')
     await expect(page).toHaveURL(/\/sessions\/[^/]+$/)
     await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
@@ -291,13 +290,12 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Cold reload restores the Selection-driven session sub-crumb (bridge un-skip, R12)', async ({ page }) => {
-    // R12 un-skips the URL→Selection bridge on the INITIAL mount, so a hard
-    // reload on a sub-view route rehydrates `view` from the path. The header
-    // crumbs are still Selection-driven (which crumb shows reads `view`), so
-    // before the un-skip the session-name crumb was MISSING on a cold reload
-    // (view snapped to the `home` default) even though the message list — which
-    // is route-driven — still rendered. This pins the crumb back.
+  test('Cold reload restores the Selection-driven session sub-crumb', async ({ page }) => {
+    // On the INITIAL mount the URL→Selection bridge rehydrates `view` from the
+    // path. The header crumbs are Selection-driven (which crumb shows reads
+    // `view`), so without that rehydration the session-name crumb goes MISSING
+    // on a cold reload (view snaps to the `home` default) even though the
+    // message list — which is route-driven — still renders. This pins the crumb.
     const agentName = `Nav Crumb Restore ${Date.now()}`
     await agentPage.createAgent(agentName)
 
@@ -316,11 +314,11 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Session survives a sibling round-trip with the agent shell mounted (R9)', async ({ page }) => {
-    // Mount-survival (§11.7): leaving the session leaf for a sibling (agent home)
-    // and returning must NOT unmount AgentShell — it anchors the chat/SSE stream
-    // and the optimistic pendingMessagesRef. The session re-renders its persisted
-    // messages on return with no page crash.
+  test('Session survives a sibling round-trip with the agent shell mounted', async ({ page }) => {
+    // Leaving the session leaf for a sibling (agent home) and returning must NOT
+    // unmount AgentShell — it anchors the chat/SSE stream and the optimistic
+    // pendingMessagesRef. The session re-renders its persisted messages on
+    // return with no page crash.
     const errors: string[] = []
     page.on('pageerror', (e) => errors.push(e.message))
 
@@ -350,14 +348,12 @@ test.describe('Navigation — discriminated AgentView', () => {
   })
 
   test('Page reload retains the deep-linked sub-view (URL is the source of truth)', async ({ page }) => {
-    // Every agent sub-view is its own route now (api-logs/connections R5,
-    // task/webhook R6, dashboard R7, chat R8, session R9), so a hard reload
-    // restores it from the path. Only the bridge un-skip + full reload contract
-    // (sidebar highlight on cold reload, settings/notifications) remain for R12/R16.
+    // Every agent sub-view is its own route, so a hard reload restores it from
+    // the path.
     const agentName = `Nav Reload ${Date.now()}`
     await agentPage.createAgent(agentName)
 
-    // Navigate into API Logs (now a real route → durable in the URL)
+    // Navigate into API Logs (durable in the URL)
     await page.getByTestId('home-api-logs-open-page').click()
     await expect(page).toHaveURL(/\/api-logs$/)
     await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
@@ -373,7 +369,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Dashboard leaf route resolves on a cold deep-link without crashing (R7)', async ({ page }) => {
+  test('Dashboard leaf route resolves on a cold deep-link without crashing', async ({ page }) => {
     // Mock mode has no real dashboards (artifacts=[]), so we can't click a card —
     // but we can verify the dashboard leaf route resolves into the shared agent
     // shell and renders DashboardView's fallback without a page crash.
@@ -396,7 +392,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Chat leaf route resolves on a cold deep-link with ?session= search (R8)', async ({ page }) => {
+  test('Chat leaf route resolves on a cold deep-link with ?session= search', async ({ page }) => {
     // Mock mode has no chat integrations, so we can't click one — but we can
     // verify the chat leaf route (path param + ?session= search) resolves into
     // the shared agent shell and renders its fallback without a page crash.
@@ -419,11 +415,10 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Sidebar highlights the agent on a cold reload (route-driven active, R11)', async ({ page }) => {
+  test('Sidebar highlights the agent on a cold reload (route-driven active)', async ({ page }) => {
     // The sidebar active state is route-derived (useParams/pathname), so it
     // reflects the URL immediately on a hard reload — it never depended on the
-    // Selection bridge, which is why it highlighted correctly even before R12
-    // un-skipped the bridge's initial mount.
+    // Selection bridge.
     const agentName = `Nav Sidebar Active ${Date.now()}`
     await agentPage.createAgent(agentName)
     const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
@@ -438,7 +433,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Notifications route lights up only the Notifications nav item (R11)', async ({ page }) => {
+  test('Notifications route lights up only the Notifications nav item', async ({ page }) => {
     const agentName = `Nav Notif Active ${Date.now()}`
     await agentPage.createAgent(agentName)
     const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
@@ -454,12 +449,12 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Notifications is a durable top-level route — survives a hard reload (R13)', async ({ page }) => {
-    // /notifications is its own top-level route (R4) and all entry points
-    // navigate to it (sidebar R11, OS/tray R9). R13 pins the durability: a hard
-    // reload restores the notifications page straight from the URL, and the
-    // back button still navigates out (to global home — no agent scope after a
-    // cold reload, since /notifications carries no slug).
+  test('Notifications is a durable top-level route — survives a hard reload', async ({ page }) => {
+    // /notifications is its own top-level route, and all entry points (sidebar,
+    // OS/tray) navigate to it. A hard reload restores the notifications page
+    // straight from the URL, and the back button still navigates out (to global
+    // home — no agent scope after a cold reload, since /notifications carries no
+    // slug).
     const agentName = `Nav Notif Reload ${Date.now()}`
     await agentPage.createAgent(agentName)
 
@@ -480,7 +475,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Deep-linking an unknown agent shows the ambiguous not-found screen (R15)', async ({ page }) => {
+  test('Deep-linking an unknown agent shows the ambiguous not-found screen', async ({ page }) => {
     // The agent loader maps 404 (unknown) — and, in auth mode, 403 (forbidden) —
     // to ONE ambiguous not-found screen (anti-enumeration). Mock mode returns
     // 404 for an unknown slug, so this exercises the 404 → notFound path.
@@ -495,7 +490,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     expect(errors).toEqual([])
   })
 
-  test('Home is a durable route — a hard reload stays on global home (R16)', async ({ page }) => {
+  test('Home is a durable route — a hard reload stays on global home', async ({ page }) => {
     // The root route restores from the URL like every other route: a hard reload
     // on '/' returns to global home, not a blank screen or an error.
     await appPage.reload()
@@ -504,7 +499,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).not.toBeVisible()
   })
 
-  test('Deep-linking a non-existent session shows the not-found leaf (R17)', async ({ page }) => {
+  test('Deep-linking a non-existent session shows the not-found leaf', async ({ page }) => {
     // A session deep-link within an ACCESSIBLE agent that doesn't exist → the
     // session leaf shows the ambiguous not-found (guarded so a just-created
     // session's optimistic ghost never flashes it). The agent shell stays.

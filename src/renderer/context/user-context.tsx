@@ -78,7 +78,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   // manual signOut() below does this, but the 401 auto-sign-out in api.ts calls
   // better-auth's signOut directly and bypasses it. Without this, the agent route
   // loader's ensureQueryData could serve a previous user's warm-cached agent to
-  // the next user on a shared tab without a server re-check (review §2.1). Guard
+  // the next user on a shared tab without a server re-check. Guard
   // on a genuine true→false transition so a cold signed-out load never clears.
   //
   // Caveat: better-auth nulls session.data on ANY /get-session error (no retry),

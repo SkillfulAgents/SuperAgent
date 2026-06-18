@@ -134,7 +134,7 @@ test.describe('Settings Page', () => {
     await expect(page).not.toHaveURL(/\/settings/)
   })
 
-  test('switching tabs drives the URL (R17 URL-driven tabs)', async ({ page }) => {
+  test('switching tabs drives the URL', async ({ page }) => {
     await openSettings(page)
     // The tab navigates to /settings/$tab, preserving the ?from= close-target
     // captured at open (hence the `(\?|$)` — the URL keeps `?from=/`).
@@ -144,7 +144,7 @@ test.describe('Settings Page', () => {
     await expect(page).toHaveURL(/\/settings\/voice(\?|$)/)
   })
 
-  test('an unknown settings tab redirects to /settings (R17 junk-tab)', async ({ page }) => {
+  test('an unknown settings tab redirects to /settings', async ({ page }) => {
     await page.goto('/settings/totally-not-a-tab')
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
     await expect(page).toHaveURL(/\/settings(\?|$)/)
@@ -575,11 +575,11 @@ test.describe('Settings deep-link reset', () => {
 })
 
 // ---------------------------------------------------------------------------
-// R12 §11.6 — settings is a route; close pushes back to the captured ?from=
-// origin (a durable query param, not history.back), or home on a cold deep-link.
+// Settings is a route; close pushes back to the captured ?from= origin (a
+// durable query param, not history.back), or home on a cold deep-link.
 // ---------------------------------------------------------------------------
 
-test.describe('Settings ?from= close-target (R12)', () => {
+test.describe('Settings ?from= close-target', () => {
   test('close pushes to the captured ?from origin', async ({ page, request }) => {
     await request.put('http://localhost:3000/api/user-settings', { data: { setupCompleted: true } })
     const createRes = await request.post('http://localhost:3000/api/agents', { data: { name: 'Settings From Origin' } })

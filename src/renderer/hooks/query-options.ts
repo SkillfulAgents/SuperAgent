@@ -2,7 +2,7 @@ import { queryOptions } from '@tanstack/react-query'
 import { apiJson } from '@renderer/lib/api'
 
 /**
- * Shared TanStack Query options consumed by route LOADERS (migration plan §9.2).
+ * Shared TanStack Query options consumed by route LOADERS.
  *
  * The query keys MUST match the existing data hooks so the loader's prefetch and
  * the component's `useQuery` resolve to the SAME cache entry — the loader warms

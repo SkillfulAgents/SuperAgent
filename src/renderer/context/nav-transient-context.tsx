@@ -8,17 +8,12 @@ interface NavTransientValue {
 const NavTransientContext = createContext<NavTransientValue | null>(null)
 
 /**
- * The slimmed remains of SelectionContext: the new-agent "morph" one-shot that
- * must outlive in-app navigation but die on a hard reload (correct for a
- * one-shot). Mounted ABOVE the router (App.tsx) so a route change never resets
- * it.
+ * Holds the new-agent "morph" one-shot, which must outlive in-app navigation
+ * but die on a hard reload (correct for a one-shot). Mounted ABOVE the router
+ * (App.tsx) so a route change never resets it.
  *
  * - `justCreatedSlug`: the new-agent "morph" tag. Produced by
- *   `useCreateUntitledAgent` on create and consumed by AgentHome (R10).
- *
- * (The `pendingDraft` composer-pre-fill one-shot was removed in §3.4 — its only
- * producer, `setAgentWithDraft`, was deleted with SelectionContext in R14, so the
- * read path was permanently dead. Re-add a producer alongside it if revived.)
+ *   `useCreateUntitledAgent` on create and consumed by AgentHome.
  */
 export function NavTransientProvider({ children }: { children: ReactNode }) {
   const [justCreatedSlug, setJustCreatedSlug] = useState<string | null>(null)

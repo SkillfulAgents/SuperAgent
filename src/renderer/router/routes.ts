@@ -26,16 +26,14 @@ import {
 } from './route-components'
 
 /**
- * Code-based route tree (migration plan §4.3). No file-based codegen — the tree
- * is small and fully enumerated, kept in one reviewable file with identical
- * type-safety. R1 builds the structure only: NO loaders, NO access control, NO
- * not-found/error components — those land in R4 (AgentShell) and R15 (loaders).
+ * Code-based route tree. No file-based codegen — the tree is small and fully
+ * enumerated, kept in one reviewable file with identical type-safety.
  *
  * Param parsing uses the modern `params: { parse }` form (`parseParams` is
  * `@deprecated` in @tanstack/react-router@1.170.15).
  */
 
-/** Router context injected at the root: the RouterProvider in App.tsx wires `user` at render time (R2/R3). */
+/** Router context injected at the root: the RouterProvider in App.tsx wires `user` at render time. */
 export interface RouterContext {
   queryClient: QueryClient
   user: UserContextValue
@@ -91,8 +89,8 @@ export const agentLayoutRoute = createRoute({
 })
 
 export const agentHomeRoute = createRoute({
-  // INDEX of /agents/$slug — the agent home (R10). Every other sub-view is its
-  // own sibling route, so this leaf is just AgentHome.
+  // INDEX of /agents/$slug — the agent home. Every other sub-view is its own
+  // sibling route, so this leaf is just AgentHome.
   getParentRoute: () => agentLayoutRoute,
   path: '/',
   component: AgentHomeRoute,
@@ -166,9 +164,9 @@ export const settingsIndexRoute = createRoute({
 export const settingsTabRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '$tab',
-  // Accept any non-empty tab at the param layer (R17); `beforeLoad` then
-  // gracefully redirects an unknown tab to `/settings` instead of throwing a
-  // param-parse error (a strict enum parse here hard-errors `/settings/garbage`).
+  // Accept any non-empty tab at the param layer; `beforeLoad` then gracefully
+  // redirects an unknown tab to `/settings` instead of throwing a param-parse
+  // error (a strict enum parse here hard-errors `/settings/garbage`).
   params: { parse: (raw) => ({ tab: z.string().min(1).parse(raw.tab) }) },
   beforeLoad: ({ params }) => {
     if (!settingsTabSchema.safeParse(params.tab).success) {

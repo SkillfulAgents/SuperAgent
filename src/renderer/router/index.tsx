@@ -5,13 +5,13 @@ import { RouteNotFound, RouteError } from './route-fallbacks'
 
 /**
  * The router singleton. MUST be module-scope (never recreated in a component) so
- * the active route survives the AuthGate unmount/remount on login (§9) and so
+ * the active route survives the AuthGate unmount/remount on login and so
  * IPC/SSE navigators (tray, OS notification clicks, `superagent://` deep links)
  * can call `router.navigate` directly.
  *
  * The context here is a PLACEHOLDER. The real `queryClient` and `user` are
  * injected at render by `<RouterProvider context={{ queryClient, user }}>` in
- * App.tsx (R3). The queryClient is injected (not imported) on purpose: there is
+ * App.tsx. The queryClient is injected (not imported) on purpose: there is
  * no module-singleton client — `query-client.ts` exports only a factory, and the
  * live instance is created by QueryClientProvider. Injecting QueryClientProvider's
  * instance is what lets loaders share the exact cache the hooks use.
@@ -22,17 +22,17 @@ export const router = createRouter({
   context: { queryClient: undefined, user: undefined } as unknown as RouterContext,
   defaultPreload: false, // streaming/SSE app — never prefetch-mount route loaders
   // NB: structural sharing is applied locally on useRouteLocation's useRouterState
-  // selector (review §3.1) rather than globally here — a global default would
+  // selector rather than globally here — a global default would
   // force an explicit `structuralSharing` on every `useSearch({ strict: false })`.
   // Styled app-level fallbacks for any unmatched URL / unexpected throw on a
-  // route without its own fallback (review §3.6). Route-level fallbacks (the
+  // route without its own fallback. Route-level fallbacks (the
   // agent layout's notFound/error) still take precedence.
   defaultNotFoundComponent: RouteNotFound,
   defaultErrorComponent: RouteError,
 })
 
 /**
- * Navigation conventions (review §3.5), so the call-site mix doesn't regrow:
+ * Navigation conventions, so the call-site mix doesn't regrow:
  *  - Declarative links → <AppLink> (real <a>, cmd-click/middle-click work).
  *  - Inside React components → the useNavigate() hook.
  *  - Non-React module code only (IPC/SSE/tray handlers, the AppLink click

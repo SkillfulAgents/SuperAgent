@@ -31,7 +31,7 @@ Open the app, then open DevTools (View → Toggle Developer Tools, or ⌥⌘I).
    i.e. the route lives in the **hash**, not the path. A bare `file://…/index.html`
    with the route in the path = the hash branch is NOT active (regression).
 
-2. **Reload preserves the route (the R12 reload contract).** On a session/task/
+2. **Reload preserves the route.** On a session/task/
    dashboard/connections/api-logs/notifications/settings route, press **⌘R**. The
    same view must come back — NOT a reset to home. Repeat on `/notifications` and
    `/settings/<tab>`.

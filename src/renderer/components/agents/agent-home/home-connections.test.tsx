@@ -13,7 +13,7 @@ vi.mock('@renderer/lib/api', () => ({
 }))
 
 // Capture navigate so we can assert the deep link into the connections page
-// (R14: the rows navigate directly now instead of writing SelectionContext).
+// (the rows navigate directly).
 const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),

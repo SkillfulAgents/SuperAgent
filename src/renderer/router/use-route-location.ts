@@ -3,22 +3,21 @@ import { decodeLocation, type AppLocation, type RouteSnapshot } from './route-st
 
 /**
  * The current navigation state (`{ selectedAgentSlug, view }`) DERIVED from the
- * router — the read-side replacement for `useSelection()` (R14). Params/search
- * are merged across every match so the leaf sees ancestor params (the agent
- * `slug`), then `decodeLocation` maps the deepest match to an `AppLocation`.
+ * router. Params/search are merged across every match so the leaf sees ancestor
+ * params (the agent `slug`), then `decodeLocation` maps the deepest match to an
+ * `AppLocation`.
  *
- * This is the pull version of what the R3–R13 `SelectionBridge` pushed into
- * `SelectionContext`: with every view now a real route, the URL IS the source of
- * truth, so consumers read straight from it instead of a mirrored context. The
- * selector only re-runs on a router state change (i.e. navigation), which is
- * exactly when a view-derived consumer needs to re-render.
+ * The URL is the source of truth for navigation, so consumers read straight from
+ * it rather than from a mirrored context. The selector only re-runs on a router
+ * state change (i.e. navigation), which is exactly when a view-derived consumer
+ * needs to re-render.
  */
 export function useRouteLocation(): AppLocation {
   return useRouterState({
     // Dedupe the selector output by structure so consumers only re-render on a
     // real view change, not on every router-store tick during a loader's
-    // pending/loading transitions (review §3.1). AppLocation is JSON-compatible,
-    // satisfying the structural-sharing constraint.
+    // pending/loading transitions. AppLocation is JSON-compatible, satisfying
+    // the structural-sharing constraint.
     structuralSharing: true,
     select: (state): AppLocation => {
       const params: Record<string, string | undefined> = {}

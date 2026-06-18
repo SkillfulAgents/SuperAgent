@@ -4,7 +4,7 @@ import { encodeLocation, decodeLocation, type AppLocation, type RouteSnapshot } 
 /**
  * Pins the codec inverse: encode → (mock match snapshot) → decode must equal the
  * original AppLocation for every AgentView kind. A drift between encode and decode
- * fails loudly here (migration plan §4.1, §11.1).
+ * fails loudly here.
  */
 function roundTrip(loc: AppLocation): AppLocation {
   const nav = encodeLocation(loc) as unknown as {

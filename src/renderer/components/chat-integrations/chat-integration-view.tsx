@@ -61,7 +61,7 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
   const updateIntegration = useUpdateChatIntegration()
   const clearSession = useClearChatSession()
   const navigate = useNavigate()
-  // The active sub-session comes from the URL search now (deep-linkable).
+  // The active sub-session comes from the URL search (deep-linkable).
   const selectedChatSessionId = chatSessionId
   const { canUseAgent } = useUser()
   const canManage = canUseAgent(agentSlug)
@@ -221,8 +221,8 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
                       value={activeSessionId}
                       onChange={(e) => {
                         const sessionId = e.target.value
-                        // Push (not replace): each sub-session is a real history
-                        // entry so Back walks them (migration plan §7.3).
+                        // Push (not replace): each sub-session is its own history
+                        // entry so Back walks them.
                         void navigate({
                           to: '/agents/$slug/chat/$integrationId',
                           params: { slug: agentSlug, integrationId },

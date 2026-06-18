@@ -138,7 +138,7 @@ test.describe('Auth Flow', () => {
     // Wait for assistant response
     await sessionPage.waitForResponse(15000)
 
-    // Capture the agent slug from the URL (now on /agents/$slug/sessions/$id) for
+    // Capture the agent slug from the URL (/agents/$slug/sessions/$id) for
     // the cross-tenant deep-link test below.
     agentSlug = user2Page.url().match(/\/agents\/([^/?#]+)/)?.[1] ?? ''
     expect(agentSlug).toBeTruthy()
@@ -174,12 +174,12 @@ test.describe('Auth Flow', () => {
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
   })
 
-  test('user3 deep-linking the agent before invite gets the ambiguous not-found (R15)', async ({ user3Page }) => {
+  test('user3 deep-linking the agent before invite gets the ambiguous not-found', async ({ user3Page }) => {
     // ACL is enforced by the agent LOADER, not just sidebar visibility. user3 is
     // a regular (non-admin) non-member here, so the server returns 403, which
-    // collapses to the SAME ambiguous not-found screen as a 404 (anti-enumeration
-    // §9.2). (An ADMIN would hit the server's known isAdmin bypass and load it —
-    // a server-side bug the client deliberately doesn't compensate for, §9.)
+    // collapses to the SAME ambiguous not-found screen as a 404 (anti-enumeration).
+    // (An ADMIN would hit the server's known isAdmin bypass and load it —
+    // a server-side bug the client deliberately doesn't compensate for.)
     expect(agentSlug).toBeTruthy()
     await user3Page.goto(`/agents/${agentSlug}`)
     await expect(user3Page.locator('[data-testid="agent-not-found"]')).toBeVisible()
@@ -439,10 +439,10 @@ test.describe('Auth Flow', () => {
     await userBar.expectUserName(user2.name)
   })
 
-  // ── Deep-link Through Login (redirect stash, migration §9.1) ───────────
+  // ── Deep-link Through Login (redirect stash) ───────────
 
-  test('cold deep-link to a protected agent while signed out returns there after login (R9/R15)', async ({ user2Page }) => {
-    // Headline migration promise: a signed-out user who cold-deep-links a protected
+  test('cold deep-link to a protected agent while signed out returns there after login', async ({ user2Page }) => {
+    // A signed-out user who cold-deep-links a protected
     // agent URL is sent to the auth gate, and after logging in lands back on that
     // EXACT url — not bounced to home. The redirect target is carried in
     // sessionStorage('superagent.redirect') by AuthGate's cold-load stash and

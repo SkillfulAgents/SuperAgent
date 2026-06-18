@@ -55,9 +55,9 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  // The new-agent morph tag lives in NavTransientContext now (R10) — above the
-  // router, so it survives in-app nav and dies on hard reload. justCreatedSlug
-  // producer = use-create-untitled-agent.
+  // The new-agent morph tag lives in NavTransientContext — above the router, so
+  // it survives in-app nav and dies on hard reload. justCreatedSlug producer =
+  // use-create-untitled-agent.
   const { justCreatedSlug, setJustCreatedSlug } = useNavTransient()
   const navigate = useNavigate()
   const [introStagger] = useState(() => {
@@ -104,10 +104,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // Tracks whether a name has already been assigned (e.g. by the voice agent)
   // so the post-submit deriveAgentName fallback doesn't clobber it.
   const nameAssignedRef = useRef(false)
-  // Agent-scoped settings dialogs (§6.6) — opened from the settings button and
+  // Agent-scoped settings dialogs — opened from the settings button and
   // HomeExtras (system-prompt/secrets). NOT the global /settings route; they
-  // stay local dialog state here, exactly as before (moved out of AgentBody in R10).
-  // (Inline rename adopts main's shared InlineEditableTitle component below.)
+  // stay local dialog state here.
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -291,8 +290,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
               inputTestId="agent-name-input"
               saveButtonTestId="agent-name-save"
             />
-            {/* Settings dialog is route-owned by this AgentHome (no onOpenSettings
-                prop), so the gear opens the local handler, not main's parent prop. */}
+            {/* AgentHome owns the settings dialog (no onOpenSettings prop), so the
+                gear opens the local handler rather than a parent-supplied one. */}
             <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">
               <Settings2 className="h-4 w-4" />
             </Button>

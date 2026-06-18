@@ -4,7 +4,6 @@ import { isElectron } from '@renderer/lib/env'
 
 /**
  * The header + body frame shared by the agent view and the notifications route.
- * Extracted verbatim from main-content.tsx in R4 so route components can reuse it.
  */
 export function ContentShell({
   needsTrafficLightPadding,

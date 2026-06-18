@@ -25,7 +25,7 @@ import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from 
 /**
  * Root route: the always-mounted chrome (window controls, update toaster), the
  * app-level providers, and the wizard gate. Renders `<Outlet/>` for the app
- * shell. Decomposed from App.tsx's AppContent in R4.
+ * shell.
  */
 export function RootLayout() {
   useTheme()
@@ -85,11 +85,11 @@ export function RootLayout() {
         <OnboardingProvider>
           {/* Real-time + native-nav handlers live HERE (root, above the
               shell⇄settings switch) so they stay mounted while /settings is open.
-              Previously in AppShellLayout, which /settings replaces — so opening
-              settings unmounted them, dropping the notification SSE + OS popups,
-              the container-setup stream, and any native menu/tray command fired
-              while in settings (review §4.1). MenuCommandHandler also drains the
-              window-closed menu-command queue (SUP-264). All only need
+              The /settings route replaces the whole shell, so handlers mounted
+              inside the shell would unmount on open — dropping the notification
+              SSE + OS popups, the container-setup stream, and any native
+              menu/tray command fired while in settings. MenuCommandHandler also
+              drains the window-closed menu-command queue (SUP-264). All only need
               useNavigate / useDialogs / useUser / useUserSettings — available at
               the root route. */}
           <MenuCommandHandler />
@@ -97,7 +97,7 @@ export function RootLayout() {
           <ContainerSetupHandler />
           <WindowControls />
           <UpdateToastNotifier />
-          {/* Rendered here (inside the router) so it can use useNavigate — R11 §7.7. */}
+          {/* Rendered here (inside the router) so it can use useNavigate. */}
           <SearchDialog />
           {wizardOpen ? (
             <GettingStartedWizard agentOnly={wizardAgentOnly} onClose={() => setWizardOpen(false)} />
@@ -112,8 +112,8 @@ export function RootLayout() {
 
 /**
  * Keeps Electron's traffic-light position synced to the sidebar collapsed state.
- * Must live inside SidebarProvider. Relocated from main-content.tsx in R4 so it
- * runs for every shell route, not just agent views.
+ * Must live inside SidebarProvider, and at the shell level so it runs for every
+ * shell route, not just agent views.
  */
 function SidebarCollapsedSync() {
   const { state: sidebarState } = useSidebar()
@@ -128,9 +128,8 @@ function SidebarCollapsedSync() {
 /**
  * App shell (pathless layout, mount-survival anchor #1): the sidebar + inset
  * that stays mounted as the `<Outlet/>` swaps between home, notifications, and an
- * agent. Settings is its own top-level route now (R12), a sibling of this shell,
- * so it replaces the whole shell via the router rather than a boolean here.
- * Decomposed from App.tsx's AppShell.
+ * agent. Settings is a top-level route, a sibling of this shell, so it replaces
+ * the whole shell via the router rather than a boolean here.
  */
 export function AppShellLayout() {
   return (

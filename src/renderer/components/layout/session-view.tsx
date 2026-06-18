@@ -24,11 +24,11 @@ interface SessionViewProps {
  * the chat column, the per-session search bar, and the automated-session
  * indicator banners (which link back to the originating trigger/schedule).
  *
- * `FilePreviewProvider` wraps ONLY this leaf (migration plan §8.4): files are
- * session-specific, so it must remount/clear when the route's `sessionId`
- * changes. The optimistic `pendingMessagesRef` + two-holder `useMessageStream`
- * live one level up in `AgentShell`, so they survive leaving this leaf for a
- * sibling sub-view and coming back.
+ * `FilePreviewProvider` wraps ONLY this leaf: files are session-specific, so it
+ * must remount/clear when the route's `sessionId` changes. The optimistic
+ * `pendingMessagesRef` + two-holder `useMessageStream` live one level up in
+ * `AgentShell`, so they survive leaving this leaf for a sibling sub-view and
+ * coming back.
  */
 export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   useRenderTracker('SessionView')
@@ -71,7 +71,7 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // A genuine 404 (deep-link to a non-existent / deleted session) → ambiguous
-  // not-found (R17). The pending-messages guard means a just-created session
+  // not-found. The pending-messages guard means a just-created session
   // (optimistic ghost in flight while the backend catches up) never flashes
   // not-found — and the agent-level loader has already gated access.
   if (

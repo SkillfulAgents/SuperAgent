@@ -4,9 +4,9 @@ import { AppLink } from '@renderer/components/ui/app-link'
 
 /**
  * Rendered when the agent loader hits 403 OR 404 — deliberately ONE ambiguous
- * screen (anti-enumeration, migration plan §9.2): we never reveal whether the
- * agent exists but is forbidden, or simply doesn't exist. It replaces the agent
- * shell inside the persistent app shell (the sidebar stays).
+ * screen (anti-enumeration): we never reveal whether the agent exists but is
+ * forbidden, or simply doesn't exist. It replaces the agent shell inside the
+ * persistent app shell (the sidebar stays).
  */
 export function AgentNotFound() {
   return (
@@ -30,7 +30,7 @@ export function AgentNotFound() {
 /**
  * Rendered when the agent loader fails with a 5xx / network error (NOT 403/404).
  * `router.invalidate()` re-runs the loader so a transient failure can recover
- * without a full reload (§9.2).
+ * without a full reload.
  */
 export function AgentLoadError() {
   const router = useRouter()
@@ -52,9 +52,9 @@ export function AgentLoadError() {
 
 /**
  * Rendered by the session leaf when the session 404s with no optimistic message
- * in flight — a deep-link to a non-existent / deleted session (R17). Stays
- * inside the agent shell (sidebar + agent header remain), with a link back to
- * the agent home.
+ * in flight — a deep-link to a non-existent / deleted session. Stays inside the
+ * agent shell (sidebar + agent header remain), with a link back to the agent
+ * home.
  */
 export function SessionNotFound({ agentSlug }: { agentSlug: string }) {
   return (
@@ -82,9 +82,9 @@ export function SessionNotFound({ agentSlug }: { agentSlug: string }) {
  * `defaultErrorComponent` on `createRouter`). Without these, an unmatched
  * non-agent URL (e.g. a mistyped `/garbage`) or an unexpected throw on a route
  * that defines no fallback of its own would hit TanStack's bare, unstyled "Not
- * Found" (review §3.6). Routes with their own fallbacks (the agent layout) still
- * win. Kept DEAD-SIMPLE on purpose — a fallback that itself throws is swallowed
- * by the sibling error boundary (migration gotcha).
+ * Found". Routes with their own fallbacks (the agent layout) still win. Kept
+ * DEAD-SIMPLE on purpose — a fallback that itself throws is swallowed by the
+ * sibling error boundary.
  */
 export function RouteNotFound() {
   return (

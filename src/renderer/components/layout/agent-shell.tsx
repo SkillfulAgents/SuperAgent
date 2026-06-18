@@ -17,17 +17,17 @@ import { AgentBanners } from './agent-banners'
 const EMPTY_PENDING_MESSAGES: PendingMessage[] = []
 
 /**
- * The `/agents/$slug` layout route. Mount-survival anchor #2 (migration plan
- * §8.1/§8.2): it stays mounted across the agent's sub-views, so it owns the
- * optimistic `pendingMessagesRef` and `useMessageStream` (holder #1), exposing
- * them to the agent body via PendingMessagesContext.
+ * The `/agents/$slug` layout route. It stays mounted across the agent's
+ * sub-views, so it owns the optimistic `pendingMessagesRef` and
+ * `useMessageStream` (holder #1), exposing them to the agent body via
+ * PendingMessagesContext.
  *
  * It is also the shared layout — it owns the agent header chrome (`AgentHeader`)
  * and agent-level banners (`AgentBanners`) above a single `<Outlet/>`, so every
- * sub-view (the agent body index, plus the api-logs/connections leaf routes from
- * R5 onward) inherits one mounted header instead of re-rendering its own.
+ * sub-view (the agent body index, plus the api-logs/connections leaf routes)
+ * inherits one mounted header instead of re-rendering its own.
  *
- * The agent slug AND the active sessionId both come from the route now (R9):
+ * The agent slug AND the active sessionId both come from the route:
  * `useParams({ strict: false })` returns the deepest match's params, so on the
  * session leaf it surfaces the child `sessionId` to this parent layout, driving
  * holder #1 of the two-holder EventSource directly off the URL.
@@ -113,7 +113,7 @@ export function AgentShell() {
   // Seed the optimistic ghost into the ref (which lives here, so it survives the
   // index→session-leaf swap), then navigate to the session route. AgentShell
   // stays mounted across that navigation, so the ghost is intact when the leaf
-  // reads it via getPendingMessages (migration plan §8.3).
+  // reads it via getPendingMessages.
   const onSessionCreated = useCallback(
     (newSessionId: string, initialMessage: string, messageUuid: string) => {
       pendingMessagesRef.current.set(newSessionId, [
@@ -135,7 +135,7 @@ export function AgentShell() {
     [navigate, slug, isAuthMode, user],
   )
 
-  // Orphan cleanup: drop a deleted session's optimistic entry (migration plan §8.3).
+  // Orphan cleanup: drop a deleted session's optimistic entry.
   const clearPendingMessagesForSession = useCallback((sessionId: string) => {
     if (pendingMessagesRef.current.delete(sessionId)) forceUpdate((n) => n + 1)
   }, [])

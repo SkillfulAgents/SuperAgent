@@ -6,8 +6,8 @@ import { NotificationsView } from '@renderer/components/notifications/notificati
 import { ContentShell } from './content-shell'
 
 /**
- * The global `/notifications` route. Split out of main-content.tsx in R4 so it is
- * its own top-level view (no agent slug), not a slug-less branch of the agent body.
+ * The global `/notifications` route: its own top-level view (no agent slug),
+ * not a slug-less branch of the agent body.
  */
 export function NotificationsRoute() {
   const { state: sidebarState } = useSidebar()

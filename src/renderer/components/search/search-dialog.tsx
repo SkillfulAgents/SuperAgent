@@ -18,9 +18,9 @@ function formatLastRun(date: Date | string | null | undefined): string | null {
 }
 
 /**
- * Rendered from RootLayout (R11) — INSIDE the router, so it uses the `useNavigate`
- * hook directly (reverting the R8 off-router singleton workaround). Open state
- * comes from SearchContext (`open`/`closeSearch`), which lives above the router.
+ * Rendered inside the router, so it can use the `useNavigate` hook directly.
+ * Open state comes from SearchContext (`open`/`closeSearch`), which lives above
+ * the router.
  */
 export function SearchDialog() {
   const { open, closeSearch } = useSearch()

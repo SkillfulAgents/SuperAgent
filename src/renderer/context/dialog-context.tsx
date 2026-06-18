@@ -13,11 +13,11 @@ interface DialogContextType {
 const DialogContext = createContext<DialogContextType | null>(null)
 
 /**
- * Global settings is a URL now (`/settings`, `/settings/$tab`) — DialogContext is
- * just the intent layer that translates open/close into navigation (migration
- * plan §10.1). Mounted inside RootLayout, so it can use the router. Close uses a
- * `?from=` forward push (not history.back/replace) so history stays honest and
- * the close-target survives a refresh inside settings.
+ * Global settings lives at a URL (`/settings`, `/settings/$tab`); DialogContext is
+ * just the intent layer that translates open/close into navigation. Mounted inside
+ * RootLayout, so it can use the router. Close uses a `?from=` forward push (not
+ * history.back/replace) so history stays honest and the close-target survives a
+ * refresh inside settings.
  */
 export function DialogProvider({
   children,

@@ -9,7 +9,7 @@ const { apiFetch } = vi.hoisted(() => ({
 
 vi.mock('@renderer/lib/api', () => ({
   apiFetch,
-  // R15 §9.1 redirect-stash helpers used by the email/OAuth sign-in handlers.
+  // redirect-stash helpers used by the email/OAuth sign-in handlers.
   consumeRedirectStash: () => null,
   peekRedirectStash: () => '/',
 }))

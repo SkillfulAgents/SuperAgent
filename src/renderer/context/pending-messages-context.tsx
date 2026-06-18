@@ -7,7 +7,7 @@ import type { SessionUsage } from '@shared/lib/types/agent'
  * pending-message store + the live stream's context usage. AgentShell holds
  * `pendingMessagesRef` and `useMessageStream` (holder #1) so they survive across
  * the agent's sub-views; the agent body consumes them here instead of owning
- * them (migration plan §8.2, §8.3).
+ * them.
  */
 export interface PendingMessagesContextValue {
   getPendingMessages: (sessionId: string | null) => PendingMessage[]

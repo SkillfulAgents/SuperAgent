@@ -186,7 +186,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
     try {
       await deleteSession.mutateAsync({ id: session.id, agentSlug })
       setShowDeleteDialog(false)
-      // (R14) navigate away only if we're currently viewing the deleted session.
+      // Navigate away only if we're currently viewing the deleted session.
       if (routeSessionId === session.id) {
         void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
       }

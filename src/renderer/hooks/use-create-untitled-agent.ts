@@ -9,8 +9,8 @@ export const UNTITLED_AGENT_NAME = 'Untitled'
 
 export function useCreateUntitledAgent() {
   const createAgent = useCreateAgent()
-  // Morph tag lives in NavTransientContext now (R10); set it BEFORE navigate so
-  // AgentHome's first-mount initializer reads it and plays the intro once (§8.5).
+  // Morph tag lives in NavTransientContext; set it BEFORE navigate so
+  // AgentHome's first-mount initializer reads it and plays the intro once.
   const { setJustCreatedSlug } = useNavTransient()
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()

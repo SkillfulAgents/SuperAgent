@@ -64,7 +64,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     // Wait for the tool call to complete
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
 
-    // Scheduled tasks now live on the agent home page (under the "Triggers"
+    // Scheduled tasks live on the agent home page (under the "Triggers"
     // section), not in the sidebar. Click the agent row to clear the session
     // selection and land on AgentHome.
     await agentPage.selectAgent(agentName)
@@ -77,7 +77,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await expect(main.getByText('Daily Issue Summary')).toBeVisible({ timeout: 10000 })
   })
 
-  test('opening a scheduled task navigates to its own route and back returns home (R6)', async ({ page }) => {
+  test('opening a scheduled task navigates to its own route and back returns home', async ({ page }) => {
     const agentName = `Task Route ${Date.now()}`
     await agentPage.createAgent(agentName)
 
@@ -91,12 +91,12 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     const taskRow = main.getByText('Daily Issue Summary')
     await expect(taskRow).toBeVisible({ timeout: 10000 })
 
-    // Open the task → it's a real URL route now (R6)
+    // Open the task → it has its own URL route
     await taskRow.click()
     await expect(page).toHaveURL(/\/tasks\/[^/]+$/)
     await expect(page.locator('[data-testid="scheduled-task-back-button"]')).toBeVisible()
 
-    // Hard reload — the task route is URL-durable, restored from the path (R16)
+    // Hard reload — the task route is URL-durable, restored from the path
     await appPage.reload()
     await expect(page).toHaveURL(/\/tasks\/[^/]+$/)
     await expect(page.locator('[data-testid="scheduled-task-back-button"]')).toBeVisible()

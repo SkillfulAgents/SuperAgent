@@ -85,7 +85,7 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useCancelScheduledTask: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
 }))
 
-// The morph one-shots live in NavTransientContext now (R10). Controllable so the
+// The morph one-shots live in NavTransientContext. Controllable so the
 // intro-morph test can flip justCreatedSlug and assert the clear.
 let mockJustCreatedSlug: string | null = null
 const mockSetJustCreatedSlug = vi.fn()
@@ -98,7 +98,7 @@ vi.mock('@renderer/context/nav-transient-context', () => ({
   NavTransientProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-// The agent-scoped settings dialogs render inside AgentHome now (§6.6). Stub them
+// The agent-scoped settings dialogs render inside AgentHome. Stub them
 // — their internals aren't under test here and would pull in extra hooks.
 vi.mock('@renderer/components/agents/agent-settings-dialog', () => ({
   AgentSettingsDialog: () => null,
@@ -261,7 +261,7 @@ describe('AgentHome', () => {
     expect(screen.getByTestId('home-send-button')).toBeInTheDocument()
   })
 
-  // --- New-agent intro morph (R10) ---
+  // --- New-agent intro morph ---
 
   it('plays the new-agent intro morph once when justCreatedSlug matches, then clears the tag', () => {
     // jsdom lacks matchMedia; the morph reads prefers-reduced-motion.

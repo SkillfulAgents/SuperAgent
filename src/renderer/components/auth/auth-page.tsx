@@ -126,11 +126,10 @@ function SignInForm({ onSwitchToSignUp, showSignupLink }: { onSwitchToSignUp: ()
         setServerError(res.error.message || 'Sign in failed')
         return
       }
-      // Restore the URL stashed when a 401 expired the session (§9.1). Email
-      // login otherwise keeps the address bar in place, so this is a no-op unless
-      // a 401 had bounced us to the sign-in screen. Lazy-import the router
-      // singleton so AuthPage's module graph (and its unit tests) don't pull in
-      // the whole route tree.
+      // Restore the URL stashed when a 401 expired the session. Email login
+      // otherwise keeps the address bar in place, so this is a no-op unless a 401
+      // had bounced us to the sign-in screen. Lazy-import the router singleton so
+      // AuthPage's module graph (and its unit tests) don't pull in the whole route tree.
       const back = consumeRedirectStash()
       if (back) {
         const { router } = await import('@renderer/router')
@@ -386,7 +385,7 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
     try {
       const res = await signIn.oauth2({
         providerId,
-        // Carry the post-401 destination through the OAuth round-trip (§9.1).
+        // Carry the post-401 destination through the OAuth round-trip.
         callbackURL: peekRedirectStash(),
         errorCallbackURL: '/',
       })

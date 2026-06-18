@@ -47,10 +47,10 @@ vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => 'http://localhost:3000',
 }))
 
-// The back button navigates now (R14 dropped the setView bridge call). Capture
-// the navigate target via a file-level useNavigate spy (overrides the global
-// no-op stub). The notification ROWS navigate declaratively via <AppLink>, which
-// the global stub renders as <a data-to/data-params>.
+// The back button navigates via useNavigate. Capture the navigate target via a
+// file-level useNavigate spy (overrides the global no-op stub). The notification
+// ROWS navigate declaratively via <AppLink>, which the global stub renders as
+// <a data-to/data-params>.
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useNavigate: () => mockNavigate,

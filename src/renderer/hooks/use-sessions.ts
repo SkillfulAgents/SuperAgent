@@ -24,7 +24,7 @@ export function useSession(id: string | null, agentSlug: string | null = null) {
   return useQuery<ApiSession>({
     queryKey: ['session', id, agentSlug],
     // `apiJson` throws `HttpError` so the session leaf can tell a genuine 404
-    // (deep-link to a non-existent session) from a transient one (R17).
+    // (deep-link to a non-existent session) from a transient one.
     queryFn: () => apiJson<ApiSession>(`/api/agents/${agentSlug}/sessions/${id}`),
     enabled: !!id && !!agentSlug,
     // KEEP the default retry (do NOT skip 404): a just-created session can 404

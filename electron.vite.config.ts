@@ -39,7 +39,7 @@ export default defineConfig({
     plugins: [react()],
     // Relative base so packaged file:// + hash history resolve ./assets/* and the
     // pinned index.html. Explicit so a future electron-vite default change fails
-    // loudly instead of silently shipping absolute asset URLs (migration plan §5.5).
+    // loudly instead of silently shipping absolute asset URLs.
     base: './',
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),

@@ -100,9 +100,9 @@ describe('settingsSearchSchema (from close-target)', () => {
   })
 })
 
-// rootSearchSchema.redirect and settingsSearchSchema.from now share ONE guard
-// with api.ts `isSafeInternalPath` (§3.3 unified them), so the schema rejects
-// every open-redirect form the sanitizer does — no asymmetry left to drift.
+// rootSearchSchema.redirect and settingsSearchSchema.from share ONE guard
+// with api.ts `isSafeInternalPath`, so the schema rejects every open-redirect
+// form the sanitizer does — no asymmetry left to drift.
 describe('rootSearchSchema.redirect == api.ts isSafeInternalPath (unified guard)', () => {
   it('rejects backslash-UNC `/\\host`', () => {
     expect(rootSearchSchema.safeParse({ redirect: '/\\evil.com' }).success).toBe(false)

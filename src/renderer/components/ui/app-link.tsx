@@ -18,7 +18,7 @@ type AppLinkProps = LinkProps & {
 }
 
 /**
- * The single navigation primitive (migration plan §7.2): a real `<a href>` so
+ * The single navigation primitive: a real `<a href>` so
  * middle/modifier clicks open a new tab on the web. Under Electron's `file://`
  * there is no new-tab target, so we cancel the native modified-click path and
  * navigate the singleton router same-window instead (gated on `!__WEB__`, so the

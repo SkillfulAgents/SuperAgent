@@ -2,9 +2,9 @@ import type { NavigateOptions } from '@tanstack/react-router'
 
 /**
  * Discriminated union describing what is currently shown for the selected agent
- * (exactly one view at a time — mutual exclusion by construction). It lived in
- * SelectionContext until R14; now it's a pure route/codec type with no React
- * dependency, so it lives next to the encode/decode that consume it.
+ * (exactly one view at a time — mutual exclusion by construction). A pure
+ * route/codec type with no React dependency, so it lives next to the
+ * encode/decode that consume it.
  */
 export type AgentView =
   | { kind: 'home' }
@@ -30,7 +30,7 @@ export type AgentView =
  * (`{ selectedAgentSlug, view }`) to/from a URL. `encodeLocation` and
  * `decodeLocation` are inverses (proven by route-state.test.ts), so the read
  * side (`useRouteLocation`) and every navigation call site share one mapping and
- * cannot drift (migration plan §4.1).
+ * cannot drift.
  */
 export interface AppLocation {
   selectedAgentSlug: string | null
@@ -59,7 +59,7 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
   const view = loc.view
 
   // Notifications is a globally-scoped view: its URL never carries an agent slug
-  // (navigating to it drops agent scope — migration plan §6.2).
+  // (navigating to it drops agent scope).
   if (view.kind === 'notifications') return { to: '/notifications' }
 
   // The only other slug-less view we model is the global home.

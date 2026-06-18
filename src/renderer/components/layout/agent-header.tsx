@@ -23,12 +23,11 @@ interface AgentHeaderProps {
 
 /**
  * The agent header chrome (breadcrumb + start/stop) rendered by the shared
- * AgentShell layout, so it stays mounted across every agent sub-view (migration
- * plan §8.1 — "AgentShell owns the agent header chrome"). Which crumbs show is
- * derived from the URL via `useRouteLocation()`; the crumbs themselves are
- * `<AppLink>`s (real `<a href>` — §7.4), so the agent-name crumb's active styling
- * is route-derived (`data-status`) and survives a cold reload with no
- * hand-computed leaf flag.
+ * AgentShell layout, so it stays mounted across every agent sub-view. Which
+ * crumbs show is derived from the URL via `useRouteLocation()`; the crumbs
+ * themselves are `<AppLink>`s (real `<a href>`), so the agent-name crumb's
+ * active styling is route-derived (`data-status`) and survives a cold reload
+ * with no hand-computed leaf flag.
  */
 export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHeaderProps) {
   const { view } = useRouteLocation()

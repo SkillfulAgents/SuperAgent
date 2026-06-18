@@ -85,8 +85,8 @@ vi.mock('@renderer/hooks/use-fullscreen', () => ({
 }))
 
 
-// Sidebar active state is route-derived now (R11) — mock the router hooks so
-// tests can drive the URL. `mockRouteParams.slug` marks the active agent;
+// Sidebar active state is route-derived, so mock the router hooks to let
+// tests drive the URL. `mockRouteParams.slug` marks the active agent;
 // `mockRoutePathname` drives Home/Notifications. useNavigate stays a no-op
 // (matches the global setup mock, which this file-level mock replaces).
 let mockRouteParams: Record<string, string | undefined> = {}
@@ -361,7 +361,7 @@ describe('AppSidebar — layout & top nav', () => {
 
   it('does not render a header bar in non-Electron mode (no traffic-light spacer)', () => {
     renderWithProviders(<AppSidebar />)
-    // Header is always mounted now, but collapses to h-0 / no border when not needed.
+    // Header is always mounted, but collapses to h-0 / no border when not needed.
     const header = screen.getByTestId('sidebar-header')
     expect(header.className).toMatch(/h-0/)
     expect(header.className).not.toMatch(/h-12\b/)

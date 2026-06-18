@@ -35,7 +35,7 @@ vi.mock('@renderer/context/analytics-context', () => ({
   AnalyticsProvider: ({ children }: { children: React.ReactNode }) => children,
 }))
 
-// Many components now call useNavigate() (router-driven navigation). Renderer
+// Many components call useNavigate() for router-driven navigation. Renderer
 // unit tests render leaf components WITHOUT a RouterProvider, so stub navigation
 // to a no-op — these tests assert component rendering/behavior, not real route
 // changes (which are covered by router unit tests + E2E). Without this, the real
@@ -71,7 +71,7 @@ vi.mock('@renderer/components/ui/app-link', () => ({
     ),
 }))
 
-// DialogContext drives global settings via the router now (R12). Renderer unit
+// DialogContext drives global settings via the router. Renderer unit
 // tests have no RouterProvider, so stub it — DialogProvider passes children
 // through and useDialogs returns no-ops. A file-level mock overrides where a test
 // needs to assert on these (e.g. app-sidebar.test).
@@ -80,9 +80,9 @@ vi.mock('@renderer/context/dialog-context', () => ({
   useDialogs: () => ({ openSettings: vi.fn(), closeSettings: vi.fn(), openWizard: vi.fn() }),
 }))
 
-// Components read navigation state via `useRouteLocation()` now (R14, the route-
-// derived replacement for `useSelection`). It calls `useRouterState()`, which
-// throws outside a RouterProvider — renderer unit tests have none. Default it to
+// Components read navigation state via `useRouteLocation()`. It calls
+// `useRouterState()`, which throws outside a RouterProvider — renderer unit
+// tests have none. Default it to
 // the global home; a file-level vi.mock overrides where a test asserts behavior
 // that depends on the active view/slug.
 vi.mock('@renderer/router/use-route-location', () => ({
