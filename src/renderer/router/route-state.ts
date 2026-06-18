@@ -1,5 +1,29 @@
 import type { NavigateOptions } from '@tanstack/react-router'
-import type { AgentView } from '@renderer/context/selection-context'
+
+/**
+ * Discriminated union describing what is currently shown for the selected agent
+ * (exactly one view at a time — mutual exclusion by construction). It lived in
+ * SelectionContext until R14; now it's a pure route/codec type with no React
+ * dependency, so it lives next to the encode/decode that consume it.
+ */
+export type AgentView =
+  | { kind: 'home' }
+  | { kind: 'session'; id: string }
+  | { kind: 'task'; id: string }
+  | { kind: 'webhook'; id: string }
+  | { kind: 'chat'; integrationId: string; sessionId?: string }
+  | { kind: 'dashboard'; slug: string }
+  | { kind: 'apiLogs' }
+  | {
+      kind: 'connections'
+      /**
+       * Open the connections page with this row's detail view shown. `source`
+       * is where it was opened from — it decides the breadcrumb trail and where
+       * Back leads (agent home vs. the connections list).
+       */
+      detail?: { rowKey: string; source: 'home' | 'list' }
+    }
+  | { kind: 'notifications' }
 
 /**
  * The single source of truth mapping the app's navigation state

@@ -7,8 +7,6 @@ import type { ApiNotification } from '@shared/lib/types/api'
 // Mock state — mutated by tests, reset in beforeEach
 // ---------------------------------------------------------------------------
 
-const mockSetView = vi.fn()
-const mockSetAgent = vi.fn()
 const mockMarkReadMutate = vi.fn()
 const mockMarkAllReadMutate = vi.fn()
 const mockNavigate = vi.fn()
@@ -22,15 +20,6 @@ let mockMarkAllPending = false
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
-
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({
-    view: { kind: 'notifications' },
-    setView: mockSetView,
-    setAgent: mockSetAgent,
-  }),
-  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
 
 vi.mock('@renderer/hooks/use-notifications', () => ({
   useNotifications: () => ({

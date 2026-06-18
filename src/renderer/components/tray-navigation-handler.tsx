@@ -6,8 +6,8 @@ interface TrayNavigationHandlerProps {
 }
 
 /**
- * Listens for navigation commands from the system tray and updates the selection context.
- * Must be rendered inside SelectionProvider.
+ * Listens for navigation commands from the system tray and navigates the router.
+ * Must be rendered inside the RouterProvider (uses `useNavigate`).
  */
 export function TrayNavigationHandler({ children }: TrayNavigationHandlerProps) {
   const navigate = useNavigate()

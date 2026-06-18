@@ -24,12 +24,6 @@ vi.mock('@shared/lib/utils/cn', () => ({
   },
 }))
 
-const mockSetAgent = vi.fn()
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({ setAgent: mockSetAgent, view: { kind: 'home' }, selectedAgentSlug: null }),
-  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
-
 vi.mock('@renderer/context/search-context', () => ({
   useSearch: () => ({ open: false, openSearch: vi.fn(), closeSearch: vi.fn() }),
 }))

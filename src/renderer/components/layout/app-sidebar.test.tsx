@@ -84,28 +84,6 @@ vi.mock('@renderer/hooks/use-fullscreen', () => ({
   useFullScreen: () => false,
 }))
 
-type MockView =
-  | { kind: 'home' }
-  | { kind: 'session'; id: string }
-  | { kind: 'task'; id: string }
-  | { kind: 'webhook'; id: string }
-  | { kind: 'chat'; integrationId: string; sessionId?: string }
-  | { kind: 'dashboard'; slug: string }
-  | { kind: 'apiLogs' }
-  | { kind: 'connections' }
-  | { kind: 'notifications' }
-
-const mockSelectionContext = {
-  selectedAgentSlug: null as string | null,
-  view: { kind: 'home' } as MockView,
-  setAgent: vi.fn(),
-  setView: vi.fn(),
-  clearSelection: vi.fn(),
-}
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => mockSelectionContext,
-  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
 
 // Sidebar active state is route-derived now (R11) — mock the router hooks so
 // tests can drive the URL. `mockRouteParams.slug` marks the active agent;
@@ -313,10 +291,6 @@ function makeSession(overrides: Record<string, any> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  Object.assign(mockSelectionContext, {
-    selectedAgentSlug: null,
-    view: { kind: 'home' } as MockView,
-  })
   mockRouteParams = {}
   mockRoutePathname = '/'
   mockUseAgents.mockReturnValue({
@@ -437,7 +411,6 @@ describe('AppSidebar — agent rows', () => {
     const expandBtn = testAgentRow.querySelector('[aria-label="Expand"]') as HTMLButtonElement
     expect(expandBtn).not.toBeNull()
     await user.click(expandBtn)
-    expect(mockSelectionContext.setAgent).not.toHaveBeenCalled()
     expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
     expect(testAgentRow.querySelector('[aria-label="Collapse"]')).not.toBeNull()
   })

@@ -21,7 +21,6 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
-import { SelectionBridge } from '@renderer/router/selection-bridge'
 
 /**
  * Root route: the always-mounted chrome (window controls, update toaster), the
@@ -84,7 +83,6 @@ export function RootLayout() {
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
       <UpdateStatusProvider>
         <OnboardingProvider>
-          <SelectionBridge />
           <WindowControls />
           <UpdateToastNotifier />
           {/* Rendered here (inside the router) so it can use useNavigate — R11 §7.7. */}

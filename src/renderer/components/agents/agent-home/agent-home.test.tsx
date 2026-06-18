@@ -67,15 +67,6 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useCancelScheduledTask: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
 }))
 
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({
-    view: { kind: 'home' },
-    setAgent: vi.fn(),
-    setView: vi.fn(),
-  }),
-  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
-
 // The morph one-shots live in NavTransientContext now (R10). Controllable so the
 // intro-morph test can flip justCreatedSlug and assert the clear.
 let mockJustCreatedSlug: string | null = null

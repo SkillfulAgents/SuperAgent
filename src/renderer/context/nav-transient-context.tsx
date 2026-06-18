@@ -17,9 +17,9 @@ const NavTransientContext = createContext<NavTransientValue | null>(null)
  *
  * - `justCreatedSlug`: the new-agent "morph" tag (consumed by AgentHome, R10).
  * - `pendingDraft`: composer pre-fill. Kept for the documented contract even
- *   though its only producer (`setAgentWithDraft`) is dead in product code;
- *   `consumePendingDraft` preserves the exact read-then-clear semantics of
- *   selection-context.tsx:97-101.
+ *   though it currently has no producer (the old `setAgentWithDraft` was removed
+ *   with SelectionContext in R14); `consumePendingDraft` is a one-shot
+ *   read-then-clear.
  *
  * Empty of live producers in R3 — wired up as views migrate (R10).
  */
