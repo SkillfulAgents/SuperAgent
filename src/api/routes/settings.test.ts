@@ -116,6 +116,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   webhookTriggers: {},
   chatIntegrations: {},
   chatIntegrationSessions: {},
+  chatIntegrationAccess: {},
   remoteMcpServers: {},
   agentRemoteMcps: {},
   mcpAuditLog: {},

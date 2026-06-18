@@ -214,7 +214,7 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('review:tool-1', {
         question: '_approval',
         answer: '✅ Allow',
-      })
+      }, undefined)
     })
 
     it('emits deny response on thumbs-down reaction', async () => {
@@ -237,7 +237,7 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('review:tool-1', {
         question: '_approval',
         answer: '❌ Deny',
-      })
+      }, undefined)
     })
 
     it('removes pending approval after it is resolved', async () => {
@@ -393,7 +393,7 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('q-6', {
         question: 'Pick a color',
         answer: 'Blue',
-      })
+      }, undefined)
     })
 
     it('resolves question by exact label (case-insensitive)', async () => {
@@ -421,7 +421,7 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('q-7', {
         question: 'Pick a color',
         answer: 'Red',
-      })
+      }, undefined)
     })
 
     it('resolves question with raw text when no match', async () => {
@@ -449,7 +449,7 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('q-8', {
         question: 'Pick a color',
         answer: 'Purple',
-      })
+      }, undefined)
     })
 
     it('does not emit a regular message when answering a question', async () => {
@@ -737,7 +737,7 @@ describe('IMessageConnector', () => {
       expect(handler).toHaveBeenCalledWith('review:tool-A', {
         question: '_approval',
         answer: '❌ Deny',
-      })
+      }, undefined)
     })
 
     it('denies multiple pending approvals when they have distinct IDs', async () => {

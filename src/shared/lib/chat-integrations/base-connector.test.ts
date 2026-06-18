@@ -84,7 +84,7 @@ describe('ChatClientConnector event system', () => {
       connector.onInteractiveResponse(handler)
       connector.simulateInteractiveResponse('tu-1', { answer: 'yes' })
 
-      expect(handler).toHaveBeenCalledWith('tu-1', { answer: 'yes' })
+      expect(handler).toHaveBeenCalledWith('tu-1', { answer: 'yes' }, undefined)
     })
 
     it('returns unsubscribe function', () => {
