@@ -15,16 +15,18 @@ export const chatSearchSchema = z.object({
   session: z.string().optional(),
 })
 
-// Connections detail overlay on the list. `detail` is the unified-row key
-// (`account-${id}` / `mcp-${id}`, see connections/unified-rows.ts); `source`
-// decides the breadcrumb + back-target. They travel together — today both live
-// inside one optional `detail` object on the `connections` AgentView variant.
+// A connection-detail overlay key: `account-${id}` / `mcp-${id}` (see
+// connections/unified-rows.ts). ONE definition shared by the agent connections
+// route and the global settings connections tab, so the two can't drift.
+const connectionDetailKey = z.string().regex(/^(account|mcp)-.+$/)
+
+// Connections detail overlay on the list. `detail` is the unified-row key;
+// `source` decides the breadcrumb + back-target. They travel together — today
+// both live inside one optional `detail` object on the `connections` AgentView
+// variant.
 export const connectionsSearchSchema = z
   .object({
-    detail: z
-      .string()
-      .regex(/^(account|mcp)-.+$/)
-      .optional(),
+    detail: connectionDetailKey.optional(),
     source: z.enum(['home', 'list']).optional(),
   })
   .refine((s) => (s.detail == null) === (s.source == null), {
@@ -46,8 +48,14 @@ export const rootSearchSchema = z.object({
 // Settings close-target: the path the gear was opened FROM, so closing returns
 // there. A query param (not an in-memory stash) so it SURVIVES a refresh inside
 // settings (§10.1).
+//
+// `detail` is the open connection-detail overlay on the Connections tab,
+// URL-driven for parity with the agent connections route (deep-linkable +
+// reload-durable). Only the Connections tab reads it; `lenient()` drops it on
+// other tabs. No `source` here — settings detail always returns to its own list.
 export const settingsSearchSchema = z.object({
   from: internalPath.optional(),
+  detail: connectionDetailKey.optional(),
 })
 
 // The 18 GLOBAL settings tabs (settings/global-settings-page.tsx user/admin/auth
