@@ -30,7 +30,15 @@ export function DialogProvider({
 
   const openSettings = useCallback(
     (tab?: string) => {
-      const from = router.state.location.pathname + router.state.location.searchStr
+      // Capture where settings was opened FROM as the close-target. If settings
+      // is already open (e.g. the open-settings menu command fires twice), the
+      // current location IS a /settings URL — re-capturing it would nest the
+      // close-target back into settings, so Close would bounce here instead of
+      // the real origin. Preserve the existing `from` in that case.
+      const onSettings = router.state.location.pathname.startsWith('/settings')
+      const from = onSettings
+        ? settingsSearchSchema.safeParse(router.state.location.search).data?.from ?? '/'
+        : router.state.location.pathname + router.state.location.searchStr
       void router.navigate(
         tab
           ? { to: '/settings/$tab', params: { tab }, search: { from } }
