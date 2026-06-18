@@ -18,6 +18,7 @@ export interface IncomingMessage {
   text: string
   chatId: string               // Telegram chat_id or Slack channel_id
   userId: string               // Telegram user_id or Slack user_id
+  chatType?: 'private' | 'group' | 'supergroup'  // Telegram chat type (undefined for non-Telegram connectors)
   userName?: string            // Display name of the user (for session naming)
   chatName?: string            // Display name of the chat/channel (for session naming)
   files?: { name: string; url: string; mimeType?: string }[]

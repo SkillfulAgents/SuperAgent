@@ -120,7 +120,7 @@ export class TelegramConnector extends ChatClientConnector {
   private startupError: Error | null = null
 
   // First-poll batching: accumulate messages before sending them all at once
-  private pendingFirstPollMessages: Map<string, { texts: string[]; timer: ReturnType<typeof setTimeout> | null }> = new Map()
+  private pendingFirstPollMessages: Map<string, { texts: string[]; timer: ReturnType<typeof setTimeout> | null; userName?: string; chatName?: string; chatType?: string }> = new Map()
 
   // Track callback_query toolUseId mappings (Telegram callback_data is limited to 64 bytes)
   private callbackDataMap: Map<string, { toolUseId: string; value: unknown; ts: number }> = new Map()
@@ -177,6 +177,7 @@ export class TelegramConnector extends ChatClientConnector {
         text: ctx.message.caption || '',
         chatId,
         userId: String(ctx.from?.id || ''),
+        chatType: (ctx.chat as { type: string }).type as 'private' | 'group' | 'supergroup',
         userName,
         chatName: (ctx.chat as any).title || userName || undefined,
         files: [{
@@ -205,6 +206,7 @@ export class TelegramConnector extends ChatClientConnector {
         text: ctx.message.caption || '',
         chatId,
         userId: String(ctx.from?.id || ''),
+        chatType: (ctx.chat as { type: string }).type as 'private' | 'group' | 'supergroup',
         userName,
         chatName: (ctx.chat as any).title || userName || undefined,
         files: [{
@@ -585,11 +587,8 @@ export class TelegramConnector extends ChatClientConnector {
     const text = ctx.message?.text
     if (!text || !ctx.chat) return
 
-    // Handle /start command — greet the user instead of forwarding to the agent
-    if (text === '/start') {
-      ctx.reply('Hello! Send me a message and I\'ll forward it to your agent.').catch(() => {})
-      return
-    }
+    const chatType = (ctx.chat as { type: string }).type
+    if (chatType === 'channel') return // out of scope v1; no chat row
 
     const chatId = String(ctx.chat.id)
     const fromId = String(ctx.from?.id || '')
@@ -597,14 +596,14 @@ export class TelegramConnector extends ChatClientConnector {
     const userName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ')
       || ctx.from?.username
       || undefined
-    // For groups/channels use the chat title; for DMs use the user's name
+    // For groups use the chat title; for DMs use the user's name
     const chatName = (ctx.chat as any).title || userName || undefined
 
     if (!this.hasCompletedFirstPoll) {
       // Buffer messages during first poll
       let pending = this.pendingFirstPollMessages.get(chatId)
       if (!pending) {
-        pending = { texts: [], timer: null }
+        pending = { texts: [], timer: null, userName, chatName, chatType }
         this.pendingFirstPollMessages.set(chatId, pending)
       }
       pending.texts.push(text)
@@ -622,6 +621,7 @@ export class TelegramConnector extends ChatClientConnector {
       text,
       chatId,
       userId: fromId,
+      chatType: chatType as 'private' | 'group' | 'supergroup',
       userName,
       chatName,
       timestamp: new Date((ctx.message?.date || 0) * 1000),
@@ -638,6 +638,9 @@ export class TelegramConnector extends ChatClientConnector {
       text: combined,
       chatId,
       userId,
+      chatType: pending.chatType as 'private' | 'group' | 'supergroup' | undefined,
+      userName: pending.userName,
+      chatName: pending.chatName,
       timestamp: new Date(),
     })
     this.pendingFirstPollMessages.delete(chatId)
