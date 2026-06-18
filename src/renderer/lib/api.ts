@@ -22,3 +22,27 @@ export async function apiFetch(
 
   return response
 }
+
+/**
+ * Thrown by `apiJson` on a non-2xx response, carrying the HTTP status so route
+ * loaders can map it: 403/404 → `notFound()`, 5xx/network → `errorComponent`
+ * (migration plan §9.2).
+ */
+export class HttpError extends Error {
+  constructor(public status: number) {
+    super(`HTTP ${status}`)
+    this.name = 'HttpError'
+  }
+}
+
+/**
+ * Loader-only fetch: returns parsed JSON, throwing `HttpError` on a non-2xx
+ * response. The existing data hooks stay on `apiFetch` (which never throws and
+ * renders its own inline loading/empty states); loaders need a throw to gate
+ * access before the route renders.
+ */
+export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await apiFetch(path, init)
+  if (!res.ok) throw new HttpError(res.status)
+  return res.json() as Promise<T>
+}

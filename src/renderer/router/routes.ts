@@ -1,7 +1,10 @@
-import { createRootRouteWithContext, createRoute } from '@tanstack/react-router'
+import { createRootRouteWithContext, createRoute, notFound } from '@tanstack/react-router'
 import type { QueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 import type { UserContextValue } from '@renderer/context/user-context'
+import { HttpError } from '@renderer/lib/api'
+import { agentQuery } from '@renderer/hooks/query-options'
+import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
 import { chatSearchSchema, connectionsSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
@@ -68,7 +71,30 @@ export const agentLayoutRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'agents/$slug',
   params: { parse: (raw) => ({ slug: z.string().min(1).parse(raw.slug) }) },
+  // Cheap ACL fast-path (§9): when roles are known AND say no access, skip the
+  // network round-trip and 404 straight away. ACL-ONLY — no isAdmin exception
+  // (admins are not special); a non-member admin hits the same ambiguous screen.
+  // If roles aren't ready yet the gate is skipped and the loader (the server, the
+  // real authority) decides — a momentary unknown degrades to a normal load.
+  beforeLoad: ({ context, params }) => {
+    if (__AUTH_MODE__ && context.user.rolesReady && !context.user.canAccessAgent(params.slug)) {
+      throw notFound()
+    }
+  },
+  // Warm the agent into the shared query cache; map access failures to the
+  // route's fallbacks. 403 (forbidden) and 404 (unknown) COLLAPSE to one
+  // ambiguous notFound (anti-enumeration); 5xx/network → errorComponent.
+  loader: async ({ context, params }) => {
+    try {
+      await context.queryClient.ensureQueryData(agentQuery(params.slug))
+    } catch (err) {
+      if (err instanceof HttpError && (err.status === 403 || err.status === 404)) throw notFound()
+      throw err
+    }
+  },
   component: AgentShell,
+  notFoundComponent: AgentNotFound,
+  errorComponent: AgentLoadError,
 })
 
 export const agentHomeRoute = createRoute({

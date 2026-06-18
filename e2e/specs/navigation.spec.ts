@@ -371,4 +371,18 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.selectAgent(agentName)
     await agentPage.deleteAgent()
   })
+
+  test('Deep-linking an unknown agent shows the ambiguous not-found screen (R15)', async ({ page }) => {
+    // The agent loader maps 404 (unknown) — and, in auth mode, 403 (forbidden) —
+    // to ONE ambiguous not-found screen (anti-enumeration). Mock mode returns
+    // 404 for an unknown slug, so this exercises the 404 → notFound path.
+    const errors: string[] = []
+    page.on('pageerror', (e) => errors.push(e.message))
+
+    await page.goto('/agents/does-not-exist-r15')
+    await expect(page.locator('[data-testid="agent-not-found"]')).toBeVisible()
+    // The persistent app shell (sidebar) stays mounted around the fallback.
+    await expect(page.locator('[data-testid="home-button"]')).toBeVisible()
+    expect(errors).toEqual([])
+  })
 })
