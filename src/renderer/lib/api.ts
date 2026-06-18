@@ -30,9 +30,20 @@ export async function apiFetch(
 
 const REDIRECT_KEY = 'superagent.redirect'
 
-/** A safe internal path: starts with a single `/` (rejects `//` + absolute/protocol URLs). */
+/**
+ * A safe internal path. Must start with a single `/` and reject anything the
+ * router/browser could resolve into an off-site (open-redirect) navigation:
+ * `//host` and `/\host` (protocol-relative / UNC), and a leading encoded
+ * separator (`/%2f…`, `/%5c…`) that would decode into one. A deeper encoded `%2f`
+ * (in a query, say) is fine — only a leading one is dangerous. Current callers
+ * pass browser-normalized `window.location.*`; this is the open-redirect backstop
+ * for any future caller that stashes a hand-built path.
+ */
 function isSafeInternalPath(p: string | null): p is string {
-  return !!p && /^\/(?!\/)/.test(p)
+  if (!p) return false
+  if (!/^\/(?![/\\])/.test(p)) return false // single leading slash only
+  if (/^\/(?:%2f|%5c)/i.test(p)) return false // encoded separator right after it
+  return true
 }
 
 /**
@@ -53,6 +64,31 @@ export function consumeRedirectStash(): string | null {
 export function peekRedirectStash(): string {
   const raw = sessionStorage.getItem(REDIRECT_KEY)
   return isSafeInternalPath(raw) ? raw : '/'
+}
+
+/** Drop the redirect stash. Called on sign-out so a signed-out user's path can't
+ * be restored into the NEXT user's session on a shared tab (a no-clobber stash
+ * would otherwise leak it). */
+export function clearRedirectStash(): void {
+  sessionStorage.removeItem(REDIRECT_KEY)
+}
+
+/**
+ * Stash an internal path so a subsequent login restores it — via the OAuth
+ * `callbackURL` (`peekRedirectStash`) or in-place email login
+ * (`consumeRedirectStash`). Called when the auth screen is about to render for a
+ * signed-out user on a COLD load (§9.1): a cold deep-link (e.g. `/agents/foo`)
+ * never mounts the router and so never fires an API call, meaning the 401 handler
+ * above never runs and the deep link would otherwise be lost — OAuth's
+ * `callbackURL` would default to `/`. No-op outside auth mode; skips `/` (the
+ * default) and non-safe paths. Overwrites any existing entry so the newest
+ * deep-link intent wins (consistent with the 401 handler above); the caller is
+ * responsible for only invoking this on a genuine cold load, never on sign-out.
+ */
+export function stashRedirectTarget(path: string): void {
+  if (!__AUTH_MODE__) return
+  if (path === '/' || !isSafeInternalPath(path)) return
+  sessionStorage.setItem(REDIRECT_KEY, path)
 }
 
 /**

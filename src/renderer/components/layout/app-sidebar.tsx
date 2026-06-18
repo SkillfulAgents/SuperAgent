@@ -124,9 +124,9 @@ function SessionSubItem({
   agentSlug: string
 }) {
   useRenderTracker('SessionSubItem')
-  // Active state is route-derived (URL is authoritative) so the highlight + the
-  // stream subscription are correct on a cold reload, not just after the bridge
-  // mirrors Selection (which skips the initial mount until R12).
+  // Active state is route-derived (URL is authoritative, read from useParams) so
+  // the highlight + the stream subscription are correct on a cold reload, with no
+  // in-memory selection state to wait on.
   const { slug: routeSlug, sessionId: routeSessionId } = useParams({ strict: false }) as { slug?: string; sessionId?: string }
   const isSelected = routeSlug === agentSlug && routeSessionId === session.id
   const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)

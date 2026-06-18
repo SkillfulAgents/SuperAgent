@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 
 // Mock the history factories to return distinguishable sentinels, and isElectron
-// so we control the runtime side of the tripwire. `__WEB__` is NOT in
-// vitest.config.ts's `define`, so it stays a real global here and `vi.stubGlobal`
-// can flip it per case (a baked compile-time literal could not be flipped).
+// so we control the runtime side of the tripwire. `__WEB__` IS set in
+// vitest.config.ts's `define`, but Vitest implements `define` as a real global on
+// `globalThis` (not an esbuild compile-time substitution like the production
+// builds), so `vi.stubGlobal` can flip it per case; resetModules() then re-imports
+// ./history so it reads the freshly-stubbed value.
 vi.mock('@tanstack/react-router', () => ({
   createBrowserHistory: vi.fn(() => ({ tag: 'browser' })),
   createHashHistory: vi.fn(() => ({ tag: 'hash' })),

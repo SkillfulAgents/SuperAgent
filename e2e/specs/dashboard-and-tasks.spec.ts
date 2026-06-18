@@ -106,4 +106,38 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await expect(page).toHaveURL(/\/agents\/[^/]+$/)
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
   })
+
+  test('a cross-agent task deep-link canonicalizes to the task\'s true agent (P1-b)', async ({ page }) => {
+    // Tasks are addressed globally by id, so /agents/<other>/tasks/<id> would
+    // otherwise render the task under the WRONG agent's shell (mismatched chrome,
+    // back-links, permission gating). The view redirects to the task's true agent.
+    const ownerName = `Task Owner ${Date.now()}`
+    await agentPage.createAgent(ownerName)
+    await sessionPage.sendMessage('schedule task for daily issues')
+    await sessionPage.waitForResponse(15000)
+    await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
+
+    // Open the task to capture its id + the owner's slug from the URL.
+    await agentPage.selectAgent(ownerName)
+    const taskRow = appPage.getMainContent().getByText('Daily Issue Summary')
+    await expect(taskRow).toBeVisible({ timeout: 10000 })
+    await taskRow.click()
+    await expect(page).toHaveURL(/\/tasks\/[^/]+$/)
+    const m = page.url().match(/\/agents\/([^/?#]+)\/tasks\/([^/?#]+)/)
+    expect(m).toBeTruthy()
+    const ownerSlug = m![1]
+    const taskId = m![2]
+
+    // Create a SECOND agent and deep-link the owner's task under ITS slug.
+    const otherName = `Task Other ${Date.now()}`
+    await agentPage.createAgent(otherName)
+    const otherSlug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
+    expect(otherSlug).toBeTruthy()
+    expect(otherSlug).not.toBe(ownerSlug)
+
+    await page.goto(`/agents/${otherSlug}/tasks/${taskId}`)
+    // Redirects back to the owner (the task's true agent), not the other shell.
+    await expect(page).toHaveURL(new RegExp(`/agents/${ownerSlug}/tasks/${taskId}$`))
+    await expect(page.locator('[data-testid="scheduled-task-back-button"]')).toBeVisible()
+  })
 })

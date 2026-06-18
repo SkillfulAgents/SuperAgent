@@ -15,13 +15,12 @@ const NavTransientContext = createContext<NavTransientValue | null>(null)
  * outlive in-app navigation but die on a hard reload (correct for one-shots).
  * Mounted ABOVE the router (App.tsx) so a route change never resets them.
  *
- * - `justCreatedSlug`: the new-agent "morph" tag (consumed by AgentHome, R10).
+ * - `justCreatedSlug`: the new-agent "morph" tag. Produced by
+ *   `useCreateUntitledAgent` on create and consumed by AgentHome (R10).
  * - `pendingDraft`: composer pre-fill. Kept for the documented contract even
  *   though it currently has no producer (the old `setAgentWithDraft` was removed
  *   with SelectionContext in R14); `consumePendingDraft` is a one-shot
  *   read-then-clear.
- *
- * Empty of live producers in R3 — wired up as views migrate (R10).
  */
 export function NavTransientProvider({ children }: { children: ReactNode }) {
   const [pendingDraft, setPendingDraft] = useState<string | null>(null)

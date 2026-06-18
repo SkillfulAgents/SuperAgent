@@ -37,7 +37,7 @@ vi.mock('@renderer/context/analytics-context', () => ({
 
 // Many components now call useNavigate() (router-driven navigation). Renderer
 // unit tests render leaf components WITHOUT a RouterProvider, so stub navigation
-// to a no-op — these tests assert SelectionContext/behavior, not real route
+// to a no-op — these tests assert component rendering/behavior, not real route
 // changes (which are covered by router unit tests + E2E). Without this, the real
 // useNavigate returns a rejected promise outside a router, surfacing as a
 // mis-attributed unhandled rejection. File-level vi.mock of the module overrides

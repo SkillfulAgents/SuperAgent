@@ -24,8 +24,8 @@ import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from 
 
 /**
  * Root route: the always-mounted chrome (window controls, update toaster), the
- * app-level providers, the URL→Selection bridge, and the wizard gate. Renders
- * `<Outlet/>` for the app shell. Decomposed from App.tsx's AppContent in R4.
+ * app-level providers, and the wizard gate. Renders `<Outlet/>` for the app
+ * shell. Decomposed from App.tsx's AppContent in R4.
  */
 export function RootLayout() {
   useTheme()

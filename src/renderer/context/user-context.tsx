@@ -1,7 +1,7 @@
 import { createContext, useContext, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSession, signOut as authSignOut } from '@renderer/lib/auth-client'
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, clearRedirectStash } from '@renderer/lib/api'
 import type { AgentRole } from '@shared/lib/types/agent'
 
 interface AgentRoleInfo {
@@ -129,6 +129,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
   )
 
   const signOut = useCallback(async () => {
+    // Drop any stashed redirect target so this user's last path can't be restored
+    // into the next user's session on a shared tab (e.g. a residual stash left by
+    // their own OAuth login, which peeks but never clears it).
+    clearRedirectStash()
     await authSignOut()
     queryClient.clear()
   }, [queryClient])

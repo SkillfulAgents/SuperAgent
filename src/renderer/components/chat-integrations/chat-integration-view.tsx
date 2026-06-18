@@ -5,7 +5,7 @@
  * with a banner indicating the session is controlled from an external chat.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { MessageCircle, MoreVertical, Loader2, ExternalLink, RotateCcw, AlertTriangle } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { SessionThread } from '@renderer/components/messages/session-thread'
@@ -65,6 +65,23 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
   const selectedChatSessionId = chatSessionId
   const { canUseAgent } = useUser()
   const canManage = canUseAgent(agentSlug)
+
+  // Canonicalize: integrations are addressed globally by id, so
+  // /agents/<wrong>/chat/<id> would render this integration under the wrong
+  // agent's shell (mismatched chrome and canManage gating, and the SessionThread
+  // below fetches messages scoped to the URL slug → empty/404). Redirect to the
+  // integration's true agent, preserving the `?session=` sub-session.
+  useEffect(() => {
+    if (integration && integration.agentSlug !== agentSlug) {
+      void navigate({
+        to: '/agents/$slug/chat/$integrationId',
+        params: { slug: integration.agentSlug, integrationId },
+        search: (prev) => prev,
+        replace: true,
+      })
+    }
+  }, [integration, agentSlug, integrationId, navigate])
+
   const [clearError, setClearError] = useState<string | null>(null)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState('')
@@ -93,6 +110,17 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
     return (
       <div className="flex-1 flex items-center justify-center text-destructive">
         Failed to load chat integration
+      </div>
+    )
+  }
+
+  // Mismatched shell → the effect above is redirecting; don't render B's
+  // integration (or its wrong-slug message fetches) under A's chrome meanwhile.
+  if (integration.agentSlug !== agentSlug) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+        Loading chat integration...
       </div>
     )
   }

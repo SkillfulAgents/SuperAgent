@@ -77,7 +77,13 @@ export function useDeleteAgent() {
       }
       // 204 No Content - no body to parse
     },
-    onSuccess: () => {
+    onSuccess: (_data, slug) => {
+      // Evict the per-slug entry (not just invalidate) so a re-navigation to the
+      // just-deleted agent can't be served a stale agent object from cache by the
+      // route loader's ensureQueryData(agentQuery(slug)) — which returns a warm
+      // entry without a blocking refetch. Defense-in-depth: the server already
+      // 404s the agent, so this only removes a brief stale name/description flash.
+      queryClient.removeQueries({ queryKey: ['agents', slug] })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },

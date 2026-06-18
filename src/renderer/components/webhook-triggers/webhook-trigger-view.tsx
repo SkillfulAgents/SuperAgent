@@ -5,7 +5,7 @@
  * trigger fires, run history, status toggle, and a delete option.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Trash2, Loader2, AlertTriangle, Settings as SettingsIcon, Pencil } from 'lucide-react'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
@@ -59,6 +59,20 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const { data: settings } = useSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
   const canCancel = canUseAgent(agentSlug)
+
+  // Canonicalize: triggers are addressed globally by id, so /agents/<wrong>/webhooks/<id>
+  // would render this trigger under the wrong agent's shell (mismatched chrome,
+  // back-links, and canUseAgent gating). Redirect to the trigger's true agent.
+  useEffect(() => {
+    if (trigger && trigger.agentSlug !== agentSlug) {
+      void navigate({
+        to: '/agents/$slug/webhooks/$webhookId',
+        params: { slug: trigger.agentSlug, webhookId: triggerId },
+        replace: true,
+      })
+    }
+  }, [trigger, agentSlug, triggerId, navigate])
+
   const isActive = trigger?.status === 'active' || trigger?.status === 'paused'
   const isPaused = trigger?.status === 'paused'
   const hasLocalComposioKey = settings?.apiKeyStatus?.composio?.isConfigured ?? false
@@ -117,6 +131,16 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
     return (
       <div className="flex-1 flex items-center justify-center text-destructive">
         Failed to load webhook trigger
+      </div>
+    )
+  }
+
+  // Mismatched shell → the effect above is redirecting; don't render B's trigger
+  // (or its wrong-slug nested fetches) under A's chrome in the meantime.
+  if (trigger.agentSlug !== agentSlug) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+        Loading webhook trigger...
       </div>
     )
   }

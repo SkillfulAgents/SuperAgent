@@ -19,9 +19,8 @@ export function ConnectionsView({ agentSlug, detail }: ConnectionsViewProps) {
 
   // The open detail overlay travels in the URL search now (deep-linkable); the
   // row itself is resolved inside ConnectionsList from the freshest query data so
-  // renames/deletes stay live. Each handler navigates AND mirrors into Selection
-  // (setView) so the Selection-driven header crumb stays correct until breadcrumbs
-  // become route-driven (R11/R14).
+  // renames/deletes stay live. Each handler navigates via the URL; the header
+  // crumb is route-driven (AgentHeader derives it from the URL).
   const goAgentHome = () => {
     void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
   }

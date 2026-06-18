@@ -28,8 +28,8 @@ export type AgentView =
 /**
  * The single source of truth mapping the app's navigation state
  * (`{ selectedAgentSlug, view }`) to/from a URL. `encodeLocation` and
- * `decodeLocation` are inverses (proven by route-state.test.ts), so the R3
- * URL→Selection bridge and every navigation call site share one mapping and
+ * `decodeLocation` are inverses (proven by route-state.test.ts), so the read
+ * side (`useRouteLocation`) and every navigation call site share one mapping and
  * cannot drift (migration plan §4.1).
  */
 export interface AppLocation {
@@ -138,7 +138,7 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
     }
     default:
       // Unknown / non-app-shell routes (e.g. /settings) are not AgentView state;
-      // the bridge handles those separately. Degrade to the global home.
+      // they have their own top-level routes. Degrade to the global home.
       return { selectedAgentSlug: null, view: { kind: 'home' } }
   }
 }
