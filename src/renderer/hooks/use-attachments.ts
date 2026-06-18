@@ -7,10 +7,27 @@ const MAX_WEB_FOLDER_SIZE = 500 * 1024 * 1024
 
 interface UseAttachmentsOptions {
   onFoldersReceived?: (folders: FolderGroup[]) => void
+  /** Pre-fill the composer with carried-over attachments (e.g. "Start fresh"). */
+  initialAttachments?: Attachment[]
+}
+
+/**
+ * Carried-over image attachments arrive with their object-URL preview stripped
+ * (the source composer revokes it on unmount), so mint a fresh one from the
+ * still-valid File. Other attachment kinds carry no preview to rebuild.
+ */
+function rehydratePreviews(initial: Attachment[]): Attachment[] {
+  return initial.map((a) =>
+    a.type === 'file' && a.file.type.startsWith('image/') && !a.preview
+      ? { ...a, preview: URL.createObjectURL(a.file) }
+      : a
+  )
 }
 
 export function useAttachments(options?: UseAttachmentsOptions) {
-  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [attachments, setAttachments] = useState<Attachment[]>(
+    () => rehydratePreviews(options?.initialAttachments ?? [])
+  )
   const [isDragOver, setIsDragOver] = useState(false)
 
   const addFiles = useCallback((files: FileWithPath[]) => {

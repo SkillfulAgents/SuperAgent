@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MessageInput } from '@renderer/components/messages/message-input'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { PendingRequestStack } from '@renderer/components/messages/pending-request-stack'
@@ -8,8 +8,9 @@ import { usePendingRequests } from '@renderer/components/messages/use-pending-re
 import { StaleSessionToast } from '@renderer/components/messages/stale-session-notice'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watcher'
-import { useBranchSession, useCreateSession } from '@renderer/hooks/use-sessions'
+import { useBranchSession } from '@renderer/hooks/use-sessions'
 import { useDraftsStore } from '@renderer/context/drafts-context'
+import { splitSnapshotForHandoff, carryoverKey, type ComposerSnapshot } from '@renderer/lib/composer-carryover'
 import { evaluateStalePrompt } from '@shared/lib/stale-session/stale-session-trigger'
 import { currentContextTokens } from '@shared/lib/stale-session/message-cost'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -33,6 +34,9 @@ interface SessionChatColumnProps {
   lastActivityAt?: Date | null
   contextUsage?: SessionUsage | null
   onSessionCreated?: (sessionId: string, initialMessage: string, messageUuid: string) => void
+  /** Navigate to the agent's new-chat composer. "Start fresh" snapshots the
+   *  current composer into the carry-over, then calls this to land the user there. */
+  onStartFresh?: () => void
 }
 
 export function SessionChatColumn({
@@ -50,6 +54,7 @@ export function SessionChatColumn({
   lastActivityAt,
   contextUsage,
   onSessionCreated,
+  onStartFresh,
 }: SessionChatColumnProps) {
   const {
     isActive,
@@ -83,12 +88,29 @@ export function SessionChatColumn({
     pendingBrowserInputRequests.length > 0
   )
   const isRunning = isActive && !isWaitingBackground
-  const shouldPrompt = useMemo(() => evaluateStalePrompt({
-    idleMs: lastActivityAt ? Date.now() - lastActivityAt.getTime() : 0,
-    contextTokens: currentContextTokens(contextUsage),
-    isAwaitingInput,
-    isRunning,
-  }).shouldPrompt, [lastActivityAt, contextUsage, isAwaitingInput, isRunning])
+
+  // `lastActivityAt` comes from the session-detail query, which only refreshes on
+  // metadata changes / remount — not when a turn completes. So after the user sends
+  // and the agent replies, it still reads the pre-send time, and the prompt would
+  // immediately re-trip the moment the session goes idle. Track the live active->idle
+  // transition as a fresher activity signal (set while active and at the instant it
+  // goes idle) so a just-finished turn resets the idle clock.
+  const [liveActivityAt, setLiveActivityAt] = useState<number | null>(null)
+  const wasActiveRef = useRef(isActive)
+  useEffect(() => {
+    if (isActive || wasActiveRef.current) setLiveActivityAt(Date.now())
+    wasActiveRef.current = isActive
+  }, [isActive])
+
+  const shouldPrompt = useMemo(() => {
+    const activityMs = Math.max(lastActivityAt?.getTime() ?? 0, liveActivityAt ?? 0)
+    return evaluateStalePrompt({
+      idleMs: activityMs ? Date.now() - activityMs : 0,
+      contextTokens: currentContextTokens(contextUsage),
+      isAwaitingInput,
+      isRunning,
+    }).shouldPrompt
+  }, [lastActivityAt, liveActivityAt, contextUsage, isAwaitingInput, isRunning])
 
   // Local Ignore (no persistence) + in-flight action state for the popover.
   const [ignored, setIgnored] = useState(false)
@@ -97,13 +119,17 @@ export function SessionChatColumn({
   const [staleMenuOpen, setStaleMenuOpen] = useState(false)
   const [isSummarizing, setIsSummarizing] = useState(false)
   const [staleError, setStaleError] = useState<string | null>(null)
-  const [failedAction, setFailedAction] = useState<'summary' | 'newConversation' | null>(null)
   const actionActiveRef = useRef(false)
+  // Getter for the in-session composer's live state, registered by MessageInput.
+  // "Start fresh" reads it to carry text + files + model + effort into the new chat.
+  const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null)
+  const registerSnapshot = useCallback((getSnapshot: (() => ComposerSnapshot) | null) => {
+    composerSnapshotRef.current = getSnapshot
+  }, [])
 
   const draftStore = useDraftsStore()
   const draftKey = `session:${sessionId}`
   const branchSession = useBranchSession()
-  const createSession = useCreateSession()
 
   // The toast owns the footer slot only at rest; once active, the activity
   // indicator (rendered by SessionThread) owns it instead. View-only users can't
@@ -117,7 +143,6 @@ export function SessionChatColumn({
   const handleContinueSummary = useCallback(async () => {
     actionActiveRef.current = true
     setStaleError(null)
-    setFailedAction(null)
     setIsSummarizing(true)
     const content = draftStore.get<string>(draftKey) ?? ''
     try {
@@ -128,28 +153,24 @@ export function SessionChatColumn({
       actionActiveRef.current = false
     } catch {
       setStaleError("Couldn't summarize right now")
-      setFailedAction('summary')
     } finally {
       setIsSummarizing(false)
     }
   }, [agentSlug, sessionId, model, branchSession, onSessionCreated, draftStore, draftKey])
 
-  const handleNewConversation = useCallback(async () => {
-    actionActiveRef.current = true
-    setFailedAction(null)
-    setStaleError(null)
-    const content = draftStore.get<string>(draftKey) ?? ''
-    try {
-      const res = await createSession.mutateAsync({ agentSlug, message: content })
-      if (!actionActiveRef.current) return
-      draftStore.set(draftKey, undefined)
-      onSessionCreated?.(res.id, content, res.initialMessageUuid)
-      actionActiveRef.current = false
-    } catch {
-      setStaleError("Couldn't start a new conversation right now")
-      setFailedAction('newConversation')
-    }
-  }, [agentSlug, createSession, onSessionCreated, draftStore, draftKey])
+  // Start fresh: snapshot the live composer (text + files + model + effort), carry
+  // it into the agent's new-chat composer, and navigate there. No session is
+  // created until the user actually sends — the normal AgentHome path owns that.
+  const handleStartFresh = useCallback(() => {
+    const { draftText, carryover } = splitSnapshotForHandoff(composerSnapshotRef.current?.())
+    // Text rides the agent's draft key; only overwrite when present so an empty
+    // Start fresh doesn't clobber an existing agent-home draft.
+    if (draftText !== undefined) draftStore.set(`agent:${agentSlug}`, draftText)
+    draftStore.set(carryoverKey(agentSlug), carryover)
+    // This is a move, not a copy — clear the source session's text draft.
+    draftStore.set(draftKey, undefined)
+    onStartFresh?.()
+  }, [agentSlug, draftStore, draftKey, onStartFresh])
 
   return (
     <>
@@ -186,11 +207,10 @@ export function SessionChatColumn({
                 <StaleSessionToast
                   onIgnore={() => setIgnored(true)}
                   onStartSummary={handleContinueSummary}
-                  onStartFresh={handleNewConversation}
+                  onStartFresh={handleStartFresh}
                   isSummarizing={isSummarizing}
-                  summaryError={failedAction === 'summary' ? staleError : null}
+                  summaryError={staleError}
                   onRetrySummary={handleContinueSummary}
-                  isStartingFresh={createSession.isPending}
                   onMenuOpenChange={setStaleMenuOpen}
                 />
               )}
@@ -203,6 +223,7 @@ export function SessionChatColumn({
                 onMessageFailed={onMessageFailed}
                 initialEffort={effort}
                 initialModel={model}
+                registerSnapshot={registerSnapshot}
               />
               <div className="flex justify-between items-center gap-1.5 px-6 py-3">
                 {contextPercent != null ? (

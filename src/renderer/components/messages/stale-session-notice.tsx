@@ -8,7 +8,8 @@ export interface StaleSessionToastProps {
   onIgnore: () => void
   /** Branch to a fresh chat carrying an AI summary + the current draft. */
   onStartSummary: () => void
-  /** Fresh chat carrying only the current draft. */
+  /** Snapshot the composer into the new chat and navigate there. Instant (no session
+   *  is created until the user sends), so the row just closes the popover and leaves. */
   onStartFresh: () => void
   /** Summary action in flight (slow, fallible). Keeps the popover open with a spinner. */
   isSummarizing: boolean
@@ -16,8 +17,6 @@ export interface StaleSessionToastProps {
   summaryError: string | null
   /** Re-attempt the summary (same handler as onStartSummary, surfaced on failure). */
   onRetrySummary: () => void
-  /** Fresh-chat action in flight (near-instant; just disables the rows). */
-  isStartingFresh: boolean
   /** Fires when either popover opens or closes, so the parent can hide UI it
    *  overlaps (the centered scroll-to-bottom FAB). */
   onMenuOpenChange?: (open: boolean) => void
@@ -69,14 +68,11 @@ function NewChatActions({
   isSummarizing,
   summaryError,
   onRetrySummary,
-  isStartingFresh,
   onClose,
 }: Pick<
   StaleSessionToastProps,
-  'onStartSummary' | 'onStartFresh' | 'isSummarizing' | 'summaryError' | 'onRetrySummary' | 'isStartingFresh'
+  'onStartSummary' | 'onStartFresh' | 'isSummarizing' | 'summaryError' | 'onRetrySummary'
 > & { onClose: () => void }) {
-  const busy = isSummarizing || isStartingFresh
-
   return (
     <>
       <div className="flex flex-col gap-0.5">
@@ -89,19 +85,20 @@ function NewChatActions({
             data-testid="stale-new-chat-summarizing"
           >
             <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-            <span>Summarizing this chat...</span>
+            <span>Summarizing this conversation...</span>
           </div>
         ) : (
           <ActionRow
             label="Start with Summary"
             blurb="Keeps the context. Drops the cost."
             onClick={onStartSummary}
-            disabled={isStartingFresh}
+            disabled={false}
             testId="stale-new-chat-summary"
           />
         )}
 
-        {/* Start fresh — near-instant, so it closes the popover before navigating. */}
+        {/* Start fresh — instant: closes the popover and navigates to the new chat.
+            Disabled while a summary is mid-flight so it can't jump away underneath it. */}
         <ActionRow
           label="Start fresh"
           blurb="Clean slate for something new."
@@ -109,7 +106,7 @@ function NewChatActions({
             onClose()
             onStartFresh()
           }}
-          disabled={busy}
+          disabled={isSummarizing}
           testId="stale-new-chat-fresh"
         />
       </div>
@@ -162,7 +159,6 @@ export function StaleSessionToast({
   isSummarizing,
   summaryError,
   onRetrySummary,
-  isStartingFresh,
   onMenuOpenChange,
 }: StaleSessionToastProps) {
   const [newChatOpen, setNewChatOpen] = useState(false)
@@ -188,7 +184,7 @@ export function StaleSessionToast({
               <PopoverAnchor asChild>
                 <div className="flex items-center justify-between gap-4 rounded-lg border bg-muted/50 p-4">
                   <div className="flex min-w-0 max-w-[60%] flex-col gap-1.5">
-                    <p className="text-base font-semibold">Continue chatting here?</p>
+                    <p className="text-base font-semibold">Continue this conversation here?</p>
                     <p className="text-xs text-muted-foreground">
                       This conversation is getting pretty long. It may be cheaper, faster, and more effective to
                       start a new conversation.{' '}
@@ -216,7 +212,7 @@ export function StaleSessionToast({
                     </Button>
                     <PopoverTrigger asChild>
                       <Button type="button" size="sm" className="gap-1.5" data-testid="stale-new-chat-trigger">
-                        New chat
+                        New conversation
                         <ChevronDown className="h-3.5 w-3.5" />
                       </Button>
                     </PopoverTrigger>
@@ -236,7 +232,6 @@ export function StaleSessionToast({
                   isSummarizing={isSummarizing}
                   summaryError={summaryError}
                   onRetrySummary={onRetrySummary}
-                  isStartingFresh={isStartingFresh}
                   onClose={() => setNewChatOpen(false)}
                 />
               </PopoverContent>
@@ -252,13 +247,13 @@ export function StaleSessionToast({
           className={`flex w-80 flex-col justify-center gap-1.5 rounded-lg px-3 py-2 ${POPOVER_HEIGHT}`}
           data-testid="stale-learn-more-popover"
         >
-          <p className="text-sm font-medium">Why start a new chat?</p>
-          <TeachingPoint lead="Agents can have many chats.">
-            Start a new one for each new topic. They all stay under the same agent.
+          <p className="text-sm font-medium">Why start a new conversation?</p>
+          <TeachingPoint lead="Agents can have many conversations.">
+            Start a new one for each new task. They all stay under the same agent.
           </TeachingPoint>
-          <TeachingPoint lead="Long chats get heavy.">
-            The longer a chat runs, the more the agent re-reads every time you send, so it gets slower, costs more,
-            and answers less sharply. A fresh chat resets that.
+          <TeachingPoint lead="Long conversations get heavy.">
+            The longer a conversation runs, the more the agent re-reads every time you send, so it gets slower, costs more,
+            and answers less sharply. A fresh conversation resets that.
           </TeachingPoint>
         </PopoverContent>
       </Popover>

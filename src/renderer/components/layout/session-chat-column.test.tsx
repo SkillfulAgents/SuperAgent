@@ -2,7 +2,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
 import { SessionChatColumn } from './session-chat-column'
-import { renderWithProviders } from '@renderer/test/test-utils'
+import { renderWithProviders, userEvent } from '@renderer/test/test-utils'
+import { useDraftsStore } from '@renderer/context/drafts-context'
+import { carryoverKey, type ComposerSnapshot, type NewChatCarryover } from '@renderer/lib/composer-carryover'
+import type { SessionUsage } from '@shared/lib/types/agent'
 import type { PendingRequestDescriptor } from '@renderer/components/messages/use-pending-requests'
 
 // Mock children so we don't pull in the world; just mark them with testids.
@@ -11,8 +14,14 @@ vi.mock('@renderer/components/messages/message-list', () => ({
     <div data-testid="message-list" data-pending-count={pendingRequestCount} />
   ),
 }))
+// The mocked composer reports a fixed snapshot back through registerSnapshot so the
+// Start-fresh handler has live composer state to carry over. Tests can reassign it.
+let mockSnapshot: ComposerSnapshot = { text: '', attachments: [], model: 'opus', effort: 'high' }
 vi.mock('@renderer/components/messages/message-input', () => ({
-  MessageInput: () => <div data-testid="message-input-mock" />,
+  MessageInput: ({ registerSnapshot }: { registerSnapshot?: (g: (() => unknown) | null) => void }) => {
+    registerSnapshot?.(() => mockSnapshot)
+    return <div data-testid="message-input-mock" />
+  },
 }))
 vi.mock('@renderer/components/messages/agent-activity-indicator', () => ({
   AgentActivityIndicator: () => null,
@@ -41,9 +50,21 @@ vi.mock('@renderer/components/messages/use-pending-requests', () => ({
   usePendingRequests: () => mockPendingResult,
 }))
 
-// useMessageStream — SessionChatColumn reads `isActive` and `browserActive`.
+// useMessageStream — SessionChatColumn reads `isActive`, `browserActive`, and the
+// pending-request arrays. `mockIsActive` is mutable so a test can drive a turn.
+let mockIsActive = false
 vi.mock('@renderer/hooks/use-message-stream', () => ({
-  useMessageStream: () => ({ isActive: false, browserActive: false }),
+  useMessageStream: () => ({
+    isActive: mockIsActive,
+    browserActive: false,
+    isWaitingBackground: false,
+    pendingSecretRequests: [],
+    pendingConnectedAccountRequests: [],
+    pendingQuestionRequests: [],
+    pendingFileRequests: [],
+    pendingRemoteMcpRequests: [],
+    pendingBrowserInputRequests: [],
+  }),
 }))
 
 const baseProps = {
@@ -74,6 +95,10 @@ const fileDescriptor: PendingRequestDescriptor = {
   description: 'pick',
   onComplete: noop,
 }
+
+beforeEach(() => {
+  mockIsActive = false
+})
 
 describe('SessionChatColumn composer swap', () => {
   beforeEach(() => {
@@ -137,5 +162,108 @@ describe('SessionChatColumn composer swap', () => {
 
     expect(screen.queryByText('Send')).not.toBeInTheDocument()
     expect(screen.queryByText('New line')).not.toBeInTheDocument()
+  })
+})
+
+// Captures the live drafts store so the test can assert what Start fresh wrote.
+let probedStore: ReturnType<typeof useDraftsStore> | undefined
+function StoreProbe() {
+  probedStore = useDraftsStore()
+  return null
+}
+
+// Idle + large enough to trip the stale-session gate (idle > 6h AND context > 100k).
+const staleProps = {
+  ...baseProps,
+  lastActivityAt: new Date(Date.now() - 7 * 60 * 60 * 1000),
+  contextUsage: {
+    inputTokens: 5000,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 130_000,
+    contextWindow: 200_000,
+  } satisfies SessionUsage,
+}
+
+describe('SessionChatColumn Start fresh', () => {
+  beforeEach(() => {
+    mockPendingResult.items = []
+    mockPendingResult.count = 0
+    probedStore = undefined
+    mockSnapshot = { text: '', attachments: [], model: 'opus', effort: 'high' }
+  })
+
+  async function clickStartFresh() {
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('stale-new-chat-trigger'))
+    await user.click(await screen.findByTestId('stale-new-chat-fresh'))
+  }
+
+  it('carries text + selected model/effort into the agent draft + carry-over, then navigates', async () => {
+    mockSnapshot = { text: 'pick this up later', attachments: [], model: 'sonnet', effort: 'low' }
+    const onStartFresh = vi.fn()
+
+    renderWithProviders(
+      <>
+        <SessionChatColumn {...staleProps} onStartFresh={onStartFresh} />
+        <StoreProbe />
+      </>
+    )
+
+    await clickStartFresh()
+
+    expect(onStartFresh).toHaveBeenCalledTimes(1)
+    expect(probedStore?.get('agent:agent-1')).toBe('pick this up later')
+    expect(probedStore?.get<NewChatCarryover>(carryoverKey('agent-1'))).toEqual({
+      attachments: [],
+      model: 'sonnet',
+      effort: 'low',
+    })
+    // Source session draft is cleared — Start fresh is a move, not a copy.
+    expect(probedStore?.get('session:s-1')).toBeUndefined()
+  })
+
+  it('carries model/effort but leaves the agent draft untouched when the composer is empty', async () => {
+    mockSnapshot = { text: '   ', attachments: [], model: 'opus', effort: 'high' }
+    const onStartFresh = vi.fn()
+
+    renderWithProviders(
+      <>
+        <SessionChatColumn {...staleProps} onStartFresh={onStartFresh} />
+        <StoreProbe />
+      </>
+    )
+
+    await clickStartFresh()
+
+    expect(onStartFresh).toHaveBeenCalledTimes(1)
+    // Blank composer must not clobber an existing agent-home draft.
+    expect(probedStore?.get('agent:agent-1')).toBeUndefined()
+    expect(probedStore?.get<NewChatCarryover>(carryoverKey('agent-1'))).toEqual({
+      attachments: [],
+      model: 'opus',
+      effort: 'high',
+    })
+  })
+})
+
+describe('SessionChatColumn stale gate', () => {
+  it('does not re-trip immediately after a turn (active -> idle resets the idle clock)', () => {
+    const { rerender } = renderWithProviders(<SessionChatColumn {...staleProps} />)
+    // Idle + large at rest -> the prompt shows.
+    expect(screen.getByTestId('stale-toast')).toBeInTheDocument()
+
+    // A turn starts -> the running session suppresses the prompt.
+    mockIsActive = true
+    rerender(<SessionChatColumn {...staleProps} />)
+    expect(screen.queryByTestId('stale-toast')).not.toBeInTheDocument()
+
+    // Turn ends -> the prompt STAYS hidden: the just-finished turn reset the idle
+    // clock even though the persisted lastActivityAt is still hours old. Regression
+    // guard — it used to immediately re-trip because the gate read only that stale
+    // timestamp.
+    mockIsActive = false
+    rerender(<SessionChatColumn {...staleProps} />)
+    expect(screen.queryByTestId('stale-toast')).not.toBeInTheDocument()
   })
 })

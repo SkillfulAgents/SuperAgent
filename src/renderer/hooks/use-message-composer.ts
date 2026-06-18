@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useAttachments } from './use-attachments'
+import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import { useVoiceInput } from './use-voice-input'
 import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
@@ -21,6 +22,8 @@ interface UseMessageComposerOptions {
   keepMessageUntilComplete?: boolean
   /** If provided, the composer persists its draft under this key via DraftsContext so it survives unmount. */
   draftKey?: string
+  /** Seed the composer with carried-over attachments (e.g. "Start fresh"). One-shot: read at mount only. */
+  initialAttachments?: Attachment[]
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
@@ -74,7 +77,10 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     handleFileSelect,
     handleFolderSelect,
     dragHandlers,
-  } = useAttachments({ onFoldersReceived: isElectron ? handleFoldersReceived : undefined })
+  } = useAttachments({
+    onFoldersReceived: isElectron ? handleFoldersReceived : undefined,
+    initialAttachments: options.initialAttachments,
+  })
 
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {

@@ -21,6 +21,7 @@ import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { useNewChatCarryover, carryoverToComposerInit } from '@renderer/lib/composer-carryover'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
@@ -83,9 +84,15 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   // regardless of the user's "Default Model" setting. Passed as a preferred
   // family — the user can still pick a different model in the dropdown.
   const isFirstSession = Array.isArray(sessionsData) && sessionsData.length === 0
-  const composerOptions = useComposerOptions(
-    isFirstSession ? { preferredFamily: 'opus' } : {}
-  )
+  // A pending "Start fresh" carry-over pre-fills this composer exactly once: text
+  // arrives via the agent draft key, attachments + model + effort come from here.
+  const carryover = useNewChatCarryover(agent.slug)
+  const { initialAttachments, initialModel, initialEffort } = carryoverToComposerInit(carryover)
+  const composerOptions = useComposerOptions({
+    ...(isFirstSession ? { preferredFamily: 'opus' } : {}),
+    initialModel,
+    initialEffort,
+  })
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
@@ -161,6 +168,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
+    initialAttachments,
   })
 
   // Consume any pending draft from voice agent flow

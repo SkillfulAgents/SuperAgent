@@ -140,7 +140,7 @@ test.describe('Stale Session Surface', () => {
 
     const toast = page.locator('[data-testid="stale-toast"]')
     await expect(toast).toBeVisible({ timeout: 20000 })
-    await expect(toast).toContainText('Continue chatting here?')
+    await expect(toast).toContainText('Continue this conversation here?')
   })
 
   // -------------------------------------------------------------------------
@@ -197,15 +197,19 @@ test.describe('Stale Session Surface', () => {
 
     await page.locator('[data-testid="stale-learn-more-trigger"]').click()
 
-    await expect(page.getByText('Why start a new chat?')).toBeVisible({ timeout: 15000 })
-    await expect(page.getByText('Agents can have many chats.')).toBeVisible()
-    await expect(page.getByText('Long chats get heavy.')).toBeVisible()
+    await expect(page.getByText('Why start a new conversation?')).toBeVisible({ timeout: 15000 })
+    await expect(page.getByText('Agents can have many conversations.')).toBeVisible()
+    await expect(page.getByText('Long conversations get heavy.')).toBeVisible()
   })
 
   // -------------------------------------------------------------------------
-  // Scenario 5 — "Start fresh" creates a fresh conversation, carrying the draft
+  // Scenario 5 — "Start fresh" carries the composer into a new chat (no send)
+  //
+  // No session is created until the user actually sends. Start fresh snapshots the
+  // composer (text + model + effort + files) and lands the user on the agent's
+  // new-chat composer with it carried over, ready to edit — nothing is sent.
   // -------------------------------------------------------------------------
-  test('stale session: Start fresh creates a fresh conversation and shows the typed message', async (
+  test('stale session: Start fresh carries the typed draft into the new-chat composer without sending', async (
     { page, request },
     testInfo,
   ) => {
@@ -215,15 +219,17 @@ test.describe('Stale Session Surface', () => {
     await openStaleAtRest(page, sessionPage, agent, sessionId)
     await expect(page.locator('[data-testid="stale-toast"]')).toBeVisible({ timeout: 20000 })
 
-    // The draft is carried verbatim into the fresh conversation.
+    // Type into the in-session composer, then Start fresh.
     await page.locator('[data-testid="message-input"]').fill('A brand new conversation')
 
     await page.locator('[data-testid="stale-new-chat-trigger"]').click()
     await page.locator('[data-testid="stale-new-chat-fresh"]').click()
 
-    await expect(
-      page.locator('[data-testid="message-list"]').getByText('A brand new conversation'),
-    ).toBeVisible({ timeout: 15000 })
+    // Lands on the agent's new-chat composer — no session created, nothing sent —
+    // with the draft carried verbatim and ready to edit.
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
+    await expect(page.locator('[data-testid="message-input"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="home-message-input"]')).toHaveValue('A brand new conversation')
   })
 
   // -------------------------------------------------------------------------
