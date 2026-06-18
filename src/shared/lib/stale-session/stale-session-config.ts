@@ -20,3 +20,12 @@ export const SUMMARY_MAX_TOKENS = 700
  *  Must stay in sync with buildBranchInitialMessage (the full first line has
  *  " The summary below covers the earlier context." appended). */
 export const BRANCH_PREAMBLE_SENTINEL = 'This conversation is continued from a previous session.'
+
+/** Summary output budget floor — the full balanced handoff for a normal session. */
+export const SUMMARY_OUTPUT_FLOOR_TOKENS = 800
+
+/** Summary output budget cap — only very large sessions stretch toward this. */
+export const SUMMARY_OUTPUT_CAP_TOKENS = 2000
+
+/** Output budget as a fraction of the (pruned) input, clamped to [floor, cap]. */
+export const SUMMARY_OUTPUT_RATIO = 0.15
