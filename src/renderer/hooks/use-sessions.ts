@@ -23,15 +23,15 @@ export function useSessions(agentSlug: string | null, options?: { staleTime?: nu
 export function useSession(id: string | null, agentSlug: string | null = null) {
   return useQuery<ApiSession>({
     queryKey: ['session', id, agentSlug],
-    // `apiJson` throws `HttpError` so the session leaf can tell a genuine 404
-    // (deep-link to a non-existent session) from a transient one.
+    // `apiJson` throws `HttpError` carrying the status, so the session leaf can
+    // distinguish a 404 (missing session) from a 5xx/network error.
     queryFn: () => apiJson<ApiSession>(`/api/agents/${agentSlug}/sessions/${id}`),
     enabled: !!id && !!agentSlug,
-    // KEEP the default retry (do NOT skip 404): a just-created session can 404
-    // transiently while the backend catches up, so retrying masks the
-    // create-then-navigate race. SessionView's not-found guard reads `error`,
-    // which React Query only sets once retries are exhausted — i.e. only for a
-    // genuinely missing session, never a still-settling new one.
+    // A 404 here means the session is genuinely missing: the backend's
+    // getSession is metadata-authoritative, so a just-created session — which is
+    // registered in metadata synchronously as part of the create response — is
+    // readable immediately, before its JSONL transcript is even written. The
+    // default retry is kept only as ordinary transient-error resilience.
   })
 }
 
