@@ -15,6 +15,9 @@ const user1 = { name: 'Alice Admin', email: 'alice@test.com', password: 'passwor
 const user2 = { name: 'Bob Builder', email: 'bob@test.com', password: 'password123' }
 const user3 = { name: 'Carol Viewer', email: 'carol@test.com', password: 'password123' }
 const agentName = 'Auth Test Agent'
+// Captured once user2 is viewing the agent — used by the cross-tenant deep-link
+// test to prove the loader gates access by URL, not just by sidebar visibility.
+let agentSlug = ''
 
 test.describe('Auth Flow', () => {
   // ── Signup & Auth Gate ──────────────────────────────────────────────
@@ -134,6 +137,11 @@ test.describe('Auth Flow', () => {
 
     // Wait for assistant response
     await sessionPage.waitForResponse(15000)
+
+    // Capture the agent slug from the URL (now on /agents/$slug/sessions/$id) for
+    // the cross-tenant deep-link test below.
+    agentSlug = user2Page.url().match(/\/agents\/([^/?#]+)/)?.[1] ?? ''
+    expect(agentSlug).toBeTruthy()
   })
 
   test('user1 does NOT see user2 agent', async ({ user1Page }) => {
@@ -146,6 +154,7 @@ test.describe('Auth Flow', () => {
     // User2's agent should NOT be visible to user1
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
   })
+
 
   // ── Invite & ACL ───────────────────────────────────────────────────
 
@@ -163,6 +172,18 @@ test.describe('Auth Flow', () => {
   test('user3 does NOT see agent before invite', async ({ user3Page }) => {
     const agentPage = new AgentPage(user3Page)
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
+  })
+
+  test('user3 deep-linking the agent before invite gets the ambiguous not-found (R15)', async ({ user3Page }) => {
+    // ACL is enforced by the agent LOADER, not just sidebar visibility. user3 is
+    // a regular (non-admin) non-member here, so the server returns 403, which
+    // collapses to the SAME ambiguous not-found screen as a 404 (anti-enumeration
+    // §9.2). (An ADMIN would hit the server's known isAdmin bypass and load it —
+    // a server-side bug the client deliberately doesn't compensate for, §9.)
+    expect(agentSlug).toBeTruthy()
+    await user3Page.goto(`/agents/${agentSlug}`)
+    await expect(user3Page.locator('[data-testid="agent-not-found"]')).toBeVisible()
+    await expect(user3Page.locator('[data-testid="agent-breadcrumb"]')).not.toBeVisible()
   })
 
   test('user2 invites user3 with user role', async ({ user2Page }) => {

@@ -14,13 +14,45 @@ export async function apiFetch(
   const baseUrl = getApiBaseUrl()
   const response = await fetch(`${baseUrl}${path}`, init)
 
-  // Auto-sign-out on 401 in auth mode (skip auth endpoints to avoid loops)
+  // Auto-sign-out on 401 in auth mode (skip auth endpoints to avoid loops).
+  // Stash the current URL FIRST so any successful in-place re-sign-in restores it
+  // (§9.1). Only on 401 (expired) — never 403 (forbidden). AUTH_MODE is web-only,
+  // so pathname+search is the route; the hash is included for completeness.
   if (__AUTH_MODE__ && response.status === 401 && !path.startsWith('/api/auth/')) {
+    const here = window.location.pathname + window.location.search + window.location.hash
+    if (here !== '/') sessionStorage.setItem(REDIRECT_KEY, here)
     const { signOut } = await import('./auth-client')
     await signOut().catch(() => {}) // session may already be gone
   }
 
   return response
+}
+
+const REDIRECT_KEY = 'superagent.redirect'
+
+/** A safe internal path: starts with a single `/` (rejects `//` + absolute/protocol URLs). */
+function isSafeInternalPath(p: string | null): p is string {
+  return !!p && /^\/(?!\/)/.test(p)
+}
+
+/**
+ * Read AND clear the post-login redirect stash, validated as a safe internal
+ * path (open-redirect guard, §4.2). Used by the email-login restore.
+ */
+export function consumeRedirectStash(): string | null {
+  const raw = sessionStorage.getItem(REDIRECT_KEY)
+  sessionStorage.removeItem(REDIRECT_KEY)
+  return isSafeInternalPath(raw) ? raw : null
+}
+
+/**
+ * Read (WITHOUT clearing) the redirect stash as a safe internal path, defaulting
+ * to `/`. Used for the OAuth `callbackURL` (the round-trip leaves the SPA, so the
+ * destination must travel with it rather than be restored in-place).
+ */
+export function peekRedirectStash(): string {
+  const raw = sessionStorage.getItem(REDIRECT_KEY)
+  return isSafeInternalPath(raw) ? raw : '/'
 }
 
 /**

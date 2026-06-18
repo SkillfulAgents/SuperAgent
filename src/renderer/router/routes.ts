@@ -71,19 +71,12 @@ export const agentLayoutRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'agents/$slug',
   params: { parse: (raw) => ({ slug: z.string().min(1).parse(raw.slug) }) },
-  // Cheap ACL fast-path (§9): when roles are known AND say no access, skip the
-  // network round-trip and 404 straight away. ACL-ONLY — no isAdmin exception
-  // (admins are not special); a non-member admin hits the same ambiguous screen.
-  // If roles aren't ready yet the gate is skipped and the loader (the server, the
-  // real authority) decides — a momentary unknown degrades to a normal load.
-  beforeLoad: ({ context, params }) => {
-    if (__AUTH_MODE__ && context.user.rolesReady && !context.user.canAccessAgent(params.slug)) {
-      throw notFound()
-    }
-  },
-  // Warm the agent into the shared query cache; map access failures to the
-  // route's fallbacks. 403 (forbidden) and 404 (unknown) COLLAPSE to one
-  // ambiguous notFound (anti-enumeration); 5xx/network → errorComponent.
+  // The SERVER is the sole access authority (no client beforeLoad fast-path —
+  // the cached `my-agent-roles` is stale right after create-then-navigate, so a
+  // client gate would falsely 404 a brand-new agent the user owns). The loader
+  // warms the agent into the shared cache and maps the server's verdict: 403
+  // (forbidden) and 404 (unknown) COLLAPSE to one ambiguous notFound
+  // (anti-enumeration); 5xx/network → errorComponent.
   loader: async ({ context, params }) => {
     try {
       await context.queryClient.ensureQueryData(agentQuery(params.slug))
