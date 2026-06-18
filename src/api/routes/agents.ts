@@ -39,8 +39,8 @@ import {
   removeToolCall,
 } from '@shared/lib/services/session-service'
 import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory } from '@shared/lib/utils/file-storage'
-import { loadTranscript, buildBranchInitialMessage } from '@shared/lib/services/session-summary-service'
-import { branchSessionRequestSchema } from '@shared/lib/stale-session/stale-session-schema'
+import { loadTranscript, buildBranchInitialMessage, summarizeTranscript, buildSeed } from '@shared/lib/services/session-summary-service'
+import { branchSessionRequestSchema, summarizeRequestSchema, summarizeResponseSchema, createSessionRequestSchema } from '@shared/lib/stale-session/stale-session-schema'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import {
   listUserSecrets,
@@ -1281,11 +1281,18 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   try {
     const slug = c.req.param('id')
     const body = await c.req.json()
-    const { message } = body
-
-    if (!message?.trim()) {
-      return c.json({ error: 'Message is required' }, 400)
+    const parsed = createSessionRequestSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid request', details: parsed.error.format() }, 400)
     }
+    const { seedSummary, fromSessionId } = parsed.data
+    const userMessage = parsed.data.message.trim()
+    // When a carried summary is present, the new session's initial message is the
+    // seeded block + the user's real message; otherwise it is the bare message.
+    // The session name and optimistic-UI echo must always use the BARE message.
+    const initialMessage = seedSummary && fromSessionId
+      ? buildSeed({ fromSessionId, summary: seedSummary, userMessage })
+      : userMessage
 
     const runtimeOptions = parseRuntimeOptions(body)
 
@@ -1309,7 +1316,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: message.trim(),
+      initialMessage,
       initialMessageUuid,
       model: sessionModel,
       browserModel: getEffectiveModels().browserModel,
@@ -1357,7 +1364,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     generateAndUpdateSessionNameAsync(
       slug,
       sessionId,
-      message.trim(),
+      userMessage,
       agent.frontmatter.name
     ).catch(console.error)
 
@@ -1377,6 +1384,39 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
   } catch (error) {
     console.error('Failed to create session:', error)
     return c.json({ error: 'Failed to create session' }, 500)
+  }
+})
+
+// POST /api/agents/:id/sessions/summarize - Summarize a source session's transcript.
+// Returns { summary } so the client can stash it and seed a new session on first send.
+// 502 {"error":"summary_failed"} on failure (or empty summary) so the caller can Retry
+// without losing the draft.
+agents.post('/:id/sessions/summarize', AgentUser(), async (c) => {
+  try {
+    const slug = c.req.param('id')
+    const body = await c.req.json()
+    const parsed = summarizeRequestSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid request', details: parsed.error.format() }, 400)
+    }
+    const agent = await getAgent(slug)
+    if (!agent) {
+      return c.json({ error: 'Agent not found' }, 404)
+    }
+    try {
+      const summary = await summarizeTranscript(slug, parsed.data.fromSessionId)
+      const validated = summarizeResponseSchema.safeParse({ summary })
+      if (!validated.success) {
+        return c.json({ error: 'summary_failed' }, 502) // empty/blank summary
+      }
+      return c.json(validated.data, 200)
+    } catch (error) {
+      console.error('Failed to summarize session:', error)
+      return c.json({ error: 'summary_failed' }, 502)
+    }
+  } catch (error) {
+    console.error('Failed to summarize session:', error)
+    return c.json({ error: 'Failed to summarize' }, 500)
   }
 })
 
