@@ -4,12 +4,12 @@
  * React Query hooks for managing external chat integrations (Telegram, Slack).
  */
 
-import type { ChatIntegration, ChatIntegrationSession } from '@shared/lib/db/schema'
+import type { ChatIntegration, ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
-export type { ChatIntegration, ChatIntegrationSession }
+export type { ChatIntegration, ChatIntegrationSession, ChatIntegrationAccess }
 
 export class ChatIntegrationApiError extends Error {
   readonly status: number
@@ -32,6 +32,7 @@ export const chatIntegrationKeys = {
   detail: (id: string | null) => ['chat-integration', id] as const,
   status: (id: string | null) => ['chat-integration-status', id] as const,
   sessions: (integrationId: string | null) => ['chat-integration-sessions', integrationId] as const,
+  access: (integrationId: string) => ['chat-integration-access', integrationId] as const,
 }
 
 // ── List hooks ──────────────────────────────────────────────────────────
@@ -104,6 +105,23 @@ export function useChatIntegrationSessions(integrationId: string | null) {
   })
 }
 
+// ── Access hook ────────────────────────────────────────────────────────
+
+export function useChatIntegrationAccess(integrationId: string | null) {
+  return useQuery<ChatIntegrationAccess[]>({
+    queryKey: chatIntegrationKeys.access(integrationId ?? ''),
+    queryFn: async () => {
+      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access`)
+      if (!res.ok) throw new Error('Failed to fetch chat integration access')
+      return res.json()
+    },
+    enabled: !!integrationId,
+    // Poll for new access requests — same cadence as sessions, no SSE fallback.
+    refetchInterval: 20_000,
+    refetchIntervalInBackground: false,
+  })
+}
+
 // ── Create mutation ─────────────────────────────────────────────────────
 
 export function useCreateChatIntegration() {
@@ -168,6 +186,7 @@ export function useUpdateChatIntegration() {
       sessionTimeout?: number | null
       model?: string | null
       effort?: string | null
+      requireApproval?: boolean
       status?: 'active' | 'paused'
     }) => {
       const res = await apiFetch(`/api/chat-integrations/${id}`, {
@@ -201,6 +220,59 @@ export function useDeleteChatIntegration() {
       queryClient.invalidateQueries({ queryKey: ['chat-integrations', variables.agentSlug] })
       queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.detail(variables.id) })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+}
+
+// ── Access mutations ────────────────────────────────────────────────────
+
+export function useApproveChatAccess() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ integrationId, accessId }: { integrationId: string; accessId: string }) => {
+      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access/${accessId}/approve`, {
+        method: 'POST',
+      })
+      if (!res.ok) throw new Error('Failed to approve access')
+      return { integrationId }
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.access(variables.integrationId) })
+    },
+  })
+}
+
+export function useDenyChatAccess() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ integrationId, accessId }: { integrationId: string; accessId: string }) => {
+      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access/${accessId}/deny`, {
+        method: 'POST',
+      })
+      if (!res.ok) throw new Error('Failed to deny access')
+      return { integrationId }
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.access(variables.integrationId) })
+    },
+  })
+}
+
+export function useRevokeChatAccess() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ integrationId, accessId }: { integrationId: string; accessId: string }) => {
+      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access/${accessId}/revoke`, {
+        method: 'POST',
+      })
+      if (!res.ok) throw new Error('Failed to revoke access')
+      return { integrationId }
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.access(variables.integrationId) })
     },
   })
 }
