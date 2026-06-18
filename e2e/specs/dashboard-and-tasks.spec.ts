@@ -96,6 +96,11 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await expect(page).toHaveURL(/\/tasks\/[^/]+$/)
     await expect(page.locator('[data-testid="scheduled-task-back-button"]')).toBeVisible()
 
+    // Hard reload — the task route is URL-durable, restored from the path (R16)
+    await appPage.reload()
+    await expect(page).toHaveURL(/\/tasks\/[^/]+$/)
+    await expect(page.locator('[data-testid="scheduled-task-back-button"]')).toBeVisible()
+
     // Back → agent home
     await page.locator('[data-testid="scheduled-task-back-button"]').click()
     await expect(page).toHaveURL(/\/agents\/[^/]+$/)

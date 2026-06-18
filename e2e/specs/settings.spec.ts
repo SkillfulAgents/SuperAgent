@@ -49,6 +49,7 @@ test.describe('Settings Page', () => {
 
   test('opens settings page via sidebar button', async ({ page }) => {
     await openSettings(page)
+    await expect(page).toHaveURL(/\/settings/)
   })
 
   test('shows correct tabs for non-auth mode', async ({ page }) => {
@@ -130,6 +131,7 @@ test.describe('Settings Page', () => {
     await openSettings(page)
     await page.locator('[data-testid="settings-back"]').click()
     await expect(page.locator('[data-testid="global-settings-page"]')).not.toBeVisible()
+    await expect(page).not.toHaveURL(/\/settings/)
   })
 
   test('app shell unmounts while settings is open and returns on close', async ({ page }) => {

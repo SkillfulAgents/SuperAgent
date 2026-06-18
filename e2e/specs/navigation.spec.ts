@@ -36,10 +36,12 @@ test.describe('Navigation — discriminated AgentView', () => {
     const agentName = `Nav Home ${Date.now()}`
     await agentPage.createAgent(agentName)
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
 
     // Go back to global Home — should not render the agent breadcrumb anymore
     await page.locator('[data-testid="home-button"]').click()
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).not.toBeVisible()
+    await expect(page).toHaveURL(/\/$/)
 
     // Cleanup
     await agentPage.selectAgent(agentName)
@@ -152,11 +154,13 @@ test.describe('Navigation — discriminated AgentView', () => {
     // sidebar.
     await sessionPage.sendMessage('hi')
     await sessionPage.waitForResponse(15000)
+    await expect(page).toHaveURL(/\/sessions\/[^/]+$/)
 
     // Click the agent breadcrumb → should return to agent home
     await page.locator('[data-testid="agent-breadcrumb"]').click()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
     await expect(page.locator('[data-testid="message-list"]')).not.toBeVisible()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
 
     // Cleanup
     await agentPage.deleteAgent()
@@ -380,9 +384,19 @@ test.describe('Navigation — discriminated AgentView', () => {
     page.on('pageerror', (e) => errors.push(e.message))
 
     await page.goto('/agents/does-not-exist-r15')
+    await expect(page).toHaveURL(/\/agents\/does-not-exist-r15$/)
     await expect(page.locator('[data-testid="agent-not-found"]')).toBeVisible()
     // The persistent app shell (sidebar) stays mounted around the fallback.
     await expect(page.locator('[data-testid="home-button"]')).toBeVisible()
     expect(errors).toEqual([])
+  })
+
+  test('Home is a durable route — a hard reload stays on global home (R16)', async ({ page }) => {
+    // The root route restores from the URL like every other route: a hard reload
+    // on '/' returns to global home, not a blank screen or an error.
+    await appPage.reload()
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.locator('[data-testid="home-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).not.toBeVisible()
   })
 })
