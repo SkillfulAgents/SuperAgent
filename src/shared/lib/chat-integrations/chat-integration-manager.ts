@@ -39,6 +39,12 @@ import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import {
+  decideInboundAccess,
+  isChatAllowed,
+  getChatAccess,
+  markNoticeSent,
+} from '@shared/lib/services/chat-integration-access-service'
 
 // ── Sentry helpers ─────────────────────────────────────────────────────
 
@@ -611,6 +617,39 @@ class ChatIntegrationManager {
     const chatId = message.chatId
     if (!chatId) return
 
+    // Access gate — enforce owner approval BEFORE any token spend (and before
+    // /clear or /start), so a non-allowed chat can neither command nor cost.
+    const decision = decideInboundAccess({
+      integrationId,
+      externalChatId: chatId,
+      chatType: message.chatType,
+      userId: message.userId,
+      userName: message.userName,
+      chatName: message.chatName,
+      preview: message.text,
+    })
+    if (decision.action === 'blocked') {
+      if (decision.sendNotice) {
+        const access = getChatAccess(integrationId, chatId)
+        if (access) {
+          try {
+            await conn.connector.sendMessage(chatId, { text: 'This bot needs the owner to approve this chat before it can respond.' })
+            markNoticeSent(access.id)
+          } catch (err) {
+            reportError(err, 'access-notice', { integrationId, chatId }, 'warning')
+          }
+        }
+      }
+      return
+    }
+
+    // Handle /start — a freshly bootstrapped/allowed chat gets a greeting without
+    // spending on the agent. (Pending chats never reach here — the gate blocked them.)
+    if (message.text.trim().toLowerCase() === '/start') {
+      await conn.connector.sendMessage(chatId, { text: "You're connected. Send a message to start." }).catch(() => {})
+      return
+    }
+
     // Handle /clear command — reset the session for this chat
     if (message.text.trim().toLowerCase() === '/clear') {
       await this.clearChatSession(integrationId, chatId, conn.connector)
@@ -629,6 +668,9 @@ class ChatIntegrationManager {
       try { updateChatIntegrationStatus(integrationId, 'error', 'Agent no longer exists') } catch { /* best-effort */ }
       return
     }
+
+    // Revoke can land mid-flight (during the awaits above). Re-check before spending.
+    if (!isChatAllowed(integrationId, chatId)) return
 
     // Ensure container is running
     let client: Awaited<ReturnType<typeof containerManager.ensureRunning>>
@@ -669,6 +711,9 @@ class ChatIntegrationManager {
             text: `Could not download file(s): ${names}. Your text message will still be sent.\n\nIf this is a Slack bot, ensure the \`files:read\` scope is added and the app is reinstalled.`,
           })
         }
+
+        // Revoke can land mid-flight (during the awaits above). Re-check before spending.
+        if (!isChatAllowed(integrationId, chatId)) return
 
         await this.startNewChatSession(integration, client, chatId, message, messageText)
         return // initialMessage already sent via createSession
@@ -719,6 +764,9 @@ class ChatIntegrationManager {
           text: `Could not download file(s): ${names}. Your text message will still be sent.\n\nIf this is a Slack bot, ensure the \`files:read\` scope is added and the app is reinstalled.`,
         })
       }
+
+      // Revoke can land mid-flight (during the awaits above). Re-check before spending.
+      if (!isChatAllowed(integrationId, chatId)) return
 
       await client.sendMessage(sessionId, messageText)
       messagePersister.markSessionActive(sessionId, integration.agentSlug)

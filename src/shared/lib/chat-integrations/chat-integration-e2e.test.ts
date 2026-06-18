@@ -99,13 +99,18 @@ import { MockContainerClient } from '@shared/lib/container/mock-container-client
 // ── Helpers ────────────────────────────────────────────────────────────
 
 function createTestIntegration(overrides?: Record<string, unknown>): string {
-  return createChatIntegration({
+  const id = createChatIntegration({
     agentSlug: 'test-agent',
     provider: 'telegram',
     config: { botToken: 'test-token-123' },
     name: 'Test Bot',
     ...overrides,
   })
+  // Telegram integrations now require owner approval by default (the access
+  // allowlist gate). These tests exercise message-flow plumbing for an already
+  // approved bot, not access control, so disable the gate for them.
+  testSqlite.prepare('UPDATE chat_integrations SET require_approval = 0 WHERE id = ?').run(id)
+  return id
 }
 
 function waitForCondition(
