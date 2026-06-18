@@ -19,6 +19,7 @@ import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSettings } from '@renderer/hooks/use-settings'
+import { useDocumentTitle } from '@renderer/hooks/use-document-title'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
 
@@ -30,6 +31,7 @@ import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from 
 export function RootLayout() {
   useTheme()
   useInsetRadius()
+  useDocumentTitle()
 
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardAgentOnly, setWizardAgentOnly] = useState(false)
