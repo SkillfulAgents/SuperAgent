@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures/multi-user.fixture'
+import { getAuthBaseUrl, test, expect } from '../fixtures/multi-user.fixture'
 import { AuthPage } from '../pages/auth.page'
 import { SettingsPage } from '../pages/settings.page'
 import { AppPage } from '../../pages/app.page'
@@ -12,6 +12,7 @@ const admin = { email: 'alice@test.com', password: 'password123' }
 const newUser = { name: 'Dave Domain', email: 'dave@allowed.com', password: 'password123' }
 const blockedUser = { name: 'Eve External', email: 'eve@blocked.com', password: 'password123' }
 const approvalUser = { name: 'Frank Pending', email: 'frank@test.com', password: 'password123' }
+const authBaseUrl = getAuthBaseUrl()
 
 test.describe('Auth Settings Enforcement', () => {
   // ── Setup: admin signs in ───────────────────────────────────────────
@@ -28,9 +29,9 @@ test.describe('Auth Settings Enforcement', () => {
       user3Page.context().clearCookies(),
     ])
     await Promise.all([
-      user1Page.goto('http://localhost:3001'),
-      user2Page.goto('http://localhost:3001'),
-      user3Page.goto('http://localhost:3001'),
+      user1Page.goto(authBaseUrl),
+      user2Page.goto(authBaseUrl),
+      user3Page.goto(authBaseUrl),
     ])
 
     await authPage.expectVisible()

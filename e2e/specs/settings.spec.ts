@@ -581,8 +581,8 @@ test.describe('Settings deep-link reset', () => {
 
 test.describe('Settings ?from= close-target', () => {
   test('close pushes to the captured ?from origin', async ({ page, request }) => {
-    await request.put('http://localhost:3000/api/user-settings', { data: { setupCompleted: true } })
-    const createRes = await request.post('http://localhost:3000/api/agents', { data: { name: 'Settings From Origin' } })
+    await request.put('/api/user-settings', { data: { setupCompleted: true } })
+    const createRes = await request.post('/api/agents', { data: { name: 'Settings From Origin' } })
     const agent = await createRes.json() as { slug: string }
 
     const appPage = new AppPage(page)
@@ -597,11 +597,11 @@ test.describe('Settings ?from= close-target', () => {
     await page.locator('[data-testid="settings-back"]').click()
     await expect(page).toHaveURL(origin)
 
-    await request.delete(`http://localhost:3000/api/agents/${agent.slug}`)
+    await request.delete(`/api/agents/${agent.slug}`)
   })
 
   test('cold deep-link to /settings/general closes to home (no ?from)', async ({ page, request }) => {
-    await request.put('http://localhost:3000/api/user-settings', { data: { setupCompleted: true } })
+    await request.put('/api/user-settings', { data: { setupCompleted: true } })
     await page.goto('/settings/general')
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-nav-general"]')).toHaveAttribute('data-active', 'true')
@@ -610,8 +610,8 @@ test.describe('Settings ?from= close-target', () => {
   })
 
   test('settings survives a refresh and still closes to origin (?from= is durable)', async ({ page, request }) => {
-    await request.put('http://localhost:3000/api/user-settings', { data: { setupCompleted: true } })
-    const createRes = await request.post('http://localhost:3000/api/agents', { data: { name: 'Settings Refresh From' } })
+    await request.put('/api/user-settings', { data: { setupCompleted: true } })
+    const createRes = await request.post('/api/agents', { data: { name: 'Settings Refresh From' } })
     const agent = await createRes.json() as { slug: string }
 
     const appPage = new AppPage(page)
@@ -628,6 +628,6 @@ test.describe('Settings ?from= close-target', () => {
     await page.locator('[data-testid="settings-back"]').click()
     await expect(page).toHaveURL(origin)
 
-    await request.delete(`http://localhost:3000/api/agents/${agent.slug}`)
+    await request.delete(`/api/agents/${agent.slug}`)
   })
 })
