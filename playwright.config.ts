@@ -4,7 +4,7 @@ import path from 'path'
 // Use a separate data directory for E2E tests to avoid polluting production data.
 // CI can override these so suites can keep isolated state and artifacts.
 const e2eDataDir = path.resolve(process.env.SUPERAGENT_DATA_DIR ?? path.join(__dirname, '.e2e-data'))
-const e2ePort = process.env.PORT ?? process.env.E2E_PORT ?? '3000'
+const e2ePort = process.env.E2E_PORT ?? process.env.PORT ?? '3000'
 const e2eBaseUrl = process.env.E2E_BASE_URL ?? `http://localhost:${e2ePort}`
 const playwrightOutputDir = process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results'
 const playwrightHtmlReportDir = process.env.PLAYWRIGHT_HTML_REPORT ?? 'playwright-report'

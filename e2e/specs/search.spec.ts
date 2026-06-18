@@ -96,7 +96,7 @@ test.describe('Search palette', () => {
 
     // Agents are created as "Untitled" with a random slug, then renamed
     // asynchronously. Look up the actual slug from the API by name.
-    const agentsRes = await request.get('http://localhost:3000/api/agents')
+    const agentsRes = await request.get('/api/agents')
     expect(agentsRes.ok()).toBe(true)
     const agents = (await agentsRes.json()) as Array<{ slug: string; name: string }>
     const slug = agents.find((a) => a.name === agentName)?.slug
@@ -110,12 +110,12 @@ test.describe('Search palette', () => {
     await expect
       .poll(
         async () => {
-          const sessionsRes = await request.get(`http://localhost:3000/api/agents/${slug}/sessions`)
+          const sessionsRes = await request.get(`/api/agents/${slug}/sessions`)
           if (!sessionsRes.ok()) return false
           const sessions = (await sessionsRes.json()) as Array<{ id: string }>
           if (sessions.length === 0) return false
           const patchRes = await request.patch(
-            `http://localhost:3000/api/agents/${slug}/sessions/${sessions[0].id}`,
+            `/api/agents/${slug}/sessions/${sessions[0].id}`,
             { data: { name: sessionName } },
           )
           return patchRes.ok()
