@@ -116,7 +116,10 @@ function SettingsPageView({ tab }: { tab?: string }) {
       onOpenWizard={openWizard}
       initialSection={tab}
       // Switching tabs drives the URL → /settings/$tab (R17 URL-driven tabs),
-      // preserving `?from=` so the close-target survives a tab switch.
+      // preserving `?from=` so the close-target survives a tab switch. The nav
+      // items render as real <a href> links to this target so cmd/middle-click
+      // opens a tab in a new window (web); a plain click navigates in place.
+      sectionLinkProps={(id) => ({ to: '/settings/$tab', params: { tab: id }, search: (prev) => prev })}
       onSectionChange={(id) => navigate({ to: '/settings/$tab', params: { tab: id }, search: (prev) => prev })}
     />
   )

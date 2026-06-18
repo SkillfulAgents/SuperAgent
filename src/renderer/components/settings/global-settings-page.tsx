@@ -1,5 +1,6 @@
 import { Settings, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic, Activity, Terminal, BadgeCheck, ClipboardList } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
+import { type LinkProps } from '@tanstack/react-router'
 import { ProfileTab } from './profile-tab'
 import { GeneralTab } from './general-tab'
 import { RuntimeTab } from './runtime-tab'
@@ -27,9 +28,10 @@ interface GlobalSettingsPageProps {
   onOpenWizard: () => void
   initialSection?: string
   onSectionChange?: (id: string) => void
+  sectionLinkProps?: (id: string) => LinkProps
 }
 
-export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSectionChange }: GlobalSettingsPageProps) {
+export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSectionChange, sectionLinkProps }: GlobalSettingsPageProps) {
   const { isAuthMode, isAdmin } = useUser()
   const showAdminSettings = !isAuthMode || isAdmin
   const showAuthAdmin = isAuthMode && isAdmin
@@ -83,6 +85,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
       onClose={onClose}
       initialSection={initialSection}
       onSectionChange={onSectionChange}
+      sectionLinkProps={sectionLinkProps}
       data-testid="global-settings-page"
       navTestIdPrefix="settings"
     />
