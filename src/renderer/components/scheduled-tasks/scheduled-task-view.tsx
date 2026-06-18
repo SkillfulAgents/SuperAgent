@@ -32,7 +32,6 @@ import {
   usePauseScheduledTask,
   useResumeScheduledTask,
 } from '@renderer/hooks/use-scheduled-tasks'
-import { useSelection } from '@renderer/context/selection-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
@@ -73,7 +72,6 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const resumeTask = useResumeScheduledTask()
   const updatePrompt = useUpdateScheduledTaskPrompt()
   const updateRuntimeOptions = useUpdateScheduledTaskRuntimeOptions()
-  const { handleScheduledTaskDeleted, setView } = useSelection()
   const navigate = useNavigate()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
@@ -121,8 +119,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
     try {
       await cancelTask.mutateAsync({ id: taskId, agentSlug })
       // Deleting the task we're viewing → up-nav to the agent home (the task
-      // route no longer resolves). setView keeps Selection consistent for R14.
-      handleScheduledTaskDeleted(taskId)
+      // route no longer resolves).
       void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to cancel scheduled task:', err)
@@ -132,9 +129,7 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const handleRunNow = async () => {
     try {
       const result = await runNow.mutateAsync({ taskId, agentSlug })
-      // Leave the task route for the new run's session route. setView keeps
-      // Selection consistent for the bridge until R14.
-      setView({ kind: 'session', id: result.sessionId })
+      // Leave the task route for the new run's session route.
       void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: result.sessionId } })
     } catch (err) {
       console.error('Failed to run scheduled task:', err)
@@ -298,7 +293,6 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
         title={task.name || 'Scheduled Task'}
         back={{
           onClick: () => {
-            setView({ kind: 'home' })
             void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
           },
           testId: 'scheduled-task-back-button',

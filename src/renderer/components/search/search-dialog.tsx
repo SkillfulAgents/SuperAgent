@@ -4,7 +4,6 @@ import { Bot, ChevronRight, MessageSquare, Search } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { useAgents } from '@renderer/hooks/use-agents'
-import { useSelection } from '@renderer/context/selection-context'
 import { useSearch } from '@renderer/context/search-context'
 import { useNavigate } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
@@ -31,7 +30,6 @@ export function SearchDialog() {
   const [expandedSlugs, setExpandedSlugs] = useState<Set<string>>(new Set())
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const { setAgent } = useSelection()
   const { data: agents } = useAgents()
 
   const sessionQueries = useQueries({
@@ -115,10 +113,8 @@ export function SearchDialog() {
     // the Radix overlay open (it intercepts pointer events on the page beneath).
     closeSearch()
     if (item.kind === 'agent') {
-      setAgent(item.agent.slug)
       void navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
     } else {
-      setAgent(item.agent.slug, { kind: 'session', id: item.session.id })
       void navigate({
         to: '/agents/$slug/sessions/$sessionId',
         params: { slug: item.agent.slug, sessionId: item.session.id },

@@ -11,7 +11,6 @@ import { UploadError } from '@renderer/components/ui/upload-error'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { useSelection } from '@renderer/context/selection-context'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
@@ -55,7 +54,6 @@ interface AgentHomeProps {
 
 export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { setView, setAgent } = useSelection()
   // The new-agent morph tag + composer pre-fill one-shots live in
   // NavTransientContext now (R10) — above the router, so they survive in-app nav
   // and die on hard reload. justCreatedSlug producer = use-create-untitled-agent.
@@ -269,7 +267,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
 
   const handleImportComplete = useCallback(
     async ({ agent: imported, hasOnboarding }: ImportResult) => {
-      setAgent(imported.slug)
       void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
       if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
         deleteAgent.mutate(agent.slug)
@@ -278,7 +275,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         await startOnboardingSession(imported.slug)
       }
     },
-    [setAgent, navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
+    [navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(
@@ -557,11 +554,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
               onSelectTask={(taskId: string) => {
-                setView({ kind: 'task', id: taskId })
                 void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agent.slug, taskId } })
               }}
               onSelectWebhook={(webhookId: string) => {
-                setView({ kind: 'webhook', id: webhookId })
                 void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agent.slug, webhookId } })
               }}
             />

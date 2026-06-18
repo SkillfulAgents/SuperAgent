@@ -1,5 +1,4 @@
 import { useNavigate } from '@tanstack/react-router'
-import { useSelection } from '@renderer/context/selection-context'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { ConnectionsList, NewIntegrationButton } from '@renderer/components/connections/connections-list'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
@@ -13,7 +12,6 @@ interface ConnectionsViewProps {
 
 export function ConnectionsView({ agentSlug, detail }: ConnectionsViewProps) {
   useRenderTracker('ConnectionsView')
-  const { setView } = useSelection()
   const navigate = useNavigate()
   const { data: agent } = useAgent(agentSlug)
 
@@ -25,15 +23,12 @@ export function ConnectionsView({ agentSlug, detail }: ConnectionsViewProps) {
   // (setView) so the Selection-driven header crumb stays correct until breadcrumbs
   // become route-driven (R11/R14).
   const goAgentHome = () => {
-    setView({ kind: 'home' })
     void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
   }
   const openList = () => {
-    setView({ kind: 'connections' })
     void navigate({ to: '/agents/$slug/connections', params: { slug: agentSlug } })
   }
   const openDetail = (rowKey: string) => {
-    setView({ kind: 'connections', detail: { rowKey, source: 'list' } })
     void navigate({
       to: '/agents/$slug/connections',
       params: { slug: agentSlug },

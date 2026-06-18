@@ -1,6 +1,5 @@
 import { Outlet, useParams, useNavigate } from '@tanstack/react-router'
 import { useCallback, useRef, useState } from 'react'
-import { useSelection } from '@renderer/context/selection-context'
 import { useUser } from '@renderer/context/user-context'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
@@ -38,7 +37,6 @@ export function AgentShell() {
   const slug = params.slug ?? null
   const activeSessionId = params.sessionId ?? null
 
-  const { setView } = useSelection()
   const navigate = useNavigate()
 
   const { user, isAuthMode, canUseAgent } = useUser()
@@ -127,7 +125,6 @@ export function AgentShell() {
           sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
         },
       ])
-      setView({ kind: 'session', id: newSessionId })
       if (slug) {
         void navigate({
           to: '/agents/$slug/sessions/$sessionId',
@@ -135,7 +132,7 @@ export function AgentShell() {
         })
       }
     },
-    [setView, navigate, slug, isAuthMode, user],
+    [navigate, slug, isAuthMode, user],
   )
 
   // Orphan cleanup: drop a deleted session's optimistic entry (migration plan §8.3).

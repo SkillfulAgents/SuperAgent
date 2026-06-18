@@ -30,7 +30,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/components/ui/dialog'
-import { useSelection } from '@renderer/context/selection-context'
+import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useDeleteSession, useUpdateSessionName } from '@renderer/hooks/use-sessions'
@@ -162,11 +162,11 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
 }
 
 function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, searchQuery, dateAsTitle = false, formatSubtext }: { session: SessionItem; showIcon: boolean; formatDate: (date: string) => string; agentSlug?: string; searchQuery?: string; dateAsTitle?: boolean; formatSubtext?: (date: string) => string }) {
-  const { setView, selectedAgentSlug, handleSessionDeleted } = useSelection()
+  const { selectedAgentSlug, view } = useRouteLocation()
   const navigate = useNavigate()
+  const routeSessionId = view.kind === 'session' ? view.id : null
   const agentSlug = agentSlugProp ?? selectedAgentSlug
   const selectSession = (id: string) => {
-    setView({ kind: 'session', id })
     if (agentSlug) {
       void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: id } })
     }
@@ -186,7 +186,10 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
     try {
       await deleteSession.mutateAsync({ id: session.id, agentSlug })
       setShowDeleteDialog(false)
-      handleSessionDeleted(session.id)
+      // (R14) navigate away only if we're currently viewing the deleted session.
+      if (routeSessionId === session.id) {
+        void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+      }
     } catch (error) {
       console.error('Failed to delete session:', error)
     } finally {

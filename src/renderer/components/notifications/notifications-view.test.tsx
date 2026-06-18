@@ -11,6 +11,7 @@ const mockSetView = vi.fn()
 const mockSetAgent = vi.fn()
 const mockMarkReadMutate = vi.fn()
 const mockMarkAllReadMutate = vi.fn()
+const mockNavigate = vi.fn()
 
 let mockNotificationsData: { items: ApiNotification[]; total: number } | undefined
 let mockNotificationsLoading = false
@@ -55,6 +56,15 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 vi.mock('@renderer/lib/env', () => ({
   isElectron: () => false,
   getApiBaseUrl: () => 'http://localhost:3000',
+}))
+
+// The back button navigates now (R14 dropped the setView bridge call). Capture
+// the navigate target via a file-level useNavigate spy (overrides the global
+// no-op stub). The notification ROWS navigate declaratively via <AppLink>, which
+// the global stub renders as <a data-to/data-params>.
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useNavigate: () => mockNavigate,
 }))
 
 import { NotificationsView } from './notifications-view'
@@ -169,15 +179,15 @@ describe('NotificationsView', () => {
   // Click behavior
   // -----------------------------------------------------------------------
 
-  it('navigates to the session when a notification is clicked', async () => {
-    const user = userEvent.setup()
+  it('links a notification to its session route', () => {
     mockNotificationsData = {
       items: [makeNotification({ id: '1', agentSlug: 'bot-1', sessionId: 'sess-42' })],
       total: 1,
     }
     renderWithProviders(<NotificationsView />)
-    await user.click(screen.getByText('Notification 1'))
-    expect(mockSetAgent).toHaveBeenCalledWith('bot-1', { kind: 'session', id: 'sess-42' })
+    const link = screen.getByText('Notification 1').closest('a')
+    expect(link).toHaveAttribute('data-to', '/agents/$slug/sessions/$sessionId')
+    expect(link).toHaveAttribute('data-params', JSON.stringify({ slug: 'bot-1', sessionId: 'sess-42' }))
   })
 
   it('marks unread notification as read on click', async () => {
@@ -202,8 +212,7 @@ describe('NotificationsView', () => {
     expect(mockMarkReadMutate).not.toHaveBeenCalled()
   })
 
-  it('navigates to agent home for chat integration notifications', async () => {
-    const user = userEvent.setup()
+  it('links a chat-integration notification to the agent home', () => {
     mockNotificationsData = {
       items: [makeNotification({
         id: 'ci1',
@@ -214,8 +223,9 @@ describe('NotificationsView', () => {
       total: 1,
     }
     renderWithProviders(<NotificationsView />)
-    await user.click(screen.getByText('Chat Integration Connected'))
-    expect(mockSetAgent).toHaveBeenCalledWith('slack-bot-1', { kind: 'home' })
+    const link = screen.getByText('Chat Integration Connected').closest('a')
+    expect(link).toHaveAttribute('data-to', '/agents/$slug')
+    expect(link).toHaveAttribute('data-params', JSON.stringify({ slug: 'slack-bot-1' }))
   })
 
   // -----------------------------------------------------------------------
@@ -287,7 +297,7 @@ describe('NotificationsView', () => {
     mockNotificationsData = { items: [], total: 0 }
     renderWithProviders(<NotificationsView />)
     await user.click(screen.getByTestId('notifications-back-button'))
-    expect(mockSetView).toHaveBeenCalledWith({ kind: 'home' })
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/' })
   })
 
   // -----------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
-import { useSelection } from './selection-context'
+import { useRouteLocation } from '@renderer/router/use-route-location'
 
 export interface FileTab {
   filePath: string
@@ -43,9 +43,9 @@ function getDisplayName(filePath: string): string {
 let commentIdCounter = 0
 
 export function FilePreviewProvider({ children, sessionId: sessionIdProp }: { children: ReactNode; sessionId?: string | null }) {
-  const { view } = useSelection()
+  const { view } = useRouteLocation()
   // Views that own a session (e.g. chat integrations) can pass it explicitly so
-  // state clears when switching sessions; otherwise derive from the active selection.
+  // state clears when switching sessions; otherwise derive from the active route.
   const sessionId = sessionIdProp !== undefined ? sessionIdProp : (view.kind === 'session' ? view.id : null)
 
   const [openFiles, setOpenFiles] = useState<FileTab[]>([])

@@ -53,7 +53,7 @@ import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-
 import { useQueryClient } from '@tanstack/react-query'
 import { useParams, useRouterState, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
-import { useSelection } from '@renderer/context/selection-context'
+import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useSearch } from '@renderer/context/search-context'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import { useChatIntegrations, useChatIntegrationSessions, type ChatIntegration } from '@renderer/hooks/use-chat-integrations'
@@ -124,7 +124,6 @@ function SessionSubItem({
   agentSlug: string
 }) {
   useRenderTracker('SessionSubItem')
-  const { setAgent } = useSelection()
   // Active state is route-derived (URL is authoritative) so the highlight + the
   // stream subscription are correct on a cold reload, not just after the bridge
   // mirrors Selection (which skips the initial mount until R12).
@@ -134,10 +133,6 @@ function SessionSubItem({
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
-
-  const handleSelect = () => {
-    setAgent(agentSlug, { kind: 'session', id: session.id })
-  }
 
   return (
     <SidebarMenuSubItem>
@@ -153,7 +148,6 @@ function SessionSubItem({
           <AppLink
             to="/agents/$slug/sessions/$sessionId"
             params={{ slug: agentSlug, sessionId: session.id }}
-            onClick={handleSelect}
             className="flex items-center gap-2 w-full"
             data-testid={`session-item-${session.id}`}
           >
@@ -182,7 +176,6 @@ function ChatIntegrationSubItem({
   integration: ChatIntegration
   agentSlug: string
 }) {
-  const { setAgent } = useSelection()
   const { data: sessions } = useChatIntegrationSessions(integration.id)
   // Route-derived active state (URL-authoritative; correct on cold reload).
   const { slug: routeSlug, integrationId: routeIntegrationId } = useParams({ strict: false }) as { slug?: string; integrationId?: string }
@@ -192,15 +185,6 @@ function ChatIntegrationSubItem({
   const isSelected = viewingThisIntegration && !selectedChatSessionId
   const hasSelectedSession = viewingThisIntegration && selectedChatSessionId != null
   const [isOpen, setIsOpen] = useState(viewingThisIntegration || hasSelectedSession)
-
-  // AppLink navigates; these keep Selection in sync for the bridge until R14.
-  const handleSelect = () => {
-    setAgent(agentSlug, { kind: 'chat', integrationId: integration.id })
-  }
-
-  const handleSessionSelect = (sessionId: string) => {
-    setAgent(agentSlug, { kind: 'chat', integrationId: integration.id, sessionId })
-  }
 
   const statusDot = integration.status === 'active' ? 'bg-green-500' :
     integration.status === 'paused' ? 'bg-yellow-500' :
@@ -225,7 +209,6 @@ function ChatIntegrationSubItem({
               <AppLink
                 to="/agents/$slug/chat/$integrationId"
                 params={{ slug: agentSlug, integrationId: integration.id }}
-                onClick={handleSelect}
                 className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
               >
                 <span className="truncate">
@@ -258,7 +241,6 @@ function ChatIntegrationSubItem({
                         to="/agents/$slug/chat/$integrationId"
                         params={{ slug: agentSlug, integrationId: integration.id }}
                         search={{ session: session.sessionId }}
-                        onClick={() => handleSessionSelect(session.sessionId)}
                         className={`flex items-center gap-2 w-full text-muted-foreground ${isArchived ? 'opacity-40' : 'opacity-70'}`}
                       >
                         <span className="truncate text-xs">
@@ -289,7 +271,6 @@ function ChatIntegrationSubItem({
           <AppLink
             to="/agents/$slug/chat/$integrationId"
             params={{ slug: agentSlug, integrationId: integration.id }}
-            onClick={handleSelect}
             className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
           >
             <span className="truncate">
@@ -348,15 +329,9 @@ function DashboardSubItem({
   artifact: ArtifactInfo
   agentSlug: string
 }) {
-  const { setAgent } = useSelection()
   const { slug: routeSlug, dashSlug: routeDashSlug } = useParams({ strict: false }) as { slug?: string; dashSlug?: string }
   const isSelected = routeSlug === agentSlug && routeDashSlug === artifact.slug
   const [isRenaming, setIsRenaming] = useState(false)
-
-  // AppLink navigates; keep Selection in sync for the bridge until R14.
-  const handleSelect = () => {
-    setAgent(agentSlug, { kind: 'dashboard', slug: artifact.slug })
-  }
 
   const handleDoubleClick = () => {
     openDashboardExternal(agentSlug, artifact.slug, artifact.name)
@@ -378,7 +353,6 @@ function DashboardSubItem({
           <AppLink
             to="/agents/$slug/dashboards/$dashSlug"
             params={{ slug: agentSlug, dashSlug: artifact.slug }}
-            onClick={handleSelect}
             onDoubleClick={handleDoubleClick}
             className="flex items-center gap-2 w-full"
           >
@@ -521,7 +495,7 @@ export const AgentMenuItem = React.forwardRef<
   { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
-  const { setAgent, view } = useSelection()
+  const { view } = useRouteLocation()
   const { agentMemberCount } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
@@ -601,12 +575,6 @@ export const AgentMenuItem = React.forwardRef<
     }
   }, [isOpen, agent.slug, queryClient])
 
-  // AppLink handles the navigation; this keeps Selection in sync for the bridge
-  // until R14 (the highlight itself is route-derived now).
-  const handleSelect = () => {
-    setAgent(agent.slug)
-  }
-
   const handleChevronClick = (e: React.MouseEvent) => {
     e.stopPropagation()
     setIsOpen((prev) => !prev)
@@ -628,7 +596,7 @@ export const AgentMenuItem = React.forwardRef<
               className="justify-between pl-7"
               data-testid={`agent-item-${agent.slug}`}
             >
-              <AppLink to="/agents/$slug" params={{ slug: agent.slug }} onClick={handleSelect}>
+              <AppLink to="/agents/$slug" params={{ slug: agent.slug }}>
                 <span className="flex items-center gap-1.5 min-w-0">
                   <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
                   {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
@@ -729,13 +697,12 @@ if (__RENDER_TRACKING__) {
 function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const unreadCount = countData?.count ?? 0
-  const { setView } = useSelection()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isActive = pathname === '/notifications'
 
   return (
     <SidebarMenuButton asChild data-testid="notifications-button" isActive={isActive}>
-      <AppLink to="/notifications" onClick={() => setView({ kind: 'notifications' })}>
+      <AppLink to="/notifications">
         <Bell className="h-4 w-4" />
         <span>Notifications</span>
         {unreadCount > 0 && (
@@ -821,7 +788,6 @@ export function AppSidebar() {
       window.electronAPI?.removeOpenCreateAgent?.()
     }
   }, [createUntitledAgent])
-  const { clearSelection } = useSelection()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const { openSearch } = useSearch()
   const { data: agents, isLoading, error } = useAgents()
@@ -994,7 +960,7 @@ export function AppSidebar() {
                     isActive={pathname === '/'}
                     data-testid="home-button"
                   >
-                    <AppLink to="/" onClick={() => clearSelection()}>
+                    <AppLink to="/">
                       <LayoutGrid className="h-4 w-4" />
                       <span>Home</span>
                     </AppLink>

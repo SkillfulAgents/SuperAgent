@@ -1,4 +1,3 @@
-import { useSelection } from '@renderer/context/selection-context'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { SquareMousePointer, ArrowUpRight } from 'lucide-react'
@@ -29,16 +28,9 @@ export function DashboardCard({
   agentSlug: string
   variant?: 'overlay' | 'push'
 }) {
-  const { setAgent } = useSelection()
-
-  // AppLink navigates; keep Selection in sync for the bridge until R14.
-  const handleSelect = () => {
-    setAgent(agentSlug, { kind: 'dashboard', slug: dashboard.slug })
-  }
   const linkProps = {
     to: '/agents/$slug/dashboards/$dashSlug',
     params: { slug: agentSlug, dashSlug: dashboard.slug },
-    onClick: handleSelect,
   } as const
 
   const screenshotUrl = dashboard.hasScreenshot

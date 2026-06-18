@@ -4,7 +4,6 @@ import { ChevronLeft, CalendarClock, Zap } from 'lucide-react'
 import { useEffect } from 'react'
 import { useSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
-import { useSelection } from '@renderer/context/selection-context'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { usePendingMessages } from '@renderer/context/pending-messages-context'
 import { useUser } from '@renderer/context/user-context'
@@ -32,7 +31,6 @@ interface SessionViewProps {
 export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   useRenderTracker('SessionView')
   const navigate = useNavigate()
-  const { setView } = useSelection()
   const { data: session } = useSession(sessionId, agentSlug)
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
   const {
@@ -79,7 +77,6 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
             <button
               onClick={() => {
                 const taskId = session.scheduledTaskId!
-                setView({ kind: 'task', id: taskId })
                 void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agentSlug, taskId } })
               }}
               className="inline-flex items-center gap-1 text-primary hover:underline shrink-0"
@@ -101,7 +98,6 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
             <button
               onClick={() => {
                 const webhookId = session.webhookTriggerId!
-                setView({ kind: 'webhook', id: webhookId })
                 void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agentSlug, webhookId } })
               }}
               className="inline-flex items-center gap-1 text-primary hover:underline shrink-0"

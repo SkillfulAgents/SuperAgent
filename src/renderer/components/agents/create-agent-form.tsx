@@ -10,7 +10,6 @@ import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
-import { useSelection } from '@renderer/context/selection-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -52,7 +51,6 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
 
   const createAgent = useCreateAgent()
   const createSession = useCreateSession()
-  const { setAgent } = useSelection()
   const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
@@ -60,14 +58,13 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   const finishCreatedAgent = useCallback(
     async (agent: ApiAgent, source: 'new' | 'import' | 'skillset', hasOnboarding?: boolean) => {
       track('agent_created', { source, num_skills_added_at_creation: 0 })
-      setAgent(agent.slug)
       void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
       if (hasOnboarding) {
         await startOnboardingSession(agent.slug)
       }
       await onAgentCreated?.()
     },
-    [track, setAgent, navigate, startOnboardingSession, onAgentCreated],
+    [track, navigate, startOnboardingSession, onAgentCreated],
   )
 
   const composer = useMessageComposer({
@@ -90,7 +87,6 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
           model: 'opus',
         })
         track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
-        setAgent(newAgent.slug, { kind: 'session', id: session.id })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.slug, sessionId: session.id } })
         await onAgentCreated?.()
       } catch (error) {
@@ -99,7 +95,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
           description: error instanceof Error ? error.message : 'Please try again.',
         })
       }
-    }, [createAgent, createSession, setAgent, navigate, track, onAgentCreated]),
+    }, [createAgent, createSession, navigate, track, onAgentCreated]),
   })
 
   useEffect(() => {

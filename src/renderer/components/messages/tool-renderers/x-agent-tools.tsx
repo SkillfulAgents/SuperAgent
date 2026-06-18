@@ -1,7 +1,6 @@
 import { SquareGanttChart, SquarePlus, SquareArrowRight, MessagesSquare, ArrowUpRight } from 'lucide-react'
 import type { ToolRenderer, ToolRendererProps } from './types'
 import { ResultBlock } from './shared'
-import { useSelection } from '@renderer/context/selection-context'
 import { AppLink } from '@renderer/components/ui/app-link'
 import {
   listAgentsDef,
@@ -18,12 +17,10 @@ import {
 // ── shared helpers ────────────────────────────────────────────
 
 function AgentLink({ slug, label }: { slug: string; label?: string }) {
-  const { setAgent } = useSelection()
   return (
     <AppLink
       to="/agents/$slug"
       params={{ slug }}
-      onClick={() => setAgent(slug)}
       className="inline-flex items-center gap-1 text-primary hover:underline"
     >
       {label ?? slug}
@@ -33,12 +30,10 @@ function AgentLink({ slug, label }: { slug: string; label?: string }) {
 }
 
 function SessionLink({ slug, sessionId }: { slug: string; sessionId: string }) {
-  const { setAgent } = useSelection()
   return (
     <AppLink
       to="/agents/$slug/sessions/$sessionId"
       params={{ slug, sessionId }}
-      onClick={() => setAgent(slug, { kind: 'session', id: sessionId })}
       className="inline-flex items-center gap-1 font-mono text-xs text-primary hover:underline"
     >
       {sessionId.slice(0, 12)}…

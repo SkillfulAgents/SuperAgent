@@ -55,8 +55,20 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 vi.mock('@renderer/components/ui/app-link', () => ({
   // Strip the link-specific props so they don't land as DOM attributes; forward
   // the rest (onClick/className/data-testid) to a plain anchor.
-  AppLink: ({ children, to: _to, params: _params, search: _search, activeClassName: _ac, activeOptions: _ao, noDrag: _nd, ...props }: Record<string, unknown> & { children?: unknown }) =>
-    createElement('a', { href: '#', ...props }, children as never),
+  AppLink: ({ children, to, params, search, activeClassName: _ac, activeOptions: _ao, noDrag: _nd, ...props }: Record<string, unknown> & { children?: unknown }) =>
+    createElement(
+      'a',
+      {
+        href: '#',
+        // Expose the route target so tests can assert navigation (the real
+        // <a href> isn't built in jsdom; data-* attrs avoid React DOM warnings).
+        'data-to': to,
+        'data-params': params ? JSON.stringify(params) : undefined,
+        'data-search': search ? JSON.stringify(search) : undefined,
+        ...props,
+      },
+      children as never,
+    ),
 }))
 
 // DialogContext drives global settings via the router now (R12). Renderer unit
@@ -66,4 +78,13 @@ vi.mock('@renderer/components/ui/app-link', () => ({
 vi.mock('@renderer/context/dialog-context', () => ({
   DialogProvider: ({ children }: { children: React.ReactNode }) => children,
   useDialogs: () => ({ openSettings: vi.fn(), closeSettings: vi.fn(), openWizard: vi.fn() }),
+}))
+
+// Components read navigation state via `useRouteLocation()` now (R14, the route-
+// derived replacement for `useSelection`). It calls `useRouterState()`, which
+// throws outside a RouterProvider — renderer unit tests have none. Default it to
+// the global home; a file-level vi.mock overrides where a test asserts behavior
+// that depends on the active view/slug.
+vi.mock('@renderer/router/use-route-location', () => ({
+  useRouteLocation: () => ({ selectedAgentSlug: null, view: { kind: 'home' } }),
 }))

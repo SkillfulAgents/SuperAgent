@@ -373,11 +373,9 @@ describe('AppSidebar — layout & top nav', () => {
     expect(screen.getByText('v0.1.0-test')).toBeInTheDocument()
   })
 
-  it('clears selection when Home is clicked', async () => {
-    const user = userEvent.setup()
+  it('Home links to the global home route', () => {
     renderWithProviders(<AppSidebar />)
-    await user.click(screen.getByTestId('home-button'))
-    expect(mockSelectionContext.clearSelection).toHaveBeenCalled()
+    expect(screen.getByTestId('home-button')).toHaveAttribute('data-to', '/')
   })
 
   it('creates an untitled agent when New Agent is clicked', async () => {
@@ -419,12 +417,13 @@ describe('AppSidebar — agent rows', () => {
     expect(screen.getByLabelText('unread notifications')).toBeInTheDocument()
   })
 
-  it('row click selects the agent without expanding', async () => {
+  it('agent row links to the agent route without expanding', async () => {
     const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
     const row = screen.getByTestId('agent-item-test-agent')
+    expect(row).toHaveAttribute('data-to', '/agents/$slug')
+    expect(row).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent' }))
     await user.click(row)
-    expect(mockSelectionContext.setAgent).toHaveBeenCalledWith('test-agent')
     // Row click does NOT toggle expansion → no session sub-items rendered.
     expect(screen.queryByTestId('session-item-session-1')).not.toBeInTheDocument()
   })
@@ -449,12 +448,12 @@ describe('AppSidebar — agent rows', () => {
     expect(screen.getByText('Session 1')).toBeInTheDocument()
   })
 
-  it('selects agent and session on session click', async () => {
+  it('session sub-item links to the session route', () => {
     mockRouteParams = { slug: 'test-agent' }
-    const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
-    await user.click(screen.getByTestId('session-item-session-1'))
-    expect(mockSelectionContext.setAgent).toHaveBeenCalledWith('test-agent', { kind: 'session', id: 'session-1' })
+    const sessionItem = screen.getByTestId('session-item-session-1')
+    expect(sessionItem).toHaveAttribute('data-to', '/agents/$slug/sessions/$sessionId')
+    expect(sessionItem).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent', sessionId: 'session-1' }))
   })
 
   it('shows an unread dot on a session sub-item with hasUnreadNotifications', () => {
@@ -486,11 +485,9 @@ describe('AppSidebar — notifications', () => {
     expect(button.querySelector('[aria-label="3 unread"]')).not.toBeNull()
   })
 
-  it('navigates to the notifications page when the button is clicked', async () => {
-    const user = userEvent.setup()
+  it('Notifications links to the notifications route', () => {
     renderWithProviders(<AppSidebar />)
-    await user.click(screen.getByTestId('notifications-button'))
-    expect(mockSelectionContext.setView).toHaveBeenCalledWith({ kind: 'notifications' })
+    expect(screen.getByTestId('notifications-button')).toHaveAttribute('data-to', '/notifications')
   })
 })
 

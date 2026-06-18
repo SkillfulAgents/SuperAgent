@@ -1,6 +1,5 @@
 import { ArrowDownToLine, ArrowRight, MessageSquare } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { useSelection } from '@renderer/context/selection-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useSession } from '@renderer/hooks/use-sessions'
@@ -24,7 +23,6 @@ function useSessionLabel(slug: string | undefined, sessionId: string | undefined
 
 function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) {
   const { session_id, agent_slug, description } = input as DeliverSessionInput
-  const { setAgent } = useSelection()
   const navigate = useNavigate()
 
   // agent_slug from input wins (x-agent case); fall back to the message's agent
@@ -35,7 +33,6 @@ function ExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) 
 
   const handleOpen = () => {
     if (!targetSlug || !session_id) return
-    setAgent(targetSlug, { kind: 'session', id: session_id })
     void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: targetSlug, sessionId: session_id } })
   }
 
@@ -90,7 +87,6 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
   const targetSlug = agent_slug || agentSlug
   const targetName = useAgentName(targetSlug)
   const sessionLabel = useSessionLabel(targetSlug, session_id)
-  const { setAgent } = useSelection()
   const navigate = useNavigate()
 
   if (!session_id || !targetSlug || isError) return null
@@ -102,7 +98,6 @@ function CollapsedContent({ input, isError, agentSlug }: CollapsedContentProps) 
       type="button"
       onClick={(e) => {
         e.stopPropagation()
-        setAgent(targetSlug, { kind: 'session', id: session_id })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: targetSlug, sessionId: session_id } })
       }}
       className="inline-flex min-w-0 max-w-full items-center gap-1 px-2 py-0.5 rounded border text-xs text-muted-foreground hover:text-foreground hover:bg-muted whitespace-nowrap"

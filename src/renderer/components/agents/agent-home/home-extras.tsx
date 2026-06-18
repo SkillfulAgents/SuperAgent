@@ -4,7 +4,6 @@ import { ArrowUpRight, ChevronRight, Copy } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { apiFetch } from '@renderer/lib/api'
 import { isElectron } from '@renderer/lib/env'
-import { useSelection } from '@renderer/context/selection-context'
 
 interface HomeExtrasProps {
   agentSlug: string
@@ -14,7 +13,6 @@ interface HomeExtrasProps {
 
 export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasProps) {
   const [error, setError] = useState<string | null>(null)
-  const { setView } = useSelection()
   const navigate = useNavigate()
 
   const handleOpenDirectory = async () => {
@@ -55,7 +53,6 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
         <ExtrasButton
           label="API Logs"
           onClick={() => {
-            setView({ kind: 'apiLogs' })
             void navigate({ to: '/agents/$slug/api-logs', params: { slug: agentSlug } })
           }}
           testId="home-api-logs-open-page"

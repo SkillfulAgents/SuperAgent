@@ -22,7 +22,6 @@ import {
   useClearChatSession,
 } from '@renderer/hooks/use-chat-integrations'
 import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
-import { useSelection } from '@renderer/context/selection-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import {
@@ -61,7 +60,6 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
   const deleteIntegration = useDeleteChatIntegration()
   const updateIntegration = useUpdateChatIntegration()
   const clearSession = useClearChatSession()
-  const { handleChatIntegrationDeleted, setView } = useSelection()
   const navigate = useNavigate()
   // The active sub-session comes from the URL search now (deep-linkable).
   const selectedChatSessionId = chatSessionId
@@ -76,8 +74,6 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
     try {
       await deleteIntegration.mutateAsync({ id: integrationId, agentSlug })
       // Always invoked while viewing this integration's route → up-nav home.
-      // setView keeps Selection consistent until R14.
-      handleChatIntegrationDeleted(integrationId)
       void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to delete chat integration:', err)
@@ -199,7 +195,6 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
                         const sessionId = e.target.value
                         // Push (not replace): each sub-session is a real history
                         // entry so Back walks them (migration plan §7.3).
-                        setView({ kind: 'chat', integrationId, sessionId })
                         void navigate({
                           to: '/agents/$slug/chat/$integrationId',
                           params: { slug: agentSlug, integrationId },

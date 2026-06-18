@@ -5,7 +5,6 @@ import { format } from 'date-fns'
 import { useNavigate } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { useSelection } from '@renderer/context/selection-context'
 import { Button } from '@renderer/components/ui/button'
 import {
   Table,
@@ -154,7 +153,6 @@ function EntryDetails({ entry }: { entry: AuditLogEntry }) {
 
 export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
   useRenderTracker('ApiLogsView')
-  const { setView } = useSelection()
   const navigate = useNavigate()
   const [page, setPage] = useState(0)
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -183,7 +181,6 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
         title="API Logs"
         back={{
           onClick: () => {
-            setView({ kind: 'home' })
             void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
           },
           testId: 'api-logs-back-button',

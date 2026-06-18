@@ -9,7 +9,7 @@ import {
   useMarkAllNotificationsRead,
   type ApiNotification,
 } from '@renderer/hooks/use-notifications'
-import { useSelection } from '@renderer/context/selection-context'
+import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useNavigate } from '@tanstack/react-router'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { useAgents } from '@renderer/hooks/use-agents'
@@ -32,7 +32,6 @@ function NotificationRow({
   agentName: string | null
 }) {
   const markRead = useMarkNotificationRead()
-  const { setAgent } = useSelection()
 
   // A chat-integration notification has no session to open — it lands on the
   // agent home; every other notification opens its session.
@@ -40,12 +39,8 @@ function NotificationRow({
     notification.type !== 'session_chat_integration' ? notification.sessionId : null
 
   const handleClick = () => {
-    // Keep feeding SelectionContext for the bridge (until R14); the <AppLink>
-    // owns the actual navigation now (real <a href> → web new-tab on cmd-click).
-    setAgent(
-      notification.agentSlug,
-      sessionId ? { kind: 'session', id: sessionId } : { kind: 'home' },
-    )
+    // The <AppLink> owns the actual navigation now (real <a href> → web new-tab
+    // on cmd-click).
     if (!notification.isRead) {
       markRead.mutate(notification.id)
     }
@@ -153,7 +148,7 @@ const PAGE_SIZE = 15
 
 export function NotificationsView() {
   useRenderTracker('NotificationsView')
-  const { setView, selectedAgentSlug } = useSelection()
+  const { selectedAgentSlug } = useRouteLocation()
   const navigate = useNavigate()
   const [page, setPage] = useState(0)
   const offset = page * PAGE_SIZE
@@ -179,7 +174,6 @@ export function NotificationsView() {
         title="Notifications"
         back={{
           onClick: () => {
-            setView({ kind: 'home' })
             void navigate(
               selectedAgentSlug
                 ? { to: '/agents/$slug', params: { slug: selectedAgentSlug } }

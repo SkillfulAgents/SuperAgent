@@ -1,6 +1,6 @@
 import { Power, Square, Clock, Loader2, Zap } from 'lucide-react'
-import { useSelection } from '@renderer/context/selection-context'
 import { AppLink } from '@renderer/components/ui/app-link'
+import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useAgent, type useStartAgent, type useStopAgent } from '@renderer/hooks/use-agents'
 import { useSessions, useSession } from '@renderer/hooks/use-sessions'
 import { useScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
@@ -32,7 +32,7 @@ interface AgentHeaderProps {
  * survives a reload with no hand-computed leaf flag.
  */
 export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHeaderProps) {
-  const { view, setView } = useSelection()
+  const { view } = useRouteLocation()
   const sessionId = view.kind === 'session' ? view.id : null
   const scheduledTaskId = view.kind === 'task' ? view.id : null
   const webhookTriggerId = view.kind === 'webhook' ? view.id : null
@@ -60,9 +60,6 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
             to="/agents/$slug"
             params={{ slug }}
             activeOptions={{ exact: true }}
-            // The agent home is the same slug, so the bridge preserves the
-            // current sub-view (slug-only sync) — force `home` explicitly here.
-            onClick={() => setView({ kind: 'home' })}
             noDrag
             // Route-derived leaf styling: foreground only when this link is the
             // exact active route (`data-status=active`), muted/clickable otherwise.
@@ -91,7 +88,6 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                 <AppLink
                   to="/agents/$slug/tasks/$taskId"
                   params={{ slug, taskId: taskCrumbId }}
-                  onClick={() => setView({ kind: 'task', id: taskCrumbId })}
                   noDrag
                   className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
                 >
@@ -123,7 +119,6 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                 <AppLink
                   to="/agents/$slug/webhooks/$webhookId"
                   params={{ slug, webhookId: webhookCrumbId }}
-                  onClick={() => setView({ kind: 'webhook', id: webhookCrumbId })}
                   noDrag
                   className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors"
                 >
@@ -163,7 +158,6 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
           <ConnectionsCrumbs
             slug={slug}
             detail={view.kind === 'connections' ? view.detail ?? null : null}
-            onOpenList={() => setView({ kind: 'connections' })}
           />
         )}
       </div>
@@ -248,11 +242,9 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
 function ConnectionsCrumbs({
   slug,
   detail,
-  onOpenList,
 }: {
   slug: string
   detail: { rowKey: string; source: 'home' | 'list' } | null
-  onOpenList: () => void
 }) {
   const { data: accountsData } = useConnectedAccounts()
   const { data: mcpsData } = useRemoteMcps()
@@ -286,7 +278,6 @@ function ConnectionsCrumbs({
             to="/agents/$slug/connections"
             params={{ slug }}
             // No `search` → drops `?detail`/`?source`, returning to the list.
-            onClick={onOpenList}
             noDrag
             className="truncate text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
             data-testid="connections-breadcrumb"

@@ -1,6 +1,5 @@
 import { useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { useSelection } from '../context/selection-context'
 
 interface TrayNavigationHandlerProps {
   children: React.ReactNode
@@ -11,7 +10,6 @@ interface TrayNavigationHandlerProps {
  * Must be rendered inside SelectionProvider.
  */
 export function TrayNavigationHandler({ children }: TrayNavigationHandlerProps) {
-  const { setAgent } = useSelection()
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -20,7 +18,6 @@ export function TrayNavigationHandler({ children }: TrayNavigationHandlerProps) 
     }
 
     window.electronAPI.onNavigateToAgent((agentSlug, sessionId) => {
-      setAgent(agentSlug, sessionId ? { kind: 'session', id: sessionId } : { kind: 'home' })
       if (sessionId) {
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId } })
       } else {
@@ -31,7 +28,7 @@ export function TrayNavigationHandler({ children }: TrayNavigationHandlerProps) 
     return () => {
       window.electronAPI?.removeNavigateToAgent?.()
     }
-  }, [setAgent, navigate])
+  }, [navigate])
 
   return <>{children}</>
 }
