@@ -52,6 +52,7 @@ describe('BrowserInputRequestItem', () => {
     const [url, opts] = mockApiFetch.mock.calls[0]
     expect(url).toBe(COMPLETE_URL)
     expect(opts.body).toContain('"decline":true')
+    expect(opts.body).not.toContain('declineReason') // reason travels via /messages, not the decline body
     expect(defaultProps.onComplete).toHaveBeenCalled()
   })
 
@@ -73,6 +74,10 @@ describe('BrowserInputRequestItem', () => {
     expect(mockApiFetch.mock.calls[1][1].body).toContain('Skip the login, the data is public at /api/x')
   })
 
+  // NOTE: with onComplete mocked as a no-op the item stays mounted, so the error
+  // banner is assertable here. In production onComplete removes the request and
+  // unmounts the item, so the banner is best-effort; the draft-probe assertion below
+  // is the load-bearing one — the preserved composer draft is the durable recovery.
   it('decline with reason where the message send fails → surfaces error and preserves the reason in the composer draft', async () => {
     const user = userEvent.setup()
     mockApiFetch
