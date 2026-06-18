@@ -211,6 +211,9 @@ export function BrowserTrayContent({
               label="Decline"
               showIcon={false}
               size="sm"
+              // Chevron sits inside the grey action bar; clear the bar's bottom edge
+              // (plus a small gap) rather than offsetting from the chevron.
+              popoverSideOffset={18}
               className="h-7 text-xs border-border text-foreground hover:bg-muted"
               data-testid="browser-tray-decline-btn"
             />

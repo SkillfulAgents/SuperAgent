@@ -11,6 +11,8 @@ interface DeclineButtonProps {
   label?: string
   showIcon?: boolean
   size?: 'sm' | 'xs'
+  /** Gap (px) between the chevron trigger and the popover. Defaults to the popover's own spacing. */
+  popoverSideOffset?: number
   'data-testid'?: string
 }
 
@@ -21,6 +23,7 @@ export function DeclineButton({
   label = 'Decline',
   showIcon = true,
   size = 'xs',
+  popoverSideOffset,
   'data-testid': testId
 }: DeclineButtonProps) {
   const [open, setOpen] = useState(false)
@@ -59,6 +62,7 @@ export function DeclineButton({
         </PopoverTrigger>
         <PopoverContent
           align="end"
+          sideOffset={popoverSideOffset}
           className="w-80 p-0"
           onOpenAutoFocus={(e) => {
             e.preventDefault()
