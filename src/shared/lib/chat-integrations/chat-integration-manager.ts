@@ -388,6 +388,10 @@ class ChatIntegrationManager {
       this.emitNotification(integration, 'error', error.message)
     })
 
+    // Intentionally provider-agnostic and NOT access-gated: Telegram excludes typing hints
+    // from allowed_updates today, so this never fires in practice. If a future provider (or
+    // Telegram config change) emits typing hints, add an isChatAllowed check here before
+    // pre-warming to avoid leaking container resources for ungated chats.
     conn.typingHintUnsubscribe = connector.onTypingHint(() => {
       this.preWarmContainer(integration.agentSlug)
     })

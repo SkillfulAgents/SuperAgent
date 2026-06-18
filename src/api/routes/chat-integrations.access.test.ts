@@ -325,6 +325,30 @@ describe('chat-integrations access routes', () => {
         .prepare(`SELECT status FROM chat_integration_access WHERE id = ?`)
         .get(accessId) as { status: string } | undefined
       expect(row?.status).toBe('denied')
+      // tearDownChatSession IS called (it's a no-op when no live session exists);
+      // the key is that it does not throw.
+      expect(mockTearDownChatSession).toHaveBeenCalledWith(INTEGRATION_A, 'chat-pending')
+    })
+
+    it('tears down the live session when denying an already-allowed chat', async () => {
+      const accessId = seedAccess(INTEGRATION_A, 'chat-allowed', 'allowed')
+
+      const res = await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}/access/${accessId}/deny`,
+        { method: 'POST' },
+      )
+      expect(res.status).toBe(200)
+      const body = await res.json() as { ok: boolean }
+      expect(body.ok).toBe(true)
+
+      // The row should now be denied
+      const row = testSqlite
+        .prepare(`SELECT status FROM chat_integration_access WHERE id = ?`)
+        .get(accessId) as { status: string } | undefined
+      expect(row?.status).toBe('denied')
+
+      // tearDownChatSession must be called to kill the live SSE/forwarding session
+      expect(mockTearDownChatSession).toHaveBeenCalledWith(INTEGRATION_A, 'chat-allowed')
     })
   })
 })

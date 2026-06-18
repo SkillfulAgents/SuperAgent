@@ -161,6 +161,9 @@ export class TelegramConnector extends ChatClientConnector {
       const photos = ctx.message.photo
       if (!photos || photos.length === 0) return
 
+      const chatType = (ctx.chat as { type: string }).type
+      if (chatType === 'channel') return // out of scope v1; no chat row
+
       // Use the largest photo version (last in array)
       const largest = photos[photos.length - 1]
       const chatId = String(ctx.chat.id)
@@ -177,7 +180,7 @@ export class TelegramConnector extends ChatClientConnector {
         text: ctx.message.caption || '',
         chatId,
         userId: String(ctx.from?.id || ''),
-        chatType: (ctx.chat as { type: string }).type as 'private' | 'group' | 'supergroup',
+        chatType: chatType as 'private' | 'group' | 'supergroup',
         userName,
         chatName: (ctx.chat as any).title || userName || undefined,
         files: [{
@@ -192,6 +195,9 @@ export class TelegramConnector extends ChatClientConnector {
     // Handle document uploads (for file request resolution)
     this.bot.on('message:document', async (ctx) => {
       const doc = ctx.message.document
+      const chatType = (ctx.chat as { type: string }).type
+      if (chatType === 'channel') return // out of scope v1; no chat row
+
       const chatId = String(ctx.chat.id)
       let url = ''
       try {
@@ -206,7 +212,7 @@ export class TelegramConnector extends ChatClientConnector {
         text: ctx.message.caption || '',
         chatId,
         userId: String(ctx.from?.id || ''),
-        chatType: (ctx.chat as { type: string }).type as 'private' | 'group' | 'supergroup',
+        chatType: chatType as 'private' | 'group' | 'supergroup',
         userName,
         chatName: (ctx.chat as any).title || userName || undefined,
         files: [{

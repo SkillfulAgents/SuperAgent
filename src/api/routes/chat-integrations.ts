@@ -445,7 +445,7 @@ for (const verb of ['approve', 'deny', 'revoke'] as const) {
       if (ok) {
         logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
         if (verb === 'approve') chatIntegrationManager.notifyChatApproved(integrationId, row.externalChatId).catch(() => {})
-        if (verb === 'revoke') await chatIntegrationManager.tearDownChatSession(integrationId, row.externalChatId)
+        if (verb === 'revoke' || verb === 'deny') await chatIntegrationManager.tearDownChatSession(integrationId, row.externalChatId)
       }
       return c.json({ ok })
     } catch (error) {
