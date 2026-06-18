@@ -49,3 +49,30 @@ export function AgentLoadError() {
     </div>
   )
 }
+
+/**
+ * Rendered by the session leaf when the session 404s with no optimistic message
+ * in flight — a deep-link to a non-existent / deleted session (R17). Stays
+ * inside the agent shell (sidebar + agent header remain), with a link back to
+ * the agent home.
+ */
+export function SessionNotFound({ agentSlug }: { agentSlug: string }) {
+  return (
+    <div
+      data-testid="session-not-found"
+      className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center"
+    >
+      <h2 className="text-lg font-medium">Session not available</h2>
+      <p className="max-w-sm text-sm text-muted-foreground">
+        This session doesn’t exist, or it was deleted.
+      </p>
+      <AppLink
+        to="/agents/$slug"
+        params={{ slug: agentSlug }}
+        className={buttonVariants({ variant: 'outline', size: 'sm' })}
+      >
+        Back to agent
+      </AppLink>
+    </div>
+  )
+}

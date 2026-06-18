@@ -1,4 +1,4 @@
-import { Outlet, useParams, useSearch } from '@tanstack/react-router'
+import { Outlet, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
@@ -109,7 +109,17 @@ export function SessionRoute() {
 // renders; the index route handles `/settings` (no tab).
 function SettingsPageView({ tab }: { tab?: string }) {
   const { closeSettings, openWizard } = useDialogs()
-  return <GlobalSettingsPage onClose={closeSettings} onOpenWizard={openWizard} initialSection={tab} />
+  const navigate = useNavigate()
+  return (
+    <GlobalSettingsPage
+      onClose={closeSettings}
+      onOpenWizard={openWizard}
+      initialSection={tab}
+      // Switching tabs drives the URL → /settings/$tab (R17 URL-driven tabs),
+      // preserving `?from=` so the close-target survives a tab switch.
+      onSectionChange={(id) => navigate({ to: '/settings/$tab', params: { tab: id }, search: (prev) => prev })}
+    />
+  )
 }
 
 export function SettingsLayout() {

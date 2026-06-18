@@ -3,6 +3,8 @@ import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { ChevronLeft, CalendarClock, Zap } from 'lucide-react'
 import { useEffect } from 'react'
 import { useSession } from '@renderer/hooks/use-sessions'
+import { HttpError } from '@renderer/lib/api'
+import { SessionNotFound } from '@renderer/router/route-fallbacks'
 import { useNavigate } from '@tanstack/react-router'
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { usePendingMessages } from '@renderer/context/pending-messages-context'
@@ -31,7 +33,7 @@ interface SessionViewProps {
 export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
   useRenderTracker('SessionView')
   const navigate = useNavigate()
-  const { data: session } = useSession(sessionId, agentSlug)
+  const { data: session, error: sessionError } = useSession(sessionId, agentSlug)
   const markSessionNotificationsRead = useMarkSessionNotificationsRead()
   const {
     getPendingMessages,
@@ -67,6 +69,18 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A genuine 404 (deep-link to a non-existent / deleted session) → ambiguous
+  // not-found (R17). The pending-messages guard means a just-created session
+  // (optimistic ghost in flight while the backend catches up) never flashes
+  // not-found — and the agent-level loader has already gated access.
+  if (
+    sessionError instanceof HttpError &&
+    sessionError.status === 404 &&
+    getPendingMessages(sessionId).length === 0
+  ) {
+    return <SessionNotFound agentSlug={agentSlug} />
+  }
 
   return (
     <>

@@ -26,9 +26,10 @@ interface GlobalSettingsPageProps {
   onClose: () => void
   onOpenWizard: () => void
   initialSection?: string
+  onSectionChange?: (id: string) => void
 }
 
-export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection }: GlobalSettingsPageProps) {
+export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSectionChange }: GlobalSettingsPageProps) {
   const { isAuthMode, isAdmin } = useUser()
   const showAdminSettings = !isAuthMode || isAdmin
   const showAuthAdmin = isAuthMode && isAdmin
@@ -81,6 +82,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection }: Gl
       groups={groups}
       onClose={onClose}
       initialSection={initialSection}
+      onSectionChange={onSectionChange}
       data-testid="global-settings-page"
       navTestIdPrefix="settings"
     />

@@ -1,4 +1,4 @@
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, apiJson } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiSession } from '@shared/lib/types/api'
@@ -23,12 +23,15 @@ export function useSessions(agentSlug: string | null, options?: { staleTime?: nu
 export function useSession(id: string | null, agentSlug: string | null = null) {
   return useQuery<ApiSession>({
     queryKey: ['session', id, agentSlug],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${id}`)
-      if (!res.ok) throw new Error('Failed to fetch session')
-      return res.json()
-    },
+    // `apiJson` throws `HttpError` so the session leaf can tell a genuine 404
+    // (deep-link to a non-existent session) from a transient one (R17).
+    queryFn: () => apiJson<ApiSession>(`/api/agents/${agentSlug}/sessions/${id}`),
     enabled: !!id && !!agentSlug,
+    // KEEP the default retry (do NOT skip 404): a just-created session can 404
+    // transiently while the backend catches up, so retrying masks the
+    // create-then-navigate race. SessionView's not-found guard reads `error`,
+    // which React Query only sets once retries are exhausted — i.e. only for a
+    // genuinely missing session, never a still-settling new one.
   })
 }
 

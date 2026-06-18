@@ -399,4 +399,28 @@ test.describe('Navigation — discriminated AgentView', () => {
     await expect(page.locator('[data-testid="home-button"]')).toBeVisible()
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).not.toBeVisible()
   })
+
+  test('Deep-linking a non-existent session shows the not-found leaf (R17)', async ({ page }) => {
+    // A session deep-link within an ACCESSIBLE agent that doesn't exist → the
+    // session leaf shows the ambiguous not-found (guarded so a just-created
+    // session's optimistic ghost never flashes it). The agent shell stays.
+    const errors: string[] = []
+    page.on('pageerror', (e) => errors.push(e.message))
+
+    const agentName = `Nav SessionNF ${Date.now()}`
+    await agentPage.createAgent(agentName)
+    const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
+    expect(slug).toBeTruthy()
+
+    await page.goto(`/agents/${slug}/sessions/does-not-exist-r17`)
+    // The not-found surfaces only after useSession's retries are exhausted (it
+    // doesn't skip 404, to avoid false-firing on a still-settling new session).
+    await expect(page.locator('[data-testid="session-not-found"]')).toBeVisible({ timeout: 15000 })
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+    expect(errors).toEqual([])
+
+    // Cleanup
+    await agentPage.selectAgent(agentName)
+    await agentPage.deleteAgent()
+  })
 })

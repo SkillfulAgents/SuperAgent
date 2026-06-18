@@ -1,4 +1,4 @@
-import { createRootRouteWithContext, createRoute, notFound } from '@tanstack/react-router'
+import { createRootRouteWithContext, createRoute, notFound, redirect } from '@tanstack/react-router'
 import type { QueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 import type { UserContextValue } from '@renderer/context/user-context'
@@ -166,9 +166,16 @@ export const settingsIndexRoute = createRoute({
 export const settingsTabRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: '$tab',
-  // Strict tab validation against the enum (a junk `/settings/garbage` throws).
-  // The graceful junk→/settings redirect is a deferred R12 refinement.
-  params: { parse: (raw) => ({ tab: settingsTabSchema.parse(raw.tab) }) },
+  // Accept any non-empty tab at the param layer (R17); `beforeLoad` then
+  // gracefully redirects an unknown tab to `/settings` instead of throwing a
+  // param-parse error (a strict enum parse here hard-errors `/settings/garbage`).
+  params: { parse: (raw) => ({ tab: z.string().min(1).parse(raw.tab) }) },
+  beforeLoad: ({ params }) => {
+    if (!settingsTabSchema.safeParse(params.tab).success) {
+      // Preserve `?from=` so the close-target survives the normalization.
+      throw redirect({ to: '/settings', search: (prev) => prev })
+    }
+  },
   component: SettingsTabRoute,
 })
 

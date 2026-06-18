@@ -134,6 +134,22 @@ test.describe('Settings Page', () => {
     await expect(page).not.toHaveURL(/\/settings/)
   })
 
+  test('switching tabs drives the URL (R17 URL-driven tabs)', async ({ page }) => {
+    await openSettings(page)
+    // The tab navigates to /settings/$tab, preserving the ?from= close-target
+    // captured at open (hence the `(\?|$)` — the URL keeps `?from=/`).
+    await page.locator('[data-testid="settings-nav-runtime"]').click()
+    await expect(page).toHaveURL(/\/settings\/runtime(\?|$)/)
+    await page.locator('[data-testid="settings-nav-voice"]').click()
+    await expect(page).toHaveURL(/\/settings\/voice(\?|$)/)
+  })
+
+  test('an unknown settings tab redirects to /settings (R17 junk-tab)', async ({ page }) => {
+    await page.goto('/settings/totally-not-a-tab')
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await expect(page).toHaveURL(/\/settings(\?|$)/)
+  })
+
   test('app shell unmounts while settings is open and returns on close', async ({ page }) => {
     // App sidebar visible before opening settings
     await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()

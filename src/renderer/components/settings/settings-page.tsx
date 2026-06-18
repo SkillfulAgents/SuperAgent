@@ -82,6 +82,12 @@ interface SettingsPageProps {
   groups: SettingsPageSectionGroup[]
   initialSection?: string
   onClose: () => void
+  /**
+   * When provided, selecting a section calls this instead of relying solely on
+   * internal state — the global settings page uses it to drive the URL
+   * (`/settings/$tab`) so the active tab is shareable + back/forward-able (R17).
+   */
+  onSectionChange?: (id: string) => void
   navTestIdPrefix?: string
   'data-testid'?: string
 }
@@ -90,6 +96,7 @@ export function SettingsPage({
   groups,
   initialSection,
   onClose,
+  onSectionChange,
   navTestIdPrefix = 'settings',
   'data-testid': dataTestId,
 }: SettingsPageProps) {
@@ -99,6 +106,7 @@ export function SettingsPage({
         groups={groups}
         initialSection={initialSection}
         onClose={onClose}
+        onSectionChange={onSectionChange}
         navTestIdPrefix={navTestIdPrefix}
       />
     </SidebarProvider>
@@ -109,6 +117,7 @@ function SettingsPageContent({
   groups,
   initialSection,
   onClose,
+  onSectionChange,
   navTestIdPrefix,
 }: Omit<SettingsPageProps, 'data-testid'>) {
   const isMobile = useIsMobile()
@@ -135,6 +144,9 @@ function SettingsPageContent({
   const handleSectionClick = (id: string) => {
     setActive(id)
     if (isMobile) setMobileView('content')
+    // Drive the URL too when wired (R17); the effect above re-syncs `active`
+    // from the resulting `initialSection`, so the two never diverge.
+    onSectionChange?.(id)
   }
 
   const activeSection = allSections.find((s) => s.id === active)
