@@ -287,6 +287,7 @@ class ChatIntegrationManager {
   async ensureSession(integrationId: string, chatId: string): Promise<string> {
     const integration = getChatIntegration(integrationId)
     if (!integration) throw new Error(`Chat integration ${integrationId} not found`)
+    if (!isChatAllowed(integrationId, chatId)) throw new Error(`Chat ${chatId} is not allowed for integration ${integrationId}`)
 
     const existing = resolveActiveSession(
       integrationId, chatId, integration.sessionTimeout,

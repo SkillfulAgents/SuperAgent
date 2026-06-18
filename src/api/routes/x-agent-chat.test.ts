@@ -83,6 +83,12 @@ vi.mock('fs', () => ({
   appendFileSync: (...args: unknown[]) => mockAppendFileSync(...args),
 }))
 
+const mockIsChatAllowed = vi.fn()
+
+vi.mock('@shared/lib/services/chat-integration-access-service', () => ({
+  isChatAllowed: (...args: unknown[]) => mockIsChatAllowed(...args),
+}))
+
 import xAgentChat from './x-agent-chat'
 
 function createApp() {
@@ -140,6 +146,7 @@ describe('x-agent chat route', () => {
     mockEnsureRunning.mockResolvedValue({ sendMessage: containerSendMessage })
     mockGetSessionJsonlPath.mockReturnValue('/tmp/superagent/agent-one/session-1.jsonl')
     mockExistsSync.mockReturnValue(false)
+    mockIsChatAllowed.mockReturnValue(true)
     vi.spyOn(Math, 'random').mockReturnValue(0)
   })
 
@@ -260,5 +267,42 @@ describe('x-agent chat route', () => {
       type: 'text',
       text: '[SYSTEM] A message was sent to the user on your behalf via chat integration:\nDaily summary is ready',
     }])
+  })
+
+  it('returns 403 when the chat is not approved for the integration', async () => {
+    immediateTimeout()
+    mockIsChatAllowed.mockReturnValue(false)
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        integration_id: 'integration-1',
+        message: 'Hello',
+        chat_id: 'chat-blocked',
+      }),
+    })
+
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'This chat is not approved for this integration.' })
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('sends message when isChatAllowed returns true', async () => {
+    immediateTimeout()
+    mockIsChatAllowed.mockReturnValue(true)
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        integration_id: 'integration-1',
+        message: 'Hello',
+        chat_id: 'chat-1',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(connector.sendMessage).toHaveBeenCalledWith('chat-1', { text: 'Hello' })
   })
 })

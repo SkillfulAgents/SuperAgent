@@ -24,6 +24,7 @@ import {
 } from '@shared/lib/chat-integrations/config-schema'
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
+import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
 
 type XAgentChatVariables = { callerSlug: string }
 
@@ -200,6 +201,10 @@ xAgentChat.post('/send', async (c) => {
         }, 400)
       }
       resolvedChatId = activeChats[0].externalChatId
+    }
+
+    if (!isChatAllowed(integration_id, resolvedChatId)) {
+      return c.json({ error: 'This chat is not approved for this integration.' }, 403)
     }
 
     // Send through connector (with a brief "working" indicator first)
