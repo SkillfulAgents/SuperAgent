@@ -35,6 +35,10 @@ vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: { ensureRunning: vi.fn() },
 }))
 
+vi.mock('@shared/lib/proxy/review-manager', () => ({
+  reviewManager: { submitDecision: vi.fn() },
+}))
+
 vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn(),
 }))
@@ -42,6 +46,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 import { chatIntegrationManager } from './chat-integration-manager'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { agentExists } from '@shared/lib/services/agent-service'
+import { reviewManager } from '@shared/lib/proxy/review-manager'
 import {
   getChatAccess,
   approveChatAccess,
@@ -60,6 +65,12 @@ interface ManagerInternals {
     integrationId: string,
     message: IncomingMessage,
     integration: unknown,
+  ) => Promise<void>
+  handleInteractiveResponse: (
+    integrationId: string,
+    toolUseId: string,
+    response: unknown,
+    chatId?: string,
   ) => Promise<void>
 }
 
@@ -261,5 +272,78 @@ describe('chat-integration inbound access gate', () => {
 
     expect(agentExists).toHaveBeenCalledTimes(1)
     expect(containerManager.ensureRunning).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 6 — callback gate on handleInteractiveResponse.
+//
+// Button-tap callbacks carry the originating chat id. The gate checks
+// isChatAllowed before any review/resolve logic, failing closed when the
+// chat id is missing (undefined → '' → not allowed).
+//
+// Spy: reviewManager.submitDecision — hit on the review: branch immediately
+// after the gate, so it's the cheapest probe for "did the handler run?"
+// ---------------------------------------------------------------------------
+
+describe('chat-integration callback access gate', () => {
+  function callback(chatId?: string): Promise<void> {
+    return mgr.handleInteractiveResponse(INT, 'review:test-review', { answer: 'allow' }, chatId)
+  }
+
+  beforeEach(() => {
+    testSqlite = new Database(':memory:')
+    testDb = drizzle(testSqlite, { schema })
+    migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
+    seedIntegration(true)
+
+    vi.mocked(reviewManager.submitDecision).mockReset()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    mgr.connections.clear()
+    mgr.messageQueues.clear()
+    mgr.chatSessions.clear()
+    injectConn()
+  })
+
+  afterEach(() => {
+    testSqlite?.close()
+    mgr.connections.clear()
+    mgr.messageQueues.clear()
+    mgr.chatSessions.clear()
+    vi.restoreAllMocks()
+  })
+
+  it('allowed chat → reaches the review/resolve path', async () => {
+    const id = insertAccess('c1', 'pending')
+    approveChatAccess(id, 'owner')
+
+    await callback('c1')
+
+    expect(reviewManager.submitDecision).toHaveBeenCalledTimes(1)
+    expect(reviewManager.submitDecision).toHaveBeenCalledWith('test-review', 'allow')
+  })
+
+  it('revoked chat → silently dropped before review/resolve', async () => {
+    const id = insertAccess('c1', 'pending')
+    approveChatAccess(id, 'owner')
+    revokeChatAccess(id, 'owner')
+
+    await callback('c1')
+
+    expect(reviewManager.submitDecision).not.toHaveBeenCalled()
+  })
+
+  it('unknown chat → silently dropped (no row)', async () => {
+    await callback('unknown-chat')
+
+    expect(reviewManager.submitDecision).not.toHaveBeenCalled()
+  })
+
+  it('chatId undefined → fails closed (empty string is not an allowed chat)', async () => {
+    // Even if there were a row for '', the gate must reject it.
+    await callback(undefined)
+
+    expect(reviewManager.submitDecision).not.toHaveBeenCalled()
   })
 })

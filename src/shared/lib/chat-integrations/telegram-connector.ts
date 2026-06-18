@@ -572,12 +572,12 @@ export class TelegramConnector extends ChatClientConnector {
           question: '_all',
           answer: '_all',
           answers: pending.answers,
-        })
+        }, chatId)
         this.pendingQuestions.delete(mapping.toolUseId)
       }
     } else {
       // Single question — emit immediately
-      this.emitInteractiveResponse(mapping.toolUseId, mapping.value)
+      this.emitInteractiveResponse(mapping.toolUseId, mapping.value, chatId)
     }
   }
 

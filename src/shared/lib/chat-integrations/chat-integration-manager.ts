@@ -373,8 +373,8 @@ class ChatIntegrationManager {
       this.enqueueMessage(integration.id, msg)
     })
 
-    conn.interactiveUnsubscribe = connector.onInteractiveResponse((toolUseId, response) => {
-      this.handleInteractiveResponse(integration.id, toolUseId, response).catch((err) => {
+    conn.interactiveUnsubscribe = connector.onInteractiveResponse((toolUseId, response, chatId) => {
+      this.handleInteractiveResponse(integration.id, toolUseId, response, chatId).catch((err) => {
         console.error(`[ChatIntegrationManager] Error handling interactive response for ${integration.id}:`, err)
         reportError(err, 'interactive-response', { integrationId: integration.id, provider: integration.provider, toolUseId })
       })
@@ -1260,7 +1260,10 @@ class ChatIntegrationManager {
     integrationId: string,
     toolUseId: string,
     response: unknown,
+    chatId?: string,
   ): Promise<void> {
+    if (!isChatAllowed(integrationId, chatId ?? '')) return // revoked/stale keyboard, or missing identity → fail closed
+
     // Handle proxy review decisions (tool approval requests)
     if (toolUseId.startsWith('review:')) {
       const parts = toolUseId.split(':')
