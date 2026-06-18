@@ -4,6 +4,9 @@ import { Globe } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
+import { RequestError } from './request-error'
+import { DeclineButton } from './decline-button'
+import { useDraft } from '@renderer/context/drafts-context'
 import { cn } from '@shared/lib/utils/cn'
 
 interface BrowserInputRequestItemProps {
@@ -31,8 +34,13 @@ export function BrowserInputRequestItem({
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [submittingAction, setSubmittingAction] = useState<SubmittingAction | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
 
-  const submitBrowserInput = async (body: object, successStatus: RequestStatus, action: SubmittingAction) => {
+  const submitBrowserInput = async (
+    body: object,
+    successStatus: RequestStatus,
+    action: SubmittingAction
+  ): Promise<boolean> => {
     setStatus('submitting')
     setSubmittingAction(action)
     setError(null)
@@ -54,25 +62,41 @@ export function BrowserInputRequestItem({
 
       setStatus(successStatus)
       onComplete()
+      return true
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Request failed')
       setStatus('pending')
       setSubmittingAction(null)
+      return false
     }
   }
 
   const handleComplete = () => submitBrowserInput({ toolUseId }, 'completed', 'completing')
 
-  const handleChatWithAgent = () =>
-    submitBrowserInput(
-      { toolUseId, decline: true, declineReason: 'User wants to chat with the agent' },
-      'declined',
-      'declining'
-    )
+  const handleDecline = async (reason?: string) => {
+    const ok = await submitBrowserInput({ toolUseId, decline: true }, 'declined', 'declining')
+    if (ok && reason) {
+      try {
+        const res = await apiFetch(
+          `/api/agents/${agentSlug}/sessions/${sessionId}/messages`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: reason }),
+          }
+        )
+        if (!res.ok) throw new Error('Failed to send your reason to the agent')
+      } catch (err: unknown) {
+        setSessionDraft(reason)
+        setError(err instanceof Error ? err.message : 'Failed to send your reason to the agent')
+      }
+    }
+  }
 
   const isCompleted = status === 'completed' || status === 'declined'
 
   return (
+    <>
     <RequestItemShell
       title={message}
       subtitle="Click 'Done' when you have completed the suggested steps."
@@ -92,7 +116,7 @@ export function BrowserInputRequestItem({
                 />
               ),
               label: <span className="text-sm">Browser Input</span>,
-              statusLabel: status === 'completed' ? 'Completed' : 'Cancelled',
+              statusLabel: status === 'completed' ? 'Completed' : 'Declined',
               isSuccess: status === 'completed',
             }
           : null
@@ -118,17 +142,15 @@ export function BrowserInputRequestItem({
       )}
 
       <RequestItemActions>
-        <Button
-          onClick={handleChatWithAgent}
-          loading={submittingAction === 'declining'}
+        <DeclineButton
+          onDecline={handleDecline}
           disabled={status === 'submitting'}
+          label="Decline"
+          showIcon={false}
           size="xs"
-          variant="outline"
-          className="h-8 min-w-24 border-border text-foreground hover:bg-muted"
-          data-testid="browser-input-chat-btn"
-        >
-          Dismiss
-        </Button>
+          className="border-border text-foreground hover:bg-muted"
+          data-testid="browser-input-decline-btn"
+        />
 
         <Button
           onClick={handleComplete}
@@ -142,5 +164,7 @@ export function BrowserInputRequestItem({
         </Button>
       </RequestItemActions>
     </RequestItemShell>
+    {isCompleted && error && <RequestError message={error} />}
+    </>
   )
 }
