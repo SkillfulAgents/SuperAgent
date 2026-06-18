@@ -856,12 +856,12 @@ describe('IMessageConnector', () => {
 
   // ── 8. Typing indicator ───────────────────────────────────────────
 
-  describe('showTypingIndicator', () => {
+  describe('startWorking', () => {
     it('sends start_typing command', async () => {
       const connector = createConnector()
       const ws = wireUp(connector)
 
-      await connector.showTypingIndicator('chat-1')
+      await connector.startWorking('chat-1')
 
       const messages = parseSent(ws)
       expect(messages).toHaveLength(1)

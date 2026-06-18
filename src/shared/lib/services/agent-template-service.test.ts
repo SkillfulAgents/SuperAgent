@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { createZipBuffer, openZipFromBuffer } from '@shared/lib/utils/zip'
+import { createZipBuffer, openZipFromBuffer, type ZipEntryMeta } from '@shared/lib/utils/zip'
 import type { SkillsetConfig, InstalledAgentMetadata } from '@shared/lib/types/skillset'
 
 // ============================================================================
@@ -54,6 +54,7 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 
 import {
   validateAgentTemplate,
+  validateTemplateEntries,
   exportAgentTemplate,
   exportAgentFull,
   importAgentFromTemplate,
@@ -86,6 +87,22 @@ description: An agent without a name field
 const CLAUDE_MD_NO_FRONTMATTER = `# Just Markdown
 No frontmatter at all.
 `
+
+function zipEntry(fileName: string, uncompressedSize: number): ZipEntryMeta {
+  return {
+    fileName,
+    uncompressedSize,
+    compressedSize: Math.min(uncompressedSize, 1024),
+    isDirectory: fileName.endsWith('/'),
+  }
+}
+
+function templateEntriesWithSizes(sizes: number[]): ZipEntryMeta[] {
+  return [
+    zipEntry('CLAUDE.md', Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')),
+    ...sizes.map((size, index) => zipEntry(`data-${index}.bin`, size)),
+  ]
+}
 
 /** Helper: create a zip buffer from a map of { path: content } */
 async function makeZip(files: Record<string, string>): Promise<Buffer> {
@@ -382,69 +399,46 @@ describe('validateAgentTemplate', () => {
   // Size limits
   // --------------------------------------------------------------------------
 
-  // Each case below builds and zlib-compresses ~500MB in memory, which can run
-  // right up against the 5s default test timeout under `vitest --coverage` on
-  // CI runners (a pre-existing flake). Give these the headroom they need.
   describe('total size limits', () => {
-    it('rejects template exceeding 500MB uncompressed', async () => {
-      const largeContent = 'x'.repeat(10 * 1024 * 1024)
-      const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      }
-      for (let i = 0; i < 51; i++) {
-        files[`large-${i}.bin`] = largeContent
-      }
-      const result = await validateAgentTemplate(await makeZip(files))
+    it('rejects template exceeding 500MB uncompressed', () => {
+      const tenMB = 10 * 1024 * 1024
+      const result = validateTemplateEntries(templateEntriesWithSizes(Array(51).fill(tenMB)), 'template')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
       expect(result.error).toContain('500MB')
-    }, 30_000)
+    })
 
-    it('accepts template at exactly the uncompressed size limit', async () => {
-      const chunkContent = 'a'.repeat(10 * 1024 * 1024)
-      const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      }
-      for (let i = 0; i < 49; i++) {
-        files[`data-${i}.bin`] = chunkContent
-      }
+    it('accepts template at exactly the uncompressed size limit', () => {
+      const tenMB = 10 * 1024 * 1024
       // Fill the remaining budget: 500MB - 49*10MB - CLAUDE.md size
       const claudeMdSize = Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')
-      const remaining = 500 * 1024 * 1024 - 49 * 10 * 1024 * 1024 - claudeMdSize
-      files['data-last.bin'] = 'b'.repeat(remaining)
-      const result = await validateAgentTemplate(await makeZip(files))
+      const remaining = 500 * 1024 * 1024 - 49 * tenMB - claudeMdSize
+      const result = validateTemplateEntries(templateEntriesWithSizes([
+        ...Array(49).fill(tenMB),
+        remaining,
+      ]), 'template')
       expect(result.valid).toBe(true)
-    }, 30_000)
+    })
 
-    it('rejects template at exactly one byte over the limit', async () => {
-      const chunkContent = 'a'.repeat(10 * 1024 * 1024)
-      const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      }
-      for (let i = 0; i < 49; i++) {
-        files[`data-${i}.bin`] = chunkContent
-      }
+    it('rejects template at exactly one byte over the limit', () => {
+      const tenMB = 10 * 1024 * 1024
       const claudeMdSize = Buffer.byteLength(MINIMAL_CLAUDE_MD, 'utf-8')
-      const remaining = 500 * 1024 * 1024 - 49 * 10 * 1024 * 1024 - claudeMdSize
-      files['data-last.bin'] = 'b'.repeat(remaining + 1)
-      const result = await validateAgentTemplate(await makeZip(files))
+      const remaining = 500 * 1024 * 1024 - 49 * tenMB - claudeMdSize
+      const result = validateTemplateEntries(templateEntriesWithSizes([
+        ...Array(49).fill(tenMB),
+        remaining + 1,
+      ]), 'template')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-    }, 30_000)
+    })
 
-    it('rejects when multiple small files sum to over the limit', async () => {
-      const files: Record<string, string> = {
-        'CLAUDE.md': MINIMAL_CLAUDE_MD,
-      }
+    it('rejects when multiple small files sum to over the limit', () => {
       // 51 files × 10MB each = 510MB > 500MB
-      const tenMB = 'x'.repeat(10 * 1024 * 1024)
-      for (let i = 0; i < 51; i++) {
-        files[`chunk-${i}.bin`] = tenMB
-      }
-      const result = await validateAgentTemplate(await makeZip(files))
+      const tenMB = 10 * 1024 * 1024
+      const result = validateTemplateEntries(templateEntriesWithSizes(Array(51).fill(tenMB)), 'template')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('too large')
-    }, 30_000)
+    })
   })
 
   // --------------------------------------------------------------------------

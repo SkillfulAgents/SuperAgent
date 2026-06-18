@@ -1,5 +1,4 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import { SearchDialog } from '@renderer/components/search/search-dialog'
 
 interface SearchContextType {
   open: boolean
@@ -26,10 +25,12 @@ export function SearchProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
+  // The dialog itself renders from RootLayout (inside the router) so it can use
+  // the useNavigate hook; this provider just owns the open state + the
+  // cmd/ctrl-K shortcut.
   return (
     <SearchContext.Provider value={{ open, openSearch, closeSearch }}>
       {children}
-      <SearchDialog open={open} onOpenChange={setOpen} />
     </SearchContext.Provider>
   )
 }

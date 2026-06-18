@@ -221,6 +221,31 @@ function parseSessionInfo(
   }
 }
 
+/**
+ * Build the SessionInfo for a session that is registered in metadata but whose
+ * JSONL transcript doesn't exist on disk yet: a just-created session still
+ * settling before the agent has streamed its first message (the transcript is
+ * written asynchronously, after the create response returns). Shared by
+ * getSession and listSessions so a single-session read and the list agree on a
+ * session's existence and fields rather than drifting. Callers gate on
+ * `meta.createdAt` — a properly registered session always has it.
+ */
+function emptySessionFromMetadata(
+  sessionId: string,
+  agentSlug: string,
+  meta: SessionMetadata
+): SessionInfo {
+  const createdAt = meta.createdAt ? new Date(meta.createdAt) : new Date()
+  return {
+    id: sessionId,
+    agentSlug,
+    name: meta.name || 'New Session',
+    createdAt,
+    lastActivityAt: createdAt,
+    messageCount: 0,
+  }
+}
+
 // ============================================================================
 // Session Operations
 // ============================================================================
@@ -322,11 +347,20 @@ export async function listSessions(
         continue
       }
 
+      // Prefer metadata createdAt; birthtime is unsupported (epoch 0) on
+      // network filesystems like S3 Files / EFS used by the k8s runtime.
+      const metaCreatedAt = metadata[sessionId]?.createdAt
+      const createdAt = metaCreatedAt
+        ? new Date(metaCreatedAt)
+        : stat.birthtimeMs > 0
+          ? stat.birthtime
+          : new Date(stat.mtimeMs)
+
       sessions.push({
         id: sessionId,
         agentSlug,
         name: metadata[sessionId]?.name || 'New Session',
-        createdAt: stat.birthtime,
+        createdAt,
         lastActivityAt: new Date(stat.mtimeMs),
         messageCount: 0,
       })
@@ -334,7 +368,7 @@ export async function listSessions(
   }
 
   // Then, add sessions from metadata that don't have JSONL files yet
-  // (newly created sessions where Claude hasn't written yet)
+  // (newly created sessions where the agent hasn't streamed yet)
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
     if (!processedSessionIds.has(sessionId) && sessionMeta.createdAt) {
       // Skip scheduled/webhook sessions when requested
@@ -342,15 +376,7 @@ export async function listSessions(
         continue
       }
 
-      const createdAt = new Date(sessionMeta.createdAt)
-      sessions.push({
-        id: sessionId,
-        agentSlug,
-        name: sessionMeta.name || 'New Session',
-        createdAt,
-        lastActivityAt: createdAt,
-        messageCount: 0,
-      })
+      sessions.push(emptySessionFromMetadata(sessionId, agentSlug, sessionMeta))
     }
   }
 
@@ -368,15 +394,25 @@ export async function getSession(
   sessionId: string
 ): Promise<SessionInfo | null> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const metadata = await getSessionMetadata(agentSlug, sessionId)
 
-  if (!(await fileExists(jsonlPath))) {
-    return null
+  if (await fileExists(jsonlPath)) {
+    const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+    return parseSessionInfo(sessionId, agentSlug, entries, metadata || undefined)
   }
 
-  const metadata = await getSessionMetadata(agentSlug, sessionId)
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+  // No transcript yet, but the session is registered → it was just created and
+  // the agent hasn't streamed its first message (which is what writes the
+  // JSONL). Report it as an empty session, matching listSessions, instead of
+  // 404ing a session that genuinely exists. Registration (the metadata write)
+  // is synchronous in the create path, so by the time a client navigates to a
+  // new session it is always readable here. A genuine 404 means the session is
+  // in neither store — truly missing.
+  if (metadata?.createdAt) {
+    return emptySessionFromMetadata(sessionId, agentSlug, metadata)
+  }
 
-  return parseSessionInfo(sessionId, agentSlug, entries, metadata || undefined)
+  return null
 }
 
 /**

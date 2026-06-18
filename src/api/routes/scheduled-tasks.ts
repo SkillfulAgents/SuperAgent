@@ -16,6 +16,7 @@ import {
   recordManualExecution,
   updateScheduleExpression,
   updateTaskPrompt,
+  updateTaskName,
   updateTaskRuntimeOptions,
   pauseScheduledTask,
   resumeScheduledTask,
@@ -174,6 +175,31 @@ scheduledTasksRouter.patch('/:taskId/prompt', TaskAgentRole('user'), async (c) =
   } catch (error) {
     console.error('Failed to update scheduled task prompt:', error)
     return c.json({ error: 'Failed to update prompt' }, 500)
+  }
+})
+
+// PATCH /api/scheduled-tasks/:taskId/name - Rename a scheduled task
+scheduledTasksRouter.patch('/:taskId/name', TaskAgentRole('user'), async (c) => {
+  try {
+    const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
+    const body = await c.req.json().catch(() => ({}))
+    const { name } = body as { name?: unknown }
+
+    if (typeof name !== 'string' || !name.trim()) {
+      return c.json({ error: 'name is required and must be a non-empty string' }, 400)
+    }
+
+    const updated = await updateTaskName(task!.id, name.trim())
+    if (!updated) {
+      return c.json({ error: 'Task not found or not editable' }, 404)
+    }
+
+    const refreshed = await getScheduledTask(task!.id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'name' } })
+    return c.json(refreshed)
+  } catch (error) {
+    console.error('Failed to update scheduled task name:', error)
+    return c.json({ error: 'Failed to update name' }, 500)
   }
 })
 

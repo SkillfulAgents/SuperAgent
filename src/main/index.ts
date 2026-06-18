@@ -32,7 +32,7 @@ if (process.platform !== 'win32') {
 
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
-import { createAppMenu, updateAppMenuWindow, destroyAppMenu } from './app-menu'
+import { createAppMenu, updateAppMenuWindow, destroyAppMenu, flushPendingMenuCommands } from './app-menu'
 import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
@@ -533,6 +533,14 @@ ipcMain.handle('flush-pending-notification-events', () => {
     pendingNotificationNavigations.length,
   )
   return { events, navigations }
+})
+
+// Renderer pulls menu commands (navigate-to-agent / open-settings /
+// open-create-agent) that fired while the window was closed and recreated it.
+// The renderer asks once on mount, when its IPC listeners are guaranteed
+// attached, so no command is lost to the webContents.send race (SUP-264).
+ipcMain.handle('flush-pending-menu-commands', () => {
+  return flushPendingMenuCommands()
 })
 
 // IPC handler for setting dock badge count (macOS)

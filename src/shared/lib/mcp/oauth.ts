@@ -61,6 +61,8 @@ function generatePKCE(): { codeVerifier: string; codeChallenge: string } {
 export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
   metadata: OAuthMetadata
   resource: string
+  scopesSupported?: string[]
+  challengeScope?: string
 } | null> {
   try {
     // Step 1: Make unauthenticated request to get 401
@@ -75,12 +77,22 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
       return null
     }
 
-    // Step 2: Extract resource_metadata from WWW-Authenticate
+    // Step 2: Extract resource_metadata (and any scope challenge) from
+    // WWW-Authenticate. RFC 6750 §3 lets the resource server name the scopes
+    // required for access; the MCP auth spec makes this the top-priority source
+    // for the scope the client requests, ahead of scopes_supported.
     const wwwAuth = probeResponse.headers.get('WWW-Authenticate') || ''
     const resourceMetadataMatch = wwwAuth.match(/resource_metadata="([^"]+)"/)
+    const challengeScopeMatch = wwwAuth.match(/scope="([^"]+)"/)
+    const challengeScope = challengeScopeMatch ? challengeScopeMatch[1] : undefined
 
     let authServerUrl: string
     let resource: string
+    // Scopes advertised by the Protected Resource Metadata (RFC 9728). Per the
+    // MCP auth spec's scope-selection strategy, when the 401 WWW-Authenticate
+    // carries no `scope`, the client requests all of the resource's
+    // scopes_supported. Captured here so the caller can put it on the auth URL.
+    let resourceScopes: string[] | undefined
 
     if (resourceMetadataMatch) {
       // RFC 9728: Fetch Protected Resource Metadata.
@@ -97,8 +109,10 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
       const resourceMetadata = (await resourceRes.json()) as {
         resource?: string
         authorization_servers?: string[]
+        scopes_supported?: string[]
       }
       resource = resourceMetadata.resource || new URL(mcpUrl).origin
+      resourceScopes = resourceMetadata.scopes_supported
       const authServers = resourceMetadata.authorization_servers || []
       if (authServers.length === 0) {
         throw new Error('No authorization servers found in resource metadata')
@@ -135,7 +149,14 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
         if (res.ok) {
           const metadata = (await res.json()) as OAuthMetadata
           if (metadata.authorization_endpoint && metadata.token_endpoint) {
-            return { metadata, resource }
+            // Prefer the resource's advertised scopes; fall back to the
+            // authorization server's scopes_supported.
+            return {
+              metadata,
+              resource,
+              scopesSupported: resourceScopes ?? metadata.scopes_supported,
+              challengeScope,
+            }
           }
         }
       } catch {
@@ -219,7 +240,7 @@ export async function initiateOAuthFlow(
   const discovery = await discoverOAuthMetadata(mcpUrl)
   if (!discovery) return null
 
-  const { metadata, resource } = discovery
+  const { metadata, resource, scopesSupported, challengeScope } = discovery
 
   // Verify S256 is supported
   const supportedMethods = metadata.code_challenge_methods_supported || []
@@ -309,9 +330,16 @@ export async function initiateOAuthFlow(
   // here lets the AS issue a token with the wrong audience, which the resource
   // server then rejects on initialize (401).
   authUrl.searchParams.set('resource', resource)
-  // Use scope from client registration response if available
-  if (registeredScope) {
-    authUrl.searchParams.set('scope', registeredScope)
+  // Scope selection follows the MCP auth spec's priority order:
+  //   1. the scope challenged in the 401 WWW-Authenticate header (RFC 6750 §3)
+  //   2. the scope granted at dynamic client registration
+  //   3. all scopes the resource/AS advertise in scopes_supported
+  // Servers like Robinhood challenge no scope and their DCR echoes none, so we
+  // fall to (3) and send scopes_supported (["internal"]); without any scope the
+  // AS ignores the request and bounces the user back with no consent screen.
+  const scope = challengeScope || registeredScope || scopesSupported?.join(' ')
+  if (scope) {
+    authUrl.searchParams.set('scope', scope)
   }
 
   return {
@@ -339,7 +367,7 @@ export async function initiateNewServerOAuth(
   const discovery = await discoverOAuthMetadata(mcpUrl)
   if (!discovery) return null
 
-  const { metadata, resource } = discovery
+  const { metadata, resource, scopesSupported, challengeScope } = discovery
 
   const supportedMethods = metadata.code_challenge_methods_supported || []
   if (supportedMethods.length > 0 && !supportedMethods.includes('S256')) {
@@ -403,9 +431,16 @@ export async function initiateNewServerOAuth(
   // here lets the AS issue a token with the wrong audience, which the resource
   // server then rejects on initialize (401).
   authUrl.searchParams.set('resource', resource)
-  // Use scope from client registration response if available
-  if (registeredScope) {
-    authUrl.searchParams.set('scope', registeredScope)
+  // Scope selection follows the MCP auth spec's priority order:
+  //   1. the scope challenged in the 401 WWW-Authenticate header (RFC 6750 §3)
+  //   2. the scope granted at dynamic client registration
+  //   3. all scopes the resource/AS advertise in scopes_supported
+  // Servers like Robinhood challenge no scope and their DCR echoes none, so we
+  // fall to (3) and send scopes_supported (["internal"]); without any scope the
+  // AS ignores the request and bounces the user back with no consent screen.
+  const scope = challengeScope || registeredScope || scopesSupported?.join(' ')
+  if (scope) {
+    authUrl.searchParams.set('scope', scope)
   }
 
   return { authorizationUrl: authUrl.toString(), state }

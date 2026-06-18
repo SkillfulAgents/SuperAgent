@@ -27,7 +27,7 @@ import {
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { useDeleteSession, useUpdateSessionName } from '@renderer/hooks/use-sessions'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate, useParams } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { Trash2, ClipboardCopy, Pencil } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
@@ -52,7 +52,11 @@ export function SessionContextMenu({
   const renameInputRef = useRef<HTMLInputElement>(null)
   const deleteSession = useDeleteSession()
   const updateSessionName = useUpdateSessionName()
-  const { handleSessionDeleted } = useSelection()
+  const navigate = useNavigate()
+  // strict:false → undefined when the menu is opened off the session route
+  // (e.g. from the sidebar list), so the up-nav only fires when we're actually
+  // viewing the session being deleted.
+  const params = useParams({ strict: false }) as { sessionId?: string }
   const { canAdminAgent } = useUser()
   const isOwner = canAdminAgent(agentSlug)
 
@@ -61,7 +65,9 @@ export function SessionContextMenu({
     try {
       await deleteSession.mutateAsync({ id: sessionId, agentSlug })
       setShowDeleteDialog(false)
-      handleSessionDeleted(sessionId)
+      if (params.sessionId === sessionId) {
+        void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+      }
     } catch (error) {
       console.error('Failed to delete session:', error)
     } finally {

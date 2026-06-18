@@ -26,6 +26,63 @@ export class SessionPage {
     return regular.or(home)
   }
 
+  private async findMatchingLocator(locators: Locator[], options: { enabled?: boolean } = {}) {
+    for (const locator of locators) {
+      const count = await locator.count().catch(() => 0)
+      for (let index = 0; index < count; index++) {
+        const candidate = locator.nth(index)
+        const isVisible = await candidate.isVisible().catch(() => false)
+        if (!isVisible) continue
+        const isEnabled = await candidate.isEnabled().catch(() => false)
+        if (options.enabled && !isEnabled) continue
+        return candidate
+      }
+    }
+    return undefined
+  }
+
+  private getMessageInputLocators() {
+    const regular = this.page.locator('[data-testid="message-input"]')
+    const home = this.page.locator('[data-testid="home-message-input"]')
+    return [regular, home]
+  }
+
+  private getSendButtonLocators() {
+    const regular = this.page.locator('[data-testid="send-button"]')
+    const home = this.page.locator('[data-testid="home-send-button"]')
+    return [regular, home]
+  }
+
+  private async getVisibleMessageInput(timeout = 10000) {
+    let visibleInput: Locator | undefined
+    await expect.poll(async () => {
+      visibleInput = await this.findMatchingLocator(this.getMessageInputLocators())
+      return visibleInput ? 'found' : 'none'
+    }, { timeout }).not.toBe('none')
+
+    return visibleInput ?? this.page.locator('[data-testid="message-input"]').first()
+  }
+
+  private async getEnabledMessageInput(timeout = 10000) {
+    let enabledInput: Locator | undefined
+    await expect.poll(async () => {
+      enabledInput = await this.findMatchingLocator(this.getMessageInputLocators(), { enabled: true })
+      return enabledInput ? 'found' : 'none'
+    }, { timeout }).not.toBe('none')
+
+    return enabledInput ?? this.page.locator('[data-testid="message-input"]').first()
+  }
+
+  private async getVisibleSendButton(timeout = 10000) {
+    let visibleButton: Locator | undefined
+    await expect.poll(async () => {
+      visibleButton = await this.findMatchingLocator(this.getSendButtonLocators())
+      return visibleButton ? 'found' : 'none'
+    }, { timeout }).not.toBe('none')
+
+    return visibleButton ?? this.page.locator('[data-testid="send-button"]').first()
+  }
+
   /**
    * Get the stop button (visible when agent is working)
    */
@@ -65,7 +122,9 @@ export class SessionPage {
    * Type a message into the input
    */
   async typeMessage(content: string) {
-    await this.getMessageInput().fill(content)
+    const input = await this.getEnabledMessageInput()
+    await input.fill(content)
+    await expect(input).toHaveValue(content)
   }
 
   /**
@@ -73,7 +132,9 @@ export class SessionPage {
    */
   async sendMessage(content: string) {
     await this.typeMessage(content)
-    await this.getSendButton().click()
+    const sendButton = await this.getVisibleSendButton()
+    await expect(sendButton).toBeEnabled({ timeout: 10000 })
+    await sendButton.click()
   }
 
   /**
@@ -167,7 +228,7 @@ export class SessionPage {
    * Wait for the input to be enabled (agent finished responding)
    */
   async waitForInputEnabled(timeout = 10000) {
-    await expect(this.getMessageInput()).toBeEnabled({ timeout })
+    await this.getEnabledMessageInput(timeout)
   }
 
   /**

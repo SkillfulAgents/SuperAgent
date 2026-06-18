@@ -383,6 +383,25 @@ export async function updateTaskPrompt(
 }
 
 /**
+ * Update a scheduled task's display name.
+ * Allowed for pending or paused tasks.
+ */
+export async function updateTaskName(
+  taskId: string,
+  name: string,
+): Promise<boolean> {
+  const task = await getScheduledTask(taskId)
+  if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
+
+  const result = await db
+    .update(scheduledTasks)
+    .set({ name })
+    .where(eq(scheduledTasks.id, taskId))
+
+  return (result.changes ?? 0) > 0
+}
+
+/**
  * Update a recurring task's schedule expression and recalculate next execution time.
  */
 export async function updateScheduleExpression(

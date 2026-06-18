@@ -9,6 +9,10 @@ import { z } from 'zod'
 export const telegramConfigSchema = z.object({
   botToken: z.string().min(1, 'Bot token is required'),
   chatId: z.string().optional(),
+  // Rich Messages (Bot API 10.1). Defaults are applied in the connector.
+  richMessages: z.boolean().optional(),        // global rollback switch (default: rich)
+  draftStreaming: z.boolean().optional(),       // animated DM streaming (default: on)
+  skipEntityDetection: z.boolean().optional(),  // default: false (auto-detection ON)
 })
 
 export const slackConfigSchema = z.object({

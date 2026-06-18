@@ -62,6 +62,14 @@ vi.mock('./mock-container-client', () => ({
   MockContainerClient: vi.fn(),
 }))
 
+vi.mock('./platform-k8s-runtime', () => ({
+  PlatformK8sRuntimeClient: class {
+    static isEligible() { return false }
+    static async isAvailable() { return false }
+    static async isRunning() { return false }
+  },
+}))
+
 const mockExecWithPath = vi.fn()
 const mockSpawnWithPath = vi.fn()
 vi.mock('./base-container-client', () => ({

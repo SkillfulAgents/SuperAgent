@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { Button } from '@renderer/components/ui/button'
 import { ChevronRight, Plus, Settings2 } from 'lucide-react'
-import { useSelection } from '@renderer/context/selection-context'
 import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { McpStatusPill } from '@renderer/components/connections/mcp-status-pill'
 import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -33,7 +33,7 @@ interface ConnectionRow {
 export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) {
   const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
-  const { setView } = useSelection()
+  const navigate = useNavigate()
 
   const connections = useMemo<ConnectionRow[]>(() => {
     const rows: ConnectionRow[] = []
@@ -97,7 +97,13 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
                   </span>
                 </>
               }
-              onActivate={() => setView({ kind: 'connections', detail: { rowKey: conn.id, source: 'home' } })}
+              onActivate={() => {
+                void navigate({
+                  to: '/agents/$slug/connections',
+                  params: { slug: agentSlug },
+                  search: { detail: conn.id, source: 'home' },
+                })
+              }}
               ariaLabel={`Open ${conn.name} connection details`}
               right={
                 <span
@@ -125,7 +131,9 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
             type="button"
             variant="ghost"
             size="sm"
-            onClick={() => setView({ kind: 'connections' })}
+            onClick={() => {
+              void navigate({ to: '/agents/$slug/connections', params: { slug: agentSlug } })
+            }}
             data-testid="home-connections-open-page"
           >
             {connections.length > 0 ? <Settings2 /> : <Plus />}

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, act } from '@testing-library/react'
+import { screen, act, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AgentHome } from './agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
@@ -23,6 +23,24 @@ const mockCreateSession = {
   mutateAsync: vi.fn().mockResolvedValue({ id: 'session-123', initialMessageUuid: 'srv-msg-uuid' }),
   isPending: false,
 }
+
+const mockUpdateAgentMutate = vi.fn()
+const mockUpdateAgentMutateAsync = vi.fn()
+const mockDeleteAgentMutate = vi.fn()
+
+vi.mock('@renderer/hooks/use-agents', () => ({
+  useAgent: () => ({ data: { ...testAgent, mounts: [] } }),
+  useAgents: () => ({ data: [testAgent] }),
+  useUpdateAgent: () => ({
+    mutate: mockUpdateAgentMutate,
+    mutateAsync: mockUpdateAgentMutateAsync,
+    isPending: false,
+  }),
+  useDeleteAgent: () => ({
+    mutate: mockDeleteAgentMutate,
+    isPending: false,
+  }),
+}))
 
 // Default to "loaded, empty" — most tests don't care, and the new
 // first-session Opus tests want this state. Specific tests that need a
@@ -67,14 +85,26 @@ vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useCancelScheduledTask: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
 }))
 
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({
-    view: { kind: 'home' },
-    setAgent: vi.fn(),
-    setView: vi.fn(),
-    consumePendingDraft: vi.fn(() => null),
+// The morph one-shots live in NavTransientContext. Controllable so the
+// intro-morph test can flip justCreatedSlug and assert the clear.
+let mockJustCreatedSlug: string | null = null
+const mockSetJustCreatedSlug = vi.fn()
+
+vi.mock('@renderer/context/nav-transient-context', () => ({
+  useNavTransient: () => ({
+    justCreatedSlug: mockJustCreatedSlug,
+    setJustCreatedSlug: mockSetJustCreatedSlug,
   }),
-  SelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  NavTransientProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}))
+
+// The agent-scoped settings dialogs render inside AgentHome. Stub them
+// — their internals aren't under test here and would pull in extra hooks.
+vi.mock('@renderer/components/agents/agent-settings-dialog', () => ({
+  AgentSettingsDialog: () => null,
+}))
+vi.mock('@renderer/components/agents/system-prompt-dialog', () => ({
+  SystemPromptDialog: () => null,
 }))
 
 const mockComposer = {
@@ -133,6 +163,9 @@ vi.mock('@renderer/hooks/use-agent-skills', () => ({
   useAgentSkills: () => ({ data: [] }),
   useDiscoverableSkills: () => ({ data: [] }),
   useRefreshAgentSkills: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateSkill: () => ({ mutate: vi.fn(), isPending: false }),
+  useExportSkill: () => ({ mutate: vi.fn(), isPending: false }),
+  useImportSkillZip: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
 
 const mockRuntimeStatus = {
@@ -167,6 +200,7 @@ describe('AgentHome', () => {
     vi.clearAllMocks()
     mockCreateSession.isPending = false
     mockCreateSession.mutateAsync.mockResolvedValue({ id: 'session-123', initialMessageUuid: 'srv-msg-uuid' })
+    mockUpdateAgentMutateAsync.mockResolvedValue({ ...testAgent })
     mockComposer.message = ''
     mockComposer.attachments = []
     mockComposer.isUploading = false
@@ -179,6 +213,7 @@ describe('AgentHome', () => {
     mockCanAdminAgent = false
     capturedComposerOptions = undefined
     mockSessionsData = []
+    mockJustCreatedSlug = null
   })
 
   // --- Rendering ---
@@ -188,6 +223,27 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
+  })
+
+  it('renames the agent inline for owners', async () => {
+    const user = userEvent.setup()
+    mockCanAdminAgent = true
+
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await user.click(screen.getByTestId('agent-name'))
+    await user.clear(screen.getByTestId('agent-name-input'))
+    await user.type(screen.getByTestId('agent-name-input'), 'Renamed Agent')
+    await user.click(screen.getByTestId('agent-name-save'))
+
+    await waitFor(() => {
+      expect(mockUpdateAgentMutateAsync).toHaveBeenCalledWith({
+        slug: 'test-agent',
+        name: 'Renamed Agent',
+      })
+    })
   })
 
   it('renders textarea with placeholder', () => {
@@ -203,6 +259,37 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTestId('home-send-button')).toBeInTheDocument()
+  })
+
+  // --- New-agent intro morph ---
+
+  it('plays the new-agent intro morph once when justCreatedSlug matches, then clears the tag', () => {
+    // jsdom lacks matchMedia; the morph reads prefers-reduced-motion.
+    const originalMatchMedia = window.matchMedia
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia
+    vi.useFakeTimers()
+    try {
+      mockJustCreatedSlug = testAgent.slug
+      const { unmount } = renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
+      // The intro overlay is showing.
+      expect(screen.getByText('Creating')).toBeInTheDocument()
+      // After the intro window the one-shot tag is cleared so it can't replay.
+      act(() => { vi.advanceTimersByTime(2200) })
+      expect(mockSetJustCreatedSlug).toHaveBeenCalledWith(null)
+      unmount()
+
+      // A second mount with the tag cleared does NOT replay the morph.
+      mockJustCreatedSlug = null
+      renderWithProviders(
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      )
+      expect(screen.queryByText('Creating')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+      window.matchMedia = originalMatchMedia
+    }
   })
 
   // --- Send button disabled state ---

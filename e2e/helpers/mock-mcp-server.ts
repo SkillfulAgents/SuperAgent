@@ -87,9 +87,11 @@ export async function startMockMcpServer(port = 9876): Promise<MockMcpServer> {
     })
 
     server.listen(port, () => {
+      const address = server.address()
+      const actualPort = typeof address === 'object' && address ? address.port : port
       resolve({
-        url: `http://127.0.0.1:${port}/mcp`,
-        port,
+        url: `http://127.0.0.1:${actualPort}/mcp`,
+        port: actualPort,
         close: () => new Promise<void>((res) => server.close(() => res())),
       })
     })

@@ -15,12 +15,35 @@ function getFilename(filePath: string): string {
   return filePath.split('/').pop() || filePath
 }
 
+/** Cap long cell values so a single comment can't bloat the prompt. */
+function truncateValue(value: string, max = 200): string {
+  return value.length > max ? value.slice(0, max) + '…' : value
+}
+
+/** Escape double quotes so a value containing `"` can't unbalance the wrapper. */
+function escapeQuotes(value: string): string {
+  return value.replace(/"/g, '\\"')
+}
+
 export function formatComments(filePath: string, comments: FileComment[]): string {
   const filename = getFilename(filePath)
   const lines: string[] = [`File feedback on \`${filename}\`:\n`]
 
   comments.forEach((comment, i) => {
-    if (comment.selectedText) {
+    if (comment.cell) {
+      const { row, col, column, value } = comment.cell
+      // Include the 1-based column position so duplicate header names stay
+      // unambiguous, and escape the value so embedded quotes don't break out.
+      const ref = `${row}:${column} (col ${col + 1}`
+      if (value === undefined) {
+        lines.push(`At cell ${ref}):`)
+      } else if (value === '') {
+        lines.push(`At cell ${ref}, empty cell):`)
+      } else {
+        lines.push(`At cell ${ref}, value: "${escapeQuotes(truncateValue(value))}"):`)
+      }
+      lines.push(comment.text)
+    } else if (comment.selectedText) {
       lines.push(`> "${comment.selectedText}"`)
       lines.push(comment.text)
     } else if (comment.x != null && comment.y != null) {
@@ -60,6 +83,14 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
           <div key={comment.id} className="flex items-start gap-2 text-xs group">
             <span className="text-muted-foreground shrink-0 tabular-nums">{i + 1}.</span>
             <div className="flex-1 min-w-0">
+              {comment.cell && (
+                <div className="text-muted-foreground/70 truncate">
+                  <span className="font-medium">Cell {comment.cell.row}:{comment.cell.column}</span>
+                  {comment.cell.value
+                    ? <span className="italic"> &mdash; &ldquo;{comment.cell.value}&rdquo;</span>
+                    : comment.cell.value === '' ? <span className="italic"> &mdash; empty</span> : null}
+                </div>
+              )}
               {comment.selectedText && (
                 <div className="text-muted-foreground/70 italic truncate">&ldquo;{comment.selectedText}&rdquo;</div>
               )}

@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { isLocalhostHost, isPrivateHost, validateHttpUrl, validateSafeCloneUrl } from './url-safety'
+import {
+  isLocalhostHost,
+  isPrivateHost,
+  isHostOrSubdomain,
+  tryParseUrl,
+  validateHttpUrl,
+  validateSafeCloneUrl,
+} from './url-safety'
 
 describe('isLocalhostHost', () => {
   it.each([
@@ -64,6 +71,43 @@ describe('isPrivateHost', () => {
     '192.167.0.1',
   ])('does not flag %s', (host) => {
     expect(isPrivateHost(host)).toBe(false)
+  })
+})
+
+describe('isHostOrSubdomain', () => {
+  it.each([
+    ['slack.com', 'slack.com'],
+    ['files.slack.com', 'slack.com'],
+    ['a.b.slack.com', 'slack.com'],
+    ['SLACK.COM', 'slack.com'],
+  ])('matches %s against %s', (host, domain) => {
+    expect(isHostOrSubdomain(host, domain)).toBe(true)
+  })
+
+  it.each([
+    ['evilslack.com', 'slack.com'],
+    ['slack.com.evil.com', 'slack.com'],
+    ['notslack.com', 'slack.com'],
+    ['slackXcom', 'slack.com'],
+    ['', 'slack.com'],
+  ])('does not match %s against %s', (host, domain) => {
+    expect(isHostOrSubdomain(host, domain)).toBe(false)
+  })
+})
+
+describe('tryParseUrl', () => {
+  it('parses absolute URLs', () => {
+    expect(tryParseUrl('https://example.com/x')?.host).toBe('example.com')
+  })
+
+  it('resolves relative inputs against a base', () => {
+    const base = new URL('https://files.slack.com/a/b')
+    expect(tryParseUrl('/c/d', base)?.toString()).toBe('https://files.slack.com/c/d')
+  })
+
+  it('returns null on malformed input', () => {
+    expect(tryParseUrl('not a url')).toBeNull()
+    expect(tryParseUrl('/relative-without-base')).toBeNull()
   })
 })
 

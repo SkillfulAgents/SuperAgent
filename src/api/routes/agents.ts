@@ -119,7 +119,7 @@ import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
-import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -1729,12 +1729,12 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
 
     messagePersister.unsubscribeFromSession(sessionId)
 
-    // deleteSession removes the JSONL transcript and/or a lingering metadata
-    // entry. It returns false only when neither existed — i.e. the session is
-    // truly unknown. A dangling metadata-only session (transcript already
-    // deleted) still deletes successfully here. We intentionally do NOT gate on
-    // getSession(), which returns null when the JSONL is missing and would
-    // wrongly 404 exactly the dangling sessions we want to be able to remove.
+    // deleteSession is the authority for existence here: it removes the JSONL
+    // transcript and/or a lingering metadata entry and returns false only when
+    // neither existed (the session is truly unknown). Deleting directly, rather
+    // than gating on a prior read, keeps a dangling session with only one half
+    // left (e.g. a metadata entry whose transcript was already removed)
+    // removable instead of wrongly reported as not-found.
     const deleted = await deleteSession(agentSlug, sessionId)
     if (!deleted) {
       return c.json({ error: 'Session not found' }, 404)
@@ -3881,7 +3881,10 @@ async function writeUploadedFile(agentSlug: string, filename: string, buffer: Bu
     const normalized = path.normalize(relativePath).replace(/^(\.\.[/\\])+/, '')
     uploadPath = `uploads/${normalized}`
   } else {
-    uploadPath = `uploads/${Date.now()}-${filename}`
+    // Single-file upload: collapse the untrusted name to a safe basename
+    // (shared with the chat-attachment write path). isPathWithinDir below is
+    // the defense-in-depth backstop.
+    uploadPath = `uploads/${Date.now()}-${sanitizeUploadFilename(filename)}`
   }
 
   const workspaceDir = getAgentWorkspaceDir(agentSlug)

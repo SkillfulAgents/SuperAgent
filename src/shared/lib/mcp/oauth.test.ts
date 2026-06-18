@@ -469,8 +469,121 @@ describe('oauth', () => {
       // RFC 8707: resource indicator must be sent on the authorization request
       // so the AS binds the token audience to this MCP server.
       expect(url.searchParams.get('resource')).toBe('https://mcp.example.com')
-      // No scope when using existing client (scope only from fresh registration)
-      expect(url.searchParams.has('scope')).toBe(false)
+      // MCP auth spec scope-selection strategy: with no `scope` in the 401
+      // WWW-Authenticate, request all advertised scopes_supported — regardless
+      // of whether the client was freshly registered or pre-existing.
+      expect(url.searchParams.get('scope')).toBe('read write')
+    })
+
+    it('sends scopes_supported from the resource metadata when DCR returns no scope (Robinhood case)', async () => {
+      // Probe: 401 with resource_metadata
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer resource_metadata="https://mcp.example.com/.well-known/res"',
+          },
+        })
+      )
+      // Resource metadata advertises the scope (like Robinhood's ["internal"])
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            resource: 'https://mcp.example.com',
+            authorization_servers: ['https://auth.example.com'],
+            scopes_supported: ['internal'],
+          }),
+          { status: 200 }
+        )
+      )
+      // Auth server metadata: registration endpoint present, no scopes_supported
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+            registration_endpoint: 'https://auth.example.com/register',
+          }),
+          { status: 200 }
+        )
+      )
+      // DCR response echoes no `scope` (exactly what Robinhood returns)
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ client_id: 'dyn-client-id' }),
+          { status: 200 }
+        )
+      )
+
+      // DB: new server has no stored client credentials yet
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([{ oauthClientId: null, oauthClientSecret: null }])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+      const result = await initiateOAuthFlow(
+        'mcp-1',
+        'https://mcp.example.com/mcp',
+        'http://localhost:3000/callback'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      // Without this the AS bounces the user back with no consent screen.
+      expect(url.searchParams.get('scope')).toBe('internal')
+    })
+
+    it('prefers the scope challenged in WWW-Authenticate over scopes_supported', async () => {
+      // Probe: 401 whose WWW-Authenticate names a required scope (RFC 6750 §3).
+      // Per the MCP auth spec this is priority #1, ahead of scopes_supported.
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer resource_metadata="https://mcp.example.com/.well-known/res", scope="files:read files:write"',
+          },
+        })
+      )
+      // Resource metadata advertises a *different* scopes_supported set
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            resource: 'https://mcp.example.com',
+            authorization_servers: ['https://auth.example.com'],
+            scopes_supported: ['read', 'write'],
+          }),
+          { status: 200 }
+        )
+      )
+      // Auth server metadata
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+          }),
+          { status: 200 }
+        )
+      )
+
+      // DB: existing server with a stored client id (no fresh registration)
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([{ oauthClientId: 'existing-client-id', oauthClientSecret: null }])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+      const result = await initiateOAuthFlow(
+        'mcp-1',
+        'https://mcp.example.com/mcp',
+        'http://localhost:3000/callback'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      // The challenged scope wins over scopes_supported ('read write').
+      expect(url.searchParams.get('scope')).toBe('files:read files:write')
     })
 
     it('returns null when discovery fails', async () => {

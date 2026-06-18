@@ -516,11 +516,12 @@ export class SlackConnector extends ChatClientConnector {
     await this.clearThinkingReaction(chatId)
   }
 
-  async showTypingIndicator(chatId: string): Promise<void> {
+  async startWorking(chatId: string): Promise<void> {
     if (!this.app) return
 
     // Slack doesn't support typing indicators for bots.
     // Workaround: add a :thinking_face: reaction to the user's last message.
+    // The reaction persists until removed, so no keep-alive timer is needed.
     const lastTs = this.lastUserMessageTs.get(chatId)
     if (!lastTs) return
 
@@ -538,6 +539,10 @@ export class SlackConnector extends ChatClientConnector {
     } catch {
       // Already reacted or message deleted — non-critical
     }
+  }
+
+  async stopWorking(chatId: string): Promise<void> {
+    await this.clearThinkingReaction(chatId)
   }
 
   // ── User request cards ──────────────────────────────────────────────

@@ -36,6 +36,11 @@ export function BrowserInputRequestItem({
   const [error, setError] = useState<string | null>(null)
   const [sessionDraft, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
 
+  // `requirements` is typed string[] but originates from model tool input, so a
+  // malformed value (e.g. a bare string) can reach here. Normalize to an array
+  // before any `.length`/`.map` so a bad payload can't throw.
+  const safeRequirements = Array.isArray(requirements) ? requirements : []
+
   const submitBrowserInput = async (
     body: object,
     successStatus: RequestStatus,
@@ -127,11 +132,11 @@ export function BrowserInputRequestItem({
       data-testid={isCompleted ? 'browser-input-request-completed' : 'browser-input-request'}
       data-status={isCompleted ? status : undefined}
     >
-      {requirements.length > 0 && (
+      {safeRequirements.length > 0 && (
         <div className="pt-4">
           <div className="rounded-md border border-border bg-white p-3 dark:bg-background">
             <ul className="space-y-1.5">
-              {requirements.map((req, i) => (
+              {safeRequirements.map((req, i) => (
                 <li key={i} className="flex items-start gap-2 text-foreground">
                   <span className="mt-0.5 shrink-0 text-xs text-muted-foreground">{i + 1}.</span>
                   <span>{req}</span>

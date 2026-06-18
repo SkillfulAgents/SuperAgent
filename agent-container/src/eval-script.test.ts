@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script'
+import { prepareEvalScript, scanTopLevel, finalizeEvalOutput, evalErrorHint } from './eval-script'
 
 describe('prepareEvalScript', () => {
   it('auto-invokes a bare arrow function (the {} trap)', () => {
@@ -42,6 +42,68 @@ describe('prepareEvalScript', () => {
     ]) {
       expect(prepareEvalScript(expr)).toEqual({ script: expr, wrapped: false })
     }
+  })
+
+  it('wraps a top-level return in a fresh async scope (fixes "Illegal return")', () => {
+    expect(prepareEvalScript('const t = document.title; return t;')).toEqual({
+      script: '(async () => {\nconst t = document.title; return t\n})()',
+      wrapped: true,
+    })
+  })
+
+  it('wraps top-level const/let so it cannot collide across calls ("already declared")', () => {
+    expect(prepareEvalScript('const x = 1; foo(x)').wrapped).toBe(true)
+    expect(prepareEvalScript('let y = 2; y').wrapped).toBe(true)
+    expect(prepareEvalScript('const x = 1; foo(x)').script).toContain('(async () => {')
+  })
+
+  it('does NOT wrap an expression whose return/decl live inside a nested function (depth>0)', () => {
+    // the inner return must not be mistaken for a top-level statement, or the
+    // array value would be lost to an undefined function body
+    const expr = '[...document.querySelectorAll("a")].map(a => { return a.href })'
+    expect(prepareEvalScript(expr)).toEqual({ script: expr, wrapped: false })
+    const filt = 'rows.filter(r => { const v = r.value; return v > 0 })'
+    expect(prepareEvalScript(filt)).toEqual({ script: filt, wrapped: false })
+  })
+
+  it('wraps a plain top-level await expression while preserving its value', () => {
+    expect(prepareEvalScript('await fetch("/x").then(r => r.json())')).toEqual({
+      script: '(async () => (await fetch("/x").then(r => r.json())))()',
+      wrapped: true,
+    })
+  })
+
+  it('wraps multiple top-level statements', () => {
+    expect(prepareEvalScript('document.querySelector("#a").remove(); document.querySelector("#b").click()').wrapped).toBe(true)
+  })
+
+  it('does not treat keywords inside strings as statements', () => {
+    expect(prepareEvalScript('document.querySelector("[data-x=\'return\']")')).toEqual({
+      script: 'document.querySelector("[data-x=\'return\']")',
+      wrapped: false,
+    })
+  })
+
+  it('handles empty / whitespace input', () => {
+    expect(prepareEvalScript('   ')).toEqual({ script: '   ', wrapped: false })
+  })
+})
+
+describe('scanTopLevel', () => {
+  it('detects top-level statement keywords', () => {
+    expect(scanTopLevel('return 5').isStatementBody).toBe(true)
+    expect(scanTopLevel('const x = 1').isStatementBody).toBe(true)
+    expect(scanTopLevel('if (a) b()').isStatementBody).toBe(true)
+  })
+  it('ignores keywords nested in functions, strings, and member access', () => {
+    expect(scanTopLevel('xs.map(x => { return x })').isStatementBody).toBe(false)
+    expect(scanTopLevel('el.return').isStatementBody).toBe(false)
+    expect(scanTopLevel('f("const y")').isStatementBody).toBe(false)
+    expect(scanTopLevel('returnValue + 1').isStatementBody).toBe(false) // not the keyword
+  })
+  it('reports top-level await', () => {
+    expect(scanTopLevel('await x()').hasAwait).toBe(true)
+    expect(scanTopLevel('xs.map(async x => await f(x))').hasAwait).toBe(false)
   })
 })
 

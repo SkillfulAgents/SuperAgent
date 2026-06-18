@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback, type RefObject } from 'react'
+import type { CellRef } from '@renderer/context/file-preview-context'
+import { useDismissOnOutsideClick } from './use-dismiss-on-outside-click'
 
 export interface TextSelectionInfo {
   text: string
   rect: DOMRect
   x?: number
   y?: number
+  cell?: CellRef
 }
 
 export function useTextSelection(containerRef: RefObject<HTMLElement | null>) {
@@ -48,20 +51,17 @@ export function useTextSelection(containerRef: RefObject<HTMLElement | null>) {
       })
     }
 
-    // Dismiss the overlay on any mousedown, unless the click is inside
-    // the comment overlay itself (marked with data-comment-overlay).
-    const handleDocumentMouseDown = (e: MouseEvent) => {
-      if ((e.target as HTMLElement).closest?.('[data-comment-overlay]')) return
-      setSelection(null)
-    }
-
     container.addEventListener('mouseup', handleMouseUp)
-    document.addEventListener('mousedown', handleDocumentMouseDown)
     return () => {
       container.removeEventListener('mouseup', handleMouseUp)
-      document.removeEventListener('mousedown', handleDocumentMouseDown)
     }
   }, [containerRef])
 
+  // Dismiss the pending comment affordance on any mousedown, unless the click
+  // is inside the comment overlay itself (marked with data-comment-overlay).
+  useDismissOnOutsideClick(selection != null, () => setSelection(null), DISMISS_IGNORE)
+
   return { selection, clearSelection }
 }
+
+const DISMISS_IGNORE = ['[data-comment-overlay]']

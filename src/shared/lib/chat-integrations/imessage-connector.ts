@@ -248,7 +248,7 @@ export class IMessageConnector extends ChatClientConnector {
     await this.sendMessage(chatId, { text: finalText })
   }
 
-  async showTypingIndicator(chatId: string): Promise<void> {
+  async startWorking(chatId: string): Promise<void> {
     const targetChatId = chatId || this.lastChatId || undefined
     this.send({ type: 'start_typing', data: { chatId: targetChatId } })
   }

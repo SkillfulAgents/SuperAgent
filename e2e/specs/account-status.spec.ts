@@ -3,7 +3,7 @@ import { AppPage } from '../pages/app.page'
 
 test.describe.configure({ mode: 'serial' })
 
-const API = 'http://localhost:3000'
+const API = ''
 
 test.describe('Account Status & Reconnect', () => {
   let appPage: AppPage

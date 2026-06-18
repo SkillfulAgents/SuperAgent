@@ -5,7 +5,7 @@ import { startMockMcpServer, type MockMcpServer } from '../helpers/mock-mcp-serv
 // Serial: cross-checks DB state via the API; sensitive to concurrent writes.
 test.describe.configure({ mode: 'serial' })
 
-const API = 'http://localhost:3000'
+const API = ''
 
 test.describe('Global Settings → Connections — Add MCP flow', () => {
   let appPage: AppPage

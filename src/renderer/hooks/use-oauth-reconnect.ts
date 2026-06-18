@@ -3,6 +3,11 @@ import { useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
+// Upper bound on how long we wait for the OAuth callback before giving up and
+// cleaning up the IPC listener. Generous enough for a slow login (incl. MFA),
+// short enough that an abandoned flow doesn't leak a listener for the session.
+const OAUTH_RECONNECT_TIMEOUT_MS = 5 * 60 * 1000
+
 export function useOAuthReconnect() {
   const queryClient = useQueryClient()
   const [pendingAccountId, setPendingAccountId] = useState<string | null>(null)
@@ -38,9 +43,29 @@ export function useOAuthReconnect() {
 
       if (window.electronAPI) {
         await new Promise<void>((resolve) => {
-          window.electronAPI!.onOAuthCallback(async (params) => {
+          let settled = false
+          let unsubscribe: (() => void) | undefined
+          // Tear down the listener and clear the timeout exactly once. Returns
+          // false if already settled so a late callback / timeout race no-ops.
+          const settle = (): boolean => {
+            if (settled) return false
+            settled = true
+            clearTimeout(timeout)
+            unsubscribe?.()
+            return true
+          }
+          // Bound the wait: if the user abandons the OAuth window (or only
+          // mismatched-toolkit callbacks ever arrive), settle anyway so we don't
+          // leak the listener or hang reconnect() forever. The channel-wide
+          // reset that used to sweep orphaned listeners is gone (SUP-215).
+          const timeout = setTimeout(() => {
+            if (settle()) resolve()
+          }, OAUTH_RECONNECT_TIMEOUT_MS)
+          unsubscribe = window.electronAPI!.onOAuthCallback(async (params) => {
+            // Ignore callbacks for other toolkits; keep waiting for ours.
             if (params.toolkit && params.toolkit !== toolkit) return
-            window.electronAPI?.removeOAuthCallback()
+            // Remove only this reconnect listener; other OAuth subscribers stay.
+            if (!settle()) return
             if (params.connectionId && params.toolkit) {
               await apiFetch('/api/connected-accounts/complete', {
                 method: 'POST',

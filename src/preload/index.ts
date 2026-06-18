@@ -10,17 +10,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   osVersion: process.getSystemVersion(),
 
-  // OAuth callback handling - receives parsed callback params from main process
+  // OAuth callback handling - receives parsed callback params from main process.
+  // Returns a per-listener unsubscribe so concurrent subscribers (multiple
+  // toolkits / overlapping reconnect flows) can be torn down independently.
   onOAuthCallback: (callback: (params: {
     connectionId?: string | null
     status?: string | null
     toolkit?: string | null
     error?: string | null
-  }) => void) => {
-    ipcRenderer.on('oauth-callback', (_event, params) => callback(params))
+  }) => void): (() => void) => {
+    const handler = (_event: unknown, params: unknown) => callback(params as never)
+    ipcRenderer.on('oauth-callback', handler)
+    return () => {
+      ipcRenderer.removeListener('oauth-callback', handler)
+    }
   },
 
-  // Remove OAuth callback listener
+  // Channel-wide reset — removes EVERY oauth-callback listener. Prefer the
+  // unsubscribe returned by onOAuthCallback for per-component cleanup.
   removeOAuthCallback: () => {
     ipcRenderer.removeAllListeners('oauth-callback')
   },
@@ -30,11 +37,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     success: boolean
     mcpId?: string | null
     error?: string | null
-  }) => void) => {
-    ipcRenderer.on('mcp-oauth-callback', (_event, params) => callback(params))
+  }) => void): (() => void) => {
+    const handler = (_event: unknown, params: unknown) => callback(params as never)
+    ipcRenderer.on('mcp-oauth-callback', handler)
+    return () => {
+      ipcRenderer.removeListener('mcp-oauth-callback', handler)
+    }
   },
 
-  // Remove MCP OAuth callback listener
+  // Channel-wide reset — prefer the unsubscribe returned by onMcpOAuthCallback.
   removeMcpOAuthCallback: () => {
     ipcRenderer.removeAllListeners('mcp-oauth-callback')
   },
@@ -43,19 +54,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
     success: boolean
     email?: string | null
     error?: string | null
-  }) => void) => {
-    ipcRenderer.on('platform-auth-callback', (_event, params) => callback(params))
+  }) => void): (() => void) => {
+    const handler = (_event: unknown, params: unknown) => callback(params as never)
+    ipcRenderer.on('platform-auth-callback', handler)
+    return () => {
+      ipcRenderer.removeListener('platform-auth-callback', handler)
+    }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onPlatformAuthCallback.
   removePlatformAuthCallback: () => {
     ipcRenderer.removeAllListeners('platform-auth-callback')
   },
 
   // Full screen state handling
-  onFullScreenChange: (callback: (isFullScreen: boolean) => void) => {
-    ipcRenderer.on('fullscreen-change', (_event, isFullScreen) => callback(isFullScreen))
+  onFullScreenChange: (callback: (isFullScreen: boolean) => void): (() => void) => {
+    const handler = (_event: unknown, isFullScreen: unknown) => callback(isFullScreen as boolean)
+    ipcRenderer.on('fullscreen-change', handler)
+    return () => {
+      ipcRenderer.removeListener('fullscreen-change', handler)
+    }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onFullScreenChange.
   removeFullScreenChange: () => {
     ipcRenderer.removeAllListeners('fullscreen-change')
   },
@@ -78,9 +99,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWindowMaximizedState: (): Promise<boolean> => {
     return ipcRenderer.invoke('get-window-maximized-state')
   },
-  onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => {
-    ipcRenderer.on('window-maximized-change', (_event, isMaximized) => callback(isMaximized))
+  onWindowMaximizedChange: (callback: (isMaximized: boolean) => void): (() => void) => {
+    const handler = (_event: unknown, isMaximized: unknown) => callback(isMaximized as boolean)
+    ipcRenderer.on('window-maximized-change', handler)
+    return () => {
+      ipcRenderer.removeListener('window-maximized-change', handler)
+    }
   },
+  // Channel-wide reset — prefer the unsubscribe returned by onWindowMaximizedChange.
   removeWindowMaximizedChange: () => {
     ipcRenderer.removeAllListeners('window-maximized-change')
   },
@@ -96,28 +122,44 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Navigation from tray menu or deep links.
-  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => {
-    ipcRenderer.on('navigate-to-agent', (_event, agentSlug, sessionId) => callback(agentSlug, sessionId))
+  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void): (() => void) => {
+    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown) =>
+      callback(agentSlug as string, sessionId as string | null | undefined)
+    ipcRenderer.on('navigate-to-agent', handler)
+    return () => {
+      ipcRenderer.removeListener('navigate-to-agent', handler)
+    }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onNavigateToAgent.
   removeNavigateToAgent: () => {
     ipcRenderer.removeAllListeners('navigate-to-agent')
   },
 
   // Menu commands - open settings
-  onOpenSettings: (callback: () => void) => {
-    ipcRenderer.on('open-settings', () => callback())
+  onOpenSettings: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('open-settings', handler)
+    return () => {
+      ipcRenderer.removeListener('open-settings', handler)
+    }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onOpenSettings.
   removeOpenSettings: () => {
     ipcRenderer.removeAllListeners('open-settings')
   },
 
   // Menu commands - open create agent dialog
-  onOpenCreateAgent: (callback: () => void) => {
-    ipcRenderer.on('open-create-agent', () => callback())
+  onOpenCreateAgent: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('open-create-agent', handler)
+    return () => {
+      ipcRenderer.removeListener('open-create-agent', handler)
+    }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onOpenCreateAgent.
   removeOpenCreateAgent: () => {
     ipcRenderer.removeAllListeners('open-create-agent')
   },
@@ -169,6 +211,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     navigations: Array<{ agentSlug: string; sessionId: string | null }>
   }> => {
     return ipcRenderer.invoke('flush-pending-notification-events')
+  },
+
+  // Pull menu commands (Settings / New Agent / navigate-to-agent) queued while
+  // the window was closed. The renderer calls this once on mount so commands
+  // captured before its IPC listeners existed still get dispatched (SUP-264).
+  flushPendingMenuCommands: (): Promise<
+    Array<
+      | { channel: 'navigate-to-agent'; agentSlug: string }
+      | { channel: 'open-settings' }
+      | { channel: 'open-create-agent' }
+    >
+  > => {
+    return ipcRenderer.invoke('flush-pending-menu-commands')
   },
 
   // Set dock badge count (macOS)
@@ -281,28 +336,28 @@ declare global {
       getApiUrl: () => Promise<string>
       platform: string
       osVersion: string
-      onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => void
+      onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => () => void
       removeOAuthCallback: () => void
-      onMcpOAuthCallback: (callback: (params: { success: boolean; mcpId?: string | null; error?: string | null }) => void) => void
+      onMcpOAuthCallback: (callback: (params: { success: boolean; mcpId?: string | null; error?: string | null }) => void) => () => void
       removeMcpOAuthCallback: () => void
-      onPlatformAuthCallback: (callback: (params: { success: boolean; email?: string | null; error?: string | null }) => void) => void
+      onPlatformAuthCallback: (callback: (params: { success: boolean; email?: string | null; error?: string | null }) => void) => () => void
       removePlatformAuthCallback: () => void
-      onFullScreenChange: (callback: (isFullScreen: boolean) => void) => void
+      onFullScreenChange: (callback: (isFullScreen: boolean) => void) => () => void
       removeFullScreenChange: () => void
       getFullScreenState: () => Promise<boolean>
       minimizeWindow: () => void
       toggleMaximizeWindow: () => void
       closeWindow: () => void
       getWindowMaximizedState: () => Promise<boolean>
-      onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => void
+      onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void
       removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
-      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => void
+      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
       removeNavigateToAgent: () => void
-      onOpenSettings: (callback: () => void) => void
+      onOpenSettings: (callback: () => void) => () => void
       removeOpenSettings: () => void
-      onOpenCreateAgent: (callback: () => void) => void
+      onOpenCreateAgent: (callback: () => void) => () => void
       removeOpenCreateAgent: () => void
       setSidebarCollapsed: (collapsed: boolean) => void
       setTrayVisible: (visible: boolean) => Promise<void>
@@ -319,6 +374,13 @@ declare global {
         events: Array<{ type: 'click' | 'action'; actionIndex?: number; context?: unknown }>
         navigations: Array<{ agentSlug: string; sessionId: string | null }>
       }>
+      flushPendingMenuCommands: () => Promise<
+        Array<
+          | { channel: 'navigate-to-agent'; agentSlug: string }
+          | { channel: 'open-settings' }
+          | { channel: 'open-create-agent' }
+        >
+      >
       setBadgeCount: (count: number) => Promise<void>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>

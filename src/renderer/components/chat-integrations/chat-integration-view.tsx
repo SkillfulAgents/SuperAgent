@@ -5,7 +5,7 @@
  * with a banner indicating the session is controlled from an external chat.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { MessageCircle, MoreVertical, Loader2, ExternalLink, RotateCcw, AlertTriangle } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { SessionThread } from '@renderer/components/messages/session-thread'
@@ -22,7 +22,7 @@ import {
   useClearChatSession,
 } from '@renderer/hooks/use-chat-integrations'
 import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import {
   Dialog,
@@ -49,19 +49,39 @@ import { formatProviderName } from '@shared/lib/chat-integrations/utils'
 interface ChatIntegrationViewProps {
   integrationId: string
   agentSlug: string
+  /** Active sub-session from the route's `?session=` search (null = latest). */
+  chatSessionId: string | null
 }
 
-export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegrationViewProps) {
+export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }: ChatIntegrationViewProps) {
   const { data: integration, isLoading, error } = useChatIntegration(integrationId)
   const { data: status } = useChatIntegrationStatus(integrationId)
   const { data: sessions } = useChatIntegrationSessions(integrationId)
   const deleteIntegration = useDeleteChatIntegration()
   const updateIntegration = useUpdateChatIntegration()
   const clearSession = useClearChatSession()
-  const { view, handleChatIntegrationDeleted, setView } = useSelection()
-  const selectedChatSessionId = view.kind === 'chat' ? view.sessionId ?? null : null
+  const navigate = useNavigate()
+  // The active sub-session comes from the URL search (deep-linkable).
+  const selectedChatSessionId = chatSessionId
   const { canUseAgent } = useUser()
   const canManage = canUseAgent(agentSlug)
+
+  // Canonicalize: integrations are addressed globally by id, so
+  // /agents/<wrong>/chat/<id> would render this integration under the wrong
+  // agent's shell (mismatched chrome and canManage gating, and the SessionThread
+  // below fetches messages scoped to the URL slug → empty/404). Redirect to the
+  // integration's true agent, preserving the `?session=` sub-session.
+  useEffect(() => {
+    if (integration && integration.agentSlug !== agentSlug) {
+      void navigate({
+        to: '/agents/$slug/chat/$integrationId',
+        params: { slug: integration.agentSlug, integrationId },
+        search: (prev) => prev,
+        replace: true,
+      })
+    }
+  }, [integration, agentSlug, integrationId, navigate])
+
   const [clearError, setClearError] = useState<string | null>(null)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState('')
@@ -70,7 +90,8 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
   const handleDelete = async () => {
     try {
       await deleteIntegration.mutateAsync({ id: integrationId, agentSlug })
-      handleChatIntegrationDeleted(integrationId)
+      // Always invoked while viewing this integration's route → up-nav home.
+      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to delete chat integration:', err)
     }
@@ -89,6 +110,17 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
     return (
       <div className="flex-1 flex items-center justify-center text-destructive">
         Failed to load chat integration
+      </div>
+    )
+  }
+
+  // Mismatched shell → the effect above is redirecting; don't render B's
+  // integration (or its wrong-slug message fetches) under A's chrome meanwhile.
+  if (integration.agentSlug !== agentSlug) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin mr-2" />
+        Loading chat integration...
       </div>
     )
   }
@@ -187,7 +219,16 @@ export function ChatIntegrationView({ integrationId, agentSlug }: ChatIntegratio
                   <div className="flex items-center gap-2 flex-1 min-w-0">
                     <select
                       value={activeSessionId}
-                      onChange={(e) => setView({ kind: 'chat', integrationId, sessionId: e.target.value })}
+                      onChange={(e) => {
+                        const sessionId = e.target.value
+                        // Push (not replace): each sub-session is its own history
+                        // entry so Back walks them.
+                        void navigate({
+                          to: '/agents/$slug/chat/$integrationId',
+                          params: { slug: agentSlug, integrationId },
+                          search: { session: sessionId },
+                        })
+                      }}
                       aria-label="Select chat session"
                       className="bg-transparent border rounded px-1.5 py-0.5 text-xs text-muted-foreground cursor-pointer"
                     >

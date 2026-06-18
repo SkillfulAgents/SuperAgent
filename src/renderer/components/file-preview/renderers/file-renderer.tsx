@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react'
 import { getFileExtension } from '@shared/lib/utils/mime'
 import { MarkdownRenderer } from './markdown-renderer'
 import { TextRenderer } from './text-renderer'
+import { CsvRenderer } from './csv-renderer'
 import { ImageRenderer } from './image-renderer'
 import { HtmlRenderer } from './html-renderer'
 import { UnsupportedRenderer } from './unsupported-renderer'
@@ -10,8 +11,9 @@ import { UnsupportedRenderer } from './unsupported-renderer'
 const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
 
 const MARKDOWN_EXTS = new Set(['md', 'markdown'])
+const CSV_EXTS = new Set(['csv', 'tsv'])
 const TEXT_EXTS = new Set([
-  'txt', 'log', 'csv', 'json', 'xml', 'yml', 'yaml', 'toml', 'ini', 'cfg',
+  'txt', 'log', 'json', 'xml', 'yml', 'yaml', 'toml', 'ini', 'cfg',
   'env', 'sh', 'bash', 'zsh', 'py', 'js', 'ts', 'tsx', 'jsx', 'css',
   'scss', 'less', 'sql', 'graphql', 'proto', 'dockerfile', 'makefile',
   'gitignore', 'editorconfig', 'rs', 'go', 'java', 'kt', 'swift', 'rb', 'php',
@@ -34,6 +36,10 @@ export function FileRenderer({ filePath, fileUrl, agentSlug }: FileRendererProps
 
   if (ext === 'html' || ext === 'htm') {
     return <HtmlRenderer url={fileUrl} />
+  }
+
+  if (CSV_EXTS.has(ext)) {
+    return <CsvRenderer url={fileUrl} filePath={filePath} />
   }
 
   if (TEXT_EXTS.has(ext)) {

@@ -28,11 +28,13 @@ import {
   updateChatIntegrationSessionName,
   archiveChatIntegrationSession,
   touchChatIntegrationSession,
-  listChatIntegrationSessions,
+  listActiveChatIntegrationSessions,
   resolveActiveSession,
   getLastDisplayName,
 } from '@shared/lib/services/chat-integration-session-service'
-import type { EffortLevel } from '@shared/lib/container/types'
+import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
+import type { EffortLevel, ContainerClient } from '@shared/lib/container/types'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -67,6 +69,15 @@ function breadcrumb(message: string, data?: Record<string, unknown>): void {
  */
 function isContainerNotRunning(err: unknown): boolean {
   return err instanceof Error && err.message.includes('Container is not running')
+}
+
+/**
+ * True iff `u` is an HTTPS request to Slack (slack.com or a *.slack.com
+ * subdomain). Only these hosts may receive the Slack bot token on a redirect
+ * hop (SUP-232).
+ */
+function isTrustedSlackDownloadHost(u: URL): boolean {
+  return u.protocol === 'https:' && isHostOrSubdomain(u.hostname, 'slack.com')
 }
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -181,7 +192,7 @@ class ChatIntegrationManager {
 
     // Clean up all chat session SSE subscriptions
     for (const [, session] of this.chatSessions) {
-      session.sseUnsubscribe?.()
+      this.stopSession(session)
     }
     this.chatSessions.clear()
 
@@ -228,7 +239,7 @@ class ChatIntegrationManager {
     // Remove all chat sessions for this integration
     for (const [key, session] of this.chatSessions) {
       if (key.startsWith(`${id}:`)) {
-        session.sseUnsubscribe?.()
+        this.stopSession(session)
         this.chatSessions.delete(key)
       }
     }
@@ -386,8 +397,10 @@ class ChatIntegrationManager {
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
 
-    // Restore SSE subscriptions for existing chat sessions
-    const existingSessions = listChatIntegrationSessions(integration.id)
+    // Restore SSE subscriptions for ACTIVE chat sessions only. Archived/cleared/
+    // timed-out sessions must not be re-subscribed, or stale agent output could
+    // be forwarded back to the external chat (SUP-233).
+    const existingSessions = listActiveChatIntegrationSessions(integration.id)
     for (const session of existingSessions) {
       this.subscribeChatSession(integration.id, session.externalChatId, session.sessionId)
     }
@@ -641,12 +654,6 @@ class ChatIntegrationManager {
     if (!chatSession) {
       // New chat — create a new agent session
       try {
-        const { getEffectiveModels } = await import('@shared/lib/config/settings')
-        const { getSecretEnvVars } = await import('@shared/lib/services/secrets-service')
-        const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
-
-        const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
-
         const { text: messageText, failedFiles } = await this.buildMessageContent(integration, message)
 
         if (failedFiles.length > 0 && !messageText.trim()) {
@@ -663,47 +670,7 @@ class ChatIntegrationManager {
           })
         }
 
-        const models = getEffectiveModels()
-        const containerSession = await client.createSession({
-          availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-          initialMessage: messageText,
-          model: integration.model || models.agentModel,
-          browserModel: models.browserModel,
-          ...(integration.effort ? { effort: integration.effort as EffortLevel } : {}),
-          ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
-        })
-
-        const sessionId = containerSession.id
-        breadcrumb('New chat session created', { integrationId, sessionId, provider: integration.provider })
-
-        const displayName = this.deriveDisplayName(integration.provider, message)
-
-        const sessionName = buildSessionName(
-          integration.name,
-          integration.provider,
-          displayName,
-          integration.sessionTimeout,
-        )
-
-        await registerSession(integration.agentSlug, sessionId, sessionName)
-
-        await updateSessionMetadata(integration.agentSlug, sessionId, {
-          isChatIntegrationSession: true,
-          chatIntegrationId: integrationId,
-          ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
-        })
-
-        createChatIntegrationSession({
-          integrationId,
-          externalChatId: chatId,
-          sessionId,
-          displayName,
-        })
-
-        await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
-        messagePersister.markSessionActive(sessionId, integration.agentSlug)
-        this.subscribeChatSession(integrationId, chatId, sessionId)
-
+        await this.startNewChatSession(integration, client, chatId, message, messageText)
         return // initialMessage already sent via createSession
       } catch (err) {
         console.error(`[ChatIntegrationManager] Failed to create new session for ${integrationId}:`, err)
@@ -725,6 +692,8 @@ class ChatIntegrationManager {
 
     const sessionId = chatSession.sessionId
 
+    // Hoisted so the catch can reuse it for self-heal without re-downloading.
+    let messageText = ''
     try {
       if (!messagePersister.isSubscribed(sessionId)) {
         await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
@@ -733,7 +702,9 @@ class ChatIntegrationManager {
       // Ensure SSE → chat forwarding is active (may have been torn down by reconnect)
       this.subscribeChatSession(integrationId, chatId, sessionId)
 
-      const { text: messageText, failedFiles } = await this.buildMessageContent(integration, message)
+      const built = await this.buildMessageContent(integration, message)
+      messageText = built.text
+      const failedFiles = built.failedFiles
 
       if (failedFiles.length > 0 && !messageText.trim()) {
         const names = failedFiles.join(', ')
@@ -758,6 +729,32 @@ class ChatIntegrationManager {
         this.lastSessionTouch.set(chatSession.id, now)
       }
     } catch (err) {
+      // Self-heal: the container no longer has this agent session (e.g. it was
+      // evicted and could not be resumed). Without recovery, resolveActiveSession
+      // keeps returning this dead row, so EVERY future message to this chat would
+      // fail. Archive the stale mapping and transparently start a fresh session
+      // with the same message. Transient failures (dead container, network) are
+      // NOT session-gone, so they keep the retry prompt below.
+      if (this.isSessionGoneError(err)) {
+        console.warn(`[ChatIntegrationManager] Agent session ${sessionId} gone in container; rotating chat ${chatId} to a fresh session`)
+        breadcrumb('Chat agent session gone, self-healing', { integrationId, chatId, sessionId })
+        this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
+        try {
+          // messageText is already built unless we failed before it (e.g. the
+          // subscribe threw); rebuild in that rare case so the message isn't lost.
+          if (!messageText) {
+            messageText = (await this.buildMessageContent(integration, message)).text
+          }
+          await this.startNewChatSession(integration, client, chatId, message, messageText)
+          return
+        } catch (healErr) {
+          console.error(`[ChatIntegrationManager] Self-heal failed for ${integrationId}/${chatId}:`, healErr)
+          reportError(healErr, 'send-message-selfheal', { integrationId, chatId, provider: integration.provider }, isContainerNotRunning(healErr) ? 'warning' : 'error')
+          await conn.connector.sendMessage(chatId, { text: 'Error: Failed to send your message to the agent. Please try again.' }).catch(() => {})
+          return
+        }
+      }
+
       console.error(`[ChatIntegrationManager] Failed to send message for ${integrationId}/${sessionId}:`, err)
       // Recovered path (user is told to retry); a dead container is expected and
       // self-healing, so downgrade it to a warning to cut Sentry noise.
@@ -766,15 +763,95 @@ class ChatIntegrationManager {
       return
     }
 
-    // Show typing indicator
-    this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
-      ?.connector.showTypingIndicator(chatId).catch(() => {})
+    // Show the "Thinking…" indicator (the connector keeps it alive) until the first token streams.
+    const dispatched = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+    if (dispatched) dispatched.connector.startWorking(dispatched.chatId).catch(() => {})
+  }
+
+  /**
+   * Create a fresh agent session for a chat, persist the (integration, chat) →
+   * session mapping, and wire up SSE forwarding. `messageText` is sent as the
+   * session's initial message via createSession. Callers build messageText (and
+   * surface any failed-download warnings) and archive any prior session for this
+   * chat first. Shared by the new-chat path and the send-time self-heal.
+   */
+  private async startNewChatSession(
+    integration: ChatIntegration,
+    client: ContainerClient,
+    chatId: string,
+    message: IncomingMessage,
+    messageText: string,
+  ): Promise<void> {
+    const { getEffectiveModels } = await import('@shared/lib/config/settings')
+    const { getSecretEnvVars } = await import('@shared/lib/services/secrets-service')
+    const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
+
+    const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
+    const models = getEffectiveModels()
+
+    const containerSession = await client.createSession({
+      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+      initialMessage: messageText,
+      model: integration.model || models.agentModel,
+      browserModel: models.browserModel,
+      ...(integration.effort ? { effort: integration.effort as EffortLevel } : {}),
+      ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
+    })
+
+    const sessionId = containerSession.id
+    breadcrumb('New chat session created', { integrationId: integration.id, sessionId, provider: integration.provider })
+
+    const displayName = this.deriveDisplayName(integration.provider, message)
+    const sessionName = buildSessionName(
+      integration.name,
+      integration.provider,
+      displayName,
+      integration.sessionTimeout,
+    )
+
+    await registerSession(integration.agentSlug, sessionId, sessionName)
+    await updateSessionMetadata(integration.agentSlug, sessionId, {
+      isChatIntegrationSession: true,
+      chatIntegrationId: integration.id,
+      ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
+    })
+
+    createChatIntegrationSession({
+      integrationId: integration.id,
+      externalChatId: chatId,
+      sessionId,
+      displayName,
+    })
+
+    await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
+    messagePersister.markSessionActive(sessionId, integration.agentSlug)
+    this.subscribeChatSession(integration.id, chatId, sessionId)
+  }
+
+  /**
+   * True when a container call failed because the agent session no longer exists
+   * there (evicted / not resumable) — as opposed to a transient container or
+   * network error. Gates the send-time self-heal so only genuinely-gone sessions
+   * are rotated, while transient errors still surface a retry prompt.
+   */
+  private isSessionGoneError(err: unknown): boolean {
+    if (!(err instanceof Error)) return false
+    // Matches both shapes the container surfaces: the 404 guard's generic
+    // "Session not found" (host client: "Failed to send message: Session not
+    // found") and the resume-failure form "Session <id> not found".
+    return /session(\s+\S+)?\s+not\s+found/i.test(err.message)
+  }
+
+  /** Stop a chat session's live streaming: drop the SSE subscription and the working indicator. */
+  private stopSession(session: ManagedConnector): void {
+    session.sseUnsubscribe?.()
+    session.connector.stopWorking(session.chatId).catch(() => {})
   }
 
   private teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): void {
     const key = this.getChatSessionKey(integrationId, chatId)
     const managed = this.chatSessions.get(key)
-    managed?.sseUnsubscribe?.()
+    if (managed) this.stopSession(managed)
     this.chatSessions.delete(key)
     if (opts?.archive) {
       this.lastSessionTouch.delete(opts.archive)
@@ -808,7 +885,7 @@ class ChatIntegrationManager {
       const [integrationId, chatId] = key.split(':')
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession?.id === sessionId) {
-        managed.sseUnsubscribe?.()
+        this.stopSession(managed)
         this.chatSessions.delete(key)
         break
       }
@@ -934,17 +1011,39 @@ class ChatIntegrationManager {
     return this.downloadWithAuth(info.file.url_private_download, botToken)
   }
 
-  /** Download a URL with Bearer auth, following redirects manually to preserve the header. */
+  /**
+   * Download a URL with Bearer auth, following redirects manually.
+   *
+   * The Slack bot token is attached ONLY when the next hop is an HTTPS request
+   * to a trusted Slack host (SUP-232). Slack download URLs redirect to signed S3
+   * URLs whose auth lives in the query string, so dropping the header on
+   * cross-origin hops does not break legitimate downloads — but it prevents the
+   * xoxb token from leaking to an attacker-controlled redirect target.
+   */
   private async downloadWithAuth(url: string, token: string): Promise<Buffer | null> {
-    const headers = { 'Authorization': `Bearer ${token}` }
+    let target = tryParseUrl(url)
+    if (!target) {
+      console.error('[ChatIntegrationManager] Invalid Slack download URL')
+      return null
+    }
 
-    let response = await fetch(url, { headers, redirect: 'manual' })
-    // Follow redirects with auth preserved
+    const headersFor = (u: URL): Record<string, string> =>
+      isTrustedSlackDownloadHost(u) ? { 'Authorization': `Bearer ${token}` } : {}
+
+    let response = await fetch(target.toString(), { headers: headersFor(target), redirect: 'manual' })
+    // Follow redirects, re-evaluating auth for every hop.
     let redirects = 0
     while (response.status >= 300 && response.status < 400 && redirects < 5) {
       const location = response.headers.get('location')
       if (!location) break
-      response = await fetch(location, { headers })
+      // Resolve relative redirects against the current URL.
+      const next = tryParseUrl(location, target)
+      if (!next) {
+        console.error('[ChatIntegrationManager] Invalid redirect location in Slack download')
+        return null
+      }
+      target = next
+      response = await fetch(target.toString(), { headers: headersFor(target), redirect: 'manual' })
       redirects++
     }
 
@@ -987,10 +1086,17 @@ class ChatIntegrationManager {
     const path = await import('path')
     const fs = await import('fs')
 
-    const uploadName = `${Date.now()}-${filename}`
+    // External attachment names are attacker-controlled — sanitize to a safe
+    // basename so `../` segments cannot escape the uploads directory (SUP-231).
+    const safeName = sanitizeUploadFilename(filename)
+    const uploadName = `${Date.now()}-${safeName}`
     const workspaceDir = getAgentWorkspaceDir(agentSlug)
     const uploadsDir = path.resolve(workspaceDir, 'uploads')
     const fullPath = path.resolve(uploadsDir, uploadName)
+
+    // Defense in depth: never write outside uploads even if sanitization is
+    // weakened in the future. Throws on escape.
+    assertPathWithinDir(uploadsDir, fullPath, 'Resolved upload path escapes the uploads directory')
 
     await fs.promises.mkdir(uploadsDir, { recursive: true })
     await fs.promises.writeFile(fullPath, data)
@@ -1206,6 +1312,12 @@ export async function processSSEEvent(
     case 'stream_delta': {
       const text = data.text as string
       if (!text) break
+      // First token of this segment: the response is streaming now, so drop "Thinking…".
+      // Guard on the empty accumulator so stopWorking fires once on the transition,
+      // not on every streamed token.
+      if (managed.streamingState.accumulatedText === '') {
+        managed.connector.stopWorking(managed.chatId).catch(() => {})
+      }
       managed.streamingState.accumulatedText += text
 
       const now = Date.now()
@@ -1233,14 +1345,9 @@ export async function processSSEEvent(
       } catch (err) {
         console.error('[ChatIntegrationManager] Failed to finalize on stream_start:', err)
       }
-      managed.connector.showTypingIndicator(managed.chatId).catch(() => {})
-      break
-    }
-
-    case 'messages_updated': {
-      if (managed.streamingState.accumulatedText) {
-        managed.connector.showTypingIndicator(managed.chatId).catch(() => {})
-      }
+      // "Thinking…" again for the next segment. startWorking self-keep-alives, so a
+      // long gap before the next token no longer drops it; the first token replaces it.
+      managed.connector.startWorking(managed.chatId).catch(() => {})
       break
     }
 
@@ -1329,6 +1436,7 @@ export async function processSSEEvent(
     }
 
     case 'session_idle': {
+      managed.connector.stopWorking(managed.chatId).catch(() => {})
       try {
         await finalizeStreaming(managed)
         await resolvePendingToolMessages(managed)
@@ -1393,8 +1501,10 @@ async function sendDeliveredFile(
   const workspaceDir = getAgentWorkspaceDir(managed.integration.agentSlug)
   const fullPath = path.resolve(workspaceDir, relativePath)
 
-  // Security: ensure path doesn't escape workspace
-  if (!fullPath.startsWith(path.resolve(workspaceDir))) {
+  // Security: ensure path doesn't escape workspace. A bare startsWith() check is
+  // unsafe — a sibling workspace sharing the path prefix (agent vs agent-victim)
+  // would pass — so use prefix-safe isPathWithinDir (path.relative based).
+  if (!isPathWithinDir(workspaceDir, fullPath)) {
     console.error('[ChatIntegrationManager] deliver_file path escapes workspace:', filePath)
     reportError(new Error('Path traversal attempt in deliver_file'), 'deliver-file-security', { filePath, agentSlug: managed.integration.agentSlug }, 'warning')
     return

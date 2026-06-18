@@ -116,7 +116,11 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, isSessio
   return (
     <div className="text-sm border border-border/70 rounded-md overflow-hidden" data-testid={`tool-call-${toolCall.name}`}>
       <button
-        onClick={() => setExpanded(!expanded)}
+        type="button"
+        aria-expanded={expanded}
+        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${toolCall.name} tool call`}
+        data-testid={`tool-call-toggle-${toolCall.name}`}
+        onClick={() => setExpanded((current) => !current)}
         className={cn('flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
       >
         <ToolIcon className="h-3.5 w-3.5 shrink-0 text-foreground/45 group-hover:text-foreground transition-colors" />
