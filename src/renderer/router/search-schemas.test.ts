@@ -3,6 +3,7 @@ import {
   chatSearchSchema,
   connectionsSearchSchema,
   rootSearchSchema,
+  settingsSearchSchema,
   settingsTabSchema,
   SETTINGS_TABS,
 } from './search-schemas'
@@ -58,6 +59,14 @@ describe('lenient wrapper', () => {
   it('returns parsed data on valid search', () => {
     expect(lenient(chatSearchSchema)({ session: 'x' })).toEqual({ session: 'x' })
   })
+  it('strips unknown keys (zod .object() default) and keeps the known field', () => {
+    expect(lenient(chatSearchSchema)({ session: 'x', junk: 1 })).toEqual({ session: 'x' })
+  })
+  it('falls back to {} when a refine rejects a structurally-valid half-pair', () => {
+    // `detail: 'account-1'` passes the /^(account|mcp)-.+$/ regex, so only the
+    // detail+source coupling refine fails → lenient must degrade to {}, not throw.
+    expect(lenient(connectionsSearchSchema)({ detail: 'account-1' })).toEqual({})
+  })
 })
 
 describe('settingsTabSchema', () => {
@@ -73,5 +82,37 @@ describe('settingsTabSchema', () => {
   })
   it('has 18 tabs', () => {
     expect(SETTINGS_TABS).toHaveLength(18)
+  })
+})
+
+describe('settingsSearchSchema (from close-target)', () => {
+  it('rejects an absolute URL', () => {
+    expect(settingsSearchSchema.safeParse({ from: 'https://evil.com' }).success).toBe(false)
+  })
+  it('rejects a protocol-relative //', () => {
+    expect(settingsSearchSchema.safeParse({ from: '//evil' }).success).toBe(false)
+  })
+  it('accepts an internal absolute path', () => {
+    expect(settingsSearchSchema.safeParse({ from: '/settings/general' }).success).toBe(true)
+  })
+  it('accepts no from', () => {
+    expect(settingsSearchSchema.safeParse({}).success).toBe(true)
+  })
+})
+
+// The schema regex `/^\/(?!\/)/` only blocks protocol-relative `//host`. It
+// deliberately ACCEPTS backslash-UNC `/\host` and a leading encoded `/%2fhost`
+// that the REAL open-redirect backstop — api.ts `isSafeInternalPath`, pinned in
+// api.test.ts — rejects. This pins that asymmetry so nobody mistakes the search
+// schema (a shape gate) for the sanitizer (applied on the actual redirect path).
+describe('rootSearchSchema vs api.ts isSafeInternalPath (intentional asymmetry)', () => {
+  it('ACCEPTS backslash-UNC `/\\host` that isSafeInternalPath rejects', () => {
+    expect(rootSearchSchema.safeParse({ redirect: '/\\evil.com' }).success).toBe(true)
+  })
+  it('ACCEPTS a leading encoded separator `/%2fhost` that isSafeInternalPath rejects', () => {
+    expect(rootSearchSchema.safeParse({ redirect: '/%2fevil' }).success).toBe(true)
+  })
+  it('still rejects the protocol-relative `//host` the regex DOES catch', () => {
+    expect(rootSearchSchema.safeParse({ redirect: '//evil.com' }).success).toBe(false)
   })
 })

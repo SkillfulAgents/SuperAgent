@@ -24,6 +24,26 @@ test.describe('Navigation — discriminated AgentView', () => {
   let agentPage: AgentPage
   let sessionPage: SessionPage
 
+  // Seeded once for the connections-detail deep-link tests below. The global
+  // /api/connected-accounts list is agent-independent, so a freshly-created
+  // agent still surfaces this row in its connections list (just not granted).
+  let accountId: string
+
+  test.beforeAll(async ({ request }) => {
+    // Unique per run so a retry (which re-runs beforeAll in a new worker) does
+    // not collide with the previously-seeded row on the unique connectionId.
+    const providerConnectionId = `e2e-nav-conn-detail-${Date.now()}`
+    const res = await request.post('/api/connected-accounts', {
+      data: {
+        providerConnectionId,
+        toolkitSlug: 'slack',
+        displayName: 'E2E Nav Detail Account',
+      },
+    })
+    const body = await res.json()
+    accountId = body.account.id
+  })
+
   test.beforeEach(async ({ page }) => {
     appPage = new AppPage(page)
     agentPage = new AgentPage(page)
@@ -115,6 +135,90 @@ test.describe('Navigation — discriminated AgentView', () => {
 
     // Cleanup
     await page.locator('[data-testid="api-logs-back-button"]').click()
+    await agentPage.deleteAgent()
+  })
+
+  test('Browser back/forward walks agent sub-view transitions in lockstep with the URL', async ({ page }) => {
+    // Headline migration promise: each sub-view nav is a real history PUSH, so
+    // the browser back/forward buttons replay them in order. A navigate() that
+    // mistakenly used `replace: true`, or a sub-view that double-pushed, would
+    // break this silently while every forward-nav test still passed — so this
+    // is the only e2e that drives page.goBack()/goForward().
+    const errors: string[] = []
+    page.on('pageerror', (e) => errors.push(e.message))
+
+    const agentName = `Nav BackFwd ${Date.now()}`
+    await agentPage.createAgent(agentName)
+    // createAgent lands on agent-home (this is history entry [0] for our walk).
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+
+    // [1] Push API Logs.
+    await page.getByTestId('home-api-logs-open-page').click()
+    await expect(page).toHaveURL(/\/api-logs$/)
+    await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
+
+    // Back to agent-home via the in-app back button (this is its own push of the
+    // home route, NOT a history pop) so the subsequent Connections push sits
+    // after a clean home entry.
+    await page.locator('[data-testid="api-logs-back-button"]').click()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+
+    // [2] Push Connections.
+    await page.locator('[data-testid="home-connections-open-page"]').click()
+    await expect(page).toHaveURL(/\/connections$/)
+    await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
+    // Mutual exclusion: only the Connections back-button is present.
+    await expect(page.locator('[data-testid="api-logs-back-button"]')).not.toBeVisible()
+
+    // ── Walk backward through the pushed history ──────────────────────────────
+
+    // goBack → the home entry pushed by the API-Logs back-button.
+    await page.goBack()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="api-logs-back-button"]')).not.toBeVisible()
+
+    // goBack → API Logs.
+    await page.goBack()
+    await expect(page).toHaveURL(/\/api-logs$/)
+    await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
+
+    // goBack → agent home (the original entry from createAgent).
+    await page.goBack()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page.locator('[data-testid="api-logs-back-button"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
+
+    // ── Walk forward, replaying the same stops ────────────────────────────────
+
+    // goForward → API Logs.
+    await page.goForward()
+    await expect(page).toHaveURL(/\/api-logs$/)
+    await expect(page.locator('[data-testid="api-logs-back-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
+
+    // goForward → the home entry, then goForward → Connections.
+    await page.goForward()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+
+    await page.goForward()
+    await expect(page).toHaveURL(/\/connections$/)
+    await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="api-logs-back-button"]')).not.toBeVisible()
+
+    // No uncaught render errors anywhere across the whole back/forward walk.
+    expect(errors).toEqual([])
+
+    // Cleanup — return to agent-home (where agent-settings-button lives) before
+    // deleting. We're on Connections, so use its in-app back button.
+    await page.locator('[data-testid="connections-back-button"]').click()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
     await agentPage.deleteAgent()
   })
 
@@ -417,6 +521,84 @@ test.describe('Navigation — discriminated AgentView', () => {
     // doesn't skip 404, to avoid false-firing on a still-settling new session).
     await expect(page.locator('[data-testid="session-not-found"]')).toBeVisible({ timeout: 15000 })
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+    expect(errors).toEqual([])
+
+    // Cleanup
+    await agentPage.selectAgent(agentName)
+    await agentPage.deleteAgent()
+  })
+
+  test('Connections detail overlay is deep-linkable and reload-durable; source=list back returns to the list', async ({ page }) => {
+    // The detail overlay travels in the URL search (`?detail&source`,
+    // ConnectionsRoute decodes it). A cold deep-link must restore the overlay
+    // (connection-detail-back), hide the bare list back-button, and survive a
+    // hard reload. For source=list, Back returns to the connections list.
+    const errors: string[] = []
+    page.on('pageerror', (e) => errors.push(e.message))
+
+    const agentName = `Nav Conn Detail ${Date.now()}`
+    await agentPage.createAgent(agentName)
+    const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
+    expect(slug).toBeTruthy()
+
+    // Cold deep-link straight to the open overlay.
+    await page.goto(`/agents/${slug}/connections?detail=account-${accountId}&source=list`)
+
+    // The URL keeps both search params (param order isn't guaranteed, so assert
+    // each independently).
+    await expect(page).toHaveURL(new RegExp(`/agents/${slug}/connections\\?`))
+    await expect(page).toHaveURL(new RegExp(`detail=account-${accountId}`))
+    await expect(page).toHaveURL(/source=list/)
+
+    // Overlay renders; the bare connections-list back-button is NOT present
+    // (PageTitle is suppressed while a detail is open).
+    await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible({ timeout: 15000 })
+    await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
+
+    // Reload — the overlay is restored straight from the URL, no Selection.
+    await appPage.reload()
+    await expect(page).toHaveURL(new RegExp(`detail=account-${accountId}`))
+    await expect(page).toHaveURL(/source=list/)
+    await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible({ timeout: 15000 })
+    await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
+
+    // source=list → Back returns to the connections list (the bare list
+    // back-button reappears, overlay gone).
+    await page.locator('[data-testid="connection-detail-back"]').click()
+    await expect(page).toHaveURL(/\/connections$/)
+    await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="connection-detail-back"]')).not.toBeVisible()
+
+    expect(errors).toEqual([])
+
+    // Cleanup
+    await agentPage.selectAgent(agentName)
+    await agentPage.deleteAgent()
+  })
+
+  test('Connections detail overlay with source=home: Back returns to agent home', async ({ page }) => {
+    // The agent-scoped overlay's `source` decides the back-target: source=home
+    // routes Back to agent home, not to the connections list — an invariant that
+    // can silently regress.
+    const errors: string[] = []
+    page.on('pageerror', (e) => errors.push(e.message))
+
+    const agentName = `Nav Conn Detail Home ${Date.now()}`
+    await agentPage.createAgent(agentName)
+    const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
+    expect(slug).toBeTruthy()
+
+    await page.goto(`/agents/${slug}/connections?detail=account-${accountId}&source=home`)
+    await expect(page).toHaveURL(new RegExp(`detail=account-${accountId}`))
+    await expect(page).toHaveURL(/source=home/)
+    await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible({ timeout: 15000 })
+
+    // source=home → Back returns to agent home (large composer visible).
+    await page.locator('[data-testid="connection-detail-back"]').click()
+    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page.locator('[data-testid="connection-detail-back"]')).not.toBeVisible()
+
     expect(errors).toEqual([])
 
     // Cleanup

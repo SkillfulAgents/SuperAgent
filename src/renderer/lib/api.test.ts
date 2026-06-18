@@ -5,7 +5,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // api.ts imports getApiBaseUrl at module load; stub it so the import is inert.
 vi.mock('./env', () => ({ getApiBaseUrl: () => '' }))
 
-import { stashRedirectTarget, peekRedirectStash, consumeRedirectStash, clearRedirectStash } from './api'
+// apiFetch dynamically import()s ./auth-client on a 401; mock it so signOut is an
+// observable spy and the real better-auth client never loads.
+const signOutMock = vi.fn().mockResolvedValue(undefined)
+vi.mock('./auth-client', () => ({ signOut: signOutMock }))
+
+import {
+  apiFetch,
+  apiJson,
+  HttpError,
+  stashRedirectTarget,
+  peekRedirectStash,
+  consumeRedirectStash,
+  clearRedirectStash,
+} from './api'
 
 const KEY = 'superagent.redirect'
 
@@ -79,5 +92,87 @@ describe('redirect stash (post-login restore)', () => {
       expect(consumeRedirectStash()).toBe('/agents/foo')
       expect(peekRedirectStash()).toBe('/') // now cleared
     })
+  })
+})
+
+describe('apiJson (loader fetch: status-preserving throw)', () => {
+  // afterEach restores fetch so a thrown-error case can't leak the stub into the
+  // next test (mirrors the vi.unstubAllGlobals() discipline of the stash suite).
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('returns the parsed JSON body on a 2xx response', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ a: 1 }) })))
+    await expect(apiJson('/x')).resolves.toEqual({ a: 1 })
+  })
+
+  // 403/404 are the access-control statuses the agentLayoutRoute.loader maps to
+  // notFound(); 500 is the rethrow-to-errorComponent case. apiJson must surface
+  // the EXACT status on the error object so the loader can branch on it.
+  it.each([403, 404, 500])('throws an HttpError carrying status %i on a non-2xx response', async (status) => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status })))
+    await expect(apiJson('/x')).rejects.toSatisfy(
+      (err: unknown) => err instanceof HttpError && err.status === status && err.name === 'HttpError',
+    )
+  })
+})
+
+describe('apiFetch 401 auto-stash (warm, router-mounted)', () => {
+  // The 401 branch is the WARM stash trigger: while the router IS mounted, an
+  // expired-session API call stashes the CURRENT window.location and signs out,
+  // so an in-place re-sign-in restores the destination. Separate path from the
+  // cold stashRedirectTarget above (its own /api/auth/ loop-guard + here!=='/').
+  beforeEach(() => {
+    sessionStorage.clear()
+    signOutMock.mockClear()
+    vi.stubGlobal('__AUTH_MODE__', true)
+    // Default 401 so apiFetch enters the auto-stash branch unless a case overrides.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 401 }))
+    window.history.replaceState(null, '', '/')
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    sessionStorage.clear()
+    window.history.replaceState(null, '', '/')
+  })
+
+  it('(1) stashes the warm location and signs out on a 401', async () => {
+    window.history.replaceState(null, '', '/agents/foo')
+    await apiFetch('/api/agents/foo')
+    expect(sessionStorage.getItem(KEY)).toBe('/agents/foo')
+    expect(signOutMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('(2) does NOT stash when the current location is the default "/"', async () => {
+    window.history.replaceState(null, '', '/')
+    await apiFetch('/api/agents/foo')
+    expect(sessionStorage.getItem(KEY)).toBeNull()
+    // still signs out (the here!=='/' guard only gates the stash, not the sign-out)
+    expect(signOutMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('(3) skips the branch entirely for /api/auth/* (sign-out loop guard)', async () => {
+    window.history.replaceState(null, '', '/agents/foo')
+    await apiFetch('/api/auth/session')
+    expect(sessionStorage.getItem(KEY)).toBeNull()
+    expect(signOutMock).not.toHaveBeenCalled()
+  })
+
+  it('(4) is a no-op outside auth mode', async () => {
+    vi.stubGlobal('__AUTH_MODE__', false)
+    window.history.replaceState(null, '', '/agents/foo')
+    await apiFetch('/api/agents/foo')
+    expect(sessionStorage.getItem(KEY)).toBeNull()
+    expect(signOutMock).not.toHaveBeenCalled()
+  })
+
+  it('does not stash or sign out on a non-401 (e.g. 403 forbidden)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 403 }))
+    window.history.replaceState(null, '', '/agents/foo')
+    await apiFetch('/api/agents/foo')
+    expect(sessionStorage.getItem(KEY)).toBeNull()
+    expect(signOutMock).not.toHaveBeenCalled()
   })
 })

@@ -75,4 +75,76 @@ describe('route-state codec', () => {
       view: { kind: 'home' },
     })
   })
+
+  // ── decoder-only degradation paths ──────────────────────────────────────────
+  // These feed decodeLocation snapshots that encodeLocation can never EMIT (a
+  // half-pair, an out-of-enum source, a non-string session, missing params), so
+  // they are NOT round-trip cases — they pin the decoder's defensive guards.
+
+  it('drops a connections half-pair (detail without source) to the bare connections view', () => {
+    expect(
+      decodeLocation({ to: '/agents/$slug/connections', params: { slug: 'a' }, search: { detail: 'account-1' } }),
+    ).toEqual({
+      selectedAgentSlug: 'a',
+      view: { kind: 'connections' },
+    })
+  })
+
+  it('drops a connections half-pair (source without detail) to the bare connections view', () => {
+    expect(
+      decodeLocation({ to: '/agents/$slug/connections', params: { slug: 'a' }, search: { source: 'home' } }),
+    ).toEqual({
+      selectedAgentSlug: 'a',
+      view: { kind: 'connections' },
+    })
+  })
+
+  it('drops connections detail when source is present but out of enum (decoder coupling guard)', () => {
+    expect(
+      decodeLocation({
+        to: '/agents/$slug/connections',
+        params: { slug: 'a' },
+        search: { detail: 'account-1', source: 'garbage' },
+      }),
+    ).toEqual({
+      selectedAgentSlug: 'a',
+      view: { kind: 'connections' },
+    })
+  })
+
+  it('drops a non-string chat ?session= so the chat view has no sessionId', () => {
+    // The `typeof search.session === 'string'` guard (route-state.ts) must reject
+    // a coerced number/array session. Round-trips only ever feed a clean string.
+    const decoded = decodeLocation({
+      to: '/agents/$slug/chat/$integrationId',
+      params: { slug: 'a', integrationId: 'i' },
+      search: { session: 123 },
+    })
+    expect(decoded).toEqual({
+      selectedAgentSlug: 'a',
+      view: { kind: 'chat', integrationId: 'i' },
+    })
+    expect(decoded.view).not.toHaveProperty('sessionId')
+  })
+
+  it('tolerates a missing slug/sessionId on a matched agent template (defensive ?? fallbacks)', () => {
+    expect(decodeLocation({ to: '/agents/$slug/sessions/$sessionId', params: {}, search: {} })).toEqual({
+      selectedAgentSlug: null,
+      view: { kind: 'session', id: '' },
+    })
+  })
+
+  it('degrades an unknown agent sub-path to the global home (default branch)', () => {
+    expect(decodeLocation({ to: '/agents/$slug/unknownthing', params: { slug: 'a' }, search: {} })).toEqual({
+      selectedAgentSlug: null,
+      view: { kind: 'home' },
+    })
+  })
+
+  it('preserves the bare root "/" (length>1 guard does not strip it to "")', () => {
+    expect(decodeLocation({ to: '/', params: {}, search: {} })).toEqual({
+      selectedAgentSlug: null,
+      view: { kind: 'home' },
+    })
+  })
 })
