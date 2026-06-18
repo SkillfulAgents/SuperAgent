@@ -1,5 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
+import Database from 'better-sqlite3'
+import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
+import * as path from 'path'
+import * as schema from '@shared/lib/db/schema'
+
+let testDb: ReturnType<typeof drizzle>
+let testSqlite: InstanceType<typeof Database>
+
+vi.mock('@shared/lib/db', () => ({
+  get db() { return testDb },
+  get sqlite() { return testSqlite },
+}))
 
 const mockEnsureRunning = vi.fn()
 
@@ -83,12 +96,6 @@ vi.mock('fs', () => ({
   appendFileSync: (...args: unknown[]) => mockAppendFileSync(...args),
 }))
 
-const mockIsChatAllowed = vi.fn()
-
-vi.mock('@shared/lib/services/chat-integration-access-service', () => ({
-  isChatAllowed: (...args: unknown[]) => mockIsChatAllowed(...args),
-}))
-
 import xAgentChat from './x-agent-chat'
 
 function createApp() {
@@ -125,6 +132,20 @@ describe('x-agent chat route', () => {
   let containerSendMessage: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    // Set up real in-memory DB so isChatAllowed exercises genuine SQL.
+    // Seed 'integration-1' as slack (requireApproval=false) → isChatAllowed returns
+    // true for all default-path tests without any access row needed.
+    testSqlite = new Database(':memory:')
+    testDb = drizzle(testSqlite, { schema })
+    migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
+    const now = Date.now()
+    testSqlite
+      .prepare(
+        `INSERT INTO chat_integrations (id, agent_slug, provider, config, require_approval, created_at, updated_at)
+         VALUES ('integration-1', 'agent-one', 'slack', '{}', 0, ?, ?)`,
+      )
+      .run(now, now)
+
     vi.clearAllMocks()
     app = createApp()
     connector = {
@@ -146,11 +167,11 @@ describe('x-agent chat route', () => {
     mockEnsureRunning.mockResolvedValue({ sendMessage: containerSendMessage })
     mockGetSessionJsonlPath.mockReturnValue('/tmp/superagent/agent-one/session-1.jsonl')
     mockExistsSync.mockReturnValue(false)
-    mockIsChatAllowed.mockReturnValue(true)
     vi.spyOn(Math, 'random').mockReturnValue(0)
   })
 
   afterEach(() => {
+    testSqlite?.close()
     vi.restoreAllMocks()
   })
 
@@ -271,7 +292,11 @@ describe('x-agent chat route', () => {
 
   it('returns 403 when the chat is not approved for the integration', async () => {
     immediateTimeout()
-    mockIsChatAllowed.mockReturnValue(false)
+    // Reconfigure 'integration-1' in the DB to telegram+require_approval=1.
+    // 'chat-blocked' has no access row, so isChatAllowed returns false via real SQL.
+    testSqlite
+      .prepare(`UPDATE chat_integrations SET provider = 'telegram', require_approval = 1 WHERE id = 'integration-1'`)
+      .run()
 
     const res = await app.request('http://localhost/api/x-agent/chat/send', {
       method: 'POST',
@@ -288,9 +313,10 @@ describe('x-agent chat route', () => {
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 
-  it('sends message when isChatAllowed returns true', async () => {
+  it('sends message when the integration has no access restriction (real DB allows it)', async () => {
     immediateTimeout()
-    mockIsChatAllowed.mockReturnValue(true)
+    // 'integration-1' is seeded as slack (require_approval=0) in beforeEach,
+    // so isChatAllowed returns true via real SQL without needing an access row.
 
     const res = await app.request('http://localhost/api/x-agent/chat/send', {
       method: 'POST',
