@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, text, integer, uniqueIndex, index } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, uniqueIndex, index, check } from 'drizzle-orm/sqlite-core'
 import { CHAT_PROVIDERS } from '@shared/lib/chat-integrations/config-schema'
 
 // =============================================================================
@@ -415,6 +415,7 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
 
   // Behavior settings
   showToolCalls: integer('show_tool_calls', { mode: 'boolean' }).notNull().default(false),
+  requireApproval: integer('require_approval', { mode: 'boolean' }).notNull().default(true),
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
   model: text('model'), // Claude model override; null = use default
   effort: text('effort'), // Effort level override; null = use default
@@ -448,6 +449,32 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
+}))
+
+export const chatIntegrationAccess = sqliteTable('chat_integration_access', {
+  id: text('id').primaryKey(),
+  integrationId: text('integration_id').notNull()
+    .references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  externalChatId: text('external_chat_id').notNull(),
+  chatType: text('chat_type', { enum: ['private', 'group', 'supergroup'] }), // nullable: seeded rows unknown
+  status: text('status', { enum: ['pending', 'allowed', 'denied'] }).notNull().default('pending'),
+  approvalSource: text('approval_source', { enum: ['auto_first_contact', 'owner', 'migration'] }),
+  title: text('title'),
+  firstUserId: text('first_user_id'),
+  firstUserName: text('first_user_name'),
+  firstMessagePreview: text('first_message_preview'),
+  requestNoticeSentAt: integer('request_notice_sent_at', { mode: 'timestamp_ms' }),
+  requestedAt: integer('requested_at', { mode: 'timestamp_ms' }).notNull(),
+  decidedAt: integer('decided_at', { mode: 'timestamp_ms' }),
+  decidedByUserId: text('decided_by_user_id'), // NOT an FK: non-auth mode stores sentinel "local"
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  chatUnique: uniqueIndex('chat_integration_access_unique').on(table.integrationId, table.externalChatId),
+  statusIdx: index('chat_integration_access_status_idx').on(table.integrationId, table.status),
+  statusCheck: check('chat_integration_access_status_check', sql`${table.status} in ('pending','allowed','denied')`),
+  chatTypeCheck: check('chat_integration_access_chat_type_check', sql`${table.chatType} is null or ${table.chatType} in ('private','group','supergroup')`),
+  sourceCheck: check('chat_integration_access_source_check', sql`${table.approvalSource} is null or ${table.approvalSource} in ('auto_first_contact','owner','migration')`),
 }))
 
 // Audit log - tracks key user actions across the app
@@ -506,5 +533,7 @@ export type ChatIntegration = typeof chatIntegrations.$inferSelect
 export type NewChatIntegration = typeof chatIntegrations.$inferInsert
 export type ChatIntegrationSession = typeof chatIntegrationSessions.$inferSelect
 export type NewChatIntegrationSession = typeof chatIntegrationSessions.$inferInsert
+export type ChatIntegrationAccess = typeof chatIntegrationAccess.$inferSelect
+export type NewChatIntegrationAccess = typeof chatIntegrationAccess.$inferInsert
 export type AuditLogEntry = typeof auditLog.$inferSelect
 export type NewAuditLogEntry = typeof auditLog.$inferInsert

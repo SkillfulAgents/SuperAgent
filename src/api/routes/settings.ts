@@ -47,6 +47,7 @@ import {
   webhookTriggers,
   chatIntegrations,
   chatIntegrationSessions,
+  chatIntegrationAccess,
   remoteMcpServers,
   agentRemoteMcps,
   mcpAuditLog,
@@ -84,7 +85,8 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   webhookTriggers,
   notifications,
   scheduledTasks,
-  // chat integrations (sessions cascade-cascade from integrations)
+  // chat integrations (access + sessions cascade from integrations)
+  chatIntegrationAccess,
   chatIntegrationSessions,
   chatIntegrations,
   // connected accounts + dependents (api scope policies + agent mappings cascade)
