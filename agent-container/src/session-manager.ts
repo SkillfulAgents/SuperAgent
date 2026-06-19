@@ -105,6 +105,7 @@ export class SessionManager extends EventEmitter {
       sessionId: tempSessionId,
       workingDirectory,
       userSystemPrompt: request.systemPrompt,
+      modelPromptHints: request.modelPromptHints,
       availableEnvVars: request.availableEnvVars,
       model: request.model,
       browserModel: request.browserModel,
@@ -162,6 +163,7 @@ export class SessionManager extends EventEmitter {
       workingDirectory,
       envVars: request.envVars,
       systemPrompt: request.systemPrompt,
+      modelPromptHints: request.modelPromptHints,
       availableEnvVars: request.availableEnvVars,
       slashCommands: process.slashCommands,
     };
@@ -194,6 +196,7 @@ export class SessionManager extends EventEmitter {
       createdAt: session.createdAt.toISOString(),
       lastActivity: session.lastActivity.toISOString(),
       systemPrompt: request.systemPrompt,
+      modelPromptHints: request.modelPromptHints,
       availableEnvVars: request.availableEnvVars,
       model: request.model,
       browserModel: request.browserModel,
@@ -228,6 +231,7 @@ export class SessionManager extends EventEmitter {
         workingDirectory: persisted.workingDirectory,
         claudeSessionId: persisted.claudeSessionId,
         userSystemPrompt: persisted.systemPrompt,
+        modelPromptHints: persisted.modelPromptHints,
         availableEnvVars: persisted.availableEnvVars,
         model: persisted.model,
         browserModel: persisted.browserModel,
@@ -246,6 +250,7 @@ export class SessionManager extends EventEmitter {
         lastActivity: new Date(),
         workingDirectory: persisted.workingDirectory,
         systemPrompt: persisted.systemPrompt,
+        modelPromptHints: persisted.modelPromptHints,
         availableEnvVars: persisted.availableEnvVars,
       };
 

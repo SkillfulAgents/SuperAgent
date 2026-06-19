@@ -1,5 +1,6 @@
 import type { EffortLevel } from '../container/types'
 import type { ModelDefinition } from './model-catalog-schema'
+import { GPT_TOOL_USE_PROMPT_HINTS } from './model-prompt-hints'
 import { pricingFor } from './model-pricing-lookup'
 
 /**
@@ -156,6 +157,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
     contextWindow: 1_050_000,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
     id: 'openai/gpt-5.5',
@@ -173,6 +175,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
     contextWindow: 1_050_000,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
     id: 'z-ai/glm-5.2',
@@ -213,6 +216,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
     contextWindow: 1_050_000,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
     id: 'gpt-5.5',
@@ -226,6 +230,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
     contextWindow: 1_050_000,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
 ]
 

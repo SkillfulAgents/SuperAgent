@@ -31,6 +31,7 @@ export interface Session {
   workingDirectory: string;
   envVars?: Record<string, string>;
   systemPrompt?: string;
+  modelPromptHints?: string[];
   availableEnvVars?: string[];
   slashCommands?: SlashCommandInfo[];
 }
@@ -55,6 +56,7 @@ export interface CreateSessionRequest {
   workingDirectory?: string;
   envVars?: Record<string, string>;
   systemPrompt?: string; // Custom system prompt to append to default
+  modelPromptHints?: string[];
   availableEnvVars?: string[]; // List of env var names available to the agent
   initialMessage: string; // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: UUID; // Optional UUID for message author attribution

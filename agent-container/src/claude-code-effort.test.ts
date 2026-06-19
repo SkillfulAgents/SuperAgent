@@ -253,3 +253,23 @@ describe('ClaudeCodeProcess model handling', () => {
     expect(calls[1].options.model).toBe('claude-opus-4-7')
   })
 })
+
+describe('ClaudeCodeProcess model prompt hints', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('injects model-specific prompt hints into the system prompt', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-prompt-hints',
+      workingDirectory: '/tmp',
+      modelPromptHints: ['Use exact ToolSearch names.', 'Do not send pages as an empty string.'],
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(calls[0].options.systemPrompt).toContain('## Model-Specific Instructions')
+    expect(calls[0].options.systemPrompt).toContain('- Use exact ToolSearch names.')
+    expect(calls[0].options.systemPrompt).toContain('- Do not send pages as an empty string.')
+  })
+})
