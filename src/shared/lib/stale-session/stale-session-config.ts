@@ -16,7 +16,7 @@ export const SUMMARY_INPUT_BUDGET_TOKENS = 150_000
  *  Used to detect and split the carried-context block for display.
  *  Must stay in sync with buildSeed (the full first line has
  *  " The summary below covers the earlier context." appended). */
-export const BRANCH_PREAMBLE_SENTINEL = 'This conversation is continued from a previous session.'
+export const BRANCH_PREAMBLE_SENTINEL = 'Continued from an earlier conversation.'
 
 /** Summary output budget floor — the full balanced handoff for a normal session. */
 export const SUMMARY_OUTPUT_FLOOR_TOKENS = 800

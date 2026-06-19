@@ -8,6 +8,7 @@ import {
   TransformedCompactBoundary,
 } from './message-transform'
 import { JsonlMessageEntry, ContentBlock } from '@shared/lib/types/agent'
+import { BRANCH_PREAMBLE_SENTINEL } from '@shared/lib/stale-session/stale-session-config'
 
 /** Helper to narrow TransformedItem to TransformedMessage in tests */
 function asMessage(item: unknown): TransformedMessage {
@@ -1225,7 +1226,7 @@ describe('transformMessages', () => {
   // ============================================================================
 
   describe('branch preamble split', () => {
-    const SENTINEL = 'This conversation is continued from a previous session.'
+    const SENTINEL = BRANCH_PREAMBLE_SENTINEL
 
     function buildInjected(userMessage: string, summary = 'Was working on auth.'): string {
       return [
