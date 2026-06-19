@@ -207,7 +207,7 @@ describe('chat-integration inbound access gate', () => {
     expect(row?.requestNoticeSentAt).not.toBeNull()
     expect(sendMessage).toHaveBeenCalledTimes(1)
     expect(sendMessage).toHaveBeenCalledWith('g1', {
-      text: 'This bot needs the owner to approve this chat before it can respond.',
+      text: 'This bot needs the owner to approve this conversation before it can respond.',
     })
     expect(containerManager.ensureRunning).not.toHaveBeenCalled()
   })

@@ -204,7 +204,7 @@ xAgentChat.post('/send', async (c) => {
     }
 
     if (!isChatAllowed(integration_id, resolvedChatId)) {
-      return c.json({ error: 'This chat is not approved for this integration.' }, 403)
+      return c.json({ error: 'This conversation is not approved for this integration.' }, 403)
     }
 
     // Send through connector (with a brief "working" indicator first)

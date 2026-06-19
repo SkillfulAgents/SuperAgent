@@ -186,7 +186,6 @@ export function useUpdateChatIntegration() {
       sessionTimeout?: number | null
       model?: string | null
       effort?: string | null
-      requireApproval?: boolean
       status?: 'active' | 'paused'
     }) => {
       const res = await apiFetch(`/api/chat-integrations/${id}`, {
@@ -226,15 +225,21 @@ export function useDeleteChatIntegration() {
 
 // ── Access mutations ────────────────────────────────────────────────────
 
-export function useApproveChatAccess() {
+type ChatAccessVerb = 'approve' | 'deny' | 'revoke'
+
+// One mutation primitive for all three access decisions — a new verb is added,
+// not threaded through three near-identical hooks. Mirrors the server-side
+// `accessActions` verb loop. Mutations carry `accessId` so callers can scope
+// per-row pending UI to the row being acted on.
+function useChatAccessAction(verb: ChatAccessVerb) {
   const queryClient = useQueryClient()
 
   return useMutation({
     mutationFn: async ({ integrationId, accessId }: { integrationId: string; accessId: string }) => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access/${accessId}/approve`, {
+      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access/${accessId}/${verb}`, {
         method: 'POST',
       })
-      if (!res.ok) throw new Error('Failed to approve access')
+      if (!res.ok) throw new Error(`Failed to ${verb} access`)
       return { integrationId }
     },
     onSuccess: (_, variables) => {
@@ -243,36 +248,30 @@ export function useApproveChatAccess() {
   })
 }
 
-export function useDenyChatAccess() {
+export const useApproveChatAccess = () => useChatAccessAction('approve')
+export const useDenyChatAccess = () => useChatAccessAction('deny')
+export const useRevokeChatAccess = () => useChatAccessAction('revoke')
+
+// Toggle the allowlist on/off — hits the dedicated owner-only endpoint so the
+// security-sensitive "make public" flip is gated separately from general edits.
+export function useSetRequireApproval() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ integrationId, accessId }: { integrationId: string; accessId: string }) => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access/${accessId}/deny`, {
-        method: 'POST',
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ id, requireApproval }: { id: string; requireApproval: boolean }) => {
+      const res = await apiFetch(`/api/chat-integrations/${id}/require-approval`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requireApproval }),
       })
-      if (!res.ok) throw new Error('Failed to deny access')
-      return { integrationId }
+      if (!res.ok) throw new Error('Failed to update require approval')
+      return res.json() as Promise<ChatIntegration>
     },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.access(variables.integrationId) })
-    },
-  })
-}
-
-export function useRevokeChatAccess() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ integrationId, accessId }: { integrationId: string; accessId: string }) => {
-      const res = await apiFetch(`/api/chat-integrations/${integrationId}/access/${accessId}/revoke`, {
-        method: 'POST',
-      })
-      if (!res.ok) throw new Error('Failed to revoke access')
-      return { integrationId }
-    },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.access(variables.integrationId) })
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['chat-integrations', data.agentSlug] })
+      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.detail(data.id) })
+      queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.access(data.id) })
     },
   })
 }

@@ -309,7 +309,7 @@ describe('x-agent chat route', () => {
     })
 
     expect(res.status).toBe(403)
-    expect(await res.json()).toEqual({ error: 'This chat is not approved for this integration.' })
+    expect(await res.json()).toEqual({ error: 'This conversation is not approved for this integration.' })
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 

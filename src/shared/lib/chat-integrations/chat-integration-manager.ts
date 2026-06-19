@@ -28,6 +28,7 @@ import {
   updateChatIntegrationSessionName,
   archiveChatIntegrationSession,
   touchChatIntegrationSession,
+  listChatIntegrationSessions,
   listActiveChatIntegrationSessions,
   resolveActiveSession,
   getLastDisplayName,
@@ -641,7 +642,7 @@ class ChatIntegrationManager {
         const access = getChatAccess(integrationId, chatId)
         if (access) {
           try {
-            await conn.connector.sendMessage(chatId, { text: 'This bot needs the owner to approve this chat before it can respond.' })
+            await conn.connector.sendMessage(chatId, { text: 'This bot needs the owner to approve this conversation before it can respond.' })
             markNoticeSent(access.id)
           } catch (err) {
             reportError(err, 'access-notice', { integrationId, chatId }, 'warning')
@@ -974,6 +975,21 @@ class ChatIntegrationManager {
     archiveChatIntegrationSession(session.id)
   }
 
+  /**
+   * Reconcile running sessions against current access (called when approval is
+   * enabled). Tears down any active session whose chat is no longer allowed, so
+   * a flip to require-approval immediately gates previously-public conversations.
+   */
+  async reconcileAccess(integrationId: string): Promise<void> {
+    const sessions = listChatIntegrationSessions(integrationId)
+    for (const session of sessions) {
+      if (session.archivedAt) continue
+      if (!isChatAllowed(integrationId, session.externalChatId)) {
+        await this.tearDownChatSession(integrationId, session.externalChatId)
+      }
+    }
+  }
+
   private deriveDisplayName(_provider: string, message: IncomingMessage): string | undefined {
     const baseName = deriveDisplayName(message)
 
@@ -1282,6 +1298,11 @@ class ChatIntegrationManager {
     const key = this.getChatSessionKey(integrationId, chatId)
     const session = this.chatSessions.get(key)
     if (!session) return
+
+    // Fail closed: never forward agent output to a chat that is no longer allowed.
+    // Teardown normally unsubscribes on revoke/deny, but this guards the window
+    // where an event is already in flight when access is revoked.
+    if (!isChatAllowed(integrationId, chatId)) return
 
     const showToolCalls = getChatIntegration(integrationId)?.showToolCalls ?? false
     await processSSEEvent(session, event, showToolCalls)

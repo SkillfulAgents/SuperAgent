@@ -129,6 +129,10 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
     const body = await c.req.json()
     const { provider, name, config, showToolCalls, requireApproval, sessionTimeout, model, effort } = body
 
+    if (requireApproval !== undefined && !z.boolean().safeParse(requireApproval).success) {
+      return c.json({ error: 'requireApproval must be a boolean' }, 400)
+    }
+
     if (!provider || !config) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
@@ -239,7 +243,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
   try {
     const id = c.req.param('integrationId')
     const body = await c.req.json()
-    const { name, config, showToolCalls, requireApproval, sessionTimeout, model, effort, status } = body
+    const { name, config, showToolCalls, sessionTimeout, model, effort, status } = body
 
     // Validate config if provided
     if (config !== undefined) {
@@ -259,7 +263,6 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     if (name !== undefined) updates.name = name
     if (config !== undefined) updates.config = config
     if (showToolCalls !== undefined) updates.showToolCalls = showToolCalls
-    if (requireApproval !== undefined) updates.requireApproval = requireApproval
     if (sessionTimeout !== undefined) updates.sessionTimeout = sessionTimeout
     if (model !== undefined) updates.model = model
     if (effort !== undefined) updates.effort = effort
@@ -297,6 +300,31 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     console.error('Failed to update chat integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'update-integration' }, extra: { integrationId: c.req.param('integrationId') } })
     return c.json({ error: 'Failed to update chat integration' }, 500)
+  }
+})
+
+// PATCH /api/chat-integrations/:integrationId/require-approval - Toggle the allowlist (owner-only)
+// Separate from the general PATCH so the security-sensitive "make public" flip requires
+// the owner role, and so turning approval ON can reconcile already-running sessions.
+chatIntegrationsRouter.patch('/:integrationId/require-approval', IntegrationAgentRole('owner'), async (c) => {
+  try {
+    const id = c.req.param('integrationId')
+    const { requireApproval } = await c.req.json()
+    if (!z.boolean().safeParse(requireApproval).success) {
+      return c.json({ error: 'requireApproval must be a boolean' }, 400)
+    }
+    updateChatIntegration(id, { requireApproval })
+    // Secure-by-default: enabling approval must gate already-running sessions whose
+    // chat is not explicitly allowed (previously-public conversations).
+    if (requireApproval === true) {
+      await chatIntegrationManager.reconcileAccess(id)
+    }
+    const updated = getChatIntegration(id)
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated', details: { requireApproval } })
+    return c.json(updated)
+  } catch (error) {
+    captureException(error, { tags: { ...SENTRY_TAGS, operation: 'set-require-approval' }, extra: { integrationId: c.req.param('integrationId') } })
+    return c.json({ error: 'Failed to update require approval' }, 500)
   }
 })
 
@@ -431,7 +459,7 @@ chatIntegrationsRouter.get('/:integrationId/access', IntegrationAgentRole('user'
 // POST /api/chat-integrations/:integrationId/access/:accessId/{approve,deny,revoke}
 const accessActions = { approve: approveChatAccess, deny: denyChatAccess, revoke: revokeChatAccess } as const
 for (const verb of ['approve', 'deny', 'revoke'] as const) {
-  chatIntegrationsRouter.post(`/:integrationId/access/:accessId/${verb}`, IntegrationAgentRole('user'), async (c) => {
+  chatIntegrationsRouter.post(`/:integrationId/access/:accessId/${verb}`, IntegrationAgentRole('owner'), async (c) => {
     try {
       const integrationId = c.req.param('integrationId')
       const accessId = c.req.param('accessId')

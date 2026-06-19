@@ -1,6 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TelegramConnector } from './telegram-connector'
 import type { IncomingMessage } from './base-connector'
+
+// ── grammY mock ────────────────────────────────────────────────────────────────
+// The photo/document handlers are inline closures registered inside connect(),
+// not methods like handleTextMessage — so they can only be driven via the
+// registry. We mock grammY's Bot to capture the handlers connect() registers and
+// to stub api.getFile. The text-handler describes never call connect(), so they
+// never touch the mock.
+const { capturedHandlers, getFileMock } = vi.hoisted(() => ({
+  capturedHandlers: {} as Record<string, (ctx: any) => unknown>,
+  getFileMock: vi.fn(),
+}))
+
+vi.mock('grammy', () => ({
+  Bot: class {
+    api = { getFile: getFileMock }
+    on(event: string, handler: (ctx: any) => unknown): void { capturedHandlers[event] = handler }
+    start(opts: { onStart?: () => void }): Promise<void> { opts?.onStart?.(); return Promise.resolve() }
+    async stop(): Promise<void> {}
+  },
+}))
 
 // ── Minimal ctx mock ──────────────────────────────────────────────────────────
 
@@ -160,5 +180,72 @@ describe('TelegramConnector — first-poll batch flush', () => {
     expect(emitted[0].chatType).toBe('private')
     expect(emitted[0].text).toContain('first')
     expect(emitted[0].text).toContain('second')
+  })
+})
+
+describe('TelegramConnector — media handlers (photo/document)', () => {
+  let connector: TelegramConnector
+  let emitted: IncomingMessage[]
+
+  beforeEach(async () => {
+    // Fake timers so the connect() poll loop + onStart's first-poll timer settle
+    // deterministically without dangling into other tests.
+    vi.useFakeTimers()
+    for (const k of Object.keys(capturedHandlers)) delete capturedHandlers[k]
+    getFileMock.mockReset().mockResolvedValue({ file_path: 'files/x' })
+    connector = makeConnector()
+    emitted = collectEmits(connector)
+    const p = connector.connect()
+    // Drives the 100ms connect() poll (resolves once connected) and onStart's
+    // ~1000ms first-poll completion timer.
+    await vi.advanceTimersByTimeAsync(1100)
+    await p
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
+  function photoCtx(type: string): unknown {
+    return {
+      chat: { id: 123, type, title: type === 'private' ? undefined : 'My Group' },
+      from: { id: 456, first_name: 'Alice' },
+      message: { photo: [{ file_id: 'small' }, { file_id: 'large' }], caption: 'pic', message_id: 9, date: 0 },
+    }
+  }
+
+  function docCtx(type: string): unknown {
+    return {
+      chat: { id: 123, type, title: type === 'private' ? undefined : 'My Group' },
+      from: { id: 456, first_name: 'Bob' },
+      message: { document: { file_id: 'd1', file_name: 'report.pdf', mime_type: 'application/pdf' }, caption: '', message_id: 11, date: 0 },
+    }
+  }
+
+  for (const type of ['private', 'group', 'supergroup'] as const) {
+    it(`photo handler emits chatType=${type}`, async () => {
+      await capturedHandlers['message:photo'](photoCtx(type))
+      expect(emitted).toHaveLength(1)
+      expect(emitted[0].chatType).toBe(type)
+      expect(emitted[0].files?.[0]?.mimeType).toBe('image/jpeg')
+    })
+
+    it(`document handler emits chatType=${type}`, async () => {
+      await capturedHandlers['message:document'](docCtx(type))
+      expect(emitted).toHaveLength(1)
+      expect(emitted[0].chatType).toBe(type)
+      expect(emitted[0].files?.[0]?.name).toBe('report.pdf')
+    })
+  }
+
+  it('photo handler drops channel updates (no emit)', async () => {
+    await capturedHandlers['message:photo'](photoCtx('channel'))
+    expect(emitted).toHaveLength(0)
+  })
+
+  it('document handler drops channel updates (no emit)', async () => {
+    await capturedHandlers['message:document'](docCtx('channel'))
+    expect(emitted).toHaveLength(0)
   })
 })

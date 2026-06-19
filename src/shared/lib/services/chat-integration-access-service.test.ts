@@ -20,6 +20,7 @@ import {
   decideInboundAccess,
   approveChatAccess,
   denyChatAccess,
+  revokeChatAccess,
   markNoticeSent,
 } from './chat-integration-access-service'
 
@@ -118,6 +119,121 @@ describe('chat-integration-access-service', () => {
       expect(allowed).toHaveLength(1)
       expect([a.status, b.status].sort()).toEqual(['bootstrapped', 'pending'])
     })
+
+    // ── Short-circuit matrix (asserted directly on decideInboundAccess) ──
+    // These branches fail/pass without ever consulting the access table, so the
+    // invariant is "decision returned AND no row written".
+    it('unknown integration → blocked/denied, no row written (fail closed)', () => {
+      const d = decideInboundAccess({ integrationId: 'nope', externalChatId: 'c1', chatType: 'private' })
+      expect(d).toEqual({ action: 'blocked', sendNotice: false, status: 'denied' })
+      expect(getChatAccess('nope', 'c1')).toBeNull()
+    })
+
+    it('non-telegram integration → forward/allowed, no row written', () => {
+      const d = decideInboundAccess({ integrationId: 'int-slack', externalChatId: 'c1', chatType: 'private' })
+      expect(d).toEqual({ action: 'forward', sendNotice: false, status: 'allowed' })
+      expect(getChatAccess('int-slack', 'c1')).toBeNull()
+    })
+
+    it('telegram with requireApproval=false → forward/allowed, no row written', () => {
+      setRequireApproval('int-tg', false)
+      const d = decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'c1', chatType: 'private' })
+      expect(d).toEqual({ action: 'forward', sendNotice: false, status: 'allowed' })
+      expect(getChatAccess('int-tg', 'c1')).toBeNull()
+    })
+
+    it('never bootstraps a supergroup even as first contact', () => {
+      const d = decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'sg1', chatType: 'supergroup' })
+      expect(d.action).toBe('blocked')
+      expect(getChatAccess('int-tg', 'sg1')!.status).toBe('pending')
+    })
+
+    // ── Cap boundary (NONALLOWED_CAP = 100) ──
+    it('99 non-allowed rows still admits a new pending insert (boundary)', () => {
+      for (let i = 0; i < 99; i++) { const id = seedPending('int-tg', 'p' + i); if (i % 2) denyChatAccess(id, 'local') }
+      const d = decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'edge', chatType: 'group' })
+      expect(d).toEqual({ action: 'blocked', sendNotice: true, status: 'pending' })
+      expect(getChatAccess('int-tg', 'edge')!.status).toBe('pending')
+    })
+
+    it('allowed rows do not count toward the non-allowed cap', () => {
+      for (let i = 0; i < 50; i++) { const id = seedPending('int-tg', 'a' + i); approveChatAccess(id, 'local') }
+      for (let i = 0; i < 99; i++) { seedPending('int-tg', 'n' + i) }
+      const d = decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'admit-me', chatType: 'group' })
+      expect(d.status).toBe('pending')
+      expect(getChatAccess('int-tg', 'admit-me')!.status).toBe('pending')
+    })
+  })
+
+  describe('refreshPending (repeat pending contact)', () => {
+    it('updates changed metadata but leaves requestNoticeSentAt untouched', () => {
+      decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'g1', chatType: 'group', userName: 'Old', chatName: 'OldTitle', preview: 'old' })
+      const id = getChatAccess('int-tg', 'g1')!.id
+      markNoticeSent(id)
+      const sentAt = getChatAccess('int-tg', 'g1')!.requestNoticeSentAt
+      expect(sentAt).not.toBeNull()
+
+      decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'g1', chatType: 'group', userName: 'New', chatName: 'NewTitle', preview: 'new' })
+      const row = getChatAccess('int-tg', 'g1')!
+      expect(row.firstUserName).toBe('New')
+      expect(row.title).toBe('NewTitle')
+      expect(row.firstMessagePreview).toBe('new')
+      expect(row.requestNoticeSentAt!.getTime()).toBe(sentAt!.getTime())
+    })
+
+    it('identical metadata is a no-op that does not bump updatedAt', () => {
+      decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'g1', chatType: 'group', userName: 'U', chatName: 'T', preview: 'p' })
+      const before = getChatAccess('int-tg', 'g1')!.updatedAt.getTime()
+      decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'g1', chatType: 'group', userName: 'U', chatName: 'T', preview: 'p' })
+      const after = getChatAccess('int-tg', 'g1')!.updatedAt.getTime()
+      expect(after).toBe(before)
+    })
+
+    it('truncates an updated preview to 200 chars', () => {
+      decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'g1', chatType: 'group', preview: 'short' })
+      decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'g1', chatType: 'group', preview: 'x'.repeat(250) })
+      expect(getChatAccess('int-tg', 'g1')!.firstMessagePreview!.length).toBe(200)
+    })
+  })
+
+  describe('state-guarded transitions (wrong-state matrix)', () => {
+    it('approve from denied → true, row becomes allowed/owner', () => {
+      const id = seedPending('int-tg', 'c1'); denyChatAccess(id, 'local')
+      expect(approveChatAccess(id, 'owner')).toBe(true)
+      const row = getChatAccess('int-tg', 'c1')!
+      expect(row.status).toBe('allowed')
+      expect(row.approvalSource).toBe('owner')
+    })
+
+    it('approve from allowed → false (no-op), row unchanged', () => {
+      const id = seedPending('int-tg', 'c1'); approveChatAccess(id, 'local')
+      expect(approveChatAccess(id, 'owner')).toBe(false)
+      expect(getChatAccess('int-tg', 'c1')!.status).toBe('allowed')
+    })
+
+    it('deny from denied → false (no-op), row unchanged', () => {
+      const id = seedPending('int-tg', 'c1'); denyChatAccess(id, 'local')
+      expect(denyChatAccess(id, 'owner')).toBe(false)
+      expect(getChatAccess('int-tg', 'c1')!.status).toBe('denied')
+    })
+
+    it('revoke from pending → false, row stays pending', () => {
+      const id = seedPending('int-tg', 'c1')
+      expect(revokeChatAccess(id, 'owner')).toBe(false)
+      expect(getChatAccess('int-tg', 'c1')!.status).toBe('pending')
+    })
+
+    it('revoke from denied → false, row stays denied', () => {
+      const id = seedPending('int-tg', 'c1'); denyChatAccess(id, 'local')
+      expect(revokeChatAccess(id, 'owner')).toBe(false)
+      expect(getChatAccess('int-tg', 'c1')!.status).toBe('denied')
+    })
+
+    it('unknown id → false for approve/deny/revoke', () => {
+      expect(approveChatAccess('missing', 'owner')).toBe(false)
+      expect(denyChatAccess('missing', 'owner')).toBe(false)
+      expect(revokeChatAccess('missing', 'owner')).toBe(false)
+    })
   })
 
   describe('isChatAllowed', () => {
@@ -130,6 +246,23 @@ describe('chat-integration-access-service', () => {
     })
     it('unknown integration → false (fail closed)', () => {
       expect(isChatAllowed('nope', 'c')).toBe(false)
+    })
+
+    // ── Status matrix for a telegram + requireApproval integration ──
+    it('allowed row → true', () => {
+      const id = seedPending('int-tg', 'c1'); approveChatAccess(id, 'owner')
+      expect(isChatAllowed('int-tg', 'c1')).toBe(true)
+    })
+    it('pending row → false', () => {
+      seedPending('int-tg', 'c1')
+      expect(isChatAllowed('int-tg', 'c1')).toBe(false)
+    })
+    it('denied row → false', () => {
+      const id = seedPending('int-tg', 'c1'); denyChatAccess(id, 'owner')
+      expect(isChatAllowed('int-tg', 'c1')).toBe(false)
+    })
+    it('no row → false', () => {
+      expect(isChatAllowed('int-tg', 'no-row')).toBe(false)
     })
   })
 })

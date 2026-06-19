@@ -72,6 +72,7 @@ vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
 // ── Manager: mocked with spies on the new helpers ───────────────────────
 const mockNotifyChatApproved = vi.fn().mockResolvedValue(undefined)
 const mockTearDownChatSession = vi.fn().mockResolvedValue(undefined)
+const mockReconcileAccess = vi.fn().mockResolvedValue(undefined)
 const mockClearChatSessionById = vi.fn()
 
 vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
@@ -79,6 +80,7 @@ vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
     clearChatSessionById: (id: string) => mockClearChatSessionById(id),
     notifyChatApproved: (...args: unknown[]) => mockNotifyChatApproved(...args),
     tearDownChatSession: (...args: unknown[]) => mockTearDownChatSession(...args),
+    reconcileAccess: (...args: unknown[]) => mockReconcileAccess(...args),
     isIntegrationConnected: vi.fn(() => false),
     addIntegration: vi.fn(),
     removeIntegration: vi.fn(),
@@ -108,6 +110,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import chatIntegrationsRouter from './chat-integrations'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 
 function app() {
   const a = new Hono()
@@ -267,6 +270,84 @@ describe('chat-integrations access routes', () => {
       // No side-effects
       expect(mockNotifyChatApproved).not.toHaveBeenCalled()
     })
+
+    it('deny: 404 for a foreign accessId, row unchanged, no teardown', async () => {
+      const bAccessId = seedAccess(INTEGRATION_B, 'chat-b', 'allowed')
+
+      const res = await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}/access/${bAccessId}/deny`,
+        { method: 'POST' },
+      )
+
+      expect(res.status).toBe(404)
+      const row = testSqlite
+        .prepare(`SELECT status FROM chat_integration_access WHERE id = ?`)
+        .get(bAccessId) as { status: string } | undefined
+      expect(row?.status).toBe('allowed')
+      expect(mockTearDownChatSession).not.toHaveBeenCalled()
+    })
+
+    it('revoke: 404 for a foreign accessId, row unchanged, no teardown', async () => {
+      const bAccessId = seedAccess(INTEGRATION_B, 'chat-b', 'allowed')
+
+      const res = await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}/access/${bAccessId}/revoke`,
+        { method: 'POST' },
+      )
+
+      expect(res.status).toBe(404)
+      const row = testSqlite
+        .prepare(`SELECT status FROM chat_integration_access WHERE id = ?`)
+        .get(bAccessId) as { status: string } | undefined
+      expect(row?.status).toBe('allowed')
+      expect(mockTearDownChatSession).not.toHaveBeenCalled()
+    })
+  })
+
+  // ── Audit-log verb mapping ────────────────────────────────────────────
+  describe('audit logging', () => {
+    it('approve logs details.access="approve"', async () => {
+      const accessId = seedAccess(INTEGRATION_A, 'chat-1', 'pending')
+      await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}/access/${accessId}/approve`,
+        { method: 'POST' },
+      )
+      expect(vi.mocked(logAuditEvent)).toHaveBeenCalledWith(
+        expect.objectContaining({ details: expect.objectContaining({ access: 'approve', accessId }) }),
+      )
+    })
+
+    it('deny logs details.access="deny"', async () => {
+      const accessId = seedAccess(INTEGRATION_A, 'chat-1', 'pending')
+      await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}/access/${accessId}/deny`,
+        { method: 'POST' },
+      )
+      expect(vi.mocked(logAuditEvent)).toHaveBeenCalledWith(
+        expect.objectContaining({ details: expect.objectContaining({ access: 'deny', accessId }) }),
+      )
+    })
+
+    it('revoke logs details.access="revoke"', async () => {
+      const accessId = seedAccess(INTEGRATION_A, 'chat-1', 'allowed')
+      await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}/access/${accessId}/revoke`,
+        { method: 'POST' },
+      )
+      expect(vi.mocked(logAuditEvent)).toHaveBeenCalledWith(
+        expect.objectContaining({ details: expect.objectContaining({ access: 'revoke', accessId }) }),
+      )
+    })
+
+    it('a no-op transition (approve an already-allowed row) does not log an audit event', async () => {
+      const accessId = seedAccess(INTEGRATION_A, 'chat-1', 'allowed')
+      const res = await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}/access/${accessId}/approve`,
+        { method: 'POST' },
+      )
+      expect((await res.json() as { ok: boolean }).ok).toBe(false)
+      expect(vi.mocked(logAuditEvent)).not.toHaveBeenCalled()
+    })
   })
 
   // ── POST revoke ────────────────────────────────────────────────────────
@@ -349,6 +430,44 @@ describe('chat-integrations access routes', () => {
 
       // tearDownChatSession must be called to kill the live SSE/forwarding session
       expect(mockTearDownChatSession).toHaveBeenCalledWith(INTEGRATION_A, 'chat-allowed')
+    })
+  })
+
+  describe('PATCH /:integrationId/require-approval (owner-gated make-public)', () => {
+    it('rejects a non-boolean requireApproval with 400', async () => {
+      const res = await app().request(`http://localhost/api/chat-integrations/${INTEGRATION_A}/require-approval`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requireApproval: 'false' }),
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'requireApproval must be a boolean' })
+    })
+
+    it('accepts a boolean requireApproval and persists it', async () => {
+      const { updateChatIntegration } = await import('@shared/lib/services/chat-integration-service')
+      const res = await app().request(`http://localhost/api/chat-integrations/${INTEGRATION_A}/require-approval`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requireApproval: false }),
+      })
+      expect(res.status).toBe(200)
+      expect(updateChatIntegration).toHaveBeenCalledWith(
+        INTEGRATION_A,
+        expect.objectContaining({ requireApproval: false }),
+      )
+      // Disabling approval does not reconcile sessions
+      expect(mockReconcileAccess).not.toHaveBeenCalled()
+    })
+
+    it('reconciles running sessions when approval is turned ON', async () => {
+      const res = await app().request(`http://localhost/api/chat-integrations/${INTEGRATION_A}/require-approval`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requireApproval: true }),
+      })
+      expect(res.status).toBe(200)
+      expect(mockReconcileAccess).toHaveBeenCalledWith(INTEGRATION_A)
     })
   })
 })

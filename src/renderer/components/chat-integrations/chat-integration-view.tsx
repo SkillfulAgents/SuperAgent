@@ -79,13 +79,15 @@ function DeniedSection({ denied, integrationId, canManage, approve }: {
               </p>
               {canManage && (
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="ghost"
-                  className="h-6 px-2 text-xs shrink-0"
+                  className="shrink-0"
                   disabled={approve.isPending}
                   onClick={() => approve.mutate({ integrationId, accessId: row.id })}
                 >
-                  Allow
+                  {approve.isPending && approve.variables?.accessId === row.id
+                    ? <Loader2 className="h-3 w-3 animate-spin" />
+                    : 'Allow'}
                 </Button>
               )}
             </li>
@@ -97,11 +99,27 @@ function DeniedSection({ denied, integrationId, canManage, approve }: {
 }
 
 function ChatAccessSections({ integrationId, canManage }: { integrationId: string; canManage: boolean }) {
-  const { data: access } = useChatIntegrationAccess(integrationId)
+  const { data: access, isLoading, error } = useChatIntegrationAccess(integrationId)
   const approve = useApproveChatAccess()
   const deny = useDenyChatAccess()
   const revoke = useRevokeChatAccess()
 
+  if (isLoading) {
+    return (
+      <div className="shrink-0 border-b px-6 py-3 flex items-center gap-2 text-xs text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" /> Loading access…
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div className="shrink-0 border-b px-6 py-3">
+        <Alert variant="destructive">
+          <AlertDescription className="text-xs">Failed to load access requests.</AlertDescription>
+        </Alert>
+      </div>
+    )
+  }
   if (!access || access.length === 0) return null
 
   const pending = access.filter(a => a.status === 'pending')
@@ -131,22 +149,23 @@ function ChatAccessSections({ integrationId, canManage }: { integrationId: strin
                 {canManage && (
                   <div className="flex items-center gap-1.5 shrink-0">
                     <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-6 px-2 text-xs"
+                      size="xs"
                       disabled={approve.isPending || deny.isPending}
                       onClick={() => approve.mutate({ integrationId, accessId: row.id })}
                     >
-                      Approve
+                      {approve.isPending && approve.variables?.accessId === row.id
+                        ? <Loader2 className="h-3 w-3 animate-spin" />
+                        : 'Approve'}
                     </Button>
                     <Button
-                      size="sm"
+                      size="xs"
                       variant="outline"
-                      className="h-6 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive border-destructive/30"
                       disabled={approve.isPending || deny.isPending}
                       onClick={() => deny.mutate({ integrationId, accessId: row.id })}
                     >
-                      Deny
+                      {deny.isPending && deny.variables?.accessId === row.id
+                        ? <Loader2 className="h-3 w-3 animate-spin" />
+                        : 'Deny'}
                     </Button>
                   </div>
                 )}
@@ -175,13 +194,15 @@ function ChatAccessSections({ integrationId, canManage }: { integrationId: strin
                 </div>
                 {canManage && (
                   <Button
-                    size="sm"
+                    size="xs"
                     variant="ghost"
-                    className="h-6 px-2 text-xs text-muted-foreground hover:text-destructive shrink-0"
+                    className="text-muted-foreground hover:text-destructive shrink-0"
                     disabled={revoke.isPending}
                     onClick={() => revoke.mutate({ integrationId, accessId: row.id })}
                   >
-                    Revoke
+                    {revoke.isPending && revoke.variables?.accessId === row.id
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : 'Revoke'}
                   </Button>
                 )}
               </li>
@@ -220,8 +241,10 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
   const navigate = useNavigate()
   // The active sub-session comes from the URL search (deep-linkable).
   const selectedChatSessionId = chatSessionId
-  const { canUseAgent } = useUser()
+  const { canUseAgent, canAdminAgent } = useUser()
   const canManage = canUseAgent(agentSlug)
+  // Access decisions and the make-public toggle are owner-only (server enforces too).
+  const canManageAccess = canAdminAgent(agentSlug)
 
   // Canonicalize: integrations are addressed globally by id, so
   // /agents/<wrong>/chat/<id> would render this integration under the wrong
@@ -330,6 +353,7 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
               <PopoverContent align="end" className="w-48 p-1">
                 <IntegrationSettingsMenu
                   integration={integration}
+                  canManageApproval={canManageAccess}
                   onRename={() => {
                     setRenameValue(integration.name || '')
                     setRenameOpen(true)
@@ -343,8 +367,8 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
       </div>
 
       {/* Access management — shown when require-approval is on and there are access rows */}
-      {integration.requireApproval && canManage && (
-        <ChatAccessSections integrationId={integrationId} canManage={canManage} />
+      {integration.requireApproval && canManageAccess && (
+        <ChatAccessSections integrationId={integrationId} canManage={canManageAccess} />
       )}
 
       {/* Session thread (read-only) or empty state */}
