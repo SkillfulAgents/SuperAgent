@@ -81,6 +81,31 @@ describe('getProviderCatalog', () => {
     const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
     expect(gptLatest.map((m) => m.id)).toEqual(['openai/gpt-5.5'])
   })
+
+  it('exposes the Platform non-Claude built-ins under BARE ids the proxy routes', () => {
+    const catalog = getProviderCatalog('platform')
+    const gpt = catalog.find((m) => m.id === 'gpt-5.5')!
+    const glm = catalog.find((m) => m.id === 'glm-5.2')!
+    // gpt rides the OpenAI Responses wire (native web_search), glm rides
+    // Fireworks (server tools stripped → no web search).
+    expect(gpt).toMatchObject({
+      family: 'gpt',
+      isLatest: true,
+      icon: 'openai',
+      supportsWebSearch: true,
+      pricing: { inputPerMtok: 5, outputPerMtok: 30 },
+    })
+    expect(glm).toMatchObject({
+      family: 'glm',
+      isLatest: true,
+      icon: 'zai',
+      supportsWebSearch: false,
+      pricing: { inputPerMtok: 1.4, outputPerMtok: 4.4 },
+    })
+    // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
+    expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
+    expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
+  })
 })
 
 describe('hasVersionSegment', () => {
@@ -128,6 +153,12 @@ describe('resolveModelForProvider', () => {
   it('resolves OpenRouter non-Claude models (gpt alias → latest id, glm slug passthrough)', () => {
     expect(resolveModelForProvider('gpt', 'openrouter', 'agent')).toBe('openai/gpt-5.5')
     expect(resolveModelForProvider('z-ai/glm-5.2', 'openrouter', 'agent')).toBe('z-ai/glm-5.2')
+  })
+
+  it('resolves Platform non-Claude models to bare ids (gpt alias → latest, gpt-5.4 pin, glm alias)', () => {
+    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.5')
+    expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
+    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('glm-5.2')
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {
