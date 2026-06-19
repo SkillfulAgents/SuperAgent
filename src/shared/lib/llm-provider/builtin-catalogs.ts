@@ -154,6 +154,8 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-06-18.
     pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
+    contextWindow: 1_050_000,
   },
   {
     id: 'openai/gpt-5.5',
@@ -169,6 +171,8 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     // Non-Claude ids aren't in model-pricing.json; baked from OpenRouter's live
     // model list (per-Mtok USD), fetched 2026-06-18. Refresh if OpenRouter repricing.
     pricing: { inputPerMtok: 5, outputPerMtok: 30 },
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
+    contextWindow: 1_050_000,
   },
   {
     id: 'z-ai/glm-5.2',
@@ -181,6 +185,8 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     supportsWebSearch: false,
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-06-18.
     pricing: { inputPerMtok: 1.2, outputPerMtok: 4.2 },
+    // Z.ai GLM-5.2 1M-token context (z.ai/blog/glm-5.2).
+    contextWindow: 1_000_000,
   },
 ]
 
@@ -207,6 +213,8 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     // web_search server tool to the native web_search tool — so search works.
     supportsWebSearch: true,
     pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
+    contextWindow: 1_050_000,
   },
   {
     id: 'gpt-5.5',
@@ -218,6 +226,8 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: true,
     pricing: { inputPerMtok: 5, outputPerMtok: 30 },
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
+    contextWindow: 1_050_000,
   },
   {
     id: 'glm-5.2',
@@ -231,6 +241,8 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportsWebSearch: false,
     // Priced from the Platform/Fireworks rate (per-Mtok USD), not OpenRouter's.
     pricing: { inputPerMtok: 1.4, outputPerMtok: 4.4 },
+    // GLM-5.2 1M-token context; Fireworks serves glm-5p2 at ~1.04M.
+    contextWindow: 1_000_000,
   },
 ]
 

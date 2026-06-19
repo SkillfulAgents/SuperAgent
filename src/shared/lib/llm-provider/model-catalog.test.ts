@@ -10,6 +10,7 @@ vi.mock('../config/settings', () => ({
 import {
   getProviderCatalog,
   getModelDefinition,
+  getModelContextWindow,
   hasVersionSegment,
   resolveModelForProvider,
 } from './model-catalog'
@@ -105,6 +106,27 @@ describe('getProviderCatalog', () => {
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
+  })
+})
+
+describe('getModelContextWindow', () => {
+  it('returns the catalog window for Platform non-Claude models', () => {
+    expect(getModelContextWindow('gpt-5.5', 'platform')).toBe(1_050_000)
+    expect(getModelContextWindow('gpt-5.4', 'platform')).toBe(1_050_000)
+    expect(getModelContextWindow('glm-5.2', 'platform')).toBe(1_000_000)
+  })
+
+  it('returns the catalog window for OpenRouter non-Claude models', () => {
+    expect(getModelContextWindow('openai/gpt-5.5', 'openrouter')).toBe(1_050_000)
+    expect(getModelContextWindow('z-ai/glm-5.2', 'openrouter')).toBe(1_000_000)
+  })
+
+  it('returns undefined for Claude models (SDK supplies their window)', () => {
+    expect(getModelContextWindow('claude-opus-4-8', 'anthropic')).toBeUndefined()
+  })
+
+  it('returns undefined for an unknown id', () => {
+    expect(getModelContextWindow('nope', 'platform')).toBeUndefined()
   })
 })
 

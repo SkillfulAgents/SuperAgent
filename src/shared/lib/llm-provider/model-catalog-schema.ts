@@ -46,6 +46,9 @@ export const modelDefinitionSchema = z.object({
       outputPerMtok: z.number().nonnegative(),
     })
     .optional(),
+  // Static context-window (tokens); host fallback when the SDK reports none
+  // (non-Claude). Claude models override this via the SDK result event.
+  contextWindow: z.number().int().positive().optional(),
 })
 
 export type ModelDefinition = z.infer<typeof modelDefinitionSchema>
