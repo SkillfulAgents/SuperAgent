@@ -100,9 +100,9 @@ test.describe('Settings Page', () => {
     await goToTab(page, 'llm')
 
     // Provider radio cards replace the old <select>; the active provider's card
-    // expands inline to show its two model selectors (default + summarizer).
+    // expands inline to show its three model selectors (default + summarizer + dashboard).
     await expect(page.locator('[data-testid="llm-provider-card-anthropic"]')).toBeVisible()
-    await expect(page.locator('[data-testid="settings-model-trigger"]')).toHaveCount(2)
+    await expect(page.locator('[data-testid="settings-model-trigger"]')).toHaveCount(3)
   })
 
   test('Runtime tab shows container config fields', async ({ page }) => {
