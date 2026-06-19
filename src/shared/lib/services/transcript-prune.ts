@@ -28,7 +28,12 @@ interface ToolResultSignal {
   status?: string
 }
 
-/** Cheap character-count heuristic; 4 chars ~ 1 token. */
+/**
+ * Cheap character-count heuristic; 4 chars ~ 1 token. Deliberately local rather
+ * than the Anthropic SDK's countTokens: this only sizes the recency budget ahead
+ * of a single summarize call, so exactness is not needed, and countTokens is an
+ * async network round-trip that would be untenable in this per-line budgeting loop.
+ */
 export function estTokens(s: string): number {
   return Math.ceil(s.length / 4)
 }

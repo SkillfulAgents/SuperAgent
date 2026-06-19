@@ -1403,6 +1403,11 @@ agents.post('/:id/sessions/summarize', AgentUser(), async (c) => {
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
+    // The source session must have a transcript on disk; otherwise we would ask the
+    // model to summarize an empty transcript and risk fabricated context.
+    if (!(await sessionExists(slug, parsed.data.fromSessionId))) {
+      return c.json({ error: 'Session transcript not found' }, 404)
+    }
     try {
       const summary = await summarizeTranscript(slug, parsed.data.fromSessionId)
       const validated = summarizeResponseSchema.safeParse({ summary })

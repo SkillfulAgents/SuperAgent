@@ -8,7 +8,7 @@ export type SummarizeRequest = z.infer<typeof summarizeRequestSchema>
 
 /** Response from POST /api/agents/:id/sessions/summarize. Rejects an empty summary. */
 export const summarizeResponseSchema = z.object({
-  summary: z.string().min(1),
+  summary: z.string().trim().min(1),
 })
 export type SummarizeResponse = z.infer<typeof summarizeResponseSchema>
 
@@ -17,8 +17,9 @@ export type SummarizeResponse = z.infer<typeof summarizeResponseSchema>
  *  `message` is trimmed so a whitespace-only body is rejected, matching the old guard. */
 export const createSessionRequestSchema = z.object({
   message: z.string().trim().min(1),
-  model: z.string().optional(),
-  effort: z.string().optional(),
+  // model + effort are validated and applied separately via parseRuntimeOptions on
+  // the raw body, so they are intentionally not declared here — declaring them
+  // would be a decorative duplicate the handler never reads.
   seedSummary: z.string().min(1).optional(),
   fromSessionId: z.string().min(1).regex(/^[A-Za-z0-9_-]+$/, 'invalid session id').optional(),
 }).superRefine((val, ctx) => {

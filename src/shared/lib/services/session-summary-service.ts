@@ -102,6 +102,9 @@ export async function summarizeText(text: string, priorBoundarySummary?: string)
     max_tokens: maxTokens,
     messages: [{ role: 'user', content: `${HANDOFF_SUMMARY_INSTRUCTION}\n\n${input}` }],
   }))
+  // Join every text block. The shared extractTextFromLlmResponse helper returns
+  // only the first block, which would silently truncate a multi-block summary, so
+  // it does not fit here.
   return res.content
     .map((c: { type: string; text?: string }) => (c.type === 'text' ? (c.text ?? '') : ''))
     .join('')
