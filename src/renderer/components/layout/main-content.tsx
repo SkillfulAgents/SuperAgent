@@ -513,7 +513,6 @@ export function MainContent() {
                 onMessageFailed={handlePendingMessageAppeared}
                 lastActivityAt={session?.lastActivityAt ? new Date(session.lastActivityAt) : null}
                 contextUsage={contextUsage}
-                onSessionCreated={handleSessionCreated}
                 onStartFresh={() => setView({ kind: 'home' })}
               />
             </div>

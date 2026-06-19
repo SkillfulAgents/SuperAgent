@@ -4,9 +4,14 @@ import { screen } from '@testing-library/react'
 import { SessionChatColumn } from './session-chat-column'
 import { renderWithProviders, userEvent } from '@renderer/test/test-utils'
 import { useDraftsStore } from '@renderer/context/drafts-context'
-import { carryoverKey, type ComposerSnapshot, type NewChatCarryover } from '@renderer/lib/composer-carryover'
+import { carryoverKey, summaryKey, type ComposerSnapshot, type NewChatCarryover, type NewChatSummary } from '@renderer/lib/composer-carryover'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { PendingRequestDescriptor } from '@renderer/components/messages/use-pending-requests'
+
+const { mockSummarize } = vi.hoisted(() => ({ mockSummarize: vi.fn() }))
+vi.mock('@renderer/hooks/use-sessions', () => ({
+  useSummarizeSession: () => ({ mutateAsync: mockSummarize }),
+}))
 
 // Mock children so we don't pull in the world; just mark them with testids.
 vi.mock('@renderer/components/messages/message-list', () => ({
@@ -244,6 +249,62 @@ describe('SessionChatColumn Start fresh', () => {
       model: 'opus',
       effort: 'high',
     })
+  })
+})
+
+describe('SessionChatColumn Start with Summary', () => {
+  beforeEach(() => {
+    mockPendingResult.items = []
+    mockPendingResult.count = 0
+    probedStore = undefined
+    mockSnapshot = { text: 'keep going', attachments: [], model: 'opus', effort: 'high' }
+    mockSummarize.mockReset()
+  })
+
+  async function clickStartSummary() {
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('stale-new-chat-trigger'))
+    await user.click(await screen.findByTestId('stale-new-chat-summary'))
+  }
+
+  it('summarizes, stashes summary + carryover, then navigates', async () => {
+    mockSummarize.mockResolvedValueOnce({ summary: '## Goal\nFinish auth' })
+    const onStartFresh = vi.fn()
+
+    renderWithProviders(
+      <>
+        <SessionChatColumn {...staleProps} onStartFresh={onStartFresh} />
+        <StoreProbe />
+      </>
+    )
+
+    await clickStartSummary()
+
+    expect(mockSummarize).toHaveBeenCalledWith({ agentSlug: 'agent-1', fromSessionId: 's-1' })
+    expect(onStartFresh).toHaveBeenCalledTimes(1)
+    expect(probedStore?.get<NewChatSummary>(summaryKey('agent-1'))).toEqual({
+      summary: '## Goal\nFinish auth',
+      fromSessionId: 's-1',
+    })
+    expect(probedStore?.get('agent:agent-1')).toBe('keep going')
+    expect(probedStore?.get<NewChatCarryover>(carryoverKey('agent-1'))).toEqual({
+      attachments: [],
+      model: 'opus',
+      effort: 'high',
+    })
+    expect(probedStore?.get('session:s-1')).toBeUndefined()
+  })
+
+  it('stays put and shows an error when summarization fails', async () => {
+    mockSummarize.mockRejectedValueOnce(new Error('boom'))
+    const onStartFresh = vi.fn()
+
+    renderWithProviders(<SessionChatColumn {...staleProps} onStartFresh={onStartFresh} />)
+
+    await clickStartSummary()
+
+    expect(onStartFresh).not.toHaveBeenCalled()
+    expect(await screen.findByText("Couldn't summarize right now")).toBeInTheDocument()
   })
 })
 

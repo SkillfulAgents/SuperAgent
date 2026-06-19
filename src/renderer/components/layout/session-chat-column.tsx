@@ -8,9 +8,9 @@ import { usePendingRequests } from '@renderer/components/messages/use-pending-re
 import { StaleSessionToast } from '@renderer/components/messages/stale-session-notice'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watcher'
-import { useBranchSession } from '@renderer/hooks/use-sessions'
+import { useSummarizeSession } from '@renderer/hooks/use-sessions'
 import { useDraftsStore } from '@renderer/context/drafts-context'
-import { splitSnapshotForHandoff, carryoverKey, type ComposerSnapshot } from '@renderer/lib/composer-carryover'
+import { splitSnapshotForHandoff, carryoverKey, summaryKey, type ComposerSnapshot, type NewChatSummary } from '@renderer/lib/composer-carryover'
 import { evaluateStalePrompt } from '@shared/lib/stale-session/stale-session-trigger'
 import { currentContextTokens } from '@shared/lib/stale-session/message-cost'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -33,7 +33,6 @@ interface SessionChatColumnProps {
   onMessageFailed: (localId: string) => void
   lastActivityAt?: Date | null
   contextUsage?: SessionUsage | null
-  onSessionCreated?: (sessionId: string, initialMessage: string, messageUuid: string) => void
   /** Navigate to the agent's new-chat composer. "Start fresh" snapshots the
    *  current composer into the carry-over, then calls this to land the user there. */
   onStartFresh?: () => void
@@ -53,7 +52,6 @@ export function SessionChatColumn({
   onMessageFailed,
   lastActivityAt,
   contextUsage,
-  onSessionCreated,
   onStartFresh,
 }: SessionChatColumnProps) {
   const {
@@ -129,7 +127,7 @@ export function SessionChatColumn({
 
   const draftStore = useDraftsStore()
   const draftKey = `session:${sessionId}`
-  const branchSession = useBranchSession()
+  const summarizeSession = useSummarizeSession()
 
   // The toast owns the footer slot only at rest; once active, the activity
   // indicator (rendered by SessionThread) owns it instead. View-only users can't
@@ -137,26 +135,30 @@ export function SessionChatColumn({
   // later qualifying mount, and a plain send clears it as the idle gate resets.
   const showToast = shouldPrompt && !isActive && !isViewOnly && !ignored
 
-  // Both forward actions carry the current composer draft verbatim if one exists
-  // (the branch endpoint tolerates a blank draft). Read it imperatively so the
-  // column doesn't re-render on every keystroke.
-  const handleContinueSummary = useCallback(async () => {
+  // Start with Summary: summarize up front, then carry the live composer (text +
+  // files + model + effort) AND the summary + source id into the new-chat composer,
+  // and navigate. No session is created until the user sends. On failure, stay put
+  // and surface an error inline.
+  const handleStartSummary = useCallback(async () => {
     actionActiveRef.current = true
     setStaleError(null)
     setIsSummarizing(true)
-    const content = draftStore.get<string>(draftKey) ?? ''
     try {
-      const res = await branchSession.mutateAsync({ agentSlug, fromSessionId: sessionId, message: content, model })
+      const { summary } = await summarizeSession.mutateAsync({ agentSlug, fromSessionId: sessionId })
       if (!actionActiveRef.current) return
+      const { draftText, carryover } = splitSnapshotForHandoff(composerSnapshotRef.current?.())
+      if (draftText !== undefined) draftStore.set(`agent:${agentSlug}`, draftText)
+      draftStore.set(carryoverKey(agentSlug), carryover)
+      draftStore.set(summaryKey(agentSlug), { summary, fromSessionId: sessionId } satisfies NewChatSummary)
       draftStore.set(draftKey, undefined)
-      onSessionCreated?.(res.id, content, res.initialMessageUuid)
       actionActiveRef.current = false
+      onStartFresh?.()
     } catch {
       setStaleError("Couldn't summarize right now")
     } finally {
       setIsSummarizing(false)
     }
-  }, [agentSlug, sessionId, model, branchSession, onSessionCreated, draftStore, draftKey])
+  }, [agentSlug, sessionId, summarizeSession, draftStore, draftKey, onStartFresh])
 
   // Start fresh: snapshot the live composer (text + files + model + effort), carry
   // it into the agent's new-chat composer, and navigate there. No session is
@@ -206,11 +208,11 @@ export function SessionChatColumn({
               {showToast && (
                 <StaleSessionToast
                   onIgnore={() => setIgnored(true)}
-                  onStartSummary={handleContinueSummary}
+                  onStartSummary={handleStartSummary}
                   onStartFresh={handleStartFresh}
                   isSummarizing={isSummarizing}
                   summaryError={staleError}
-                  onRetrySummary={handleContinueSummary}
+                  onRetrySummary={handleStartSummary}
                   onMenuOpenChange={setStaleMenuOpen}
                 />
               )}
