@@ -173,9 +173,9 @@ async function buildAppMenu(): Promise<void> {
   const template: Electron.MenuItemConstructorOptions[] = [
     // App menu (macOS only — on macOS, the first menu becomes the "app" menu)
     ...(isMac ? [{
-      label: 'SuperAgent',
+      label: 'Gamut',
       submenu: [
-        { role: 'about' as const, label: 'About SuperAgent' },
+        { role: 'about' as const, label: 'About Gamut' },
         { type: 'separator' as const },
         {
           label: 'Settings...',
@@ -183,11 +183,14 @@ async function buildAppMenu(): Promise<void> {
           click: () => sendToRenderer('open-settings'),
         },
         { type: 'separator' as const },
-        { role: 'hide' as const },
+        // Explicit labels: `role` items interpolate app.name (kept 'SuperAgent' for
+        // data-dir / cookie-keychain continuity), which would otherwise leak the legacy
+        // brand as "Hide SuperAgent" / "Quit SuperAgent" in the macOS app menu.
+        { role: 'hide' as const, label: 'Hide Gamut' },
         { role: 'hideOthers' as const },
         { role: 'unhide' as const },
         { type: 'separator' as const },
-        { role: 'quit' as const },
+        { role: 'quit' as const, label: 'Quit Gamut' },
       ],
     }] : []),
     // File menu

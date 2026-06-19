@@ -4,7 +4,7 @@ description: Create interactive web dashboards to visualize data and provide UI 
 
 # Creating Dashboards
 
-You can create web dashboards that are served to the user through the Superagent UI. Dashboards are full web applications (HTML/JS/React/Svelte/etc.) that run as servers inside the container.
+You can create web dashboards that are served to the user through the Gamut UI. Dashboards are full web applications (HTML/JS/React/Svelte/etc.) that run as servers inside the container.
 
 ## Available Tools
 
@@ -19,7 +19,7 @@ You can create web dashboards that are served to the user through the Superagent
 2. Update `package.json` with the dashboard's `name` and `description`
 3. Edit `src/App.jsx` to build the UI (add API routes in `serve.js` if needed). **All fetch calls in the frontend MUST use relative URLs** — `fetch('api/data')` not `fetch('/api/data')` — absolute paths will 404.
 4. Use `start_dashboard` to build and start the server
-5. The user can view the dashboard in the Superagent UI
+5. The user can view the dashboard in the Gamut UI
 
 ## Directory Structure
 
@@ -129,7 +129,7 @@ This applies to all fetches, image sources, link hrefs, etc.
 
 ## Important Limitations
 
-- **Do NOT use the browser tool to view your own dashboards.** The browser runs outside the container and cannot access `localhost` URLs served inside it. Dashboard requests will fail. The user views dashboards through the Superagent UI — you do not need to verify them visually. Use `get_dashboard_logs` to debug issues instead.
+- **Do NOT use the browser tool to view your own dashboards.** The browser runs outside the container and cannot access `localhost` URLs served inside it. Dashboard requests will fail. The user views dashboards through the Gamut UI — you do not need to verify them visually. Use `get_dashboard_logs` to debug issues instead.
 
 ## Built-in APIs
 

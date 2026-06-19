@@ -338,9 +338,9 @@ beforeEach(() => {
 })
 
 describe('AppSidebar — layout & top nav', () => {
-  it('renders the SuperAgent wordmark', () => {
+  it('renders the Gamut wordmark', () => {
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByText('SuperAgent')).toBeInTheDocument()
+    expect(screen.getByText('Gamut')).toBeInTheDocument()
   })
 
   it('renders Home, Notifications, and New Agent in the top nav', () => {

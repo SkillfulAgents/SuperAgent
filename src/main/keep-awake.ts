@@ -161,7 +161,7 @@ export async function restoreKeepAwakeOnStartup(enabled: boolean): Promise<void>
     const { response } = await dialog.showMessageBox({
       type: 'warning',
       title: 'Keep Awake Cleanup',
-      message: 'Superagent previously prevented your Mac from sleeping, but that setting is still active from a prior session. Would you like to restore normal sleep behavior?',
+      message: 'Gamut previously prevented your Mac from sleeping, but that setting is still active from a prior session. Would you like to restore normal sleep behavior?',
       buttons: ['Restore Sleep', 'Leave As-Is'],
       defaultId: 0,
     })

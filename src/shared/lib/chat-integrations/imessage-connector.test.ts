@@ -850,7 +850,7 @@ describe('IMessageConnector', () => {
 
       const text = (parseSent(ws)[0].data as any).parts[0].value as string
       expect(text).toContain("isn't supported in chat")
-      expect(text).toContain('Open Superagent on your desktop')
+      expect(text).toContain('Open Gamut on your desktop')
     })
   })
 

@@ -75,7 +75,7 @@ llm.post('/v1/messages', async (c) => {
   try {
     client = getConfiguredLlmClient()
   } catch {
-    return c.json({ error: 'LLM provider not configured. Check Superagent settings.' }, 503)
+    return c.json({ error: 'LLM provider not configured. Check Gamut settings.' }, 503)
   }
 
   try {
