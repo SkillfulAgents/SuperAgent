@@ -21,7 +21,7 @@ import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
-import { useNewChatCarryover, carryoverToComposerInit } from '@renderer/lib/composer-carryover'
+import { useNewChatCarryover, carryoverToComposerInit, useNewChatSummary } from '@renderer/lib/composer-carryover'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
@@ -33,6 +33,7 @@ import { HomeBookmarks } from './home-bookmarks'
 import { DashboardCard } from '@renderer/components/home/dashboard-card'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
+import { CarriedSummaryCard } from '@renderer/components/messages/carried-summary-card'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import {
   useTypewriterPlaceholder,
@@ -88,6 +89,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   // arrives via the agent draft key, attachments + model + effort come from here.
   const carryover = useNewChatCarryover(agent.slug)
   const { initialAttachments, initialModel, initialEffort } = carryoverToComposerInit(carryover)
+  const { summary: carriedSummary, clear: clearCarriedSummary } = useNewChatSummary(agent.slug)
   const composerOptions = useComposerOptions({
     ...(isFirstSession ? { preferredFamily: 'opus' } : {}),
     initialModel,
@@ -154,17 +156,19 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         agentSlug: agent.slug,
         message: content,
         ...composerOptions.toRuntimeOptions(),
+        ...(carriedSummary ? { seedSummary: carriedSummary.summary, fromSessionId: carriedSummary.fromSessionId } : {}),
       })
       // The server assigns the initial message's uuid and returns it; the
       // optimistic pending copy is materialized by exact id match.
       onSessionCreated(session.id, content, session.initialMessageUuid)
+      if (carriedSummary) clearCarriedSummary()
       // Fire rename after the session is created + navigated — the mutation
       // survives AgentHome unmounting since the queryClient is app-scoped.
       if (shouldRename) {
         nameAssignedRef.current = true
         renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
       }
-    }, [createSession, agent.slug, agent.name, onSessionCreated, composerOptions, sessions.length, renameUntitledAgent]),
+    }, [createSession, agent.slug, agent.name, onSessionCreated, composerOptions, sessions.length, renameUntitledAgent, carriedSummary, clearCarriedSummary]),
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
@@ -317,6 +321,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 onChoice={composer.mountDialog.onChoice}
                 folderName={composer.mountDialog.folderName}
               />
+              {carriedSummary && <CarriedSummaryCard summary={carriedSummary.summary} />}
               <form
                 onSubmit={composer.handleSubmit}
                 className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}
