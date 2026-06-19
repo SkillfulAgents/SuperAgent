@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import crypto from 'node:crypto'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
@@ -93,6 +94,7 @@ vi.mock('./telegram-connector', () => ({
 import { chatIntegrationManager } from './chat-integration-manager'
 import { createChatIntegration, getChatIntegration } from '@shared/lib/services/chat-integration-service'
 import { listChatIntegrationSessions } from '@shared/lib/services/chat-integration-session-service'
+import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
@@ -344,6 +346,64 @@ describe('Chat integration E2E', () => {
 
       const rows = listChatIntegrationSessions(integrationId).filter((r) => r.externalChatId === 'chat-1')
       expect(rows.find((r) => r.sessionId === liveSessionId)?.archivedAt).toBeFalsy()
+
+      sendSpy.mockRestore()
+    })
+
+    it('blocks the self-heal spend when the chat is revoked mid-flight', async () => {
+      // Approval-required bot with chat-1 pre-approved (createTestIntegration
+      // force-disables approval, so re-enable it to make the access gate live).
+      const integrationId = createTestIntegration()
+      testSqlite.prepare('UPDATE chat_integrations SET require_approval = 1 WHERE id = ?').run(integrationId)
+      const accessId = crypto.randomUUID()
+      const now = Date.now()
+      testSqlite
+        .prepare(
+          `INSERT INTO chat_integration_access
+             (id, integration_id, external_chat_id, chat_type, status, requested_at, created_at, updated_at)
+           VALUES (?, ?, 'chat-1', 'private', 'pending', ?, ?, ?)`,
+        )
+        .run(accessId, integrationId, now, now, now)
+      approveChatAccess(accessId, 'owner')
+
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      // Establish a real session for the approved chat.
+      mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length === 1)
+      await waitForCondition(
+        () => mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0,
+        3000,
+      )
+
+      const deadSessionId = [...(mockContainerClient as any).sessions.keys()][0] as string
+
+      // The next send 404s with "Session not found" (→ self-heal) AND a revoke
+      // lands during that same await. The self-heal must re-check access before
+      // spending and bail — no fresh session for a chat that is no longer allowed.
+      const sendSpy = vi.spyOn(mockContainerClient, 'sendMessage').mockImplementationOnce(async () => {
+        revokeChatAccess(accessId, 'owner')
+        throw new Error('Session not found')
+      })
+
+      mockConnector.simulateIncomingMessage('Are you there?', 'chat-1', 'user-1')
+
+      // The self-heal archives the dead row before the access re-check; wait for
+      // that so we know the self-heal path actually executed.
+      await waitForCondition(() =>
+        listChatIntegrationSessions(integrationId).some(
+          (r) => r.sessionId === deadSessionId && !!r.archivedAt,
+        ),
+      )
+
+      // Gate fired: dead row archived, but NO fresh session created (no spend),
+      // so the now-revoked chat is left with no live session row.
+      expect(sendSpy).toHaveBeenCalledTimes(1)
+      expect(MockContainerClient.createSessionCalls.length).toBe(1)
+      const liveRow = listChatIntegrationSessions(integrationId)
+        .filter((r) => r.externalChatId === 'chat-1')
+        .find((r) => !r.archivedAt)
+      expect(liveRow).toBeUndefined()
 
       sendSpy.mockRestore()
     })

@@ -802,6 +802,8 @@ class ChatIntegrationManager {
           if (!messageText) {
             messageText = (await this.buildMessageContent(integration, message)).text
           }
+          // Revoke can land mid-flight (during the awaits above). Re-check before spending.
+          if (!isChatAllowed(integrationId, chatId)) return
           await this.startNewChatSession(integration, client, chatId, message, messageText)
           return
         } catch (healErr) {
