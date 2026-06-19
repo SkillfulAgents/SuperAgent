@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title as \"Example Domain\", and reported it back in the chat response.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully, showing SuperAgent home with agent sidebar containing \"QA-20260619-025312-b6jw\"",
+    "Clicked on the \"QA-20260619-025312-b6jw\" agent in the sidebar — Agent page opened with chat interface ready for input",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field — Message successfully typed into the textbox",
+    "Clicked the \"Send message\" button — Message sent and agent began processing (status changed to \"working\")",
+    "Waited up to 3 minutes for response mentioning \"Example Domain\" — Response received within ~15 seconds with the exact text \"The page title is \"Example Domain\".\"",
+    "Took screenshot to verify response — Screenshot shows both the tool calls (Open Browser, Browser Get State, Close Browser) and the final message confirming the page title is \"Example Domain\""
+  ],
+  "bugs": [],
+  "durationMs": 76814,
+  "sessionId": "afd0f82a-01a7-4311-86a5-4f36909fc91a",
+  "cost": {
+    "inputTokens": 270,
+    "outputTokens": 7445,
+    "cacheCreationTokens": 57592,
+    "cacheReadTokens": 794632,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.188948
+  }
+}
