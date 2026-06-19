@@ -49,6 +49,14 @@ export function getModelDefinition(
   return getProviderCatalog(providerId).find(model => model.id === id)
 }
 
+/** Static catalog context-window for a model, or undefined if unset. */
+export function getModelContextWindow(
+  id: string,
+  providerId: LlmProviderId,
+): number | undefined {
+  return getModelDefinition(id, providerId)?.contextWindow
+}
+
 /**
  * Resolve a stored selection to the concrete wire id for `providerId`.
  * Never throws.

@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
-import { CLAUDE_BARE_CATALOG } from './builtin-catalogs'
+import { PLATFORM_CATALOG } from './builtin-catalogs'
 import { attribution } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
@@ -41,7 +41,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   }
 
   getBuiltinCatalog(): ModelDefinition[] {
-    return CLAUDE_BARE_CATALOG
+    return PLATFORM_CATALOG
   }
 
   getDefaultModel(purpose: ModelPurpose): string {

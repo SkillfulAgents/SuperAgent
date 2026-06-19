@@ -1696,6 +1696,85 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('context window fallback from catalog (non-Claude result events)', () => {
+    function seedAssistantUsage() {
+      mockClient._sendMessage({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'hi' }],
+          usage: {
+            input_tokens: 100,
+            output_tokens: 10,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      })
+    }
+
+    it('uses the catalog contextWindow when the SDK omits it (gpt via platform)', () => {
+      mockGetSettings.mockReturnValue({ llmProvider: 'platform' })
+      seedAssistantUsage()
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        modelUsage: { 'gpt-5.5': { inputTokens: 100, outputTokens: 10 } },
+      })
+
+      const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
+      expect(usageEvents.at(-1)).toMatchObject({ contextWindow: 1_050_000 })
+    })
+
+    it('prefers the catalog window over the SDK default for a listed non-Claude model', () => {
+      mockGetSettings.mockReturnValue({ llmProvider: 'platform' })
+      seedAssistantUsage()
+      sseEvents.length = 0
+
+      // The SDK reports a generic 200K default for gpt; the catalog (1.05M) wins.
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        modelUsage: { 'gpt-5.5': { contextWindow: 200_000 } },
+      })
+
+      const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
+      expect(usageEvents.at(-1)).toMatchObject({ contextWindow: 1_050_000 })
+    })
+
+    it('uses the SDK window for Claude (no catalog window) — e.g. 1M opus', () => {
+      mockGetSettings.mockReturnValue({ llmProvider: 'platform' })
+      seedAssistantUsage()
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        modelUsage: { 'claude-opus-4-8': { contextWindow: 1_000_000 } },
+      })
+
+      const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
+      expect(usageEvents.at(-1)).toMatchObject({ contextWindow: 1_000_000 })
+    })
+
+    it('keeps the 200K default when neither SDK nor catalog has a window', () => {
+      mockGetSettings.mockReturnValue({ llmProvider: 'platform' })
+      seedAssistantUsage()
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        modelUsage: { 'totally-unknown-model': { inputTokens: 1 } },
+      })
+
+      const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
+      expect(usageEvents.at(-1)).toMatchObject({ contextWindow: 200_000 })
+    })
+  })
+
   describe('context usage from message_delta stream events', () => {
     it('broadcasts context_usage from message_delta with real token counts', () => {
       // Simulate OpenRouter: assistant message has zeros, message_delta has real values

@@ -10,6 +10,7 @@ vi.mock('../config/settings', () => ({
 import {
   getProviderCatalog,
   getModelDefinition,
+  getModelContextWindow,
   hasVersionSegment,
   resolveModelForProvider,
 } from './model-catalog'
@@ -81,6 +82,43 @@ describe('getProviderCatalog', () => {
     const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
     expect(gptLatest.map((m) => m.id)).toEqual(['openai/gpt-5.5'])
   })
+
+  it('exposes the Platform GPT built-ins under BARE ids the proxy routes', () => {
+    const catalog = getProviderCatalog('platform')
+    const gpt = catalog.find((m) => m.id === 'gpt-5.5')!
+    // gpt rides the OpenAI Responses wire, which maps native web_search.
+    expect(gpt).toMatchObject({
+      family: 'gpt',
+      isLatest: true,
+      icon: 'openai',
+      supportsWebSearch: true,
+      pricing: { inputPerMtok: 5, outputPerMtok: 30 },
+    })
+    // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
+    expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
+    expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
+    expect(catalog.some((m) => m.id === 'glm-5.2')).toBe(false)
+  })
+})
+
+describe('getModelContextWindow', () => {
+  it('returns the catalog window for Platform GPT models', () => {
+    expect(getModelContextWindow('gpt-5.5', 'platform')).toBe(1_050_000)
+    expect(getModelContextWindow('gpt-5.4', 'platform')).toBe(1_050_000)
+  })
+
+  it('returns the catalog window for OpenRouter GPT models', () => {
+    expect(getModelContextWindow('openai/gpt-5.5', 'openrouter')).toBe(1_050_000)
+    expect(getModelContextWindow('z-ai/glm-5.2', 'openrouter')).toBeUndefined()
+  })
+
+  it('returns undefined for Claude models (SDK supplies their window)', () => {
+    expect(getModelContextWindow('claude-opus-4-8', 'anthropic')).toBeUndefined()
+  })
+
+  it('returns undefined for an unknown id', () => {
+    expect(getModelContextWindow('nope', 'platform')).toBeUndefined()
+  })
 })
 
 describe('hasVersionSegment', () => {
@@ -128,6 +166,12 @@ describe('resolveModelForProvider', () => {
   it('resolves OpenRouter non-Claude models (gpt alias → latest id, glm slug passthrough)', () => {
     expect(resolveModelForProvider('gpt', 'openrouter', 'agent')).toBe('openai/gpt-5.5')
     expect(resolveModelForProvider('z-ai/glm-5.2', 'openrouter', 'agent')).toBe('z-ai/glm-5.2')
+  })
+
+  it('resolves Platform GPT models to bare ids and falls back for unsupported glm', () => {
+    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.5')
+    expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
+    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('claude-opus-4-8')
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {

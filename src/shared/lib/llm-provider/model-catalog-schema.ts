@@ -46,6 +46,10 @@ export const modelDefinitionSchema = z.object({
       outputPerMtok: z.number().nonnegative(),
     })
     .optional(),
+  // Static context window (tokens) for non-Claude models. The SDK reports a
+  // generic 200K default for these, so the host prefers this over the SDK value
+  // (see handleResultUsage). Claude entries omit it and use the SDK's real window.
+  contextWindow: z.number().int().positive().optional(),
 })
 
 export type ModelDefinition = z.infer<typeof modelDefinitionSchema>

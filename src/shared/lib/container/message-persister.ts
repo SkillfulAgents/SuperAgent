@@ -34,6 +34,7 @@ import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
@@ -2924,11 +2925,20 @@ class MessagePersister {
     content: any
   ): void {
     try {
-      // Extract contextWindow from modelUsage (per-model breakdown in SDK result)
+      // contextWindow precedence: catalog (non-Claude) > SDK-reported > 200K default.
+      // The SDK always reports a number, but for non-Claude models it's a generic
+      // 200K default — so catalog (which only carries non-Claude windows) must win
+      // when present. Claude entries have no catalog window, so they use the SDK value.
       const modelUsage = content.modelUsage
       if (modelUsage && typeof modelUsage === 'object') {
-        const firstModel = Object.values(modelUsage)[0] as { contextWindow?: number } | undefined
-        if (firstModel?.contextWindow) {
+        const [modelId] = Object.keys(modelUsage)
+        const firstModel = modelUsage[modelId] as { contextWindow?: number } | undefined
+        const catalogWindow = modelId
+          ? getModelContextWindow(modelId, getActiveLlmProvider().id)
+          : undefined
+        if (catalogWindow) {
+          state.lastContextWindow = catalogWindow
+        } else if (firstModel?.contextWindow) {
           state.lastContextWindow = firstModel.contextWindow
         }
       }
