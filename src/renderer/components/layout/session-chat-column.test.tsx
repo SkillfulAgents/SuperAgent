@@ -250,6 +250,27 @@ describe('SessionChatColumn Start fresh', () => {
       effort: 'high',
     })
   })
+
+  it('clears a previously staged summary so Start fresh lands on a clean composer', async () => {
+    const onStartFresh = vi.fn()
+    renderWithProviders(
+      <>
+        <SessionChatColumn {...staleProps} onStartFresh={onStartFresh} />
+        <StoreProbe />
+      </>
+    )
+    // A summary staged by an earlier "Start with Summary" the user navigated away from.
+    probedStore?.set(
+      summaryKey('agent-1'),
+      { summary: 'stale summary', fromSessionId: 'old-session' } satisfies NewChatSummary,
+    )
+
+    await clickStartFresh()
+
+    expect(onStartFresh).toHaveBeenCalledTimes(1)
+    // Start fresh is the no-summary path: the stale summary must not ride along.
+    expect(probedStore?.get(summaryKey('agent-1'))).toBeUndefined()
+  })
 })
 
 describe('SessionChatColumn Start with Summary', () => {

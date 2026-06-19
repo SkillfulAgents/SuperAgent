@@ -135,11 +135,14 @@ export function SessionChatColumn({
 
   // Move the live composer (text + files + model + effort) into the agent's
   // new-chat composer and clear the source draft. Shared by both toast actions;
-  // a move, not a copy. Start with Summary writes its summary key on top.
+  // a move, not a copy. Also clears any pending carried summary so "Start fresh"
+  // lands on a clean composer; "Start with Summary" writes its summary key back
+  // on top afterward.
   const stashComposerForNewChat = useCallback(() => {
     const { draftText, carryover } = splitSnapshotForHandoff(composerSnapshotRef.current?.())
     if (draftText !== undefined) draftStore.set(`agent:${agentSlug}`, draftText)
     draftStore.set(carryoverKey(agentSlug), carryover)
+    draftStore.set(summaryKey(agentSlug), undefined)
     draftStore.set(draftKey, undefined)
   }, [agentSlug, draftStore, draftKey])
 
