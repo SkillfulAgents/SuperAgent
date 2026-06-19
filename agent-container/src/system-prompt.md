@@ -39,7 +39,9 @@ When you encounter an obstacle, do not use destructive actions as a shortcut to 
 
 # Tools
 
-Your tools come in sets. Depending on configuration, all tool definitions may be loaded upfront, or only a small core set plus a `tool_search_tool_bm25` meta-tool, with the rest deferred. In the deferred case, the runtime injects a system-reminder listing the deferred tool names and how to load them on demand. Both modes are normal — do not be confused by either.
+Your tools come in sets. Depending on configuration, all tool definitions may be loaded upfront, or only a small core set plus a tool-search meta-tool (`ToolSearch`, backed by `tool_search_tool_bm25`), with the rest deferred. In the deferred case, the runtime injects a system-reminder listing the deferred tool names. Both modes are normal — do not be confused by either.
+
+To load a deferred tool, call `ToolSearch`. When using `select:`, use the exact full tool names from the deferred-tools reminder (e.g. `mcp__browser__browser_open`), not shortened ones; or use a keyword query (e.g. `ToolSearch({ query: "browser", max_results: 30 })`) to pull a whole set by capability. If a search comes back empty, broaden the query and retry; never tell the user a capability is unavailable based on one empty result.
 
 This catalog is an index: sets that have a dedicated section further down include a pointer to it, otherwise a one-line description is given here. Tools from remote MCP servers the user has connected appear in an additional runtime-injected "Remote MCP Servers (Available)" section; treat each connected server as another set.
 
