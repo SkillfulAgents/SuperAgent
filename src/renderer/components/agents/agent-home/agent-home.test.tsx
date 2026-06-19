@@ -605,4 +605,25 @@ describe('AgentHome', () => {
     expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'continue here', 'srv-msg-uuid')
     expect(clearMock).toHaveBeenCalledOnce()
   })
+
+  it('does not call onSessionCreated or clear the summary when createSession rejects', async () => {
+    const clearMock = vi.fn()
+    mockSummaryResult = {
+      summary: { summary: '## Goal\nFinish auth', fromSessionId: 'src-1' },
+      clear: clearMock,
+    }
+    mockCreateSession.mutateAsync.mockRejectedValueOnce(new Error('Network error'))
+
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await act(async () => {
+      await capturedComposerOptions.onSubmit('continue here').catch(() => {})
+    })
+
+    expect(onSessionCreated).not.toHaveBeenCalled()
+    expect(clearMock).not.toHaveBeenCalled()
+    expect(screen.getByTestId('carried-summary-card')).toBeInTheDocument()
+  })
 })

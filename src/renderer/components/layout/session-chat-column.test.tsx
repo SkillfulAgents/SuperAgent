@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import { SessionChatColumn } from './session-chat-column'
 import { renderWithProviders, userEvent } from '@renderer/test/test-utils'
 import { useDraftsStore } from '@renderer/context/drafts-context'
@@ -327,6 +327,68 @@ describe('SessionChatColumn Start with Summary', () => {
     expect(onStartFresh).not.toHaveBeenCalled()
     expect(probedStore?.get(summaryKey('agent-1'))).toBeUndefined()
     expect(probedStore?.get('agent:agent-1')).toBeUndefined()
+  })
+
+  it('failure preserves the source draft and does not write summary or carryover keys', async () => {
+    mockSummarize.mockRejectedValueOnce(new Error('boom'))
+    const onStartFresh = vi.fn()
+
+    renderWithProviders(
+      <>
+        <SessionChatColumn {...staleProps} onStartFresh={onStartFresh} />
+        <StoreProbe />
+      </>
+    )
+
+    // Seed the source draft — failure must leave this untouched
+    probedStore!.set('session:s-1', 'do not clear this')
+
+    await clickStartSummary()
+
+    expect(onStartFresh).not.toHaveBeenCalled()
+    expect(await screen.findByText("Couldn't summarize right now")).toBeInTheDocument()
+    // Loading indicator must be gone (isSummarizing reset)
+    expect(screen.queryByTestId('stale-new-chat-summarizing')).not.toBeInTheDocument()
+    // Source draft must be preserved — failure is not a move
+    expect(probedStore?.get('session:s-1')).toBe('do not clear this')
+    // Summary / carryover / agent draft must NOT have been written
+    expect(probedStore?.get(summaryKey('agent-1'))).toBeUndefined()
+    expect(probedStore?.get('agent:agent-1')).toBeUndefined()
+    expect(probedStore?.get(carryoverKey('agent-1'))).toBeUndefined()
+  })
+
+  it('retry after a failure succeeds: clears the error, writes the summary key, and navigates', async () => {
+    mockSummarize
+      .mockRejectedValueOnce(new Error('first attempt fails'))
+      .mockResolvedValueOnce({ summary: '## Goal' })
+    const onStartFresh = vi.fn()
+
+    renderWithProviders(
+      <>
+        <SessionChatColumn {...staleProps} onStartFresh={onStartFresh} />
+        <StoreProbe />
+      </>
+    )
+
+    await clickStartSummary() // first attempt — fails
+
+    expect(await screen.findByText("Couldn't summarize right now")).toBeInTheDocument()
+    expect(onStartFresh).not.toHaveBeenCalled()
+
+    // Popover is still open; click the inline retry button
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('stale-new-chat-retry'))
+
+    // Wait for the async retry to complete and navigate
+    await waitFor(() => expect(onStartFresh).toHaveBeenCalledTimes(1))
+
+    // Error must have cleared
+    expect(screen.queryByText("Couldn't summarize right now")).not.toBeInTheDocument()
+    // Summary key must be written with the summary from the successful retry
+    expect(probedStore?.get<NewChatSummary>(summaryKey('agent-1'))).toEqual({
+      summary: '## Goal',
+      fromSessionId: 's-1',
+    })
   })
 })
 

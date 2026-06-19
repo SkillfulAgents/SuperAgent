@@ -55,6 +55,13 @@ const fileHistory = (): JsonlEntry => ({
   snapshot: { messageId: 'm', trackedFileBackups: {}, timestamp: 't' },
 }) as unknown as JsonlEntry
 
+// A Task tool_result entry with empty content and a status field on toolUseResult.
+const taskResultWithStatus = (toolId: string, status: string): JsonlEntry => ({
+  uuid: 'r', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolId, content: '', is_error: false }] },
+  toolUseResult: { stdout: '', stderr: '', interrupted: false, isImage: false, status },
+}) as unknown as JsonlEntry
+
 describe('pruneTranscript', () => {
   it('keeps user + assistant text', () => {
     const lines = pruneTranscript([userMsg('fix the login bug'), assistantText('found it in auth.ts')])
@@ -190,6 +197,80 @@ describe('pruneTranscript', () => {
     const text = renderPrunedLines(lines)
     expect(text).toContain('[attachment: image]')
   })
+
+  it('renderToolCall renders Grep and Glob with their pattern; unknown tool falls back to bare name', () => {
+    const lines = pruneTranscript([
+      assistantWithTool('searching', 't1', 'Grep', { pattern: 'foo.*bar' }),
+      toolResultUser('t1', ''),
+      assistantWithTool('globbing', 't2', 'Glob', { pattern: '**/*.ts' }),
+      toolResultUser('t2', ''),
+      assistantWithTool('calling', 't3', 'mcp__custom__tool', {}),
+      toolResultUser('t3', ''),
+    ])
+    const text = renderPrunedLines(lines)
+    expect(text).toContain('[tool] Grep foo.*bar')
+    expect(text).toContain('[tool] Glob **/*.ts')
+    expect(text).toContain('[tool] mcp__custom__tool')
+  })
+
+  it('tool_use with no matching tool_result renders just the call line without a signal', () => {
+    const lines = pruneTranscript([
+      assistantWithTool('reading', 't1', 'Read', { file_path: 'src/x.ts' }),
+      // no toolResultUser for t1
+    ])
+    const text = renderPrunedLines(lines)
+    expect(text).toContain('[tool] Read src/x.ts')
+    expect(text).not.toContain('->')
+  })
+
+  it('Task with empty result body falls back to status when present, or "done" when absent', () => {
+    const withStatus = pruneTranscript([
+      assistantWithTool('delegating', 't1', 'Task', { description: 'audit auth' }),
+      taskResultWithStatus('t1', 'completed'),
+    ])
+    expect(renderPrunedLines(withStatus)).toContain('-> completed')
+
+    const withoutStatus = pruneTranscript([
+      assistantWithTool('delegating', 't2', 'Task', { description: 'audit auth' }),
+      toolResultUser('t2', ''),
+    ])
+    expect(renderPrunedLines(withoutStatus)).toContain('-> done')
+  })
+
+  it('caps a long successful result from a non-bulk tool with [truncated]', () => {
+    const longBody = 'a'.repeat(600)
+    const lines = pruneTranscript([
+      assistantWithTool('fetching', 't1', 'WebFetch', { url: 'https://example.com' }),
+      toolResultUser('t1', longBody),
+    ])
+    const text = renderPrunedLines(lines)
+    expect(text).toContain('[tool] WebFetch')
+    expect(text).toContain('[truncated]')
+    expect(text).not.toContain(longBody)
+  })
+
+  it('queued_command with a ContentBlock[] prompt renders as USER text', () => {
+    const blockEntry: JsonlEntry = {
+      uuid: 'q', type: 'attachment', timestamp: 't',
+      attachment: { type: 'queued_command', prompt: [{ type: 'text', text: 'refocus on auth' }] },
+    } as unknown as JsonlEntry
+    const lines = pruneTranscript([blockEntry])
+    expect(renderPrunedLines(lines)).toBe('USER: refocus on auth')
+  })
+
+  it('empty transcript returns []', () => {
+    expect(pruneTranscript([])).toEqual([])
+  })
+
+  it('isCompactSummary entries are skipped entirely', () => {
+    const compactEntry: JsonlEntry = {
+      uuid: 'cs', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+      isCompactSummary: true,
+      message: { role: 'user', content: 'summary text' },
+    } as unknown as JsonlEntry
+    const lines = pruneTranscript([userMsg('before'), compactEntry, userMsg('after')])
+    expect(renderPrunedLines(lines)).toBe('USER: before\nUSER: after')
+  })
 })
 
 describe('budgetPrunedLines', () => {
@@ -203,6 +284,15 @@ describe('budgetPrunedLines', () => {
   it('keeps at least one line even when it exceeds budget', () => {
     const lines = pruneTranscript([userMsg('a'.repeat(400))])
     expect(budgetPrunedLines(lines, 1)).toHaveLength(1)
+  })
+
+  it('drops oldest lines when budget is tight, preserving chronological order in result', () => {
+    // "USER: aaaa" = 10 chars -> ceil(10/4) = 3 tokens each; 4 lines = 12 tokens total
+    const lines = pruneTranscript([userMsg('aaaa'), userMsg('bbbb'), userMsg('cccc'), userMsg('dddd')])
+    // budget 6 fits only 2 lines (newest two); result is still oldest-first
+    const kept = budgetPrunedLines(lines, 6)
+    expect(kept).toHaveLength(2)
+    expect(renderPrunedLines(kept)).toBe('USER: cccc\nUSER: dddd')
   })
 })
 

@@ -20,7 +20,7 @@ import {
   buildSeed, summarizeText, summarizeTranscript, loadTranscriptEntries,
 } from './session-summary-service'
 import { SUMMARY_OUTPUT_FLOOR_TOKENS, SUMMARY_OUTPUT_CAP_TOKENS } from '../stale-session/stale-session-config'
-import { createSessionRequestSchema } from '../stale-session/stale-session-schema'
+import { createSessionRequestSchema, summarizeRequestSchema, summarizeResponseSchema } from '../stale-session/stale-session-schema'
 
 describe('buildSeed', () => {
   it('composes sentinel + summary + in-container path line + anti-recap + user message', () => {
@@ -74,6 +74,50 @@ describe('summarizeText', () => {
     expect(maxTokens).toBeGreaterThanOrEqual(SUMMARY_OUTPUT_FLOOR_TOKENS)
     expect(maxTokens).toBeLessThanOrEqual(SUMMARY_OUTPUT_CAP_TOKENS)
   })
+
+  it('returns empty string when model response has no text block', async () => {
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }],
+    })
+    const out = await summarizeText('some transcript text')
+    expect(out).toBe('')
+  })
+
+  it('concatenates multiple text blocks', async () => {
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'Part A' }, { type: 'text', text: ' Part B' }],
+    })
+    const out = await summarizeText('some input')
+    expect(out).toBe('Part A Part B')
+  })
+
+  it('includes [Earlier summary] prefix in prompt when priorBoundarySummary is provided', async () => {
+    mockCreate.mockResolvedValueOnce({ content: [{ type: 'text', text: 'ok' }] })
+    await summarizeText('transcript text', 'The auth flow was set up.')
+    const sentContent = mockCreate.mock.calls[0][0].messages[0].content as string
+    expect(sentContent).toContain('[Earlier summary]\nThe auth flow was set up.')
+  })
+
+  it('omits [Earlier summary] prefix when priorBoundarySummary is absent', async () => {
+    mockCreate.mockResolvedValueOnce({ content: [{ type: 'text', text: 'ok' }] })
+    await summarizeText('transcript text')
+    const sentContent = mockCreate.mock.calls[0][0].messages[0].content as string
+    expect(sentContent).not.toContain('[Earlier summary]')
+  })
+
+  it('clamps max_tokens to floor for a tiny input', async () => {
+    mockCreate.mockResolvedValueOnce({ content: [{ type: 'text', text: 'ok' }] })
+    await summarizeText('x')
+    const maxTokens = mockCreate.mock.calls[0][0].max_tokens
+    expect(maxTokens).toBe(SUMMARY_OUTPUT_FLOOR_TOKENS)
+  })
+
+  it('clamps max_tokens to cap for a very large input', async () => {
+    mockCreate.mockResolvedValueOnce({ content: [{ type: 'text', text: 'ok' }] })
+    await summarizeText('a'.repeat(60_000))
+    const maxTokens = mockCreate.mock.calls[0][0].max_tokens
+    expect(maxTokens).toBe(SUMMARY_OUTPUT_CAP_TOKENS)
+  })
 })
 
 describe('summarizeTranscript', () => {
@@ -97,6 +141,33 @@ describe('summarizeTranscript', () => {
     const sentContent = mockCreate.mock.calls[0][0].messages[0].content as string
     expect(sentContent).toContain('[tool] Edit src/auth.ts')
   })
+
+  it('threads priorBoundarySummary from the transcript into the LLM prompt', async () => {
+    mockReadJsonlFile.mockResolvedValueOnce([
+      { uuid: 's1', type: 'system', subtype: 'compact_boundary', content: '', isMeta: true, timestamp: 't' },
+      { uuid: 'cs1', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        isCompactSummary: true, message: { role: 'user', content: 'Auth was set up earlier.' } },
+      { uuid: 'u1', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        message: { role: 'user', content: 'continue' } },
+    ])
+    mockCreate.mockResolvedValueOnce({ content: [{ type: 'text', text: 'done' }] })
+    await summarizeTranscript('atlas', 'sess-1')
+    const sentContent = mockCreate.mock.calls[0][0].messages[0].content as string
+    expect(sentContent).toContain('[Earlier summary]')
+    expect(sentContent).toContain('Auth was set up earlier.')
+  })
+
+  it('still calls summarizeText when all entries prune to nothing', async () => {
+    mockReadJsonlFile.mockResolvedValueOnce([
+      { uuid: 's1', type: 'system', subtype: 'compact_boundary', content: '', isMeta: true, timestamp: 't' },
+    ])
+    mockCreate.mockResolvedValueOnce({ content: [{ type: 'text', text: '' }] })
+    await summarizeTranscript('atlas', 'sess-1')
+    expect(mockCreate).toHaveBeenCalledOnce()
+    const call = mockCreate.mock.calls[0][0]
+    expect(call.messages).toHaveLength(1)
+    expect(call.messages[0].role).toBe('user')
+  })
 })
 
 describe('loadTranscriptEntries', () => {
@@ -114,6 +185,58 @@ describe('loadTranscriptEntries', () => {
     expect(entries).toHaveLength(3)
     expect(priorBoundarySummary).toBe('Earlier: set up auth.')
   })
+
+  it('returns undefined when companion isCompactSummary sits beyond the 3-entry lookahead', async () => {
+    mockReadJsonlFile.mockResolvedValueOnce([
+      { uuid: 's1', type: 'system', subtype: 'compact_boundary', content: '', isMeta: true, timestamp: 't' },
+      { uuid: 'u1', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        message: { role: 'user', content: 'a' } },
+      { uuid: 'u2', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        message: { role: 'user', content: 'b' } },
+      { uuid: 'u3', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        message: { role: 'user', content: 'c' } },
+      // companion at offset 4 — beyond the j <= i+3 window
+      { uuid: 'cs1', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        isCompactSummary: true, message: { role: 'user', content: 'Late summary.' } },
+    ])
+    const { priorBoundarySummary } = await loadTranscriptEntries('atlas', 'sess-1')
+    expect(priorBoundarySummary).toBeUndefined()
+  })
+
+  it('returns undefined when compact_boundary has no isCompactSummary companion', async () => {
+    mockReadJsonlFile.mockResolvedValueOnce([
+      { uuid: 's1', type: 'system', subtype: 'compact_boundary', content: '', isMeta: true, timestamp: 't' },
+      { uuid: 'u1', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        message: { role: 'user', content: 'no companion here' } },
+    ])
+    const { priorBoundarySummary } = await loadTranscriptEntries('atlas', 'sess-1')
+    expect(priorBoundarySummary).toBeUndefined()
+  })
+
+  it('returns undefined when isCompactSummary companion has empty text', async () => {
+    mockReadJsonlFile.mockResolvedValueOnce([
+      { uuid: 's1', type: 'system', subtype: 'compact_boundary', content: '', isMeta: true, timestamp: 't' },
+      { uuid: 'cs1', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        isCompactSummary: true, message: { role: 'user', content: '' } },
+    ])
+    const { priorBoundarySummary } = await loadTranscriptEntries('atlas', 'sess-1')
+    expect(priorBoundarySummary).toBeUndefined()
+  })
+
+  it('uses the latest valid companion when multiple compact_boundaries exist', async () => {
+    mockReadJsonlFile.mockResolvedValueOnce([
+      { uuid: 's1', type: 'system', subtype: 'compact_boundary', content: '', isMeta: true, timestamp: 't' },
+      { uuid: 'cs1', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        isCompactSummary: true, message: { role: 'user', content: 'First summary.' } },
+      { uuid: 'u1', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        message: { role: 'user', content: 'continue' } },
+      { uuid: 's2', type: 'system', subtype: 'compact_boundary', content: '', isMeta: true, timestamp: 't' },
+      { uuid: 'cs2', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        isCompactSummary: true, message: { role: 'user', content: 'Second summary.' } },
+    ])
+    const { priorBoundarySummary } = await loadTranscriptEntries('atlas', 'sess-1')
+    expect(priorBoundarySummary).toBe('Second summary.')
+  })
 })
 
 describe('createSessionRequestSchema', () => {
@@ -126,5 +249,28 @@ describe('createSessionRequestSchema', () => {
   })
   it('accepts both together', () => {
     expect(createSessionRequestSchema.safeParse({ message: 'hi', seedSummary: 's', fromSessionId: 'sess-1' }).success).toBe(true)
+  })
+  it('rejects fromSessionId with invalid charset', () => {
+    expect(createSessionRequestSchema.safeParse({ message: 'hi', seedSummary: 's', fromSessionId: '../x' }).success).toBe(false)
+    expect(createSessionRequestSchema.safeParse({ message: 'hi', seedSummary: 's', fromSessionId: 'a/b' }).success).toBe(false)
+  })
+})
+
+describe('summarizeRequestSchema', () => {
+  it('rejects fromSessionId with path traversal or slash characters', () => {
+    expect(summarizeRequestSchema.safeParse({ fromSessionId: '../x' }).success).toBe(false)
+    expect(summarizeRequestSchema.safeParse({ fromSessionId: 'a/b' }).success).toBe(false)
+  })
+  it('accepts a valid alphanumeric session id', () => {
+    expect(summarizeRequestSchema.safeParse({ fromSessionId: 'abc-123_XYZ' }).success).toBe(true)
+  })
+})
+
+describe('summarizeResponseSchema', () => {
+  it('rejects an empty summary', () => {
+    expect(summarizeResponseSchema.safeParse({ summary: '' }).success).toBe(false)
+  })
+  it('accepts a non-empty summary', () => {
+    expect(summarizeResponseSchema.safeParse({ summary: '## Goal\nFix bug.' }).success).toBe(true)
   })
 })
