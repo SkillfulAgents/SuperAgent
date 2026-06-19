@@ -9,7 +9,7 @@ vi.mock('../llm-provider/helpers', () => ({
   }),
 }))
 
-// loadTranscript reads JSONL off disk; stub the file layer so we can feed fixtures.
+// loadTranscriptEntries reads JSONL off disk; stub the file layer so we can feed fixtures.
 const mockReadJsonlFile = vi.fn()
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getSessionJsonlPath: () => '/fake/sess.jsonl',

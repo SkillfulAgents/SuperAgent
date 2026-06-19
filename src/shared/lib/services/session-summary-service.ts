@@ -149,7 +149,7 @@ export async function summarizeTranscript(agentSlug: string, fromSessionId: stri
 
 /**
  * Build the initialMessage for the new session from a PRECOMPUTED summary. This is
- * the formatting tail of buildBranchInitialMessage, relocated so it runs at
+ * the formatting tail of the old eager branch path, relocated so it runs at
  * create-on-send. The in-container path line is load-bearing: message-transform's
  * splitter anchors on it to draw the post-send context card. Do not change the
  * shape without updating that splitter.
