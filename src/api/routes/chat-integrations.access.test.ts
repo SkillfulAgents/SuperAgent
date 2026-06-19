@@ -28,19 +28,29 @@ vi.mock('@shared/lib/db', () => ({
 
 // ── Auth middleware: faithful passthrough (mirrors sup229 test) ──────────
 const mockAuthUser = { id: 'owner-user', name: 'Owner', email: 'owner@example.com' }
+// Test-controlled caller role so the owner-gate is actually exercised. Default
+// 'owner'; tests drop it to 'user' to assert 403 on owner-gated routes.
+const mockAuthRole: { current: 'viewer' | 'user' | 'owner' } = { current: 'owner' }
 
-vi.mock('../middleware/auth', () => ({
-  Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
-  AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
-  EntityAgentRole: (opts: any) => (_minRole: string) => async (c: any, next: () => Promise<void>) => {
-    const id = c.req.param(opts.paramName)
-    const entity = await opts.lookupFn(id)
-    if (!entity) return c.json({ error: `${opts.entityName} not found` }, 404)
-    c.set(opts.contextKey, entity)
-    c.set('user', mockAuthUser)
-    return next()
-  },
-}))
+vi.mock('../middleware/auth', () => {
+  const RANK: Record<string, number> = { viewer: 0, user: 1, owner: 2 }
+  return {
+    Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+    AgentUser: () => async (c: any, next: () => Promise<void>) => {
+      if (RANK[mockAuthRole.current] < RANK.user) return c.json({ error: 'Forbidden' }, 403)
+      c.set('user', mockAuthUser); return next()
+    },
+    EntityAgentRole: (opts: any) => (minRole: string) => async (c: any, next: () => Promise<void>) => {
+      const id = c.req.param(opts.paramName)
+      const entity = await opts.lookupFn(id)
+      if (!entity) return c.json({ error: `${opts.entityName} not found` }, 404)
+      if (RANK[mockAuthRole.current] < RANK[minRole]) return c.json({ error: 'Forbidden' }, 403)
+      c.set(opts.contextKey, entity)
+      c.set('user', mockAuthUser)
+      return next()
+    },
+  }
+})
 
 // ── Integration service: returns mock objects keyed by id ────────────────
 const INTEGRATION_A = 'integration-a'
@@ -110,6 +120,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import chatIntegrationsRouter from './chat-integrations'
+import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 
 function app() {
@@ -147,6 +158,7 @@ describe('chat-integrations access routes', () => {
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
     vi.clearAllMocks()
+    mockAuthRole.current = 'owner'
     mockGetChatIntegration.mockImplementation((id: string) => integrations[id] ?? null)
     mockNotifyChatApproved.mockResolvedValue(undefined)
     mockTearDownChatSession.mockResolvedValue(undefined)
@@ -468,6 +480,75 @@ describe('chat-integrations access routes', () => {
       })
       expect(res.status).toBe(200)
       expect(mockReconcileAccess).toHaveBeenCalledWith(INTEGRATION_A)
+    })
+  })
+
+  // ── Owner-role enforcement ─────────────────────────────────────────────
+  // The role mock honors minRole, so these prove a non-owner 'user' is blocked
+  // from the owner-gated access/management routes (not just hidden in the UI).
+
+  describe('owner-role enforcement (user role rejected on owner-gated routes)', () => {
+    it('GET /access returns 403 for a non-owner user', async () => {
+      seedAccess(INTEGRATION_A, 'chat-1', 'pending')
+      mockAuthRole.current = 'user'
+      const res = await app().request(`http://localhost/api/chat-integrations/${INTEGRATION_A}/access`)
+      expect(res.status).toBe(403)
+    })
+
+    it('PATCH /require-approval returns 403 for a non-owner user (no reconcile)', async () => {
+      mockAuthRole.current = 'user'
+      const res = await app().request(`http://localhost/api/chat-integrations/${INTEGRATION_A}/require-approval`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requireApproval: false }),
+      })
+      expect(res.status).toBe(403)
+      expect(mockReconcileAccess).not.toHaveBeenCalled()
+    })
+
+    it.each(['approve', 'deny', 'revoke'])(
+      'POST /access/:id/%s returns 403 for a non-owner user (no spend, no teardown)',
+      async (verb) => {
+        const accessId = seedAccess(INTEGRATION_A, 'chat-1', 'pending')
+        mockAuthRole.current = 'user'
+        const res = await app().request(
+          `http://localhost/api/chat-integrations/${INTEGRATION_A}/access/${accessId}/${verb}`,
+          { method: 'POST' },
+        )
+        expect(res.status).toBe(403)
+        expect(mockTearDownChatSession).not.toHaveBeenCalled()
+        expect(mockNotifyChatApproved).not.toHaveBeenCalled()
+      },
+    )
+
+    it('GET /access still succeeds for an owner (positive control)', async () => {
+      seedAccess(INTEGRATION_A, 'chat-1', 'pending')
+      mockAuthRole.current = 'owner'
+      const res = await app().request(`http://localhost/api/chat-integrations/${INTEGRATION_A}/access`)
+      expect(res.status).toBe(200)
+    })
+  })
+
+  // ── Create route: make-public is owner-only, not settable at create ─────
+
+  describe('POST /:id create — requireApproval not settable at create', () => {
+    it('ignores requireApproval in the body so the public flip cannot bypass the owner gate', async () => {
+      vi.mocked(createChatIntegration).mockReturnValue('new-int')
+      mockGetChatIntegration.mockImplementation((id: string) =>
+        id === 'new-int' ? { id: 'new-int', agentSlug: 'agent-a' } : (integrations[id] ?? null),
+      )
+
+      const res = await app().request('http://localhost/api/chat-integrations/agent-a', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'telegram', config: { botToken: 't' }, requireApproval: false }),
+      })
+
+      expect(res.status).toBe(201)
+      // The route must NOT forward requireApproval — the service applies its secure
+      // default (true). Making a bot public is owner-only via PATCH /require-approval.
+      expect(vi.mocked(createChatIntegration)).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(createChatIntegration).mock.calls[0][0]).not.toHaveProperty('requireApproval')
     })
   })
 })

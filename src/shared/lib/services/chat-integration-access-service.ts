@@ -83,7 +83,7 @@ export function decideInboundAccess(args: {
 function preview(s?: string): string | null { return s ? s.slice(0, PREVIEW_MAX) : null }
 
 function refreshPending(existing: ChatIntegrationAccess, args: { userName?: string; chatName?: string; preview?: string }) {
-  const nextPreview = args.preview ? args.preview.slice(0, PREVIEW_MAX) : existing.firstMessagePreview
+  const nextPreview = args.preview ? preview(args.preview) : existing.firstMessagePreview
   if (existing.firstUserName === (args.userName ?? existing.firstUserName)
     && existing.title === (args.chatName ?? existing.title)
     && existing.firstMessagePreview === nextPreview) return // skip no-op write

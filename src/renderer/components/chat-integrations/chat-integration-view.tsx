@@ -53,6 +53,36 @@ import { formatProviderName } from '@shared/lib/chat-integrations/utils'
 
 // ── Access management sections ────────────────────────────────────────────
 
+function chatLabel(row: ChatIntegrationAccess): string {
+  return row.title ?? `Conversation ${row.externalChatId.slice(-6)}`
+}
+
+/** One access action (approve/deny/revoke/allow): shows a per-row spinner while
+ *  this row's own mutation is in flight, else the label. */
+function AccessActionButton({ mutation, integrationId, accessId, label, variant, className, disabled }: {
+  mutation: ReturnType<typeof useApproveChatAccess>
+  integrationId: string
+  accessId: string
+  label: string
+  variant?: 'default' | 'outline' | 'ghost'
+  className?: string
+  disabled?: boolean
+}) {
+  return (
+    <Button
+      size="xs"
+      variant={variant}
+      className={className}
+      disabled={disabled ?? mutation.isPending}
+      onClick={() => mutation.mutate({ integrationId, accessId })}
+    >
+      {mutation.isPending && mutation.variables?.accessId === accessId
+        ? <Loader2 className="h-3 w-3 animate-spin" />
+        : label}
+    </Button>
+  )
+}
+
 function DeniedSection({ denied, integrationId, canManage, approve }: {
   denied: ChatIntegrationAccess[]
   integrationId: string
@@ -75,20 +105,17 @@ function DeniedSection({ denied, integrationId, canManage, approve }: {
           {denied.map(row => (
             <li key={row.id} className="flex items-center justify-between gap-3">
               <p className="text-sm truncate text-muted-foreground">
-                {row.title ?? `Conversation ${row.externalChatId.slice(-6)}`}
+                {chatLabel(row)}
               </p>
               {canManage && (
-                <Button
-                  size="xs"
+                <AccessActionButton
+                  mutation={approve}
+                  integrationId={integrationId}
+                  accessId={row.id}
+                  label="Allow"
                   variant="ghost"
                   className="shrink-0"
-                  disabled={approve.isPending}
-                  onClick={() => approve.mutate({ integrationId, accessId: row.id })}
-                >
-                  {approve.isPending && approve.variables?.accessId === row.id
-                    ? <Loader2 className="h-3 w-3 animate-spin" />
-                    : 'Allow'}
-                </Button>
+                />
               )}
             </li>
           ))}
@@ -140,7 +167,7 @@ function ChatAccessSections({ integrationId, canManage }: { integrationId: strin
               <li key={row.id} className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-medium truncate">
-                    {row.title ?? `Conversation ${row.externalChatId.slice(-6)}`}
+                    {chatLabel(row)}
                   </p>
                   {row.firstMessagePreview && (
                     <p className="text-xs text-muted-foreground truncate">{row.firstMessagePreview}</p>
@@ -148,25 +175,21 @@ function ChatAccessSections({ integrationId, canManage }: { integrationId: strin
                 </div>
                 {canManage && (
                   <div className="flex items-center gap-1.5 shrink-0">
-                    <Button
-                      size="xs"
+                    <AccessActionButton
+                      mutation={approve}
+                      integrationId={integrationId}
+                      accessId={row.id}
+                      label="Approve"
                       disabled={approve.isPending || deny.isPending}
-                      onClick={() => approve.mutate({ integrationId, accessId: row.id })}
-                    >
-                      {approve.isPending && approve.variables?.accessId === row.id
-                        ? <Loader2 className="h-3 w-3 animate-spin" />
-                        : 'Approve'}
-                    </Button>
-                    <Button
-                      size="xs"
+                    />
+                    <AccessActionButton
+                      mutation={deny}
+                      integrationId={integrationId}
+                      accessId={row.id}
+                      label="Deny"
                       variant="outline"
                       disabled={approve.isPending || deny.isPending}
-                      onClick={() => deny.mutate({ integrationId, accessId: row.id })}
-                    >
-                      {deny.isPending && deny.variables?.accessId === row.id
-                        ? <Loader2 className="h-3 w-3 animate-spin" />
-                        : 'Deny'}
-                    </Button>
+                    />
                   </div>
                 )}
               </li>
@@ -184,7 +207,7 @@ function ChatAccessSections({ integrationId, canManage }: { integrationId: strin
               <li key={row.id} className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex items-center gap-2 flex-wrap">
                   <p className="text-sm truncate">
-                    {row.title ?? `Conversation ${row.externalChatId.slice(-6)}`}
+                    {chatLabel(row)}
                   </p>
                   {row.approvalSource === 'auto_first_contact' && (
                     <span className="shrink-0 inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
@@ -193,17 +216,14 @@ function ChatAccessSections({ integrationId, canManage }: { integrationId: strin
                   )}
                 </div>
                 {canManage && (
-                  <Button
-                    size="xs"
+                  <AccessActionButton
+                    mutation={revoke}
+                    integrationId={integrationId}
+                    accessId={row.id}
+                    label="Revoke"
                     variant="ghost"
                     className="text-muted-foreground hover:text-destructive shrink-0"
-                    disabled={revoke.isPending}
-                    onClick={() => revoke.mutate({ integrationId, accessId: row.id })}
-                  >
-                    {revoke.isPending && revoke.variables?.accessId === row.id
-                      ? <Loader2 className="h-3 w-3 animate-spin" />
-                      : 'Revoke'}
-                  </Button>
+                  />
                 )}
               </li>
             ))}

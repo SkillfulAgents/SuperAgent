@@ -415,7 +415,6 @@ class ChatIntegrationManager {
     // skipped by the access check below.
     const existingSessions = listActiveChatIntegrationSessions(integration.id)
     for (const session of existingSessions) {
-      if (session.archivedAt) continue
       if (!isChatAllowed(integration.id, session.externalChatId)) continue
       this.subscribeChatSession(integration.id, session.externalChatId, session.sessionId)
     }

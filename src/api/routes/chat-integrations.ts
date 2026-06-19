@@ -127,11 +127,10 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
   try {
     const agentSlug = c.req.param('id')
     const body = await c.req.json()
-    const { provider, name, config, showToolCalls, requireApproval, sessionTimeout, model, effort } = body
-
-    if (requireApproval !== undefined && !z.boolean().safeParse(requireApproval).success) {
-      return c.json({ error: 'requireApproval must be a boolean' }, 400)
-    }
+    const { provider, name, config, showToolCalls, sessionTimeout, model, effort } = body
+    // requireApproval is intentionally NOT accepted here: making a bot public is
+    // owner-only and must go through PATCH /:integrationId/require-approval. New
+    // integrations default to requireApproval=true (private).
 
     if (!provider || !config) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
@@ -191,7 +190,6 @@ chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
         name,
         config,
         showToolCalls: showToolCalls ?? false,
-        requireApproval,
         sessionTimeout: sessionTimeout ?? null,
         model: model ?? null,
         effort: effort ?? null,
@@ -439,7 +437,8 @@ chatIntegrationsRouter.delete('/:integrationId/sessions/:sessionId', Integration
 const accessStatusSchema = z.enum(['pending', 'allowed', 'denied'])
 
 // GET /api/chat-integrations/:integrationId/access - List access entries (optionally filtered by status)
-chatIntegrationsRouter.get('/:integrationId/access', IntegrationAgentRole('user'), async (c) => {
+// Owner-only: entries expose requester identity + message previews, shown only to owners in the UI.
+chatIntegrationsRouter.get('/:integrationId/access', IntegrationAgentRole('owner'), async (c) => {
   try {
     const integrationId = c.req.param('integrationId')
     const raw = c.req.query('status')
@@ -472,7 +471,7 @@ for (const verb of ['approve', 'deny', 'revoke'] as const) {
       const ok = accessActions[verb](accessId, getCurrentUserId(c))
       if (ok) {
         logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
-        if (verb === 'approve') chatIntegrationManager.notifyChatApproved(integrationId, row.externalChatId).catch(() => {})
+        if (verb === 'approve') void chatIntegrationManager.notifyChatApproved(integrationId, row.externalChatId)
         if (verb === 'revoke' || verb === 'deny') await chatIntegrationManager.tearDownChatSession(integrationId, row.externalChatId)
       }
       return c.json({ ok })
