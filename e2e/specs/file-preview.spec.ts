@@ -116,6 +116,75 @@ test.describe('File Preview', () => {
     await expect(markdown(page).getByRole('heading', { name: 'Version 2' })).toBeVisible({ timeout: 10000 })
   })
 
+  test('renders CSV as a table and supports the raw toggle', async ({ page }) => {
+    await agentPage.createAgent(`CsvPreview ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(
+      agentSlug,
+      'output/data.csv',
+      'Name,Email,Age\nAlice,alice@example.com,30\nBob,bob@example.com,25',
+    )
+
+    await sessionPage.sendMessage('deliver csv')
+    await sessionPage.waitForResponse(15000)
+
+    const filePill = getFilePill(page, 'data.csv').first()
+    await expect(filePill).toBeVisible({ timeout: 10000 })
+    await filePill.click()
+
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    const csv = page.getByTestId('csv-renderer')
+    await expect(csv).toBeVisible({ timeout: 10000 })
+
+    // Header cells and data cells are rendered as a table.
+    await expect(csv.getByRole('columnheader', { name: 'Email' })).toBeVisible()
+    await expect(csv.getByRole('cell', { name: 'alice@example.com' })).toBeVisible()
+
+    // Toggle to raw text and back.
+    await csv.getByRole('button', { name: 'Raw' }).click()
+    await expect(csv.getByRole('columnheader', { name: 'Email' })).not.toBeVisible()
+    await csv.getByRole('button', { name: 'Table' }).click()
+    await expect(csv.getByRole('columnheader', { name: 'Email' })).toBeVisible()
+  })
+
+  test('pins a comment to a CSV cell and sends it to the agent', async ({ page }) => {
+    await agentPage.createAgent(`CsvComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(
+      agentSlug,
+      'output/data.csv',
+      'Name,Email,Age\nAlice,alice@example.com,30\nBob,bob@example.com,25',
+    )
+
+    await sessionPage.sendMessage('deliver csv')
+    await sessionPage.waitForResponse(15000)
+
+    const filePill = getFilePill(page, 'data.csv').first()
+    await expect(filePill).toBeVisible({ timeout: 10000 })
+    await filePill.click()
+
+    const csv = page.getByTestId('csv-renderer')
+    await expect(csv).toBeVisible({ timeout: 10000 })
+
+    // Click a data cell → comment affordance appears.
+    await csv.getByRole('cell', { name: 'alice@example.com' }).click()
+    const overlay = page.locator('[data-comment-overlay]')
+    await overlay.getByRole('button', { name: 'Comment' }).click()
+
+    // Add a comment for that cell.
+    await page.getByPlaceholder('Add your comment...').fill('This email looks wrong')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    // The comment bar shows the cell identifier and the comment text.
+    const tray = page.getByTestId('file-preview-tray')
+    await expect(tray.getByText('Cell 1:Email', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(tray.getByText('This email looks wrong')).toBeVisible()
+
+    // Submitting posts the formatted feedback back into the conversation.
+    await tray.getByRole('button', { name: 'Submit' }).click()
+    await expect(page.getByText('At cell 1:Email', { exact: false })).toBeVisible({ timeout: 10000 })
+  })
+
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {
     await agentPage.createAgent(`MultiFile ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)

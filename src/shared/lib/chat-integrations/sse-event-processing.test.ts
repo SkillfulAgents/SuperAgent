@@ -55,6 +55,30 @@ async function processEvents(
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
+describe('working indicator', () => {
+  it('stops the indicator once, on the first streamed token of a segment', async () => {
+    const managed = createManagedConnector()
+    const mock = getMock(managed)
+
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'Hello' })
+    expect(mock.stoppedWorking).toEqual(['chat-123']) // fired on the thinking→streaming transition
+
+    // Later tokens in the same segment must not re-fire stopWorking (no API call per token).
+    await processSSEEvent(managed, { type: 'stream_delta', text: ' world' })
+    expect(mock.stoppedWorking).toEqual(['chat-123'])
+  })
+
+  it('re-shows the indicator at the start of a new segment', async () => {
+    const managed = createManagedConnector()
+    const mock = getMock(managed)
+
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'first segment' })
+    const before = mock.typingIndicators.length
+    await processSSEEvent(managed, { type: 'stream_start' })
+    expect(mock.typingIndicators.length).toBe(before + 1) // startWorking re-shown for the next segment
+  })
+})
+
 describe('processSSEEvent', () => {
   let managed: ManagedConnector
 
@@ -333,15 +357,12 @@ describe('processSSEEvent', () => {
       expect(getMock(managed).typingIndicators.length).toBe(1)
     })
 
-    it('refreshes typing on messages_updated only when streaming', async () => {
-      // No accumulated text — should NOT send typing
-      await processSSEEvent(managed, { type: 'messages_updated' })
-      expect(getMock(managed).typingIndicators.length).toBe(0)
-
-      // With accumulated text — should send typing
+    it('does not re-show "Thinking…" on messages_updated (would clobber the streaming draft)', async () => {
+      // Even mid-stream, messages_updated must not re-send the thinking draft over
+      // already-streamed content — the thinking indicator is a pre-stream-only state.
       managed.streamingState.accumulatedText = 'some text'
       await processSSEEvent(managed, { type: 'messages_updated' })
-      expect(getMock(managed).typingIndicators.length).toBe(1)
+      expect(getMock(managed).typingIndicators.length).toBe(0)
     })
 
     it('does not send typing on tool_use_ready', async () => {

@@ -1,9 +1,10 @@
-import { apiFetch } from '@renderer/lib/api'
-import { useState } from 'react'
 import { Globe } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
+import { RequestError } from './request-error'
+import { DeclineButton } from './decline-button'
+import { useBrowserInputActions } from '@renderer/hooks/use-browser-input-actions'
 import { cn } from '@shared/lib/utils/cn'
 
 interface BrowserInputRequestItemProps {
@@ -16,9 +17,6 @@ interface BrowserInputRequestItemProps {
   onComplete: () => void
 }
 
-type SubmittingAction = 'completing' | 'declining'
-type RequestStatus = 'pending' | 'submitting' | 'completed' | 'declined'
-
 export function BrowserInputRequestItem({
   toolUseId,
   message,
@@ -28,56 +26,21 @@ export function BrowserInputRequestItem({
   readOnly,
   onComplete,
 }: BrowserInputRequestItemProps) {
-  const [status, setStatus] = useState<RequestStatus>('pending')
-  const [submittingAction, setSubmittingAction] = useState<SubmittingAction | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const { status, submittingAction, error, complete, decline } = useBrowserInputActions({
+    agentSlug,
+    sessionId,
+    onResolved: onComplete,
+  })
 
   // `requirements` is typed string[] but originates from model tool input, so a
   // malformed value (e.g. a bare string) can reach here. Normalize to an array
   // before any `.length`/`.map` so a bad payload can't throw.
   const safeRequirements = Array.isArray(requirements) ? requirements : []
 
-  const submitBrowserInput = async (body: object, successStatus: RequestStatus, action: SubmittingAction) => {
-    setStatus('submitting')
-    setSubmittingAction(action)
-    setError(null)
-
-    try {
-      const response = await apiFetch(
-        `/api/agents/${agentSlug}/sessions/${sessionId}/complete-browser-input`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }
-      )
-
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Request failed')
-      }
-
-      setStatus(successStatus)
-      onComplete()
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Request failed')
-      setStatus('pending')
-      setSubmittingAction(null)
-    }
-  }
-
-  const handleComplete = () => submitBrowserInput({ toolUseId }, 'completed', 'completing')
-
-  const handleChatWithAgent = () =>
-    submitBrowserInput(
-      { toolUseId, decline: true, declineReason: 'User wants to chat with the agent' },
-      'declined',
-      'declining'
-    )
-
   const isCompleted = status === 'completed' || status === 'declined'
 
   return (
+    <>
     <RequestItemShell
       title={message}
       subtitle="Click 'Done' when you have completed the suggested steps."
@@ -97,7 +60,7 @@ export function BrowserInputRequestItem({
                 />
               ),
               label: <span className="text-sm">Browser Input</span>,
-              statusLabel: status === 'completed' ? 'Completed' : 'Cancelled',
+              statusLabel: status === 'completed' ? 'Completed' : 'Declined',
               isSuccess: status === 'completed',
             }
           : null
@@ -123,20 +86,18 @@ export function BrowserInputRequestItem({
       )}
 
       <RequestItemActions>
-        <Button
-          onClick={handleChatWithAgent}
-          loading={submittingAction === 'declining'}
+        <DeclineButton
+          onDecline={(reason) => decline(toolUseId, reason)}
           disabled={status === 'submitting'}
+          label="Decline"
+          showIcon={false}
           size="xs"
-          variant="outline"
-          className="h-8 min-w-24 border-border text-foreground hover:bg-muted"
-          data-testid="browser-input-chat-btn"
-        >
-          Dismiss
-        </Button>
+          className="border-border text-foreground hover:bg-muted"
+          data-testid="browser-input-decline-btn"
+        />
 
         <Button
-          onClick={handleComplete}
+          onClick={() => complete(toolUseId)}
           loading={submittingAction === 'completing'}
           disabled={status === 'submitting'}
           size="xs"
@@ -147,5 +108,7 @@ export function BrowserInputRequestItem({
         </Button>
       </RequestItemActions>
     </RequestItemShell>
+    {isCompleted && error && <RequestError message={error} />}
+    </>
   )
 }

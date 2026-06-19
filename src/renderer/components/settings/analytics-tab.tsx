@@ -91,7 +91,7 @@ export function AnalyticsTab() {
         <div className="space-y-0.5">
           <Label htmlFor="share-analytics">Share Anonymous Analytics</Label>
           <p className="text-xs text-muted-foreground">
-            Help improve Superagent by sharing anonymous usage data
+            Help improve Gamut by sharing anonymous usage data
           </p>
         </div>
         <Switch

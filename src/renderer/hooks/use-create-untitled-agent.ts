@@ -1,14 +1,18 @@
 import { useCallback } from 'react'
 import { toast } from 'sonner'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
+import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
 export const UNTITLED_AGENT_NAME = 'Untitled'
 
 export function useCreateUntitledAgent() {
   const createAgent = useCreateAgent()
-  const { setAgent, setJustCreatedSlug } = useSelection()
+  // Morph tag lives in NavTransientContext; set it BEFORE navigate so
+  // AgentHome's first-mount initializer reads it and plays the intro once.
+  const { setJustCreatedSlug } = useNavTransient()
+  const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
 
   const createUntitledAgent = useCallback(async () => {
@@ -17,7 +21,7 @@ export function useCreateUntitledAgent() {
       track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
 
       setJustCreatedSlug(agent.slug)
-      setAgent(agent.slug)
+      void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
 
       return agent
     } catch (error) {
@@ -27,7 +31,7 @@ export function useCreateUntitledAgent() {
       })
       return null
     }
-  }, [createAgent, setAgent, setJustCreatedSlug, track])
+  }, [createAgent, setJustCreatedSlug, navigate, track])
 
   return {
     createUntitledAgent,

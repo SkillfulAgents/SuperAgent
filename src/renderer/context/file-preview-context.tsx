@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
-import { useSelection } from './selection-context'
+import { useRouteLocation } from '@renderer/router/use-route-location'
 
 export interface FileTab {
   filePath: string
@@ -9,6 +9,18 @@ export interface FileTab {
   version: number
 }
 
+export interface CellRef {
+  /** 1-based data row index (header row excluded). */
+  row: number
+  /** 0-based column index, used to place the comment pin in the grid. */
+  col: number
+  /** Column header name (or "Column N" when the header is blank). */
+  column: string
+  /** Current cell value, included as context for the agent. */
+  value?: string
+}
+
+// TODO should create specific types for CSV / Image (x,y) and text, and FileComment can be a union of those with a `type` field. Deeper validation - if we have x we need y etc...
 export interface FileComment {
   id: string
   filePath: string
@@ -16,6 +28,7 @@ export interface FileComment {
   selectedText?: string
   x?: number
   y?: number
+  cell?: CellRef
 }
 
 interface FilePreviewContextType {
@@ -43,9 +56,9 @@ function getDisplayName(filePath: string): string {
 let commentIdCounter = 0
 
 export function FilePreviewProvider({ children, sessionId: sessionIdProp }: { children: ReactNode; sessionId?: string | null }) {
-  const { view } = useSelection()
+  const { view } = useRouteLocation()
   // Views that own a session (e.g. chat integrations) can pass it explicitly so
-  // state clears when switching sessions; otherwise derive from the active selection.
+  // state clears when switching sessions; otherwise derive from the active route.
   const sessionId = sessionIdProp !== undefined ? sessionIdProp : (view.kind === 'session' ? view.id : null)
 
   const [openFiles, setOpenFiles] = useState<FileTab[]>([])

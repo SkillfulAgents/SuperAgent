@@ -110,7 +110,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
     try {
         // Ensure client exists (creates if needed) and get cached status
-        containerManager.getClient(agentSlug)
+        const client = containerManager.getClient(agentSlug)
         const info = containerManager.getCachedInfo(agentSlug)
 
         if (info.status !== 'running' || !info.port) {
@@ -118,8 +118,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
           return
         }
 
-        // Connect to the container's browser stream WebSocket
-        const wsUrl = `ws://localhost:${info.port}/browser/stream`
+        const wsUrl = `${client.getWebSocketBaseUrl(info.port)}/browser/stream`
         console.log(`[BrowserProxy] Connecting upstream to: ${wsUrl}`)
         const upstream = new WebSocket(wsUrl)
 

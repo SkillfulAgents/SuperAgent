@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { ArrowUpRight, ChevronRight, Copy } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { apiFetch } from '@renderer/lib/api'
 import { isElectron } from '@renderer/lib/env'
-import { useSelection } from '@renderer/context/selection-context'
 
 interface HomeExtrasProps {
   agentSlug: string
@@ -13,7 +13,7 @@ interface HomeExtrasProps {
 
 export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasProps) {
   const [error, setError] = useState<string | null>(null)
-  const { setView } = useSelection()
+  const navigate = useNavigate()
 
   const handleOpenDirectory = async () => {
     setError(null)
@@ -50,7 +50,13 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
         <ExtrasButton label={directoryLabel} onClick={handleOpenDirectory} hoverIcon={directoryHoverIcon} />
         <ExtrasButton label="Secrets" onClick={() => onOpenSettings?.('secrets')} />
-        <ExtrasButton label="API Logs" onClick={() => setView({ kind: 'apiLogs' })} testId="home-api-logs-open-page" />
+        <ExtrasButton
+          label="API Logs"
+          onClick={() => {
+            void navigate({ to: '/agents/$slug/api-logs', params: { slug: agentSlug } })
+          }}
+          testId="home-api-logs-open-page"
+        />
       </div>
       {error && (
         <p className="px-4 pt-2 text-xs text-destructive" role="alert">{error}</p>

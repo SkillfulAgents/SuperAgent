@@ -37,9 +37,14 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react()],
+    // Relative base so packaged file:// + hash history resolve ./assets/* and the
+    // pinned index.html. Explicit so a future electron-vite default change fails
+    // loudly instead of silently shipping absolute asset URLs.
+    base: './',
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
       __AUTH_MODE__: JSON.stringify(false),
+      __WEB__: JSON.stringify(false), // all Electron (dev http + prod file://) → hash history
       __AMPLITUDE_API_KEY__: JSON.stringify(process.env.AMPLITUDE_API_KEY || analyticsConfig.defaultAmplitudeKey),
       __RENDER_TRACKING__: JSON.stringify(process.env.RENDER_TRACKING === 'true'),
       'globalThis.__PLATFORM_BASE_URL__': JSON.stringify(process.env.PLATFORM_BASE_URL || ''),

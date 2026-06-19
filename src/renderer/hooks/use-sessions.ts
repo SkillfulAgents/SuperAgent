@@ -1,4 +1,4 @@
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, apiJson } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiSession } from '@shared/lib/types/api'
@@ -23,12 +23,15 @@ export function useSessions(agentSlug: string | null, options?: { staleTime?: nu
 export function useSession(id: string | null, agentSlug: string | null = null) {
   return useQuery<ApiSession>({
     queryKey: ['session', id, agentSlug],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/agents/${agentSlug}/sessions/${id}`)
-      if (!res.ok) throw new Error('Failed to fetch session')
-      return res.json()
-    },
+    // `apiJson` throws `HttpError` carrying the status, so the session leaf can
+    // distinguish a 404 (missing session) from a 5xx/network error.
+    queryFn: () => apiJson<ApiSession>(`/api/agents/${agentSlug}/sessions/${id}`),
     enabled: !!id && !!agentSlug,
+    // A 404 here means the session is genuinely missing: the backend's
+    // getSession is metadata-authoritative, so a just-created session — which is
+    // registered in metadata synchronously as part of the create response — is
+    // readable immediately, before its JSONL transcript is even written. The
+    // default retry is kept only as ordinary transient-error resilience.
   })
 }
 

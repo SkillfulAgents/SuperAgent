@@ -49,6 +49,19 @@ vi.mock('@renderer/context/connectivity-context', () => ({
   ConnectivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+// Mock useRuntimeStatus — default ready, override per test
+const mockRuntimeStatus = {
+  data: {
+    runtimeReadiness: { status: 'READY' as string, message: 'Ready' },
+    hasRunningAgents: true,
+    apiKeyConfigured: true,
+  },
+  isPending: false,
+}
+vi.mock('@renderer/hooks/use-runtime-status', () => ({
+  useRuntimeStatus: () => mockRuntimeStatus,
+}))
+
 const mockSettings = {
   data: {
     llmProvider: 'anthropic',
@@ -79,6 +92,8 @@ describe('MessageInput', () => {
     mockStreamState.slashCommands = []
     mockSendMessage.isPending = false
     mockIsOnline = true
+    mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
+    mockRuntimeStatus.isPending = false
   })
 
   it('renders textarea with placeholder', () => {
@@ -440,6 +455,60 @@ describe('MessageInput', () => {
         <MessageInput sessionId="s-1" agentSlug="agent-1" />
       )
       expect(screen.getByTitle('Add files')).toBeDisabled()
+    })
+  })
+
+  // ---- Runtime not ready (pending) ----
+  describe('runtime pending state', () => {
+    it('disables the textarea while the runtime image is pulling', () => {
+      mockRuntimeStatus.data.runtimeReadiness.status = 'PULLING_IMAGE'
+      renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" />
+      )
+      expect(screen.getByTestId('message-input')).toBeDisabled()
+    })
+
+    it('disables the textarea while the runtime is being checked', () => {
+      mockRuntimeStatus.data.runtimeReadiness.status = 'CHECKING'
+      renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" />
+      )
+      expect(screen.getByTestId('message-input')).toBeDisabled()
+    })
+
+    it('keeps the send button disabled even after typing when runtime is pending', async () => {
+      mockRuntimeStatus.data.runtimeReadiness.status = 'PULLING_IMAGE'
+      const user = userEvent.setup()
+      renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" />
+      )
+      const input = screen.getByTestId('message-input')
+      await user.type(input, 'Hello')
+      expect(screen.getByTestId('send-button')).toBeDisabled()
+    })
+
+    it('does not send on Enter when runtime is pending', async () => {
+      mockRuntimeStatus.data.runtimeReadiness.status = 'PULLING_IMAGE'
+      const user = userEvent.setup()
+      const onMessageSent = vi.fn()
+      renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" onMessageSent={onMessageSent} />
+      )
+      const input = screen.getByTestId('message-input')
+      await user.type(input, 'Hello{Enter}')
+      expect(mockSendMessage.mutateAsync).not.toHaveBeenCalled()
+      expect(onMessageSent).not.toHaveBeenCalled()
+    })
+
+    it('enables the send button once the runtime is ready', async () => {
+      mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
+      const user = userEvent.setup()
+      renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" />
+      )
+      const input = screen.getByTestId('message-input')
+      await user.type(input, 'Hello')
+      expect(screen.getByTestId('send-button')).toBeEnabled()
     })
   })
 

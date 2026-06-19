@@ -70,7 +70,7 @@ export function splitChatMessage(text: string, maxLength: number): string[] {
  * Connectors wrap this in their own formatting (Telegram HTML, Slack mrkdwn).
  */
 export function describeUnsupportedRequest(event: UserRequestEvent): string {
-  const tail = ' Open Superagent on your desktop to continue.'
+  const tail = ' Open Gamut on your desktop to continue.'
   switch (event.type) {
     case 'connected_account_request':
       return `The agent wants to connect your ${event.toolkit} account, which isn't supported in chat.${tail}`

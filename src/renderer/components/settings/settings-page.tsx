@@ -14,6 +14,8 @@ import {
   SidebarProvider,
 } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
+import { AppLink } from '@renderer/components/ui/app-link'
+import { type LinkProps } from '@tanstack/react-router'
 import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/settings-page'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { isElectron, getPlatform } from '@renderer/lib/env'
@@ -82,6 +84,19 @@ interface SettingsPageProps {
   groups: SettingsPageSectionGroup[]
   initialSection?: string
   onClose: () => void
+  /**
+   * When provided, selecting a section calls this instead of relying solely on
+   * internal state — the global settings page uses it to drive the URL
+   * (`/settings/$tab`) so the active tab is shareable + back/forward-able.
+   */
+  onSectionChange?: (id: string) => void
+  /**
+   * When provided, nav items render as real links (AppLink → `<a href>`) to this
+   * target instead of buttons, so the URL-driven global settings tabs support
+   * cmd/middle-click "open in new tab". The agent-scoped settings DIALOG omits it
+   * (no URL) and keeps buttons. Takes precedence over `onSectionChange`.
+   */
+  sectionLinkProps?: (id: string) => LinkProps
   navTestIdPrefix?: string
   'data-testid'?: string
 }
@@ -90,6 +105,8 @@ export function SettingsPage({
   groups,
   initialSection,
   onClose,
+  onSectionChange,
+  sectionLinkProps,
   navTestIdPrefix = 'settings',
   'data-testid': dataTestId,
 }: SettingsPageProps) {
@@ -99,6 +116,8 @@ export function SettingsPage({
         groups={groups}
         initialSection={initialSection}
         onClose={onClose}
+        onSectionChange={onSectionChange}
+        sectionLinkProps={sectionLinkProps}
         navTestIdPrefix={navTestIdPrefix}
       />
     </SidebarProvider>
@@ -109,6 +128,8 @@ function SettingsPageContent({
   groups,
   initialSection,
   onClose,
+  onSectionChange,
+  sectionLinkProps,
   navTestIdPrefix,
 }: Omit<SettingsPageProps, 'data-testid'>) {
   const isMobile = useIsMobile()
@@ -135,6 +156,9 @@ function SettingsPageContent({
   const handleSectionClick = (id: string) => {
     setActive(id)
     if (isMobile) setMobileView('content')
+    // Drive the URL too when wired; the effect above re-syncs `active`
+    // from the resulting `initialSection`, so the two never diverge.
+    onSectionChange?.(id)
   }
 
   const activeSection = allSections.find((s) => s.id === active)
@@ -168,18 +192,36 @@ function SettingsPageContent({
                     {group.label}
                   </div>
                 )}
-                {group.sections.map((s) => (
-                  <button
-                    key={s.id}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-sm text-left hover:bg-accent active:bg-accent"
-                    onClick={() => handleSectionClick(s.id)}
-                    data-testid={`${navTestIdPrefix}-nav-${s.id}`}
-                  >
-                    {s.icon}
-                    <span className="flex-1">{s.label}</span>
-                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                  </button>
-                ))}
+                {group.sections.map((s) => {
+                  const navClassName =
+                    'flex w-full items-center gap-3 px-4 py-3 text-sm text-left hover:bg-accent active:bg-accent'
+                  const navChildren = (
+                    <>
+                      {s.icon}
+                      <span className="flex-1">{s.label}</span>
+                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    </>
+                  )
+                  return sectionLinkProps ? (
+                    <AppLink
+                      key={s.id}
+                      {...sectionLinkProps(s.id)}
+                      className={navClassName}
+                      data-testid={`${navTestIdPrefix}-nav-${s.id}`}
+                    >
+                      {navChildren}
+                    </AppLink>
+                  ) : (
+                    <button
+                      key={s.id}
+                      className={navClassName}
+                      onClick={() => handleSectionClick(s.id)}
+                      data-testid={`${navTestIdPrefix}-nav-${s.id}`}
+                    >
+                      {navChildren}
+                    </button>
+                  )
+                })}
               </div>
             ))}
           </div>
@@ -234,14 +276,27 @@ function SettingsPageContent({
                 <SidebarMenu>
                   {group.sections.map((s) => (
                     <SidebarMenuItem key={s.id}>
-                      <SidebarMenuButton
-                        isActive={active === s.id}
-                        onClick={() => handleSectionClick(s.id)}
-                        data-testid={`${navTestIdPrefix}-nav-${s.id}`}
-                      >
-                        {s.icon}
-                        <span>{s.label}</span>
-                      </SidebarMenuButton>
+                      {sectionLinkProps ? (
+                        <SidebarMenuButton
+                          asChild
+                          isActive={active === s.id}
+                          data-testid={`${navTestIdPrefix}-nav-${s.id}`}
+                        >
+                          <AppLink {...sectionLinkProps(s.id)}>
+                            {s.icon}
+                            <span>{s.label}</span>
+                          </AppLink>
+                        </SidebarMenuButton>
+                      ) : (
+                        <SidebarMenuButton
+                          isActive={active === s.id}
+                          onClick={() => handleSectionClick(s.id)}
+                          data-testid={`${navTestIdPrefix}-nav-${s.id}`}
+                        >
+                          {s.icon}
+                          <span>{s.label}</span>
+                        </SidebarMenuButton>
+                      )}
                     </SidebarMenuItem>
                   ))}
                 </SidebarMenu>

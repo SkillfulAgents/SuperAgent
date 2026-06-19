@@ -94,7 +94,7 @@ Use this to start browsing a website. The browser preserves cookies/sessions via
     // the container and cannot reach servers running inside it (e.g. dashboards).
     const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(args.url)
     const localhostWarning = isLocalhost
-      ? '\n\nWARNING: This is a localhost URL. The browser runs outside the container and cannot access servers running inside it. If you are trying to view a dashboard, stop — the user can already see dashboards through the Superagent UI. Use get_dashboard_logs to debug any issues instead.'
+      ? '\n\nWARNING: This is a localhost URL. The browser runs outside the container and cannot access servers running inside it. If you are trying to view a dashboard, stop — the user can already see dashboards through the Gamut UI. Use get_dashboard_logs to debug any issues instead.'
       : ''
 
     const result = await browserFetch('open', { url: args.url })

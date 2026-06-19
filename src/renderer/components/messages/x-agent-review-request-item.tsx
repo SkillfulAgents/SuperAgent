@@ -4,7 +4,7 @@ import { ShieldCheck, ShieldX, ChevronDown, MessageSquare } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 
@@ -55,7 +55,7 @@ export function XAgentReviewRequestItem({
   const [allowMenuOpen, setAllowMenuOpen] = useState(false)
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isMountedRef = useRef(true)
-  const { setAgent } = useSelection()
+  const navigate = useNavigate()
 
   useEffect(() => {
     isMountedRef.current = true
@@ -156,7 +156,9 @@ export function XAgentReviewRequestItem({
   const targetButton = targetIsActionable ? (
     <button
       type="button"
-      onClick={() => setAgent(xAgent.targetAgentSlug)}
+      onClick={() => {
+        void navigate({ to: '/agents/$slug', params: { slug: xAgent.targetAgentSlug } })
+      }}
       className="font-medium text-foreground hover:underline"
     >
       {xAgent.targetAgentName}

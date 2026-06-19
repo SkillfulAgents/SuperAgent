@@ -443,5 +443,27 @@ describe('Chat integration E2E', () => {
 
       expect(mockConnector.typingIndicators).toContain('chat-1')
     })
+
+    it('stops the working indicator when the integration is torn down', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      // Establish a live managed session for chat-1.
+      mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+      await waitForCondition(
+        () => mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0,
+        3000,
+      )
+
+      // Ignore stopWorking from the normal stream transition; we only want to
+      // prove the teardown path stops the indicator. Guards the round-1 leak fix
+      // where clearing a session dropped it without stopping the keep-alive timer.
+      mockConnector.stoppedWorking = []
+
+      await chatIntegrationManager.removeIntegration(integrationId)
+
+      expect(mockConnector.stoppedWorking).toContain('chat-1')
+    })
   })
 })

@@ -7,6 +7,52 @@ let apiPortRef: number = 0
 let updateInterval: NodeJS.Timeout | null = null
 
 /**
+ * Menu commands that fired while the window was closed (app still in the
+ * tray/dock on macOS/Windows) are queued here and pulled by the renderer on
+ * mount via the `flush-pending-menu-commands` IPC, mirroring the notification
+ * queue in index.ts. Without this, recreating the window from a menu click
+ * (File > Settings, Agents > <name>, New Agent) races the renderer's useEffect
+ * listeners: `webContents.send` fires before they attach, the command is lost,
+ * and the window opens but never navigates (SUP-264).
+ */
+export type PendingMenuCommand =
+  | { channel: 'navigate-to-agent'; agentSlug: string }
+  | { channel: 'open-settings' }
+  | { channel: 'open-create-agent' }
+
+const pendingMenuCommands: PendingMenuCommand[] = []
+
+/** Translate a raw `sendToRenderer` call into a replayable command, if any. */
+function buildPendingCommand(channel: string, args: unknown[]): PendingMenuCommand | null {
+  switch (channel) {
+    case 'navigate-to-agent':
+      return { channel: 'navigate-to-agent', agentSlug: String(args[0] ?? '') }
+    case 'open-settings':
+      return { channel: 'open-settings' }
+    case 'open-create-agent':
+      return { channel: 'open-create-agent' }
+    default:
+      return null
+  }
+}
+
+function queueMenuCommand(command: PendingMenuCommand): void {
+  // Keep only the latest command per channel: replaying duplicates would open
+  // several Settings dialogs or create several untitled agents, and only the
+  // most recent navigate-to-agent target matters (last menu click wins). This
+  // also bounds the queue to one entry per channel, so it can't grow unbounded
+  // while the window stays closed.
+  const existingIdx = pendingMenuCommands.findIndex(c => c.channel === command.channel)
+  if (existingIdx !== -1) pendingMenuCommands.splice(existingIdx, 1)
+  pendingMenuCommands.push(command)
+}
+
+/** Drain and return queued menu commands. The renderer pulls these on mount. */
+export function flushPendingMenuCommands(): PendingMenuCommand[] {
+  return pendingMenuCommands.splice(0, pendingMenuCommands.length)
+}
+
+/**
  * Get the directory containing status icons.
  * In dev mode, icons are in the project's build/ directory.
  * In production, they are bundled as extraResources under tray-icons/.
@@ -30,13 +76,29 @@ function createStatusIcon(status: ActivityStatus): Electron.NativeImage {
  * Send an IPC event to the renderer, ensuring the window exists
  */
 function sendToRenderer(channel: string, ...args: unknown[]): void {
+  const command = buildPendingCommand(channel, args)
+
   if (!mainWindowRef || mainWindowRef.isDestroyed()) {
+    // Window closed (app still in tray/dock). Queue the command so the renderer
+    // can replay it once it mounts, then recreate the window. Sending now would
+    // be lost — the window doesn't exist yet (SUP-264).
+    if (command) queueMenuCommand(command)
     app.emit('activate')
-    // Can't send yet - window doesn't exist
     return
   }
+
   mainWindowRef.show()
   mainWindowRef.focus()
+
+  // Window exists but its renderer is still loading (e.g. a previous menu click
+  // just recreated it). The IPC listeners attach on React mount, which hasn't
+  // happened yet, so a live send would race them and be lost — queue instead
+  // and let the mount-time flush deliver it.
+  if (command && mainWindowRef.webContents.isLoading()) {
+    queueMenuCommand(command)
+    return
+  }
+
   mainWindowRef.webContents.send(channel, ...args)
 }
 
@@ -111,9 +173,9 @@ async function buildAppMenu(): Promise<void> {
   const template: Electron.MenuItemConstructorOptions[] = [
     // App menu (macOS only — on macOS, the first menu becomes the "app" menu)
     ...(isMac ? [{
-      label: 'SuperAgent',
+      label: 'Gamut',
       submenu: [
-        { role: 'about' as const, label: 'About SuperAgent' },
+        { role: 'about' as const, label: 'About Gamut' },
         { type: 'separator' as const },
         {
           label: 'Settings...',
@@ -121,11 +183,14 @@ async function buildAppMenu(): Promise<void> {
           click: () => sendToRenderer('open-settings'),
         },
         { type: 'separator' as const },
-        { role: 'hide' as const },
+        // Explicit labels: `role` items interpolate app.name (kept 'SuperAgent' for
+        // data-dir / cookie-keychain continuity), which would otherwise leak the legacy
+        // brand as "Hide SuperAgent" / "Quit SuperAgent" in the macOS app menu.
+        { role: 'hide' as const, label: 'Hide Gamut' },
         { role: 'hideOthers' as const },
         { role: 'unhide' as const },
         { type: 'separator' as const },
-        { role: 'quit' as const },
+        { role: 'quit' as const, label: 'Quit Gamut' },
       ],
     }] : []),
     // File menu

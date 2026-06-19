@@ -60,5 +60,5 @@ tsconfig.tsbuildinfo
 scripts/.scope-input.json
 scripts/.scope-labels.json
 
-# Superpowers AI plan/spec artifacts (brainstorm/plan output, not shipped docs)
+# AI-generated planning artifacts (superpowers skill output) — keep local, don't track
 docs/superpowers/

@@ -15,6 +15,9 @@ const user1 = { name: 'Alice Admin', email: 'alice@test.com', password: 'passwor
 const user2 = { name: 'Bob Builder', email: 'bob@test.com', password: 'password123' }
 const user3 = { name: 'Carol Viewer', email: 'carol@test.com', password: 'password123' }
 const agentName = 'Auth Test Agent'
+// Captured once user2 is viewing the agent — used by the cross-tenant deep-link
+// test to prove the loader gates access by URL, not just by sidebar visibility.
+let agentSlug = ''
 
 test.describe('Auth Flow', () => {
   // ── Signup & Auth Gate ──────────────────────────────────────────────
@@ -134,6 +137,11 @@ test.describe('Auth Flow', () => {
 
     // Wait for assistant response
     await sessionPage.waitForResponse(15000)
+
+    // Capture the agent slug from the URL (/agents/$slug/sessions/$id) for
+    // the cross-tenant deep-link test below.
+    agentSlug = user2Page.url().match(/\/agents\/([^/?#]+)/)?.[1] ?? ''
+    expect(agentSlug).toBeTruthy()
   })
 
   test('user1 does NOT see user2 agent', async ({ user1Page }) => {
@@ -146,6 +154,7 @@ test.describe('Auth Flow', () => {
     // User2's agent should NOT be visible to user1
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
   })
+
 
   // ── Invite & ACL ───────────────────────────────────────────────────
 
@@ -163,6 +172,18 @@ test.describe('Auth Flow', () => {
   test('user3 does NOT see agent before invite', async ({ user3Page }) => {
     const agentPage = new AgentPage(user3Page)
     await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
+  })
+
+  test('user3 deep-linking the agent before invite gets the ambiguous not-found', async ({ user3Page }) => {
+    // ACL is enforced by the agent LOADER, not just sidebar visibility. user3 is
+    // a regular (non-admin) non-member here, so the server returns 403, which
+    // collapses to the SAME ambiguous not-found screen as a 404 (anti-enumeration).
+    // (An ADMIN would hit the server's known isAdmin bypass and load it —
+    // a server-side bug the client deliberately doesn't compensate for.)
+    expect(agentSlug).toBeTruthy()
+    await user3Page.goto(`/agents/${agentSlug}`)
+    await expect(user3Page.locator('[data-testid="agent-not-found"]')).toBeVisible()
+    await expect(user3Page.locator('[data-testid="agent-breadcrumb"]')).not.toBeVisible()
   })
 
   test('user2 invites user3 with user role', async ({ user2Page }) => {
@@ -416,5 +437,52 @@ test.describe('Auth Flow', () => {
 
     // Verify user name
     await userBar.expectUserName(user2.name)
+  })
+
+  // ── Deep-link Through Login (redirect stash) ───────────
+
+  test('cold deep-link to a protected agent while signed out returns there after login', async ({ user2Page }) => {
+    // A signed-out user who cold-deep-links a protected
+    // agent URL is sent to the auth gate, and after logging in lands back on that
+    // EXACT url — not bounced to home. The redirect target is carried in
+    // sessionStorage('superagent.redirect') by AuthGate's cold-load stash and
+    // restored by the email-login `consumeRedirectStash()` → `router.history.push`.
+    // On a cold deep-link the router never navigates (AuthGate renders <AuthPage>
+    // in place of children), so the address bar STAYS on the deep link.
+    expect(agentSlug).toBeTruthy()
+
+    const authPage = new AuthPage(user2Page)
+    const appPage = new AppPage(user2Page)
+    const userBar = new UserBarPage(user2Page)
+
+    // Start signed out (the previous test left user2 signed in).
+    await userBar.signOut()
+    await authPage.expectVisible()
+
+    // Cold deep-link the protected agent URL while signed out.
+    await user2Page.goto(`/agents/${agentSlug}`)
+
+    // Auth gate blocks the app; the address bar STAYS on the deep link (the router
+    // never mounted, so it was not bounced to `/`).
+    await authPage.expectVisible()
+    await expect(user2Page).toHaveURL(new RegExp(`/agents/${agentSlug}$`))
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).not.toBeVisible()
+
+    // The deep-link target is stashed for post-login restore (the actual redirect
+    // carrier — a sessionStorage entry, not a URL query param).
+    const stashed = await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))
+    expect(stashed).toBe(`/agents/${agentSlug}`)
+
+    // Sign in in-place; the email-login restore pushes the stashed target.
+    await authPage.signIn(user2.email, user2.password)
+
+    // Lands back on the EXACT agent URL (NOT home), with the agent view mounted.
+    await appPage.waitForAppLoaded()
+    await expect(user2Page).toHaveURL(new RegExp(`/agents/${agentSlug}$`))
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+
+    // Stash consumed (cleared) so it can't leak into a later navigation.
+    const afterLogin = await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))
+    expect(afterLogin).toBeNull()
   })
 })

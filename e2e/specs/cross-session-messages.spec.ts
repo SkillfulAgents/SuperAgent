@@ -18,7 +18,13 @@ test.describe('Cross-Session Message Isolation', () => {
   })
 
   function userMessage(text: string) {
-    return sessionPage.getUserMessages().filter({ hasText: text })
+    // `.first()` is deliberate: during reconciliation the optimistic
+    // pending-user-message ghost and the persisted message-user briefly coexist
+    // (both carry data-testid="message-user"), so a bare toBeVisible() on the
+    // unscoped match trips Playwright strict mode under CI load. These checks only
+    // assert the message is PRESENT; the isolation guarantee is asserted by the
+    // getMessageList().not.toContainText(...) lines below.
+    return sessionPage.getUserMessages().filter({ hasText: text }).first()
   }
 
   test('messages from one agent do not leak into another agent', async ({ page }) => {

@@ -4,11 +4,11 @@ import { renderHook, act } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { FilePreviewProvider, useFilePreview } from './file-preview-context'
 
-// Mock selection context — FilePreviewProvider watches view.kind/view.id for session changes
+// Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
+// watches view.kind/view.id for session changes.
 let mockView = { kind: 'session' as const, id: 'session-1' }
-vi.mock('./selection-context', () => ({
-  useSelection: () => ({ view: mockView, selectedAgentSlug: 'agent-1', setView: vi.fn() }),
-  SelectionProvider: ({ children }: { children: ReactNode }) => children,
+vi.mock('@renderer/router/use-route-location', () => ({
+  useRouteLocation: () => ({ selectedAgentSlug: 'agent-1', view: mockView }),
 }))
 
 function wrapper({ children }: { children: ReactNode }) {

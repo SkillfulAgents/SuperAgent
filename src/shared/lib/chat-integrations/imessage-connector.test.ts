@@ -850,18 +850,18 @@ describe('IMessageConnector', () => {
 
       const text = (parseSent(ws)[0].data as any).parts[0].value as string
       expect(text).toContain("isn't supported in chat")
-      expect(text).toContain('Open Superagent on your desktop')
+      expect(text).toContain('Open Gamut on your desktop')
     })
   })
 
   // ── 8. Typing indicator ───────────────────────────────────────────
 
-  describe('showTypingIndicator', () => {
+  describe('startWorking', () => {
     it('sends start_typing command', async () => {
       const connector = createConnector()
       const ws = wireUp(connector)
 
-      await connector.showTypingIndicator('chat-1')
+      await connector.startWorking('chat-1')
 
       const messages = parseSent(ws)
       expect(messages).toHaveLength(1)

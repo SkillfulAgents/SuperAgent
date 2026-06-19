@@ -1,8 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
 import { Loader2, AlertCircle } from 'lucide-react'
 import { useRef } from 'react'
 import { useTextSelection } from '../comments/use-text-selection'
 import { CommentOverlay } from '../comments/comment-overlay'
+import { useFileContent } from './use-file-content'
 
 interface TextRendererProps {
   url: string
@@ -13,22 +13,11 @@ export function TextRenderer({ url, filePath }: TextRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const { selection, clearSelection } = useTextSelection(containerRef)
 
-  const { data: content, isLoading, error } = useQuery({
-    queryKey: ['file-content', url],
-    queryFn: async () => {
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`Failed to load file: ${res.status}`)
-      const text = await res.text()
-      if (text.length > 5_000_000) {
-        return text.slice(0, 5_000_000) + '\n\n... (file truncated at 5MB)'
-      }
-      return text
-    },
-    staleTime: 30_000,
-  })
+  const { data, isLoading, error } = useFileContent(url)
+  const sizeTruncated = data?.truncated ?? false
 
   const MAX_LINES = 5000
-  const allLines = (content || '').split('\n')
+  const allLines = (data?.text || '').split('\n')
   const truncated = allLines.length > MAX_LINES
   const lines = truncated ? allLines.slice(0, MAX_LINES) : allLines
 
@@ -61,6 +50,11 @@ export function TextRenderer({ url, filePath }: TextRendererProps) {
             </tbody>
           </table>
         </pre>
+        {sizeTruncated && (
+          <div className="px-4 py-3 border-t text-xs text-muted-foreground text-center">
+            File is larger than 5&nbsp;MB and was truncated. Download the file for the full content.
+          </div>
+        )}
         {truncated && (
           <div className="px-4 py-3 border-t text-xs text-muted-foreground text-center">
             Showing first {MAX_LINES.toLocaleString()} of {allLines.length.toLocaleString()} lines. Download the file for the full content.

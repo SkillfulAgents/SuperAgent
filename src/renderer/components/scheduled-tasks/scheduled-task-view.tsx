@@ -5,7 +5,7 @@
  * that will be executed and options to cancel, run now, or edit schedule.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Trash2, Play, Pencil, Loader2, Settings as SettingsIcon } from 'lucide-react'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { Button } from '@renderer/components/ui/button'
@@ -34,7 +34,7 @@ import {
   usePauseScheduledTask,
   useResumeScheduledTask,
 } from '@renderer/hooks/use-scheduled-tasks'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import {
@@ -76,9 +76,22 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const updatePrompt = useUpdateScheduledTaskPrompt()
   const updateName = useUpdateScheduledTaskName()
   const updateRuntimeOptions = useUpdateScheduledTaskRuntimeOptions()
-  const { handleScheduledTaskDeleted, setView } = useSelection()
+  const navigate = useNavigate()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
+
+  // Canonicalize: tasks are addressed globally by id, so /agents/<wrong>/tasks/<id>
+  // would render this task under the wrong agent's shell (mismatched chrome,
+  // back-links, and canUseAgent gating). Redirect to the task's true agent.
+  useEffect(() => {
+    if (task && task.agentSlug !== agentSlug) {
+      void navigate({
+        to: '/agents/$slug/tasks/$taskId',
+        params: { slug: task.agentSlug, taskId },
+        replace: true,
+      })
+    }
+  }, [task, agentSlug, taskId, navigate])
   const humanizedCron = useHumanizedCron(task?.isRecurring ? task.scheduleExpression : null)
   const isActive = task?.status === 'pending' || task?.status === 'paused'
   const isPaused = task?.status === 'paused'
@@ -124,7 +137,9 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const handleCancel = async () => {
     try {
       await cancelTask.mutateAsync({ id: taskId, agentSlug })
-      handleScheduledTaskDeleted(taskId)
+      // Deleting the task we're viewing → up-nav to the agent home (the task
+      // route no longer resolves).
+      void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
     } catch (err) {
       console.error('Failed to cancel scheduled task:', err)
     }
@@ -133,7 +148,8 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const handleRunNow = async () => {
     try {
       const result = await runNow.mutateAsync({ taskId, agentSlug })
-      setView({ kind: 'session', id: result.sessionId })
+      // Leave the task route for the new run's session route.
+      void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: result.sessionId } })
     } catch (err) {
       console.error('Failed to run scheduled task:', err)
     }
@@ -208,6 +224,16 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
     return (
       <div className="flex-1 flex items-center justify-center text-destructive">
         Failed to load scheduled task
+      </div>
+    )
+  }
+
+  // Mismatched shell → the effect above is redirecting; don't render B's task
+  // (or its wrong-slug nested fetches) under A's chrome in the meantime.
+  if (task.agentSlug !== agentSlug) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+        Loading scheduled task...
       </div>
     )
   }
@@ -321,7 +347,9 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
           />
         }
         back={{
-          onClick: () => setView({ kind: 'home' }),
+          onClick: () => {
+            void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+          },
           testId: 'scheduled-task-back-button',
         }}
         actions={headerActions}

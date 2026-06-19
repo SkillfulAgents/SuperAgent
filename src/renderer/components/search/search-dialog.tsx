@@ -4,7 +4,8 @@ import { Bot, ChevronRight, MessageSquare, Search } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { useAgents } from '@renderer/hooks/use-agents'
-import { useSelection } from '@renderer/context/selection-context'
+import { useSearch } from '@renderer/context/search-context'
+import { useNavigate } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import type { ApiSession } from '@shared/lib/types/api'
 import { cn } from '@shared/lib/utils/cn'
@@ -16,18 +17,19 @@ function formatLastRun(date: Date | string | null | undefined): string | null {
   return `Last run ${formatDistanceToNow(new Date(date), { addSuffix: true })}`
 }
 
-interface SearchDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}
-
-export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
+/**
+ * Rendered inside the router, so it can use the `useNavigate` hook directly.
+ * Open state comes from SearchContext (`open`/`closeSearch`), which lives above
+ * the router.
+ */
+export function SearchDialog() {
+  const { open, closeSearch } = useSearch()
+  const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const [expandedSlugs, setExpandedSlugs] = useState<Set<string>>(new Set())
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const { setAgent } = useSelection()
   const { data: agents } = useAgents()
 
   const sessionQueries = useQueries({
@@ -107,12 +109,17 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   }
 
   const handleSelect = (item: FlatItem) => {
+    // Close the dialog BEFORE navigating: the route transition otherwise strands
+    // the Radix overlay open (it intercepts pointer events on the page beneath).
+    closeSearch()
     if (item.kind === 'agent') {
-      setAgent(item.agent.slug)
+      void navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
     } else {
-      setAgent(item.agent.slug, { kind: 'session', id: item.session.id })
+      void navigate({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: item.agent.slug, sessionId: item.session.id },
+      })
     }
-    onOpenChange(false)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -151,7 +158,7 @@ export function SearchDialog({ open, onOpenChange }: SearchDialogProps) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) closeSearch() }}>
       <DialogContent
         className="max-w-xl p-0 gap-0 overflow-hidden [&>button]:top-3 [&>button]:right-3"
         onKeyDown={handleKeyDown}

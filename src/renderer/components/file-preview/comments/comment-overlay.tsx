@@ -30,6 +30,7 @@ export function CommentOverlay({ selection, filePath, onClose }: CommentOverlayP
       selectedText: selection.text || undefined,
       x: selection.x,
       y: selection.y,
+      cell: selection.cell,
     })
     setCommentText('')
     setIsEditing(false)
@@ -80,6 +81,14 @@ export function CommentOverlay({ selection, filePath, onClose }: CommentOverlayP
         {selection.x != null && selection.y != null && (
           <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5">
             Point at ({Math.round(selection.x)}%, {Math.round(selection.y)}%)
+          </div>
+        )}
+        {selection.cell && (
+          <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5">
+            <span className="font-medium">Cell {selection.cell.row}:{selection.cell.column}</span>
+            {selection.cell.value
+              ? <span className="italic"> &mdash; &ldquo;{selection.cell.value}&rdquo;</span>
+              : selection.cell.value === '' ? <span className="italic"> &mdash; empty cell</span> : null}
           </div>
         )}
         <textarea
