@@ -84,7 +84,9 @@ Key technical decisions and why they were made; user preferences and requirement
 ## Critical context
 Anything else essential to continue: open errors, gotchas, references.
 
-Be concise but complete. Do not invent. Do not include raw file contents or raw tool output.`
+Be concise but complete. Do not invent. Do not include raw file contents or raw tool output.
+
+Preserve exact identifiers verbatim where they matter for continuation: file paths, function and symbol names, commands, and error messages, especially from the most recent activity. Quote them exactly rather than paraphrasing. This is not the same as including raw file contents or tool output, which you must still omit.`
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n))
