@@ -110,33 +110,3 @@ export function useUpdateSessionName() {
   })
 }
 
-export function useBranchSession() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (data: {
-      agentSlug: string
-      fromSessionId: string
-      message: string
-      model?: string
-      effort?: EffortLevel
-    }) => {
-      const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/branch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fromSessionId: data.fromSessionId,
-          message: data.message,
-          ...(data.model ? { model: data.model } : {}),
-          ...(data.effort ? { effort: data.effort } : {}),
-        }),
-      })
-      if (!res.ok) throw new Error('Failed to branch session')
-      return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
-    },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['sessions', variables.agentSlug] })
-    },
-  })
-}
-

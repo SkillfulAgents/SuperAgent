@@ -12,12 +12,9 @@ export const STALE_CONTEXT_TOKENS = 100_000
  *  for the instruction + output). */
 export const SUMMARY_INPUT_BUDGET_TOKENS = 150_000
 
-/** Max output tokens for the summary generation. */
-export const SUMMARY_MAX_TOKENS = 700
-
 /** Leading sentence of the injected first message when a session is branched.
  *  Used to detect and split the carried-context block for display.
- *  Must stay in sync with buildBranchInitialMessage (the full first line has
+ *  Must stay in sync with buildSeed (the full first line has
  *  " The summary below covers the earlier context." appended). */
 export const BRANCH_PREAMBLE_SENTINEL = 'This conversation is continued from a previous session.'
 

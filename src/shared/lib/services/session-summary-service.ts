@@ -9,8 +9,7 @@
 import { getConfiguredLlmClient } from '../llm-provider/helpers'
 import { getEffectiveModels } from '../config/settings'
 import { withRetry } from '@shared/lib/utils/retry'
-import { summaryPayloadSchema } from '../stale-session/stale-session-schema'
-import { SUMMARY_INPUT_BUDGET_TOKENS, SUMMARY_MAX_TOKENS, BRANCH_PREAMBLE_SENTINEL, SUMMARY_OUTPUT_FLOOR_TOKENS, SUMMARY_OUTPUT_CAP_TOKENS, SUMMARY_OUTPUT_RATIO } from '../stale-session/stale-session-config'
+import { BRANCH_PREAMBLE_SENTINEL, SUMMARY_OUTPUT_FLOOR_TOKENS, SUMMARY_OUTPUT_CAP_TOKENS, SUMMARY_OUTPUT_RATIO } from '../stale-session/stale-session-config'
 import {
   pruneTranscript,
   budgetPrunedLines,
@@ -23,15 +22,6 @@ import type {
   JsonlSystemEntry,
   ContentBlock,
 } from '@shared/lib/types/agent'
-
-// ============================================================================
-// Types
-// ============================================================================
-
-export interface TranscriptMsg {
-  role: 'user' | 'assistant'
-  text: string
-}
 
 // ============================================================================
 // In-container path (load-bearing sentinel — Task 11 parses this exact format)
@@ -47,115 +37,6 @@ const IN_CONTAINER_JSONL = (sessionId: string) =>
 /** Cheap character-count heuristic; 4 chars ≈ 1 token. */
 function estTokens(s: string): number {
   return Math.ceil(s.length / 4)
-}
-
-// ============================================================================
-// Budgeted recency slice
-// ============================================================================
-
-/**
- * Walk messages newest-first up to SUMMARY_INPUT_BUDGET_TOKENS.
- * Returns entries in original chronological order.
- */
-export function budgetedRecentSlice(
-  msgs: TranscriptMsg[],
-  budget = SUMMARY_INPUT_BUDGET_TOKENS,
-): TranscriptMsg[] {
-  const kept: TranscriptMsg[] = []
-  let used = 0
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    const t = estTokens(msgs[i].text)
-    if (used + t > budget && kept.length > 0) break
-    kept.unshift(msgs[i])
-    used += t
-  }
-  return kept
-}
-
-// ============================================================================
-// Summarizer
-// ============================================================================
-
-const SUMMARY_INSTRUCTION =
-  'Summarize the conversation below so another instance can continue it. ' +
-  'Capture: what the user is working on, key decisions, current state, and what they are now asking. ' +
-  'Respond with TEXT ONLY as JSON {"summary": "..."}. Do not call tools.'
-
-/**
- * Call the summarizerModel and return the extracted summary string.
- * Throws on a malformed/non-JSON response (or ZodError) so the caller can
- * detect failure and fall back gracefully.
- */
-export async function summarize(
-  slice: TranscriptMsg[],
-  priorBoundarySummary?: string,
-): Promise<string> {
-  const client = getConfiguredLlmClient()
-  const model = getEffectiveModels().summarizerModel
-
-  const transcript =
-    (priorBoundarySummary ? `[Earlier summary]\n${priorBoundarySummary}\n\n` : '') +
-    slice.map((m) => `${m.role.toUpperCase()}: ${m.text}`).join('\n\n')
-
-  const res = await withRetry(() => client.messages.create({
-    model,
-    max_tokens: SUMMARY_MAX_TOKENS,
-    messages: [{ role: 'user', content: `${SUMMARY_INSTRUCTION}\n\n${transcript}` }],
-  }))
-
-  const text = res.content
-    .map((c: { type: string; text?: string }) => (c.type === 'text' ? (c.text ?? '') : ''))
-    .join('')
-
-  // Models (Haiku especially) often wrap the JSON in a ```json code fence or add
-  // prose around it despite the "TEXT ONLY as JSON" instruction, so extract the
-  // JSON object (first { to last }) before parsing rather than assuming the whole
-  // reply is clean JSON. JSON.parse / ZodError still propagate so the caller
-  // detects failure and returns 502.
-  const start = text.indexOf('{')
-  const end = text.lastIndexOf('}')
-  if (start === -1 || end <= start) {
-    throw new Error(`Summarizer returned non-JSON response: ${text.slice(0, 120)}`)
-  }
-  let parsedJson: unknown
-  try {
-    parsedJson = JSON.parse(text.slice(start, end + 1))
-  } catch {
-    throw new Error(`Summarizer returned non-JSON response: ${text.slice(0, 120)}`)
-  }
-  return summaryPayloadSchema.parse(parsedJson).summary
-}
-
-// ============================================================================
-// Initial message composer (load-bearing sentinel for Task 11)
-// ============================================================================
-
-/**
- * Build the initialMessage that will be injected into the new branched session.
- * The opening line "This conversation is continued from a previous session." is a
- * sentinel parsed by Task 11 to render the collapsed context card — keep it verbatim.
- */
-export async function buildBranchInitialMessage(args: {
-  agentSlug: string
-  fromSessionId: string
-  userMessage: string
-  transcript: TranscriptMsg[]
-  priorBoundarySummary?: string
-}): Promise<string> {
-  const slice = budgetedRecentSlice(args.transcript)
-  const summary = await summarize(slice, args.priorBoundarySummary)
-
-  return [
-    `${BRANCH_PREAMBLE_SENTINEL} The summary below covers the earlier context.`,
-    '',
-    summary,
-    '',
-    `If you need exact details (code, errors), read the full transcript at: ${IN_CONTAINER_JSONL(args.fromSessionId)}`,
-    'Continue directly from where it left off. Do not recap or acknowledge this summary.',
-    '',
-    '---',
-    args.userMessage,
-  ].join('\n')
 }
 
 // ============================================================================
@@ -179,67 +60,8 @@ function isSystemEntry(entry: JsonlEntry): entry is JsonlSystemEntry {
   return entry.type === 'system'
 }
 
-/**
- * Load a session transcript from disk.
- *
- * Returns:
- *  - `transcript`: chronological user/assistant messages as { role, text }
- *  - `priorBoundarySummary`: text from the latest compact_boundary, if any
- *
- * Tool-result-only user messages and isCompactSummary injections are excluded
- * from the transcript array (but the boundary summary IS captured).
- */
-export async function loadTranscript(
-  agentSlug: string,
-  fromSessionId: string,
-): Promise<{ transcript: TranscriptMsg[]; priorBoundarySummary?: string }> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, fromSessionId)
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-
-  const transcript: TranscriptMsg[] = []
-  let priorBoundarySummary: string | undefined
-
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i]
-
-    // Capture compact_boundary summary from its companion isCompactSummary user entry
-    if (isSystemEntry(entry) && entry.subtype === 'compact_boundary') {
-      for (let j = i + 1; j < entries.length && j <= i + 3; j++) {
-        const next = entries[j]
-        if (isMessageEntry(next) && next.isCompactSummary) {
-          const summaryText = extractText(next.message.content)
-          if (summaryText) priorBoundarySummary = summaryText
-          break
-        }
-      }
-      continue
-    }
-
-    // Skip system entries, non-message entries, and compact summary injections
-    if (!isMessageEntry(entry)) continue
-    const msgEntry = entry
-    if (msgEntry.isCompactSummary) continue
-
-    // Skip tool-result-only user messages
-    if (
-      msgEntry.type === 'user' &&
-      Array.isArray(msgEntry.message.content) &&
-      msgEntry.message.content.every((b: ContentBlock) => b.type === 'tool_result')
-    ) {
-      continue
-    }
-
-    const text = extractText(msgEntry.message.content)
-    if (!text) continue
-
-    transcript.push({ role: msgEntry.type, text })
-  }
-
-  return { transcript, priorBoundarySummary }
-}
-
 // ============================================================================
-// New summarization path (Task 2 — additive; old path above stays in place)
+// New summarization path (Task 2)
 // ============================================================================
 
 const HANDOFF_SUMMARY_INSTRUCTION = `You are summarizing a coding-agent conversation so a fresh session can continue the work seamlessly. Another assistant will read ONLY your summary, so it must carry everything needed to continue and nothing else. Write concise markdown with these sections (omit a section only if it is genuinely empty):
