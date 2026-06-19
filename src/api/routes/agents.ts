@@ -117,6 +117,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
 import { resolveTargetApp } from '@shared/lib/computer-use/types'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
+import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
@@ -639,9 +640,10 @@ function getLlmClient(): Anthropic {
   return getConfiguredLlmClient()
 }
 
-// Model used for generating session names (lightweight task)
+// Model used for generating session names (lightweight task).
+// Resolve here because this is a host-direct SDK call (no container chokepoint).
 function getSummarizerModel(): string {
-  return getEffectiveModels().summarizerModel
+  return resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 }
 
 // Generate session name using AI (fire and forget)
@@ -1307,6 +1309,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       initialMessageUuid,
       model: sessionModel,
       browserModel: getEffectiveModels().browserModel,
+      dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
       maxOutputTokens: agentLimits.maxOutputTokens,
       maxThinkingTokens: agentLimits.maxThinkingTokens,
       maxTurns: agentLimits.maxTurns,

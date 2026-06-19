@@ -35,13 +35,16 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => ({
     data: {
       llmProvider: 'anthropic',
-      models: { agentModel: 'claude-sonnet' },
+      models: { agentModel: 'sonnet' },
       llmProviderStatus: [
         {
           id: 'anthropic',
-          composerModels: [
-            { family: 'sonnet', modelId: 'claude-sonnet', label: 'Sonnet' },
+          name: 'Anthropic',
+          isConfigured: true,
+          catalog: [
+            { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
           ],
+          defaultModels: { agent: 'sonnet', summarizer: 'haiku', browser: 'sonnet' },
         },
       ],
     },

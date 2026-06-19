@@ -68,6 +68,9 @@ const mockGetEffectiveModels = vi.fn()
 
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveModels: (...args: unknown[]) => mockGetEffectiveModels(...args),
+  // resolveActiveProviderModel (host-direct summarizer resolution) reads the
+  // active provider via getSettings; default to anthropic for the catalog.
+  getSettings: () => ({ llmProvider: 'anthropic' }),
 }))
 
 const mockValidateCronExpression = vi.fn()
@@ -170,7 +173,7 @@ describe('scheduled-tasks route', () => {
     mockGetEffectiveModels.mockReturnValue({
       agentModel: 'claude-agent',
       browserModel: 'claude-browser',
-      summarizerModel: 'claude-summary',
+      summarizerModel: 'claude-haiku-4-5',
     })
     mockValidateCronExpression.mockReturnValue({ valid: true })
     mockMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Every weekday at 9:00 AM' }] })
@@ -334,7 +337,7 @@ describe('scheduled-tasks route', () => {
       expression: 'every weekday morning',
     })
     expect(mockMessagesCreate).toHaveBeenCalledWith(expect.objectContaining({
-      model: 'claude-summary',
+      model: 'claude-haiku-4-5',
       max_tokens: 50,
     }))
   })

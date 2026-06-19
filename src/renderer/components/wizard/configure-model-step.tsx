@@ -1,10 +1,11 @@
 import { useSettings, useUpdateSettings, type GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { useQueryClient } from '@tanstack/react-query'
-import { inferFamily } from '@renderer/components/messages/composer-options-popover'
-import type { ComposerModelFamily } from '@shared/lib/llm-provider'
+
+/** Onboarding offers just the two headline families; both store a bare alias. */
+type WizardFamily = 'opus' | 'sonnet'
 
 const MODEL_OPTIONS: Array<{
-  family: ComposerModelFamily
+  family: WizardFamily
   label: string
   tag: string
   description: string
@@ -32,11 +33,12 @@ export function ConfigureModelStep() {
   const queryClient = useQueryClient()
 
   // The global "Default model" setting (LLM tab) persists `models.agentModel`
-  // as a bare family alias (emit="family"). Mirror that here so onboarding and
-  // settings stay in sync. Fall back to the persisted default ('opus').
-  const selectedFamily = inferFamily(settings?.models?.agentModel) ?? 'opus'
+  // as a bare family alias or a pinned id. Derive the headline family from it
+  // so onboarding and settings stay in sync; unknown/other → 'opus'.
+  const agentModel = settings?.models?.agentModel
+  const selectedFamily: WizardFamily = agentModel && /sonnet/.test(agentModel) ? 'sonnet' : 'opus'
 
-  const handleSelect = async (family: ComposerModelFamily) => {
+  const handleSelect = async (family: WizardFamily) => {
     if (family === selectedFamily) return
     // Optimistically reflect the choice in the settings cache so the card
     // updates instantly. The mutation's onSuccess invalidation refetches to

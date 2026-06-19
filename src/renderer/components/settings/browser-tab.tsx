@@ -51,7 +51,6 @@ export function BrowserTab() {
           <SettingsModelSelect
             model={settings?.models?.browserModel}
             onModelChange={(value) => updateSettings.mutate({ models: { browserModel: value } })}
-            emit="family"
             disabled={isLoading}
           />
         </div>

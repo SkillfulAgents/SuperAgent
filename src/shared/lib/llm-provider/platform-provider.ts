@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
+import type { ModelDefinition } from './model-catalog-schema'
+import { CLAUDE_BARE_CATALOG } from './builtin-catalogs'
 import { attribution } from '@shared/lib/platform-attribution'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
@@ -38,22 +40,16 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     })
   }
 
-  getAvailableModels(): ModelOption[] {
-    return [
-      { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
-      { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
-      { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
-      { value: 'claude-opus-4-7', label: 'Claude 4.7 Opus' },
-      { value: 'claude-opus-4-8', label: 'Claude 4.8 Opus' },
-      { value: 'claude-fable-5', label: 'Claude Fable 5' },
-    ]
+  getBuiltinCatalog(): ModelDefinition[] {
+    return CLAUDE_BARE_CATALOG
   }
 
   getDefaultModel(purpose: ModelPurpose): string {
     switch (purpose) {
-      case 'summarizer': return 'claude-haiku-4-5'
-      case 'agent': return 'claude-opus-4-8'
-      case 'browser': return 'claude-sonnet-4-6'
+      case 'summarizer': return 'haiku'
+      case 'agent': return 'opus'
+      case 'browser': return 'sonnet'
+      case 'dashboard': return 'opus'
     }
   }
 

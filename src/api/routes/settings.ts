@@ -236,6 +236,25 @@ settings.put('/', async (c) => {
       }
     }
 
+    // When the active LLM provider changes, reset model selections to the new
+    // provider's defaults (bare aliases) — unless the same request sets `models`
+    // explicitly. Prevents a pin from the old provider's catalog (which may not
+    // exist for the new one, e.g. a bare-Claude id on Bedrock) from leaking across.
+    const currentProvider = currentSettings.llmProvider ?? 'anthropic'
+    const providerChanged =
+      body.llmProvider !== undefined && body.llmProvider !== currentProvider
+    let providerDefaultModels:
+      | { summarizerModel: string; agentModel: string; browserModel: string; dashboardBuilderModel: string }
+      | undefined
+    if (providerChanged && body.models === undefined) {
+      try {
+        providerDefaultModels = getLlmProvider(body.llmProvider).getDefaultModels()
+      } catch {
+        // Unknown provider id — leave models as-is; other guards handle validity.
+        providerDefaultModels = undefined
+      }
+    }
+
     // Merge new settings with current settings
     // TODO refactor - pineapple on pizza level gross
     const newSettings: AppSettings = {
@@ -262,7 +281,9 @@ settings.put('/', async (c) => {
       llmProvider: body.llmProvider !== undefined ? body.llmProvider : currentSettings.llmProvider,
       models: body.models
         ? { ...currentSettings.models, ...body.models }
-        : currentSettings.models,
+        : providerDefaultModels
+          ? { ...currentSettings.models, ...providerDefaultModels }
+          : currentSettings.models,
       agentLimits: body.agentLimits !== undefined
         ? { ...currentSettings.agentLimits, ...body.agentLimits }
         : currentSettings.agentLimits,

@@ -7,6 +7,7 @@
 
 import { Hono } from 'hono'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
+import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import {
   getScheduledTask,
   cancelScheduledTask,
@@ -278,6 +279,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       initialMessage: task.prompt,
       model: task.model || models.agentModel,
       browserModel: models.browserModel,
+      dashboardBuilderModel: models.dashboardBuilderModel,
       ...(task.effort ? { effort: task.effort as EffortLevel } : {}),
     })
 
@@ -325,7 +327,7 @@ scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'),
     const client = getConfiguredLlmClient()
     const response = await withRetry(() =>
       client.messages.create({
-        model: getEffectiveModels().summarizerModel,
+        model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
         max_tokens: 100,
         messages: [
           {
@@ -372,7 +374,7 @@ scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), asyn
     const client = getConfiguredLlmClient()
     const response = await withRetry(() =>
       client.messages.create({
-        model: getEffectiveModels().summarizerModel,
+        model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
         max_tokens: 50,
         messages: [
           {

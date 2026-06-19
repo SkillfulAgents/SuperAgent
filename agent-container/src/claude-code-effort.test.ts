@@ -174,18 +174,18 @@ describe('ClaudeCodeProcess model handling', () => {
 
     await process.start()
     expect(calls).toHaveLength(1)
-    // Constructor maps full IDs to SDK aliases.
-    expect(calls[0].options.model).toBe('sonnet')
+    // The host resolves to a concrete id; the container forwards it unchanged.
+    expect(calls[0].options.model).toBe('claude-sonnet-4-6')
 
     // Switching to Opus mid-session should call setModel on the running query —
     // no interrupt, no second query() call.
     await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
 
     expect(calls).toHaveLength(1)
-    expect(setModelCalls).toEqual(['opus'])
+    expect(setModelCalls).toEqual(['claude-opus-4-7'])
   })
 
-  it('does not call setModel when the same model family is passed', async () => {
+  it('does not call setModel for the same concrete id, but treats a different version as a real switch', async () => {
     const process = new ClaudeCodeProcess({
       sessionId: 'test-model-2',
       workingDirectory: '/tmp',
@@ -195,15 +195,16 @@ describe('ClaudeCodeProcess model handling', () => {
     await process.start()
     expect(calls).toHaveLength(1)
 
-    // Same family alias — no restart, no setModel.
+    // Identical concrete id — no restart, no setModel.
     await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
     expect(calls).toHaveLength(1)
     expect(setModelCalls).toHaveLength(0)
 
-    // Same alias but different pinned version maps to same alias 'opus'.
+    // A different pinned version of the same family is now a real switch
+    // (concrete-id compare, post-SUP-275) — setModel on the running query.
     await process.sendMessage('hello again', undefined, { model: 'claude-opus-4-6' })
     expect(calls).toHaveLength(1)
-    expect(setModelCalls).toHaveLength(0)
+    expect(setModelCalls).toEqual(['claude-opus-4-6'])
   })
 
   it('combined effort + model change restarts the query exactly once with both new values', { timeout: 15000 }, async () => {
@@ -217,7 +218,7 @@ describe('ClaudeCodeProcess model handling', () => {
     await process.start()
     expect(calls).toHaveLength(1)
     expect(calls[0].options.effort).toBe('high')
-    expect(calls[0].options.model).toBe('sonnet')
+    expect(calls[0].options.model).toBe('claude-sonnet-4-6')
 
     // Effort can only change via re-query, so the model rides along on that
     // restart rather than calling setModel separately.
@@ -225,7 +226,7 @@ describe('ClaudeCodeProcess model handling', () => {
 
     expect(calls).toHaveLength(2)
     expect(calls[1].options.effort).toBe('low')
-    expect(calls[1].options.model).toBe('haiku')
+    expect(calls[1].options.model).toBe('claude-haiku-4-5')
     expect(setModelCalls).toHaveLength(0)
   })
 
@@ -246,9 +247,9 @@ describe('ClaudeCodeProcess model handling', () => {
 
     await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
 
-    expect(failOnce).toHaveBeenCalledWith('opus')
+    expect(failOnce).toHaveBeenCalledWith('claude-opus-4-7')
     // Restart happened after the failure.
     expect(calls).toHaveLength(2)
-    expect(calls[1].options.model).toBe('opus')
+    expect(calls[1].options.model).toBe('claude-opus-4-7')
   })
 })

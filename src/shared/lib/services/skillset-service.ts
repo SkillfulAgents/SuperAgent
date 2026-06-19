@@ -15,6 +15,7 @@ import yaml from 'js-yaml'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
+import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { withRetry } from '@shared/lib/utils/retry'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
@@ -1264,7 +1265,7 @@ async function generatePRSuggestions(
   }
 
   try {
-    const model = getEffectiveModels().summarizerModel
+    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 
     const response = await withRetry(() =>
       client.messages.create({
@@ -1496,7 +1497,7 @@ async function generatePublishSuggestions(
   }
 
   try {
-    const model = getEffectiveModels().summarizerModel
+    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 
     const response = await withRetry(() =>
       client.messages.create({

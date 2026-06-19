@@ -280,22 +280,6 @@ class MessageQueue {
   }
 }
 
-type SDKModelAlias = 'sonnet' | 'opus' | 'haiku' | 'fable';
-
-/**
- * Maps a full model ID (e.g. 'claude-sonnet-4-5') to the SDK's short alias.
- * Passes through model IDs containing '/' (e.g. OpenRouter format).
- */
-function toModelAlias(model?: string): SDKModelAlias | string | undefined {
-  if (!model) return undefined;
-  if (model.includes('/')) return model;
-  if (model.includes('fable')) return 'fable';
-  if (model.includes('opus')) return 'opus';
-  if (model.includes('sonnet')) return 'sonnet';
-  if (model.includes('haiku')) return 'haiku';
-  return model;
-}
-
 // Module-level reference to the current process (one per container)
 let currentProcess: ClaudeCodeProcess | null = null;
 export function getCurrentProcess(): ClaudeCodeProcess | null {
@@ -310,6 +294,7 @@ export interface ClaudeCodeProcessOptions {
   availableEnvVars?: string[];
   model?: string;
   browserModel?: string;
+  dashboardBuilderModel?: string;
   maxOutputTokens?: number;
   maxThinkingTokens?: number;
   maxTurns?: number;
@@ -328,6 +313,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private systemPrompt: string;
   private model: string | undefined;
   private browserModel: string | undefined;
+  private dashboardBuilderModel: string | undefined;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -346,8 +332,12 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.workingDirectory = options.workingDirectory;
     this.claudeSessionId = options.claudeSessionId || null;
     this.isResumedSession = !!options.claudeSessionId;
-    this.model = toModelAlias(options.model) || options.model;
-    this.browserModel = toModelAlias(options.browserModel);
+    // The host resolves selections to a concrete wire id (family aliases →
+    // their latest concrete id) before they reach the container, so we pass
+    // the model straight through — including '/'-style OpenRouter ids.
+    this.model = options.model;
+    this.browserModel = options.browserModel;
+    this.dashboardBuilderModel = options.dashboardBuilderModel;
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
@@ -482,7 +472,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         agents: {
           'web-browser': {
             description: 'Web browsing specialist. Delegate any task that requires interacting with websites — navigating pages, filling forms, clicking buttons, extracting information, searching for products, changing settings on web services, or any multi-step web interaction. The browser should already be open (use browser_open first). This agent runs on a cheaper model and handles all browser interactions autonomously.',
-            model: (this.browserModel || 'sonnet') as SDKModelAlias,
+            // Host-resolved concrete wire id for the browser model (any provider/
+            // model the user configured); AgentDefinition.model is a plain string.
+            // Fall back to the main model — never a hardcoded Claude alias, which
+            // would force Anthropic on non-Anthropic providers.
+            model: this.browserModel || this.model,
             tools: [
               ...mcpToolNames('browser', browserMcpTools),
               'WebSearch',
@@ -494,8 +488,10 @@ export class ClaudeCodeProcess extends EventEmitter {
             maxTurns: 500,
           },
           'dashboard-builder': {
-            description: 'Dashboard building specialist. Delegate any task that involves creating, editing, or debugging dashboards (artifacts) — designing layouts, writing HTML/CSS/JS or React code, adding charts, connecting to data sources, fixing visual issues, or iterating on dashboard design. This agent uses Opus and handles the full build cycle: scaffolding, coding, starting, and verifying via screenshots.',
-            model: 'opus' as const,
+            description: 'Dashboard building specialist. Delegate any task that involves creating, editing, or debugging dashboards (artifacts) — designing layouts, writing HTML/CSS/JS or React code, adding charts, connecting to data sources, fixing visual issues, or iterating on dashboard design. This agent handles the full build cycle: scaffolding, coding, starting, and verifying via screenshots.',
+            // Host-resolved dashboard-builder model (its own setting); falls back to
+            // the main model rather than a hardcoded Claude alias.
+            model: this.dashboardBuilderModel || this.model,
             tools: [
               'mcp__dashboards__create_dashboard',
               'mcp__dashboards__start_dashboard',
@@ -512,7 +508,9 @@ export class ClaudeCodeProcess extends EventEmitter {
           ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? {
             'computer-use': {
               description: 'Desktop automation specialist for macOS. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. The app should already be launched and grabbed (use computer_launch first). This agent runs on a cheaper model and handles all app interactions autonomously.',
-              model: 'sonnet' as const,
+              // Cheap tier (browser model); falls back to the main model — never a
+              // hardcoded Claude alias.
+              model: this.browserModel || this.model,
               tools: [
                 ...mcpToolNames('computer-use', computerUseTools, ['computer_launch', 'computer_quit', 'computer_ungrab']),
                 'Read',
@@ -845,16 +843,16 @@ export class ClaudeCodeProcess extends EventEmitter {
     const currentEffort: EffortLevel = this.effort ?? 'high';
     const effortChanged = effort !== undefined && effort !== currentEffort;
 
-    // For model: compare on the SDK alias so two pinned versions of the same family
-    // (e.g. opus-4-6 vs opus-4-7) don't trigger a spurious switch.
-    const incomingModelAlias = toModelAlias(model);
-    const modelChanged = model !== undefined && incomingModelAlias !== this.model;
+    // The host resolves selections to concrete wire ids before sending, so
+    // compare ids directly. Switching between two pinned versions of a family
+    // (e.g. opus-4-6 -> opus-4-7) is now a real, intentional switch.
+    const modelChanged = model !== undefined && model !== this.model;
 
     if (effortChanged) {
       this.effort = effort;
     }
     if (modelChanged) {
-      this.model = incomingModelAlias || model;
+      this.model = model;
     }
 
     if (!this.messageQueue || !this.isReady) {

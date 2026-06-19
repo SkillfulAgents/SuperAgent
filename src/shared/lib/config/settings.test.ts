@@ -221,15 +221,40 @@ describe('loadSettings', () => {
     it('merges partial model settings with defaults', () => {
       mockSettingsFile(
         JSON.stringify({
-          models: { agentModel: 'claude-sonnet-4-6' },
+          // A genuine pin (older non-default version) — must survive untouched.
+          models: { agentModel: 'claude-opus-4-7' },
         })
       )
 
       const result = loadSettings()
 
-      expect(result.models?.agentModel).toBe('claude-sonnet-4-6')
-      expect(result.models?.summarizerModel).toBe('claude-haiku-4-5') // default
-      expect(result.models?.browserModel).toBe('claude-sonnet-4-6') // default
+      expect(result.models?.agentModel).toBe('claude-opus-4-7')
+      expect(result.models?.summarizerModel).toBe('haiku') // default
+      expect(result.models?.browserModel).toBe('sonnet') // default
+    })
+
+    it('migrates legacy concrete model defaults to bare family aliases', () => {
+      // Pre-SUP-275 persisted the three defaults as concrete ids. These have no
+      // Bedrock catalog entry and would pass straight through (and fail) there,
+      // so loadSettings rewrites them to bare aliases that resolve per provider.
+      mockSettingsFile(
+        JSON.stringify({
+          models: {
+            summarizerModel: 'claude-haiku-4-5',
+            agentModel: 'claude-opus-4-8',
+            browserModel: 'claude-sonnet-4-6',
+            agentEffort: 'high',
+          },
+        })
+      )
+
+      const result = loadSettings()
+
+      expect(result.models?.summarizerModel).toBe('haiku')
+      expect(result.models?.agentModel).toBe('opus')
+      expect(result.models?.browserModel).toBe('sonnet')
+      // Non-model fields are untouched by the migration.
+      expect(result.models?.agentEffort).toBe('high')
     })
 
     it('merges auth settings with defaults', () => {
@@ -559,7 +584,7 @@ describe('loadSettings', () => {
             autoSleepTimeoutMinutes: 60,
             notifications: { enabled: false },
           },
-          models: { agentModel: 'claude-sonnet-4-6' },
+          models: { agentModel: 'claude-opus-4-7' },
           auth: { signupMode: 'open' },
         })
       )
@@ -578,8 +603,8 @@ describe('loadSettings', () => {
       expect(result.app?.notifications?.sessionComplete).toBe(true) // default
 
       // Models
-      expect(result.models?.agentModel).toBe('claude-sonnet-4-6')
-      expect(result.models?.summarizerModel).toBe('claude-haiku-4-5') // default
+      expect(result.models?.agentModel).toBe('claude-opus-4-7')
+      expect(result.models?.summarizerModel).toBe('haiku') // default
 
       // Auth
       expect(result.auth?.signupMode).toBe('open')
@@ -1041,9 +1066,10 @@ describe('getEffectiveModels', () => {
     const models = getEffectiveModels()
 
     expect(models).toEqual({
-      summarizerModel: 'claude-haiku-4-5',
-      agentModel: 'claude-opus-4-8',
-      browserModel: 'claude-sonnet-4-6',
+      summarizerModel: 'haiku',
+      agentModel: 'opus',
+      browserModel: 'sonnet',
+      dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
   })
@@ -1065,6 +1091,7 @@ describe('getEffectiveModels', () => {
       summarizerModel: 'custom-summarizer',
       agentModel: 'custom-agent',
       browserModel: 'custom-browser',
+      dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
   })
@@ -1079,8 +1106,8 @@ describe('getEffectiveModels', () => {
     const models = getEffectiveModels()
 
     expect(models.agentModel).toBe('custom-agent')
-    expect(models.summarizerModel).toBe('claude-haiku-4-5')
-    expect(models.browserModel).toBe('claude-sonnet-4-6')
+    expect(models.summarizerModel).toBe('haiku')
+    expect(models.browserModel).toBe('sonnet')
   })
 
   it('falls back to defaults when model values are empty strings', () => {
@@ -1097,9 +1124,9 @@ describe('getEffectiveModels', () => {
     const models = getEffectiveModels()
 
     // Empty strings are falsy, so || fallback triggers
-    expect(models.summarizerModel).toBe('claude-haiku-4-5')
-    expect(models.agentModel).toBe('claude-opus-4-8')
-    expect(models.browserModel).toBe('claude-sonnet-4-6')
+    expect(models.summarizerModel).toBe('haiku')
+    expect(models.agentModel).toBe('opus')
+    expect(models.browserModel).toBe('sonnet')
   })
 
   it('handles models being undefined in settings', () => {
@@ -1108,9 +1135,10 @@ describe('getEffectiveModels', () => {
     const models = getEffectiveModels()
 
     expect(models).toEqual({
-      summarizerModel: 'claude-haiku-4-5',
-      agentModel: 'claude-opus-4-8',
-      browserModel: 'claude-sonnet-4-6',
+      summarizerModel: 'haiku',
+      agentModel: 'opus',
+      browserModel: 'sonnet',
+      dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
   })
@@ -1202,11 +1230,12 @@ describe('DEFAULT_SETTINGS', () => {
     })
   })
 
-  it('has expected model defaults', () => {
+  it('has expected model defaults (bare aliases so fresh installs track latest)', () => {
     expect(DEFAULT_SETTINGS.models).toEqual({
-      summarizerModel: 'claude-haiku-4-5',
-      agentModel: 'claude-opus-4-8',
-      browserModel: 'claude-sonnet-4-6',
+      summarizerModel: 'haiku',
+      agentModel: 'opus',
+      browserModel: 'sonnet',
+      dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
   })

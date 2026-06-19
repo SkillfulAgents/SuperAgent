@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import * as fs from 'fs'
 import * as path from 'path'
 import { AppPage } from '../pages/app.page'
@@ -44,6 +44,29 @@ async function waitForRecord(
   throw new Error(`Timed out waiting for matching record. Records seen: ${JSON.stringify(readRecords(), null, 2)}`)
 }
 
+// Composer is a flat list keyed by concrete id; the host resolves the selection
+// to a concrete wire id before the (mock) container records it.
+const OPUS_LATEST = 'claude-opus-4-8'
+const OPUS_PINNED_OLDER = 'claude-opus-4-7'
+const SONNET = 'claude-sonnet-4-6'
+const HAIKU = 'claude-haiku-4-5'
+
+// The composer model picker is grouped by family: open the popover, expand the
+// family, then pick the concrete version (no "latest" row in the composer).
+// The currently-selected family auto-expands, so only click the family header
+// when the target version isn't already visible — clicking an open family
+// collapses it.
+async function pickModel(page: Page, family: string, modelId: string) {
+  await page.locator('[data-testid="composer-options-trigger"]').click()
+  const familyRow = page.locator(`[data-testid="model-family-${family}"]`)
+  await familyRow.waitFor({ state: 'visible' })
+  const version = page.locator(`[data-testid="model-pinned-${modelId}"]`)
+  if (!(await version.isVisible())) {
+    await familyRow.click()
+  }
+  await version.click()
+}
+
 test.describe('Model selection', () => {
   let appPage: AppPage
   let agentPage: AgentPage
@@ -64,74 +87,69 @@ test.describe('Model selection', () => {
     testAgentName = `Model Agent ${testInfo.workerIndex}-${Date.now()}`
   })
 
-  test('selecting Opus before sending the first message creates the session with the Opus model', async ({ page }, testInfo) => {
-    // Use a test-unique initial message so we can find this test's record in
-    // the worker-shared recorder file without picking up another test's data.
+  test('selecting the latest Opus in the composer creates the session pinned to that concrete id', async ({ page }, testInfo) => {
     const tag = `${testInfo.workerIndex}-${Date.now()}`
     const initialMessage = `Opus first message ${tag}`
 
-    // Open AgentHome (the new-session composer).
     await agentPage.clickCreateAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
-    // Pick Opus in the composer options popover.
-    await page.locator('[data-testid="composer-options-trigger"]').click()
-    await page.locator('[data-testid="model-option-opus"]').click()
+    // Pick Opus 4.8 in the grouped composer (expand Opus → pick the version).
+    await pickModel(page, 'opus', OPUS_LATEST)
 
-    // Send.
     await page.locator('[data-testid="home-message-input"]').fill(initialMessage)
     await page.locator('[data-testid="home-send-button"]').click()
 
-    // Wait for navigation to session view (signals the request reached the server).
     await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
 
     const record = await waitForRecord(
       (r) => r.type === 'createSession' && r.initialMessage === initialMessage
     )
-    expect(record.model).toBe('opus')
+    expect(record.model).toBe(OPUS_LATEST)
   })
 
-  test('switching the model mid-session sends the new model on the next message', async ({ page }, testInfo) => {
+  test('pinning a specific older version survives the send (not collapsed to latest)', async ({ page }, testInfo) => {
+    const tag = `${testInfo.workerIndex}-${Date.now()}`
+    const initialMessage = `Pinned Opus 4.7 ${tag}`
+
+    await agentPage.clickCreateAgent()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+
+    // Pin Opus 4.7 — the older version must reach the container exactly, not
+    // get collapsed up to the family latest.
+    await pickModel(page, 'opus', OPUS_PINNED_OLDER)
+
+    await page.locator('[data-testid="home-message-input"]').fill(initialMessage)
+    await page.locator('[data-testid="home-send-button"]').click()
+    await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
+
+    const record = await waitForRecord(
+      (r) => r.type === 'createSession' && r.initialMessage === initialMessage
+    )
+    expect(record.model).toBe(OPUS_PINNED_OLDER)
+  })
+
+  test('switching the model mid-session sends the new concrete model on the next message', async ({ page }, testInfo) => {
     const tag = `${testInfo.workerIndex}-${Date.now()}`
     const followUp = `Now using Haiku ${tag}`
 
-    // Create the session via AgentPage helper (uses default settings model — Opus).
-    // `createAgent(prompt)` sends `prompt` as the first message, so we can use
-    // testAgentName to uniquely identify this test's createSession record.
     await agentPage.createAgent(testAgentName)
-
-    // Navigate into the session view by selecting the agent (createAgent leaves us on agent-home).
-    // The session was created with the initial message, so just open it.
     await agentPage.expandAgent(testAgentName)
-    // First session under the agent — click the first session link.
     const sessionLink = page.locator('[data-testid^="session-item-"]').first()
     await sessionLink.click()
     await expect(page.locator('[data-testid="message-list"]')).toBeVisible()
 
-    // Initial createSession recorded with first-session Opus default.
-    // Filter on initialMessage — agentSlug stays as `untitled-XXXXX` even after
-    // the display-name rename, so it isn't a stable test-unique key.
-    const initialCreate = await waitForRecord(
-      (r) => r.type === 'createSession' && r.initialMessage === testAgentName
-    )
-    expect(initialCreate.model).toBe('opus')
-
-    // Switch to Haiku in the in-session composer. The popover closes after a
-    // pick, so reopen it to switch effort.
-    await page.locator('[data-testid="composer-options-trigger"]').click()
-    await page.locator('[data-testid="model-option-haiku"]').click()
-
-    // Also switch effort to 'low' so we can assert both flow through.
+    // Switch to Haiku in the in-session composer, then drop effort to low.
+    await pickModel(page, 'haiku', HAIKU)
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="effort-option-low"]').click()
 
-    // Send a follow-up — content tag makes this record uniquely identifiable.
     await sessionPage.sendMessage(followUp)
 
     const sendRecord = await waitForRecord(
       (r) => r.type === 'sendMessage' && r.content === followUp
     )
-    expect(sendRecord.model).toBe('haiku')
+    expect(sendRecord.model).toBe(HAIKU)
     expect(sendRecord.effort).toBe('low')
   })
 
@@ -142,18 +160,14 @@ test.describe('Model selection', () => {
     await agentPage.clickCreateAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
-    // Pick Opus, then Extra High (Opus-only effort).
-    await page.locator('[data-testid="composer-options-trigger"]').click()
-    await page.locator('[data-testid="model-option-opus"]').click()
+    await pickModel(page, 'opus', OPUS_LATEST)
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="effort-option-xhigh"]').click()
 
-    // Switch to Sonnet — popover's auto-reset effect should clamp effort back
-    // to Medium (the default) since Sonnet doesn't allow xhigh.
-    await page.locator('[data-testid="composer-options-trigger"]').click()
-    await page.locator('[data-testid="model-option-sonnet"]').click()
+    // Switch to Sonnet — the popover's auto-reset clamps effort back to Medium
+    // since Sonnet doesn't allow xhigh.
+    await pickModel(page, 'sonnet', SONNET)
 
-    // Trigger should now read "Sonnet · Medium" (effort was auto-reset).
     await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Medium')
     await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Extra High')
 
@@ -164,58 +178,47 @@ test.describe('Model selection', () => {
     const record = await waitForRecord(
       (r) => r.type === 'createSession' && r.initialMessage === initialMessage
     )
-    expect(record.model).toBe('sonnet')
+    expect(record.model).toBe(SONNET)
     expect(record.effort).toBe('medium')
   })
 
-  test('AgentHome trigger displays the family of the user pinned default model', async ({ page }, testInfo) => {
-    // Regression: settings stores `agentModel` as a pinned ID
-    // (e.g. 'claude-opus-4-8') while composer's `composerModels` are keyed by
-    // family alias. When AgentHome falls back to settings (i.e. the agent
-    // already has at least one session, so isFirstSession is false), the
-    // popover trigger must still resolve to the right family — otherwise the
-    // user sees one model in the UI while a different one goes out on the
-    // wire.
+  test('the default bare-alias model resolves to a concrete id on the wire', async ({ page }, testInfo) => {
+    // The default `agentModel` setting is the bare alias 'opus'. AgentHome's
+    // trigger must display the resolved Opus model, and a send without touching
+    // the popover must put the resolved concrete id on the wire.
     const tag = `${testInfo.workerIndex}-${Date.now()}`
 
-    // Create one session so AgentHome's `isFirstSession` becomes false on the
-    // next visit — that's what triggers the settings-fallback codepath.
     await agentPage.createAgent(`First message ${tag}`)
 
-    // We're back on agent-home. With the default Opus `agentModel` setting,
-    // the trigger must show the Opus family, not Sonnet. Assert family-shape
-    // (not the exact version) so the test stays robust to future agentModel
-    // default bumps — same reasoning as the wire-model check below.
+    // Back on agent-home: the trigger shows the resolved Opus model (not Sonnet).
     await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Opus')
     await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Sonnet')
 
-    // Send a message without touching the popover — assert the wire model
-    // matches the family the trigger displayed.
-    const followUp = `Default-pinned message ${tag}`
+    const followUp = `Default-alias message ${tag}`
     await page.locator('[data-testid="home-message-input"]').fill(followUp)
     await page.locator('[data-testid="home-send-button"]').click()
 
     const record = await waitForRecord(
       (r) => r.type === 'createSession' && r.initialMessage === followUp
     )
-    // Match family-shape rather than the exact pinned ID so the test stays
-    // robust to future agentModel default bumps.
+    // Bare 'opus' resolves to its concrete latest id — match family-shape so the
+    // test survives future default-version bumps.
     expect(record.model).toContain('opus')
+    expect(record.model).not.toBe('opus')
   })
 
   test('Extra High and Max effort options are hidden for non-Opus families', async ({ page }) => {
     await agentPage.clickCreateAgent()
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
 
-    // Default starts on Opus (preferredFamily for AgentHome) — confirm xhigh/max
-    // are visible there first so the assertion has a meaningful contrast.
+    // Default starts on Opus — confirm xhigh/max are visible there first.
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await expect(page.locator('[data-testid="effort-option-xhigh"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-max"]')).toBeVisible()
 
-    // Switch to Sonnet, reopen the popover, and confirm xhigh/max disappear
-    // while low/medium/high stay.
-    await page.locator('[data-testid="model-option-sonnet"]').click()
+    // Switch to Sonnet (popover already open), reopen, and confirm xhigh/max disappear.
+    await page.locator('[data-testid="model-family-sonnet"]').click()
+    await page.locator(`[data-testid="model-pinned-${SONNET}"]`).click()
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await expect(page.locator('[data-testid="effort-option-low"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-medium"]')).toBeVisible()

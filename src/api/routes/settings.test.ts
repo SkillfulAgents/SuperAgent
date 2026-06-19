@@ -584,6 +584,48 @@ describe('settings route', () => {
       expect(saved.models).toEqual({ summarizerModel: 'claude-3-haiku', agentModel: 'claude-sonnet-4-20250514', browserModel: 'claude-3-haiku' })
     })
 
+    it('resets models to the new provider defaults when the active provider changes', async () => {
+      // currentSettings has no llmProvider (→ effective 'anthropic'); switching to
+      // Bedrock must drop the old pins and adopt Bedrock's bare-alias defaults so a
+      // bare-Claude id can't leak into the Bedrock catalog.
+      const res = await putSettings({ llmProvider: 'bedrock' })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.llmProvider).toBe('bedrock')
+      expect(saved.models).toEqual({
+        summarizerModel: 'haiku',
+        agentModel: 'sonnet',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'opus',
+      })
+    })
+
+    it('keeps an explicit models payload even when the provider changes', async () => {
+      const res = await putSettings({
+        llmProvider: 'bedrock',
+        models: { agentModel: 'us.anthropic.claude-opus-4-7' },
+      })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      // Explicit pin wins; the other fields merge from current, not the reset.
+      expect(saved.models.agentModel).toBe('us.anthropic.claude-opus-4-7')
+      expect(saved.models.summarizerModel).toBe('claude-3-haiku')
+    })
+
+    it('does not reset models when the provider is unchanged', async () => {
+      const res = await putSettings({ app: { showMenuBarIcon: false } })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.models).toEqual({
+        summarizerModel: 'claude-3-haiku',
+        agentModel: 'claude-sonnet-4-20250514',
+        browserModel: 'claude-3-haiku',
+      })
+    })
+
     it('merges partial agentLimits with existing', async () => {
       const res = await putSettings({
         agentLimits: { maxBudgetUsd: 50 },

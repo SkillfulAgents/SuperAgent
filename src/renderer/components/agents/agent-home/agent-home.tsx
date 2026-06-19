@@ -78,14 +78,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
-  // First-session Opus default: when the session list has finished loading
-  // and is empty, the brand-new agent's first session should default to Opus
-  // regardless of the user's "Default Model" setting. Passed as a preferred
-  // family — the user can still pick a different model in the dropdown.
-  const isFirstSession = Array.isArray(sessionsData) && sessionsData.length === 0
-  const composerOptions = useComposerOptions(
-    isFirstSession ? { preferredFamily: 'opus' } : {}
-  )
+  const composerOptions = useComposerOptions()
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
