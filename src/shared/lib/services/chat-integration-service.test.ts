@@ -394,23 +394,16 @@ describe('chat-integration-service', () => {
       expect(getChatIntegration(id)?.requireApproval).toBe(true)
     })
 
-    it('persists requireApproval=false when explicitly set to false', () => {
+    it('ignores any caller-supplied requireApproval at create and stays private', () => {
+      // The field is intentionally not in CreateChatIntegrationParams; a caller
+      // smuggling it in (e.g. via an untyped request body) must NOT create a
+      // public bot — making a bot public is owner-only via PATCH.
       const id = createChatIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
-        config: { botToken: 'tok-explicit-false' },
+        config: { botToken: 'tok-override-ignored' },
         requireApproval: false,
-      })
-      expect(getChatIntegration(id)?.requireApproval).toBe(false)
-    })
-
-    it('persists requireApproval=true when explicitly set to true', () => {
-      const id = createChatIntegration({
-        agentSlug: 'agent-a',
-        provider: 'telegram',
-        config: { botToken: 'tok-explicit-true' },
-        requireApproval: true,
-      })
+      } as Parameters<typeof createChatIntegration>[0] & { requireApproval: boolean })
       expect(getChatIntegration(id)?.requireApproval).toBe(true)
     })
   })

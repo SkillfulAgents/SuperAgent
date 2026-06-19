@@ -142,7 +142,7 @@ export function IntegrationSettingsMenu({ integration, onRename, onDelete, canMa
           updateIntegration.mutate({ id: integration.id, showToolCalls: checked })
         }
       />
-      {canManageApproval && (
+      {canManageApproval && integration.provider === 'telegram' && (
         <ToggleRow
           label="Require approval for new conversations"
           helperText={

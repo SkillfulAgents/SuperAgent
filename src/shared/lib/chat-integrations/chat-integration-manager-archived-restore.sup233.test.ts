@@ -99,15 +99,16 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
   })
 
   it('does not restore SSE forwarding for archived chat sessions on reconnect', async () => {
-    // Public bot (requireApproval: false) so the access gate is a no-op and this
-    // test isolates SUP-233's concern: active sessions restore, archived don't.
+    // Public bot so the access gate is a no-op and this test isolates SUP-233's
+    // concern (active sessions restore, archived don't). requireApproval is
+    // owner-only post-create, so flip it directly on the row.
     const integrationId = createChatIntegration({
       agentSlug: 'test-agent',
       provider: 'telegram',
       config: { botToken: 'test-token-123' },
       name: 'Test Bot',
-      requireApproval: false,
     })
+    testSqlite.prepare('UPDATE chat_integrations SET require_approval = 0 WHERE id = ?').run(integrationId)
 
     // One active session, one archived session for the same integration.
     createChatIntegrationSession({

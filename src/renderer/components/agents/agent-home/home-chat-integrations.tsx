@@ -61,7 +61,9 @@ function statusBadge(status: string) {
 // the app already polls. Lives in its own component so the access query (one per
 // integration) obeys the rules of hooks inside the integration list.
 function IntegrationNameBadges({ integration, showPending }: { integration: ChatIntegration; showPending: boolean }) {
-  const enabled = showPending && !!integration.requireApproval
+  // Approval gating is Telegram-only (see chat-integration-access-service); other
+  // providers always forward, so there are never pending requests to badge.
+  const enabled = showPending && integration.provider === 'telegram' && !!integration.requireApproval
   const { data: access } = useChatIntegrationAccess(enabled ? integration.id : null)
   const pending = enabled ? (access?.filter((a) => a.status === 'pending').length ?? 0) : 0
   return (

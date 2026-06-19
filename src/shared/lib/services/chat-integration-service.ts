@@ -29,7 +29,6 @@ export interface CreateChatIntegrationParams {
   name?: string
   config: Record<string, unknown>
   showToolCalls?: boolean
-  requireApproval?: boolean
   sessionTimeout?: number | null
   model?: string | null
   effort?: string | null
@@ -69,7 +68,9 @@ export function createChatIntegration(params: CreateChatIntegrationParams): stri
     name: params.name ?? null,
     config: JSON.stringify(params.config),
     showToolCalls: params.showToolCalls ?? false,
-    requireApproval: params.requireApproval ?? true,
+    // Always private at create; making a bot public is owner-only via the
+    // dedicated PATCH /:integrationId/require-approval endpoint.
+    requireApproval: true,
     sessionTimeout: params.sessionTimeout ?? null,
     model: params.model ?? null,
     effort: params.effort ?? null,
