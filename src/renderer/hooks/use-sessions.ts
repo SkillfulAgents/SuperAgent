@@ -37,7 +37,7 @@ export function useCreateSession() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; message: string; effort?: EffortLevel; model?: string }) => {
+    mutationFn: async (data: { agentSlug: string; message: string; effort?: EffortLevel; model?: string; seedSummary?: string; fromSessionId?: string }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -45,6 +45,8 @@ export function useCreateSession() {
           message: data.message,
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.model ? { model: data.model } : {}),
+          ...(data.seedSummary ? { seedSummary: data.seedSummary } : {}),
+          ...(data.fromSessionId ? { fromSessionId: data.fromSessionId } : {}),
         }),
       })
       if (!res.ok) throw new Error('Failed to create session')
@@ -56,6 +58,20 @@ export function useCreateSession() {
       track('session_created')
       track('message_sent')
       queryClient.invalidateQueries({ queryKey: ['sessions', variables.agentSlug] })
+    },
+  })
+}
+
+export function useSummarizeSession() {
+  return useMutation({
+    mutationFn: async (data: { agentSlug: string; fromSessionId: string }) => {
+      const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fromSessionId: data.fromSessionId }),
+      })
+      if (!res.ok) throw new Error('Failed to summarize session')
+      return res.json() as Promise<{ summary: string }>
     },
   })
 }
