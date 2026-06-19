@@ -10,6 +10,7 @@ export {
   getProviderCatalog,
   getModelDefinition,
   getModelContextWindow,
+  getModelPromptHints,
   hasVersionSegment,
   resolveModelForProvider,
 } from './model-catalog'

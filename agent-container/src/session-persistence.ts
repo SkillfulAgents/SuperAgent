@@ -8,6 +8,7 @@ interface SessionMetadata {
   createdAt: string;
   lastActivity: string;
   systemPrompt?: string;
+  modelPromptHints?: string[];
   availableEnvVars?: string[];
   model?: string;
   browserModel?: string;

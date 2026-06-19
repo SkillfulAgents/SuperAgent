@@ -11,6 +11,7 @@ import {
   getProviderCatalog,
   getModelDefinition,
   getModelContextWindow,
+  getModelPromptHints,
   hasVersionSegment,
   resolveModelForProvider,
 } from './model-catalog'
@@ -118,6 +119,24 @@ describe('getModelContextWindow', () => {
 
   it('returns undefined for an unknown id', () => {
     expect(getModelContextWindow('nope', 'platform')).toBeUndefined()
+  })
+})
+
+describe('getModelPromptHints', () => {
+  it('returns GPT-specific tool guidance for Platform and OpenRouter GPT models', () => {
+    for (const [providerId, modelId] of [
+      ['platform', 'gpt-5.5'],
+      ['openrouter', 'openai/gpt-5.5'],
+    ] as const) {
+      const hints = getModelPromptHints(modelId, providerId)
+      expect(hints.some((hint) => hint.includes('ToolSearch'))).toBe(true)
+      expect(hints.some((hint) => hint.includes('pages as an empty string'))).toBe(true)
+    }
+  })
+
+  it('returns an empty list for Claude models and unknown ids', () => {
+    expect(getModelPromptHints('claude-opus-4-8', 'anthropic')).toEqual([])
+    expect(getModelPromptHints('nope', 'platform')).toEqual([])
   })
 })
 

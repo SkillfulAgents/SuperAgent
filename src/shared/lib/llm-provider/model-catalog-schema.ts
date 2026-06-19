@@ -36,6 +36,8 @@ export const modelDefinitionSchema = z.object({
    * non-Claude models routed via OpenRouter so the picker can warn.
    */
   supportsWebSearch: z.boolean().optional(),
+  /** Extra system-prompt guidance needed by model families with weaker tool priors. */
+  promptHints: z.array(z.string().min(1)).optional(),
   /**
    * Optional display pricing (per-million-token). Built-ins seed this from
    * model-pricing.json; actual cost accounting still keys off that file.

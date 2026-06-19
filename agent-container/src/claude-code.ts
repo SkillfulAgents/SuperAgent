@@ -117,11 +117,18 @@ function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string 
  */
 function generateSystemPrompt(
   availableEnvVars?: string[],
-  userSystemPrompt?: string
+  userSystemPrompt?: string,
+  modelPromptHints?: string[],
 ): string {
   const sections: string[] = [];
 
   sections.push(SYSTEM_PROMPT);
+
+  if (modelPromptHints?.length) {
+    sections.push(`## Model-Specific Instructions
+
+${modelPromptHints.map(hint => `- ${hint}`).join('\n')}`);
+  }
 
   // Parse connected accounts metadata
   const connectedAccounts = parseConnectedAccounts();
@@ -291,6 +298,7 @@ export interface ClaudeCodeProcessOptions {
   workingDirectory: string;
   claudeSessionId?: string;
   userSystemPrompt?: string;
+  modelPromptHints?: string[];
   availableEnvVars?: string[];
   model?: string;
   browserModel?: string;
@@ -346,7 +354,8 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.effort = options.effort;
     this.systemPrompt = generateSystemPrompt(
       options.availableEnvVars,
-      options.userSystemPrompt
+      options.userSystemPrompt,
+      options.modelPromptHints
     );
     // Set module-level reference for tools that need access to the process
     currentProcess = this;

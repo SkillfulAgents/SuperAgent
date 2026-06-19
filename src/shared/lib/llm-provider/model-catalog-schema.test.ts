@@ -53,6 +53,13 @@ describe('modelDefinitionSchema', () => {
     expect(() => modelDefinitionSchema.parse({ ...base, contextWindow: 1.5 })).toThrow()
   })
 
+  it('accepts non-empty prompt hints and rejects empty hints', () => {
+    expect(modelDefinitionSchema.parse({ ...base, promptHints: ['Use exact tool names.'] })).toMatchObject({
+      promptHints: ['Use exact tool names.'],
+    })
+    expect(() => modelDefinitionSchema.parse({ ...base, promptHints: [''] })).toThrow()
+  })
+
   it('validates a catalog array', () => {
     expect(modelCatalogSchema.parse([base])).toHaveLength(1)
   })

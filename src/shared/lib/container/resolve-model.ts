@@ -1,4 +1,9 @@
-import { resolveActiveProviderModel, type ModelPurpose } from '@shared/lib/llm-provider'
+import {
+  getActiveLlmProvider,
+  getModelPromptHints,
+  resolveActiveProviderModel,
+  type ModelPurpose,
+} from '@shared/lib/llm-provider'
 
 /**
  * Resolve a stored model selection (bare family alias or concrete id) to the
@@ -20,5 +25,21 @@ export function resolveContainerModel(
     // contexts that partially mock the settings module those may be absent;
     // fall back to the raw selection (the SDK still accepts bare aliases).
     return selection
+  }
+}
+
+/**
+ * Catalog prompt hints for an already-resolved wire model id (the value
+ * resolveContainerModel produced), looked up in the active provider's catalog.
+ * Empty for Claude/unknown models.
+ */
+export function getContainerModelPromptHints(resolvedModel: string | undefined): string[] {
+  if (!resolvedModel) return []
+  try {
+    return getModelPromptHints(resolvedModel, getActiveLlmProvider().id)
+  } catch {
+    // Same test-context fallback as resolveContainerModel: settings/provider
+    // registry may be unmocked, in which case there are no hints to apply.
+    return []
   }
 }
