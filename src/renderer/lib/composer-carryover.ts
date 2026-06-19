@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useDraftsStore } from '@renderer/context/drafts-context'
+import { useDraftsStore, useDraft } from '@renderer/context/drafts-context'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import type { EffortLevel } from '@shared/lib/container/types'
 
@@ -95,4 +95,28 @@ export function useNewChatCarryover(agentSlug: string): NewChatCarryover | undef
     if (store.get(key) !== undefined) store.set(key, undefined)
   }, [store, key])
   return value
+}
+
+/** A carried AI summary awaiting seeding into the user's first message. */
+export interface NewChatSummary {
+  summary: string
+  fromSessionId: string
+}
+
+/** Drafts-store key for a pending carried summary. Same lifecycle as the agent
+ *  text draft: persists across navigation, cleared on send (NOT one-shot). */
+export const summaryKey = (agentSlug: string) => `newchat-summary:${agentSlug}`
+
+/**
+ * Reactively read the pending carried summary for an agent, plus a clearer. Unlike
+ * useNewChatCarryover (one-shot, cleared on mount), this persists so the pre-send
+ * summary card stays visible while the user composes, and is cleared explicitly on
+ * send.
+ */
+export function useNewChatSummary(agentSlug: string): {
+  summary: NewChatSummary | undefined
+  clear: () => void
+} {
+  const [value, setValue] = useDraft<NewChatSummary>(summaryKey(agentSlug))
+  return { summary: value, clear: () => setValue(undefined) }
 }

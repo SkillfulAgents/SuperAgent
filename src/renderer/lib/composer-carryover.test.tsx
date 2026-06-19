@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
 import { useState } from 'react'
 import { describe, it, expect } from 'vitest'
-import { render } from '@testing-library/react'
+import { act, render } from '@testing-library/react'
 import {
   carryoverKey,
   splitSnapshotForHandoff,
   carryoverToComposerInit,
   useNewChatCarryover,
+  summaryKey,
+  useNewChatSummary,
   type ComposerSnapshot,
   type NewChatCarryover,
+  type NewChatSummary,
 } from './composer-carryover'
 import { DraftsProvider, useDraftsStore } from '@renderer/context/drafts-context'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
@@ -175,5 +178,26 @@ describe('useNewChatCarryover', () => {
     expect(seen[0]).toEqual(value)
     // The mount effect consumes the slot so a later home-view mount starts clean.
     expect(store?.get(carryoverKey('agent-y'))).toBeUndefined()
+  })
+})
+
+describe('useNewChatSummary', () => {
+  it('reads a summary written to the summary key and clears it on demand', () => {
+    let store: ReturnType<typeof useDraftsStore> | undefined
+    let carried: ReturnType<typeof useNewChatSummary> | undefined
+    function Probe() {
+      store = useDraftsStore()
+      carried = useNewChatSummary('agent-1')
+      return null
+    }
+    render(<DraftsProvider><Probe /></DraftsProvider>)
+
+    expect(carried!.summary).toBeUndefined()
+    act(() => {
+      store!.set(summaryKey('agent-1'), { summary: '## Goal', fromSessionId: 's-1' } satisfies NewChatSummary)
+    })
+    expect(carried!.summary).toEqual({ summary: '## Goal', fromSessionId: 's-1' })
+    act(() => carried!.clear())
+    expect(carried!.summary).toBeUndefined()
   })
 })
