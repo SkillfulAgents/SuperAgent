@@ -6,7 +6,7 @@ import { useRouteLocation } from '@renderer/router/use-route-location'
 import { settingsTabSchema, type SettingsTab } from '@renderer/router/search-schemas'
 import type { AppLocation, AgentView } from '@renderer/router/route-state'
 
-const APP_TITLE = 'SuperAgent'
+const APP_TITLE = 'Gamut'
 const BRAND_SEPARATOR = ' \u00b7 '
 const VIEW_SEPARATOR = ' \u2014 '
 

@@ -165,7 +165,7 @@
   },
   "build": {
     "appId": "com.superagent.app",
-    "productName": "Superagent",
+    "productName": "Gamut",
     "directories": {
       "output": "release"
     },
@@ -212,7 +212,7 @@
         "dmg",
         "zip"
       ],
-      "artifactName": "Superagent-${arch}.${ext}",
+      "artifactName": "Gamut-${arch}.${ext}",
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icon",
       "hardenedRuntime": true,
@@ -255,9 +255,9 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Superagent",
-      "uninstallDisplayName": "Superagent",
-      "artifactName": "Superagent-Setup.${ext}"
+      "shortcutName": "Gamut",
+      "uninstallDisplayName": "Gamut",
+      "artifactName": "Gamut-Setup.${ext}"
     },
     "publish": {
       "provider": "github",

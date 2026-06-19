@@ -45,11 +45,11 @@ function location(view: AppLocation['view'], selectedAgentSlug: string | null = 
 
 describe('getDocumentTitle', () => {
   it('formats global and agent home titles', () => {
-    expect(getDocumentTitle({ location: location({ kind: 'home' }) })).toBe('SuperAgent')
+    expect(getDocumentTitle({ location: location({ kind: 'home' }) })).toBe('Gamut')
     expect(getDocumentTitle({ location: location({ kind: 'home' }, 'agent-one'), agentName: 'Agent One' })).toBe(
-      `Agent One${DOT}SuperAgent`,
+      `Agent One${DOT}Gamut`,
     )
-    expect(getDocumentTitle({ location: location({ kind: 'home' }, 'agent-one') })).toBe(`agent-one${DOT}SuperAgent`)
+    expect(getDocumentTitle({ location: location({ kind: 'home' }, 'agent-one') })).toBe(`agent-one${DOT}Gamut`)
   })
 
   it('formats sessions and agent-scoped tool views', () => {
@@ -75,8 +75,8 @@ describe('getDocumentTitle', () => {
   })
 
   it('formats notifications and settings routes', () => {
-    expect(getDocumentTitle({ location: location({ kind: 'notifications' }) })).toBe(`Notifications${DOT}SuperAgent`)
-    expect(getDocumentTitle({ location: location({ kind: 'home' }), isSettingsRoute: true })).toBe(`Settings${DOT}SuperAgent`)
+    expect(getDocumentTitle({ location: location({ kind: 'notifications' }) })).toBe(`Notifications${DOT}Gamut`)
+    expect(getDocumentTitle({ location: location({ kind: 'home' }), isSettingsRoute: true })).toBe(`Settings${DOT}Gamut`)
     expect(getDocumentTitle({ location: location({ kind: 'home' }), isSettingsRoute: true, settingsTab: 'llm' })).toBe(
       `Settings${DASH}LLM Provider`,
     )
@@ -95,14 +95,14 @@ describe('useDocumentTitle', () => {
   it('applies the current route title and updates on navigation', async () => {
     const { rerender } = render(<DocumentTitleHarness />)
 
-    await waitFor(() => expect(document.title).toBe('SuperAgent'))
+    await waitFor(() => expect(document.title).toBe('Gamut'))
 
     mocks.routeLocation = location({ kind: 'home' }, 'agent-one')
     mocks.routerMatches = [{ params: { slug: 'agent-one' }, fullPath: '/agents/$slug' }]
     mocks.agent = { name: 'Agent One' }
     rerender(<DocumentTitleHarness />)
 
-    await waitFor(() => expect(document.title).toBe(`Agent One${DOT}SuperAgent`))
+    await waitFor(() => expect(document.title).toBe(`Agent One${DOT}Gamut`))
 
     mocks.routeLocation = location({ kind: 'session', id: 'session-1' }, 'agent-one')
     mocks.routerMatches = [

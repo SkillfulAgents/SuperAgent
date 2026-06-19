@@ -33,7 +33,7 @@ const PROVIDER_DESCRIPTIONS: Partial<Record<LlmProviderId, string>> = {
   anthropic: 'Direct API access to Claude models.',
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS-managed Claude inference with IAM or API key credentials.',
-  platform: 'Use credentials provided by your Superagent account.',
+  platform: 'Use credentials provided by your Gamut account.',
 }
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'

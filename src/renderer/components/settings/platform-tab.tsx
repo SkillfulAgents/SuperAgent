@@ -263,7 +263,7 @@ function NotConnectedEmptyState({ readOnly, isLaunching, onConnect }: NotConnect
         <div className="rounded-full bg-muted p-3">
           <BadgeX className="h-5 w-5 text-muted-foreground" />
         </div>
-        <h3 className="text-sm font-normal">No Superagent account connected to this workspace</h3>
+        <h3 className="text-sm font-normal">No Gamut account connected to this workspace</h3>
         {!readOnly && (
           <div className="w-full max-w-sm mt-3 space-y-2">
             {showKeyInput ? (

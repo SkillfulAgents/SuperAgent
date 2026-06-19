@@ -21,7 +21,7 @@ export function createTray(
   const icon = createTrayIcon()
 
   tray = new Tray(icon)
-  tray.setToolTip('Superagent')
+  tray.setToolTip('Gamut')
 
   // On Windows, clicking the tray icon should show/focus the window
   if (process.platform === 'win32') {
@@ -69,7 +69,7 @@ export function setTrayVisible(visible: boolean): void {
     if (apiPortRef > 0) {
       const icon = createTrayIcon()
       tray = new Tray(icon)
-      tray.setToolTip('Superagent')
+      tray.setToolTip('Gamut')
 
       // On Windows, clicking the tray icon should show/focus the window
       if (process.platform === 'win32') {
@@ -78,7 +78,7 @@ export function setTrayVisible(visible: boolean): void {
 
       // Set initial simple menu, then update async
       const initialMenu = Menu.buildFromTemplate([
-        { label: 'Open Superagent', click: () => showWindow() },
+        { label: 'Open Gamut', click: () => showWindow() },
         { type: 'separator' },
         { label: 'Loading...', enabled: false },
         { type: 'separator' },
@@ -198,7 +198,7 @@ async function updateTrayMenu(): Promise<void> {
   // Build menu template
   const menuTemplate: Electron.MenuItemConstructorOptions[] = [
     {
-      label: 'Open Superagent',
+      label: 'Open Gamut',
       click: () => showWindow(),
     },
     { type: 'separator' },
