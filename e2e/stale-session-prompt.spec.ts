@@ -234,14 +234,16 @@ test.describe('Stale Session Surface', () => {
   })
 
   // -------------------------------------------------------------------------
-  // Scenario 6 — "Start with Summary"
+  // Scenario 6 — "Start with Summary" happy path (lazy-create flow)
   //
-  // getConfiguredLlmClient() throws ("LLM API key not configured") in E2E_MOCK
-  // mode, so the branch endpoint returns 502 and the popover surfaces the error
-  // + a Retry in place. The full happy path (navigation + carried-context card)
-  // is covered by session-summary-service unit tests that stub the LLM client.
+  // The summarize endpoint is mocked so no real LLM call is needed. Clicking
+  // "Start with Summary" navigates to the agent's new-chat composer with a
+  // carried-summary card above it — no session is created yet. A session is
+  // created only when the user sends. After send, the transcript splitter detects
+  // the seed sentinel and renders a "Continued from previous conversation"
+  // context card; the user bubble shows only the bare message.
   // -------------------------------------------------------------------------
-  test('stale session: Start with Summary shows the summarizing state then an inline error + retry', async (
+  test('stale session: Start with Summary navigates to new-chat composer and creates session on send', async (
     { page, request },
     testInfo,
   ) => {
@@ -251,21 +253,44 @@ test.describe('Stale Session Surface', () => {
     await openStaleAtRest(page, sessionPage, agent, sessionId)
     await expect(page.locator('[data-testid="stale-toast"]')).toBeVisible({ timeout: 20000 })
 
+    // Mock the summarize endpoint so no real LLM call is needed.
+    await page.route('**/api/agents/*/sessions/summarize', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ summary: '## Goal\nCarried summary for E2E.' }),
+      })
+    })
+
     await page.locator('[data-testid="stale-new-chat-trigger"]').click()
     await page.locator('[data-testid="stale-new-chat-summary"]').click()
 
-    // The spinner is transient — it flips to the error as soon as the 502 lands,
-    // so accept "summarizing OR error" to prove the action fired without racing
-    // its disappearance.
-    await expect(
-      page
-        .locator('[data-testid="stale-new-chat-summarizing"]')
-        .or(page.getByText(/couldn't summarize right now/i)),
-    ).toBeVisible({ timeout: 15000 })
+    // Lands on the agent's new-chat composer with the carried-summary card above
+    // it. No session has been created yet.
+    await expect(page.locator('[data-testid="carried-summary-card"]')).toBeVisible({ timeout: 15000 })
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page.locator('[data-testid="message-input"]')).not.toBeVisible()
 
-    // Error + Retry are surfaced inside the popover, where the click happened.
-    await expect(page.getByText(/couldn't summarize right now/i)).toBeVisible({ timeout: 15000 })
-    await expect(page.locator('[data-testid="stale-new-chat-retry"]')).toBeVisible()
+    // Expand the card and confirm the summary content is present.
+    await page.locator('[data-testid="carried-summary-toggle"]').click()
+    await expect(page.locator('[data-testid="carried-summary-body"]')).toContainText('Carried summary for E2E')
+
+    // Session is created only on send. Type into the AgentHome composer and
+    // click the send button (plain Enter does not submit here).
+    await page.locator('[data-testid="home-message-input"]').fill('continue here')
+    await page.locator('[data-testid="home-send-button"]').click()
+
+    // After send the transcript splitter detects the seed sentinel and renders a
+    // "Continued from previous conversation" context card.
+    await sessionPage.waitForUserMessageCount(1, 25000)
+    await expect(page.getByText('Continued from previous conversation')).toBeVisible({ timeout: 15000 })
+
+    // The user bubble shows only the bare message, not the seeded context block.
+    await expect(page.getByText('continue here')).toBeVisible()
+    await expect(page.locator('[data-testid="carried-summary-card"]')).toHaveCount(0)
+    // The seeded summary block must NOT appear in the post-send transcript: the user
+    // bubble shows only the bare message, and the context card is collapsed by default.
+    await expect(page.getByText('Carried summary for E2E')).toHaveCount(0)
   })
 
   // -------------------------------------------------------------------------
