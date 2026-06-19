@@ -9,6 +9,14 @@ vi.mock('../llm-provider/helpers', () => ({
   }),
 }))
 
+// resolveActiveProviderModel resolves the configured alias against the active
+// provider's catalog; that resolution is covered by the llm-provider tests, so
+// stub it to a passthrough here to keep this a pure summarize-pipeline test.
+vi.mock('../llm-provider', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../llm-provider')>()),
+  resolveActiveProviderModel: (selection: string) => selection,
+}))
+
 // loadTranscriptEntries reads JSONL off disk; stub the file layer so we can feed fixtures.
 const mockReadJsonlFile = vi.fn()
 vi.mock('@shared/lib/utils/file-storage', () => ({

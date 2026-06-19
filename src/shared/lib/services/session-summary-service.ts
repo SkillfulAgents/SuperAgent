@@ -7,6 +7,7 @@
  */
 
 import { getConfiguredLlmClient } from '../llm-provider/helpers'
+import { resolveActiveProviderModel } from '../llm-provider'
 import { getEffectiveModels } from '../config/settings'
 import { withRetry } from '@shared/lib/utils/retry'
 import { BRANCH_PREAMBLE_SENTINEL, SUMMARY_OUTPUT_FLOOR_TOKENS, SUMMARY_OUTPUT_CAP_TOKENS, SUMMARY_OUTPUT_RATIO } from '../stale-session/stale-session-config'
@@ -90,12 +91,11 @@ function clamp(n: number, lo: number, hi: number): number {
  */
 export async function summarizeText(text: string, priorBoundarySummary?: string): Promise<string> {
   const client = getConfiguredLlmClient()
-  // TODO: adopt resolveActiveProviderModel(getEffectiveModels().summarizerModel,
-  // 'summarizer') once the model-catalog work (#286) lands, so this resolves the
-  // configured alias to the active provider's concrete model. Matches the other
-  // summarizer call sites (naming, agent-template, skillset), which pass the raw
-  // value today and will migrate in the same sweep.
-  const model = getEffectiveModels().summarizerModel
+  // Resolve the configured summarizer selection against the active provider's
+  // catalog (concrete id or bare family alias) instead of sending the raw alias,
+  // so summarization stays model/provider-agnostic. Matches the other summarizer
+  // call sites (naming, agent-template, skillset, scheduled-tasks).
+  const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
   const input = (priorBoundarySummary ? `[Earlier summary]\n${priorBoundarySummary}\n\n` : '') + text
   const maxTokens = clamp(
     Math.round(estTokens(input) * SUMMARY_OUTPUT_RATIO),
