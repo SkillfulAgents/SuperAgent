@@ -306,6 +306,28 @@ describe('SessionChatColumn Start with Summary', () => {
     expect(onStartFresh).not.toHaveBeenCalled()
     expect(await screen.findByText("Couldn't summarize right now")).toBeInTheDocument()
   })
+
+  it('drops the in-flight guard on navigate-away: a late summarize does not stash or navigate', async () => {
+    let resolveSummarize: (v: { summary: string }) => void = () => {}
+    mockSummarize.mockReturnValueOnce(new Promise((res) => { resolveSummarize = res }))
+    const onStartFresh = vi.fn()
+
+    const { unmount } = renderWithProviders(
+      <>
+        <SessionChatColumn {...staleProps} onStartFresh={onStartFresh} />
+        <StoreProbe />
+      </>
+    )
+
+    await clickStartSummary() // handler suspends on the pending summarize
+    unmount() // user navigates away; the [sessionId] cleanup clears actionActiveRef
+    resolveSummarize({ summary: '## Goal\nFinish auth' })
+    await new Promise((r) => setTimeout(r, 0)) // flush the post-await continuation
+
+    expect(onStartFresh).not.toHaveBeenCalled()
+    expect(probedStore?.get(summaryKey('agent-1'))).toBeUndefined()
+    expect(probedStore?.get('agent:agent-1')).toBeUndefined()
+  })
 })
 
 describe('SessionChatColumn stale gate', () => {

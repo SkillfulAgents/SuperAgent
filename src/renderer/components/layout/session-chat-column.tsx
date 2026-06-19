@@ -118,6 +118,10 @@ export function SessionChatColumn({
   const [isSummarizing, setIsSummarizing] = useState(false)
   const [staleError, setStaleError] = useState<string | null>(null)
   const actionActiveRef = useRef(false)
+  // If the user navigates away (unmount) or switches conversations while a
+  // summarize is in flight, drop the in-flight guard so a late-resolving
+  // summarize cannot stash + navigate after they have left.
+  useEffect(() => () => { actionActiveRef.current = false }, [sessionId])
   // Getter for the in-session composer's live state, registered by MessageInput.
   // "Start fresh" reads it to carry text + files + model + effort into the new chat.
   const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null)
@@ -128,6 +132,16 @@ export function SessionChatColumn({
   const draftStore = useDraftsStore()
   const draftKey = `session:${sessionId}`
   const summarizeSession = useSummarizeSession()
+
+  // Move the live composer (text + files + model + effort) into the agent's
+  // new-chat composer and clear the source draft. Shared by both toast actions;
+  // a move, not a copy. Start with Summary writes its summary key on top.
+  const stashComposerForNewChat = useCallback(() => {
+    const { draftText, carryover } = splitSnapshotForHandoff(composerSnapshotRef.current?.())
+    if (draftText !== undefined) draftStore.set(`agent:${agentSlug}`, draftText)
+    draftStore.set(carryoverKey(agentSlug), carryover)
+    draftStore.set(draftKey, undefined)
+  }, [agentSlug, draftStore, draftKey])
 
   // The toast owns the footer slot only at rest; once active, the activity
   // indicator (rendered by SessionThread) owns it instead. View-only users can't
@@ -146,11 +160,8 @@ export function SessionChatColumn({
     try {
       const { summary } = await summarizeSession.mutateAsync({ agentSlug, fromSessionId: sessionId })
       if (!actionActiveRef.current) return
-      const { draftText, carryover } = splitSnapshotForHandoff(composerSnapshotRef.current?.())
-      if (draftText !== undefined) draftStore.set(`agent:${agentSlug}`, draftText)
-      draftStore.set(carryoverKey(agentSlug), carryover)
+      stashComposerForNewChat()
       draftStore.set(summaryKey(agentSlug), { summary, fromSessionId: sessionId } satisfies NewChatSummary)
-      draftStore.set(draftKey, undefined)
       actionActiveRef.current = false
       onStartFresh?.()
     } catch {
@@ -158,21 +169,15 @@ export function SessionChatColumn({
     } finally {
       setIsSummarizing(false)
     }
-  }, [agentSlug, sessionId, summarizeSession, draftStore, draftKey, onStartFresh])
+  }, [agentSlug, sessionId, summarizeSession, stashComposerForNewChat, draftStore, onStartFresh])
 
   // Start fresh: snapshot the live composer (text + files + model + effort), carry
   // it into the agent's new-chat composer, and navigate there. No session is
   // created until the user actually sends — the normal AgentHome path owns that.
   const handleStartFresh = useCallback(() => {
-    const { draftText, carryover } = splitSnapshotForHandoff(composerSnapshotRef.current?.())
-    // Text rides the agent's draft key; only overwrite when present so an empty
-    // Start fresh doesn't clobber an existing agent-home draft.
-    if (draftText !== undefined) draftStore.set(`agent:${agentSlug}`, draftText)
-    draftStore.set(carryoverKey(agentSlug), carryover)
-    // This is a move, not a copy — clear the source session's text draft.
-    draftStore.set(draftKey, undefined)
+    stashComposerForNewChat()
     onStartFresh?.()
-  }, [agentSlug, draftStore, draftKey, onStartFresh])
+  }, [stashComposerForNewChat, onStartFresh])
 
   return (
     <>
