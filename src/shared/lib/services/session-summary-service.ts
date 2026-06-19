@@ -14,13 +14,14 @@ import {
   pruneTranscript,
   budgetPrunedLines,
   renderPrunedLines,
+  estTokens,
+  textFromContent,
+  isMessageEntry,
 } from './transcript-prune'
 import { getSessionJsonlPath, readJsonlFile } from '@shared/lib/utils/file-storage'
 import type {
   JsonlEntry,
-  JsonlMessageEntry,
   JsonlSystemEntry,
-  ContentBlock,
 } from '@shared/lib/types/agent'
 
 // ============================================================================
@@ -31,30 +32,10 @@ const IN_CONTAINER_JSONL = (sessionId: string) =>
   `.claude/projects/-workspace/${sessionId}.jsonl`
 
 // ============================================================================
-// Token estimation
-// ============================================================================
-
-/** Cheap character-count heuristic; 4 chars ≈ 1 token. */
-function estTokens(s: string): number {
-  return Math.ceil(s.length / 4)
-}
-
-// ============================================================================
 // Transcript loader (real I/O — covered by E2E, not unit tests)
 // ============================================================================
-
-/** Extract plain text from a content field (string or ContentBlock[]). */
-function extractText(content: string | ContentBlock[]): string {
-  if (typeof content === 'string') return content
-  return content
-    .filter((b): b is ContentBlock & { type: 'text'; text: string } => b.type === 'text')
-    .map((b) => b.text)
-    .join('')
-}
-
-function isMessageEntry(entry: JsonlEntry): entry is JsonlMessageEntry {
-  return entry.type === 'user' || entry.type === 'assistant'
-}
+// estTokens, textFromContent, and isMessageEntry are shared with the prune
+// module; import them rather than re-declaring (single source of truth).
 
 function isSystemEntry(entry: JsonlEntry): entry is JsonlSystemEntry {
   return entry.type === 'system'
@@ -63,6 +44,15 @@ function isSystemEntry(entry: JsonlEntry): entry is JsonlSystemEntry {
 // ============================================================================
 // New summarization path (Task 2)
 // ============================================================================
+//
+// Build vs buy: there is no drop-in Anthropic vendor for this flow. Compaction /
+// context-editing is observe-only and cannot be triggered on demand from the SDK,
+// so it cannot drive a user-initiated, pre-navigation summarize. We prune locally
+// (transcript-prune) and summarize here instead. Output is plain markdown rather
+// than Structured Outputs because it feeds both a human-readable card and the next
+// session seed, so a JSON envelope adds parsing for no gain and reintroduces the
+// json-fence parse failure the earlier JSON version hit. The HTTP layer still
+// Zod-validates the {summary} response and returns 502 on an empty result.
 
 const HANDOFF_SUMMARY_INSTRUCTION = `You are summarizing a coding-agent conversation so a fresh session can continue the work seamlessly. Another assistant will read ONLY your summary, so it must carry everything needed to continue and nothing else. Write concise markdown with these sections (omit a section only if it is genuinely empty):
 
@@ -132,7 +122,7 @@ export async function loadTranscriptEntries(
       for (let j = i + 1; j < entries.length && j <= i + 3; j++) {
         const next = entries[j]
         if (isMessageEntry(next) && next.isCompactSummary) {
-          const summaryText = extractText(next.message.content)
+          const summaryText = textFromContent(next.message.content)
           if (summaryText) priorBoundarySummary = summaryText
           break
         }

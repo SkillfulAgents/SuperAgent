@@ -37,14 +37,14 @@ function line(kind: PrunedLine['kind'], text: string): PrunedLine {
   return { kind, text, tokens: estTokens(text) }
 }
 
-function isMessageEntry(e: JsonlEntry): e is JsonlMessageEntry {
+export function isMessageEntry(e: JsonlEntry): e is JsonlMessageEntry {
   return e.type === 'user' || e.type === 'assistant'
 }
 function isAttachmentEntry(e: JsonlEntry): e is JsonlAttachmentEntry {
   return e.type === 'attachment'
 }
 
-function textFromContent(content: string | ContentBlock[]): string {
+export function textFromContent(content: string | ContentBlock[]): string {
   if (typeof content === 'string') return content
   return content
     .filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text')
