@@ -140,7 +140,7 @@ test.describe('Stale Session Surface', () => {
 
     const toast = page.locator('[data-testid="stale-toast"]')
     await expect(toast).toBeVisible({ timeout: 20000 })
-    await expect(toast).toContainText('Continue this conversation here?')
+    await expect(toast).toContainText('Start a new conversation?')
   })
 
   // -------------------------------------------------------------------------
@@ -197,9 +197,10 @@ test.describe('Stale Session Surface', () => {
 
     await page.locator('[data-testid="stale-learn-more-trigger"]').click()
 
-    await expect(page.getByText('Why start a new conversation?')).toBeVisible({ timeout: 15000 })
-    await expect(page.getByText('Agents can have many conversations.')).toBeVisible()
-    await expect(page.getByText('Long conversations get heavy.')).toBeVisible()
+    const learnMore = page.locator('[data-testid="stale-learn-more-popover"]')
+    await expect(learnMore).toBeVisible({ timeout: 15000 })
+    await expect(learnMore).toContainText('Your agent can handle many conversations at once.')
+    await expect(learnMore).toContainText('Agents re-read everything each time they reply.')
   })
 
   // -------------------------------------------------------------------------

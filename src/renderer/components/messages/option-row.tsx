@@ -9,6 +9,9 @@ export interface OptionRowProps {
   testId: string
   /** Persistent selection: tints the row, keeps the blurb open, and renders a check. */
   isSelected?: boolean
+  /** Keep the blurb open at rest (no hover needed) without the selected tint/check —
+   *  e.g. forward-action rows where the description should always be visible. */
+  alwaysShowBlurb?: boolean
   /** Trailing affordance shown when the row is not selected (e.g. a forward chevron).
    *  The node controls its own hover reveal via its own classes. Ignored when selected. */
   trailing?: ReactNode
@@ -29,6 +32,7 @@ export function OptionRow({
   onClick,
   testId,
   isSelected = false,
+  alwaysShowBlurb = false,
   trailing,
   disabled = false,
 }: OptionRowProps) {
@@ -48,7 +52,7 @@ export function OptionRow({
         <span
           className={cn(
             'overflow-hidden text-xs font-normal text-muted-foreground transition-[max-height,opacity,margin-top] duration-500 ease-out',
-            isSelected
+            isSelected || alwaysShowBlurb
               ? 'mt-0.5 max-h-16 opacity-100'
               : 'mt-0 max-h-0 opacity-0 group-hover:mt-0.5 group-hover:max-h-16 group-hover:opacity-100'
           )}

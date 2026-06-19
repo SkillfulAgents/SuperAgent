@@ -5,9 +5,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { OptionRow } from './option-row'
 
 // Forward-action affordance for the New conversation rows: a right-chevron in place
-// of the model picker's selection check, surfaced only on hover/focus to match the row.
+// of the model picker's selection check, always visible so each row reads as actionable.
 const FORWARD_CHEVRON = (
-  <ChevronRight className="h-3.5 w-3.5 shrink-0 self-center text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+  <ChevronRight className="h-3.5 w-3.5 shrink-0 self-center text-muted-foreground" />
 )
 
 export interface StaleSessionToastProps {
@@ -63,6 +63,7 @@ function NewChatActions({
             blurb="Keeps the context. Drops the cost."
             onClick={onStartSummary}
             testId="stale-new-chat-summary"
+            alwaysShowBlurb
             trailing={FORWARD_CHEVRON}
           />
         )}
@@ -78,6 +79,7 @@ function NewChatActions({
           }}
           disabled={isSummarizing}
           testId="stale-new-chat-fresh"
+          alwaysShowBlurb
           trailing={FORWARD_CHEVRON}
         />
       </div>
@@ -101,9 +103,10 @@ function NewChatActions({
 
 function TeachingPoint({ lead, children }: { lead: string; children: ReactNode }) {
   return (
-    <p className="text-xs text-muted-foreground">
-      <span className="font-semibold text-foreground">{lead}</span> {children}
-    </p>
+    <div className="text-xs">
+      <p className="font-semibold text-foreground">{lead}</p>
+      <p className="text-muted-foreground">{children}</p>
+    </div>
   )
 }
 
@@ -142,11 +145,12 @@ export function StaleSessionToast({
     return () => onMenuOpenChange?.(false)
   }, [newChatOpen, learnOpen, onMenuOpenChange])
 
+  // -mb-1 (−4px) trims the composer's pt-3 (12px) below us down to an 8px gap.
   return (
-    <div data-testid="stale-toast" className="mx-auto mb-2 w-full max-w-[740px] px-4">
-      <div className="flex items-center justify-between gap-4 rounded-lg border bg-muted/50 p-4">
+    <div data-testid="stale-toast" className="mx-auto -mb-1 w-full max-w-[740px] px-4">
+      <div className="flex items-center justify-between gap-4 rounded-2xl border bg-muted/50 p-4">
         <div className="flex min-w-0 max-w-[60%] flex-col gap-1.5">
-          <p className="text-sm font-semibold">Continue this conversation here?</p>
+          <p className="text-sm font-medium">Start a new conversation?</p>
           <p className="text-xs text-muted-foreground">
             This conversation is getting pretty long. It may be cheaper, faster, and more effective to
             start a new conversation.{' '}
@@ -165,16 +169,17 @@ export function StaleSessionToast({
                 align="start"
                 onOpenAutoFocus={(e) => e.preventDefault()}
                 onCloseAutoFocus={(e) => e.preventDefault()}
-                className="flex w-80 flex-col gap-1.5 rounded-lg px-3 py-2"
+                className="flex w-80 flex-col gap-1.5 rounded-lg px-4 py-3"
                 data-testid="stale-learn-more-popover"
               >
-                <p className="text-sm font-medium">Why start a new conversation?</p>
-                <TeachingPoint lead="Agents can have many conversations.">
-                  Start a new one for each new task. They all stay under the same agent.
+                <TeachingPoint lead="Your agent can handle many conversations at once.">
+                  It works better and smarter with focused conversations. We recommend starting a new
+                  conversation with your agent for each task so it isn&apos;t wasting time or tokens on
+                  unrelated chat history.
                 </TeachingPoint>
-                <TeachingPoint lead="Long conversations get heavy.">
-                  The longer a conversation runs, the more the agent re-reads every time you send, so it
-                  gets slower, costs more, and answers less sharply. A fresh conversation resets that.
+                <TeachingPoint lead="Agents re-read everything each time they reply.">
+                  That&apos;s why long conversations slow down and get expensive. Start fresh to keep the
+                  agent fast and sharp.
                 </TeachingPoint>
               </PopoverContent>
             </Popover>
@@ -200,7 +205,7 @@ export function StaleSessionToast({
             <PopoverContent
               side="top"
               align="end"
-              className="w-80 px-1 py-2"
+              className="w-64 px-1 py-2"
               data-testid="stale-new-chat-popover"
             >
               <NewChatActions
