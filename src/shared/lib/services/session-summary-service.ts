@@ -90,6 +90,11 @@ function clamp(n: number, lo: number, hi: number): number {
  */
 export async function summarizeText(text: string, priorBoundarySummary?: string): Promise<string> {
   const client = getConfiguredLlmClient()
+  // TODO: adopt resolveActiveProviderModel(getEffectiveModels().summarizerModel,
+  // 'summarizer') once the model-catalog work (#286) lands, so this resolves the
+  // configured alias to the active provider's concrete model. Matches the other
+  // summarizer call sites (naming, agent-template, skillset), which pass the raw
+  // value today and will migrate in the same sweep.
   const model = getEffectiveModels().summarizerModel
   const input = (priorBoundarySummary ? `[Earlier summary]\n${priorBoundarySummary}\n\n` : '') + text
   const maxTokens = clamp(
