@@ -23,6 +23,7 @@ import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import { resolveContainerModel } from './resolve-model'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 const execAsync = promisify(exec)
@@ -974,6 +975,12 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
     const timeoutMs = 60000 // 60 second timeout
 
+    // Resolve stored selections (bare aliases or concrete ids) to the active
+    // provider's concrete wire id before the container ever sees them.
+    const resolvedModel = resolveContainerModel(options.model, 'agent')
+    const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
+    const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
+
     try {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
@@ -987,8 +994,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           availableEnvVars: options.availableEnvVars,
           initialMessage: options.initialMessage,
           initialMessageUuid: options.initialMessageUuid,
-          model: options.model,
-          browserModel: options.browserModel,
+          model: resolvedModel,
+          browserModel: resolvedBrowserModel,
+          dashboardBuilderModel: resolvedDashboardBuilderModel,
           maxOutputTokens: options.maxOutputTokens,
           maxThinkingTokens: options.maxThinkingTokens,
           maxTurns: options.maxTurns,
@@ -1091,7 +1099,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
     const timeoutMs = 30000 // 30 second timeout
     const effort = options?.effort
-    const model = options?.model
+    const model = resolveContainerModel(options?.model, 'agent')
     const shouldQuery = options?.shouldQuery
 
     try {

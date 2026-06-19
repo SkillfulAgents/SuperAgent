@@ -11,6 +11,7 @@ interface SessionMetadata {
   availableEnvVars?: string[];
   model?: string;
   browserModel?: string;
+  dashboardBuilderModel?: string;
   maxOutputTokens?: number;
   maxThinkingTokens?: number;
   maxTurns?: number;

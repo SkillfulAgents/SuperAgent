@@ -89,7 +89,7 @@ test.describe('Settings Page', () => {
 
     // Click Browser tab
     await goToTab(page, 'browser')
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-model-trigger"]')).toBeVisible()
 
     // Click General tab
     await goToTab(page, 'general')
@@ -101,9 +101,9 @@ test.describe('Settings Page', () => {
     await goToTab(page, 'llm')
 
     // Provider radio cards replace the old <select>; the active provider's card
-    // expands inline to show its two model selectors (default + summarizer).
+    // expands inline to show its three model selectors (default + summarizer + dashboard).
     await expect(page.locator('[data-testid="llm-provider-card-anthropic"]')).toBeVisible()
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toHaveCount(2)
+    await expect(page.locator('[data-testid="settings-model-trigger"]')).toHaveCount(3)
   })
 
   test('Runtime tab shows container config fields', async ({ page }) => {
@@ -122,7 +122,7 @@ test.describe('Settings Page', () => {
     await openSettings(page)
     await goToTab(page, 'browser')
 
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-model-trigger"]')).toBeVisible()
     await expect(page.locator('#max-browser-tabs')).toBeVisible()
     await expect(page.locator('#browser-host')).toBeVisible()
   })

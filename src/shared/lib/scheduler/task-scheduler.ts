@@ -191,6 +191,7 @@ class TaskScheduler {
       initialMessage: task.prompt,
       model: task.model || models.agentModel,
       browserModel: models.browserModel,
+      dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },
       ...(task.effort ? { effort: task.effort as EffortLevel } : {}),
     })

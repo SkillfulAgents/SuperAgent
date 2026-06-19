@@ -71,12 +71,12 @@ const mockSettings = {
         id: 'anthropic',
         name: 'Anthropic',
         isConfigured: true,
-        availableModels: [],
-        composerModels: [
-          { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
-          { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
-          { family: 'opus', modelId: 'opus', label: 'Opus' },
+        catalog: [
+          { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
+          { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
+          { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
         ],
+        defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
       },
     ],
   },
@@ -736,7 +736,8 @@ describe('MessageInput', () => {
     )
 
     await user.click(screen.getByTestId('composer-options-trigger'))
-    await user.click(await screen.findByTestId('model-option-haiku'))
+    await user.click(await screen.findByTestId('model-family-haiku'))
+    await user.click(await screen.findByTestId('model-pinned-claude-haiku-4-5'))
 
     const input = screen.getByTestId('message-input')
     await user.type(input, 'Switch to haiku')
@@ -745,7 +746,7 @@ describe('MessageInput', () => {
     await waitFor(() => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'haiku',
+          model: 'claude-haiku-4-5',
           content: 'Switch to haiku',
         })
       )
@@ -762,7 +763,8 @@ describe('MessageInput', () => {
     await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('effort-option-low'))
     await user.click(screen.getByTestId('composer-options-trigger'))
-    await user.click(await screen.findByTestId('model-option-sonnet'))
+    await user.click(await screen.findByTestId('model-family-sonnet'))
+    await user.click(await screen.findByTestId('model-pinned-claude-sonnet-4-6'))
 
     const input = screen.getByTestId('message-input')
     await user.type(input, 'Combined')
@@ -772,7 +774,7 @@ describe('MessageInput', () => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({
           effort: 'low',
-          model: 'sonnet',
+          model: 'claude-sonnet-4-6',
           content: 'Combined',
         })
       )

@@ -146,7 +146,7 @@ test.describe('Getting Started Wizard', () => {
     // Step 5: Privacy
     await wizardPage.clickNext()
     await wizardPage.expectStep(5)
-    await expect(page.getByText('Help improve Superagent')).toBeVisible()
+    await expect(page.getByText('Help improve Gamut')).toBeVisible()
 
     // Step 6: Create Agent (skippable)
     await wizardPage.clickNext()

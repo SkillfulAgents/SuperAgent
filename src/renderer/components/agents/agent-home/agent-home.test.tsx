@@ -43,9 +43,8 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   }),
 }))
 
-// Default to "loaded, empty" — most tests don't care, and the new
-// first-session Opus tests want this state. Specific tests that need a
-// non-empty list override mockSessionsData before rendering.
+// Default to "loaded, empty" — most tests don't care. Specific tests that need
+// a non-empty list override mockSessionsData before rendering.
 let mockSessionsData: unknown = []
 
 vi.mock('@renderer/hooks/use-sessions', () => ({
@@ -56,7 +55,7 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useUpdateSessionName: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
 }))
 
-// Settings drive ComposerOptions: composerModels comes from llmProviderStatus,
+// Settings drive ComposerOptions: the catalog comes from llmProviderStatus,
 // fallback model from settings.models.agentModel.
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => ({
@@ -68,12 +67,12 @@ vi.mock('@renderer/hooks/use-settings', () => ({
           id: 'anthropic',
           name: 'Anthropic',
           isConfigured: true,
-          availableModels: [],
-          composerModels: [
-            { family: 'opus', modelId: 'opus', label: 'Opus' },
-            { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
-            { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
+          catalog: [
+            { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+            { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
+            { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
           ],
+          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
         },
       ],
     },

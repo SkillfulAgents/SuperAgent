@@ -1,24 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
+import type { ModelDefinition } from './model-catalog-schema'
 
 export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock' | 'platform'
 
-export interface ModelOption {
-  value: string
-  label: string
-}
-
-export type ModelPurpose = 'agent' | 'summarizer' | 'browser'
-
-/** Claude families exposed in the per-message model selector. */
-export const COMPOSER_MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'] as const
-export type ComposerModelFamily = typeof COMPOSER_MODEL_FAMILIES[number]
-
-export interface ComposerModel {
-  family: ComposerModelFamily
-  modelId: string
-  label: string
-}
+export type ModelPurpose = 'agent' | 'summarizer' | 'browser' | 'dashboard'
 
 export abstract class BaseLlmProvider {
   abstract readonly id: LlmProviderId
@@ -52,29 +38,41 @@ export abstract class BaseLlmProvider {
   /** Create an Anthropic-compatible SDK client configured for this provider. */
   abstract createClient(): Anthropic
 
-  /** Get the models available for this provider. */
-  abstract getAvailableModels(): ModelOption[]
+  /**
+   * The provider's built-in catalog of concrete model ids (shipped in code).
+   * Each entry is a wire-ready model id with display metadata, family grouping,
+   * and an `isLatest` flag marking what a bare family alias resolves to.
+   * See ./model-catalog.ts for how a stored selection resolves against this.
+   */
+  abstract getBuiltinCatalog(): ModelDefinition[]
 
-  /** Get the default model for a given purpose. */
+  /**
+   * Get the default model for a given purpose, as a bare family alias
+   * (e.g. 'opus') so defaults ride upgrades. The resolver alias-resolves
+   * this to a concrete id; it is the ultimate fallback when a selection
+   * can't be matched.
+   */
   abstract getDefaultModel(purpose: ModelPurpose): string
 
   /**
-   * Models surfaced in the composer's per-message family selector
-   * (Haiku / Sonnet / Opus / Fable). The wire format is the family alias because
-   * the agent container's toModelAlias() collapses every pinned or
-   * region-prefixed ID to the alias before the SDK call — so all providers
-   * we support today (Anthropic, OpenRouter, Platform, Bedrock) share the
-   * same three options. Override only if a provider needs different
-   * families or wants to hide the selector by returning [].
-   * See agent-container/src/claude-code.ts:263.
+   * All three per-purpose defaults as bare aliases, keyed to match the
+   * `models` block of settings. Used to reset model selections when the
+   * active provider changes, so a pin from the previous provider's catalog
+   * (which may not exist for the new one, e.g. a bare-Claude id on Bedrock)
+   * can't leak across providers.
    */
-  getComposerModels(): ComposerModel[] {
-    return [
-      { family: 'fable', modelId: 'fable', label: 'Fable' },
-      { family: 'opus', modelId: 'opus', label: 'Opus' },
-      { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
-      { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
-    ]
+  getDefaultModels(): {
+    summarizerModel: string
+    agentModel: string
+    browserModel: string
+    dashboardBuilderModel: string
+  } {
+    return {
+      summarizerModel: this.getDefaultModel('summarizer'),
+      agentModel: this.getDefaultModel('agent'),
+      browserModel: this.getDefaultModel('browser'),
+      dashboardBuilderModel: this.getDefaultModel('dashboard'),
+    }
   }
 
   /** Get env vars to inject into agent containers. */

@@ -794,6 +794,7 @@ class ChatIntegrationManager {
       initialMessage: messageText,
       model: integration.model || models.agentModel,
       browserModel: models.browserModel,
+      dashboardBuilderModel: models.dashboardBuilderModel,
       ...(integration.effort ? { effort: integration.effort as EffortLevel } : {}),
       ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
     })

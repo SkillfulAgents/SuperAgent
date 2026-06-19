@@ -10,16 +10,14 @@ vi.mock('@renderer/hooks/use-settings', () => ({
 
 import { SettingsModelSelect } from './settings-model-select'
 
-const AVAILABLE_MODELS = [
-  { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
-  { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
-  { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
-  { value: 'claude-opus-4-7', label: 'Claude 4.7 Opus' },
-]
-const COMPOSER_MODELS = [
-  { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
-  { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
-  { family: 'opus', modelId: 'opus', label: 'Opus' },
+const ALL = ['low', 'medium', 'high', 'xhigh', 'max']
+const STD = ['low', 'medium', 'high']
+const CATALOG = [
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
+  { id: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL },
 ]
 
 beforeEach(() => {
@@ -27,53 +25,75 @@ beforeEach(() => {
     data: {
       llmProvider: 'anthropic',
       llmProviderStatus: [
-        { id: 'anthropic', name: 'Anthropic', isConfigured: true, availableModels: AVAILABLE_MODELS, composerModels: COMPOSER_MODELS },
+        {
+          id: 'anthropic',
+          name: 'Anthropic',
+          isConfigured: true,
+          catalog: CATALOG,
+          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+        },
       ],
     },
   })
 })
 
-describe('SettingsModelSelect', () => {
-  it('persists a concrete model id (not the family alias) when a family is picked', async () => {
+describe('SettingsModelSelect (two-layered)', () => {
+  it('stores the bare family alias when "latest" is picked', async () => {
     const user = userEvent.setup()
     const onModelChange = vi.fn()
     render(<SettingsModelSelect model="claude-haiku-4-5" onModelChange={onModelChange} />)
 
-    await user.click(screen.getByTestId('composer-options-trigger'))
-    await user.click(await screen.findByTestId('model-option-sonnet'))
-
-    expect(onModelChange).toHaveBeenCalledWith('claude-sonnet-4-6')
-    expect(onModelChange).not.toHaveBeenCalledWith('sonnet')
-  })
-
-  it('persists the bare family alias when emit="family"', async () => {
-    const user = userEvent.setup()
-    const onModelChange = vi.fn()
-    render(<SettingsModelSelect model="claude-sonnet-4-6" onModelChange={onModelChange} emit="family" />)
-
-    await user.click(screen.getByTestId('composer-options-trigger'))
-    await user.click(await screen.findByTestId('model-option-opus'))
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    await user.click(await screen.findByTestId('model-family-opus'))
+    await user.click(await screen.findByTestId('model-latest-opus'))
 
     expect(onModelChange).toHaveBeenCalledWith('opus')
   })
 
-  it('keeps the exact pinned version when re-picking the current family', async () => {
+  it('stores the concrete id when a specific version is pinned', async () => {
     const user = userEvent.setup()
     const onModelChange = vi.fn()
-    // Currently on Opus 4.7 — re-picking Opus must not downgrade to 4.6.
-    render(<SettingsModelSelect model="claude-opus-4-7" onModelChange={onModelChange} />)
+    render(<SettingsModelSelect model="claude-haiku-4-5" onModelChange={onModelChange} />)
 
-    await user.click(screen.getByTestId('composer-options-trigger'))
-    await user.click(await screen.findByTestId('model-option-opus'))
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    await user.click(await screen.findByTestId('model-family-opus'))
+    await user.click(await screen.findByTestId('model-pinned-claude-opus-4-7'))
 
-    expect(onModelChange).not.toHaveBeenCalled()
+    expect(onModelChange).toHaveBeenCalledWith('claude-opus-4-7')
+  })
+
+  it('marks a bare alias selection as "latest" in the trigger', () => {
+    render(<SettingsModelSelect model="opus" onModelChange={vi.fn()} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Opus · latest')
+  })
+
+  it('marks a concrete id selection as "pinned" in the trigger', () => {
+    render(<SettingsModelSelect model="claude-opus-4-8" onModelChange={vi.fn()} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Opus 4.8 · pinned')
   })
 
   it('does not render the effort section when includeEffort is false', async () => {
     const user = userEvent.setup()
     render(<SettingsModelSelect model="claude-haiku-4-5" onModelChange={vi.fn()} includeEffort={false} />)
 
-    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(screen.getByTestId('settings-model-trigger'))
     expect(screen.queryByText('Effort')).not.toBeInTheDocument()
+  })
+
+  it('hides xhigh/max effort for the selected Sonnet model', async () => {
+    const user = userEvent.setup()
+    render(
+      <SettingsModelSelect
+        model="claude-sonnet-4-6"
+        onModelChange={vi.fn()}
+        includeEffort
+        effort="medium"
+        onEffortChange={vi.fn()}
+      />,
+    )
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    expect(screen.getByTestId('effort-option-high')).toBeInTheDocument()
+    expect(screen.queryByTestId('effort-option-xhigh')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('effort-option-max')).not.toBeInTheDocument()
   })
 })
