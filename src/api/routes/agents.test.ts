@@ -3201,6 +3201,9 @@ describe('POST /:id/sessions/summarize', () => {
     vi.clearAllMocks()
     app = createApp()
     vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', frontmatter: { name: 'Test Agent' } } as any)
+    // clearAllMocks keeps implementations, so reset the source-session existence
+    // check each test (one case below flips it to false and must not leak).
+    vi.mocked(sessionExists).mockResolvedValue(true)
   })
 
   it('returns 400 and does not invoke summarizer when fromSessionId is missing', async () => {
@@ -3224,6 +3227,13 @@ describe('POST /:id/sessions/summarize', () => {
   it('returns 404 when the agent does not exist', async () => {
     vi.mocked(getAgent).mockResolvedValue(null)
     const res = await postJson(app, URL, { fromSessionId: 'sess-1' })
+    expect(res.status).toBe(404)
+    expect(summarizeTranscript).not.toHaveBeenCalled()
+  })
+
+  it('returns 404 and does not summarize when the source session transcript is missing', async () => {
+    vi.mocked(sessionExists).mockResolvedValue(false)
+    const res = await postJson(app, URL, { fromSessionId: 'ghost-session' })
     expect(res.status).toBe(404)
     expect(summarizeTranscript).not.toHaveBeenCalled()
   })
@@ -3305,5 +3315,26 @@ describe('POST /:id/sessions — seeded vs bare initialMessage', () => {
     expect(mockCreateSession).toHaveBeenCalledWith(
       expect.objectContaining({ initialMessage: 'add rate limiting' })
     )
+  })
+
+  it('names the session from the BARE message, never the seeded block', async () => {
+    // buildSeed output embeds the summary; if naming wrongly used initialMessage,
+    // the seeded block / summary text would leak into the generated title.
+    vi.mocked(buildSeed).mockReturnValue('SEEDED_BLOCK :: ## Goal Wiring auth :: add rate limiting')
+    mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Rate limiting' }] })
+
+    const res = await postJson(app, URL, {
+      message: 'add rate limiting',
+      seedSummary: '## Goal\nWiring auth.',
+      fromSessionId: 'sess-1',
+    })
+    expect(res.status).toBe(201)
+
+    // Naming is fire-and-forget; wait for the LLM call it makes.
+    await vi.waitFor(() => expect(mockLlmMessagesCreate).toHaveBeenCalled())
+    const namingPrompt = mockLlmMessagesCreate.mock.calls[0][0].messages[0].content as string
+    expect(namingPrompt).toContain('add rate limiting')
+    expect(namingPrompt).not.toContain('SEEDED_BLOCK')
+    expect(namingPrompt).not.toContain('Wiring auth')
   })
 })

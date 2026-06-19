@@ -19,7 +19,7 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
 import {
   buildSeed, summarizeText, summarizeTranscript, loadTranscriptEntries,
 } from './session-summary-service'
-import { SUMMARY_OUTPUT_FLOOR_TOKENS, SUMMARY_OUTPUT_CAP_TOKENS } from '../stale-session/stale-session-config'
+import { SUMMARY_OUTPUT_FLOOR_TOKENS, SUMMARY_OUTPUT_CAP_TOKENS, BRANCH_PREAMBLE_SENTINEL } from '../stale-session/stale-session-config'
 import { createSessionRequestSchema, summarizeRequestSchema, summarizeResponseSchema } from '../stale-session/stale-session-schema'
 
 describe('buildSeed', () => {
@@ -53,6 +53,27 @@ describe('buildSeed', () => {
     const sepAfter = lines.findIndex((l, i) => i > lastPath && l === '---')
     expect(sepAfter).toBeGreaterThan(lastPath)
     expect(lines.slice(sepAfter + 1).join('\n')).toBe('go')
+  })
+
+  it('emits the exact load-bearing shape (guards against reordering or wording drift)', () => {
+    const out = buildSeed({
+      fromSessionId: 'sess-9',
+      summary: '## Goal\nShip it.',
+      userMessage: 'continue',
+    })
+    expect(out).toBe(
+      [
+        `${BRANCH_PREAMBLE_SENTINEL} The summary below covers the earlier context.`,
+        '',
+        '## Goal\nShip it.',
+        '',
+        'If you need exact details (code, errors), read the full transcript at: .claude/projects/-workspace/sess-9.jsonl',
+        'Continue directly from where it left off. Do not recap or acknowledge this summary.',
+        '',
+        '---',
+        'continue',
+      ].join('\n'),
+    )
   })
 })
 
@@ -89,6 +110,14 @@ describe('summarizeText', () => {
     })
     const out = await summarizeText('some input')
     expect(out).toBe('Part A Part B')
+  })
+
+  it('treats a text block with no text field as empty (no "undefined" leaks in)', async () => {
+    mockCreate.mockResolvedValueOnce({
+      content: [{ type: 'text' }, { type: 'text', text: 'real' }],
+    })
+    const out = await summarizeText('some input')
+    expect(out).toBe('real')
   })
 
   it('includes [Earlier summary] prefix in prompt when priorBoundarySummary is provided', async () => {
@@ -269,6 +298,9 @@ describe('summarizeRequestSchema', () => {
 describe('summarizeResponseSchema', () => {
   it('rejects an empty summary', () => {
     expect(summarizeResponseSchema.safeParse({ summary: '' }).success).toBe(false)
+  })
+  it('rejects a whitespace-only summary', () => {
+    expect(summarizeResponseSchema.safeParse({ summary: '   \n\t ' }).success).toBe(false)
   })
   it('accepts a non-empty summary', () => {
     expect(summarizeResponseSchema.safeParse({ summary: '## Goal\nFix bug.' }).success).toBe(true)

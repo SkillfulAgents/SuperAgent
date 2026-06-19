@@ -88,4 +88,14 @@ describe('StaleSessionToast', () => {
     await user.click(screen.getByTestId('stale-learn-more-trigger'))
     expect(props.onMenuOpenChange).toHaveBeenCalledWith(true)
   })
+
+  it('reports onMenuOpenChange(false) on unmount so the scroll-to-bottom FAB is not left suppressed', async () => {
+    const user = userEvent.setup()
+    const props = makeProps()
+    const { unmount } = renderWithProviders(<StaleSessionToast {...props} />)
+    await user.click(screen.getByTestId('stale-new-chat-trigger'))
+    expect(props.onMenuOpenChange).toHaveBeenCalledWith(true)
+    unmount()
+    expect(props.onMenuOpenChange).toHaveBeenLastCalledWith(false)
+  })
 })
