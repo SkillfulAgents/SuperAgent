@@ -21,7 +21,7 @@ describe('StaleSessionToast', () => {
   it('renders the toast, title, and action buttons', () => {
     renderWithProviders(<StaleSessionToast {...makeProps()} />)
     expect(screen.getByTestId('stale-toast')).toBeInTheDocument()
-    expect(screen.getByText('Continue this conversation here?')).toBeInTheDocument()
+    expect(screen.getByText('Start a new conversation?')).toBeInTheDocument()
     expect(screen.getByTestId('stale-toast-ignore')).toBeInTheDocument()
     expect(screen.getByTestId('stale-new-chat-trigger')).toBeInTheDocument()
   })
