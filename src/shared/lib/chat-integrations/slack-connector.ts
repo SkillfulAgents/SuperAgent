@@ -133,6 +133,13 @@ export interface SlackMessageRoutingResult {
   effectiveChatId: string
   threadContext?: { channel: string; threadTs: string }
   threadKey?: string
+  /**
+   * True when this message is the bot's first appearance in an already-existing
+   * thread (the thread isn't in `activeThreads` yet). The caller should backfill
+   * earlier thread messages as context. Computed against `activeThreads` as
+   * passed in — i.e. before the caller marks this thread active.
+   */
+  isNewThreadEntry: boolean
 }
 
 export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessageRoutingResult {
@@ -143,7 +150,7 @@ export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessa
     const isMentioned = botUserId ? rawText.includes(`<@${botUserId}>`) : false
     if (!isMentioned) {
       if (!threadTs || !activeThreads.has(`${chatId}|${threadTs}`)) {
-        return { shouldProcess: false, effectiveChatId: chatId }
+        return { shouldProcess: false, effectiveChatId: chatId, isNewThreadEntry: false }
       }
     }
   }
@@ -152,16 +159,36 @@ export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessa
   let threadContext: { channel: string; threadTs: string } | undefined
   let threadKey: string | undefined
 
-  if (isChannel && config.answerInThread) {
+  // Reply inside a thread when either:
+  // - answerInThread is on (thread every channel message), or
+  // - the inbound message is itself already inside a thread — continue that
+  //   thread instead of dropping the reply into the main channel, even when
+  //   answerInThread is off (SUP-282).
+  const inExistingThread = !!threadTs
+  if (isChannel && (config.answerInThread || inExistingThread)) {
     const threadAnchor = threadTs || ts
-    if (config.newSessionPerThread) {
+    // Give the thread its own session (composite chatId) when newSessionPerThread
+    // is on, OR when answerInThread is off but the message is inside a thread.
+    // In the latter case the channel otherwise shares a single session across all
+    // threads, so the reply destination would live only in the mutable
+    // threadContextMap — which a concurrent message can overwrite before the reply
+    // streams back (replies arrive async on a separate SSE queue). Encoding the
+    // anchor in effectiveChatId makes the destination travel immutably with the
+    // session: resolveSlackChannel recovers it by parsing the composite id, so
+    // routing never depends on shared state a later message could clobber (SUP-282).
+    if (config.newSessionPerThread || (!config.answerInThread && inExistingThread)) {
       effectiveChatId = `${chatId}|${threadAnchor}`
     }
     threadContext = { channel: chatId, threadTs: threadAnchor }
     threadKey = `${chatId}|${threadAnchor}`
   }
 
-  return { shouldProcess: true, effectiveChatId, threadContext, threadKey }
+  // Joining an existing thread for the first time: backfill its history. Only
+  // when the message is itself in a thread (threadTs) and we haven't tracked
+  // that thread yet — a brand-new top-level message has no history to fetch.
+  const isNewThreadEntry = !!(threadKey && threadTs && !activeThreads.has(threadKey))
+
+  return { shouldProcess: true, effectiveChatId, threadContext, threadKey, isNewThreadEntry }
 }
 
 export function resolveSlackChannel(
@@ -180,6 +207,34 @@ export function resolveSlackChannel(
   }
 
   return { channel: effectiveChatId }
+}
+
+/**
+ * Insert `key` at the most-recently-used position of an insertion-ordered Set,
+ * evicting the oldest entries once size exceeds `max`. Keeps long-lived tracking
+ * sets bounded so a connector that touches more and more threads over a
+ * long-running process can't leak memory. Re-inserting an existing key refreshes
+ * its recency (delete + re-add).
+ */
+export function touchAndCapSet(set: Set<string>, key: string, max: number): void {
+  set.delete(key)
+  set.add(key)
+  while (set.size > max) {
+    const oldest = set.values().next().value
+    if (oldest === undefined) break
+    set.delete(oldest)
+  }
+}
+
+/** Map counterpart of {@link touchAndCapSet}: (re)inserts `key` as MRU and evicts the oldest beyond `max`. */
+export function touchAndCapMap<V>(map: Map<string, V>, key: string, value: V, max: number): void {
+  map.delete(key)
+  map.set(key, value)
+  while (map.size > max) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
 }
 
 // ── Connector ───────────────────────────────────────────────────────────
@@ -212,6 +267,11 @@ export class SlackConnector extends ChatClientConnector {
   private threadContextMap: Map<string, { channel: string; threadTs: string }> = new Map()
   // Tracks threads the bot has participated in (for allowing thread replies without re-mention)
   private activeThreads: Set<string> = new Set() // channelId|threadTs
+  // Upper bound on tracked threads (per-collection) so a long-running connector in
+  // a busy workspace can't grow threadContextMap/activeThreads without limit. Evicts
+  // least-recently-touched threads; an evicted thread just re-fetches history /
+  // requires a re-mention if it ever resurfaces.
+  private static readonly MAX_TRACKED_THREADS = 1000
 
   constructor(private config: SlackConfig) {
     super()
@@ -258,15 +318,26 @@ export class SlackConnector extends ChatClientConnector {
 
       if (!routing.shouldProcess) return
 
-      // Detect new thread entry before marking it active
-      const isNewThreadEntry = !!(routing.threadKey && !this.activeThreads.has(routing.threadKey) && threadTs)
+      // routeSlackMessage decides this against activeThreads before we mark the
+      // thread active below, so read it now rather than recomputing post-add.
+      const isNewThreadEntry = routing.isNewThreadEntry
 
       const effectiveChatId = routing.effectiveChatId
-      if (routing.threadContext) this.threadContextMap.set(effectiveChatId, routing.threadContext)
-      if (routing.threadKey) this.activeThreads.add(routing.threadKey)
+      // Record the reply destination and mark the thread active (both bounded — see
+      // MAX_TRACKED_THREADS). For in-thread replies the destination is also encoded
+      // in effectiveChatId (composite id), so resolveSlackChannel can recover it by
+      // parsing even if this map entry is later evicted or overwritten — no stale
+      // entry can misroute a concurrent reply, so there's nothing to clear here.
+      if (routing.threadContext) {
+        touchAndCapMap(this.threadContextMap, effectiveChatId, routing.threadContext, SlackConnector.MAX_TRACKED_THREADS)
+      }
+      if (routing.threadKey) {
+        touchAndCapSet(this.activeThreads, routing.threadKey, SlackConnector.MAX_TRACKED_THREADS)
+      }
 
-      // Track message ts for reaction-based typing
-      this.lastUserMessageTs.set(effectiveChatId, ts)
+      // Track message ts for reaction-based typing (bounded: in-thread sessions
+      // make effectiveChatId per-thread, so this would otherwise grow with threads).
+      touchAndCapMap(this.lastUserMessageTs, effectiveChatId, ts, SlackConnector.MAX_TRACKED_THREADS)
 
       // Resolve real user and channel names
       const userName = await this.resolveUserName(userId)
@@ -275,8 +346,9 @@ export class SlackConnector extends ChatClientConnector {
       // Resolve <@U123>, <#C123|name>, links, and special mentions in the text
       let text = await this.resolveMentionsInText(rawText)
 
-      // When joining a thread mid-conversation, fetch earlier messages as context
-      if (isNewThreadEntry) {
+      // When joining a thread mid-conversation, fetch earlier messages as context.
+      // isNewThreadEntry already implies threadTs is set; the check narrows the type.
+      if (isNewThreadEntry && threadTs) {
         const history = await this.fetchThreadHistory(chatId, threadTs, ts)
         if (history) text = history + '\n\n' + text
       }
