@@ -4,6 +4,7 @@ import App from './App'
 import './globals.css'
 import { initApiBaseUrl, isElectron, getPlatform } from './lib/env'
 import { initRendererErrorReporting } from './lib/error-reporting'
+import { applyWebFavicon } from './lib/favicon'
 
 // Initialize Sentry error reporting as early as possible
 initRendererErrorReporting()
@@ -17,6 +18,10 @@ if (isElectron() && (getPlatform() === 'darwin' || getPlatform() === 'win32')) {
 }
 
 async function init() {
+  if (__WEB__) {
+    applyWebFavicon()
+  }
+
   // Load render tracking instrumentation before any components (must patch React first)
   if (__RENDER_TRACKING__) {
     await import('./lib/render-tracking')

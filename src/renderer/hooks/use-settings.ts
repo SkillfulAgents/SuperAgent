@@ -32,7 +32,7 @@ export function useSettings(options?: { enabled?: boolean }) {
 
 export interface UpdateSettingsParams {
   container?: Partial<ContainerSettings>
-  app?: Partial<AppPreferences>
+  app?: Omit<Partial<AppPreferences>, 'faviconDataUrl'> & { faviconDataUrl?: string | null }
   llmProvider?: LlmProviderId
   apiKeys?: {
     anthropicApiKey?: string

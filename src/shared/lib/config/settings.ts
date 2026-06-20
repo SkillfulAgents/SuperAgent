@@ -89,6 +89,8 @@ export interface AppPreferences {
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
   maxBrowserTabs?: number
+  faviconDataUrl?: string
+  faviconUpdatedAt?: string
 
   // Browserbase session settings
   browserbaseAdvancedStealth?: boolean

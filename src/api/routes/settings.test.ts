@@ -1062,6 +1062,58 @@ describe('settings route', () => {
   })
 
   // =========================================================================
+  // Settings merge — web favicon
+  // =========================================================================
+  describe('web favicon handling', () => {
+    const pngDataUrl = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64')}`
+
+    it('stores a valid favicon data URL and stamps the update time', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-06-20T01:02:03.000Z'))
+
+      const res = await putSettings({ app: { faviconDataUrl: pngDataUrl } })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.app.faviconDataUrl).toBe(pngDataUrl)
+      expect(saved.app.faviconUpdatedAt).toBe('2026-06-20T01:02:03.000Z')
+
+      vi.useRealTimers()
+    })
+
+    it('rejects an invalid favicon payload', async () => {
+      const res = await putSettings({ app: { faviconDataUrl: 'data:text/html;base64,PGgxPk5vcGU8L2gxPg==' } })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('Favicon must be')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('removes the custom favicon when set to null', async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-06-20T02:03:04.000Z'))
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        app: {
+          showMenuBarIcon: true,
+          faviconDataUrl: pngDataUrl,
+          faviconUpdatedAt: '2026-06-20T01:02:03.000Z',
+        },
+      })
+
+      const res = await putSettings({ app: { faviconDataUrl: null } })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.app.faviconDataUrl).toBeUndefined()
+      expect(saved.app.faviconUpdatedAt).toBe('2026-06-20T02:03:04.000Z')
+
+      vi.useRealTimers()
+    })
+  })
+
+  // =========================================================================
   // Settings merge — llmProvider
   // =========================================================================
   describe('llmProvider handling', () => {
