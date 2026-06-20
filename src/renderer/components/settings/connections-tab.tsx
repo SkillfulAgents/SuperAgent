@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useEffect, useCallback } from 'react'
+import { useNavigate, useSearch } from '@tanstack/react-router'
 import { ChevronRight, Loader2, Zap } from 'lucide-react'
 import { PolicyDecisionToggle } from '@renderer/components/ui/policy-decision-toggle'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
@@ -29,7 +30,22 @@ export function ConnectionsTab() {
     cancelReconnect,
   } = useOAuthReconnect()
 
-  const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null)
+  // The open connection detail lives in the URL (`/settings/connections?detail=…`)
+  // so it's deep-linkable + reload-durable + back/forward-able — parity with the
+  // agent connections route, which is also URL-driven. (Was local useState.)
+  const navigate = useNavigate()
+  const search = useSearch({ strict: false }) as { detail?: string }
+  const selectedRowKey = typeof search.detail === 'string' ? search.detail : null
+  const setDetail = useCallback(
+    (key: string | null) => {
+      void navigate({
+        to: '/settings/$tab',
+        params: { tab: 'connections' },
+        search: (prev) => ({ ...prev, detail: key ?? undefined }),
+      })
+    },
+    [navigate],
+  )
 
   const apiPolicy = settings?.defaultApiPolicy ?? 'review'
   const mcpPolicy = settings?.defaultMcpPolicy ?? 'review'
@@ -47,23 +63,24 @@ export function ConnectionsTab() {
   // Resolve the selected row from the latest rows list (so it stays in sync if
   // data refetches). If the row disappeared, clear the selection.
   const selectedRow = selectedRowKey ? rows.find((r) => r.key === selectedRowKey) ?? null : null
-  if (selectedRowKey && !selectedRow && !isLoading) {
-    // Defer clearing to next tick to avoid setState during render
-    queueMicrotask(() => setSelectedRowKey(null))
-  }
+  // A stale `?detail=` (the row was deleted, or never existed) → drop it from
+  // the URL so we fall back to the list instead of a blank detail.
+  useEffect(() => {
+    if (selectedRowKey && !selectedRow && !isLoading) setDetail(null)
+  }, [selectedRowKey, selectedRow, isLoading, setDetail])
 
   if (selectedRow) {
     return (
       <ConnectionDetailPage
         row={selectedRow}
-        onBack={() => setSelectedRowKey(null)}
+        onBack={() => setDetail(null)}
       />
     )
   }
 
   const renderRow = (row: UnifiedRow) => {
     const triggerCount = row.type === 'oauth' ? triggerCounts?.[row.id] ?? 0 : 0
-    const openDetail = () => setSelectedRowKey(row.key)
+    const openDetail = () => setDetail(row.key)
     return (
       <ConnectionRow
         key={row.key}

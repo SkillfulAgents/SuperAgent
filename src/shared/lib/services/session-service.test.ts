@@ -427,6 +427,42 @@ describe('session-service', () => {
         '2026-01-24T01:31:19.827Z'
       )
     })
+
+    it('returns an empty session for a registered session with no JSONL yet', async () => {
+      // A just-created session is registered in metadata before the agent
+      // streams its first message (which is what writes the JSONL). getSession
+      // must report it as existing (empty) — parity with listSessions — rather
+      // than 404ing a session that genuinely exists.
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'settling-session': {
+          name: 'Brand New',
+          createdAt: '2026-06-18T12:00:00.000Z',
+        },
+      })
+
+      const session = await getSession('test-agent', 'settling-session')
+
+      expect(session).not.toBeNull()
+      expect(session?.id).toBe('settling-session')
+      expect(session?.agentSlug).toBe('test-agent')
+      expect(session?.name).toBe('Brand New')
+      expect(session?.messageCount).toBe(0)
+      expect(session?.createdAt.toISOString()).toBe('2026-06-18T12:00:00.000Z')
+      expect(session?.lastActivityAt.toISOString()).toBe('2026-06-18T12:00:00.000Z')
+    })
+
+    it('returns null for a metadata entry with no createdAt (not a registered session)', async () => {
+      // Mirrors the listSessions gate: a metadata entry without createdAt is not
+      // a properly registered session, so it does not count as existing.
+      await createSessionsDir('test-agent')
+      await createSessionMetadata('test-agent', {
+        'half-written': { name: 'No CreatedAt' },
+      })
+
+      const session = await getSession('test-agent', 'half-written')
+      expect(session).toBeNull()
+    })
   })
 
   describe('getSessionMessages', () => {

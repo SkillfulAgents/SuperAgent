@@ -7,6 +7,8 @@ import { WizardPage } from '../pages/wizard.page'
 
 test.describe.configure({ mode: 'serial' })
 
+const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
+
 /**
  * Manual wizard steps (0-indexed):
  *   0: LLM  |  1: Model  |  2: Browser  |  3: Composio  |  4: Runtime  |  5: Privacy  |  6: Agent
@@ -28,25 +30,25 @@ test.describe('Getting Started Wizard', () => {
     agentPage = new AgentPage(page)
 
     // Set a mock API key so the LLM step's Next button is enabled
-    await request.put('http://localhost:3000/api/settings', {
+    await request.put('/api/settings', {
       data: { apiKeys: { anthropicApiKey: 'sk-ant-test-key-for-e2e' } },
     })
   })
 
   test.afterEach(async ({ request }) => {
     // Restore setupCompleted to true so subsequent test files don't see the wizard
-    await request.put('http://localhost:3000/api/user-settings', {
+    await request.put('/api/user-settings', {
       data: { setupCompleted: true },
     })
     // Restore global setupCompleted and clean up mock API key
-    await request.put('http://localhost:3000/api/settings', {
+    await request.put('/api/settings', {
       data: { app: { setupCompleted: true }, apiKeys: { anthropicApiKey: '' } },
     })
   })
 
   test('auto-opens when setupCompleted is false', async ({ page, request }) => {
     // Reset setupCompleted via API so the wizard will auto-open on next load
-    await request.put('http://localhost:3000/api/user-settings', {
+    await request.put('/api/user-settings', {
       data: { setupCompleted: false },
     })
 
@@ -78,7 +80,7 @@ test.describe('Getting Started Wizard', () => {
 
   test('does not auto-open when setupCompleted is true', async ({ page, request }) => {
     // Ensure setupCompleted is true
-    await request.put('http://localhost:3000/api/user-settings', {
+    await request.put('/api/user-settings', {
       data: { setupCompleted: true },
     })
 
@@ -91,7 +93,7 @@ test.describe('Getting Started Wizard', () => {
 
   test('navigates through all steps with Next and Back', async ({ page, request }) => {
     // Reset to trigger wizard
-    await request.put('http://localhost:3000/api/user-settings', {
+    await request.put('/api/user-settings', {
       data: { setupCompleted: false },
     })
 
@@ -144,7 +146,7 @@ test.describe('Getting Started Wizard', () => {
     // Step 5: Privacy
     await wizardPage.clickNext()
     await wizardPage.expectStep(5)
-    await expect(page.getByText('Help improve Superagent')).toBeVisible()
+    await expect(page.getByText('Help improve Gamut')).toBeVisible()
 
     // Step 6: Create Agent (skippable)
     await wizardPage.clickNext()
@@ -157,7 +159,7 @@ test.describe('Getting Started Wizard', () => {
   })
 
   test('skip buttons work on optional steps', async ({ page, request }) => {
-    await request.put('http://localhost:3000/api/user-settings', {
+    await request.put('/api/user-settings', {
       data: { setupCompleted: false },
     })
 
@@ -192,7 +194,7 @@ test.describe('Getting Started Wizard', () => {
   })
 
   test('sets setupCompleted after finishing', async ({ page, request }) => {
-    await request.put('http://localhost:3000/api/user-settings', {
+    await request.put('/api/user-settings', {
       data: { setupCompleted: false },
     })
 
@@ -218,7 +220,7 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
 
     // Verify setupCompleted is now true via API
-    const response = await request.get('http://localhost:3000/api/user-settings')
+    const response = await request.get('/api/user-settings')
     const settings = await response.json()
     expect(settings.setupCompleted).toBe(true)
 
@@ -234,12 +236,12 @@ test.describe('Getting Started Wizard', () => {
 
     // Clear any prior hostBrowserProvider value so we're starting from the
     // "never explicitly chose" state this bug targets.
-    await request.put('http://localhost:3000/api/settings', {
+    await request.put('/api/settings', {
       data: { app: { hostBrowserProvider: null } },
     })
 
     // Only meaningful when Chrome is actually detected (smart default picks Chrome).
-    const preRes = await request.get('http://localhost:3000/api/settings')
+    const preRes = await request.get('/api/settings')
     const preSettings = await preRes.json()
     const chromeProvider = preSettings.hostBrowserStatus?.providers?.find(
       (p: { id: string; available: boolean }) => p.id === 'chrome',
@@ -248,7 +250,7 @@ test.describe('Getting Started Wizard', () => {
     expect(preSettings.app?.hostBrowserProvider).toBeUndefined()
 
     // Reset setupCompleted so the wizard auto-opens
-    await request.put('http://localhost:3000/api/user-settings', {
+    await request.put('/api/user-settings', {
       data: { setupCompleted: false, onboardingProgress: null },
     })
 
@@ -278,19 +280,19 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
 
     // Assert via API that hostBrowserProvider was persisted as 'chrome'
-    const postRes = await request.get('http://localhost:3000/api/settings')
+    const postRes = await request.get('/api/settings')
     const postSettings = await postRes.json()
     expect(postSettings.app?.hostBrowserProvider).toBe('chrome')
 
     // Also validate on-disk settings.json to rule out an API-only illusion
-    const settingsJsonPath = path.join(process.cwd(), '.e2e-data', 'settings.json')
+    const settingsJsonPath = path.join(e2eDataDir, 'settings.json')
     const onDisk = JSON.parse(fs.readFileSync(settingsJsonPath, 'utf-8'))
     expect(onDisk.app?.hostBrowserProvider).toBe('chrome')
   })
 
   test('re-run wizard button opens wizard from settings', async ({ page, request }) => {
     // Ensure setup is completed so wizard doesn't auto-open
-    await request.put('http://localhost:3000/api/user-settings', {
+    await request.put('/api/user-settings', {
       data: { setupCompleted: true },
     })
 

@@ -49,6 +49,7 @@ export interface CreateSessionOptions {
   initialMessageUuid?: string // Optional UUID for message author attribution
   model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
+  dashboardBuilderModel?: string // Model for the dashboard-builder subagent
   maxOutputTokens?: number // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
   maxThinkingTokens?: number // Max tokens for extended thinking
   maxTurns?: number // Max conversation turns
@@ -141,6 +142,9 @@ export interface ContainerClient {
   // Make HTTP request to container (abstracts away host/port details)
   // Throws if container is not running
   fetch(path: string, init?: RequestInit): Promise<Response>
+
+  getWebSocketBaseUrl(port: number): string
+  getHostApiBaseUrl(): string
 
   // Health checks
   waitForHealthy(timeoutMs?: number, knownPort?: number): Promise<boolean>

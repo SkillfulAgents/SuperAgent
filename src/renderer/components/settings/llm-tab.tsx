@@ -33,7 +33,7 @@ const PROVIDER_DESCRIPTIONS: Partial<Record<LlmProviderId, string>> = {
   anthropic: 'Direct API access to Claude models.',
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS-managed Claude inference with IAM or API key credentials.',
-  platform: 'Use credentials provided by your Superagent account.',
+  platform: 'Use credentials provided by your Gamut account.',
 }
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
@@ -74,7 +74,6 @@ interface ModelEffortRowProps {
   /** Reasoning effort; only surfaced when `includeEffort` is true. */
   effort?: EffortLevel
   includeEffort?: boolean
-  emit?: 'model' | 'family'
   disabled?: boolean
   onModelChange: (model: string) => void
   onEffortChange?: (effort: EffortLevel) => void
@@ -87,7 +86,6 @@ function ModelEffortRow({
   model,
   effort,
   includeEffort,
-  emit,
   disabled,
   onModelChange,
   onEffortChange,
@@ -102,7 +100,6 @@ function ModelEffortRow({
           onModelChange={onModelChange}
           includeEffort={includeEffort}
           effort={effort}
-          emit={emit}
           onEffortChange={onEffortChange}
           disabled={disabled}
         />
@@ -206,7 +203,7 @@ export function LlmTab() {
         {providerStatus.map((provider) => {
           const isSelected = activeProvider === provider.id
           const platformLocked = provider.id === 'platform' && !isPlatformConnected
-          const modelOptions = provider.availableModels ?? []
+          const modelOptions = provider.catalog ?? []
           const keyConfig = SIMPLE_PROVIDER_KEY_CONFIG[provider.id]
 
           return (
@@ -259,7 +256,6 @@ export function LlmTab() {
                       model={settings?.models?.agentModel}
                       effort={settings?.models?.agentEffort ?? 'medium'}
                       includeEffort
-                      emit="family"
                       disabled={isLoading}
                       onModelChange={(model) => updateSettings.mutate({ models: { agentModel: model } })}
                       onEffortChange={(effort) => updateSettings.mutate({ models: { agentEffort: effort } })}
@@ -271,6 +267,14 @@ export function LlmTab() {
                       includeEffort={false}
                       disabled={isLoading}
                       onModelChange={(model) => updateSettings.mutate({ models: { summarizerModel: model } })}
+                    />
+                    <ModelEffortRow
+                      name="Dashboard model"
+                      subtitle="Used by the dashboard-builder subagent that creates and edits artifacts"
+                      model={settings?.models?.dashboardBuilderModel}
+                      includeEffort={false}
+                      disabled={isLoading}
+                      onModelChange={(model) => updateSettings.mutate({ models: { dashboardBuilderModel: model } })}
                     />
                   </div>
                 )}

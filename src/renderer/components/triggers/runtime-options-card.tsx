@@ -2,12 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RotateCcw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useSettings } from '@renderer/hooks/use-settings'
-import { ComposerOptionsPopover } from '@renderer/components/messages/composer-options-popover'
+import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import { DetailCard } from './detail-card'
-import type { ComposerOptionsState } from '@renderer/components/messages/composer-options'
 import type { EffortLevel } from '@shared/lib/container/types'
-import type { ComposerModel } from '@shared/lib/llm-provider'
-import type { LlmProviderId } from '@shared/lib/config/settings'
 
 interface RuntimeOptionsCardProps {
   model: string | null
@@ -18,17 +15,9 @@ interface RuntimeOptionsCardProps {
 
 export function RuntimeOptionsCard({ model, effort, disabled, onUpdate }: RuntimeOptionsCardProps) {
   const { data: settings } = useSettings()
-  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const composerModels = useMemo(
-    () => settings?.llmProviderStatus?.find(p => p.id === activeProvider)?.composerModels ?? [],
-    [settings, activeProvider],
-  )
-
-  const fallbackModel = useMemo(() => (
-    settings?.models?.agentModel
-    ?? composerModels.find(m => m.family === 'sonnet')?.modelId
-    ?? composerModels[0]?.modelId
-  ), [settings, composerModels])
+  // The override falls back to the user's default-model setting (a bare alias
+  // or pinned id) when no per-run model is set. The picker resolves it for display.
+  const fallbackModel = settings?.models?.agentModel
 
   const [localEffort, setLocalEffort] = useState<EffortLevel>((effort as EffortLevel) || 'high')
   const [localModel, setLocalModel] = useState<string | undefined>(model || fallbackModel)
@@ -65,29 +54,11 @@ export function RuntimeOptionsCard({ model, effort, disabled, onUpdate }: Runtim
     onUpdate({ model: null, effort: null })
   }, [onUpdate, fallbackModel])
 
-  const toRuntimeOptions = useCallback(
-    () => ({ effort: localEffort, ...(localModel ? { model: localModel } : {}) }),
-    [localEffort, localModel],
-  )
-
-  const state: ComposerOptionsState = useMemo(
-    () => ({
-      effort: localEffort,
-      setEffort: handleSetEffort,
-      model: localModel,
-      setModel: handleSetModel,
-      composerModels: composerModels as ComposerModel[],
-      toRuntimeOptions,
-    }),
-    [localEffort, handleSetEffort, localModel, handleSetModel, composerModels, toRuntimeOptions],
-  )
-
   const hasCustom = model !== null || effort !== null
 
-  return (
-    <DetailCard
-      label="Model & Effort"
-      headerActions={hasCustom && !disabled ? (
+  const headerActions = useMemo(
+    () =>
+      hasCustom && !disabled ? (
         <Button
           variant="ghost"
           size="sm"
@@ -97,13 +68,22 @@ export function RuntimeOptionsCard({ model, effort, disabled, onUpdate }: Runtim
           <RotateCcw className="h-3 w-3" />
           Reset
         </Button>
-      ) : undefined}
-    >
+      ) : undefined,
+    [hasCustom, disabled, handleReset],
+  )
+
+  return (
+    <DetailCard label="Model & Effort" headerActions={headerActions}>
       <div className="flex items-center gap-2">
-        <ComposerOptionsPopover state={state} disabled={disabled} />
-        {!hasCustom && (
-          <span className="text-xs text-muted-foreground">Using defaults</span>
-        )}
+        <SettingsModelSelect
+          model={localModel}
+          onModelChange={handleSetModel}
+          includeEffort
+          effort={localEffort}
+          onEffortChange={handleSetEffort}
+          disabled={disabled}
+        />
+        {!hasCustom && <span className="text-xs text-muted-foreground">Using defaults</span>}
       </div>
     </DetailCard>
   )

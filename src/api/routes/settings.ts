@@ -21,10 +21,12 @@ import {
   getEffectiveAgentLimits,
   getCustomEnvVars,
   type AppSettings,
+  type AppPreferences,
   type ApiKeySettings,
   type ContainerSettings,
   type GlobalSettingsResponse,
 } from '@shared/lib/config/settings'
+import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
 import { containerManager } from '@shared/lib/container/container-manager'
@@ -120,6 +122,11 @@ const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
   'nangoSecretKey',
   'accountProviderUserId',
 ]
+
+type AppPreferencesPatch = Partial<AppPreferences> & {
+  faviconDataUrl?: unknown
+  hostBrowserProvider?: unknown
+}
 
 /** Build the GlobalSettingsResponse shared by GET and PUT handlers. */
 function buildSettingsResponse(
@@ -236,6 +243,39 @@ settings.put('/', async (c) => {
       }
     }
 
+    let appPatch = body.app as AppPreferencesPatch | undefined
+    if (appPatch && Object.prototype.hasOwnProperty.call(appPatch, 'faviconDataUrl')) {
+      const validation = validateFaviconDataUrl(appPatch.faviconDataUrl)
+      if (!validation.ok) {
+        return c.json({ error: validation.error }, 400)
+      }
+
+      appPatch = { ...appPatch }
+      appPatch.faviconUpdatedAt = new Date().toISOString()
+      if (appPatch.faviconDataUrl === null || appPatch.faviconDataUrl === '') {
+        appPatch.faviconDataUrl = undefined
+      }
+    }
+
+    // When the active LLM provider changes, reset model selections to the new
+    // provider's defaults (bare aliases) — unless the same request sets `models`
+    // explicitly. Prevents a pin from the old provider's catalog (which may not
+    // exist for the new one, e.g. a bare-Claude id on Bedrock) from leaking across.
+    const currentProvider = currentSettings.llmProvider ?? 'anthropic'
+    const providerChanged =
+      body.llmProvider !== undefined && body.llmProvider !== currentProvider
+    let providerDefaultModels:
+      | { summarizerModel: string; agentModel: string; browserModel: string; dashboardBuilderModel: string }
+      | undefined
+    if (providerChanged && body.models === undefined) {
+      try {
+        providerDefaultModels = getLlmProvider(body.llmProvider).getDefaultModels()
+      } catch {
+        // Unknown provider id — leave models as-is; other guards handle validity.
+        providerDefaultModels = undefined
+      }
+    }
+
     // Merge new settings with current settings
     // TODO refactor - pineapple on pizza level gross
     const newSettings: AppSettings = {
@@ -251,10 +291,10 @@ settings.put('/', async (c) => {
       },
       app: {
         ...currentSettings.app,
-        ...body.app,
+        ...appPatch,
         // If hostBrowserProvider was explicitly set to null (meaning "use container"),
         // remove it from settings so consumers treat it as "no host provider"
-        ...(body.app && 'hostBrowserProvider' in body.app && body.app.hostBrowserProvider == null
+        ...(appPatch && 'hostBrowserProvider' in appPatch && appPatch.hostBrowserProvider == null
           ? { hostBrowserProvider: undefined }
           : {}),
       },
@@ -262,7 +302,9 @@ settings.put('/', async (c) => {
       llmProvider: body.llmProvider !== undefined ? body.llmProvider : currentSettings.llmProvider,
       models: body.models
         ? { ...currentSettings.models, ...body.models }
-        : currentSettings.models,
+        : providerDefaultModels
+          ? { ...currentSettings.models, ...providerDefaultModels }
+          : currentSettings.models,
       agentLimits: body.agentLimits !== undefined
         ? { ...currentSettings.agentLimits, ...body.agentLimits }
         : currentSettings.agentLimits,

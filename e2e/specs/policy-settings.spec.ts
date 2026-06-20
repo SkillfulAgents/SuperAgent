@@ -17,6 +17,11 @@ async function openConnectionDetail(page: Page, name: string) {
   await expect(row).toBeVisible({ timeout: 5000 })
   await row.click()
   await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible()
+  // The open detail is URL-driven now (deep-linkable + reload-durable), parity
+  // with the agent connections route — opening a row changes the URL. (`?from`
+  // may precede it, so assert path + param independently.)
+  await expect(page).toHaveURL(/\/settings\/connections\?/)
+  await expect(page).toHaveURL(/detail=account-/)
 }
 
 test.describe('Policy Settings', () => {

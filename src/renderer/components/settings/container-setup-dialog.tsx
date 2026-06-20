@@ -88,8 +88,8 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
         <DialogHeader>
           <DialogTitle>Container Runtime Required</DialogTitle>
           <DialogDescription>
-            Superagent runs AI agents in isolated containers for security and consistency.
-            You need a container runtime installed and running to use Superagent.
+            Gamut runs AI agents in isolated containers for security and consistency.
+            You need a container runtime installed and running to use Gamut.
           </DialogDescription>
         </DialogHeader>
 

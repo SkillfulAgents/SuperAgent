@@ -95,6 +95,7 @@ export function NewIntegrationButton() {
           tools={newMcp.tools}
           open
           onOpenChange={(isOpen) => { if (!isOpen) setNewMcp(null) }}
+          allowSaveWithoutChanges
         />
       )}
     </>

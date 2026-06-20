@@ -60,7 +60,7 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
       <div className="space-y-4">
         <h2 className="text-4xl font-normal">Build your<br />agent workforce</h2>
         <p className="text-sm text-muted-foreground mt-1 max-w-sm">
-          Superagent is the most powerful and secure way to build and manage AI teammates that actually get the job done.
+          Gamut is the most powerful and secure way to build and manage AI teammates that actually get the job done.
         </p>
       </div>
 

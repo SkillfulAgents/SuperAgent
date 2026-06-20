@@ -1,6 +1,9 @@
 import { test as base, type BrowserContext, type Page } from '@playwright/test'
 
-const BASE_URL = 'http://localhost:3001'
+export function getAuthBaseUrl() {
+  const port = process.env.E2E_PORT ?? process.env.PORT ?? '3001'
+  return process.env.E2E_BASE_URL ?? `http://localhost:${port}`
+}
 
 /**
  * Multi-user fixture for auth E2E tests.
@@ -28,7 +31,7 @@ export const test = base.extend<
 
   user1Page: [async ({ user1Context }, use) => {
     const page = await user1Context.newPage()
-    await page.goto(BASE_URL)
+    await page.goto(getAuthBaseUrl())
     await use(page)
   }, { scope: 'worker' }],
 
@@ -40,7 +43,7 @@ export const test = base.extend<
 
   user2Page: [async ({ user2Context }, use) => {
     const page = await user2Context.newPage()
-    await page.goto(BASE_URL)
+    await page.goto(getAuthBaseUrl())
     await use(page)
   }, { scope: 'worker' }],
 
@@ -52,7 +55,7 @@ export const test = base.extend<
 
   user3Page: [async ({ user3Context }, use) => {
     const page = await user3Context.newPage()
-    await page.goto(BASE_URL)
+    await page.goto(getAuthBaseUrl())
     await use(page)
   }, { scope: 'worker' }],
 })

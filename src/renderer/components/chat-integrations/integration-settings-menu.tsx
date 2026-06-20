@@ -1,15 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Pause, Pencil, Trash2 } from 'lucide-react'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { useUpdateChatIntegration } from '@renderer/hooks/use-chat-integrations'
-import { useSettings } from '@renderer/hooks/use-settings'
 import { parseChatIntegrationConfig, type SlackConfig } from '@shared/lib/chat-integrations/config-schema'
-import { ComposerOptions } from '@renderer/components/messages/composer-options'
-import type { ComposerOptionsState } from '@renderer/components/messages/composer-options'
+import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import type { EffortLevel } from '@shared/lib/container/types'
-import type { LlmProviderId } from '@shared/lib/config/settings'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
 function ToggleRow({ label, checked, onCheckedChange, disabled }: {
@@ -78,26 +75,19 @@ interface IntegrationSettingsMenuProps {
 
 export function IntegrationModelEffort({ integration }: { integration: ChatIntegration }) {
   const updateIntegration = useUpdateChatIntegration()
-  const { data: settings } = useSettings()
-  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const composerModels = useMemo(
-    () => settings?.llmProviderStatus?.find(p => p.id === activeProvider)?.composerModels ?? [],
-    [settings, activeProvider],
-  )
 
   const [model, setModelLocal] = useState<string | undefined>(integration.model ?? undefined)
   const [effort, setEffortLocal] = useState<EffortLevel>((integration.effort as EffortLevel) ?? 'medium')
 
-  const state: ComposerOptionsState = useMemo(() => ({
-    effort,
-    setEffort: (e: EffortLevel) => { setEffortLocal(e); updateIntegration.mutate({ id: integration.id, effort: e }) },
-    model,
-    setModel: (m: string) => { setModelLocal(m); updateIntegration.mutate({ id: integration.id, model: m }) },
-    composerModels,
-    toRuntimeOptions: () => ({ effort, ...(model ? { model } : {}) }),
-  }), [effort, model, composerModels, integration.id, updateIntegration])
-
-  return <ComposerOptions state={state} />
+  return (
+    <SettingsModelSelect
+      model={model}
+      onModelChange={(m) => { setModelLocal(m); updateIntegration.mutate({ id: integration.id, model: m }) }}
+      includeEffort
+      effort={effort}
+      onEffortChange={(e) => { setEffortLocal(e); updateIntegration.mutate({ id: integration.id, effort: e }) }}
+    />
+  )
 }
 
 export function IntegrationSettingsMenu({ integration, onRename, onDelete }: IntegrationSettingsMenuProps) {

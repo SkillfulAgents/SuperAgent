@@ -174,7 +174,7 @@ export function NotificationsTab() {
         <SettingRow
           htmlFor="notify-when-unfocused"
           name="Notify when window isn't focused"
-          subtitle="Send notifications even while the session is open, as long as the SuperAgent window is behind another app. Useful for long-running sessions you've left in the background."
+          subtitle="Send notifications even while the session is open, as long as the Gamut window is behind another app. Useful for long-running sessions you've left in the background."
           right={
             <Switch
               id="notify-when-unfocused"

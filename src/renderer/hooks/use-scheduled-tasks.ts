@@ -210,6 +210,33 @@ export function useUpdateScheduledTaskPrompt() {
 }
 
 /**
+ * Update a scheduled task's display name
+ */
+export function useUpdateScheduledTaskName() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ taskId, name }: { taskId: string; agentSlug: string; name: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/name`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to update name')
+      }
+      return res.json() as Promise<ApiScheduledTask>
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] })
+    },
+  })
+}
+
+/**
  * Update a scheduled task's runtime options (model and/or effort)
  */
 export function useUpdateScheduledTaskRuntimeOptions() {

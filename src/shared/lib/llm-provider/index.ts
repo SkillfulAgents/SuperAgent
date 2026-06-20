@@ -1,18 +1,22 @@
-export { BaseLlmProvider, COMPOSER_MODEL_FAMILIES } from './base-llm-provider'
-export type {
-  LlmProviderId,
-  ModelOption,
-  ModelPurpose,
-  ComposerModel,
-  ComposerModelFamily,
-} from './base-llm-provider'
+export { BaseLlmProvider } from './base-llm-provider'
+export type { LlmProviderId, ModelPurpose } from './base-llm-provider'
 export { AnthropicLlmProvider } from './anthropic-provider'
 export { OpenRouterLlmProvider } from './openrouter-provider'
 export { BedrockLlmProvider } from './bedrock-provider'
 export { PlatformLlmProvider } from './platform-provider'
+export { modelDefinitionSchema, modelCatalogSchema } from './model-catalog-schema'
+export type { ModelDefinition } from './model-catalog-schema'
+export {
+  getProviderCatalog,
+  getModelDefinition,
+  hasVersionSegment,
+  resolveModelForProvider,
+} from './model-catalog'
 
-import type { LlmProviderId } from './base-llm-provider'
+import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
 import { BaseLlmProvider } from './base-llm-provider'
+import type { ModelDefinition } from './model-catalog-schema'
+import { getProviderCatalog, resolveModelForProvider } from './model-catalog'
 import { AnthropicLlmProvider } from './anthropic-provider'
 import { OpenRouterLlmProvider } from './openrouter-provider'
 import { BedrockLlmProvider } from './bedrock-provider'
@@ -40,12 +44,38 @@ export function getActiveLlmProvider(): BaseLlmProvider {
   return getLlmProvider(id)
 }
 
+/**
+ * Resolve a stored selection (bare alias or concrete id) to the concrete wire
+ * id for the ACTIVE provider. Use at host-direct SDK call sites (e.g. the
+ * summarizer) that don't pass through the container client's chokepoint.
+ */
+export function resolveActiveProviderModel(selection: string, purpose: ModelPurpose): string {
+  return resolveModelForProvider(selection, getActiveLlmProvider().id, purpose)
+}
+
+/** Default model selection per purpose, as bare family aliases (ride upgrades). */
+export interface ProviderDefaultModels {
+  agent: string
+  summarizer: string
+  browser: string
+}
+
 export interface LlmProviderInfo {
   id: LlmProviderId
   name: string
   isConfigured: boolean
-  availableModels: { value: string; label: string }[]
-  composerModels: import('./base-llm-provider').ComposerModel[]
+  /** Concrete model ids this provider offers, normalized to ≤1 isLatest/family. */
+  catalog: ModelDefinition[]
+  /** Per-purpose default selections (bare aliases). */
+  defaultModels: ProviderDefaultModels
+}
+
+function defaultModelsFor(provider: BaseLlmProvider): ProviderDefaultModels {
+  return {
+    agent: provider.getDefaultModel('agent'),
+    summarizer: provider.getDefaultModel('summarizer'),
+    browser: provider.getDefaultModel('browser'),
+  }
 }
 
 /** Get info about all providers (for settings UI). */
@@ -54,7 +84,7 @@ export function getAllProviderInfo(): LlmProviderInfo[] {
     id: p.id,
     name: p.name,
     isConfigured: p.getApiKeyStatus().isConfigured,
-    availableModels: p.getAvailableModels(),
-    composerModels: p.getComposerModels(),
+    catalog: getProviderCatalog(p.id),
+    defaultModels: defaultModelsFor(p),
   }))
 }

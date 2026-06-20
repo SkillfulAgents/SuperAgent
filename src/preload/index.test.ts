@@ -46,6 +46,8 @@ type ExposedApi = {
   setSidebarCollapsed: (collapsed: boolean) => void
   onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => void
   removeNavigateToAgent: () => void
+  onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => void
+  removeHistoryNavigationCommand: () => void
   onNotificationEvent: (
     callback: (event: { type: 'click' | 'action'; actionIndex?: number; context?: unknown }) => void,
   ) => () => void
@@ -140,6 +142,28 @@ describe('preload electronAPI bridge', () => {
 
     api.removeNavigateToAgent()
     expect(electronMocks.removeAllListeners).toHaveBeenCalledWith('navigate-to-agent')
+  })
+
+  it('forwards history navigation commands and filters invalid payloads', async () => {
+    const api = await loadApi()
+    const callback = vi.fn()
+
+    api.onHistoryNavigationCommand(callback)
+
+    const handler = electronMocks.on.mock.calls.find(([channel]) => channel === 'history-navigation-command')?.[1] as
+      | ((event: unknown, command: string) => void)
+      | undefined
+    expect(handler).toBeDefined()
+
+    handler?.({}, 'back')
+    handler?.({}, 'forward')
+    handler?.({}, 'sideways')
+    expect(callback).toHaveBeenCalledTimes(2)
+    expect(callback).toHaveBeenNthCalledWith(1, 'back')
+    expect(callback).toHaveBeenNthCalledWith(2, 'forward')
+
+    api.removeHistoryNavigationCommand()
+    expect(electronMocks.removeAllListeners).toHaveBeenCalledWith('history-navigation-command')
   })
 
   it('returns a precise unsubscribe for notification events', async () => {

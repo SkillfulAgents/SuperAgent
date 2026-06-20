@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { getDataDir } from './data-dir'
+import { isRunningInKubernetes } from '@shared/lib/container/runtime-env'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
@@ -57,6 +58,7 @@ export interface ModelSettings {
   summarizerModel: string
   agentModel: string
   browserModel: string
+  dashboardBuilderModel: string
   /** Default reasoning effort seeded into the composer for new agent sessions. */
   agentEffort?: EffortLevel
 }
@@ -87,6 +89,8 @@ export interface AppPreferences {
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
   maxBrowserTabs?: number
+  faviconDataUrl?: string
+  faviconUpdatedAt?: string
 
   // Browserbase session settings
   browserbaseAdvancedStealth?: boolean
@@ -162,7 +166,7 @@ export interface AnalyticsTarget {
 }
 
 export type { LlmProviderId } from '../llm-provider/base-llm-provider'
-import type { LlmProviderId, ComposerModel } from '../llm-provider/base-llm-provider'
+import type { LlmProviderId } from '../llm-provider/base-llm-provider'
 
 export interface PlatformAuthSettings {
   token: string
@@ -213,6 +217,9 @@ export interface ApiKeyStatus {
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 import type { RuntimeReadiness } from '@shared/lib/container/types'
 import type { ChromeProfile } from '@shared/lib/browser/chrome-profile'
+// Canonical provider-info type (catalog + defaultModels) lives with the
+// provider layer; import it (type-only, no runtime cycle) so the two never drift.
+import type { LlmProviderInfo } from '../llm-provider'
 
 export interface HostBrowserProviderInfo {
   id: string
@@ -226,13 +233,7 @@ export interface HostBrowserStatus {
   providers: HostBrowserProviderInfo[]
 }
 
-export interface LlmProviderInfo {
-  id: LlmProviderId
-  name: string
-  isConfigured: boolean
-  availableModels: { value: string; label: string }[]
-  composerModels: ComposerModel[]
-}
+export type { LlmProviderInfo }
 
 export interface GlobalSettingsResponse {
   dataDir: string
@@ -276,6 +277,7 @@ export interface GlobalSettingsResponse {
  * WSL2 on Windows (bundled, no install needed), Docker elsewhere.
  */
 function getDefaultContainerRunner(): string {
+  if (isRunningInKubernetes()) return 'kubernetes'
   const p = os.platform()
   if (p === 'darwin') return 'lima'
   if (p === 'win32') return 'wsl2'
@@ -303,9 +305,13 @@ const DEFAULT_SETTINGS: AppSettings = {
     },
   },
   models: {
-    summarizerModel: 'claude-haiku-4-5',
-    agentModel: 'claude-opus-4-8',
-    browserModel: 'claude-sonnet-4-6',
+    // Bare family aliases so fresh installs track each family's latest version.
+    // The host resolver maps these to a concrete id per active provider.
+    summarizerModel: 'haiku',
+    agentModel: 'opus',
+    browserModel: 'sonnet',
+    // Dashboard-builder subagent — a capable tier by default (overridable).
+    dashboardBuilderModel: 'opus',
     agentEffort: 'medium',
   },
   enableToolSearch: true,
@@ -320,6 +326,28 @@ function getSettingsPath(): string {
  * Load settings from the JSON file.
  * Returns default settings if file doesn't exist.
  */
+/**
+ * Pre-SUP-275 stored model defaults. Back then the three `models.*` fields were
+ * persisted as these concrete ids and version pinning did not exist (the UI
+ * version was cosmetic — selections collapsed to a bare alias before hitting the
+ * SDK). So any of these on disk is a stale default, never an intentional pin:
+ * rewrite it to the bare family alias so it resolves per active provider (a
+ * bare-Claude id like 'claude-opus-4-8' has no Bedrock catalog entry and would
+ * otherwise pass straight through to the Bedrock SDK and fail) and rides
+ * upgrades. Post-275 pins to older versions survive (their ids aren't in this
+ * map); a deliberate pin to the current latest normalizes to its family alias —
+ * behaviorally identical until the next release in that family ships.
+ */
+const LEGACY_MODEL_DEFAULTS: Record<string, string> = {
+  'claude-opus-4-8': 'opus',
+  'claude-sonnet-4-6': 'sonnet',
+  'claude-haiku-4-5': 'haiku',
+}
+
+function migrateLegacyModelDefault<T extends string | undefined>(value: T): T {
+  return (value !== undefined ? (LEGACY_MODEL_DEFAULTS[value] ?? value) : value) as T
+}
+
 export function loadSettings(): AppSettings {
   const settingsPath = getSettingsPath()
 
@@ -362,10 +390,17 @@ export function loadSettings(): AppSettings {
         },
         apiKeys: loaded.apiKeys,
         llmProvider: loaded.llmProvider,
-        models: {
-          ...DEFAULT_SETTINGS.models,
-          ...loaded.models,
-        },
+        models: (() => {
+          const merged = { ...DEFAULT_SETTINGS.models!, ...loaded.models }
+          // One-time normalization of legacy concrete defaults → bare aliases.
+          return {
+            ...merged,
+            summarizerModel: migrateLegacyModelDefault(merged.summarizerModel),
+            agentModel: migrateLegacyModelDefault(merged.agentModel),
+            browserModel: migrateLegacyModelDefault(merged.browserModel),
+            dashboardBuilderModel: migrateLegacyModelDefault(merged.dashboardBuilderModel),
+          }
+        })(),
         agentLimits: loaded.agentLimits,
         customEnvVars: loaded.customEnvVars,
         skillsets: loaded.skillsets !== undefined
@@ -582,6 +617,7 @@ export function getEffectiveModels(): ModelSettings {
     summarizerModel: settings.models?.summarizerModel || DEFAULT_SETTINGS.models!.summarizerModel,
     agentModel: settings.models?.agentModel || DEFAULT_SETTINGS.models!.agentModel,
     browserModel: settings.models?.browserModel || DEFAULT_SETTINGS.models!.browserModel,
+    dashboardBuilderModel: settings.models?.dashboardBuilderModel || DEFAULT_SETTINGS.models!.dashboardBuilderModel,
     agentEffort: settings.models?.agentEffort || DEFAULT_SETTINGS.models!.agentEffort,
   }
 }

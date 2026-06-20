@@ -5,8 +5,10 @@ import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { NewIntegrationButton } from './connections-list'
 import { OAUTH_ABORT_DELAY_MS } from '@renderer/hooks/use-delayed-oauth-abort'
+import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 
 const MOCK_ACCOUNT_ID = 'new-account-123'
+const MOCK_MCP_ID = 'new-mcp-123'
 
 const mockApiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({
@@ -34,10 +36,12 @@ vi.mock('@renderer/hooks/use-mcp-oauth-listener', () => ({
 }))
 
 let capturedOAuthCallback: ((params: any) => void) | null = null
+let capturedMcpOAuthCallback: ((result: { success: boolean; error?: string }) => void) | null = null
 let originalElectronAPI: typeof window.electronAPI
+let lastToolPoliciesPutBody: { policies: Array<{ toolName: string; decision: string }> } | null = null
 
 function mockFetchResponses() {
-  mockApiFetch.mockImplementation(async (url: string) => {
+  mockApiFetch.mockImplementation(async (url: string, opts?: { method?: string; body?: string }) => {
     if (url === '/api/providers') {
       return {
         ok: true,
@@ -67,7 +71,44 @@ function mockFetchResponses() {
         }),
       }
     }
+    if (url === '/api/remote-mcps/initiate-oauth') {
+      return {
+        ok: true,
+        json: async () => ({ redirectUrl: 'https://oauth.example/authorize', state: 'oauth-state' }),
+      }
+    }
+    if (url === '/api/remote-mcps') {
+      return {
+        ok: true,
+        json: async () => ({
+          servers: [
+            {
+              id: MOCK_MCP_ID,
+              name: 'Linear',
+              url: 'https://mcp.linear.app/mcp',
+              authType: 'oauth',
+              status: 'active',
+              errorMessage: null,
+              tools: [
+                { name: 'list_issues', description: 'List issues' },
+                { name: 'create_issue', description: 'Create issue' },
+              ],
+              toolsDiscoveredAt: '2026-06-16T00:00:00.000Z',
+              createdAt: '2026-06-16T00:00:00.000Z',
+              updatedAt: '2026-06-16T00:00:00.000Z',
+            },
+          ],
+        }),
+      }
+    }
     if (url.startsWith('/api/policies/scope/')) {
+      return { ok: true, json: async () => ({ policies: [] }) }
+    }
+    if (url.startsWith('/api/policies/tool/')) {
+      if (opts?.method === 'PUT') {
+        lastToolPoliciesPutBody = JSON.parse(opts.body as string)
+        return { ok: true, json: async () => ({ ok: true }) }
+      }
       return { ok: true, json: async () => ({ policies: [] }) }
     }
     return { ok: true, json: async () => ({}) }
@@ -79,13 +120,19 @@ beforeEach(() => {
   vi.clearAllMocks()
   popupMocks.navigate.mockReset()
   popupMocks.close.mockReset()
+  capturedMcpOAuthCallback = null
+  lastToolPoliciesPutBody = null
   mockFetchResponses()
+  vi.mocked(useMcpOAuthListener).mockImplementation((active, onComplete) => {
+    if (active) capturedMcpOAuthCallback = onComplete
+  })
 })
 
 afterEach(() => {
   vi.useRealTimers()
   window.electronAPI = originalElectronAPI
   capturedOAuthCallback = null
+  capturedMcpOAuthCallback = null
 })
 
 describe('NewIntegrationButton — post-OAuth policy editor', () => {
@@ -216,5 +263,27 @@ describe('NewIntegrationButton — post-OAuth policy editor', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1)
     expect(popupMocks.close).toHaveBeenCalledTimes(1)
     expect(screen.getByTestId('directory-connect-api-slack')).not.toBeDisabled()
+  })
+
+  it('lets a newly connected MCP save default tool policies', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await userEvent.click(screen.getByTestId('directory-tab-mcps'))
+    await userEvent.click(screen.getByTestId('directory-connect-mcp-linear'))
+    await userEvent.click(screen.getByTestId('mcp-form-submit'))
+
+    await waitFor(() => expect(capturedMcpOAuthCallback).not.toBeNull())
+
+    await act(async () => {
+      capturedMcpOAuthCallback!({ success: true })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('tool-policy-save')).toBeEnabled())
+
+    await userEvent.click(screen.getByTestId('tool-policy-save'))
+    await waitFor(() => expect(lastToolPoliciesPutBody).toEqual({ policies: [] }))
   })
 })

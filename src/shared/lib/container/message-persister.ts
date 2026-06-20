@@ -2590,7 +2590,9 @@ class MessagePersister {
         type: 'browser_input_request',
         toolUseId,
         message: input.message,
-        requirements: input.requirements || [],
+        // The model controls this field — coerce a non-array (e.g. a bare
+        // string) to [] so the renderer never calls `.map()` on a non-array.
+        requirements: Array.isArray(input.requirements) ? input.requirements : [],
         agentSlug,
       })
 

@@ -22,6 +22,7 @@ import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
 import sttRouter from './routes/stt'
 import llmRouter from './routes/llm'
+import faviconRouter from './routes/favicon'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import { ANTHROPIC_SDK_BUNDLE } from './llm-sdk-bundle'
@@ -188,6 +189,7 @@ app.route('/api/audit-log', auditLogRouter)
 app.route('/api/platform-auth', platformAuth)
 app.route('/api/stt', sttRouter)
 app.route('/api/llm', llmRouter)
+app.route('/api/favicon', faviconRouter)
 app.route('/api/debug', debugRouter)
 
 // Global error handler

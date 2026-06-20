@@ -352,6 +352,33 @@ describe('usePendingRequests', () => {
     expect(matches[0].url).toBe('https://mcp.example.com')
   })
 
+  it('coerces a non-array requirements to [] (model emitted a bare string)', () => {
+    // Regression: the model can emit `requirements` as a string instead of a
+    // string[]. The old `input.requirements || []` guard let a non-empty string
+    // through, which then crashed `.map()` in the request card. The intake must
+    // coerce any non-array to [].
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-bi',
+            name: 'mcp__user-input__request_browser_input',
+            input: { message: 'Log in', requirements: 'Enter your email and password' },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'browser_input')
+    expect(matches).toHaveLength(1)
+    expect(matches[0].requirements).toEqual([])
+  })
+
   it('skips message-based requests when subsequent user message exists', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [

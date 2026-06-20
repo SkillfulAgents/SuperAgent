@@ -45,6 +45,7 @@ interface ToolPolicyEditorBodyProps {
   onSaved?: () => void
   onCancel?: () => void
   hideActions?: boolean
+  allowSaveWithoutChanges?: boolean
 }
 
 /**
@@ -57,6 +58,7 @@ export function ToolPolicyEditorBody({
   onSaved,
   onCancel,
   hideActions,
+  allowSaveWithoutChanges = false,
 }: ToolPolicyEditorBodyProps) {
   const queryClient = useQueryClient()
   const [policies, setPolicies] = useState<ToolPolicy[]>([])
@@ -132,6 +134,7 @@ export function ToolPolicyEditorBody({
   const currentSnapshot = useMemo(() => serializePolicies(currentBatch), [currentBatch])
   // Save is only meaningful when the editor differs from what's persisted.
   const isDirty = currentSnapshot !== savedSnapshot
+  const canSave = isDirty || allowSaveWithoutChanges
 
   const handleSave = async () => {
     setSaving(true)
@@ -269,7 +272,7 @@ export function ToolPolicyEditorBody({
               Cancel
             </Button>
           )}
-          <Button data-testid="tool-policy-save" size="sm" onClick={handleSave} disabled={saving || !isDirty}>
+          <Button data-testid="tool-policy-save" size="sm" onClick={handleSave} disabled={saving || !canSave}>
             {saving && <Loader2 className="h-4 w-4 animate-spin mr-1" />}
             Save Policies
           </Button>
@@ -285,6 +288,7 @@ interface ToolPolicyEditorProps {
   tools: Array<{ name: string; description?: string }>
   open: boolean
   onOpenChange: (open: boolean) => void
+  allowSaveWithoutChanges?: boolean
 }
 
 export function ToolPolicyEditor({
@@ -293,6 +297,7 @@ export function ToolPolicyEditor({
   tools,
   open,
   onOpenChange,
+  allowSaveWithoutChanges,
 }: ToolPolicyEditorProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -306,6 +311,7 @@ export function ToolPolicyEditor({
           tools={tools}
           onSaved={() => onOpenChange(false)}
           onCancel={() => onOpenChange(false)}
+          allowSaveWithoutChanges={allowSaveWithoutChanges}
         />
       </DialogContent>
     </Dialog>

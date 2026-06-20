@@ -1,7 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk'
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
 import { getSettings, type ApiKeyStatus } from '../config/settings'
-import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
+import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
+import type { ModelDefinition } from './model-catalog-schema'
+import { BEDROCK_CATALOG } from './builtin-catalogs'
 
 export class BedrockLlmProvider extends BaseLlmProvider {
   readonly id = 'bedrock' as const
@@ -70,22 +72,16 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     return new AnthropicBedrock({ awsRegion: region }) as unknown as Anthropic
   }
 
-  getAvailableModels(): ModelOption[] {
-    return [
-      { value: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', label: 'Claude 4.5 Haiku' },
-      { value: 'us.anthropic.claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
-      { value: 'us.anthropic.claude-opus-4-6-v1', label: 'Claude 4.6 Opus' },
-      { value: 'us.anthropic.claude-opus-4-7', label: 'Claude 4.7 Opus' },
-      { value: 'us.anthropic.claude-opus-4-8', label: 'Claude 4.8 Opus' },
-      { value: 'us.anthropic.claude-fable-5', label: 'Claude Fable 5' },
-    ]
+  getBuiltinCatalog(): ModelDefinition[] {
+    return BEDROCK_CATALOG
   }
 
   getDefaultModel(purpose: ModelPurpose): string {
     switch (purpose) {
-      case 'summarizer': return 'us.anthropic.claude-haiku-4-5-20251001-v1:0'
-      case 'agent': return 'us.anthropic.claude-sonnet-4-6'
-      case 'browser': return 'us.anthropic.claude-sonnet-4-6'
+      case 'summarizer': return 'haiku'
+      case 'agent': return 'sonnet'
+      case 'browser': return 'sonnet'
+      case 'dashboard': return 'opus'
     }
   }
 

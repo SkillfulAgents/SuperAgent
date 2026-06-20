@@ -14,6 +14,7 @@ import type {
   StreamMessage,
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
+import { resolveContainerModel } from './resolve-model'
 import { getSessionJsonlPath } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
 import { db } from '../db'
@@ -1218,6 +1219,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'File delivered successfully (size: 2048 bytes)',
       'Here is the sales chart.'
     )],
+    ['deliver csv', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/data.csv', description: 'Contacts export' },
+      'File delivered successfully (size: 256 bytes)',
+      'Here is the contacts export.'
+    )],
     // API error scenarios
     ['auth error', new ApiErrorScenario('authentication_failed', 'Invalid API key')],
     ['rate limit error', new ApiErrorScenario('rate_limit', 'Rate limit exceeded, please try again later')],
@@ -1592,6 +1599,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
   }
 
+  getWebSocketBaseUrl(port: number): string {
+    return `ws://127.0.0.1:${port}`
+  }
+
+  getHostApiBaseUrl(): string {
+    return 'http://127.0.0.1:3000'
+  }
+
   // Health checks
 
   async waitForHealthy(_timeoutMs?: number, _knownPort?: number): Promise<boolean> {
@@ -1605,22 +1620,25 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   // Session management
 
   async createSession(options: CreateSessionOptions): Promise<ContainerSession> {
+    // Resolve the selection exactly as the real container client does, so E2E
+    // assertions see the concrete wire id the SDK would receive.
+    const model = resolveContainerModel(options.model, 'agent')
     // Record for E2E test assertions
     MockContainerClient.lastCreateSessionCall = {
       effort: options.effort,
-      model: options.model,
+      model,
       initialMessage: options.initialMessage,
     }
     MockContainerClient.createSessionCalls.push({
       effort: options.effort,
-      model: options.model,
+      model,
       initialMessage: options.initialMessage,
     })
     this.writeMockRecord({
       type: 'createSession',
       agentSlug: this.config.agentId,
       effort: options.effort,
-      model: options.model,
+      model,
       initialMessage: options.initialMessage,
       timestamp: new Date().toISOString(),
     })
@@ -1719,18 +1737,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   // Message operations
 
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void> {
+    // Resolve like the real container client so E2E sees the concrete wire id.
+    const model = resolveContainerModel(options?.model, 'agent')
     // Record for E2E test assertions
     MockContainerClient.lastSendMessageCall = {
       sessionId,
       content,
       effort: options?.effort,
-      model: options?.model,
+      model,
     }
     MockContainerClient.sendMessageCalls.push({
       sessionId,
       content,
       effort: options?.effort,
-      model: options?.model,
+      model,
     })
     this.writeMockRecord({
       type: 'sendMessage',
@@ -1738,7 +1758,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       sessionId,
       content,
       effort: options?.effort,
-      model: options?.model,
+      model,
       timestamp: new Date().toISOString(),
     })
     const session = this.sessions.get(sessionId)

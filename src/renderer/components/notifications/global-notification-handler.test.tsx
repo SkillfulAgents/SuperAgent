@@ -35,8 +35,8 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(() => Promise.resolve({ ok: true })),
 }))
 
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: vi.fn(() => ({ view: { kind: 'home' }, setAgent: vi.fn() })),
+vi.mock('@renderer/router/use-route-location', () => ({
+  useRouteLocation: vi.fn(() => ({ selectedAgentSlug: null, view: { kind: 'home' } })),
 }))
 
 vi.mock('@renderer/context/user-context', () => ({
@@ -90,13 +90,13 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     // `mockReturnValue`. vi.mock factories are NOT reset between tests, so
     // without this an override (a selected session, `notifyWhenUnfocused`,
     // etc.) leaks into later tests and makes them order-dependent.
-    const { useSelection } = await import('@renderer/context/selection-context')
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
     const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
     const { apiFetch } = await import('@renderer/lib/api')
-    vi.mocked(useSelection).mockReturnValue({
+    vi.mocked(useRouteLocation).mockReturnValue({
       view: { kind: 'home' },
       setAgent: vi.fn(),
-    } as unknown as ReturnType<typeof useSelection>)
+    } as unknown as ReturnType<typeof useRouteLocation>)
     vi.mocked(useUserSettings).mockReturnValue({
       data: undefined,
     } as unknown as ReturnType<typeof useUserSettings>)
@@ -252,11 +252,11 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     // selection mock returns view.kind=home, so isViewingNotificationSession is false
     // for ANY session — to make this test meaningful we need to assert that the
     // visibility-only gate is what's used. Switch view to the same session.
-    const { useSelection } = await import('@renderer/context/selection-context')
-    vi.mocked(useSelection).mockReturnValue({
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
       view: { kind: 'session', id: 'sess-1' },
       setAgent: vi.fn(),
-    } as unknown as ReturnType<typeof useSelection>)
+    } as unknown as ReturnType<typeof useRouteLocation>)
 
     render(
       <QueryClientProvider client={queryClient}>
@@ -286,11 +286,11 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
       get: () => 'visible',
     })
 
-    const { useSelection } = await import('@renderer/context/selection-context')
-    vi.mocked(useSelection).mockReturnValue({
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
       view: { kind: 'session', id: 'sess-1' },
       setAgent: vi.fn(),
-    } as unknown as ReturnType<typeof useSelection>)
+    } as unknown as ReturnType<typeof useRouteLocation>)
 
     const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
     vi.mocked(useUserSettings).mockReturnValue({
@@ -333,11 +333,11 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
       get: () => 'visible',
     })
 
-    const { useSelection } = await import('@renderer/context/selection-context')
-    vi.mocked(useSelection).mockReturnValue({
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
       view: { kind: 'session', id: 'sess-1' },
       setAgent: vi.fn(),
-    } as unknown as ReturnType<typeof useSelection>)
+    } as unknown as ReturnType<typeof useRouteLocation>)
 
     const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
     vi.mocked(useUserSettings).mockReturnValue({
@@ -376,11 +376,11 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
       get: () => 'visible',
     })
 
-    const { useSelection } = await import('@renderer/context/selection-context')
-    vi.mocked(useSelection).mockReturnValue({
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
       view: { kind: 'session', id: 'sess-1' },
       setAgent: vi.fn(),
-    } as unknown as ReturnType<typeof useSelection>)
+    } as unknown as ReturnType<typeof useRouteLocation>)
 
     render(
       <QueryClientProvider client={queryClient}>

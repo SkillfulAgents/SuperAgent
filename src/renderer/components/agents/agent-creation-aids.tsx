@@ -203,7 +203,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
           <DialogHeader className="sr-only">
             <DialogTitle>Let&apos;s talk about your agent</DialogTitle>
             <DialogDescription>
-              Answer a few quick questions and Superagent will draft a detailed prompt for you to review.
+              Answer a few quick questions and Gamut will draft a detailed prompt for you to review.
             </DialogDescription>
           </DialogHeader>
           {voiceAgentConfig && (

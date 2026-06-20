@@ -2725,11 +2725,19 @@ describe('MessagePersister', () => {
       })
     }
 
-    // Wait for async handler to complete (they are fire-and-forget via ;(async () => {...})())
-    // Multiple awaits needed because the handlers chain several async operations
-    async function flushHandlers() {
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      await new Promise((resolve) => setTimeout(resolve, 50))
+    // Wait for the fire-and-forget handler to resolve or reject the exact
+    // blocking tool input this test emitted. Fixed sleeps were flaky under
+    // coverage instrumentation because the async handler chains DB and service
+    // promises before calling the container.
+    async function flushHandlers(expectedPath: string) {
+      const deadline = Date.now() + 3000
+      while (Date.now() < deadline) {
+        const call = mockContainerClientFetch.mock.calls.find((c) => c[0] === expectedPath)
+        if (call) return call
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      const paths = mockContainerClientFetch.mock.calls.map((c) => String(c[0])).join(', ')
+      throw new Error(`Timed out waiting for ${expectedPath}; observed container fetches: ${paths || '<none>'}`)
     }
 
     beforeEach(() => {
@@ -2765,7 +2773,7 @@ describe('MessagePersister', () => {
           name: 'Email Handler',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-setup-1/resolve')
 
         const sseCreated = sseEvents.filter(e => e.type === 'webhook_trigger_created')
         expect(sseCreated).toHaveLength(1)
@@ -2796,7 +2804,7 @@ describe('MessagePersister', () => {
           prompt: 'Test',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-setup-bad/reject')
 
         // Should reject with helpful error
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
@@ -2822,7 +2830,7 @@ describe('MessagePersister', () => {
           prompt: 'Test',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-setup-noplatform/reject')
 
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
           '/inputs/tool-setup-noplatform/reject',
@@ -2843,7 +2851,7 @@ describe('MessagePersister', () => {
           prompt: 'Test',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-setup-noaccount/reject')
 
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
           '/inputs/tool-setup-noaccount/reject',
@@ -2864,7 +2872,7 @@ describe('MessagePersister', () => {
           prompt: 'Test',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-setup-dbfail/reject')
 
         expect(mockEnableComposioTrigger).toHaveBeenCalled()
         expect(mockDeleteComposioTrigger).toHaveBeenCalledWith('composio_trigger_id')
@@ -2888,7 +2896,7 @@ describe('MessagePersister', () => {
           trigger_id: 'trigger_existing',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-cancel-1/resolve')
 
         const sseCancelled = sseEvents.filter(e => e.type === 'webhook_trigger_cancelled')
         expect(sseCancelled).toHaveLength(1)
@@ -2914,7 +2922,7 @@ describe('MessagePersister', () => {
           trigger_id: 'trigger_gone',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-cancel-notfound/reject')
 
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
           '/inputs/tool-cancel-notfound/reject',
@@ -2933,7 +2941,7 @@ describe('MessagePersister', () => {
 
         simulateToolUse('mcp__user-input__cancel_trigger', 'tool-cancel-noid', {})
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-cancel-noid/reject')
 
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
           '/inputs/tool-cancel-noid/reject',
@@ -2960,7 +2968,7 @@ describe('MessagePersister', () => {
 
         simulateToolUse('mcp__user-input__list_triggers', 'tool-list-1', {})
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-list-1/resolve')
 
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
           '/inputs/tool-list-1/resolve',
@@ -2984,7 +2992,7 @@ describe('MessagePersister', () => {
 
         simulateToolUse('mcp__user-input__list_triggers', 'tool-list-empty', {})
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-list-empty/resolve')
 
         const resolveCall = mockContainerClientFetch.mock.calls.find(
           (c) => c[0] === '/inputs/tool-list-empty/resolve'
@@ -3001,7 +3009,7 @@ describe('MessagePersister', () => {
           connected_account_id: 'ca_1',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-avail-1/resolve')
 
         const resolveCall = mockContainerClientFetch.mock.calls.find(
           (c) => c[0] === '/inputs/tool-avail-1/resolve'
@@ -3020,7 +3028,7 @@ describe('MessagePersister', () => {
           connected_account_id: 'ca_missing',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-avail-noaccount/reject')
 
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
           '/inputs/tool-avail-noaccount/reject',
@@ -3038,7 +3046,7 @@ describe('MessagePersister', () => {
           connected_account_id: 'ca_1',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-avail-noplatform/reject')
 
         expect(mockContainerClientFetch).toHaveBeenCalledWith(
           '/inputs/tool-avail-noplatform/reject',
@@ -3056,7 +3064,7 @@ describe('MessagePersister', () => {
           connected_account_id: 'ca_1',
         })
 
-        await flushHandlers()
+        await flushHandlers('/inputs/tool-avail-empty/resolve')
 
         const resolveCall = mockContainerClientFetch.mock.calls.find(
           (c) => c[0] === '/inputs/tool-avail-empty/resolve'

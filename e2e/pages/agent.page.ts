@@ -2,6 +2,10 @@ import { Page, expect } from '@playwright/test'
 
 export type AgentActivityStatus = 'sleeping' | 'idle' | 'working' | 'awaiting_input'
 
+type CreateAgentOptions = {
+  waitForSidebarName?: boolean
+}
+
 /**
  * Page object for agent-related operations
  */
@@ -21,7 +25,9 @@ export class AgentPage {
    * click the agent breadcrumb so the caller lands on agent-home (where
    * agent-settings-button lives) rather than the first session view.
    */
-  async createAgent(prompt: string) {
+  async createAgent(prompt: string, options: CreateAgentOptions = {}) {
+    const { waitForSidebarName = true } = options
+
     await this.clickCreateAgent()
 
     // Wait until we've actually landed on the fresh Untitled agent's AgentHome
@@ -40,11 +46,13 @@ export class AgentPage {
     await expect(this.page.locator('[data-testid="agent-settings-button"]')).toBeVisible()
 
     // The agent is created as "Untitled" then renamed async after session
-    // creation. Wait for the rename to land so downstream selectAgent(name)
-    // lookups by visible text match. We accept any non-"Untitled" value — in
-    // E2E the LLM is unconfigured so the server fallback yields the prompt's
-    // first ~5 words, matching what the test passed in.
-    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).not.toHaveText('Untitled', { timeout: 15000 })
+    // creation. Downstream tests that re-select agents by name need the
+    // sidebar row to be indexed, but session-only tests can avoid coupling to
+    // the sidebar refresh.
+    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(prompt, { timeout: 15000 })
+    if (waitForSidebarName) {
+      await expect(this.getAgentItem(prompt)).toBeVisible({ timeout: 15000 })
+    }
   }
 
   /**

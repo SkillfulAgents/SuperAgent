@@ -49,6 +49,7 @@ test.describe('Settings Page', () => {
 
   test('opens settings page via sidebar button', async ({ page }) => {
     await openSettings(page)
+    await expect(page).toHaveURL(/\/settings/)
   })
 
   test('shows correct tabs for non-auth mode', async ({ page }) => {
@@ -88,7 +89,7 @@ test.describe('Settings Page', () => {
 
     // Click Browser tab
     await goToTab(page, 'browser')
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-model-trigger"]')).toBeVisible()
 
     // Click General tab
     await goToTab(page, 'general')
@@ -100,9 +101,9 @@ test.describe('Settings Page', () => {
     await goToTab(page, 'llm')
 
     // Provider radio cards replace the old <select>; the active provider's card
-    // expands inline to show its two model selectors (default + summarizer).
+    // expands inline to show its three model selectors (default + summarizer + dashboard).
     await expect(page.locator('[data-testid="llm-provider-card-anthropic"]')).toBeVisible()
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toHaveCount(2)
+    await expect(page.locator('[data-testid="settings-model-trigger"]')).toHaveCount(3)
   })
 
   test('Runtime tab shows container config fields', async ({ page }) => {
@@ -121,7 +122,7 @@ test.describe('Settings Page', () => {
     await openSettings(page)
     await goToTab(page, 'browser')
 
-    await expect(page.locator('[data-testid="composer-options-trigger"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-model-trigger"]')).toBeVisible()
     await expect(page.locator('#max-browser-tabs')).toBeVisible()
     await expect(page.locator('#browser-host')).toBeVisible()
   })
@@ -130,6 +131,23 @@ test.describe('Settings Page', () => {
     await openSettings(page)
     await page.locator('[data-testid="settings-back"]').click()
     await expect(page.locator('[data-testid="global-settings-page"]')).not.toBeVisible()
+    await expect(page).not.toHaveURL(/\/settings/)
+  })
+
+  test('switching tabs drives the URL', async ({ page }) => {
+    await openSettings(page)
+    // The tab navigates to /settings/$tab, preserving the ?from= close-target
+    // captured at open (hence the `(\?|$)` — the URL keeps `?from=/`).
+    await page.locator('[data-testid="settings-nav-runtime"]').click()
+    await expect(page).toHaveURL(/\/settings\/runtime(\?|$)/)
+    await page.locator('[data-testid="settings-nav-voice"]').click()
+    await expect(page).toHaveURL(/\/settings\/voice(\?|$)/)
+  })
+
+  test('an unknown settings tab redirects to /settings', async ({ page }) => {
+    await page.goto('/settings/totally-not-a-tab')
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await expect(page).toHaveURL(/\/settings(\?|$)/)
   })
 
   test('app shell unmounts while settings is open and returns on close', async ({ page }) => {
@@ -522,11 +540,11 @@ test.describe('Settings validation errors', () => {
 test.describe('Settings deep-link reset', () => {
   test('voice-button deep link does not stick after close', async ({ page, request }) => {
     // Skip the first-launch wizard so the app renders straight to the agent view.
-    await request.put('http://localhost:3000/api/user-settings', {
+    await request.put('/api/user-settings', {
       data: { setupCompleted: true },
     })
     // Seed an agent via API so the home message-input (which hosts the voice button) renders.
-    const createRes = await request.post('http://localhost:3000/api/agents', {
+    const createRes = await request.post('/api/agents', {
       data: { name: 'Voice Deep Link Test' },
     })
     const agent = await createRes.json() as { slug: string }
@@ -552,6 +570,64 @@ test.describe('Settings deep-link reset', () => {
     await expect(page.locator('[data-testid="settings-nav-voice"]')).toHaveAttribute('data-active', 'false')
 
     // Clean up: delete the seeded agent via API so other tests aren't affected.
-    await request.delete(`http://localhost:3000/api/agents/${agent.slug}`)
+    await request.delete(`/api/agents/${agent.slug}`)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Settings is a route; close pushes back to the captured ?from= origin (a
+// durable query param, not history.back), or home on a cold deep-link.
+// ---------------------------------------------------------------------------
+
+test.describe('Settings ?from= close-target', () => {
+  test('close pushes to the captured ?from origin', async ({ page, request }) => {
+    await request.put('/api/user-settings', { data: { setupCompleted: true } })
+    const createRes = await request.post('/api/agents', { data: { name: 'Settings From Origin' } })
+    const agent = await createRes.json() as { slug: string }
+
+    const appPage = new AppPage(page)
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
+    await page.locator(`[data-testid="agent-item-${agent.slug}"]`).click()
+    await expect(page).toHaveURL(new RegExp(`/agents/${agent.slug}$`))
+    const origin = page.url()
+
+    await page.locator('[data-testid="settings-button"]').click()
+    await expect(page).toHaveURL(/\/settings(\/|\?|$)/)
+    await page.locator('[data-testid="settings-back"]').click()
+    await expect(page).toHaveURL(origin)
+
+    await request.delete(`/api/agents/${agent.slug}`)
+  })
+
+  test('cold deep-link to /settings/general closes to home (no ?from)', async ({ page, request }) => {
+    await request.put('/api/user-settings', { data: { setupCompleted: true } })
+    await page.goto('/settings/general')
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await expect(page.locator('[data-testid="settings-nav-general"]')).toHaveAttribute('data-active', 'true')
+    await page.locator('[data-testid="settings-back"]').click()
+    await expect(page).toHaveURL(/\/$/)
+  })
+
+  test('settings survives a refresh and still closes to origin (?from= is durable)', async ({ page, request }) => {
+    await request.put('/api/user-settings', { data: { setupCompleted: true } })
+    const createRes = await request.post('/api/agents', { data: { name: 'Settings Refresh From' } })
+    const agent = await createRes.json() as { slug: string }
+
+    const appPage = new AppPage(page)
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
+    await page.locator(`[data-testid="agent-item-${agent.slug}"]`).click()
+    await expect(page).toHaveURL(new RegExp(`/agents/${agent.slug}$`))
+    const origin = page.url()
+
+    await page.locator('[data-testid="settings-button"]').click()
+    await expect(page).toHaveURL(/\/settings(\/|\?|$)/)
+    await page.reload()
+    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+    await page.locator('[data-testid="settings-back"]').click()
+    await expect(page).toHaveURL(origin)
+
+    await request.delete(`/api/agents/${agent.slug}`)
   })
 })

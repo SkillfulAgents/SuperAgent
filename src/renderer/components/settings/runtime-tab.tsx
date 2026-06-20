@@ -371,7 +371,7 @@ export function RuntimeTab() {
               </div>
             )}
             {!hasStartableRunner && (
-              <p className="text-xs">Please install a container runtime to use Superagent.</p>
+              <p className="text-xs">Please install a container runtime to use Gamut.</p>
             )}
           </AlertDescription>
         </Alert>

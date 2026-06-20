@@ -21,6 +21,7 @@ export class MockChatClientConnector extends ChatClientConnector {
   streamUpdates: { chatId: string; text: string; existingMessageId?: string }[] = []
   finalizedMessages: { chatId: string; messageId: string; finalText: string }[] = []
   typingIndicators: string[] = []
+  stoppedWorking: string[] = []
 
   private nextMessageId = 1
 
@@ -111,8 +112,12 @@ export class MockChatClientConnector extends ChatClientConnector {
     this.finalizedMessages.push({ chatId, messageId, finalText })
   }
 
-  async showTypingIndicator(chatId: string): Promise<void> {
+  async startWorking(chatId: string): Promise<void> {
     this.typingIndicators.push(chatId)
+  }
+
+  async stopWorking(chatId: string): Promise<void> {
+    this.stoppedWorking.push(chatId)
   }
 
   async sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string> {

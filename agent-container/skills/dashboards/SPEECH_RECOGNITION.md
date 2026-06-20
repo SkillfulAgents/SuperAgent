@@ -1,8 +1,8 @@
 # Speech Recognition API
 
-Dashboards running inside Superagent have access to the standard [Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition) (`SpeechRecognition`). This is a web standard — any examples or documentation you find online for the browser SpeechRecognition API will work here.
+Dashboards running inside Gamut have access to the standard [Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition) (`SpeechRecognition`). This is a web standard — any examples or documentation you find online for the browser SpeechRecognition API will work here.
 
-Under the hood, the polyfill routes audio to the user's configured STT provider (Deepgram, OpenAI, or Platform) via the Superagent backend. Dashboards don't need API keys or provider-specific code — just use the standard API.
+Under the hood, the polyfill routes audio to the user's configured STT provider (Deepgram, OpenAI, or Platform) via the Gamut backend. Dashboards don't need API keys or provider-specific code — just use the standard API.
 
 ## Quick Start
 
@@ -93,7 +93,7 @@ recognition.onresult = (event) => {
 | `not-allowed` | Microphone permission was denied by the user. |
 | `audio-capture` | No microphone available or it could not be accessed. |
 | `network` | WebSocket connection to the STT provider failed. |
-| `service-not-allowed` | No STT provider is configured in Superagent settings. |
+| `service-not-allowed` | No STT provider is configured in Gamut settings. |
 | `no-speech` | `stop()` was called but no speech was detected. |
 | `aborted` | `abort()` was called. |
 
@@ -171,7 +171,7 @@ recognition.start();
 ## Notes
 
 - The API is automatically available in all dashboards — no imports or setup required.
-- Microphone permission is granted by the Superagent app. The user may see a one-time browser prompt.
+- Microphone permission is granted by the Gamut app. The user may see a one-time browser prompt.
 - This is a standard Web API. Search for "Web Speech API SpeechRecognition" for more examples and patterns.
 - If recognition stops unexpectedly after ~10 minutes, the STT provider token expired. Simply call `start()` again in the `onend` handler.
 - Both `SpeechRecognition` and `webkitSpeechRecognition` are available (for compatibility with code written for Chrome).

@@ -164,6 +164,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('open-create-agent')
   },
 
+  onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void): (() => void) => {
+    const handler = (_event: unknown, command: unknown) => {
+      if (command === 'back' || command === 'forward') callback(command)
+    }
+    ipcRenderer.on('history-navigation-command', handler)
+    return () => {
+      ipcRenderer.removeListener('history-navigation-command', handler)
+    }
+  },
+
+  // Channel-wide reset — prefer the unsubscribe returned by onHistoryNavigationCommand.
+  removeHistoryNavigationCommand: () => {
+    ipcRenderer.removeAllListeners('history-navigation-command')
+  },
+
   // Reclaim window focus (e.g. after Chrome steals it by opening a new tab)
   focusWindow: () => {
     ipcRenderer.send('focus-window')
@@ -211,6 +226,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     navigations: Array<{ agentSlug: string; sessionId: string | null }>
   }> => {
     return ipcRenderer.invoke('flush-pending-notification-events')
+  },
+
+  // Pull menu commands (Settings / New Agent / navigate-to-agent) queued while
+  // the window was closed. The renderer calls this once on mount so commands
+  // captured before its IPC listeners existed still get dispatched (SUP-264).
+  flushPendingMenuCommands: (): Promise<
+    Array<
+      | { channel: 'navigate-to-agent'; agentSlug: string }
+      | { channel: 'open-settings' }
+      | { channel: 'open-create-agent' }
+    >
+  > => {
+    return ipcRenderer.invoke('flush-pending-menu-commands')
   },
 
   // Set dock badge count (macOS)
@@ -346,6 +374,8 @@ declare global {
       removeOpenSettings: () => void
       onOpenCreateAgent: (callback: () => void) => () => void
       removeOpenCreateAgent: () => void
+      onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => () => void
+      removeHistoryNavigationCommand: () => void
       setSidebarCollapsed: (collapsed: boolean) => void
       setTrayVisible: (visible: boolean) => Promise<void>
       showNotification: (
@@ -361,6 +391,13 @@ declare global {
         events: Array<{ type: 'click' | 'action'; actionIndex?: number; context?: unknown }>
         navigations: Array<{ agentSlug: string; sessionId: string | null }>
       }>
+      flushPendingMenuCommands: () => Promise<
+        Array<
+          | { channel: 'navigate-to-agent'; agentSlug: string }
+          | { channel: 'open-settings' }
+          | { channel: 'open-create-agent' }
+        >
+      >
       setBadgeCount: (count: number) => Promise<void>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>

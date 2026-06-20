@@ -45,7 +45,7 @@ export function openDashboardWindow(agentSlug: string, dashboardSlug: string, ap
   const win = new BrowserWindow({
     width: 1000,
     height: 700,
-    title: 'SuperAgent Dashboard',
+    title: 'Gamut Dashboard',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

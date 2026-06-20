@@ -3,7 +3,7 @@ import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, Check } from 'lucide-react'
+import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search } from 'lucide-react'
 import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
@@ -11,8 +11,11 @@ import { UploadError } from '@renderer/components/ui/upload-error'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavTransient } from '@renderer/context/nav-transient-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
+import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
+import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
 import { uploadFileChunked } from '@renderer/lib/upload'
@@ -21,6 +24,7 @@ import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
@@ -47,12 +51,15 @@ const INTRO_ANIMATION_MS = 2200
 interface AgentHomeProps {
   agent: ApiAgent
   onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string) => void
-  onOpenSettings?: (tab?: string) => void
 }
 
-export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
+export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { setView, setAgent, consumePendingDraft, justCreatedSlug, setJustCreatedSlug } = useSelection()
+  // The new-agent morph tag lives in NavTransientContext — above the router, so
+  // it survives in-app nav and dies on hard reload. justCreatedSlug producer =
+  // use-create-untitled-agent.
+  const { justCreatedSlug, setJustCreatedSlug } = useNavTransient()
+  const navigate = useNavigate()
   const [introStagger] = useState(() => {
     if (justCreatedSlug !== agent.slug) return false
     return !window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -77,14 +84,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
-  // First-session Opus default: when the session list has finished loading
-  // and is empty, the brand-new agent's first session should default to Opus
-  // regardless of the user's "Default Model" setting. Passed as a preferred
-  // family — the user can still pick a different model in the dropdown.
-  const isFirstSession = Array.isArray(sessionsData) && sessionsData.length === 0
-  const composerOptions = useComposerOptions(
-    isFirstSession ? { preferredFamily: 'opus' } : {}
-  )
+  const composerOptions = useComposerOptions()
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
@@ -97,35 +97,20 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   // Tracks whether a name has already been assigned (e.g. by the voice agent)
   // so the post-submit deriveAgentName fallback doesn't clobber it.
   const nameAssignedRef = useRef(false)
-  const [isEditingName, setIsEditingName] = useState(false)
-  const [editedName, setEditedName] = useState(agent.name)
-
-  const handleStartRename = () => {
-    setEditedName(agent.name)
-    setIsEditingName(true)
-  }
-
-  const handleCancelRename = () => {
-    setIsEditingName(false)
-    setEditedName(agent.name)
-  }
-
-  const handleSaveRename = async () => {
-    const trimmed = editedName.trim()
-    if (!trimmed || trimmed === agent.name) {
-      handleCancelRename()
+  // Agent-scoped settings dialogs — opened from the settings button and
+  // HomeExtras (system-prompt/secrets). NOT the global /settings route; they
+  // stay local dialog state here.
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false)
+  const handleOpenSettings = useCallback((tab?: string) => {
+    if (tab === 'system-prompt') {
+      setSystemPromptOpen(true)
       return
     }
-    try {
-      await updateAgent.mutateAsync({ slug: agent.slug, name: trimmed })
-      setIsEditingName(false)
-    } catch (error) {
-      console.error('Failed to rename agent:', error)
-      toast.error('Failed to rename agent', {
-        description: error instanceof Error ? error.message : 'Please try again.',
-      })
-    }
-  }
+    setSettingsTab(tab)
+    setSettingsOpen(true)
+  }, [])
 
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
@@ -191,15 +176,6 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     draftKey: `agent:${agent.slug}`,
   })
 
-  // Consume any pending draft from voice agent flow
-  useEffect(() => {
-    const draft = consumePendingDraft()
-    if (draft) {
-      composer.setMessage(draft)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- only run on mount
-  }, [])
-
   // Reset the manual-collapse flag once the message clears.
   useEffect(() => {
     if (composer.message.trim() === '') userCollapsedRef.current = false
@@ -246,7 +222,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
 
   const handleImportComplete = useCallback(
     async ({ agent: imported, hasOnboarding }: ImportResult) => {
-      setAgent(imported.slug)
+      void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
       if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
         deleteAgent.mutate(agent.slug)
       }
@@ -254,7 +230,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         await startOnboardingSession(imported.slug)
       }
     },
-    [setAgent, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
+    [navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(
@@ -265,6 +241,7 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const showRightColumn = isOwner
 
   return (
+    <>
     <div
       className={cn(
         'flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background',
@@ -284,57 +261,31 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between gap-2 intro-step intro-step-1">
-            {isEditingName && isOwner ? (
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <Input
-                  value={editedName}
-                  onChange={(e) => setEditedName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      handleSaveRename()
-                    } else if (e.key === 'Escape') {
-                      e.preventDefault()
-                      handleCancelRename()
-                    }
-                  }}
-                  autoFocus
-                  disabled={updateAgent.isPending}
-                  className="h-9 text-xl font-semibold"
-                  data-testid="agent-name-input"
-                />
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-8 w-8 shrink-0"
-                  onClick={handleSaveRename}
-                  disabled={updateAgent.isPending}
-                  aria-label="Save name"
-                  data-testid="agent-name-save"
-                >
-                  {updateAgent.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Check className="h-4 w-4" />
-                  )}
-                </Button>
-              </div>
-            ) : isOwner ? (
-              <button
-                type="button"
-                className="text-xl font-semibold truncate text-left cursor-pointer hover:opacity-80"
-                onClick={handleStartRename}
-                data-testid="agent-name"
-              >
-                {agent.name}
-              </button>
-            ) : (
-              <h1 className="text-xl font-semibold truncate" data-testid="agent-name">
-                {agent.name}
-              </h1>
-            )}
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => onOpenSettings?.()} aria-label="Agent settings" data-testid="agent-settings-button">
+            <InlineEditableTitle
+              value={agent.name}
+              canEdit={isOwner}
+              isSaving={updateAgent.isPending}
+              onSave={async (name) => {
+                await updateAgent.mutateAsync({ slug: agent.slug, name })
+              }}
+              onError={(error) => {
+                console.error('Failed to rename agent:', error)
+                toast.error('Failed to rename agent', {
+                  description: error instanceof Error ? error.message : 'Please try again.',
+                })
+              }}
+              displayClassName="text-xl font-semibold"
+              inputClassName="h-9 text-xl font-semibold"
+              saveButtonClassName="h-8 w-8"
+              ariaLabel="Rename agent"
+              saveAriaLabel="Save name"
+              displayTestId="agent-name"
+              inputTestId="agent-name-input"
+              saveButtonTestId="agent-name-save"
+            />
+            {/* AgentHome owns the settings dialog (no onOpenSettings prop), so the
+                gear opens the local handler rather than a parent-supplied one. */}
+            <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">
               <Settings2 className="h-4 w-4" />
             </Button>
           </div>
@@ -531,8 +482,12 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
               className="intro-step intro-step-4"
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
-              onSelectTask={(taskId: string) => setView({ kind: 'task', id: taskId })}
-              onSelectWebhook={(webhookId: string) => setView({ kind: 'webhook', id: webhookId })}
+              onSelectTask={(taskId: string) => {
+                void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agent.slug, taskId } })
+              }}
+              onSelectWebhook={(webhookId: string) => {
+                void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agent.slug, webhookId } })
+              }}
             />
             <HomeConnections className="intro-step intro-step-5" agentSlug={agent.slug} />
             <HomeSkills className="intro-step intro-step-6" agentSlug={agent.slug} onRunSkill={(skillPath) => {
@@ -549,10 +504,23 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
             }} />
             <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
-            <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+            <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
           </div>
         )}
       </div>
     </div>
+
+      <AgentSettingsDialog
+        agent={agent}
+        open={settingsOpen}
+        onOpenChange={(open) => { setSettingsOpen(open); if (!open) setSettingsTab(undefined) }}
+        initialTab={settingsTab}
+      />
+      <SystemPromptDialog
+        agent={agent}
+        open={systemPromptOpen}
+        onOpenChange={setSystemPromptOpen}
+      />
+    </>
   )
 }

@@ -37,6 +37,7 @@ import {
   updateNextExecution,
   markTaskFailed,
   resetScheduledTask,
+  updateTaskName,
   deleteScheduledTask,
 } from './scheduled-task-service'
 
@@ -462,6 +463,45 @@ describe('scheduled-task-service', () => {
       const task = await getScheduledTask(taskId)
       expect(task!.status).toBe('failed')
       expect(task!.lastExecutedAt).not.toBeNull()
+    })
+  })
+
+  // ============================================================================
+  // updateTaskName Tests
+  // ============================================================================
+
+  describe('updateTaskName', () => {
+    it('updates the display name for a pending task', async () => {
+      const taskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '0 9 * * *',
+        prompt: 'Test',
+        name: 'Old name',
+      })
+
+      const result = await updateTaskName(taskId, 'New name')
+
+      expect(result).toBe(true)
+      const task = await getScheduledTask(taskId)
+      expect(task!.name).toBe('New name')
+    })
+
+    it('does not update completed tasks', async () => {
+      const taskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'at',
+        scheduleExpression: 'at now + 1 hour',
+        prompt: 'Test',
+        name: 'Old name',
+      })
+      await markTaskExecuted(taskId, 'session-abc')
+
+      const result = await updateTaskName(taskId, 'New name')
+
+      expect(result).toBe(false)
+      const task = await getScheduledTask(taskId)
+      expect(task!.name).toBe('Old name')
     })
   })
 

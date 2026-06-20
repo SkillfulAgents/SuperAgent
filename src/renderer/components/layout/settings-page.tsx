@@ -35,7 +35,7 @@ export function SettingsPageContainer({ children, className, fullScreen, fullWid
 }
 
 interface PageTitleProps {
-  title: string
+  title: ReactNode
   back?: { onClick: () => void; label?: string; testId?: string }
   actions?: ReactNode
 }
@@ -60,7 +60,11 @@ export function PageTitle({ title, back, actions }: PageTitleProps) {
         </Button>
       )}
       <div className="flex items-end justify-between gap-4">
-        <h2 className="text-xl font-medium">{title}</h2>
+        {typeof title === 'string' ? (
+          <h2 className="text-xl font-medium">{title}</h2>
+        ) : (
+          <div className="min-w-0 flex-1">{title}</div>
+        )}
         {actions && <div className="shrink-0">{actions}</div>}
       </div>
     </div>

@@ -42,6 +42,19 @@ vi.mock('@renderer/context/connectivity-context', () => ({
   ConnectivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+// Mock useRuntimeStatus — default ready, override per test
+const mockRuntimeStatus = {
+  data: {
+    runtimeReadiness: { status: 'READY' as string, message: 'Ready' },
+    hasRunningAgents: true,
+    apiKeyConfigured: true,
+  },
+  isPending: false,
+}
+vi.mock('@renderer/hooks/use-runtime-status', () => ({
+  useRuntimeStatus: () => mockRuntimeStatus,
+}))
+
 const mockSettings = {
   data: {
     llmProvider: 'anthropic',
@@ -51,12 +64,12 @@ const mockSettings = {
         id: 'anthropic',
         name: 'Anthropic',
         isConfigured: true,
-        availableModels: [],
-        composerModels: [
-          { family: 'haiku', modelId: 'haiku', label: 'Haiku' },
-          { family: 'sonnet', modelId: 'sonnet', label: 'Sonnet' },
-          { family: 'opus', modelId: 'opus', label: 'Opus' },
+        catalog: [
+          { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
+          { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
+          { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
         ],
+        defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
       },
     ],
   },
@@ -72,6 +85,8 @@ describe('MessageInput', () => {
     mockStreamState.slashCommands = []
     mockSendMessage.isPending = false
     mockIsOnline = true
+    mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
+    mockRuntimeStatus.isPending = false
   })
 
   it('renders textarea with placeholder', () => {
@@ -436,6 +451,60 @@ describe('MessageInput', () => {
     })
   })
 
+  // ---- Runtime not ready (pending) ----
+  describe('runtime pending state', () => {
+    it('disables the textarea while the runtime image is pulling', () => {
+      mockRuntimeStatus.data.runtimeReadiness.status = 'PULLING_IMAGE'
+      renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" />
+      )
+      expect(screen.getByTestId('message-input')).toBeDisabled()
+    })
+
+    it('disables the textarea while the runtime is being checked', () => {
+      mockRuntimeStatus.data.runtimeReadiness.status = 'CHECKING'
+      renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" />
+      )
+      expect(screen.getByTestId('message-input')).toBeDisabled()
+    })
+
+    it('keeps the send button disabled even after typing when runtime is pending', async () => {
+      mockRuntimeStatus.data.runtimeReadiness.status = 'PULLING_IMAGE'
+      const user = userEvent.setup()
+      renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" />
+      )
+      const input = screen.getByTestId('message-input')
+      await user.type(input, 'Hello')
+      expect(screen.getByTestId('send-button')).toBeDisabled()
+    })
+
+    it('does not send on Enter when runtime is pending', async () => {
+      mockRuntimeStatus.data.runtimeReadiness.status = 'PULLING_IMAGE'
+      const user = userEvent.setup()
+      const onMessageSent = vi.fn()
+      renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" onMessageSent={onMessageSent} />
+      )
+      const input = screen.getByTestId('message-input')
+      await user.type(input, 'Hello{Enter}')
+      expect(mockSendMessage.mutateAsync).not.toHaveBeenCalled()
+      expect(onMessageSent).not.toHaveBeenCalled()
+    })
+
+    it('enables the send button once the runtime is ready', async () => {
+      mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
+      const user = userEvent.setup()
+      renderWithProviders(
+        <MessageInput sessionId="s-1" agentSlug="agent-1" />
+      )
+      const input = screen.getByTestId('message-input')
+      await user.type(input, 'Hello')
+      expect(screen.getByTestId('send-button')).toBeEnabled()
+    })
+  })
+
   // ---- Whitespace-only input ----
 
   it('does not submit whitespace-only message', async () => {
@@ -660,7 +729,8 @@ describe('MessageInput', () => {
     )
 
     await user.click(screen.getByTestId('composer-options-trigger'))
-    await user.click(await screen.findByTestId('model-option-haiku'))
+    await user.click(await screen.findByTestId('model-family-haiku'))
+    await user.click(await screen.findByTestId('model-pinned-claude-haiku-4-5'))
 
     const input = screen.getByTestId('message-input')
     await user.type(input, 'Switch to haiku')
@@ -669,7 +739,7 @@ describe('MessageInput', () => {
     await waitFor(() => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'haiku',
+          model: 'claude-haiku-4-5',
           content: 'Switch to haiku',
         })
       )
@@ -686,7 +756,8 @@ describe('MessageInput', () => {
     await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('effort-option-low'))
     await user.click(screen.getByTestId('composer-options-trigger'))
-    await user.click(await screen.findByTestId('model-option-sonnet'))
+    await user.click(await screen.findByTestId('model-family-sonnet'))
+    await user.click(await screen.findByTestId('model-pinned-claude-sonnet-4-6'))
 
     const input = screen.getByTestId('message-input')
     await user.type(input, 'Combined')
@@ -696,7 +767,7 @@ describe('MessageInput', () => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({
           effort: 'low',
-          model: 'sonnet',
+          model: 'claude-sonnet-4-6',
           content: 'Combined',
         })
       )

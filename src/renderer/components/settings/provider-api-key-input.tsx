@@ -126,7 +126,7 @@ export function ProviderApiKeyInput({
     ? 'Your API key is saved locally. Enter a new key to replace it.'
     : apiKeyStatus?.source === 'env'
       ? 'Save a key here to override the environment variable.'
-      : 'Your API key will be saved locally in ~/.superagent/settings.json'
+      : 'Your API key will be saved locally on your device.'
 
   return (
     <div className="space-y-2">

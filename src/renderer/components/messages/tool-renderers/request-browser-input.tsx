@@ -23,7 +23,7 @@ function ExpandedView({ input, result, isError }: ToolRendererProps) {
   return (
     <div className="space-y-2">
       {message && <Field label="Message">{message}</Field>}
-      {requirements && requirements.length > 0 && <RequirementsBlock requirements={requirements} />}
+      {Array.isArray(requirements) && requirements.length > 0 && <RequirementsBlock requirements={requirements} />}
       {result && <ResultField result={result} isError={isError} />}
     </div>
   )
@@ -43,7 +43,7 @@ function StreamingView({ partialInput }: StreamingToolRendererProps) {
         {parsed.message || <span className="text-muted-foreground italic">...</span>}
         <span className="animate-pulse">|</span>
       </Field>
-      {parsed.requirements && parsed.requirements.length > 0 && (
+      {Array.isArray(parsed.requirements) && parsed.requirements.length > 0 && (
         <RequirementsBlock requirements={parsed.requirements} />
       )}
     </div>

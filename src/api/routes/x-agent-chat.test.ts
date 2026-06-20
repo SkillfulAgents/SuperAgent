@@ -112,7 +112,8 @@ function immediateTimeout() {
 describe('x-agent chat route', () => {
   let app: ReturnType<typeof createApp>
   let connector: {
-    showTypingIndicator: ReturnType<typeof vi.fn>
+    startWorking: ReturnType<typeof vi.fn>
+    stopWorking: ReturnType<typeof vi.fn>
     sendMessage: ReturnType<typeof vi.fn>
   }
   let containerSendMessage: ReturnType<typeof vi.fn>
@@ -121,7 +122,8 @@ describe('x-agent chat route', () => {
     vi.clearAllMocks()
     app = createApp()
     connector = {
-      showTypingIndicator: vi.fn().mockResolvedValue(undefined),
+      startWorking: vi.fn().mockResolvedValue(undefined),
+      stopWorking: vi.fn().mockResolvedValue(undefined),
       sendMessage: vi.fn().mockResolvedValue(undefined),
     }
     containerSendMessage = vi.fn().mockResolvedValue(undefined)
@@ -218,7 +220,7 @@ describe('x-agent chat route', () => {
     expect(await res.json()).toEqual({ chatId: 'chat-1', provider: 'slack' })
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('getConnector returned undefined'))
     expect(mockAddIntegration).toHaveBeenCalledWith('integration-1')
-    expect(connector.showTypingIndicator).toHaveBeenCalledWith('chat-1')
+    expect(connector.startWorking).toHaveBeenCalledWith('chat-1')
     expect(connector.sendMessage).toHaveBeenCalledWith('chat-1', { text: 'Ship the update' })
     expect(mockEnsureSession).toHaveBeenCalledWith('integration-1', 'chat-1')
     expect(mockEnsureRunning).toHaveBeenCalledWith('agent-one')

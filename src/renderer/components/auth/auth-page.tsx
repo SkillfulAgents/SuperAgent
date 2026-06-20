@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { signIn, signUp, signOut } from '@renderer/lib/auth-client'
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, consumeRedirectStash, peekRedirectStash } from '@renderer/lib/api'
 import { Card, CardContent, CardHeader } from '@renderer/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import { Input } from '@renderer/components/ui/input'
@@ -124,6 +124,16 @@ function SignInForm({ onSwitchToSignUp, showSignupLink }: { onSwitchToSignUp: ()
       const res = await signIn.email({ email: data.email, password: data.password })
       if (res.error) {
         setServerError(res.error.message || 'Sign in failed')
+        return
+      }
+      // Restore the URL stashed when a 401 expired the session. Email login
+      // otherwise keeps the address bar in place, so this is a no-op unless a 401
+      // had bounced us to the sign-in screen. Lazy-import the router singleton so
+      // AuthPage's module graph (and its unit tests) don't pull in the whole route tree.
+      const back = consumeRedirectStash()
+      if (back) {
+        const { router } = await import('@renderer/router')
+        router.history.push(back)
       }
     } catch {
       setServerError('Sign in failed. Please try again.')
@@ -375,7 +385,8 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
     try {
       const res = await signIn.oauth2({
         providerId,
-        callbackURL: '/',
+        // Carry the post-401 destination through the OAuth round-trip.
+        callbackURL: peekRedirectStash(),
         errorCallbackURL: '/',
       })
       if (res?.error) {
@@ -392,7 +403,7 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
     <div className="flex items-center justify-center h-screen bg-background" data-testid="auth-page">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <h1 className="text-2xl font-bold">SuperAgent</h1>
+          <h1 className="text-2xl font-bold">Gamut</h1>
         </CardHeader>
         <CardContent className="space-y-4">
           {isLoading ? (

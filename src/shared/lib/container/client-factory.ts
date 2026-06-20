@@ -5,6 +5,7 @@ import { PodmanContainerClient } from './podman-container-client'
 import { AppleContainerClient } from './apple-container-client'
 import { LimaContainerClient, getNerdctlWrapperPath, ensureLimaReady, stopLimaVm } from './lima-container-client'
 import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro } from './wsl2-container-client'
+import { PlatformK8sRuntimeClient } from './platform-k8s-runtime'
 import { RunnerSetupError, type RunnerSetupRemediation } from './wsl2-setup-errors'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
@@ -12,7 +13,7 @@ import { BaseContainerClient, execWithPath, spawnWithPath, AGENT_CONTAINER_PATH 
 import { platform } from 'os'
 import * as fs from 'fs'
 
-export type ContainerRunner = 'docker' | 'podman' | 'apple-container' | 'lima' | 'wsl2'
+export type ContainerRunner = 'docker' | 'podman' | 'apple-container' | 'lima' | 'wsl2' | 'kubernetes'
 
 export interface RunnerAvailability {
   runner: ContainerRunner
@@ -53,6 +54,7 @@ const ALL_RUNNERS: {
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
   { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), reconcileRuntimeState: () => LimaContainerClient.reconcileRuntimeState(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
   { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro() },
+  { name: 'kubernetes', cliCommand: 'kubernetes', isEligible: () => PlatformK8sRuntimeClient.isEligible(), isAvailable: () => PlatformK8sRuntimeClient.isAvailable(), isRunning: () => PlatformK8sRuntimeClient.isRunning() },
 ]
 
 /**
@@ -72,6 +74,7 @@ const RUNNER_DISPLAY_NAMES: Record<ContainerRunner, string> = {
   podman: 'Podman',
   lima: 'Built-in Runtime',
   wsl2: 'Built-in Runtime',
+  kubernetes: 'Kubernetes',
 }
 
 export function getRunnerDisplayName(runner: ContainerRunner): string {
@@ -587,6 +590,8 @@ export function getContainerClientClass(runner: ContainerRunner): ConcreteContai
       return LimaContainerClient
     case 'wsl2':
       return WSL2ContainerClient
+    case 'kubernetes':
+      return PlatformK8sRuntimeClient
     default:
       console.warn(`Unknown container runner "${runner}", falling back to docker`)
       return DockerContainerClient

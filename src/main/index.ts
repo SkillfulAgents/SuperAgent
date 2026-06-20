@@ -32,7 +32,7 @@ if (process.platform !== 'win32') {
 
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
-import { createAppMenu, updateAppMenuWindow, destroyAppMenu } from './app-menu'
+import { createAppMenu, updateAppMenuWindow, destroyAppMenu, flushPendingMenuCommands } from './app-menu'
 import { getSettings } from '@shared/lib/config/settings'
 import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
@@ -47,7 +47,23 @@ if (!app.isPackaged) {
   app.name = 'Superagent-Dev'
 }
 
-// Set Electron-specific data directory BEFORE importing API
+// Set Electron-specific data directory BEFORE importing API.
+//
+// LOAD-BEARING (Gamut rebrand — DATA-0 / FIX H1): the production data dir is pinned to
+// the legacy "Superagent" folder, deliberately decoupled from the now-"Gamut" productName.
+// `getPath('userData')` resolves to `appData/<productName>`, so flipping productName to
+// "Gamut" *without* this pin would point every installed user at an empty `…/Gamut` and
+// strand their DB, secrets, and history in the old `…/Superagent` tree. We derive the pin
+// from the brand-independent `appData` base + the literal legacy name so the data location
+// never moves regardless of the visible brand. Do NOT change the literal 'Superagent'.
+// (See gamut-rebrand-roadmap.md §3.1.)
+//
+// Dev is unaffected: app.name is set to 'Superagent-Dev' above (pre-resolution), so the
+// fallback below resolves dev data to `…/Superagent-Dev`. A pre-existing SUPERAGENT_DATA_DIR
+// (custom dev/CI dir) is always honored verbatim via `??=`.
+if (app.isPackaged) {
+  process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('appData'), 'Superagent')
+}
 // This uses ~/Library/Application Support/Superagent (or Superagent-Dev) on macOS
 // or %APPDATA%/Superagent (or Superagent-Dev) on Windows
 // Note: app.getPath() works synchronously before app.whenReady()
@@ -372,6 +388,19 @@ function createWindow() {
     mainWindow?.webContents.send('window-maximized-change', false)
   })
 
+  // Browser-style hardware buttons (e.g. mouse Back/Forward) arrive as app
+  // commands on Windows/Linux. Forward them to the renderer so TanStack Router's
+  // history, not Electron's document history, owns app navigation.
+  mainWindow.on('app-command', (event, command) => {
+    if (command === 'browser-backward') {
+      event.preventDefault()
+      mainWindow?.webContents.send('history-navigation-command', 'back')
+    } else if (command === 'browser-forward') {
+      event.preventDefault()
+      mainWindow?.webContents.send('history-navigation-command', 'forward')
+    }
+  })
+
   processPendingProtocolUrls()
 }
 
@@ -533,6 +562,14 @@ ipcMain.handle('flush-pending-notification-events', () => {
     pendingNotificationNavigations.length,
   )
   return { events, navigations }
+})
+
+// Renderer pulls menu commands (navigate-to-agent / open-settings /
+// open-create-agent) that fired while the window was closed and recreated it.
+// The renderer asks once on mount, when its IPC listeners are guaranteed
+// attached, so no command is lost to the webContents.send race (SUP-264).
+ipcMain.handle('flush-pending-menu-commands', () => {
+  return flushPendingMenuCommands()
 })
 
 // IPC handler for setting dock badge count (macOS)
@@ -1014,7 +1051,7 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
       }
 
       const email = callbackUrl.searchParams.get('email')
-      const label = callbackUrl.searchParams.get('label') || 'SuperAgent'
+      const label = callbackUrl.searchParams.get('label') || 'Gamut'
       const orgId = callbackUrl.searchParams.get('org_id')
       const orgName = callbackUrl.searchParams.get('org_name')
       const role = callbackUrl.searchParams.get('role')

@@ -25,9 +25,9 @@ The dashboard must exist at /workspace/artifacts/<slug>/ with a valid package.js
       const content: ToolContentBlock[] = []
 
       if (info.status === 'running') {
-        text += '\n\nThe dashboard is accessible to the user through the Superagent UI.'
+        text += '\n\nThe dashboard is accessible to the user through the Gamut UI.'
         text +=
-          '\n\nDo NOT use the browser tool to view this dashboard. The browser runs outside the container and cannot access localhost URLs served inside it. The user can already see it through the Superagent UI — use get_dashboard_logs to debug any issues.'
+          '\n\nDo NOT use the browser tool to view this dashboard. The browser runs outside the container and cannot access localhost URLs served inside it. The user can already see it through the Gamut UI — use get_dashboard_logs to debug any issues.'
 
         // Await screenshot so the agent can sanity-check rendering in the same
         // tool result. Best-effort: if capture fails we still return success.

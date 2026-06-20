@@ -548,6 +548,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     initialMessage: prompt,
     model: getEffectiveModels().agentModel,
     browserModel: getEffectiveModels().browserModel,
+    dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
     maxOutputTokens: agentLimits.maxOutputTokens,
     maxThinkingTokens: agentLimits.maxThinkingTokens,
     maxTurns: agentLimits.maxTurns,
