@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
 import {
@@ -14,6 +14,7 @@ import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
+import { applyWebFavicon, getWebFaviconHref } from '@renderer/lib/favicon'
 import {
   Wand2,
   TriangleAlert,
@@ -24,6 +25,8 @@ import {
   Monitor,
   Sun,
   Moon,
+  Upload,
+  Trash2,
 } from 'lucide-react'
 
 interface SettingRowProps {
@@ -91,6 +94,36 @@ function KeepAwakeRow({ enabled, onToggle, disabled }: KeepAwakeRowProps) {
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
 const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
+const FAVICON_ACCEPT = 'image/png,image/jpeg,image/webp,image/x-icon,image/vnd.microsoft.icon,image/svg+xml,.ico'
+const FAVICON_MAX_BYTES = 256 * 1024
+const FAVICON_ALLOWED_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/x-icon',
+  'image/vnd.microsoft.icon',
+  'image/svg+xml',
+])
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result)
+      else reject(new Error('Failed to read image'))
+    }
+    reader.onerror = () => reject(new Error('Failed to read image'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function errorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'error' in error && typeof error.error === 'string') {
+    return error.error
+  }
+  if (error instanceof Error) return error.message
+  return 'Failed to update web icon'
+}
 
 interface GeneralTabProps {
   onOpenWizard: () => void
@@ -104,9 +137,15 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
   const { isAuthMode, isAdmin } = useUser()
   const showAdminFeatures = !isAuthMode || isAdmin
   const [keepAwakeLoading, setKeepAwakeLoading] = useState(false)
+  const [faviconSaving, setFaviconSaving] = useState(false)
+  const [faviconError, setFaviconError] = useState<string | null>(null)
+  const faviconInputRef = useRef<HTMLInputElement>(null)
 
   const isElectronApp = !!window.electronAPI
   const isMacElectron = window.electronAPI?.platform === 'darwin'
+  const showWebFaviconSettings = !isElectronApp && showAdminFeatures
+  const customFavicon = globalSettings?.app?.faviconDataUrl
+  const faviconPreviewSrc = customFavicon || getWebFaviconHref(globalSettings?.app?.faviconUpdatedAt)
 
   const handleKeepAwakeToggle = async (checked: boolean) => {
     setKeepAwakeLoading(true)
@@ -117,6 +156,51 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
       // User cancelled the sudo dialog or pmset failed — don't persist
     } finally {
       setKeepAwakeLoading(false)
+    }
+  }
+
+  const handleFaviconFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+
+    const isIcoWithMissingType = !file.type && file.name.toLowerCase().endsWith('.ico')
+    if (!FAVICON_ALLOWED_TYPES.has(file.type) && !isIcoWithMissingType) {
+      setFaviconError('Choose a PNG, JPEG, WebP, ICO, or SVG image.')
+      return
+    }
+
+    if (file.size > FAVICON_MAX_BYTES) {
+      setFaviconError('Choose an image smaller than 256KB.')
+      return
+    }
+
+    setFaviconSaving(true)
+    setFaviconError(null)
+    try {
+      let dataUrl = await readFileAsDataUrl(file)
+      if (isIcoWithMissingType) {
+        dataUrl = dataUrl.replace(/^data:[^;]*;base64,/, 'data:image/x-icon;base64,')
+      }
+      const updated = await updateGlobalSettings.mutateAsync({ app: { faviconDataUrl: dataUrl } })
+      applyWebFavicon(updated.app.faviconUpdatedAt)
+    } catch (error) {
+      setFaviconError(errorMessage(error))
+    } finally {
+      setFaviconSaving(false)
+    }
+  }
+
+  const handleResetFavicon = async () => {
+    setFaviconSaving(true)
+    setFaviconError(null)
+    try {
+      const updated = await updateGlobalSettings.mutateAsync({ app: { faviconDataUrl: null } })
+      applyWebFavicon(updated.app.faviconUpdatedAt)
+    } catch (error) {
+      setFaviconError(errorMessage(error))
+    } finally {
+      setFaviconSaving(false)
     }
   }
 
@@ -220,6 +304,67 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
           )}
         </div>
       </div>
+
+      {showWebFaviconSettings && (
+        <div className="space-y-2">
+          <h3 className={SECTION_HEADING}>Branding</h3>
+          <div className={CARD_CLASS}>
+            <div className="py-3 px-4">
+              <div className="flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-medium truncate block cursor-default">Web Icon</div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">Shown in browser tabs for web deployments</div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-md border bg-muted">
+                    <img src={faviconPreviewSrc} alt="" className="h-6 w-6 object-contain" />
+                  </div>
+                  <input
+                    ref={faviconInputRef}
+                    type="file"
+                    accept={FAVICON_ACCEPT}
+                    className="hidden"
+                    onChange={handleFaviconFileChange}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => faviconInputRef.current?.click()}
+                    disabled={!globalSettings || faviconSaving}
+                  >
+                    {faviconSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
+                    Upload
+                  </Button>
+                  {customFavicon && (
+                    <TooltipProvider delayDuration={0}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={handleResetFavicon}
+                            disabled={!globalSettings || faviconSaving}
+                            aria-label="Reset web icon"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Reset web icon</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
+                </div>
+              </div>
+              {faviconError && (
+                <p className="mt-2 text-[11px] text-destructive">{faviconError}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {!isAuthMode && (
         <div className="space-y-2">
