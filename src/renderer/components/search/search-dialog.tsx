@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueries } from '@tanstack/react-query'
-import { Bot, ChevronRight, MessageSquare, Search } from 'lucide-react'
+import { Bot, ChevronRight, MessageSquare, Search, SquareMousePointer } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer/components/ui/dialog'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { useAgents } from '@renderer/hooks/use-agents'
@@ -114,6 +114,11 @@ export function SearchDialog() {
     closeSearch()
     if (item.kind === 'agent') {
       void navigate({ to: '/agents/$slug', params: { slug: item.agent.slug } })
+    } else if (item.kind === 'dashboard') {
+      void navigate({
+        to: '/agents/$slug/dashboards/$dashSlug',
+        params: { slug: item.agent.slug, dashSlug: item.dashboard.slug },
+      })
     } else {
       void navigate({
         to: '/agents/$slug/sessions/$sessionId',
@@ -142,7 +147,7 @@ export function SearchDialog() {
       const item = flatItems[activeIndex]
       if (item?.kind === 'agent' && expandedSlugs.has(item.agent.slug)) {
         toggleExpand(item.agent.slug)
-      } else if (item?.kind === 'session') {
+      } else if (item?.kind === 'dashboard' || item?.kind === 'session') {
         // Collapse the parent agent and move focus to it
         toggleExpand(item.agent.slug)
         const agentIdx = flatItems.findIndex(
@@ -162,10 +167,10 @@ export function SearchDialog() {
       <DialogContent
         className="max-w-xl p-0 gap-0 overflow-hidden [&>button]:top-3 [&>button]:right-3"
         onKeyDown={handleKeyDown}
-        aria-label="Search agents and sessions"
+        aria-label="Search agents, dashboards, and sessions"
       >
-        <DialogTitle className="sr-only">Search agents and sessions</DialogTitle>
-        <DialogDescription className="sr-only">Find agents and sessions by name</DialogDescription>
+        <DialogTitle className="sr-only">Search agents, dashboards, and sessions</DialogTitle>
+        <DialogDescription className="sr-only">Find agents, dashboards, and sessions by name</DialogDescription>
         <div className="flex items-center gap-2 border-b px-3 py-2.5">
           <Search className="h-4 w-4 text-muted-foreground shrink-0" />
           <input
@@ -176,7 +181,7 @@ export function SearchDialog() {
               setQuery(e.target.value)
               setActiveIndex(0)
             }}
-            placeholder="Search agents and sessions..."
+            placeholder="Search agents, dashboards, and sessions..."
             className="flex-1 bg-transparent outline-none text-sm placeholder:text-muted-foreground"
             data-testid="search-input"
           />
@@ -196,7 +201,7 @@ export function SearchDialog() {
               return visibleGroups.map((g) => {
                 const agentIdx = idx++
                 const isExpanded = isSearchMode || expandedSlugs.has(g.agent.slug)
-                const hasSessions = g.sessions.length > 0
+                const hasChildren = g.dashboards.length > 0 || g.sessions.length > 0
                 return (
                   <div key={g.agent.slug} className="py-1">
                     <button
@@ -212,7 +217,7 @@ export function SearchDialog() {
                         activeIndex === agentIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
                       )}
                     >
-                      {!isSearchMode && hasSessions && (
+                      {!isSearchMode && hasChildren && (
                         <ChevronRight
                           data-testid="search-agent-expand"
                           data-agent-slug={g.agent.slug}
@@ -226,7 +231,7 @@ export function SearchDialog() {
                           }}
                         />
                       )}
-                      {!isSearchMode && !hasSessions && (
+                      {!isSearchMode && !hasChildren && (
                         <span className="w-3.5 shrink-0" />
                       )}
                       <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -239,6 +244,32 @@ export function SearchDialog() {
                         </span>
                       )}
                     </button>
+                    {isExpanded && g.dashboards.map((d) => {
+                      const dashboardIdx = idx++
+                      return (
+                        <button
+                          key={d.slug}
+                          type="button"
+                          data-index={dashboardIdx}
+                          data-testid="search-dashboard-row"
+                          data-agent-name={g.agent.name}
+                          data-agent-slug={g.agent.slug}
+                          data-dashboard-name={d.name}
+                          data-dashboard-slug={d.slug}
+                          onClick={() => handleSelect({ kind: 'dashboard', agent: g.agent, dashboard: d })}
+                          onMouseEnter={() => setActiveIndex(dashboardIdx)}
+                          className={cn(
+                            'w-full flex items-center gap-2 pl-9 pr-3 py-1.5 text-left text-sm rounded-sm',
+                            activeIndex === dashboardIdx ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
+                          )}
+                        >
+                          <SquareMousePointer className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="truncate text-muted-foreground">
+                            <HighlightMatch text={d.name} query={query} />
+                          </span>
+                        </button>
+                      )
+                    })}
                     {isExpanded && g.sessions.map((s) => {
                       const sessionIdx = idx++
                       return (
