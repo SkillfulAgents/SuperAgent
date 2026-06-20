@@ -653,7 +653,10 @@ class ChatIntegrationManager {
 
     // Handle /start — a freshly bootstrapped/allowed chat gets a greeting without
     // spending on the agent. (Pending chats never reach here — the gate blocked them.)
-    if (message.text.trim().toLowerCase() === '/start') {
+    // Telegram-only: /start is the Telegram onboarding convention and part of the
+    // allowlist bootstrap UX. Other providers forward "/start" to the agent as a
+    // normal message (their pre-allowlist behavior).
+    if (integration.provider === 'telegram' && message.text.trim().toLowerCase() === '/start') {
       await conn.connector.sendMessage(chatId, { text: "You're connected. Send a message to start." }).catch(() => {})
       return
     }

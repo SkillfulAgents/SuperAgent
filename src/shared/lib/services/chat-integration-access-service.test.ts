@@ -135,6 +135,16 @@ describe('chat-integration-access-service', () => {
       expect(getChatAccess('int-slack', 'c1')).toBeNull()
     })
 
+    it('non-telegram with requireApproval=true → forward/allowed, no row written (default-flip safety)', () => {
+      // require_approval now defaults true for ALL providers; the provider check
+      // must still short-circuit non-telegram before the flag is consulted, so a
+      // reorder of the OR can't silently start gating Slack/iMessage.
+      setRequireApproval('int-slack', true)
+      const d = decideInboundAccess({ integrationId: 'int-slack', externalChatId: 'c1', chatType: 'private' })
+      expect(d).toEqual({ action: 'forward', sendNotice: false, status: 'allowed' })
+      expect(getChatAccess('int-slack', 'c1')).toBeNull()
+    })
+
     it('telegram with requireApproval=false → forward/allowed, no row written', () => {
       setRequireApproval('int-tg', false)
       const d = decideInboundAccess({ integrationId: 'int-tg', externalChatId: 'c1', chatType: 'private' })
@@ -242,6 +252,10 @@ describe('chat-integration-access-service', () => {
       expect(isChatAllowed('int-tg', 'x')).toBe(true)
     })
     it('non-telegram provider → true', () => {
+      expect(isChatAllowed('int-slack', 'c')).toBe(true)
+    })
+    it('non-telegram with requireApproval true → true (default-flip safety)', () => {
+      setRequireApproval('int-slack', true)
       expect(isChatAllowed('int-slack', 'c')).toBe(true)
     })
     it('unknown integration → false (fail closed)', () => {

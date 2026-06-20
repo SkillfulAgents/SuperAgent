@@ -244,6 +244,37 @@ describe('chat-integration inbound access gate', () => {
     expect(containerManager.ensureRunning).not.toHaveBeenCalled()
   })
 
+  it('/start on a non-telegram integration → forwarded to the agent, not intercepted', async () => {
+    // The /start greeting is Telegram-only (it's the allowlist bootstrap UX). A
+    // literal "/start" on another provider must reach the agent like any message.
+    const SLACK = 'int-slack'
+    const now = Date.now()
+    testSqlite
+      .prepare(
+        `INSERT INTO chat_integrations (id, agent_slug, provider, config, require_approval, created_at, updated_at)
+         VALUES (?, 'test-agent', 'slack', '{}', 1, ?, ?)`,
+      )
+      .run(SLACK, now, now)
+    const slackIntegration = { ...integration, id: SLACK, provider: 'slack' }
+    const slackSend = vi.fn().mockResolvedValue('sent-id')
+    mgr.connections.set(SLACK, {
+      connector: { sendMessage: slackSend, showTypingIndicator: vi.fn().mockResolvedValue(undefined) },
+      integration: slackIntegration,
+      messageUnsubscribe: null,
+      interactiveUnsubscribe: null,
+      errorUnsubscribe: null,
+      typingHintUnsubscribe: null,
+    })
+
+    await mgr.handleIncomingMessageInner(SLACK, msg({ chatId: 'sc1', chatType: 'private', text: '/start' }), slackIntegration)
+
+    // Not intercepted with the greeting; reached the spend path (agent lookup +
+    // container start) instead.
+    expect(slackSend).not.toHaveBeenCalledWith('sc1', { text: "You're connected. Send a message to start." })
+    expect(agentExists).toHaveBeenCalled()
+    expect(containerManager.ensureRunning).toHaveBeenCalledTimes(1)
+  })
+
   it('revoke between two sends → second is dropped at the gate before spend', async () => {
     const id = insertAccess('c1', 'pending')
     approveChatAccess(id, 'owner')
