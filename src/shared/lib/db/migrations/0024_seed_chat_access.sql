@@ -1,4 +1,4 @@
-INSERT INTO chat_integration_access
+INSERT OR IGNORE INTO chat_integration_access
   (id, integration_id, external_chat_id, chat_type, status, approval_source, requested_at, created_at, updated_at)
 SELECT
   lower(hex(randomblob(16))), s.integration_id, s.external_chat_id, NULL, 'allowed', 'migration',

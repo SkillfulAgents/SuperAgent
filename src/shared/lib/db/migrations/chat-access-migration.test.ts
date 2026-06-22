@@ -41,14 +41,6 @@ describe('chat_integration_access seed (0024)', () => {
     expect(rows[0]).toMatchObject({ integration_id: 'int-tg', external_chat_id: 'chat-1', status: 'allowed', approval_source: 'migration' })
   })
 
-  it('is not idempotent — re-running the seed violates the unique index', () => {
-    // Documents current behavior: the seed has no ON CONFLICT, so the drizzle
-    // migration tracker is what prevents a second run in production.
-    seedFixtures()
-    sqlite.exec(SEED_SQL)
-    expect(() => sqlite.exec(SEED_SQL)).toThrow()
-  })
-
   it('0024 journal timestamp must stay immutable — raising it re-runs the seed on existing DBs', () => {
     // Drizzle decides which migrations are "pending" by comparing each entry's
     // `when` against the latest recorded created_at — NOT by SQL hash. 0024 was
