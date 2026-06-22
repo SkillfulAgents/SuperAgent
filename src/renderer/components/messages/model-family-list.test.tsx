@@ -2,7 +2,12 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { ModelFamilyList, findCatalogModel, familyDisplayName } from './model-family-list'
+import {
+  ModelFamilyList,
+  findCatalogModel,
+  familyDisplayName,
+  formatTokenThreshold,
+} from './model-family-list'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
 
@@ -15,8 +20,8 @@ const CATALOG: ModelDefinition[] = [
   { id: 'claude-opus-4-6', label: 'Opus 4.6', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
   { id: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL },
-  { id: 'openai/gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD, supportsWebSearch: false },
-  { id: 'openai/gpt-5.5', label: 'GPT-5.5', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, supportsWebSearch: false },
+  { id: 'openai/gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
+  { id: 'openai/gpt-5.5', label: 'GPT-5.5', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
 ]
 
 describe('familyDisplayName', () => {
@@ -25,6 +30,14 @@ describe('familyDisplayName', () => {
     expect(familyDisplayName('sonnet')).toBe('Sonnet')
     expect(familyDisplayName('gpt')).toBe('GPT')
     expect(familyDisplayName('glm')).toBe('GLM')
+  })
+})
+
+describe('formatTokenThreshold', () => {
+  it('formats thousands and millions compactly', () => {
+    expect(formatTokenThreshold(272_000)).toBe('272K')
+    expect(formatTokenThreshold(1_050_000)).toBe('1.05M')
+    expect(formatTokenThreshold(500)).toBe('500')
   })
 })
 
@@ -107,6 +120,17 @@ describe('ModelFamilyList', () => {
 
     rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
     expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+  })
+
+  it('warns about the long-context price cliff for GPT, and not for flat-priced Claude', () => {
+    const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)
+    const warning = screen.getByTestId('model-long-context-cliff-warning')
+    expect(warning).toHaveTextContent('272K')
+    expect(warning).toHaveTextContent('2× input')
+    expect(warning).toHaveTextContent('1.5× output')
+
+    rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-long-context-cliff-warning')).not.toBeInTheDocument()
   })
 
   it('offers a "latest" row only when offerLatest is set', async () => {

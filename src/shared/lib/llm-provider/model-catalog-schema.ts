@@ -52,6 +52,16 @@ export const modelDefinitionSchema = z.object({
   // generic 200K default for these, so the host prefers this over the SDK value
   // (see handleResultUsage). Claude entries omit it and use the SDK's real window.
   contextWindow: z.number().int().positive().optional(),
+  // Long-context pricing cliff: above `thresholdTokens` of input, the provider
+  // reprices the whole request by these multipliers (e.g. OpenAI's 272K cliff).
+  // Present ⇒ the picker warns. Omit for flat-priced models.
+  longContextPriceCliff: z
+    .object({
+      thresholdTokens: z.number().int().positive(),
+      inputMultiplier: z.number().positive(),
+      outputMultiplier: z.number().positive(),
+    })
+    .optional(),
 })
 
 export type ModelDefinition = z.infer<typeof modelDefinitionSchema>
