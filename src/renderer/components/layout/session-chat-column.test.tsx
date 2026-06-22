@@ -432,4 +432,37 @@ describe('SessionChatColumn stale gate', () => {
     rerender(<SessionChatColumn {...staleProps} />)
     expect(screen.queryByTestId('stale-toast')).not.toBeInTheDocument()
   })
+
+  it('never shows the stale toast for view-only users (they cannot branch)', () => {
+    // Required suppressor: view-only users have no branch action, so the prompt
+    // must stay hidden even when the idle + large-context gate is satisfied.
+    renderWithProviders(<SessionChatColumn {...staleProps} isViewOnly />)
+    expect(screen.queryByTestId('stale-toast')).not.toBeInTheDocument()
+  })
+
+  it('clears the live active->idle signal on conversation change so an idle sibling still prompts', () => {
+    // Conversation A runs a turn then goes idle; the live signal reset A's idle
+    // clock, so A's own prompt stays hidden.
+    const { rerender } = renderWithProviders(<SessionChatColumn {...staleProps} sessionId="conv-a" />)
+    mockIsActive = true
+    rerender(<SessionChatColumn {...staleProps} sessionId="conv-a" />)
+    mockIsActive = false
+    rerender(<SessionChatColumn {...staleProps} sessionId="conv-a" />)
+    expect(screen.queryByTestId('stale-toast')).not.toBeInTheDocument()
+
+    // A different conversation that is itself idle + large must show the prompt:
+    // A's recent activity must not bleed across the persistent holder.
+    rerender(<SessionChatColumn {...staleProps} sessionId="conv-b" />)
+    expect(screen.getByTestId('stale-toast')).toBeInTheDocument()
+  })
+
+  it('clears local Ignore on conversation change (Ignore is per-conversation)', async () => {
+    const { rerender } = renderWithProviders(<SessionChatColumn {...staleProps} sessionId="conv-a" />)
+    await userEvent.click(screen.getByTestId('stale-toast-ignore'))
+    expect(screen.queryByTestId('stale-toast')).not.toBeInTheDocument()
+
+    // Switching conversations must not carry the previous one's Ignore.
+    rerender(<SessionChatColumn {...staleProps} sessionId="conv-b" />)
+    expect(screen.getByTestId('stale-toast')).toBeInTheDocument()
+  })
 })

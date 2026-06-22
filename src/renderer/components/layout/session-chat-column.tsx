@@ -118,10 +118,22 @@ export function SessionChatColumn({
   const [isSummarizing, setIsSummarizing] = useState(false)
   const [staleError, setStaleError] = useState<string | null>(null)
   const actionActiveRef = useRef(false)
-  // If the user navigates away (unmount) or switches conversations while a
-  // summarize is in flight, drop the in-flight guard so a late-resolving
-  // summarize cannot stash + navigate after they have left.
-  useEffect(() => () => { actionActiveRef.current = false }, [sessionId])
+  // Reset the stale-prompt state when the conversation changes. SessionChatColumn
+  // is a persistent holder (not keyed by sessionId — see AgentShell), so without
+  // this, local Ignore and the live active->idle signal would bleed into the next
+  // conversation and wrongly suppress a prompt that a sibling independently earns.
+  useEffect(() => {
+    setIgnored(false)
+    setStaleError(null)
+    setIsSummarizing(false)
+    setStaleMenuOpen(false)
+    setLiveActivityAt(null)
+    wasActiveRef.current = isActive
+    // If the user navigates away (unmount) or switches conversations while a
+    // summarize is in flight, drop the in-flight guard so a late-resolving
+    // summarize cannot stash + navigate after they have left.
+    return () => { actionActiveRef.current = false }
+  }, [sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
   // Getter for the in-session composer's live state, registered by MessageInput.
   // "Start fresh" reads it to carry text + files + model + effort into the new chat.
   const composerSnapshotRef = useRef<(() => ComposerSnapshot) | null>(null)
