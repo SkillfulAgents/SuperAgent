@@ -12,15 +12,25 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  # Extract version from tag
+  # Extract version + update channel from tag
   prepare:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
     steps:
-      - name: Extract version from tag
+      - name: Extract version + channel from tag
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          # Channel = the prerelease identifier (rc/beta/alpha) so electron-builder
+          # writes rc-*.yml for prereleases and latest-*.yml for stable. Matches the
+          # app's runtime autoUpdater.channel derivation in auto-updater.ts.
+          if [[ "$GITHUB_REF_NAME" =~ -([a-zA-Z]+) ]]; then
+            echo "channel=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            echo "channel=latest" >> $GITHUB_OUTPUT
+          fi
 
   # Build and push agent container with version tag
   build-agent-container:
@@ -154,7 +164,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
-        run: npm run dist:mac
+        run: npm run dist:mac -- -c.publish.channel=${{ needs.prepare.outputs.channel }}
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -197,7 +207,7 @@ jobs:
           AZURE_CODE_SIGNING_ACCOUNT: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT }}
           AZURE_CODE_SIGNING_PROFILE: ${{ secrets.AZURE_CODE_SIGNING_PROFILE }}
           AZURE_CODE_SIGNING_PUBLISHER: ${{ secrets.AZURE_CODE_SIGNING_PUBLISHER }}
-        run: npm run dist:win
+        run: npm run dist:win -- -c.publish.channel=${{ needs.prepare.outputs.channel }}
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -215,6 +225,10 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     needs: [prepare, build-agent-container, build-app-container, build-mac, build-win]
+    # Mapped from the secret so the R2 upload step can self-gate on its presence
+    # (the `secrets` context isn't available in a step `if:` condition).
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -248,3 +262,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+
+      # Dual-publish bridge (SUP-286): populate the owned R2 feed
+      # (updates.gamutagents.com) AFTER the GitHub release is published, so a
+      # transient R2 hiccup can never block the primary (GitHub) feed during the
+      # bridge. continue-on-error keeps a failed upload from failing the release —
+      # generic-feed builds update from R2; pre-generic clients keep updating from
+      # GitHub until the cutover subtask (SUP-287) retires the GitHub feed. Skipped
+      # if the Cloudflare credentials aren't configured. Uses the same
+      # CLOUDFLARE_API_TOKEN as the gamut-releases Worker deploy — no separate R2
+      # S3 keys to manage.
+      - name: Upload release feed to Cloudflare R2
+        if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          shopt -s nullglob
+          for f in ./release-artifacts/*; do
+            name="$(basename "$f")"
+            # builder-debug.yml is electron-builder's debug dump, not a feed file.
+            [ "$name" = "builder-debug.yml" ] && continue
+            echo "→ R2: $name"
+            npx --yes wrangler@4 r2 object put "gamut-releases/$name" --file "$f" --remote
+          done

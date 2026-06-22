@@ -332,17 +332,21 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
       return
     }
 
-    // Dev-only escape hatch: pretend we're an older version so the GitHub feed
+    // Dev-only escape hatch: pretend we're an older version so the update feed
     // returns "update available". Activated by SUPERAGENT_TEST_UPDATES=1.
     // SUPERAGENT_FAKE_VERSION overrides the reported version (default 0.0.1).
+    // SUPERAGENT_TEST_FEED_URL overrides the generic feed origin (default the
+    // prod feed) — point it at a local `wrangler dev` of the gamut-releases
+    // Worker (e.g. http://localhost:8787/) to hand-test updates before deploy.
     // Gated on !app.isPackaged so a stray env var on a shipped build can't
     // redirect the auto-updater feed.
     if (process.env.SUPERAGENT_TEST_UPDATES === '1' && !app.isPackaged) {
       const fakeVersion = process.env.SUPERAGENT_FAKE_VERSION || '0.0.1'
+      const feedUrl = process.env.SUPERAGENT_TEST_FEED_URL || 'https://updates.gamutagents.com/'
       const cfgPath = path.join(os.tmpdir(), 'superagent-dev-app-update.yml')
       fs.writeFileSync(
         cfgPath,
-        'provider: github\nowner: SkillfulAgents\nrepo: SuperAgent\n',
+        `provider: generic\nurl: ${feedUrl}\nchannel: latest\n`,
       )
       autoUpdater.updateConfigPath = cfgPath
       autoUpdater.forceDevUpdateConfig = true
