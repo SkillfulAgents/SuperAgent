@@ -249,7 +249,7 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
   }
 
   private podName(): string {
-    return kubeResourceName('superagent', this.config.agentId)
+    return kubeResourceName('gamut-agent-container', this.config.agentId)
   }
 
   private serviceName(): string {
