@@ -194,16 +194,30 @@ describe('summarizeTranscript', () => {
     expect(sentContent).toContain('Auth was set up earlier.')
   })
 
-  it('still calls summarizeText when all entries prune to nothing', async () => {
+  it('returns empty without calling the model when all entries prune to nothing', async () => {
+    // An empty pruned transcript with no prior summary must not reach the model:
+    // summarizing nothing invites a fabricated summary. The route turns '' into 502.
     mockReadJsonlFile.mockResolvedValueOnce([
       { uuid: 's1', type: 'system', subtype: 'compact_boundary', content: '', isMeta: true, timestamp: 't' },
     ])
-    mockCreate.mockResolvedValueOnce({ content: [{ type: 'text', text: '' }] })
-    await summarizeTranscript('atlas', 'sess-1')
+    const summary = await summarizeTranscript('atlas', 'sess-1')
+    expect(summary).toBe('')
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it('still summarizes when the pruned transcript is empty but a prior boundary summary exists', async () => {
+    mockReadJsonlFile.mockResolvedValueOnce([
+      { uuid: 's1', type: 'system', subtype: 'compact_boundary', content: '', isMeta: true, timestamp: 't' },
+      { uuid: 'cs1', parentUuid: null, type: 'user', sessionId: 's', timestamp: 't',
+        isCompactSummary: true, message: { role: 'user', content: 'Earlier work recap.' } },
+    ])
+    mockCreate.mockResolvedValueOnce({ content: [{ type: 'text', text: 'recap summary' }] })
+    const summary = await summarizeTranscript('atlas', 'sess-1')
+    expect(summary).toBe('recap summary')
     expect(mockCreate).toHaveBeenCalledOnce()
-    const call = mockCreate.mock.calls[0][0]
-    expect(call.messages).toHaveLength(1)
-    expect(call.messages[0].role).toBe('user')
+    const sentContent = mockCreate.mock.calls[0][0].messages[0].content as string
+    expect(sentContent).toContain('[Earlier summary]')
+    expect(sentContent).toContain('Earlier work recap.')
   })
 })
 

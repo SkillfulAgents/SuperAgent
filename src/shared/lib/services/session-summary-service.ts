@@ -144,6 +144,11 @@ export async function loadTranscriptEntries(
 export async function summarizeTranscript(agentSlug: string, fromSessionId: string): Promise<string> {
   const { entries, priorBoundarySummary } = await loadTranscriptEntries(agentSlug, fromSessionId)
   const text = renderPrunedLines(budgetPrunedLines(pruneTranscript(entries)))
+  // Nothing to summarize: an empty pruned transcript with no prior boundary summary
+  // would send the model only the instruction, inviting a fabricated summary. Return
+  // '' so the route surfaces 502 (empty result) and the caller can retry instead of
+  // seeding invented context.
+  if (!text.trim() && !priorBoundarySummary?.trim()) return ''
   return summarizeText(text, priorBoundarySummary)
 }
 
