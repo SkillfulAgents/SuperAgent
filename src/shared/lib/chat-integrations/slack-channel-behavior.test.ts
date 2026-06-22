@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeSlackMessage, resolveSlackChannel, type SlackMessageRoutingParams } from './slack-connector'
+import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, type SlackMessageRoutingParams } from './slack-connector'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -202,6 +202,150 @@ describe('routeSlackMessage', () => {
     })
   })
 
+  // ── thread reply when answerInThread is off (SUP-282) ──────────────
+
+  describe('answerInThread off but message is inside a thread (SUP-282)', () => {
+    it('replies in the thread when the inbound message has a thread_ts', () => {
+      const result = routeSlackMessage(makeParams({
+        ts: '2000.002',
+        threadTs: '1000.001',
+        config: { answerInThread: false },
+      }))
+      expect(result.threadContext).toEqual({ channel: 'C123', threadTs: '1000.001' })
+      expect(result.threadKey).toBe('C123|1000.001')
+    })
+
+    it('does NOT thread a top-level channel message when answerInThread is off', () => {
+      const result = routeSlackMessage(makeParams({
+        ts: '1000.001',
+        config: { answerInThread: false },
+      }))
+      expect(result.threadContext).toBeUndefined()
+      expect(result.threadKey).toBeUndefined()
+      expect(result.effectiveChatId).toBe('C123')
+    })
+
+    it('replies in the thread for a mention inside a thread with onlyMentioned on', () => {
+      const result = routeSlackMessage(makeParams({
+        rawText: '<@U_BOT> help me here',
+        ts: '2000.002',
+        threadTs: '1000.001',
+        config: { onlyMentioned: true, answerInThread: false },
+      }))
+      expect(result.shouldProcess).toBe(true)
+      expect(result.threadContext).toEqual({ channel: 'C123', threadTs: '1000.001' })
+    })
+
+    it('does not thread DMs even when inside a thread', () => {
+      const result = routeSlackMessage(makeParams({
+        channelType: 'im',
+        chatId: 'D456',
+        ts: '2000.002',
+        threadTs: '1000.001',
+        config: { answerInThread: false },
+      }))
+      expect(result.threadContext).toBeUndefined()
+    })
+
+    it('uses a per-thread session (composite chatId) for an in-thread message when answerInThread is off', () => {
+      // Race-free routing: the channel otherwise shares one session across threads,
+      // so the reply destination would live only in the mutable threadContextMap.
+      // Encoding the anchor in effectiveChatId makes it travel with the session.
+      const result = routeSlackMessage(makeParams({
+        ts: '2000.002',
+        threadTs: '1000.001',
+        config: { answerInThread: false, newSessionPerThread: false },
+      }))
+      expect(result.effectiveChatId).toBe('C123|1000.001')
+    })
+
+    it('reply destination is recoverable from the composite chatId alone — no shared map needed (race-free)', () => {
+      const result = routeSlackMessage(makeParams({
+        ts: '2000.002',
+        threadTs: '1000.001',
+        config: { answerInThread: false },
+      }))
+      // Pass an EMPTY map: a concurrent message could have cleared/overwritten it.
+      // The destination must still resolve to the correct thread.
+      expect(resolveSlackChannel(result.effectiveChatId, new Map())).toEqual({
+        channel: 'C123',
+        threadTs: '1000.001',
+      })
+    })
+
+    it('distinct threads in the same channel get distinct sessions (no collision)', () => {
+      const t1 = routeSlackMessage(makeParams({ ts: '2000.002', threadTs: '1000.001', config: { answerInThread: false } }))
+      const t2 = routeSlackMessage(makeParams({ ts: '3000.003', threadTs: '1500.001', config: { answerInThread: false } }))
+      expect(t1.effectiveChatId).toBe('C123|1000.001')
+      expect(t2.effectiveChatId).toBe('C123|1500.001')
+      expect(t1.effectiveChatId).not.toBe(t2.effectiveChatId)
+    })
+  })
+
+  // ── isNewThreadEntry (thread-history backfill trigger) ─────────────
+
+  describe('isNewThreadEntry', () => {
+    it('is true on first tag inside an existing thread even when answerInThread is off (SUP-282)', () => {
+      const result = routeSlackMessage(makeParams({
+        ts: '2000.002',
+        threadTs: '1000.001',
+        config: { answerInThread: false },
+        activeThreads: new Set(),
+      }))
+      expect(result.isNewThreadEntry).toBe(true)
+    })
+
+    it('is true on first entry into an existing thread when answerInThread is on', () => {
+      const result = routeSlackMessage(makeParams({
+        ts: '2000.002',
+        threadTs: '1000.001',
+        config: { answerInThread: true },
+        activeThreads: new Set(),
+      }))
+      expect(result.isNewThreadEntry).toBe(true)
+    })
+
+    it('is false once the thread is already active (no re-fetch of history)', () => {
+      const result = routeSlackMessage(makeParams({
+        ts: '2000.003',
+        threadTs: '1000.001',
+        config: { answerInThread: false },
+        activeThreads: new Set(['C123|1000.001']),
+      }))
+      expect(result.isNewThreadEntry).toBe(false)
+    })
+
+    it('is false for a brand-new top-level message (nothing to backfill)', () => {
+      const result = routeSlackMessage(makeParams({
+        ts: '1000.001',
+        config: { answerInThread: true },
+      }))
+      expect(result.isNewThreadEntry).toBe(false)
+    })
+
+    it('is false for DMs even inside a thread', () => {
+      const result = routeSlackMessage(makeParams({
+        channelType: 'im',
+        chatId: 'D456',
+        ts: '2000.002',
+        threadTs: '1000.001',
+        config: {},
+      }))
+      expect(result.isNewThreadEntry).toBe(false)
+    })
+
+    it('is false for a filtered-out message (onlyMentioned, no mention, unknown thread)', () => {
+      const result = routeSlackMessage(makeParams({
+        rawText: 'just chatting',
+        threadTs: '9999.999',
+        config: { onlyMentioned: true },
+        activeThreads: new Set(),
+      }))
+      expect(result.shouldProcess).toBe(false)
+      expect(result.isNewThreadEntry).toBe(false)
+    })
+  })
+
   // ── newSessionPerThread ───────────────────────────────────────────
 
   describe('newSessionPerThread', () => {
@@ -272,5 +416,63 @@ describe('resolveSlackChannel', () => {
   it('returns DM channel as-is', () => {
     const result = resolveSlackChannel('D456', new Map())
     expect(result).toEqual({ channel: 'D456' })
+  })
+})
+
+// ── bounded MRU eviction (touchAndCapSet / touchAndCapMap) ─────────────
+
+describe('touchAndCapSet', () => {
+  it('adds keys and keeps them under the cap', () => {
+    const set = new Set<string>()
+    touchAndCapSet(set, 'a', 3)
+    touchAndCapSet(set, 'b', 3)
+    expect([...set]).toEqual(['a', 'b'])
+  })
+
+  it('evicts the oldest entry once the cap is exceeded', () => {
+    const set = new Set<string>()
+    touchAndCapSet(set, 'a', 2)
+    touchAndCapSet(set, 'b', 2)
+    touchAndCapSet(set, 'c', 2) // evicts 'a'
+    expect([...set]).toEqual(['b', 'c'])
+    expect(set.has('a')).toBe(false)
+  })
+
+  it('re-touching an existing key refreshes its recency so it survives eviction', () => {
+    const set = new Set<string>()
+    touchAndCapSet(set, 'a', 2)
+    touchAndCapSet(set, 'b', 2)
+    touchAndCapSet(set, 'a', 2) // 'a' becomes most-recent
+    touchAndCapSet(set, 'c', 2) // evicts 'b' (now oldest), not 'a'
+    expect([...set]).toEqual(['a', 'c'])
+  })
+
+  it('never grows beyond the cap across many inserts', () => {
+    const set = new Set<string>()
+    for (let i = 0; i < 5000; i++) touchAndCapSet(set, `k${i}`, 1000)
+    expect(set.size).toBe(1000)
+    expect(set.has('k4999')).toBe(true)
+    expect(set.has('k0')).toBe(false)
+  })
+})
+
+describe('touchAndCapMap', () => {
+  it('evicts the oldest entry once the cap is exceeded', () => {
+    const map = new Map<string, number>()
+    touchAndCapMap(map, 'a', 1, 2)
+    touchAndCapMap(map, 'b', 2, 2)
+    touchAndCapMap(map, 'c', 3, 2) // evicts 'a'
+    expect([...map.keys()]).toEqual(['b', 'c'])
+    expect(map.has('a')).toBe(false)
+  })
+
+  it('updating an existing key refreshes recency and value without growing', () => {
+    const map = new Map<string, number>()
+    touchAndCapMap(map, 'a', 1, 2)
+    touchAndCapMap(map, 'b', 2, 2)
+    touchAndCapMap(map, 'a', 99, 2) // refresh 'a' (value + recency)
+    touchAndCapMap(map, 'c', 3, 2) // evicts 'b', not 'a'
+    expect(map.get('a')).toBe(99)
+    expect([...map.keys()]).toEqual(['a', 'c'])
   })
 })
