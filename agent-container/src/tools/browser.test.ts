@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stripAnsi, extractScreenshotPath } from './browser'
+import { stripAnsi, extractScreenshotPath, resolveBrowserRunInput } from './browser'
 
 describe('stripAnsi', () => {
   it('removes color codes', () => {
@@ -59,5 +59,43 @@ describe('extractScreenshotPath', () => {
   it('handles path with spaces in surrounding text but not in path', () => {
     const output = '\x1b[32m✓\x1b[0m Saved to \x1b[32m/var/data/img.png\x1b[0m done'
     expect(extractScreenshotPath(output)).toBe('/var/data/img.png')
+  })
+})
+
+describe('resolveBrowserRunInput', () => {
+  it('accepts command only', () => {
+    expect(resolveBrowserRunInput({ command: 'get url' })).toEqual({ command: 'get url' })
+  })
+
+  it('accepts args only', () => {
+    expect(resolveBrowserRunInput({ args: ['click', '@e1'] })).toEqual({ args: ['click', '@e1'] })
+  })
+
+  it('treats an empty args array as not provided (the GPT case)', () => {
+    expect(resolveBrowserRunInput({ command: 'click @e37', args: [] })).toEqual({
+      command: 'click @e37',
+    })
+  })
+
+  it('treats an empty/whitespace command string as not provided', () => {
+    expect(resolveBrowserRunInput({ command: '', args: ['click', '@e1'] })).toEqual({
+      args: ['click', '@e1'],
+    })
+    expect(resolveBrowserRunInput({ command: '   ', args: ['get', 'url'] })).toEqual({
+      args: ['get', 'url'],
+    })
+  })
+
+  it('errors when neither has an effective value', () => {
+    expect(resolveBrowserRunInput({})).toEqual({
+      error: 'Provide exactly one of "command" (string) or "args" (array of strings).',
+    })
+    expect(resolveBrowserRunInput({ command: '', args: [] })).toHaveProperty('error')
+  })
+
+  it('errors when both have effective values', () => {
+    expect(
+      resolveBrowserRunInput({ command: 'get url', args: ['click', '@e1'] }),
+    ).toHaveProperty('error')
   })
 })

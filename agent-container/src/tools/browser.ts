@@ -39,6 +39,18 @@ export function extractScreenshotPath(output: string): string {
   return match ? match[1] : clean
 }
 
+
+export function resolveBrowserRunInput(
+  input: { command?: string; args?: string[] },
+): { command: string } | { args: string[] } | { error: string } {
+  const hasCommand = typeof input.command === 'string' && input.command.trim() !== ''
+  const hasArgs = Array.isArray(input.args) && input.args.length > 0
+  if (hasCommand === hasArgs) {
+    return { error: 'Provide exactly one of "command" (string) or "args" (array of strings).' }
+  }
+  return hasCommand ? { command: input.command! } : { args: input.args! }
+}
+
 async function readScreenshotAsBase64(filePath: string): Promise<{ data: string; mimeType: string } | null> {
   try {
     const buffer = await readFile(filePath.trim())
@@ -555,10 +567,11 @@ Available commands:
     args: z.array(z.string()).optional().describe('Pre-tokenized argv — preferred when any argument contains spaces or quotes, e.g. ["fill", "@e1", "hello world"]. Provide either this or command, not both.'),
   },
   async (args) => {
-    if ((args.command === undefined) === (args.args === undefined)) {
-      return errorResult('Provide exactly one of "command" (string) or "args" (array of strings).')
+    const resolved = resolveBrowserRunInput(args)
+    if ('error' in resolved) {
+      return errorResult(resolved.error)
     }
-    const result = await browserFetch('run', { command: args.command, args: args.args })
+    const result = await browserFetch('run', resolved)
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
     let text = data.output ? String(data.output) : 'Command executed.'
