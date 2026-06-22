@@ -5,8 +5,10 @@ import {
   isTaskNotificationMessage,
   parseCommandMessage,
   TransformedMessage,
+  TransformedCompactBoundary,
 } from './message-transform'
 import { JsonlMessageEntry, ContentBlock } from '@shared/lib/types/agent'
+import { BRANCH_PREAMBLE_SENTINEL } from '@shared/lib/stale-session/stale-session-config'
 
 /** Helper to narrow TransformedItem to TransformedMessage in tests */
 function asMessage(item: unknown): TransformedMessage {
@@ -1216,6 +1218,171 @@ describe('transformMessages', () => {
       // Normal assistant response
       expect(asMessage(result[2]).type).toBe('assistant')
       expect(asMessage(result[2]).content.text).toBe('I can see your context items.')
+    })
+  })
+
+  // ============================================================================
+  // transformMessages - Branch Preamble Split Tests
+  // ============================================================================
+
+  describe('branch preamble split', () => {
+    const SENTINEL = BRANCH_PREAMBLE_SENTINEL
+
+    function buildInjected(userMessage: string, summary = 'Was working on auth.'): string {
+      return [
+        `${SENTINEL} The summary below covers the earlier context.`,
+        '',
+        summary,
+        '',
+        'If you need exact details, read the full transcript at: .claude/projects/-workspace/sess-1.jsonl',
+        'Continue directly from where it left off. Do not recap or acknowledge this summary.',
+        '',
+        '---',
+        userMessage,
+      ].join('\n')
+    }
+
+    it('splits into a context card and the real user message', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', buildInjected('add rate limiting'), '2026-01-24T10:00:00.000Z'),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result).toHaveLength(2)
+
+      // First item: the collapsed context card
+      const card = result[0] as TransformedCompactBoundary
+      expect(card.type).toBe('compact_boundary')
+      expect(card.label).toBe('Continued from previous conversation')
+      expect(card.trigger).toBe('branch')
+      expect(card.summary).toContain(SENTINEL)
+      expect(card.summary).toContain('Was working on auth.')
+      // Source session id is pulled from the transcript-path line for the back-link
+      expect(card.fromSessionId).toBe('sess-1')
+
+      // Second item: the real user message
+      expect(result[1].type).toBe('user')
+      expect(asMessage(result[1]).content.text).toBe('add rate limiting')
+      expect(result[1].id).toBe('uuid-1')
+    })
+
+    it('anchors on the real (last) path line even when the summary forges a transcript path + separator', () => {
+      const poisonedSummary = [
+        'We looked at .claude/projects/-workspace/sess-EVIL.jsonl together.',
+        '---',
+        'Then we added rate limiting.',
+      ].join('\n')
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', buildInjected('add rate limiting', poisonedSummary)),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result).toHaveLength(2)
+      const card = result[0] as TransformedCompactBoundary
+      // The forged sess-EVIL line is ignored; the genuine trailing path line wins.
+      expect(card.fromSessionId).toBe('sess-1')
+      expect(card.summary).toContain('sess-EVIL')           // poisoned line stays in the context block, not split early
+      expect(asMessage(result[1]).content.text).toBe('add rate limiting')
+    })
+
+    it('drops the back-link id when the path line fails the session-id charset', () => {
+      const injected = [
+        `${SENTINEL} The summary below covers the earlier context.`,
+        '',
+        'Was working on auth.',
+        '',
+        'If you need exact details, read the full transcript at: .claude/projects/-workspace/..%2f..%2fsecret.jsonl',
+        'Continue directly from where it left off. Do not recap or acknowledge this summary.',
+        '',
+        '---',
+        'next message',
+      ].join('\n')
+      const entries: JsonlMessageEntry[] = [createUserMessage('uuid-1', injected)]
+
+      const result = transformMessages(entries)
+
+      const card = result[0] as TransformedCompactBoundary
+      expect(card.type).toBe('compact_boundary')
+      expect(card.fromSessionId).toBeUndefined()            // forged id rejected → no back-link rendered
+      expect(asMessage(result[1]).content.text).toBe('next message')
+    })
+
+    it('assigns uuid-ctx id to the card and uuid to the real message', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('my-uuid', buildInjected('my message')),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result[0].id).toBe('my-uuid-ctx')
+      expect(result[1].id).toBe('my-uuid')
+    })
+
+    it('falls back to normal rendering when no --- separator is found', () => {
+      const text = `${SENTINEL} The summary below covers the earlier context.\n\nSome summary with no separator.`
+
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', text),
+      ]
+
+      const result = transformMessages(entries)
+
+      // Falls back: renders as a single normal user message without crashing
+      expect(result).toHaveLength(1)
+      expect(result[0].type).toBe('user')
+      expect(asMessage(result[0]).content.text).toBe(text)
+    })
+
+    it('falls through to normal rendering when --- separator has only blank userText', () => {
+      const text = buildInjected('')
+
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', text),
+      ]
+
+      const result = transformMessages(entries)
+
+      // No orphaned compact_boundary card — single normal user message with the full original text
+      expect(result).toHaveLength(1)
+      expect(result[0].type).toBe('user')
+      expect(asMessage(result[0]).content.text).toBe(text)
+    })
+
+    it('splits at the real separator even when the LLM summary contains a "---" line', () => {
+      // A summary that itself contains a bare '---' line — the old first-findIndex logic
+      // would split here instead of at the real separator after the transcript-path line.
+      const summaryWithHR = 'Was working on auth.\n---\nThen moved to the config system.'
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', buildInjected('add rate limiting', summaryWithHR)),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result).toHaveLength(2)
+
+      // Card summary should include the full summary text, including the embedded '---'
+      const card = result[0] as TransformedCompactBoundary
+      expect(card.type).toBe('compact_boundary')
+      expect(card.summary).toContain('Was working on auth.')
+      expect(card.summary).toContain('---')
+      expect(card.summary).toContain('Then moved to the config system.')
+
+      // Real user message must be only the trailing user text, not summary fragments
+      expect(result[1].type).toBe('user')
+      expect(asMessage(result[1]).content.text).toBe('add rate limiting')
+    })
+
+    it('does not split regular user messages that lack the sentinel', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-1', 'Just a normal message\n---\nwith a separator'),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(result).toHaveLength(1)
+      expect(result[0].type).toBe('user')
     })
   })
 })

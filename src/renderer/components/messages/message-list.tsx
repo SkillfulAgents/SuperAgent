@@ -20,6 +20,7 @@ import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-r
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useDraft, useDraftsStore } from '@renderer/context/drafts-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, Fragment, type ReactNode } from 'react'
@@ -57,10 +58,13 @@ interface MessageListProps {
   pendingRequestCount?: number
   /** The pending message materialized (or was restored to the composer) — remove it. */
   onPendingMessageAppeared?: (localId: string) => void
+  /** Hide the scroll-to-bottom FAB while a footer overlay (the stale-session popover) covers it. */
+  suppressScrollToBottom?: boolean
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, suppressScrollToBottom = false }: MessageListProps) {
   useRenderTracker('MessageList')
+  const navigate = useNavigate()
   const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
   const deleteToolCall = useDeleteToolCall()
@@ -673,7 +677,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             {item.type === 'memory_recall' ? (
               <MemoryRecallItem recall={item as ApiMemoryRecall} />
             ) : item.type === 'compact_boundary' ? (
-              <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
+              <CompactBoundaryItem
+                boundary={item as ApiCompactBoundary}
+                onViewSource={(id) => void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: id } })}
+              />
             ) : (
               <>
                 <MessageErrorBoundary kind="message" raw={item} itemId={item.id}>
@@ -824,7 +831,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         {/* Pending interactive requests render in the composer slot — see SessionChatColumn. */}
         </div>
       </div>
-      {showScrollToBottom && (
+      {showScrollToBottom && !suppressScrollToBottom && (
         <button
           onClick={scrollToBottom}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-primary/90 transition-opacity cursor-pointer"

@@ -6,6 +6,7 @@
  */
 
 import { ContentBlock, JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import { BRANCH_PREAMBLE_SENTINEL } from '@shared/lib/stale-session/stale-session-config'
 
 export interface TransformedMessage {
   id: string
@@ -44,6 +45,12 @@ export interface TransformedCompactBoundary {
   trigger: string
   preTokens?: number
   createdAt: Date
+  /** Optional display label overriding the default "Compacted" button text. */
+  label?: string
+  /** Optional header shown in the expanded panel, overriding the default "Compaction Summary". */
+  summaryLabel?: string
+  /** Source session id for a branched-session context card ('branch' trigger); lets the UI link back to it. */
+  fromSessionId?: string
 }
 
 export interface TransformedMemoryRecall {
@@ -388,6 +395,59 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
           text = parsed.content
         }
       }
+    }
+
+    // Split a branched-session injected first message into a collapsed context card
+    // plus the user's real typed message. Detection uses startsWith because the full
+    // first line is longer than the sentinel (it has " The summary below…" appended).
+    if (entry.type === 'user' && text.startsWith(BRANCH_PREAMBLE_SENTINEL)) {
+      const lines = text.split('\n')
+      // Anchor on the LAST transcript-path line, not the first. The LLM summary is
+      // emitted before the server's real path line, so a path string (or a '---')
+      // inside the summary must not hijack the split; the genuine path line is always
+      // the last '-workspace/<id>.jsonl' line before the user-message separator.
+      let pathLineIdx = -1
+      for (let li = lines.length - 1; li >= 0; li--) {
+        if (lines[li].includes('.claude/projects/-workspace/')) {
+          pathLineIdx = li
+          break
+        }
+      }
+      const separatorIdx = pathLineIdx !== -1
+        ? lines.findIndex((line, i) => i > pathLineIdx && line === '---')
+        : -1
+      if (separatorIdx !== -1) {
+        const contextBlock = lines.slice(0, separatorIdx).join('\n').trimEnd()
+        const userText = lines.slice(separatorIdx + 1).join('\n').trimStart()
+        // The transcript-path line carries the source session id; reuse it for the
+        // back-link, but only when it matches the same charset the branch route
+        // enforces — defends the navigation/file-read path against a forged id.
+        const rawFromId = lines[pathLineIdx]?.match(/-workspace\/([^/]+)\.jsonl/)?.[1]
+        const fromSessionId = rawFromId && /^[A-Za-z0-9_-]+$/.test(rawFromId) ? rawFromId : undefined
+
+        if (userText) {
+          result.push({
+            id: `${entry.uuid}-ctx`,
+            type: 'compact_boundary',
+            summary: contextBlock,
+            trigger: 'branch',
+            label: 'Continued from previous conversation',
+            summaryLabel: 'Conversation context',
+            ...(fromSessionId ? { fromSessionId } : {}),
+            createdAt: new Date(entry.timestamp),
+          })
+          result.push({
+            id: entry.uuid,
+            type: 'user',
+            content: { text: userText },
+            toolCalls: [],
+            createdAt: new Date(entry.timestamp),
+          })
+          continue
+        }
+        // separator found but userText empty: fall through to normal rendering below
+      }
+      // Defensive: path-line marker or separator not found — fall through to render normally
     }
 
     result.push({

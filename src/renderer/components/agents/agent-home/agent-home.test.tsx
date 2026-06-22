@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { AgentHome } from './agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import type { NewChatSummary } from '@renderer/lib/composer-carryover'
 
 // --- Mock data ---
 
@@ -192,6 +193,19 @@ vi.mock('@renderer/context/user-context', () => ({
   UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+let mockSummaryResult: { summary: NewChatSummary | undefined; clear: () => void } = {
+  summary: undefined,
+  clear: vi.fn(),
+}
+
+vi.mock('@renderer/lib/composer-carryover', async () => {
+  const actual = await vi.importActual<typeof import('@renderer/lib/composer-carryover')>('@renderer/lib/composer-carryover')
+  return {
+    ...actual,
+    useNewChatSummary: () => mockSummaryResult,
+  }
+})
+
 describe('AgentHome', () => {
   const onSessionCreated = vi.fn()
 
@@ -212,6 +226,7 @@ describe('AgentHome', () => {
     mockCanAdminAgent = false
     capturedComposerOptions = undefined
     mockSessionsData = []
+    mockSummaryResult = { summary: undefined, clear: vi.fn() }
     mockJustCreatedSlug = null
   })
 
@@ -539,4 +554,119 @@ describe('AgentHome', () => {
     expect(screen.getByTitle('Add files')).toBeDisabled()
   })
 
+  // --- First-session Opus default ---
+  //
+  // When AgentHome's session list has finished loading and is empty, the
+  // composer should default to Opus regardless of the user's "Default Model"
+  // setting. Once at least one session exists, the default reverts to the
+  // user's setting (the standard hierarchy in useComposerOptions).
+
+  it('defaults the first-session composer to Opus when sessions have loaded as empty', async () => {
+    mockSessionsData = []
+    mockComposer.canSubmit = true
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await act(async () => {
+      await capturedComposerOptions.onSubmit('Hello')
+    })
+
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'opus' })
+    )
+  })
+
+  it('uses the settings default model (not Opus) when at least one session exists', async () => {
+    mockSessionsData = [{ id: 'existing-1', name: 'Prior session', createdAt: '2025-01-01' }]
+    mockComposer.canSubmit = true
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await act(async () => {
+      await capturedComposerOptions.onSubmit('Hello')
+    })
+
+    // Settings default is sonnet in the test fixture; should NOT be Opus.
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'sonnet' })
+    )
+  })
+
+  it('does not force Opus while sessions are still loading (data is undefined)', async () => {
+    mockSessionsData = undefined  // useSessions hasn't resolved yet
+    mockComposer.canSubmit = true
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await act(async () => {
+      await capturedComposerOptions.onSubmit('Hello')
+    })
+
+    // Pre-load: should fall back to settings default, not pre-emptively force Opus.
+    // (Avoids flicker if a slow load eventually returns existing sessions.)
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'sonnet' })
+    )
+  })
+
+  // --- Carried summary card ---
+
+  it('renders the carried-summary card when a summary is staged', async () => {
+    mockSummaryResult = {
+      summary: { summary: '## Goal\nFinish auth', fromSessionId: 'src-1' },
+      clear: vi.fn(),
+    }
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+    expect(await screen.findByTestId('carried-summary-card')).toBeInTheDocument()
+  })
+
+  it('forwards seedSummary and fromSessionId to createSession and clears after success', async () => {
+    const clearMock = vi.fn()
+    mockSummaryResult = {
+      summary: { summary: '## Goal\nFinish auth', fromSessionId: 'src-1' },
+      clear: clearMock,
+    }
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await act(async () => {
+      await capturedComposerOptions.onSubmit('continue here')
+    })
+
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seedSummary: '## Goal\nFinish auth',
+        fromSessionId: 'src-1',
+      })
+    )
+    expect(onSessionCreated).toHaveBeenCalledWith('session-123', 'continue here', 'srv-msg-uuid')
+    expect(clearMock).toHaveBeenCalledOnce()
+  })
+
+  it('does not call onSessionCreated or clear the summary when createSession rejects', async () => {
+    const clearMock = vi.fn()
+    mockSummaryResult = {
+      summary: { summary: '## Goal\nFinish auth', fromSessionId: 'src-1' },
+      clear: clearMock,
+    }
+    mockCreateSession.mutateAsync.mockRejectedValueOnce(new Error('Network error'))
+
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    await act(async () => {
+      await capturedComposerOptions.onSubmit('continue here').catch(() => {})
+    })
+
+    expect(onSessionCreated).not.toHaveBeenCalled()
+    expect(clearMock).not.toHaveBeenCalled()
+    expect(screen.getByTestId('carried-summary-card')).toBeInTheDocument()
+  })
 })

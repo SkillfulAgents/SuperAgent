@@ -17,6 +17,7 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
 import { useRenderTracker } from '@renderer/lib/perf'
+import type { ComposerSnapshot } from '@renderer/lib/composer-carryover'
 import type { EffortLevel } from '@shared/lib/container/types'
 
 interface MessageInputProps {
@@ -32,9 +33,13 @@ interface MessageInputProps {
   initialEffort?: EffortLevel
   /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
   initialModel?: string
+  /** Register a getter for the live composer state (text + attachments + model + effort).
+   *  Lets a sibling (the stale-session "Start fresh" action) snapshot the composer to
+   *  carry it into a new chat. Called with null on unmount to deregister. */
+  registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialModel }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialModel, registerSnapshot }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -58,6 +63,38 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const isRuntimeReady = isRuntimePending || runtimeStatus?.runtimeReadiness?.status === 'READY'
 
+  // Core send logic for the composer submit path.
+  const doSend = useCallback(async (content: string) => {
+    // Local correlation id for the optimistic copy; the server-assigned
+    // message uuid arrives with the POST response (the server always
+    // generates it — a client-chosen id could forge attribution).
+    const localId = crypto.randomUUID()
+    // Mid-turn sends are queued by the agent loop (SDK streaming input) and
+    // picked up after the current step. They must not carry model/effort —
+    // a parameter change would interrupt/restart the in-flight query.
+    // (The server also strips them when it sees the session is active.)
+    const queued = isActive && !isWaitingBackground
+    onMessageSent?.(content, localId, queued)
+    try {
+      const result = await sendMessage.mutateAsync({
+        sessionId,
+        agentSlug,
+        content,
+        ...(queued ? {} : composerOptions.toRuntimeOptions()),
+      })
+      // Reconcile against the server's authoritative decision: our local
+      // `queued` guess is derived from SSE state that can be stale (reconnect,
+      // a peer's turn, background-task flag), and a mismatch otherwise strands
+      // the ghost — a server-queued message is re-id'd by the CLI, so it never
+      // matches our uuid and never materializes.
+      onMessageUuidAssigned?.(localId, result.uuid, result.queued)
+    } catch (error) {
+      onMessageFailed?.(localId)
+      throw error
+    }
+    track('message_sent')
+  }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground])
+
   const composer = useMessageComposer({
     agentSlug,
     uploadFile: useCallback(
@@ -69,38 +106,28 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       [uploadFolder, sessionId, agentSlug]
     ),
     onSubmit: useCallback(async (content: string) => {
-      // Local correlation id for the optimistic copy; the server-assigned
-      // message uuid arrives with the POST response (the server always
-      // generates it — a client-chosen id could forge attribution).
-      const localId = crypto.randomUUID()
-      // Mid-turn sends are queued by the agent loop (SDK streaming input) and
-      // picked up after the current step. They must not carry model/effort —
-      // a parameter change would interrupt/restart the in-flight query.
-      // (The server also strips them when it sees the session is active.)
-      const queued = isActive && !isWaitingBackground
-      onMessageSent?.(content, localId, queued)
-      try {
-        const result = await sendMessage.mutateAsync({
-          sessionId,
-          agentSlug,
-          content,
-          ...(queued ? {} : composerOptions.toRuntimeOptions()),
-        })
-        // Reconcile against the server's authoritative decision: our local
-        // `queued` guess is derived from SSE state that can be stale (reconnect,
-        // a peer's turn, background-task flag), and a mismatch otherwise strands
-        // the ghost — a server-queued message is re-id'd by the CLI, so it never
-        // matches our uuid and never materializes.
-        onMessageUuidAssigned?.(localId, result.uuid, result.queued)
-      } catch (error) {
-        onMessageFailed?.(localId)
-        throw error
-      }
-      track('message_sent')
-    }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
+      // Sending is never gated on staleness: detection moved to a continuous
+      // notice in the session-chat column, so the send path is uninterrupted.
+      await doSend(content)
+    }, [doSend]),
     submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
     draftKey: `session:${sessionId}`,
   })
+
+  // Mirror the live composer state into a ref so the registered getter (below)
+  // always reads the latest without re-registering on every keystroke.
+  const snapshotRef = useRef<ComposerSnapshot>({ text: '', attachments: [], model: undefined, effort: composerOptions.effort })
+  snapshotRef.current = {
+    text: composer.message,
+    attachments: composer.attachments,
+    model: composerOptions.model,
+    effort: composerOptions.effort,
+  }
+  useEffect(() => {
+    if (!registerSnapshot) return
+    registerSnapshot(() => snapshotRef.current)
+    return () => registerSnapshot(null)
+  }, [registerSnapshot])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {

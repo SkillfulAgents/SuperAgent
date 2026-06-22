@@ -143,6 +143,9 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
             onMessageSent={onMessageSent}
             onMessageUuidAssigned={onMessageUuidAssigned}
             onMessageFailed={onPendingMessageAppeared}
+            lastActivityAt={session?.lastActivityAt ? new Date(session.lastActivityAt) : null}
+            contextUsage={contextUsage}
+            onStartFresh={() => void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })}
           />
         </div>
       </FilePreviewProvider>

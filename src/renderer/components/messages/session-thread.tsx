@@ -17,6 +17,8 @@ interface SessionThreadProps {
   pendingUserMessages?: PendingMessage[]
   pendingRequestCount?: number
   onPendingMessageAppeared?: (localId: string) => void
+  /** Hide the scroll-to-bottom FAB (e.g. while a footer popover overlays it). */
+  suppressScrollToBottom?: boolean
 }
 
 /**
@@ -37,6 +39,7 @@ export function SessionThread({
   pendingUserMessages,
   pendingRequestCount,
   onPendingMessageAppeared,
+  suppressScrollToBottom,
 }: SessionThreadProps) {
   return (
     <div className="relative flex-1 flex min-h-0">
@@ -49,6 +52,7 @@ export function SessionThread({
           pendingUserMessages={pendingUserMessages}
           pendingRequestCount={pendingRequestCount}
           onPendingMessageAppeared={onPendingMessageAppeared}
+          suppressScrollToBottom={suppressScrollToBottom}
         />
         <div className={footerClassName}>
           <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />

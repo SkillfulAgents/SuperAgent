@@ -234,6 +234,11 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn(),
 }))
 
+vi.mock('@shared/lib/services/session-summary-service', () => ({
+  summarizeTranscript: vi.fn(),
+  buildSeed: vi.fn(),
+}))
+
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listScheduledTasks: vi.fn(),
   listPendingScheduledTasks: vi.fn(),
@@ -378,7 +383,9 @@ import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@s
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { listUserSecrets, setSecret, getSecret, keyToEnvVar } from '@shared/lib/services/secrets-service'
+import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { summarizeTranscript, buildSeed } from '@shared/lib/services/session-summary-service'
+import { containerManager } from '@shared/lib/container/container-manager'
 
 // ============================================================================
 // Test Helpers
@@ -3179,5 +3186,155 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
       expect(body.error).toContain('REMOTE_MCPS')
       expect(setSecret).not.toHaveBeenCalled()
     })
+  })
+})
+
+// ============================================================================
+// POST /:id/sessions/summarize
+// ============================================================================
+
+describe('POST /:id/sessions/summarize', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/summarize'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', frontmatter: { name: 'Test Agent' } } as any)
+    // clearAllMocks keeps implementations, so reset the source-session existence
+    // check each test (one case below flips it to false and must not leak).
+    vi.mocked(sessionExists).mockResolvedValue(true)
+  })
+
+  it('returns 400 and does not invoke summarizer when fromSessionId is missing', async () => {
+    const res = await postJson(app, URL, {})
+    expect(res.status).toBe(400)
+    expect(summarizeTranscript).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 and does not invoke summarizer when fromSessionId is empty', async () => {
+    const res = await postJson(app, URL, { fromSessionId: '' })
+    expect(res.status).toBe(400)
+    expect(summarizeTranscript).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 and does not invoke summarizer when fromSessionId contains invalid chars', async () => {
+    const res = await postJson(app, URL, { fromSessionId: '../etc/passwd' })
+    expect(res.status).toBe(400)
+    expect(summarizeTranscript).not.toHaveBeenCalled()
+  })
+
+  it('returns 404 when the agent does not exist', async () => {
+    vi.mocked(getAgent).mockResolvedValue(null)
+    const res = await postJson(app, URL, { fromSessionId: 'sess-1' })
+    expect(res.status).toBe(404)
+    expect(summarizeTranscript).not.toHaveBeenCalled()
+  })
+
+  it('returns 404 and does not summarize when the source session transcript is missing', async () => {
+    vi.mocked(sessionExists).mockResolvedValue(false)
+    const res = await postJson(app, URL, { fromSessionId: 'ghost-session' })
+    expect(res.status).toBe(404)
+    expect(summarizeTranscript).not.toHaveBeenCalled()
+  })
+
+  it('returns 502 {error:"summary_failed"} when summarizeTranscript throws', async () => {
+    vi.mocked(summarizeTranscript).mockRejectedValue(new Error('LLM unavailable'))
+    const res = await postJson(app, URL, { fromSessionId: 'sess-1' })
+    expect(res.status).toBe(502)
+    expect(await res.json()).toEqual({ error: 'summary_failed' })
+  })
+
+  it('returns 502 {error:"summary_failed"} when summarizeTranscript resolves an empty string', async () => {
+    // summarizeResponseSchema uses z.string().min(1) — only truly empty strings fail
+    vi.mocked(summarizeTranscript).mockResolvedValue('')
+    const res = await postJson(app, URL, { fromSessionId: 'sess-1' })
+    expect(res.status).toBe(502)
+    expect(await res.json()).toEqual({ error: 'summary_failed' })
+  })
+
+  it('returns 200 {summary} on success', async () => {
+    vi.mocked(summarizeTranscript).mockResolvedValue('## Goal\nWiring auth.')
+    const res = await postJson(app, URL, { fromSessionId: 'sess-1' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ summary: '## Goal\nWiring auth.' })
+  })
+})
+
+// ============================================================================
+// POST /:id/sessions — seeded vs bare initialMessage
+// ============================================================================
+
+describe('POST /:id/sessions — seeded vs bare initialMessage', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions'
+  const mockCreateSession = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({
+      slug: 'test-agent',
+      frontmatter: { name: 'Test Agent' },
+    } as any)
+    vi.mocked(containerManager.ensureRunning).mockResolvedValue({
+      createSession: mockCreateSession,
+    } as any)
+    mockCreateSession.mockResolvedValue({ id: 'new-session-id' })
+    vi.mocked(getSecretEnvVars).mockResolvedValue([])
+  })
+
+  it('passes buildSeed result as initialMessage when seedSummary + fromSessionId are present', async () => {
+    vi.mocked(buildSeed).mockReturnValue('SEEDED_BLOCK')
+
+    const res = await postJson(app, URL, {
+      message: 'add rate limiting',
+      seedSummary: '## Goal\nWiring auth.',
+      fromSessionId: 'sess-1',
+    })
+
+    expect(res.status).toBe(201)
+    expect(buildSeed).toHaveBeenCalledWith({
+      fromSessionId: 'sess-1',
+      summary: '## Goal\nWiring auth.',
+      userMessage: 'add rate limiting',
+    })
+    expect(mockCreateSession).toHaveBeenCalledWith(
+      expect.objectContaining({ initialMessage: 'SEEDED_BLOCK' })
+    )
+    const body = await res.json()
+    expect(body.name).toBe('New Session')
+    expect(body.id).toBe('new-session-id')
+  })
+
+  it('passes the bare message as initialMessage when no seedSummary or fromSessionId', async () => {
+    const res = await postJson(app, URL, { message: 'add rate limiting' })
+
+    expect(res.status).toBe(201)
+    expect(buildSeed).not.toHaveBeenCalled()
+    expect(mockCreateSession).toHaveBeenCalledWith(
+      expect.objectContaining({ initialMessage: 'add rate limiting' })
+    )
+  })
+
+  it('names the session from the BARE message, never the seeded block', async () => {
+    // buildSeed output embeds the summary; if naming wrongly used initialMessage,
+    // the seeded block / summary text would leak into the generated title.
+    vi.mocked(buildSeed).mockReturnValue('SEEDED_BLOCK :: ## Goal Wiring auth :: add rate limiting')
+    mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Rate limiting' }] })
+
+    const res = await postJson(app, URL, {
+      message: 'add rate limiting',
+      seedSummary: '## Goal\nWiring auth.',
+      fromSessionId: 'sess-1',
+    })
+    expect(res.status).toBe(201)
+
+    // Naming is fire-and-forget; wait for the LLM call it makes.
+    await vi.waitFor(() => expect(mockLlmMessagesCreate).toHaveBeenCalled())
+    const namingPrompt = mockLlmMessagesCreate.mock.calls[0][0].messages[0].content as string
+    expect(namingPrompt).toContain('add rate limiting')
+    expect(namingPrompt).not.toContain('SEEDED_BLOCK')
+    expect(namingPrompt).not.toContain('Wiring auth')
   })
 })

@@ -53,10 +53,19 @@ export interface UseComposerOptionsArgs {
   initialEffort?: EffortLevel
   /** Model last used on this session, seeds the selector once if provided. */
   initialModel?: string
+  /**
+   * Bare family alias (e.g. 'opus') for the initial model when neither
+   * `initialModel` nor a prior user selection applies. Wins over the user's
+   * "Default Model" setting. Used by AgentHome to start brand-new agents on
+   * Opus. Only consulted until the selector is seeded — once the user picks,
+   * their choice takes over. The popover resolves the alias to the family's
+   * latest via findCatalogModel.
+   */
+  preferredFamily?: string
 }
 
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsState {
-  const { initialEffort, initialModel } = args
+  const { initialEffort, initialModel, preferredFamily } = args
 
   const { data: settings } = useSettings()
 
@@ -93,17 +102,18 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     [settings, activeProvider],
   )
   const catalog = useMemo(() => providerInfo?.catalog ?? [], [providerInfo])
-  // Fallback hierarchy: user's "Default Model" → provider's agent default → the
-  // catalog's latest Sonnet → first catalog entry. The first non-empty wins.
-  // Aliases and concrete ids are both valid wire values, so any of these is a
-  // usable selection string.
+  // Fallback hierarchy: preferred family → user's "Default Model" → provider's
+  // agent default → the catalog's latest Sonnet → first catalog entry. The
+  // first non-empty wins. Aliases and concrete ids are both valid wire values,
+  // so any of these (including a bare family alias) is a usable selection string.
   const fallbackModel = useMemo(
     () =>
+      preferredFamily ??
       settings?.models?.agentModel ??
       providerInfo?.defaultModels?.agent ??
       catalog.find((m) => m.family === 'sonnet' && m.isLatest)?.id ??
       catalog[0]?.id,
-    [settings, providerInfo, catalog],
+    [preferredFamily, settings, providerInfo, catalog],
   )
 
   // ---- Model ----
@@ -122,6 +132,16 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       setModelState(fallbackModel)
     }
   }, [model, fallbackModel])
+  // When preferredFamily arrives late (e.g. after AgentHome's async session
+  // list resolves and the agent turns out to have no sessions), override the
+  // settings-based default — but not once the user has made an explicit pick.
+  const prevPreferredRef = useRef(preferredFamily)
+  useEffect(() => {
+    if (preferredFamily && preferredFamily !== prevPreferredRef.current && !modelSeededRef.current) {
+      setModelState(preferredFamily)
+    }
+    prevPreferredRef.current = preferredFamily
+  }, [preferredFamily])
   const setModel = useCallback((m: string) => {
     modelSeededRef.current = true
     setModelState(m)

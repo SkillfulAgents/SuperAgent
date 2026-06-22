@@ -181,6 +181,15 @@ export interface ApiCompactBoundary {
   trigger: string
   preTokens?: number
   createdAt: Date
+  /** Optional display label overriding the default "Compacted" button text.
+   *  Set to "Continued from previous conversation" for branched-session context cards. */
+  label?: string
+  /** Optional header shown in the expanded panel, overriding the default "Compaction Summary".
+   *  Set to "Conversation context" for branched-session context cards. */
+  summaryLabel?: string
+  /** Source session id when this is a branched-session context card ('branch' trigger).
+   *  Lets the UI link back to the session the summary came from. */
+  fromSessionId?: string
 }
 
 /**
