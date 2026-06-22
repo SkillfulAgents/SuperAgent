@@ -238,14 +238,4 @@ describe('TelegramConnector — media handlers (photo/document)', () => {
       expect(emitted[0].files?.[0]?.name).toBe('report.pdf')
     })
   }
-
-  it('photo handler drops channel updates (no emit)', async () => {
-    await capturedHandlers['message:photo'](photoCtx('channel'))
-    expect(emitted).toHaveLength(0)
-  })
-
-  it('document handler drops channel updates (no emit)', async () => {
-    await capturedHandlers['message:document'](docCtx('channel'))
-    expect(emitted).toHaveLength(0)
-  })
 })

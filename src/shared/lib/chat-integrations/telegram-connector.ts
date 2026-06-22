@@ -120,7 +120,7 @@ export class TelegramConnector extends ChatClientConnector {
   private startupError: Error | null = null
 
   // First-poll batching: accumulate messages before sending them all at once
-  private pendingFirstPollMessages: Map<string, { texts: string[]; timer: ReturnType<typeof setTimeout> | null; userName?: string; chatName?: string; chatType?: string }> = new Map()
+  private pendingFirstPollMessages: Map<string, { texts: string[]; timer: ReturnType<typeof setTimeout> | null; userName?: string; chatName?: string; chatType?: 'private' | 'group' | 'supergroup' }> = new Map()
 
   // Track callback_query toolUseId mappings (Telegram callback_data is limited to 64 bytes)
   private callbackDataMap: Map<string, { toolUseId: string; value: unknown; ts: number }> = new Map()
@@ -161,8 +161,7 @@ export class TelegramConnector extends ChatClientConnector {
       const photos = ctx.message.photo
       if (!photos || photos.length === 0) return
 
-      const chatType = (ctx.chat as { type: string }).type
-      if (chatType === 'channel') return // out of scope v1; no chat row
+      const chatType = ctx.chat.type
 
       // Use the largest photo version (last in array)
       const largest = photos[photos.length - 1]
@@ -180,9 +179,9 @@ export class TelegramConnector extends ChatClientConnector {
         text: ctx.message.caption || '',
         chatId,
         userId: String(ctx.from?.id || ''),
-        chatType: chatType as 'private' | 'group' | 'supergroup',
+        chatType: chatType,
         userName,
-        chatName: (ctx.chat as any).title || userName || undefined,
+        chatName: ('title' in ctx.chat ? ctx.chat.title : undefined) || userName || undefined,
         files: [{
           name: 'photo.jpg',
           url,
@@ -195,8 +194,7 @@ export class TelegramConnector extends ChatClientConnector {
     // Handle document uploads (for file request resolution)
     this.bot.on('message:document', async (ctx) => {
       const doc = ctx.message.document
-      const chatType = (ctx.chat as { type: string }).type
-      if (chatType === 'channel') return // out of scope v1; no chat row
+      const chatType = ctx.chat.type
 
       const chatId = String(ctx.chat.id)
       let url = ''
@@ -212,9 +210,9 @@ export class TelegramConnector extends ChatClientConnector {
         text: ctx.message.caption || '',
         chatId,
         userId: String(ctx.from?.id || ''),
-        chatType: chatType as 'private' | 'group' | 'supergroup',
+        chatType: chatType,
         userName,
-        chatName: (ctx.chat as any).title || userName || undefined,
+        chatName: ('title' in ctx.chat ? ctx.chat.title : undefined) || userName || undefined,
         files: [{
           name: doc.file_name || 'file',
           url,
@@ -593,7 +591,7 @@ export class TelegramConnector extends ChatClientConnector {
     const text = ctx.message?.text
     if (!text || !ctx.chat) return
 
-    const chatType = (ctx.chat as { type: string }).type
+    const chatType = ctx.chat.type
     if (chatType === 'channel') return // out of scope v1; no chat row
 
     const chatId = String(ctx.chat.id)
@@ -603,7 +601,7 @@ export class TelegramConnector extends ChatClientConnector {
       || ctx.from?.username
       || undefined
     // For groups use the chat title; for DMs use the user's name
-    const chatName = (ctx.chat as any).title || userName || undefined
+    const chatName = ('title' in ctx.chat ? ctx.chat.title : undefined) || userName || undefined
 
     if (!this.hasCompletedFirstPoll) {
       // Buffer messages during first poll
@@ -627,7 +625,7 @@ export class TelegramConnector extends ChatClientConnector {
       text,
       chatId,
       userId: fromId,
-      chatType: chatType as 'private' | 'group' | 'supergroup',
+      chatType: chatType,
       userName,
       chatName,
       timestamp: new Date((ctx.message?.date || 0) * 1000),
@@ -644,7 +642,7 @@ export class TelegramConnector extends ChatClientConnector {
       text: combined,
       chatId,
       userId,
-      chatType: pending.chatType as 'private' | 'group' | 'supergroup' | undefined,
+      chatType: pending.chatType,
       userName: pending.userName,
       chatName: pending.chatName,
       timestamp: new Date(),
