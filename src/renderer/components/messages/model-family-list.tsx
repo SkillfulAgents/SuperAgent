@@ -25,11 +25,8 @@ export function formatTokenThreshold(tokens: number): string {
 
 type LongContextCliff = NonNullable<ModelDefinition['longContextPriceCliff']>
 
-/**
- * Gentle heads-up about the long-context price step. Frames the threshold as a
- * share of the context window when known (more intuitive than a raw token
- * count), and the multipliers as a soft range.
- */
+// Picker copy for a model's long-context price step; frames the threshold as a
+// share of the context window when known, else as a raw token count.
 export function longContextWarningText(cliff: LongContextCliff, contextWindow?: number): string {
   const where = contextWindow
     ? `beyond about ${Math.round((cliff.thresholdTokens / contextWindow) * 100)}% of the context window`
