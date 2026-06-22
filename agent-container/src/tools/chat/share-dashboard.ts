@@ -15,7 +15,7 @@ export async function shareDashboardHandler({ slug, integration_id, chat_id }: {
     const data = await callChatHost<ShareResult>('share-dashboard', { slug, integration_id, chat_id })
     const message = data.delivery === 'button'
       ? `Shared dashboard "${slug}" to chat ${data.chatId}. The user can tap "Open dashboard" to open it inside Telegram.`
-      : `Shared dashboard "${slug}" to chat ${data.chatId} as a plain-text message. No public web URL is configured, so the user sees the dashboard name but no clickable "Open dashboard" button. Don't point them to a button that isn't there.`
+      : `Shared dashboard "${slug}" to chat ${data.chatId} as a plain-text message. The user sees the dashboard name but no clickable "Open dashboard" button. Don't point them to a button that isn't there.`
     return textResult(message)
   } catch (error) {
     const msg = error instanceof XAgentError ? error.message : String(error)

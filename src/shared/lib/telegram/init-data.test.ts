@@ -42,4 +42,24 @@ describe('verifyInitData', () => {
     const initData = signInitData({ auth_date: String(authDate), user: 'not{json' })
     expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: false, reason: 'malformed' })
   })
+
+  it('returns malformed when auth_date is not a finite number', () => {
+    // Number('notanumber') === NaN; z.number().finite() must reject it so the
+    // freshness check can't be silently bypassed.
+    const initData = signInitData({ auth_date: 'notanumber', user: JSON.stringify({ id: 1 }) })
+    expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: false, reason: 'malformed' })
+  })
+
+  it('returns malformed when the hash field is missing', () => {
+    const initData = new URLSearchParams({ auth_date: String(Math.floor(Date.now() / 1000)) }).toString()
+    expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: false, reason: 'malformed' })
+  })
+
+  it('rejects an equal-length but wrong hash (constant-time compare path)', () => {
+    // A 64-hex wrong hash has the same length as the real one, so it exercises
+    // timingSafeEqual rather than the length short-circuit.
+    const initData = signInitData({ auth_date: String(Math.floor(Date.now() / 1000)) })
+      .replace(/hash=[a-f0-9]+/, 'hash=' + 'a'.repeat(64))
+    expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: false, reason: 'signature' })
+  })
 })

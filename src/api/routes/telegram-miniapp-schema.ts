@@ -8,9 +8,3 @@ export const miniAppSessionRequestSchema = z.object({
 })
 
 export type MiniAppSessionRequest = z.infer<typeof miniAppSessionRequestSchema>
-
-export const browserLinkRequestSchema = z.object({
-  dashboardSlug: z.string().min(1),
-})
-
-export type BrowserLinkRequest = z.infer<typeof browserLinkRequestSchema>

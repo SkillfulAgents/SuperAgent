@@ -49,6 +49,7 @@ describe('chatIntegrationManager.shareDashboard', () => {
       agentSlug: 'sales',
       dashboardSlug: 'wr',
       name: 'WR',
+      allowButton: true,
     })
 
     expect(delivery).toBe('text')
@@ -58,6 +59,7 @@ describe('chatIntegrationManager.shareDashboard', () => {
       agentSlug: 'sales',
       dashboardSlug: 'wr',
       name: 'WR',
+      allowButton: true,
     })
   })
 
@@ -71,6 +73,7 @@ describe('chatIntegrationManager.shareDashboard', () => {
         agentSlug: 'sales',
         dashboardSlug: 'wr',
         name: 'WR',
+        allowButton: true,
       }),
     ).rejects.toThrow(/Telegram/)
   })
@@ -81,6 +84,7 @@ describe('chatIntegrationManager.shareDashboard', () => {
         agentSlug: 'sales',
         dashboardSlug: 'wr',
         name: 'WR',
+        allowButton: true,
       }),
     ).rejects.toThrow(/not connected/)
   })

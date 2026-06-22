@@ -303,12 +303,18 @@ xAgentChat.post('/share-dashboard', zValidator('json', shareDashboardRequestSche
     if (!dash) return c.json({ error: 'Dashboard not found' }, 404)
     const name = dash.name || slug
 
+    // A working "Open dashboard" button mints a Mini App cookie as the integration
+    // owner; without createdByUserId (e.g. integrations created before that field
+    // was captured) the button would 401 on tap, so fall back to plain text.
+    const allowButton = !!integration.createdByUserId
+
     let delivery: DashboardDelivery
     try {
       delivery = await chatIntegrationManager.shareDashboard(integration.id, resolvedChatId, {
         agentSlug: integration.agentSlug,
         dashboardSlug: slug,
         name,
+        allowButton,
       })
     } catch (err) {
       if (err instanceof Error && err.message === 'Integration not connected') {

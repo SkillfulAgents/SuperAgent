@@ -31,7 +31,7 @@ import auditLogRouter from './routes/audit-log'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
 import agentBootstrap from './routes/agent-bootstrap'
-import { TelegramDashboardSession } from './middleware/telegram-dashboard'
+import { TelegramDashboardSession, shouldRunDashboardSession } from './middleware/telegram-dashboard'
 import telegramMiniapp from './routes/telegram-miniapp'
 import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -171,13 +171,11 @@ app.get('/api/llm/anthropic-sdk.js', (c) => {
 // Mount is scoped to :artifactSlug/* — NOT the bare :artifactSlug path.
 // The bare path carries the AgentAdmin-guarded DELETE/PATCH management endpoints; a
 // dashboard cookie must not authorize those destructive operations.
-// Note: Hono 4's /* wildcard also matches the bare :artifactSlug path, so we guard explicitly.
+// Note: Hono 4's /* wildcard also matches the bare :artifactSlug path, so we guard via
+// shouldRunDashboardSession (method-gated + encoding-safe; see the middleware module).
 const dashboardSession = TelegramDashboardSession()
 app.use('/api/agents/:id/artifacts/:artifactSlug/*', async (c, next) => {
-  // Skip on the bare management path (no trailing content after the slug)
-  if (c.req.path === `/api/agents/${c.req.param('id')}/artifacts/${c.req.param('artifactSlug')}`) {
-    return next()
-  }
+  if (!shouldRunDashboardSession(c)) return next()
   return dashboardSession(c, next)
 })
 app.use('/api/llm/*', TelegramDashboardSession())

@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { setCookie, getCookie } from 'hono/cookie'
-import { miniAppSessionRequestSchema, browserLinkRequestSchema } from './telegram-miniapp-schema'
+import { miniAppSessionRequestSchema } from './telegram-miniapp-schema'
 import { getChatIntegration } from '@shared/lib/services/chat-integration-service'
 import { parseChatIntegrationConfig, type TelegramConfig } from '@shared/lib/chat-integrations/config-schema'
 import { verifyInitData } from '@shared/lib/telegram/init-data'
@@ -96,12 +96,12 @@ const SHELL_HTML = `<!DOCTYPE html>
       // Silent cookie refresh at ~70 % of the 15-minute TTL (630 000 ms)
       setInterval(function () {
         postSession(function () {}, function () {
-          showError('Session expired. Reopen from the chat.');
+          showError('Your access expired. Reopen from the chat.');
         });
       }, 630000);
     },
     function (code) {
-      if (code === 401) { showError("Couldn’t verify this Telegram session. Reopen from the chat."); }
+      if (code === 401) { showError("Couldn’t verify this dashboard link. Reopen it from your chat."); }
       else if (code === 403) { showError("You don’t have access to this dashboard."); }
       else { showError("Couldn’t load the dashboard."); }
     }
@@ -109,11 +109,8 @@ const SHELL_HTML = `<!DOCTYPE html>
 
   document.getElementById('open-in-browser').addEventListener('click', async function () {
     try {
-      var res = await fetch('/api/telegram-miniapp/browser-link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dashboardSlug: dashboardSlug })
-      });
+      // The dashboard scope rides the signed tg_dash cookie; no body needed.
+      var res = await fetch('/api/telegram-miniapp/browser-link', { method: 'POST' });
       if (!res.ok) return;
       var data = await res.json();
       if (data && data.url) {
@@ -209,6 +206,7 @@ app.post('/session', async (c) => {
     {
       userId: integration.createdByUserId,
       agentSlug: integration.agentSlug,
+      dashboardSlug,
       integrationId: integration.id,
       exp,
     },
@@ -231,51 +229,44 @@ app.post('/session', async (c) => {
 })
 
 app.post('/browser-link', async (c) => {
-  // 1. Verify existing tg_dash cookie
+  // 1. Verify existing tg_dash cookie — the dashboard scope comes from the
+  //    signed cookie, never from caller-supplied input.
   const raw = getCookie(c, DASHBOARD_COOKIE_NAME)
   const payload = raw ? verifyDashboardCookie(raw, getOrCreateAuthSecret()) : null
   if (!payload) {
     return c.json({ ok: false, reason: 'unauthorized' }, 401)
   }
 
-  // 2. Parse body
-  let rawBody: unknown
-  try {
-    rawBody = await c.req.json()
-  } catch {
-    return c.json({ ok: false, reason: 'bad_request' }, 400)
-  }
-  const parsed = browserLinkRequestSchema.safeParse(rawBody)
-  if (!parsed.success) {
-    return c.json({ ok: false, reason: 'bad_request' }, 400)
-  }
-  const { dashboardSlug } = parsed.data
-
-  // 3. Require a public base URL
+  // 2. Require a public base URL
   const base = getPlatformBaseUrl()
   if (!base) {
     return c.json({ ok: false, reason: 'no_public_url' }, 400)
   }
 
-  // 4. Mint a short-TTL link token (120s)
+  // 3. Mint a short-TTL link token (120s) carrying the cookie's dashboard scope
   const exp = Math.floor(Date.now() / 1000) + 120
   const token = signDashboardCookie(
-    { userId: payload.userId, agentSlug: payload.agentSlug, integrationId: payload.integrationId, exp },
+    {
+      userId: payload.userId,
+      agentSlug: payload.agentSlug,
+      dashboardSlug: payload.dashboardSlug,
+      integrationId: payload.integrationId,
+      exp,
+    },
     getOrCreateAuthSecret(),
   )
 
-  // 5. Build absolute browser URL
-  const url = `${base.replace(/\/$/, '')}/api/telegram-miniapp/browser?token=${encodeURIComponent(token)}&d=${encodeURIComponent(dashboardSlug)}`
+  // 4. Build absolute browser URL — the dashboard is bound to the signed token
+  const url = `${base.replace(/\/$/, '')}/api/telegram-miniapp/browser?token=${encodeURIComponent(token)}`
   return c.json({ ok: true, url })
 })
 
 app.get('/browser', async (c) => {
   const token = c.req.query('token')
-  const d = c.req.query('d')
 
-  // 1. Both params required
-  if (!token || !d) {
-    return c.text('Missing token or d parameter', 400)
+  // 1. Token required — it carries the trusted dashboard scope
+  if (!token) {
+    return c.text('Missing token parameter', 400)
   }
 
   // 2. Verify link token
@@ -290,7 +281,13 @@ app.get('/browser', async (c) => {
   // 3. Mint a fresh full-TTL tg_dash cookie from the trusted token payload
   const exp = Math.floor(Date.now() / 1000) + DASHBOARD_COOKIE_TTL_SECONDS
   const cookie = signDashboardCookie(
-    { userId: payload.userId, agentSlug: payload.agentSlug, integrationId: payload.integrationId, exp },
+    {
+      userId: payload.userId,
+      agentSlug: payload.agentSlug,
+      dashboardSlug: payload.dashboardSlug,
+      integrationId: payload.integrationId,
+      exp,
+    },
     getOrCreateAuthSecret(),
   )
   // Honor x-forwarded-proto so the flag is set correctly behind a TLS-terminating proxy.
@@ -303,8 +300,8 @@ app.get('/browser', async (c) => {
     maxAge: DASHBOARD_COOKIE_TTL_SECONDS,
   })
 
-  // 4. Build artifact path server-side from trusted payload + d param
-  const artifactPath = buildDashboardArtifactPath(payload.agentSlug, d)
+  // 4. Build artifact path server-side from the trusted token payload
+  const artifactPath = buildDashboardArtifactPath(payload.agentSlug, payload.dashboardSlug)
 
   // 5. Serve browser shell — full-viewport iframe, no Telegram SDK. The cookie
   // can't self-renew here (renewal needs Telegram initData), so instead of
@@ -328,7 +325,7 @@ app.get('/browser', async (c) => {
 </head>
 <body>
 <iframe src="${artifactPath}"></iframe>
-<div id="expired"><span>Session expired. Reopen the dashboard from your Telegram chat.</span></div>
+<div id="expired"><span>Your access expired. Reopen the dashboard from your Telegram chat.</span></div>
 <script>
 (function () {
   // The browser session cookie is minted for a fixed TTL and cannot be renewed

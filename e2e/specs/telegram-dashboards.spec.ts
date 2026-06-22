@@ -21,12 +21,18 @@
  *   - Valid signature for an unbound Telegram user → 403 reason=not_bound, no cookie
  *
  * What this test deliberately does NOT assert:
- *   ACL enforcement (AgentRead ownership checks beyond the no_owner guard).
- *   In non-auth mode AgentRead() is a no-op, so the artifact GET succeeds
- *   without validating the cookie's owner claim against an ACL table. That
- *   coverage lives in the Task 5 composition unit tests
- *   (src/api/routes/telegram-miniapp.test.ts) which mock getChatIntegration
- *   with a specific createdByUserId and exercise the middleware in isolation.
+ *   AgentRead() ownership enforcement on the artifact read path. In non-auth
+ *   mode AgentRead() is a no-op, so the artifact GET succeeds without checking
+ *   the cookie's owner claim against an ACL table. AgentRead() still runs in
+ *   production (the cookie middleware only pre-sets the user; it does not bypass
+ *   the guard). The pieces are unit-tested elsewhere:
+ *     - /session authorization gates (agent_mismatch, dashboard_not_found,
+ *       no_owner) in src/api/routes/telegram-miniapp.test.ts (mocks getChatIntegration);
+ *     - the cookie's agent + dashboard scoping in
+ *       src/api/middleware/telegram-dashboard.test.ts;
+ *     - the cookie -> Authenticated() composition in src/api/middleware/auth.test.ts.
+ *   A DB-seeded AgentRead-over-cookie (revoked-owner) composition test remains a
+ *   deferred coverage gap.
  */
 
 import { test, expect } from '@playwright/test'

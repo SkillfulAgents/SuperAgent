@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { signDashboardCookie, verifyDashboardCookie } from './dashboard-cookie'
 
 const SECRET = 'server-secret'
-const base = { userId: 'u1', agentSlug: 'sales', integrationId: 'int1' }
+const base = { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1' }
 
 describe('dashboard cookie', () => {
   it('round-trips a valid payload', () => {

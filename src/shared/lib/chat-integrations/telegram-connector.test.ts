@@ -264,6 +264,7 @@ describe('TelegramConnector.sendDashboardCard', () => {
       agentSlug: 'sales',
       dashboardSlug: 'weekly-report',
       name: 'Weekly',
+      allowButton: true,
     })
 
     expect(delivery).toBe('button')
@@ -289,6 +290,7 @@ describe('TelegramConnector.sendDashboardCard', () => {
       agentSlug: 'sales',
       dashboardSlug: 'weekly-report',
       name: 'Weekly',
+      allowButton: true,
     })
 
     expect(delivery).toBe('text')
@@ -303,6 +305,31 @@ describe('TelegramConnector.sendDashboardCard', () => {
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('public HTTPS base URL'),
     )
+
+    warnSpy.mockRestore()
+  })
+
+  it('sends plain text with no button when allowButton is false even if base URL is set', async () => {
+    // No integration owner to act as -> the button would dead-end on tap, so the
+    // connector must fall back to plain text despite a configured base URL.
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: false,
+    })
+
+    expect(delivery).toBe('text')
+    expect(sendMessage).toHaveBeenCalledOnce()
+    const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]
+    expect(chatIdArg).toBe('chat1')
+    expect(textArg).toBe('Weekly')
+    expect(optsArg?.reply_markup).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no owner'))
 
     warnSpy.mockRestore()
   })

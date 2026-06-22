@@ -9,7 +9,9 @@ export const initDataUserSchema = z.object({
 
 export const initDataSchema = z.object({
   user: initDataUserSchema.optional(),
-  auth_date: z.number(),
+  // `.finite()` rejects a NaN auth_date (from a non-numeric value coerced via
+  // Number(...)) so the downstream freshness check can't be silently bypassed.
+  auth_date: z.number().finite(),
   query_id: z.string().optional(),
   hash: z.string(),
 })

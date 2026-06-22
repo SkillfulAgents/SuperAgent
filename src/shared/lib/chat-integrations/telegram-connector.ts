@@ -598,13 +598,20 @@ export class TelegramConnector extends ChatClientConnector {
 
   async sendDashboardCard(
     chatId: string,
-    opts: { integrationId: string; agentSlug: string; dashboardSlug: string; name: string },
+    opts: { integrationId: string; agentSlug: string; dashboardSlug: string; name: string; allowButton: boolean },
   ): Promise<DashboardDelivery> {
     if (!this.bot) throw new Error('Bot not connected')
     const base = getPlatformBaseUrl()
-    if (!base) {
+    // A working button needs both a public URL to point at and a caller that's
+    // cleared to mint a Mini App cookie (allowButton). Without either, send plain
+    // text rather than a button that would dead-end when tapped.
+    if (!base || !opts.allowButton) {
       await this.bot.api.sendMessage(chatId, opts.name)
-      console.warn('[telegram] dashboard sharing needs a public HTTPS base URL (web/server mode); sent plain text without the Open dashboard button')
+      if (!base) {
+        console.warn('[telegram] dashboard sharing needs a public HTTPS base URL (web/server mode); sent plain text without the Open dashboard button')
+      } else {
+        console.warn('[telegram] dashboard integration has no owner to act as; sent plain text without the Open dashboard button')
+      }
       return 'text'
     }
     const url = `${base.replace(/\/$/, '')}/api/telegram-miniapp?i=${encodeURIComponent(opts.integrationId)}&a=${encodeURIComponent(opts.agentSlug)}&d=${encodeURIComponent(opts.dashboardSlug)}`

@@ -1358,7 +1358,7 @@ describe('Auth Middleware', () => {
       const exp = Math.floor(Date.now() / 1000) + 900
       const secret = process.env.BETTER_AUTH_SECRET!
       const cookieValue = signDashboardCookie(
-        { userId: 'u1', agentSlug: 'sales', integrationId: 'int-1', exp },
+        { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'x', integrationId: 'int-1', exp },
         secret,
       )
 

@@ -346,7 +346,7 @@ describe('x-agent chat route', () => {
 
   describe('POST /share-dashboard', () => {
     function createTelegramIntegration(overrides: Record<string, unknown> = {}) {
-      return createIntegration({ provider: 'telegram', status: 'active', ...overrides })
+      return createIntegration({ provider: 'telegram', status: 'active', createdByUserId: 'owner-1', ...overrides })
     }
 
     beforeEach(() => {
@@ -367,7 +367,7 @@ describe('x-agent chat route', () => {
       expect(mockShareDashboard).toHaveBeenCalledWith(
         'integration-1',
         'chat-1',
-        { agentSlug: 'agent-one', dashboardSlug: 'weekly-report', name: 'Weekly' },
+        { agentSlug: 'agent-one', dashboardSlug: 'weekly-report', name: 'Weekly', allowButton: true },
       )
     })
 
@@ -382,6 +382,27 @@ describe('x-agent chat route', () => {
 
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ chatId: 'chat-1', delivery: 'text' })
+    })
+
+    it('passes allowButton=false when the integration has no owner (createdByUserId null)', async () => {
+      // Integrations created before createdByUserId was captured would otherwise
+      // send a button that 401s on tap; the route must signal text-only delivery.
+      mockGetChatIntegration.mockReturnValue(createTelegramIntegration({ createdByUserId: null }))
+      mockListChatIntegrations.mockReturnValue([createTelegramIntegration({ createdByUserId: null })])
+      mockShareDashboard.mockResolvedValue('text')
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockShareDashboard).toHaveBeenCalledWith(
+        'integration-1',
+        'chat-1',
+        { agentSlug: 'agent-one', dashboardSlug: 'weekly-report', name: 'Weekly', allowButton: false },
+      )
     })
 
     it('returns 403 when the chat is not approved for the integration', async () => {

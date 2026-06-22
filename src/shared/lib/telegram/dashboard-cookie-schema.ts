@@ -3,6 +3,7 @@ import { z } from 'zod'
 export const dashboardCookiePayloadSchema = z.object({
   userId: z.string(),
   agentSlug: z.string(),
+  dashboardSlug: z.string(),
   integrationId: z.string(),
   exp: z.number(),
 })

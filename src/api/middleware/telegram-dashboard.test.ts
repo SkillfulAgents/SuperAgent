@@ -3,7 +3,7 @@ process.env.BETTER_AUTH_SECRET = 'tg-dash-test-secret'
 
 import { describe, it, expect } from 'vitest'
 import { Hono } from 'hono'
-import { TelegramDashboardSession } from './telegram-dashboard'
+import { TelegramDashboardSession, shouldRunDashboardSession } from './telegram-dashboard'
 import { signDashboardCookie, DASHBOARD_COOKIE_NAME } from '@shared/lib/telegram/dashboard-cookie'
 import { getOrCreateAuthSecret } from '@shared/lib/auth/secret'
 
@@ -25,7 +25,7 @@ describe('TelegramDashboardSession', () => {
   it('sets user when valid cookie and route agent matches cookie agent', async () => {
     const exp = Math.floor(Date.now() / 1000) + 900
     const token = signDashboardCookie(
-      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp },
+      { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp },
       getOrCreateAuthSecret(),
     )
     const res = await makeAgentApp().request('/api/agents/sales/ping', {
@@ -38,7 +38,7 @@ describe('TelegramDashboardSession', () => {
   it('does not set user when cookie agent differs from route agent', async () => {
     const exp = Math.floor(Date.now() / 1000) + 900
     const token = signDashboardCookie(
-      { userId: 'u1', agentSlug: 'other', integrationId: 'int1', exp },
+      { userId: 'u1', agentSlug: 'other', dashboardSlug: 'weekly-report', integrationId: 'int1', exp },
       getOrCreateAuthSecret(),
     )
     const res = await makeAgentApp().request('/api/agents/sales/ping', {
@@ -51,7 +51,7 @@ describe('TelegramDashboardSession', () => {
   it('sets user when route has no :id param (llm/stt path) and cookie is valid', async () => {
     const exp = Math.floor(Date.now() / 1000) + 900
     const token = signDashboardCookie(
-      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp },
+      { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp },
       getOrCreateAuthSecret(),
     )
     const res = await makeLlmApp().request('/api/llm/ping', {
@@ -69,16 +69,16 @@ describe('TelegramDashboardSession', () => {
 })
 
 describe('TelegramDashboardSession — mount scope (artifacts)', () => {
-  // Mirrors the production mount: cookie applies to :artifactSlug/* only,
-  // NOT the bare :artifactSlug path (which carries AgentAdmin-guarded DELETE/PATCH).
-  // Hono 4's /* also matches the bare path, so the wrapper skips it explicitly.
+  // Mirrors the production mount in src/api/index.ts: the cookie applies to
+  // :artifactSlug/* content reads only, NOT the bare :artifactSlug path (which
+  // carries the AgentAdmin-guarded DELETE/PATCH management endpoints). Hono 4's
+  // /* also matches the bare path, so the mount delegates to the REAL guard
+  // (shouldRunDashboardSession) — tested here, not a re-implemented copy.
   function makeArtifactApp() {
     const app = new Hono()
     const dashboardSession = TelegramDashboardSession()
     app.use('/api/agents/:id/artifacts/:artifactSlug/*', async (c, next) => {
-      if (c.req.path === `/api/agents/${c.req.param('id')}/artifacts/${c.req.param('artifactSlug')}`) {
-        return next()
-      }
+      if (!shouldRunDashboardSession(c)) return next()
       return dashboardSession(c, next)
     })
     app.get('/api/agents/:id/artifacts/:artifactSlug/*', (c) =>
@@ -87,13 +87,16 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
     app.delete('/api/agents/:id/artifacts/:artifactSlug', (c) =>
       c.json({ user: (c.get as any)('user') ?? null }),
     )
+    app.patch('/api/agents/:id/artifacts/:artifactSlug', (c) =>
+      c.json({ user: (c.get as any)('user') ?? null }),
+    )
     return app
   }
 
-  function makeCookie() {
+  function makeCookie(dashboardSlug = 'weekly-report') {
     const exp = Math.floor(Date.now() / 1000) + 900
     return signDashboardCookie(
-      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp },
+      { userId: 'u1', agentSlug: 'sales', dashboardSlug, integrationId: 'int1', exp },
       getOrCreateAuthSecret(),
     )
   }
@@ -126,5 +129,81 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
     )
     const body = await res.json()
     expect(body.user).toBeNull()
+  })
+
+  it('does NOT set user on PATCH /…/artifacts/weekly-report (bare management path)', async () => {
+    const token = makeCookie()
+    const res = await makeArtifactApp().request(
+      '/api/agents/sales/artifacts/weekly-report',
+      { method: 'PATCH', headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
+    )
+    const body = await res.json()
+    expect(body.user).toBeNull()
+  })
+
+  it('does NOT set user on a %2F-encoded bare DELETE (encoding evasion)', async () => {
+    // Hono keeps %2F in c.req.path but decodes c.req.param(); a raw-path compare
+    // would miss this and let the cookie authorize the destructive bare route.
+    const token = makeCookie()
+    for (const slug of ['weekly-report%2F', 'weekly-report%2f', 'weekly%2Freport']) {
+      const res = await makeArtifactApp().request(
+        `/api/agents/sales/artifacts/${slug}`,
+        { method: 'DELETE', headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
+      )
+      const body = await res.json()
+      expect(body.user, `slug=${slug}`).toBeNull()
+    }
+  })
+
+  it('does NOT set user on a GET to the bare management path (no sub-resource)', async () => {
+    const token = makeCookie()
+    const res = await makeArtifactApp().request(
+      '/api/agents/sales/artifacts/weekly-report',
+      { headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
+    )
+    const body = await res.json()
+    expect(body.user).toBeNull()
+  })
+
+  it('does NOT set user when the cookie is scoped to a different dashboard', async () => {
+    // Cookie minted for weekly-report must not authorize reads of another
+    // dashboard under the same agent.
+    const token = makeCookie('weekly-report')
+    const res = await makeArtifactApp().request(
+      '/api/agents/sales/artifacts/secret-finances/',
+      { headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
+    )
+    const body = await res.json()
+    expect(body.user).toBeNull()
+  })
+})
+
+describe('shouldRunDashboardSession (unit)', () => {
+  // Drive the real predicate through a tiny app so c.req.param/path/method are
+  // populated by Hono exactly as in production.
+  async function probe(method: string, path: string): Promise<boolean> {
+    const app = new Hono()
+    app.use('/api/agents/:id/artifacts/:artifactSlug/*', async (c) =>
+      c.json({ run: shouldRunDashboardSession(c) }),
+    )
+    app.use('/api/llm/*', async (c) => c.json({ run: shouldRunDashboardSession(c) }))
+    const res = await app.request(path, { method })
+    const body = (await res.json()) as { run: boolean }
+    return body.run
+  }
+
+  it('runs for GET content reads', async () => {
+    expect(await probe('GET', '/api/agents/sales/artifacts/weekly-report/index.html')).toBe(true)
+  })
+  it('runs for llm routes (no :artifactSlug to scope)', async () => {
+    expect(await probe('GET', '/api/llm/anthropic')).toBe(true)
+  })
+  it('does not run for mutating methods', async () => {
+    expect(await probe('DELETE', '/api/agents/sales/artifacts/weekly-report/x')).toBe(false)
+    expect(await probe('PATCH', '/api/agents/sales/artifacts/weekly-report/x')).toBe(false)
+  })
+  it('does not run on the bare management path (decoded compare)', async () => {
+    expect(await probe('GET', '/api/agents/sales/artifacts/weekly-report')).toBe(false)
+    expect(await probe('GET', '/api/agents/sales/artifacts/weekly-report%2F')).toBe(false)
   })
 })

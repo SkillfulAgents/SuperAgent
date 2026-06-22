@@ -54,6 +54,7 @@ vi.mock('@shared/lib/platform-auth/config', async (orig) => ({
 import app from './telegram-miniapp'
 import { signDashboardCookie, DASHBOARD_COOKIE_NAME, DASHBOARD_COOKIE_TTL_SECONDS } from '@shared/lib/telegram/dashboard-cookie'
 import { getOrCreateAuthSecret } from '@shared/lib/auth/secret'
+import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 
 // ============================================================================
 // Helper — produce a correctly-signed Telegram initData string
@@ -193,51 +194,61 @@ describe('POST /session', () => {
 })
 
 describe('POST /browser-link', () => {
-  it('returns 200 with a url containing the browser endpoint, token, and d param when cookie is valid', async () => {
+  it('returns 200 with a url containing the browser endpoint and token (scope rides the signed token, no d param)', async () => {
     const now = Math.floor(Date.now() / 1000)
     const cookieValue = signDashboardCookie(
-      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp: now + 900 },
+      { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp: now + 900 },
       getOrCreateAuthSecret(),
     )
 
     const res = await app.request('/browser-link', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Cookie: `${DASHBOARD_COOKIE_NAME}=${cookieValue}`,
-      },
-      body: JSON.stringify({ dashboardSlug: 'weekly-report' }),
+      headers: { Cookie: `${DASHBOARD_COOKIE_NAME}=${cookieValue}` },
     })
 
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.ok).toBe(true)
     expect(body.url).toContain('/api/telegram-miniapp/browser?token=')
-    expect(body.url).toContain('d=weekly-report')
+    // The dashboard is bound to the signed token; the slug is no longer a query param.
+    expect(body.url).not.toContain('d=')
   })
 
   it('returns 401 when no tg_dash cookie is present', async () => {
-    const res = await app.request('/browser-link', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dashboardSlug: 'weekly-report' }),
-    })
+    const res = await app.request('/browser-link', { method: 'POST' })
 
     expect(res.status).toBe(401)
     const body = await res.json()
     expect(body).toMatchObject({ ok: false })
   })
+
+  it('returns 400 no_public_url when no public base URL is configured', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const cookieValue = signDashboardCookie(
+      { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp: now + 900 },
+      getOrCreateAuthSecret(),
+    )
+    vi.mocked(getPlatformBaseUrl).mockReturnValueOnce('')
+
+    const res = await app.request('/browser-link', {
+      method: 'POST',
+      headers: { Cookie: `${DASHBOARD_COOKIE_NAME}=${cookieValue}` },
+    })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ ok: false, reason: 'no_public_url' })
+  })
 })
 
 describe('GET /browser', () => {
-  it('returns 200 HTML with Set-Cookie, iframe, and artifact path for a valid short-TTL token', async () => {
+  it('returns 200 HTML with Set-Cookie, iframe, and artifact path from the token scope', async () => {
     const now = Math.floor(Date.now() / 1000)
     const token = signDashboardCookie(
-      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp: now + 120 },
+      { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp: now + 120 },
       getOrCreateAuthSecret(),
     )
 
-    const res = await app.request(`/browser?token=${encodeURIComponent(token)}&d=weekly-report`, {
+    const res = await app.request(`/browser?token=${encodeURIComponent(token)}`, {
       method: 'GET',
     })
 
@@ -247,18 +258,24 @@ describe('GET /browser', () => {
     expect(setCookieHeader).toBeTruthy()
     expect(setCookieHeader).toContain('tg_dash=')
     const body = await res.text()
+    // Artifact path is built from the signed token's dashboardSlug, not a query param.
     expect(body).toContain('/api/agents/sales/artifacts/weekly-report/')
     expect(body).toContain('<iframe')
+  })
+
+  it('returns 400 when the token query param is missing', async () => {
+    const res = await app.request('/browser', { method: 'GET' })
+    expect(res.status).toBe(400)
   })
 
   it('returns 401 HTML with no Set-Cookie for an expired token', async () => {
     const past = Math.floor(Date.now() / 1000) - 1
     const token = signDashboardCookie(
-      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp: past },
+      { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp: past },
       getOrCreateAuthSecret(),
     )
 
-    const res = await app.request(`/browser?token=${encodeURIComponent(token)}&d=weekly-report`, {
+    const res = await app.request(`/browser?token=${encodeURIComponent(token)}`, {
       method: 'GET',
     })
 
@@ -266,14 +283,14 @@ describe('GET /browser', () => {
     expect(res.headers.get('set-cookie')).toBeNull()
   })
 
-  it('serves a session-expiry overlay keyed to the cookie TTL', async () => {
+  it('serves an access-expiry overlay keyed to the cookie TTL', async () => {
     const now = Math.floor(Date.now() / 1000)
     const token = signDashboardCookie(
-      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp: now + 120 },
+      { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp: now + 120 },
       getOrCreateAuthSecret(),
     )
 
-    const res = await app.request(`/browser?token=${encodeURIComponent(token)}&d=weekly-report`, {
+    const res = await app.request(`/browser?token=${encodeURIComponent(token)}`, {
       method: 'GET',
     })
 
@@ -282,7 +299,7 @@ describe('GET /browser', () => {
     // The browser cookie cannot self-renew (renewal needs Telegram initData),
     // so an expired session must surface a clear prompt instead of leaving the
     // iframe to fail on a bare 401. The overlay fires at the cookie TTL.
-    expect(body).toContain('Session expired')
+    expect(body).toContain('Your access expired')
     expect(body).toContain('Reopen the dashboard from your Telegram chat')
     expect(body).toContain(String(DASHBOARD_COOKIE_TTL_SECONDS * 1000))
   })
