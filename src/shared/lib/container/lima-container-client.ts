@@ -182,10 +182,10 @@ export function getLimactlPath(): string {
  * Run a limactl command with LIMA_HOME set.
  * Uses shell env var prefix so it works with execWithPath.
  */
-function execLimactl(args: string): Promise<{ stdout: string; stderr: string }> {
+function execLimactl(args: string, opts?: { timeoutMs?: number }): Promise<{ stdout: string; stderr: string }> {
   const limaHome = getLimaHome()
   const limactl = getLimactlPath()
-  return execWithPath(`LIMA_HOME="${limaHome}" "${limactl}" ${args}`)
+  return execWithPath(`LIMA_HOME="${limaHome}" "${limactl}" ${args}`, opts)
 }
 
 /**
@@ -196,6 +196,148 @@ function parseLimaList(stdout: string): any[] {
     .filter(Boolean)
     .map(line => { try { return JSON.parse(line) } catch { return null } })
     .filter(Boolean)
+}
+
+/** Path to the Lima host-agent Unix socket (`ha.sock`) for our VM. */
+function getHostAgentSocketPath(): string {
+  return path.join(getLimaHome(), LIMA_VM_NAME, 'ha.sock')
+}
+
+/** Path to the Lima host-agent pid file (`ha.pid`) for our VM. */
+function getHostAgentPidPath(): string {
+  return path.join(getLimaHome(), LIMA_VM_NAME, 'ha.pid')
+}
+
+/**
+ * Is the Lima host-agent process recorded in `ha.pid` still alive?
+ *
+ * This is the load-bearing guardrail for self-heal (SUP-291): a DEAD host agent
+ * means leftover `ha.sock`/`ha.pid` are stale and safe to remove before a fresh
+ * `limactl start`; a LIVE host agent means the VM process is up (possibly just
+ * thrashing under memory pressure) and its sockets must NOT be touched — removing
+ * them would orphan a live VM.
+ *
+ * Returns false when `ha.pid` is missing or unparseable (nothing known to be
+ * alive). A surviving process (kill(pid, 0) succeeds, or fails EPERM) is alive.
+ */
+function isHostAgentAlive(): boolean {
+  let pid: number
+  try {
+    pid = parseInt(fs.readFileSync(getHostAgentPidPath(), 'utf-8').trim(), 10)
+  } catch {
+    return false
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e: any) {
+    // ESRCH → no such process (dead). EPERM → exists but not signalable (alive).
+    return e?.code === 'EPERM'
+  }
+}
+
+/**
+ * Remove stale host-agent artifacts (`ha.pid`, `ha.sock`, and any orphaned
+ * `*.sock`) from a dirty Lima instance dir so the next `limactl start` succeeds
+ * instead of failing forever with "failed to connect to …/ha.sock: no such file
+ * or directory" (ELECTRON-4S) after a force-/OOM-killed vz left the dir dirty.
+ *
+ * GUARDRAIL: refuses to touch anything while the host agent is still alive —
+ * removing a live VM's sockets would orphan it. Returns true if it was safe to
+ * clean (agent dead), false if it bailed because the agent is alive.
+ */
+function cleanStaleHostAgentArtifacts(): boolean {
+  if (isHostAgentAlive()) return false
+
+  const vmDir = path.join(getLimaHome(), LIMA_VM_NAME)
+  const removed: string[] = []
+  const tryUnlink = (p: string) => {
+    try {
+      if (fs.existsSync(p)) {
+        fs.unlinkSync(p)
+        removed.push(path.basename(p))
+      }
+    } catch { /* best-effort */ }
+  }
+
+  tryUnlink(getHostAgentPidPath())
+  tryUnlink(getHostAgentSocketPath())
+  // Sweep any other orphaned Unix sockets the dead VM left behind (e.g. ssh.sock).
+  try {
+    for (const entry of fs.readdirSync(vmDir)) {
+      if (entry.endsWith('.sock')) tryUnlink(path.join(vmDir, entry))
+    }
+  } catch { /* dir may not exist yet */ }
+
+  if (removed.length) {
+    addErrorBreadcrumb({ category: 'lima', message: 'Cleaned stale host-agent artifacts', data: { removed } })
+  }
+  return true
+}
+
+/** How long to wait for the guest liveness probe before treating it as a timeout. */
+const GUEST_PROBE_TIMEOUT_MS = 8000
+
+export type LimaHealthState = 'healthy' | 'not-running' | 'dirty' | 'wedged'
+
+/**
+ * Real reachability check for the Lima VM — replaces blind trust in
+ * `limactl list` status == "Running" (SUP-291). The two states that actually
+ * cause the stuck "Checking runtime availability…" spinner — Running-but-dirty
+ * and Running-but-wedged — are invisible to `limactl list`, so we probe.
+ *
+ * - `not-running`: VM absent or not Running per limactl. Normal start path.
+ * - `dirty`:       Running per limactl, but the host agent is DEAD (`ha.sock`
+ *                  missing or guest unreachable with a dead `ha.pid`). A force-/
+ *                  OOM-killed vz left a dirty dir → safe to clean + restart.
+ * - `wedged`:      Running, host agent ALIVE, but the guest doesn't answer a
+ *                  liveness probe (timed out). Memory-wedge signature → surface
+ *                  it, do NOT rebuild (would orphan a live VM and fix nothing).
+ * - `healthy`:     Running, `ha.sock` present, guest answers the liveness probe.
+ */
+async function probeLimaHealth(): Promise<{ state: LimaHealthState; vmStatus?: string }> {
+  let vmStatus: string | undefined
+  try {
+    const { stdout } = await execLimactl('list --json')
+    vmStatus = parseLimaList(stdout).find((v: any) => v.name === LIMA_VM_NAME)?.status
+  } catch {
+    return { state: 'not-running' }
+  }
+  if (vmStatus !== 'Running') return { state: 'not-running', vmStatus }
+
+  // VM claims Running. A dirty dir (force-/OOM-killed vz) loses `ha.sock`.
+  if (!fs.existsSync(getHostAgentSocketPath())) {
+    return { state: isHostAgentAlive() ? 'wedged' : 'dirty', vmStatus }
+  }
+
+  // Socket present — probe the guest for REAL reachability.
+  if (await probeGuestReachable()) return { state: 'healthy', vmStatus }
+
+  // Unreachable: distinguish a dead agent (orphaned socket → dirty, clean+restart)
+  // from a live-but-thrashing agent (memory wedge → leave the live VM intact).
+  return { state: isHostAgentAlive() ? 'wedged' : 'dirty', vmStatus }
+}
+
+/**
+ * Short guest liveness probe via `limactl shell -- true`.
+ *
+ * Two bounded attempts: a single slow SSH round-trip on a healthy-but-busy VM
+ * (heavy build / host I/O stall) shouldn't flip it to "wedged" — a false negative
+ * that then sticks for the availability-cache TTL. Each attempt is hard-bounded
+ * by exec's own timeout (SIGKILL), so a wedged guest can't leave the probe (or
+ * its `limactl shell` child) dangling. Only genuine unreachability fails twice.
+ */
+async function probeGuestReachable(timeoutMs = GUEST_PROBE_TIMEOUT_MS): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await execLimactl(`shell ${LIMA_VM_NAME} -- true`, { timeoutMs })
+      return true
+    } catch {
+      // timed out or errored — retry once, then conclude unreachable
+    }
+  }
+  return false
 }
 
 /**
@@ -341,15 +483,17 @@ export class LimaContainerClient extends BaseContainerClient {
       msg.includes('No such file') ||
       msg.includes('EACCES')
 
-    // Check if the VM is in a broken/non-running state — if so, recovery is
-    // worth attempting even for unexpected error messages (e.g. "Bad port '0'").
+    // Check if the VM is actually unusable — if so, recovery is worth attempting
+    // even for unexpected error messages (e.g. "Bad port '0'"). Use the real
+    // reachability probe, NOT `limactl list` trust (SUP-291): a Running-but-dirty
+    // (missing ha.sock) or wedged VM also warrants recovery. ensureLimaReady()
+    // then picks the safe action — clean+restart for dirty, surface-not-rebuild
+    // for wedged — so routing both here is safe.
     let vmUnhealthy = false
     if (!isKnownVmIssue) {
       try {
-        const { stdout } = await execLimactl('list --json')
-        const vms = parseLimaList(stdout)
-        const vm = vms.find((v: any) => v.name === LIMA_VM_NAME)
-        vmUnhealthy = !vm || vm.status !== 'Running'
+        const { state } = await probeLimaHealth()
+        vmUnhealthy = state !== 'healthy'
       } catch {
         vmUnhealthy = true
       }
@@ -455,19 +599,25 @@ export class LimaContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Check if the Lima VM named 'superagent' is running.
+   * Check if the Lima VM named 'superagent' is actually usable.
+   *
+   * Does NOT trust `limactl list` status alone (SUP-291): a force-/OOM-killed vz
+   * can report "Running" while the host agent is gone (dirty dir → ELECTRON-4S)
+   * or the guest is wedged (memory pressure). Only a VM that passes the real
+   * reachability probe counts as running; a `dirty` or `wedged` VM reports false
+   * so the start path can self-heal it (dirty) or surface it (wedged) instead of
+   * the app blindly proceeding into hung container ops.
    */
   static async isRunning(): Promise<boolean> {
     try {
-      const { stdout } = await execLimactl(`list --json`)
-      const vms = parseLimaList(stdout)
-      const running = vms.some((vm: any) => vm.name === LIMA_VM_NAME && vm.status === 'Running')
-      if (running) {
+      const { state } = await probeLimaHealth()
+      if (state === 'healthy') {
         // Ensure the nerdctl wrapper points to the current limactl binary.
         // The wrapper hardcodes the limactl path, which goes stale on app updates.
         createNerdctlWrapper()
+        return true
       }
-      return running
+      return false
     } catch {
       return false
     }
@@ -610,25 +760,43 @@ async function ensureLimaReadyImpl(): Promise<void> {
     }
   }
 
-  // Check if VM is running
-  let vmRunning = false
-  try {
-    const { stdout } = await execLimactl('list --json')
-    const vms = parseLimaList(stdout)
-    vmRunning = vms.some((vm: any) => vm.name === LIMA_VM_NAME && vm.status === 'Running')
-  } catch {
-    // assume not running
+  // Verify the VM's REAL health — don't trust `limactl list` status alone.
+  // A freshly created or recreated VM hasn't been started yet, so skip the probe
+  // and go straight to start.
+  const health = vmExists && !needsRecreate ? await probeLimaHealth() : { state: 'not-running' as const }
+
+  if (health.state === 'wedged') {
+    // Running + live host agent + unreachable guest. Restarting/rebuilding a live
+    // VM here would orphan it and fix nothing — surface the signal and bail with a
+    // recoverable error instead of a destructive rebuild. (SUP-291 guardrail.)
+    // The likely cause is host memory pressure, but a healthy VM under heavy load
+    // can also land here, so don't over-assert the cause.
+    captureMessage('Lima VM is Running with a live host-agent but the guest is unreachable (possible memory pressure or heavy load); not rebuilding', {
+      level: 'warning',
+      tags: { component: 'lima', operation: 'wedge-detected' },
+      extra: { vmStatus: (health as { vmStatus?: string }).vmStatus, ...collectLimaDiagnostics() },
+    })
+    throw new Error(
+      'Built-in runtime is unreachable — the host may be low on memory or under heavy load. ' +
+      'Try again in a moment. (The VM was left running to avoid data loss.)'
+    )
   }
 
-  if (!vmRunning) {
+  if (health.state !== 'healthy') {
+    // not-running or dirty → (re)start. Self-heal a dirty instance dir first:
+    // clean stale ha.pid/ha.sock/orphaned sockets a force-killed vz left behind
+    // so `limactl start` succeeds instead of erroring on a missing ha.sock
+    // forever (ELECTRON-4S). No-ops on a clean dir or a live VM (guardrail).
+    cleanStaleHostAgentArtifacts()
+
     console.log('Starting Lima VM...')
-    addErrorBreadcrumb({ category: 'lima', message: 'Starting Lima VM' })
+    addErrorBreadcrumb({ category: 'lima', message: 'Starting Lima VM', data: { health: health.state } })
     try {
       await execLimactl(`start ${LIMA_VM_NAME}`)
     } catch (error) {
       captureException(error, {
         tags: { component: 'lima', operation: 'start-vm' },
-        extra: { limaHome, vmExists, explicitMemory, ...collectLimaDiagnostics() },
+        extra: { limaHome, vmExists, explicitMemory, health: health.state, ...collectLimaDiagnostics() },
       })
       // If start fails on a freshly created VM, delete it to avoid a zombie
       if (!vmExists) {
@@ -638,6 +806,18 @@ async function ensureLimaReadyImpl(): Promise<void> {
         } catch { /* best-effort cleanup */ }
       }
       throw error
+    }
+
+    // The VM reported "Running" but its host agent was dead (missing/orphaned
+    // ha.sock) and we just cleaned + restarted it. Record it as a real event
+    // (not just a breadcrumb) so we can measure ELECTRON-4S self-heal rate in
+    // prod and confirm the fix is working. (SUP-291)
+    if (health.state === 'dirty') {
+      captureMessage('Self-healed a dirty Lima instance dir (dead host-agent / missing ha.sock) and restarted the VM', {
+        level: 'warning',
+        tags: { component: 'lima', operation: 'dirty-dir-self-heal' },
+        extra: { vmStatus: (health as { vmStatus?: string }).vmStatus },
+      })
     }
   }
 

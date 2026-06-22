@@ -104,10 +104,16 @@ export function shellEscape(value: string): string {
  * original `.stderr`/`.stdout`/`.code` properties are preserved for callers
  * that inspect them directly.
  */
-export async function execWithPath(command: string): Promise<{ stdout: string; stderr: string }> {
+export async function execWithPath(
+  command: string,
+  opts?: { timeoutMs?: number }
+): Promise<{ stdout: string; stderr: string }> {
   try {
     return await execAsync(command, {
       env: { ...process.env, PATH: getEnhancedPath() },
+      // When set, exec kills the child with SIGKILL after timeoutMs so a hung
+      // command (e.g. a guest liveness probe against a wedged VM) can't dangle.
+      ...(opts?.timeoutMs ? { timeout: opts.timeoutMs, killSignal: 'SIGKILL' as const } : {}),
     })
   } catch (err) {
     // WSL emits UTF-16LE with embedded nulls; strip them so the message is readable.
@@ -560,8 +566,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const image = settings.container.agentImage
       const { cpu, memory } = settings.container.resourceLimits
 
-      // Ensure image exists (build if not)
-      await this.ensureImageExists()
+      // Ensure image exists (build if not), self-healing the runtime if the
+      // build fails because the VM is dirty/unreachable (SUP-291).
+      await this.ensureImageExistsWithRecovery()
 
       // Ensure workspace directory exists for persistent storage
       const workspaceDir = getAgentWorkspaceDir(this.config.agentId)
@@ -1340,6 +1347,28 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
     } catch (error) {
       console.warn('[ContainerManager] Failed to remove old images:', error)
+    }
+  }
+
+  /**
+   * Ensure the agent image exists, giving the BUILD step the same one-shot
+   * runtime recovery the container-run step gets.
+   *
+   * The build runs before start()'s run-retry loop, so a dirty/unreachable
+   * runtime here (e.g. a Lima VM with a missing ha.sock after a force-kill)
+   * fails the build with no recovery — which is how a scheduled task firing
+   * against a not-yet-healed VM hard-fails instead of self-healing (SUP-291).
+   * handleRunError() self-heals when it can and is a no-op for runners that
+   * can't (returns false → original build error rethrown), so this is safe for
+   * docker/podman/etc. too.
+   */
+  protected async ensureImageExistsWithRecovery(): Promise<void> {
+    try {
+      await this.ensureImageExists()
+    } catch (buildError) {
+      if (!(await this.handleRunError(buildError))) throw buildError
+      // Recovered (e.g. Lima VM cleaned + restarted) — retry the build once.
+      await this.ensureImageExists()
     }
   }
 
