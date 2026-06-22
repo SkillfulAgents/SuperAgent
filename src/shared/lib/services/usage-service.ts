@@ -58,25 +58,45 @@ interface CountedUsage {
 // When costUSD is present in the JSONL entry, it takes precedence over this table.
 import MODEL_PRICING from './model-pricing.json'
 
+interface RateCard {
+  input: number
+  output: number
+  cacheCreation: number
+  cacheRead: number
+}
+
+interface PricingEntry extends RateCard {
+  // OpenAI GPT-5.x 272K cliff: above `thresholdTokens` of prompt input the whole
+  // request reprices at these rates. Mirror of the proxy's pricing table.
+  longContext?: RateCard & { thresholdTokens: number }
+}
+
 /**
  * Calculate cost from token counts using hardcoded pricing.
  * Returns 0 for unknown models.
  */
-function calculateCost(
+export function calculateCost(
   model: string,
   inputTokens: number,
   outputTokens: number,
   cacheCreationTokens: number,
   cacheReadTokens: number,
 ): number {
-  const pricing = (MODEL_PRICING as Record<string, { input: number; output: number; cacheCreation: number; cacheRead: number }>)[model]
+  const pricing = (MODEL_PRICING as Record<string, PricingEntry>)[model]
   if (!pricing) return 0
 
+  // Cliff triggers on full prompt input (input excludes cache reads in this
+  // shape, so add them back) and reprices the whole request once tripped.
+  const rates =
+    pricing.longContext && inputTokens + cacheReadTokens > pricing.longContext.thresholdTokens
+      ? pricing.longContext
+      : pricing
+
   return (
-    (inputTokens * pricing.input +
-      outputTokens * pricing.output +
-      cacheCreationTokens * pricing.cacheCreation +
-      cacheReadTokens * pricing.cacheRead) /
+    (inputTokens * rates.input +
+      outputTokens * rates.output +
+      cacheCreationTokens * rates.cacheCreation +
+      cacheReadTokens * rates.cacheRead) /
     1_000_000
   )
 }
