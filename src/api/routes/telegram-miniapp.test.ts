@@ -52,7 +52,7 @@ vi.mock('@shared/lib/platform-auth/config', async (orig) => ({
 
 // Import the router AFTER mocks are declared
 import app from './telegram-miniapp'
-import { signDashboardCookie, DASHBOARD_COOKIE_NAME } from '@shared/lib/telegram/dashboard-cookie'
+import { signDashboardCookie, DASHBOARD_COOKIE_NAME, DASHBOARD_COOKIE_TTL_SECONDS } from '@shared/lib/telegram/dashboard-cookie'
 import { getOrCreateAuthSecret } from '@shared/lib/auth/secret'
 
 // ============================================================================
@@ -264,5 +264,26 @@ describe('GET /browser', () => {
 
     expect(res.status).toBe(401)
     expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('serves a session-expiry overlay keyed to the cookie TTL', async () => {
+    const now = Math.floor(Date.now() / 1000)
+    const token = signDashboardCookie(
+      { userId: 'u1', agentSlug: 'sales', integrationId: 'int1', exp: now + 120 },
+      getOrCreateAuthSecret(),
+    )
+
+    const res = await app.request(`/browser?token=${encodeURIComponent(token)}&d=weekly-report`, {
+      method: 'GET',
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    // The browser cookie cannot self-renew (renewal needs Telegram initData),
+    // so an expired session must surface a clear prompt instead of leaving the
+    // iframe to fail on a bare 401. The overlay fires at the cookie TTL.
+    expect(body).toContain('Session expired')
+    expect(body).toContain('Reopen the dashboard from your Telegram chat')
+    expect(body).toContain(String(DASHBOARD_COOKIE_TTL_SECONDS * 1000))
   })
 })

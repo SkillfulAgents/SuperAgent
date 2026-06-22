@@ -306,7 +306,9 @@ app.get('/browser', async (c) => {
   // 4. Build artifact path server-side from trusted payload + d param
   const artifactPath = buildDashboardArtifactPath(payload.agentSlug, d)
 
-  // 5. Serve browser shell — full-viewport iframe, no Telegram SDK, no refresh
+  // 5. Serve browser shell — full-viewport iframe, no Telegram SDK. The cookie
+  // can't self-renew here (renewal needs Telegram initData), so instead of
+  // silent refresh we surface a clear expiry prompt when the cookie lapses.
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -316,10 +318,27 @@ app.get('/browser', async (c) => {
 <style>
   body { margin: 0; }
   iframe { position: fixed; inset: 0; width: 100vw; height: 100vh; border: 0; }
+  #expired {
+    position: fixed; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; background: #000; color: #fff;
+    font-family: sans-serif; font-size: 15px; text-align: center; padding: 24px;
+  }
 </style>
 </head>
 <body>
 <iframe src="${artifactPath}"></iframe>
+<div id="expired"><span>Session expired. Reopen the dashboard from your Telegram chat.</span></div>
+<script>
+(function () {
+  // The browser session cookie is minted for a fixed TTL and cannot be renewed
+  // outside Telegram. When it lapses, cover the (now-unauthenticated) iframe
+  // with a clear prompt instead of letting its next request fail on a bare 401.
+  setTimeout(function () {
+    document.getElementById('expired').style.display = 'flex';
+  }, ${DASHBOARD_COOKIE_TTL_SECONDS * 1000});
+})();
+</script>
 </body>
 </html>`
   return c.html(html)
