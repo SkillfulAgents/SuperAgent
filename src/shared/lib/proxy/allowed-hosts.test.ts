@@ -26,6 +26,8 @@ describe('isHostAllowed', () => {
 
   it('handles slack toolkit', () => {
     expect(isHostAllowed('slack', 'slack.com')).toBe(true)
+    // files.slack.com serves private file downloads (SUP-303)
+    expect(isHostAllowed('slack', 'files.slack.com')).toBe(true)
     expect(isHostAllowed('slack', 'api.slack.com')).toBe(false)
   })
 

@@ -18,7 +18,9 @@ export const TOOLKIT_ALLOWED_HOSTS: Record<string, string[]> = {
   microsoft_teams: ['graph.microsoft.com'],
 
   // Communication
-  slack: ['slack.com'],
+  // slack.com hosts the Web API (slack.com/api/...); files.slack.com serves
+  // private file downloads (url_private / url_private_download).
+  slack: ['slack.com', 'files.slack.com'],
   discord: ['discord.com'],
 
   // Developer Tools
