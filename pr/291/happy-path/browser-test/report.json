@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the response.",
+  "reason": "Successfully tested browser use feature: agent opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported back correctly.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully, displaying the Gamut app with sidebar showing available agents.",
-    "Found and clicked the \"QA-20260619-224320-eecr\" agent in the sidebar — Agent page opened, displaying chat interface with message input field ready for interaction.",
-    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted and a new session titled \"Browser Navigation and Page Title Lookup\" was created with agent status showing \"working\".",
-    "Waited up to 3 minutes for agent response — Agent completed the task in approximately 13 seconds, executing multiple browser tool calls (Open Browser, Browser Get State, Close Browser) and returning the response.",
-    "Verified the response mentions \"Example Domain\" and took a screenshot — Screenshot confirmed the response contains \"The page title is **Example Domain**.\" and additional confirmation: \"The page at https://example.com loaded successfully, and its title is **\\\"Example Domain\\\"**. I've closed the browser.\""
+    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully, displayed home page with list of agents.",
+    "Step 2 - Found and clicked the \"QA-20260622-175551-lbv7\" agent in the sidebar — Agent detail page opened, showing chat interface and configuration panel.",
+    "Step 3 - Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message was correctly entered in the message input field.",
+    "Step 4 - Clicked the Send message button — Message was sent successfully and a new session \"Browser Page Title Inspection\" was created with status \"working\".",
+    "Step 5 - Waited for agent response (max 3 minutes) — Agent completed processing in 18 seconds. The \"Working...\" indicator disappeared, confirming completion.",
+    "Step 6 - Verified response mentions \"Example Domain\" and took screenshot — Response clearly states: \"The page title is \"Example Domain\".\" The agent successfully:"
   ],
   "bugs": [],
-  "durationMs": 53923,
-  "sessionId": "fccac53d-5a1f-4bd3-9725-960091fda8db",
+  "durationMs": 144767,
+  "sessionId": "4d725cc2-0d9b-450b-82c3-d08901b19d56",
   "cost": {
-    "inputTokens": 288,
-    "outputTokens": 9655,
-    "cacheCreationTokens": 63723,
-    "cacheReadTokens": 861356,
+    "inputTokens": 417,
+    "outputTokens": 11390,
+    "cacheCreationTokens": 118558,
+    "cacheReadTokens": 1244704,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.214352
+    "totalCostUsd": 0.330035
   }
 }
