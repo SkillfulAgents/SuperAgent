@@ -154,6 +154,19 @@ jobs:
           echo "$APPLE_API_KEY_BASE64" | base64 --decode > /tmp/AuthKey.p8
           echo "APPLE_API_KEY=/tmp/AuthKey.p8" >> $GITHUB_ENV
 
+      # Write the update channel into package.json's build.publish.channel via
+      # Node (value comes from an env var, never a CLI arg) so it can't be mangled
+      # by Windows arg-passing — the `-c.publish.channel=` electron-builder flag
+      # got split into `-c .publish.channel=rc` through npm -> cmd.exe -> the
+      # electron-builder.cmd shim and was read as a config-file path (SUP-283).
+      - name: Set update channel
+        shell: bash
+        env:
+          UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          node -e "const fs=require('fs'),p=require('./package.json');p.build.publish.channel=process.env.UPDATE_CHANNEL;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "build.publish.channel set to $UPDATE_CHANNEL"
+
       - name: Build and sign macOS app
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
@@ -164,7 +177,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
-        run: npm run dist:mac -- -c.publish.channel=${{ needs.prepare.outputs.channel }}
+        run: npm run dist:mac
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -195,6 +208,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # See build-mac: set the channel via Node from an env var so Windows
+      # arg-passing can't mangle a `-c.publish.channel=` CLI flag (SUP-283).
+      - name: Set update channel
+        shell: bash
+        env:
+          UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          node -e "const fs=require('fs'),p=require('./package.json');p.build.publish.channel=process.env.UPDATE_CHANNEL;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "build.publish.channel set to $UPDATE_CHANNEL"
+
       - name: Build and sign Windows app
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -207,7 +230,7 @@ jobs:
           AZURE_CODE_SIGNING_ACCOUNT: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT }}
           AZURE_CODE_SIGNING_PROFILE: ${{ secrets.AZURE_CODE_SIGNING_PROFILE }}
           AZURE_CODE_SIGNING_PUBLISHER: ${{ secrets.AZURE_CODE_SIGNING_PUBLISHER }}
-        run: npm run dist:win -- -c.publish.channel=${{ needs.prepare.outputs.channel }}
+        run: npm run dist:win
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
