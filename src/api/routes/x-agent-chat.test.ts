@@ -178,7 +178,7 @@ describe('x-agent chat route', () => {
     mockListArtifactsFromFilesystem.mockResolvedValue([
       { slug: 'weekly-report', name: 'Weekly', description: '', status: 'stopped', port: 0 },
     ])
-    mockShareDashboard.mockResolvedValue(undefined)
+    mockShareDashboard.mockResolvedValue('button')
     vi.spyOn(Math, 'random').mockReturnValue(0)
   })
 
@@ -362,13 +362,44 @@ describe('x-agent chat route', () => {
       })
 
       expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ ok: true, chatId: 'chat-1' })
+      expect(await res.json()).toEqual({ chatId: 'chat-1', delivery: 'button' })
       expect(mockShareDashboard).toHaveBeenCalledOnce()
       expect(mockShareDashboard).toHaveBeenCalledWith(
         'integration-1',
         'chat-1',
         { agentSlug: 'agent-one', dashboardSlug: 'weekly-report', name: 'Weekly' },
       )
+    })
+
+    it('passes through delivery=text when the connector falls back to plain text', async () => {
+      mockShareDashboard.mockResolvedValue('text')
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ chatId: 'chat-1', delivery: 'text' })
+    })
+
+    it('returns 403 when the chat is not approved for the integration', async () => {
+      // Flip integration-1 to telegram + require_approval so isChatAllowed gates via real SQL.
+      // 'chat-blocked' has no access row, so isChatAllowed returns false.
+      testSqlite
+        .prepare(`UPDATE chat_integrations SET provider = 'telegram', require_approval = 1 WHERE id = 'integration-1'`)
+        .run()
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report', integration_id: 'integration-1', chat_id: 'chat-blocked' }),
+      })
+
+      expect(res.status).toBe(403)
+      expect(await res.json()).toEqual({ error: 'This conversation is not approved for this integration.' })
+      expect(mockShareDashboard).not.toHaveBeenCalled()
     })
 
     it('rejects requests without a valid proxy token', async () => {

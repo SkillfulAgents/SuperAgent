@@ -11,7 +11,7 @@
  */
 
 import type { ChatClientConnector, IncomingMessage } from './base-connector'
-import { TelegramConnector } from './telegram-connector'
+import { TelegramConnector, type DashboardDelivery } from './telegram-connector'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
@@ -366,13 +366,13 @@ class ChatIntegrationManager {
     integrationId: string,
     chatId: string,
     opts: { agentSlug: string; dashboardSlug: string; name: string },
-  ): Promise<void> {
+  ): Promise<DashboardDelivery> {
     const connector = this.getConnector(integrationId)
     if (!connector) throw new Error('Integration not connected')
     if (!(connector instanceof TelegramConnector)) {
       throw new Error('Dashboards are only supported on Telegram integrations')
     }
-    await connector.sendDashboardCard(chatId, {
+    return connector.sendDashboardCard(chatId, {
       integrationId,
       agentSlug: opts.agentSlug,
       dashboardSlug: opts.dashboardSlug,

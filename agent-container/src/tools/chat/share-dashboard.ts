@@ -2,7 +2,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { callChatHost, textResult, XAgentError } from './host-client'
 
-interface ShareResult { ok: boolean; chatId: string }
+interface ShareResult { chatId: string; delivery: 'button' | 'text' }
 
 export const shareDashboardInput = {
   slug: z.string().regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/, 'Slug must be lowercase alphanumeric with hyphens, not starting/ending with hyphen').describe('Slug of the existing dashboard to share'),
@@ -13,7 +13,10 @@ export const shareDashboardInput = {
 export async function shareDashboardHandler({ slug, integration_id, chat_id }: { slug: string; integration_id?: string; chat_id?: string }) {
   try {
     const data = await callChatHost<ShareResult>('share-dashboard', { slug, integration_id, chat_id })
-    return textResult(`Shared dashboard "${slug}" to chat ${data.chatId}. The user can tap "Open dashboard" to open it inside Telegram.`)
+    const message = data.delivery === 'button'
+      ? `Shared dashboard "${slug}" to chat ${data.chatId}. The user can tap "Open dashboard" to open it inside Telegram.`
+      : `Shared dashboard "${slug}" to chat ${data.chatId} as a plain-text message. No public web URL is configured, so the user sees the dashboard name but no clickable "Open dashboard" button. Don't point them to a button that isn't there.`
+    return textResult(message)
   } catch (error) {
     const msg = error instanceof XAgentError ? error.message : String(error)
     return textResult(`Failed to share dashboard: ${msg}`, true)

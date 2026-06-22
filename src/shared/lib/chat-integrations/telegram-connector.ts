@@ -111,6 +111,9 @@ export function markdownToTelegramHtml(md: string): string {
 
 // ── Connector ───────────────────────────────────────────────────────────
 
+/** How a shared dashboard reached the chat: an interactive web_app button, or the plain-text fallback. */
+export type DashboardDelivery = 'button' | 'text'
+
 export class TelegramConnector extends ChatClientConnector {
   readonly provider = 'telegram' as const
 
@@ -596,18 +599,19 @@ export class TelegramConnector extends ChatClientConnector {
   async sendDashboardCard(
     chatId: string,
     opts: { integrationId: string; agentSlug: string; dashboardSlug: string; name: string },
-  ): Promise<void> {
+  ): Promise<DashboardDelivery> {
     if (!this.bot) throw new Error('Bot not connected')
     const base = getPlatformBaseUrl()
     if (!base) {
       await this.bot.api.sendMessage(chatId, opts.name)
       console.warn('[telegram] dashboard sharing needs a public HTTPS base URL (web/server mode); sent plain text without the Open dashboard button')
-      return
+      return 'text'
     }
     const url = `${base.replace(/\/$/, '')}/api/telegram-miniapp?i=${encodeURIComponent(opts.integrationId)}&a=${encodeURIComponent(opts.agentSlug)}&d=${encodeURIComponent(opts.dashboardSlug)}`
     await this.bot.api.sendMessage(chatId, opts.name, {
       reply_markup: { inline_keyboard: [[{ text: 'Open dashboard', web_app: { url } }]] },
     })
+    return 'button'
   }
 
   // ── First-poll batching ─────────────────────────────────────────────

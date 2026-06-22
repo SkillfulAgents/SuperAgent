@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -15,6 +16,7 @@ import {
   listChatIntegrationSessions,
 } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
+import type { DashboardDelivery } from '@shared/lib/chat-integrations/telegram-connector'
 import {
   validateChatIntegrationConfig,
   CHAT_PROVIDERS,
@@ -256,65 +258,70 @@ xAgentChat.post('/send', async (c) => {
 })
 
 // POST /share-dashboard — share a dashboard artifact to a Telegram chat
-xAgentChat.post('/share-dashboard', async (c) => {
-  const callerSlug = c.get('callerSlug')
-  const rawBody = await c.req.json().catch(() => null)
-  const parsed = shareDashboardRequestSchema.safeParse(rawBody)
-  if (!parsed.success) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const { slug, integration_id, chat_id } = parsed.data
-
-  // Resolve integration
-  let integration: Awaited<ReturnType<typeof getChatIntegration>>
-  if (integration_id) {
-    const found = getChatIntegration(integration_id)
-    if (!found) return c.json({ error: 'Chat integration not found' }, 404)
-    if (found.agentSlug !== callerSlug) return c.json({ error: 'Forbidden' }, 403)
-    if (found.provider !== 'telegram') return c.json({ error: 'Dashboards are only supported on Telegram' }, 400)
-    integration = found
-  } else {
-    const active = listChatIntegrations(callerSlug).filter(
-      (i) => i.provider === 'telegram' && i.status === 'active',
-    )
-    if (active.length === 0) return c.json({ error: 'No active Telegram integration for this agent' }, 400)
-    if (active.length > 1) return c.json({ error: 'Multiple Telegram integrations; specify integration_id' }, 400)
-    integration = active[0]
-  }
-
-  // Resolve chat
-  let resolvedChatId: string
-  if (chat_id) {
-    resolvedChatId = chat_id
-  } else {
-    const sessions = listChatIntegrationSessions(integration.id)
-    const active = sessions.filter((s) => !s.archivedAt)
-    if (active.length === 0) return c.json({ error: 'No active chat for this integration' }, 400)
-    if (active.length > 1) return c.json({ error: 'Multiple active chats; specify chat_id' }, 400)
-    resolvedChatId = active[0].externalChatId
-  }
-
-  // Validate dashboard existence
-  const artifacts = await listArtifactsFromFilesystem(integration.agentSlug)
-  const dash = artifacts.find((a) => a.slug === slug)
-  if (!dash) return c.json({ error: 'Dashboard not found' }, 404)
-  const name = dash.name || slug
-
+xAgentChat.post('/share-dashboard', zValidator('json', shareDashboardRequestSchema), async (c) => {
   try {
-    await chatIntegrationManager.shareDashboard(integration.id, resolvedChatId, {
-      agentSlug: integration.agentSlug,
-      dashboardSlug: slug,
-      name,
-    })
-  } catch (err) {
-    if (err instanceof Error && err.message === 'Integration not connected') {
-      return c.json({ error: 'Integration not connected' }, 503)
+    const callerSlug = getCallerSlug(c)
+    const { slug, integration_id, chat_id } = c.req.valid('json')
+
+    // Resolve integration
+    let integration: Awaited<ReturnType<typeof getChatIntegration>>
+    if (integration_id) {
+      const found = getChatIntegration(integration_id)
+      if (!found) return c.json({ error: 'Chat integration not found' }, 404)
+      if (found.agentSlug !== callerSlug) return c.json({ error: 'Forbidden' }, 403)
+      if (found.provider !== 'telegram') return c.json({ error: 'Dashboards are only supported on Telegram' }, 400)
+      integration = found
+    } else {
+      const active = listChatIntegrations(callerSlug).filter(
+        (i) => i.provider === 'telegram' && i.status === 'active',
+      )
+      if (active.length === 0) return c.json({ error: 'No active Telegram integration for this agent' }, 400)
+      if (active.length > 1) return c.json({ error: 'Multiple Telegram integrations; specify integration_id' }, 400)
+      integration = active[0]
     }
-    captureException(err, { tags: { component: 'x-agent-chat', operation: 'share-dashboard' } })
+
+    // Resolve chat
+    let resolvedChatId: string
+    if (chat_id) {
+      resolvedChatId = chat_id
+    } else {
+      const sessions = listChatIntegrationSessions(integration.id)
+      const active = sessions.filter((s) => !s.archivedAt)
+      if (active.length === 0) return c.json({ error: 'No active chat for this integration' }, 400)
+      if (active.length > 1) return c.json({ error: 'Multiple active chats; specify chat_id' }, 400)
+      resolvedChatId = active[0].externalChatId
+    }
+
+    // Same access-control gate as /send: never deliver to a conversation that isn't approved.
+    if (!isChatAllowed(integration.id, resolvedChatId)) {
+      return c.json({ error: 'This conversation is not approved for this integration.' }, 403)
+    }
+
+    // Validate dashboard existence
+    const artifacts = await listArtifactsFromFilesystem(integration.agentSlug)
+    const dash = artifacts.find((a) => a.slug === slug)
+    if (!dash) return c.json({ error: 'Dashboard not found' }, 404)
+    const name = dash.name || slug
+
+    let delivery: DashboardDelivery
+    try {
+      delivery = await chatIntegrationManager.shareDashboard(integration.id, resolvedChatId, {
+        agentSlug: integration.agentSlug,
+        dashboardSlug: slug,
+        name,
+      })
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Integration not connected') {
+        return c.json({ error: 'Integration not connected' }, 503)
+      }
+      throw err
+    }
+
+    return c.json({ chatId: resolvedChatId, delivery })
+  } catch (error) {
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'share-dashboard' } })
     return c.json({ error: 'Failed to share dashboard' }, 500)
   }
-
-  return c.json({ ok: true, chatId: resolvedChatId })
 })
 
 // --- Helpers ---

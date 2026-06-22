@@ -14,8 +14,8 @@ describe('shareDashboardHandler', () => {
     vi.resetAllMocks()
   })
 
-  it('success: calls callChatHost with correct args and returns success result mentioning slug', async () => {
-    vi.mocked(callChatHost).mockResolvedValue({ ok: true, chatId: 'chat1' })
+  it('success (button): calls callChatHost with correct args and tells the agent the user can tap the button', async () => {
+    vi.mocked(callChatHost).mockResolvedValue({ chatId: 'chat1', delivery: 'button' })
 
     const result = await shareDashboardHandler({ slug: 'weekly-report' })
 
@@ -26,6 +26,18 @@ describe('shareDashboardHandler', () => {
     })
     expect(result.isError).toBeFalsy()
     expect(result.content[0].text).toContain('weekly-report')
+    expect(result.content[0].text).toContain('Open dashboard')
+  })
+
+  it('success (text fallback): tells the agent a plain-text message was sent with no button', async () => {
+    vi.mocked(callChatHost).mockResolvedValue({ chatId: 'chat1', delivery: 'text' })
+
+    const result = await shareDashboardHandler({ slug: 'weekly-report' })
+
+    expect(result.isError).toBeFalsy()
+    expect(result.content[0].text).toContain('weekly-report')
+    expect(result.content[0].text).toContain('plain-text')
+    expect(result.content[0].text).not.toContain('tap')
   })
 
   it('server error: returns isError result containing the server message', async () => {

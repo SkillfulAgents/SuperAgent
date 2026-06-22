@@ -259,13 +259,14 @@ describe('TelegramConnector.sendDashboardCard', () => {
   it('sends a web_app button with the correct URL when base URL is set', async () => {
     vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
 
-    await connector.sendDashboardCard('chat1', {
+    const delivery = await connector.sendDashboardCard('chat1', {
       integrationId: 'int1',
       agentSlug: 'sales',
       dashboardSlug: 'weekly-report',
       name: 'Weekly',
     })
 
+    expect(delivery).toBe('button')
     expect(sendMessage).toHaveBeenCalledOnce()
 
     const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]
@@ -283,13 +284,14 @@ describe('TelegramConnector.sendDashboardCard', () => {
     vi.mocked(getPlatformBaseUrl).mockReturnValue('')
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    await connector.sendDashboardCard('chat1', {
+    const delivery = await connector.sendDashboardCard('chat1', {
       integrationId: 'int1',
       agentSlug: 'sales',
       dashboardSlug: 'weekly-report',
       name: 'Weekly',
     })
 
+    expect(delivery).toBe('text')
     expect(sendMessage).toHaveBeenCalledOnce()
 
     const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]

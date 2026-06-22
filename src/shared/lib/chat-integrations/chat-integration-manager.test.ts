@@ -42,15 +42,16 @@ describe('chatIntegrationManager.shareDashboard', () => {
 
   it('calls sendDashboardCard on the TelegramConnector with the correct args', async () => {
     const conn = new TelegramConnector({ botToken: 'x' })
-    const spy = vi.spyOn(conn, 'sendDashboardCard').mockResolvedValue(undefined)
+    const spy = vi.spyOn(conn, 'sendDashboardCard').mockResolvedValue('text')
     ;(chatIntegrationManager as unknown as { connections: Map<string, unknown> }).connections.set('int1', { connector: conn })
 
-    await chatIntegrationManager.shareDashboard('int1', 'chat1', {
+    const delivery = await chatIntegrationManager.shareDashboard('int1', 'chat1', {
       agentSlug: 'sales',
       dashboardSlug: 'wr',
       name: 'WR',
     })
 
+    expect(delivery).toBe('text')
     expect(spy).toHaveBeenCalledOnce()
     expect(spy).toHaveBeenCalledWith('chat1', {
       integrationId: 'int1',
