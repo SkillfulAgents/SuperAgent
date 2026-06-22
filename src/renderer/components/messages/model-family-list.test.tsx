@@ -7,6 +7,7 @@ import {
   findCatalogModel,
   familyDisplayName,
   formatTokenThreshold,
+  longContextWarningText,
 } from './model-family-list'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -20,8 +21,8 @@ const CATALOG: ModelDefinition[] = [
   { id: 'claude-opus-4-6', label: 'Opus 4.6', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
   { id: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL },
-  { id: 'openai/gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
-  { id: 'openai/gpt-5.5', label: 'GPT-5.5', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
+  { id: 'openai/gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, contextWindow: 1_050_000, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
+  { id: 'openai/gpt-5.5', label: 'GPT-5.5', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, contextWindow: 1_050_000, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
 ]
 
 describe('familyDisplayName', () => {
@@ -38,6 +39,28 @@ describe('formatTokenThreshold', () => {
     expect(formatTokenThreshold(272_000)).toBe('272K')
     expect(formatTokenThreshold(1_050_000)).toBe('1.05M')
     expect(formatTokenThreshold(500)).toBe('500')
+  })
+})
+
+describe('longContextWarningText', () => {
+  const cliff = { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 }
+
+  it('frames the threshold as a share of the context window when known', () => {
+    expect(longContextWarningText(cliff, 1_050_000)).toBe(
+      'Note: beyond about 26% of the context window, pricing increases by roughly 1.5–2×.',
+    )
+  })
+
+  it('falls back to a token count when the context window is unknown', () => {
+    expect(longContextWarningText(cliff)).toBe(
+      'Note: beyond ~272K tokens of context, pricing increases by roughly 1.5–2×.',
+    )
+  })
+
+  it('collapses equal multipliers to a single factor', () => {
+    expect(longContextWarningText({ thresholdTokens: 100_000, inputMultiplier: 2, outputMultiplier: 2 })).toContain(
+      'roughly 2×',
+    )
   })
 })
 
@@ -125,9 +148,9 @@ describe('ModelFamilyList', () => {
   it('warns about the long-context price cliff for GPT, and not for flat-priced Claude', () => {
     const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)
     const warning = screen.getByTestId('model-long-context-cliff-warning')
-    expect(warning).toHaveTextContent('272K')
-    expect(warning).toHaveTextContent('2× input')
-    expect(warning).toHaveTextContent('1.5× output')
+    // 272K / 1.05M ≈ 26% of the context window; multipliers shown as a soft range.
+    expect(warning).toHaveTextContent('26% of the context window')
+    expect(warning).toHaveTextContent('1.5–2×')
 
     rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
     expect(screen.queryByTestId('model-long-context-cliff-warning')).not.toBeInTheDocument()

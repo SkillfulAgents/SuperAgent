@@ -23,6 +23,23 @@ export function formatTokenThreshold(tokens: number): string {
   return String(tokens)
 }
 
+type LongContextCliff = NonNullable<ModelDefinition['longContextPriceCliff']>
+
+/**
+ * Gentle heads-up about the long-context price step. Frames the threshold as a
+ * share of the context window when known (more intuitive than a raw token
+ * count), and the multipliers as a soft range.
+ */
+export function longContextWarningText(cliff: LongContextCliff, contextWindow?: number): string {
+  const lo = Math.min(cliff.inputMultiplier, cliff.outputMultiplier)
+  const hi = Math.max(cliff.inputMultiplier, cliff.outputMultiplier)
+  const range = lo === hi ? `${hi}×` : `${lo}–${hi}×`
+  const where = contextWindow
+    ? `beyond about ${Math.round((cliff.thresholdTokens / contextWindow) * 100)}% of the context window`
+    : `beyond ~${formatTokenThreshold(cliff.thresholdTokens)} tokens of context`
+  return `Note: ${where}, pricing increases by roughly ${range}.`
+}
+
 /**
  * Resolve a stored selection to its catalog entry for display: an exact
  * concrete-id match first, then a bare family alias → that family's latest.
@@ -168,11 +185,7 @@ export function ModelFamilyList({
           className="mx-1 mb-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
         >
           <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
-          <span>
-            Above {formatTokenThreshold(resolved.longContextPriceCliff.thresholdTokens)} tokens of
-            context, pricing jumps to {resolved.longContextPriceCliff.inputMultiplier}× input and{' '}
-            {resolved.longContextPriceCliff.outputMultiplier}× output for the whole request.
-          </span>
+          <span>{longContextWarningText(resolved.longContextPriceCliff, resolved.contextWindow)}</span>
         </div>
       )}
       {families.map((group) => {
