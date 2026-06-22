@@ -47,19 +47,13 @@ describe('longContextWarningText', () => {
 
   it('frames the threshold as a share of the context window when known', () => {
     expect(longContextWarningText(cliff, 1_050_000)).toBe(
-      'Note: beyond about 26% of the context window, pricing increases by roughly 1.5–2×.',
+      'Note: beyond about 26% of the context window, input pricing rises 2× and output 1.5×.',
     )
   })
 
   it('falls back to a token count when the context window is unknown', () => {
     expect(longContextWarningText(cliff)).toBe(
-      'Note: beyond ~272K tokens of context, pricing increases by roughly 1.5–2×.',
-    )
-  })
-
-  it('collapses equal multipliers to a single factor', () => {
-    expect(longContextWarningText({ thresholdTokens: 100_000, inputMultiplier: 2, outputMultiplier: 2 })).toContain(
-      'roughly 2×',
+      'Note: beyond ~272K tokens of context, input pricing rises 2× and output 1.5×.',
     )
   })
 })
@@ -148,9 +142,9 @@ describe('ModelFamilyList', () => {
   it('warns about the long-context price cliff for GPT, and not for flat-priced Claude', () => {
     const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)
     const warning = screen.getByTestId('model-long-context-cliff-warning')
-    // 272K / 1.05M ≈ 26% of the context window; multipliers shown as a soft range.
+    // 272K / 1.05M ≈ 26% of the context window; input/output multipliers spelled out.
     expect(warning).toHaveTextContent('26% of the context window')
-    expect(warning).toHaveTextContent('1.5–2×')
+    expect(warning).toHaveTextContent('input pricing rises 2× and output 1.5×')
 
     rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
     expect(screen.queryByTestId('model-long-context-cliff-warning')).not.toBeInTheDocument()

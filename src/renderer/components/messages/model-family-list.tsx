@@ -31,13 +31,10 @@ type LongContextCliff = NonNullable<ModelDefinition['longContextPriceCliff']>
  * count), and the multipliers as a soft range.
  */
 export function longContextWarningText(cliff: LongContextCliff, contextWindow?: number): string {
-  const lo = Math.min(cliff.inputMultiplier, cliff.outputMultiplier)
-  const hi = Math.max(cliff.inputMultiplier, cliff.outputMultiplier)
-  const range = lo === hi ? `${hi}×` : `${lo}–${hi}×`
   const where = contextWindow
     ? `beyond about ${Math.round((cliff.thresholdTokens / contextWindow) * 100)}% of the context window`
     : `beyond ~${formatTokenThreshold(cliff.thresholdTokens)} tokens of context`
-  return `Note: ${where}, pricing increases by roughly ${range}.`
+  return `Note: ${where}, input pricing rises ${cliff.inputMultiplier}× and output ${cliff.outputMultiplier}×.`
 }
 
 /**
