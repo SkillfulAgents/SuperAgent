@@ -15,12 +15,14 @@ vi.mock('fs', () => ({
     writeFileSync: vi.fn(),
     unlinkSync: vi.fn(),
     readFileSync: vi.fn(),
+    readdirSync: vi.fn(() => []),
   },
   existsSync: vi.fn(),
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
   unlinkSync: vi.fn(),
   readFileSync: vi.fn(),
+  readdirSync: vi.fn(() => []),
 }))
 
 vi.mock('./base-container-client', () => ({
@@ -72,6 +74,82 @@ import {
 const mockedFs = vi.mocked(fs)
 const mockedExecWithPath = vi.mocked(execWithPath)
 const mockedGetSettings = vi.mocked(getSettings)
+
+// ============================================================================
+// Shared mock helpers
+//
+// isRunning() and ensureLimaReady() now probe REAL VM health (SUP-291), so a
+// single call can fan out to `limactl list`, an `ha.sock` fs check, an `ha.pid`
+// liveness check, and a `limactl shell -- true` guest probe. Drive execWithPath
+// by inspecting the limactl subcommand (not a fixed sequence) so adding a probe
+// doesn't desync the mocks, and make fs reads path-aware.
+// ============================================================================
+
+/**
+ * @param opts.list           VMs returned by `limactl list --json`
+ * @param opts.guestReachable does `limactl shell -- true` resolve? (default true)
+ * @param opts.startError     make `limactl start` reject with this error
+ */
+function mockExec(opts: { list?: any[]; guestReachable?: boolean; startError?: Error } = {}) {
+  const listJson = (opts.list ?? []).map((v) => JSON.stringify(v)).join('\n')
+  mockedExecWithPath.mockImplementation(((cmd: string) => {
+    if (cmd.includes('list --json')) return Promise.resolve({ stdout: listJson, stderr: '' })
+    if (cmd.includes('-- true')) {
+      return (opts.guestReachable ?? true)
+        ? Promise.resolve({ stdout: '', stderr: '' })
+        : Promise.reject(new Error('guest unreachable'))
+    }
+    if (cmd.includes(' start ')) {
+      return opts.startError ? Promise.reject(opts.startError) : Promise.resolve({ stdout: '', stderr: '' })
+    }
+    // create / delete / stop — succeed
+    return Promise.resolve({ stdout: '', stderr: '' })
+  }) as any)
+}
+
+/**
+ * Path-aware fs mock for the version/ha.pid/ha.sock reads the health check makes.
+ * @param opts.version      contents of `lima-version` (undefined → file missing)
+ * @param opts.haSockExists is `ha.sock` present?
+ * @param opts.haPid        contents of `ha.pid` (undefined → file missing)
+ */
+function mockFsState(opts: { version?: string; haSockExists?: boolean; haPid?: string } = {}) {
+  mockedFs.readFileSync.mockImplementation(((p: any) => {
+    const s = String(p)
+    if (s.endsWith('ha.pid')) {
+      if (opts.haPid === undefined) { const e: any = new Error('ENOENT'); e.code = 'ENOENT'; throw e }
+      return opts.haPid
+    }
+    if (s.endsWith('lima-version')) {
+      if (opts.version === undefined) { const e: any = new Error('ENOENT'); e.code = 'ENOENT'; throw e }
+      return opts.version
+    }
+    return ''
+  }) as any)
+  mockedFs.existsSync.mockImplementation(((p: any) => {
+    const s = String(p)
+    if (s.endsWith('ha.sock')) return !!opts.haSockExists
+    if (s.endsWith('ha.pid')) return opts.haPid !== undefined
+    return false
+  }) as any)
+}
+
+/** Make `process.kill(pid, 0)` report the pid as dead (ESRCH) — host agent gone. */
+function deadPid(): any {
+  return vi.spyOn(process, 'kill').mockImplementation((() => {
+    const e: any = new Error('ESRCH'); e.code = 'ESRCH'; throw e
+  }) as any)
+}
+
+/** Make `process.kill(pid, 0)` succeed — host agent process is alive. */
+function alivePid(): any {
+  return vi.spyOn(process, 'kill').mockImplementation((() => true) as any)
+}
+
+/** The full limactl command strings execWithPath was called with. */
+function execCmds(): string[] {
+  return mockedExecWithPath.mock.calls.map((c) => c[0] as string)
+}
 
 // ============================================================================
 // parseLimaList — test indirectly via LimaContainerClient.isRunning()
@@ -157,6 +235,8 @@ describe('getLimaHome', () => {
 // ============================================================================
 
 describe('ensureLimaReady', () => {
+  let killSpy: any
+
   beforeEach(() => {
     vi.clearAllMocks()
     mockedGetSettings.mockReturnValue({
@@ -170,161 +250,207 @@ describe('ensureLimaReady', () => {
     })
     // Default: getNerdctlWrapperPath needs HOME
     process.env.HOME = '/Users/testuser'
+    mockedFs.readdirSync.mockReturnValue([] as any)
+    // Default: any referenced host-agent pid is dead unless a test says otherwise.
+    killSpy = deadPid()
   })
 
-  function mockLimaList(vms: any[]) {
-    const ndjson = vms.map((v) => JSON.stringify(v)).join('\n')
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: ndjson, stderr: '' })
-  }
-
-  /** Mock the lima-version file so the version check doesn't trigger a recreate */
-  function mockLimaVersion(version = 'v99.0.0') {
-    mockedFs.readFileSync.mockReturnValue(version)
-  }
+  afterEach(() => {
+    killSpy.mockRestore()
+  })
 
   it('creates VM and starts it when no VM exists', async () => {
-    // First list: no VMs (VM exists check)
-    mockLimaList([])
-    // createLimaVm: execLimactl('create ...')
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
-    // Second list: VM exists but stopped (running check)
-    mockLimaList([{ name: LIMA_VM_NAME, status: 'Stopped' }])
-    // start VM
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockExec({ list: [] })
+    mockFsState({})
 
     await ensureLimaReady()
 
-    // Verify create and start were called
-    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
-    expect(calls.some((c) => c.includes('create'))).toBe(true)
-    expect(calls.some((c) => c.includes('start'))).toBe(true)
+    expect(execCmds().some((c) => c.includes('create'))).toBe(true)
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(true)
   })
 
-  it('skips creation when VM already exists and running', async () => {
-    mockLimaVersion()
-    // First list: VM exists and running
-    mockLimaList([{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }])
-    // Second list: still running
-    mockLimaList([{ name: LIMA_VM_NAME, status: 'Running' }])
+  it('skips creation and start when VM exists and is healthy', async () => {
+    // Running + ha.sock present + guest reachable = genuinely healthy.
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }], guestReachable: true })
+    mockFsState({ version: 'v99.0.0', haSockExists: true })
 
     await ensureLimaReady()
 
-    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
-    expect(calls.some((c) => c.includes('create'))).toBe(false)
-    expect(calls.some((c) => c.includes('start '))).toBe(false)
+    expect(execCmds().some((c) => c.includes('create'))).toBe(false)
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(false)
   })
 
   it('mutex serializes concurrent calls', async () => {
-    mockLimaVersion()
+    mockFsState({ version: 'v99.0.0', haSockExists: true })
+    const runningJson = JSON.stringify({ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }) + '\n'
     let resolveList: ((v: any) => void) | null = null
     let callCount = 0
 
-    mockedExecWithPath.mockImplementation(() => {
+    mockedExecWithPath.mockImplementation((() => {
       callCount++
       if (callCount === 1) {
         // First list call — slow
-        return new Promise((resolve) => {
-          resolveList = resolve
-        })
+        return new Promise((resolve) => { resolveList = resolve })
       }
-      // Subsequent calls resolve immediately
-      return Promise.resolve({ stdout: JSON.stringify({ name: LIMA_VM_NAME, status: 'Running' }) + '\n', stderr: '' })
-    })
+      // Subsequent calls (list / guest probe) resolve immediately
+      return Promise.resolve({ stdout: runningJson, stderr: '' })
+    }) as any)
 
-    // Launch two concurrent calls
     const p1 = ensureLimaReady()
     const p2 = ensureLimaReady()
 
-    // Only one should be in-flight (callCount should be 1 from the first list call)
+    // Only one should be in-flight (the first list call)
     expect(callCount).toBe(1)
 
-    // Resolve the first list call
-    resolveList!({ stdout: JSON.stringify({ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }) + '\n', stderr: '' })
+    resolveList!({ stdout: runningJson, stderr: '' })
 
     await Promise.all([p1, p2])
   })
 
   it('cleans up zombie VM when start fails after creation', async () => {
-    // First list: no VMs
-    mockLimaList([])
-    // createLimaVm succeeds
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
-    // Second list: VM exists but stopped
-    mockLimaList([{ name: LIMA_VM_NAME, status: 'Stopped' }])
-    // start VM fails
-    mockedExecWithPath.mockRejectedValueOnce(new Error('disk full'))
-    // delete VM (cleanup)
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockExec({ list: [], startError: new Error('disk full') })
+    mockFsState({})
 
     await expect(ensureLimaReady()).rejects.toThrow('disk full')
 
-    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
-    expect(calls.some((c) => c.includes('delete') && c.includes('--force'))).toBe(true)
+    expect(execCmds().some((c) => c.includes('delete') && c.includes('--force'))).toBe(true)
   })
 
   it('does NOT delete VM when start fails on pre-existing VM', async () => {
-    mockLimaVersion()
-    // First list: VM exists
-    mockLimaList([{ name: LIMA_VM_NAME, status: 'Stopped', memory: 4 * 1024 * 1024 * 1024 }])
-    // Second list: still stopped
-    mockLimaList([{ name: LIMA_VM_NAME, status: 'Stopped' }])
-    // start VM fails
-    mockedExecWithPath.mockRejectedValueOnce(new Error('network error'))
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Stopped', memory: 4 * 1024 * 1024 * 1024 }], startError: new Error('network error') })
+    mockFsState({ version: 'v99.0.0' })
 
     await expect(ensureLimaReady()).rejects.toThrow('network error')
 
-    // Should NOT have called delete — VM existed before this call
-    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
-    expect(calls.some((c) => c.includes('delete'))).toBe(false)
+    // VM existed before this call → must not be destroyed.
+    expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
   })
 
   it('recreates VM when memory setting differs', async () => {
-    mockLimaVersion()
     mockedGetSettings.mockReturnValue({
       container: { runtimeSettings: { lima: { vmMemory: '8GiB' } } },
     } as any)
-
-    // First list: VM exists with 4GiB
-    mockLimaList([{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }])
-    // stop --force
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
-    // delete --force
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
-    // createLimaVm
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
-    // list (running check)
-    mockLimaList([{ name: LIMA_VM_NAME, status: 'Stopped' }])
-    // start
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }] })
+    mockFsState({ version: 'v99.0.0' })
 
     await ensureLimaReady()
 
-    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
-    expect(calls.some((c) => c.includes('delete') && c.includes('--force'))).toBe(true)
-    expect(calls.some((c) => c.includes('create'))).toBe(true)
+    expect(execCmds().some((c) => c.includes('delete') && c.includes('--force'))).toBe(true)
+    expect(execCmds().some((c) => c.includes('create'))).toBe(true)
   })
 
   it('recreates VM when lima-version is older than minimum', async () => {
-    mockLimaVersion('v2.0.3')
-
-    // First list: VM exists
-    mockLimaList([{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }])
-    // stop --force
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
-    // delete --force
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
-    // createLimaVm
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
-    // list (running check)
-    mockLimaList([{ name: LIMA_VM_NAME, status: 'Stopped' }])
-    // start
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }] })
+    mockFsState({ version: 'v2.0.3' })
 
     await ensureLimaReady()
 
-    const calls = mockedExecWithPath.mock.calls.map((c) => c[0] as string)
-    expect(calls.some((c) => c.includes('delete') && c.includes('--force'))).toBe(true)
-    expect(calls.some((c) => c.includes('create'))).toBe(true)
+    expect(execCmds().some((c) => c.includes('delete') && c.includes('--force'))).toBe(true)
+    expect(execCmds().some((c) => c.includes('create'))).toBe(true)
+  })
+
+  // ==========================================================================
+  // SUP-291: self-heal a dirty instance dir + reachability-based health check
+  // ==========================================================================
+
+  it('self-heals a dirty instance dir (dead ha.pid) by cleaning stale sockets then restarting', async () => {
+    // limactl says Running, but a force-killed vz left ha.sock gone and a stale
+    // ha.pid pointing at a dead process.
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }] })
+    mockFsState({ version: 'v99.0.0', haSockExists: false, haPid: '4242' })
+    killSpy.mockRestore()
+    killSpy = deadPid() // pid 4242 is dead
+
+    await ensureLimaReady()
+
+    const unlinked = mockedFs.unlinkSync.mock.calls.map((c) => String(c[0]))
+    expect(unlinked.some((p) => p.endsWith('ha.pid'))).toBe(true)
+    // Restarted to recover — and NOT a destructive delete/recreate.
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(true)
+    expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
+  })
+
+  it('recovers a VM whose ha.sock was deleted (ELECTRON-4S) by restarting on next launch', async () => {
+    // ha.sock missing, no ha.pid (host agent gone) — the canonical ELECTRON-4S dir.
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }] })
+    mockFsState({ version: 'v99.0.0', haSockExists: false })
+
+    await ensureLimaReady()
+
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(true)
+    expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
+  })
+
+  it('does NOT rebuild, restart, or clean a wedged-but-live VM (guest probe times out)', async () => {
+    // Running + ha.sock present + guest unreachable + host agent ALIVE = memory wedge.
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }], guestReachable: false })
+    mockFsState({ version: 'v99.0.0', haSockExists: true, haPid: '777' })
+    killSpy.mockRestore()
+    killSpy = alivePid()
+
+    await expect(ensureLimaReady()).rejects.toThrow(/memory|unreachable/i)
+
+    // Recoverable surface, NOT a destructive rebuild — and never touch a live VM's sockets.
+    expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(false)
+    expect(mockedFs.unlinkSync).not.toHaveBeenCalled()
+  })
+
+  it('treats sock-missing + LIVE host agent as wedged — never cleans a live VM', async () => {
+    // ha.sock gone but the host-agent process is still alive: must NOT be cleaned
+    // (would orphan the live VM) and must NOT be restarted/rebuilt.
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }] })
+    mockFsState({ version: 'v99.0.0', haSockExists: false, haPid: '777' })
+    killSpy.mockRestore()
+    killSpy = alivePid()
+
+    await expect(ensureLimaReady()).rejects.toThrow(/memory|unreachable|load/i)
+
+    expect(mockedFs.unlinkSync).not.toHaveBeenCalled()
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(false)
+    expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
+  })
+
+  it('heals an orphaned-socket dirty dir (ha.sock present, guest unreachable, host agent DEAD) — dirty, not wedged', async () => {
+    // Distinct from a wedge: the socket file lingers but the host-agent process
+    // is gone, so this is a dead-agent dirty dir → clean + restart, NOT a throw.
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }], guestReachable: false })
+    mockFsState({ version: 'v99.0.0', haSockExists: true }) // no ha.pid → agent dead
+
+    await ensureLimaReady()
+
+    const unlinked = mockedFs.unlinkSync.mock.calls.map((c) => String(c[0]))
+    expect(unlinked.some((p) => p.endsWith('ha.sock'))).toBe(true)
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(true)
+    expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
+  })
+
+  it('sweeps orphaned *.sock files (e.g. ssh.sock) when cleaning a dirty dir, leaving non-sockets', async () => {
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 * 1024 * 1024 }] })
+    // dirty: ha.sock + ha.pid gone (dead agent), but orphaned runtime sockets remain
+    mockedFs.readFileSync.mockImplementation(((p: any) => {
+      const s = String(p)
+      if (s.endsWith('ha.pid')) { const e: any = new Error('ENOENT'); e.code = 'ENOENT'; throw e }
+      if (s.endsWith('lima-version')) return 'v99.0.0'
+      return ''
+    }) as any)
+    mockedFs.existsSync.mockImplementation(((p: any) => {
+      const s = String(p)
+      if (s.endsWith('ha.sock')) return false // missing → dirty
+      if (s.endsWith('ssh.sock') || s.endsWith('default_ep.sock')) return true
+      return false
+    }) as any)
+    mockedFs.readdirSync.mockReturnValue(['ssh.sock', 'default_ep.sock', 'cidata.iso', 'lima.yaml'] as any)
+
+    await ensureLimaReady()
+
+    const unlinked = mockedFs.unlinkSync.mock.calls.map((c) => String(c[0]))
+    expect(unlinked.some((p) => p.endsWith('ssh.sock'))).toBe(true)
+    expect(unlinked.some((p) => p.endsWith('default_ep.sock'))).toBe(true)
+    // non-socket files are never touched
+    expect(unlinked.some((p) => p.endsWith('cidata.iso'))).toBe(false)
+    expect(unlinked.some((p) => p.endsWith('lima.yaml'))).toBe(false)
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(true)
   })
 })
 
@@ -379,6 +505,8 @@ describe('stopLimaVm', () => {
 // ============================================================================
 
 describe('LimaContainerClient.isRunning', () => {
+  let killSpy: any
+
   beforeEach(() => {
     vi.clearAllMocks()
     Object.defineProperty(process, 'resourcesPath', {
@@ -386,40 +514,74 @@ describe('LimaContainerClient.isRunning', () => {
       writable: true,
       configurable: true,
     })
+    process.env.HOME = '/Users/testuser'
+    mockedFs.readdirSync.mockReturnValue([] as any)
+    killSpy = deadPid()
   })
 
-  it('returns true when VM is running (tests parseLimaList indirectly)', async () => {
-    const ndjson = JSON.stringify({ name: LIMA_VM_NAME, status: 'Running' })
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: ndjson, stderr: '' })
+  afterEach(() => {
+    killSpy.mockRestore()
+  })
+
+  it('returns true when the VM is healthy (Running + ha.sock present + guest reachable)', async () => {
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running' }], guestReachable: true })
+    mockFsState({ haSockExists: true })
 
     expect(await LimaContainerClient.isRunning()).toBe(true)
   })
 
   it('returns false when VM is stopped', async () => {
-    const ndjson = JSON.stringify({ name: LIMA_VM_NAME, status: 'Stopped' })
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: ndjson, stderr: '' })
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Stopped' }] })
+    mockFsState({})
 
     expect(await LimaContainerClient.isRunning()).toBe(false)
   })
 
   it('returns false when no VMs exist (empty output)', async () => {
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockExec({ list: [] })
+    mockFsState({})
 
     expect(await LimaContainerClient.isRunning()).toBe(false)
   })
 
   it('returns false on exec error', async () => {
-    mockedExecWithPath.mockRejectedValueOnce(new Error('limactl not found'))
+    mockedExecWithPath.mockRejectedValue(new Error('limactl not found'))
+
+    expect(await LimaContainerClient.isRunning()).toBe(false)
+  })
+
+  it('returns false when limactl reports Running but ha.sock is missing (dirty dir → ELECTRON-4S)', async () => {
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running' }] })
+    mockFsState({ haSockExists: false }) // no ha.pid → host agent dead → dirty
+
+    expect(await LimaContainerClient.isRunning()).toBe(false)
+  })
+
+  it('returns false when Running with ha.sock but the guest probe times out (wedge)', async () => {
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running' }], guestReachable: false })
+    mockFsState({ haSockExists: true, haPid: '777' })
+    killSpy.mockRestore()
+    killSpy = alivePid()
+
+    expect(await LimaContainerClient.isRunning()).toBe(false)
+  })
+
+  it('returns false for an orphaned socket (Running, ha.sock present, guest unreachable, host agent DEAD → dirty)', async () => {
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running' }], guestReachable: false })
+    mockFsState({ haSockExists: true }) // no ha.pid → dead agent → dirty (not wedged)
 
     expect(await LimaContainerClient.isRunning()).toBe(false)
   })
 
   it('handles multi-line NDJSON with multiple VMs', async () => {
-    const lines = [
-      JSON.stringify({ name: 'other-vm', status: 'Running' }),
-      JSON.stringify({ name: LIMA_VM_NAME, status: 'Running' }),
-    ].join('\n')
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: lines, stderr: '' })
+    mockExec({
+      list: [
+        { name: 'other-vm', status: 'Running' },
+        { name: LIMA_VM_NAME, status: 'Running' },
+      ],
+      guestReachable: true,
+    })
+    mockFsState({ haSockExists: true })
 
     expect(await LimaContainerClient.isRunning()).toBe(true)
   })
@@ -430,7 +592,11 @@ describe('LimaContainerClient.isRunning', () => {
       JSON.stringify({ name: LIMA_VM_NAME, status: 'Running' }),
       '{broken',
     ].join('\n')
-    mockedExecWithPath.mockResolvedValueOnce({ stdout: lines, stderr: '' })
+    mockedExecWithPath.mockImplementation(((cmd: string) => {
+      if (cmd.includes('list --json')) return Promise.resolve({ stdout: lines, stderr: '' })
+      return Promise.resolve({ stdout: '', stderr: '' }) // guest probe ok
+    }) as any)
+    mockFsState({ haSockExists: true })
 
     expect(await LimaContainerClient.isRunning()).toBe(true)
   })
@@ -485,5 +651,67 @@ describe('LimaContainerClient.extractInaccessibleMountPath', () => {
 
   it('returns null for permission errors without a parseable path', () => {
     expect(client.extractInaccessibleMountPath(new Error('operation not permitted'))).toBe(null)
+  })
+})
+
+// ============================================================================
+// handleRunError — SUP-291: recovery is driven by the REAL health probe, not
+// `limactl list` trust, so a Running-but-dirty VM (e.g. a build that failed on
+// a missing ha.sock) is recognized and self-healed, while a wedged VM is
+// surfaced but never destructively rebuilt.
+// ============================================================================
+
+describe('LimaContainerClient.handleRunError', () => {
+  let killSpy: any
+  const makeClient = () => new LimaContainerClient({ agentId: 'test-agent' } as any) as any
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockedGetSettings.mockReturnValue({ container: { runtimeSettings: {} } } as any)
+    Object.defineProperty(process, 'resourcesPath', { value: undefined, writable: true, configurable: true })
+    process.env.HOME = '/Users/testuser'
+    mockedFs.readdirSync.mockReturnValue([] as any)
+    killSpy = deadPid()
+  })
+
+  afterEach(() => {
+    killSpy.mockRestore()
+  })
+
+  it('self-heals a dirty VM on a build failure whose message is not a known-issue string', async () => {
+    // A "Container build failed" message contains lowercase "no such file" which
+    // does NOT match the known-issue list — so recovery hinges on the health probe.
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 ** 3 }] })
+    mockFsState({ version: 'v99.0.0', haSockExists: false, haPid: '4242' }) // sock gone + pid dead → dirty
+
+    const recovered = await makeClient().handleRunError(
+      new Error('Container build failed with code 255: stat …/ha.sock: no such file or directory')
+    )
+
+    expect(recovered).toBe(true)
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(true)
+  })
+
+  it('does NOT recover when the VM is healthy (the VM is not the fault)', async () => {
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 ** 3 }], guestReachable: true })
+    mockFsState({ version: 'v99.0.0', haSockExists: true })
+
+    const recovered = await makeClient().handleRunError(new Error('some unexpected build error'))
+
+    expect(recovered).toBe(false)
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(false)
+  })
+
+  it('does NOT rebuild a wedged VM — recovery surfaces it and reports unrecovered', async () => {
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 ** 3 }], guestReachable: false })
+    mockFsState({ version: 'v99.0.0', haSockExists: true, haPid: '777' })
+    killSpy.mockRestore()
+    killSpy = alivePid()
+
+    const recovered = await makeClient().handleRunError(new Error('some unexpected build error'))
+
+    expect(recovered).toBe(false)
+    expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(false)
   })
 })

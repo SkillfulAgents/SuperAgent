@@ -848,11 +848,28 @@ class ContainerManager {
     // This is the only path that catches a stale-but-running VM, since startRunner()
     // (which normally handles version checks) is skipped when the VM is already up.
     if (runnerStatus?.running) {
-      const rebuilt = await reconcileRunnerState(configuredRunner)
-      if (rebuilt) {
-        clearRunnerAvailabilityCache()
-        allAvailability = await checkAllRunnersAvailability()
-        runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
+      try {
+        const rebuilt = await reconcileRunnerState(configuredRunner)
+        if (rebuilt) {
+          clearRunnerAvailabilityCache()
+          allAvailability = await checkAllRunnersAvailability()
+          runnerStatus = allAvailability.find((r) => r.runner === configuredRunner)
+        }
+      } catch (error: any) {
+        // reconcile → ensureLimaReady can throw — e.g. a wedged Lima VM surfaces a
+        // recoverable error instead of a destructive rebuild (SUP-291). Don't let
+        // it escape ensureImageReady (whose callers only .catch+log), which would
+        // leave the readiness spinner stuck forever. Surface it as unavailable.
+        captureException(error, {
+          tags: { component: 'runtime', operation: 'reconcile' },
+          extra: { runner: configuredRunner },
+        })
+        this.setReadiness({
+          status: 'RUNTIME_UNAVAILABLE',
+          message: error?.message || `Failed to reconcile ${getRunnerDisplayName(configuredRunner)} runtime.`,
+          pullProgress: null,
+        })
+        return
       }
     }
 
