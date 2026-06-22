@@ -16,6 +16,24 @@ export function familyDisplayName(family: string): string {
   return FAMILY_LABELS[family] ?? capitalize(family)
 }
 
+/** Compact token-count label for warnings, e.g. 272000 → "272K", 1_050_000 → "1.05M". */
+export function formatTokenThreshold(tokens: number): string {
+  if (tokens >= 1_000_000) return `${+(tokens / 1_000_000).toFixed(2)}M`
+  if (tokens >= 1_000) return `${+(tokens / 1_000).toFixed(0)}K`
+  return String(tokens)
+}
+
+type LongContextCliff = NonNullable<ModelDefinition['longContextPriceCliff']>
+
+// Picker copy for a model's long-context price step; frames the threshold as a
+// share of the context window when known, else as a raw token count.
+export function longContextWarningText(cliff: LongContextCliff, contextWindow?: number): string {
+  const where = contextWindow
+    ? `beyond about ${Math.round((cliff.thresholdTokens / contextWindow) * 100)}% of the context window`
+    : `beyond ~${formatTokenThreshold(cliff.thresholdTokens)} tokens of context`
+  return `Note: ${where}, input pricing rises ${cliff.inputMultiplier}× and output ${cliff.outputMultiplier}×.`
+}
+
 /**
  * Resolve a stored selection to its catalog entry for display: an exact
  * concrete-id match first, then a bare family alias → that family's latest.
@@ -153,6 +171,15 @@ export function ModelFamilyList({
         >
           <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
           <span>Web search and fetch aren’t available on this model.</span>
+        </div>
+      )}
+      {resolved?.longContextPriceCliff && (
+        <div
+          data-testid="model-long-context-cliff-warning"
+          className="mx-1 mb-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
+        >
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span>{longContextWarningText(resolved.longContextPriceCliff, resolved.contextWindow)}</span>
         </div>
       )}
       {families.map((group) => {

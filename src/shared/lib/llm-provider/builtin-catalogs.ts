@@ -19,6 +19,14 @@ const STANDARD_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 // xhigh/max are Anthropic-only reasoning tiers; non-Claude models get the standard three.
 const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 
+// OpenAI GPT-5.x reprice the whole request 2x input / 1.5x output once prompt
+// input crosses 272K tokens. Shared by every GPT entry so the picker can warn.
+const GPT_LONG_CONTEXT_CLIFF = {
+  thresholdTokens: 272_000,
+  inputMultiplier: 2,
+  outputMultiplier: 1.5,
+} as const
+
 const ICON = 'anthropic'
 
 /** Anthropic / OpenRouter / Platform — bare Claude ids. */
@@ -157,6 +165,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
     contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
@@ -175,6 +184,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
     contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
@@ -216,6 +226,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
     contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
   {
@@ -230,6 +241,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
     contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
 ]

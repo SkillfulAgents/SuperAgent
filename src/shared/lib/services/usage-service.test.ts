@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import * as path from 'path'
 
-import { loadDailyUsageData as loadDailyUsageDataLightweight } from './usage-service'
+import { loadDailyUsageData as loadDailyUsageDataLightweight, calculateCost } from './usage-service'
 
 const FIXTURES_DIR = path.resolve(__dirname, '__fixtures__/usage-data')
 
@@ -258,6 +258,58 @@ describe('usage-service', () => {
       // costUSD was 0.0023 + 0.0045 = 0.0068
       // Hardcoded pricing would give a different number
       expect(dec5.totalCost).toBeCloseTo(0.0068, 6)
+    })
+  })
+
+  describe('calculateCost — GPT pricing + 272K long-context cliff', () => {
+    it('prices GPT models that are absent from the old Claude-only table (was $0)', () => {
+      // 100K input, 1K output, below the cliff: $5 input / $30 output per 1M.
+      expect(calculateCost('gpt-5.5', 100_000, 1_000, 0, 0)).toBeCloseTo(
+        (100_000 * 5 + 1_000 * 30) / 1_000_000,
+        9,
+      )
+      // OpenRouter-prefixed id resolves too.
+      expect(calculateCost('openai/gpt-5.4', 100_000, 1_000, 0, 0)).toBeCloseTo(
+        (100_000 * 2.5 + 1_000 * 15) / 1_000_000,
+        9,
+      )
+    })
+
+    it('reprices the whole request above 272K input (2x input / 1.5x output)', () => {
+      expect(calculateCost('gpt-5.5', 300_000, 2_000, 0, 0)).toBeCloseTo(
+        (300_000 * 10 + 2_000 * 45) / 1_000_000,
+        9,
+      )
+      expect(calculateCost('gpt-5.4', 300_000, 2_000, 0, 0)).toBeCloseTo(
+        (300_000 * 5 + 2_000 * 22.5) / 1_000_000,
+        9,
+      )
+    })
+
+    it('counts cache reads toward the threshold (cliff is on full prompt input)', () => {
+      // 50K fresh + 250K cache reads = 300K prompt input → over 272K.
+      expect(calculateCost('gpt-5.5', 50_000, 0, 0, 250_000)).toBeCloseTo(
+        (50_000 * 10 + 250_000 * 1) / 1_000_000,
+        9,
+      )
+    })
+
+    it('stays on the short rate exactly at 272K (cliff is strictly >)', () => {
+      expect(calculateCost('gpt-5.5', 272_000, 0, 0, 0)).toBeCloseTo(
+        (272_000 * 5) / 1_000_000,
+        9,
+      )
+    })
+
+    it('Claude models have no cliff — large prompts stay linear', () => {
+      expect(calculateCost('claude-opus-4-6', 500_000, 10_000, 0, 0)).toBeCloseTo(
+        (500_000 * 5 + 10_000 * 25) / 1_000_000,
+        9,
+      )
+    })
+
+    it('returns 0 for unknown models', () => {
+      expect(calculateCost('totally-unknown', 100_000, 1_000, 0, 0)).toBe(0)
     })
   })
 

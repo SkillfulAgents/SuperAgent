@@ -53,6 +53,29 @@ describe('modelDefinitionSchema', () => {
     expect(() => modelDefinitionSchema.parse({ ...base, contextWindow: 1.5 })).toThrow()
   })
 
+  it('accepts an optional longContextPriceCliff and omits cleanly', () => {
+    const cliff = { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 }
+    expect(modelDefinitionSchema.parse({ ...base, longContextPriceCliff: cliff })).toMatchObject({
+      longContextPriceCliff: cliff,
+    })
+    expect(modelDefinitionSchema.parse(base).longContextPriceCliff).toBeUndefined()
+  })
+
+  it('rejects a longContextPriceCliff with a non-positive threshold or multiplier', () => {
+    expect(() =>
+      modelDefinitionSchema.parse({
+        ...base,
+        longContextPriceCliff: { thresholdTokens: 0, inputMultiplier: 2, outputMultiplier: 1.5 },
+      }),
+    ).toThrow()
+    expect(() =>
+      modelDefinitionSchema.parse({
+        ...base,
+        longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 0, outputMultiplier: 1.5 },
+      }),
+    ).toThrow()
+  })
+
   it('accepts non-empty prompt hints and rejects empty hints', () => {
     expect(modelDefinitionSchema.parse({ ...base, promptHints: ['Use exact tool names.'] })).toMatchObject({
       promptHints: ['Use exact tool names.'],
