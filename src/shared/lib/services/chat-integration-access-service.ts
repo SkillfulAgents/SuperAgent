@@ -1,4 +1,4 @@
-import { eq, and, inArray } from 'drizzle-orm'
+import { eq, and, inArray, count } from 'drizzle-orm'
 import crypto from 'node:crypto'
 import { db, sqlite } from '@shared/lib/db'
 import { chatIntegrationAccess, chatIntegrations } from '@shared/lib/db/schema'
@@ -66,8 +66,8 @@ export function decideInboundAccess(args: {
   }
 
   // not bootstrapped → record pending unless capped
-  const nonAllowed = db.select().from(chatIntegrationAccess)
-    .where(and(eq(chatIntegrationAccess.integrationId, args.integrationId), inArray(chatIntegrationAccess.status, ['pending', 'denied']))).all().length
+  const nonAllowed = db.select({ value: count() }).from(chatIntegrationAccess)
+    .where(and(eq(chatIntegrationAccess.integrationId, args.integrationId), inArray(chatIntegrationAccess.status, ['pending', 'denied']))).get()?.value ?? 0
   if (nonAllowed >= NONALLOWED_CAP) return { action: 'blocked', sendNotice: false, status: 'pending' }
 
   const now = new Date()
