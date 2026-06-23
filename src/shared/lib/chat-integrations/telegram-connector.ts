@@ -425,13 +425,18 @@ export class TelegramConnector extends ChatClientConnector {
 
   async startWorking(chatId: string): Promise<void> {
     if (!this.bot) return
-    // Send once now, then keep it alive on a heartbeat (drafts/typing self-expire)
-    // until stopWorking. Idempotent: one timer per chat.
+    // Register the keep-alive heartbeat synchronously BEFORE the first awaited send.
+    // stopWorking() is fire-and-forget and can run while this initial send is still
+    // in flight; if the interval were registered only after the await, that
+    // stopWorking would find no timer and this call would install one *after*
+    // teardown, leaking "Thinking…" forever. Registering first means a concurrent
+    // stopWorking always sees (and clears) the timer. Idempotent: one timer per chat.
+    if (!this.workingTimers.has(chatId)) {
+      this.workingTimers.set(chatId, setInterval(() => {
+        void this.sendWorkingIndicator(chatId)
+      }, WORKING_REFRESH_MS))
+    }
     await this.sendWorkingIndicator(chatId)
-    if (this.workingTimers.has(chatId)) return
-    this.workingTimers.set(chatId, setInterval(() => {
-      void this.sendWorkingIndicator(chatId)
-    }, WORKING_REFRESH_MS))
   }
 
   async stopWorking(chatId: string): Promise<void> {

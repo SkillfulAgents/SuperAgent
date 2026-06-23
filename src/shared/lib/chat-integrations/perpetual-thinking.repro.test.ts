@@ -170,10 +170,10 @@ describe('REPRO: perpetual "Thinking…" after a non-idle terminal event', () =>
 // watchdog clears the indicator after a stretch of total SSE silence, and resets
 // on any activity so a healthy long turn is never cut off.
 
-const WATCHDOG_MS = 3 * 60 * 1000
+const WATCHDOG_MS = 5 * 60 * 1000
 
 function stalledMessageSent(connector: MockChatClientConnector): boolean {
-  return connector.sentMessages.some((m) => /stopped responding|try again/i.test(m.message.text))
+  return connector.sentMessages.some((m) => /taking longer|send your message again/i.test(m.message.text))
 }
 
 describe('REPRO: idle-silence watchdog', () => {
@@ -224,11 +224,78 @@ describe('REPRO: idle-silence watchdog', () => {
         toolUseId: 'tu-1',
         questions: [{ question: 'Which DB?' }],
       })
-      await vi.advanceTimersByTimeAsync(5 * 60 * 1000) // long human wait
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 60 * 1000) // long human wait, past threshold
 
       expect(stalledMessageSent(connector)).toBe(false)
     } finally {
       vi.useRealTimers()
     }
   })
+
+  it('does NOT fire after session_error already settled the turn (and never double-notifies)', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-watch')
+
+      // A turn arms the indicator + watchdog, then errors. session_error settles
+      // the turn (clearing the watchdog) and sends ONE curated error message.
+      await processSSEEvent(managed, { type: 'stream_start' })
+      await processSSEEvent(managed, {
+        type: 'session_error',
+        error: 'boom',
+        apiErrorCode: 'overloaded_error',
+        isActive: false,
+      })
+      const messagesAfterError = connector.sentMessages.length
+
+      // Well past the watchdog threshold: the watchdog must NOT also fire (no
+      // stall notice, no second message piled on the error).
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 60 * 1000)
+
+      expect(stalledMessageSent(connector)).toBe(false)
+      expect(connector.sentMessages.length).toBe(messagesAfterError)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+// ── session_error → curated, code-specific message (and NEVER the raw error) ──
+// The headline fix: an errored turn settles the indicator AND surfaces a short,
+// sanitized message keyed off apiErrorCode. The producer puts the raw internal
+// error (which can carry file paths / tokens) in `data.error`; the consumer must
+// read only `apiErrorCode` and never echo `data.error` into the chat.
+
+describe('session_error: curated message by apiErrorCode, raw error never leaked', () => {
+  const RAW_LEAK = '/Users/secret/path tok-abc123 stack-trace-line'
+  const cases: Array<{ code: string | null; expect: RegExp }> = [
+    { code: 'overloaded_error', expect: /overloaded/i },
+    { code: 'rate_limit_error', expect: /rate limit/i },
+    { code: 'authentication_failed', expect: /authenticate/i },
+    { code: 'context_length_exceeded', expect: /too long|new conversation/i },
+    { code: 'some_unknown_code', expect: /hit an error/i },
+    { code: null, expect: /hit an error/i },
+  ]
+
+  for (const c of cases) {
+    it(`apiErrorCode=${c.code ?? 'null'} → curated message, no raw error`, async () => {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-err')
+
+      await processSSEEvent(managed, {
+        type: 'session_error',
+        error: RAW_LEAK,
+        apiErrorCode: c.code,
+        isActive: false,
+      })
+
+      const text = connector.sentMessages.at(-1)?.message.text ?? ''
+      expect(text).toMatch(c.expect)
+      expect(text).not.toContain('/Users/secret/path')
+      expect(text).not.toContain('tok-abc123')
+      // The indicator is also torn down on the error path.
+      expect(connector.stoppedWorking).toContain('chat-err')
+    })
+  }
 })

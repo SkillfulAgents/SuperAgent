@@ -102,8 +102,12 @@ const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
 // completely silent (no SSE events) for this long, assume it stalled and tear
 // the indicator down. The backstop for any missing-terminal-event path (SDK
 // stall, dropped stream, an event type nobody handles). Reset on any activity,
-// so a healthy long turn never trips it.
-const WORKING_WATCHDOG_MS = 3 * 60 * 1000
+// so a healthy long turn never trips it. Set generously: a single silent tool
+// call (a long build / install / search that streams nothing) is legitimate
+// work, so the threshold must clear that before it assumes a stall — and even
+// then the notice is softened (see onWorkingWatchdogFired) because it can be a
+// false positive on slow-but-alive work.
+const WORKING_WATCHDOG_MS = 5 * 60 * 1000
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024 // 50 MB
 
@@ -141,6 +145,11 @@ export interface ManagedConnector {
   // Idle-silence watchdog timer (see WORKING_WATCHDOG_MS). Armed when the
   // working indicator is shown, reset on every SSE event, cleared on teardown.
   watchdogTimer?: ReturnType<typeof setTimeout> | null
+  // True once a terminal user-facing notice (the session_error message or the
+  // watchdog stall notice) has gone out for the current turn, so a watchdog /
+  // session_error overlap can't double-notify. Reset whenever the indicator is
+  // (re)armed for a new turn or segment.
+  turnNotified?: boolean
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────
@@ -1453,9 +1462,17 @@ function clearWorkingWatchdog(managed: ManagedConnector): void {
  */
 function armWorkingWatchdog(managed: ManagedConnector): void {
   clearWorkingWatchdog(managed)
-  managed.watchdogTimer = setTimeout(() => {
+  // A freshly-shown indicator is a fresh turn/segment: allow one terminal notice.
+  managed.turnNotified = false
+  const timer = setTimeout(() => {
+    // Ignore a stale fire. If the watchdog was cleared or re-armed after this
+    // timer was scheduled (clearTimeout can't un-queue an already-fired timer),
+    // managed.watchdogTimer no longer points at us — do nothing.
+    if (managed.watchdogTimer !== timer) return
+    managed.watchdogTimer = null
     void onWorkingWatchdogFired(managed)
   }, WORKING_WATCHDOG_MS)
+  managed.watchdogTimer = timer
 }
 
 /** Reset the watchdog only if it is currently armed — any SSE event proves liveness. */
@@ -1464,7 +1481,6 @@ function resetWatchdogIfRunning(managed: ManagedConnector): void {
 }
 
 async function onWorkingWatchdogFired(managed: ManagedConnector): Promise<void> {
-  managed.watchdogTimer = null
   console.warn(
     `[ChatIntegrationManager] Working-indicator watchdog fired after ${WORKING_WATCHDOG_MS}ms of silence (chat ${managed.chatId})`,
   )
@@ -1480,11 +1496,18 @@ async function onWorkingWatchdogFired(managed: ManagedConnector): Promise<void> 
     'warning',
   )
   await settleTurn(managed)
-  await managed.connector
-    .sendMessage(managed.chatId, {
-      text: '⚠️ The assistant stopped responding. Send your message again to retry.',
-    })
-    .catch(() => {})
+  // Notify at most once per turn: if a near-simultaneous session_error already
+  // surfaced its message, don't pile a second notice on top. Softened copy — the
+  // watchdog can be a false positive on a slow-but-alive turn, so it must not
+  // flatly assert the agent died.
+  if (!managed.turnNotified) {
+    managed.turnNotified = true
+    await managed.connector
+      .sendMessage(managed.chatId, {
+        text: "⚠️ This is taking longer than expected. If you don't see a reply soon, send your message again.",
+      })
+      .catch(() => {})
+  }
 }
 
 /**
@@ -1665,11 +1688,14 @@ export async function processSSEEvent(
       // "Thinking…" forever. Settle the turn the same way session_idle does, then
       // surface the error so the user isn't left staring at a frozen indicator.
       await settleTurn(managed)
-      await managed.connector
-        .sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null) })
-        .catch((err) => {
-          console.error('[ChatIntegrationManager] Failed to send error message:', err)
-        })
+      if (!managed.turnNotified) {
+        managed.turnNotified = true
+        await managed.connector
+          .sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null) })
+          .catch((err) => {
+            console.error('[ChatIntegrationManager] Failed to send error message:', err)
+          })
+      }
       break
     }
   }
