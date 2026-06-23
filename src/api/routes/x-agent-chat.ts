@@ -261,7 +261,7 @@ xAgentChat.post('/send', async (c) => {
 xAgentChat.post('/share-dashboard', zValidator('json', shareDashboardRequestSchema), async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
-    const { slug, integration_id, chat_id } = c.req.valid('json')
+    const { slug, integration_id, chat_id, emoji, caption } = c.req.valid('json')
 
     // Resolve integration
     let integration: Awaited<ReturnType<typeof getChatIntegration>>
@@ -315,6 +315,8 @@ xAgentChat.post('/share-dashboard', zValidator('json', shareDashboardRequestSche
         dashboardSlug: slug,
         name,
         allowButton,
+        emoji,
+        caption,
       })
     } catch (err) {
       if (err instanceof Error && err.message === 'Integration not connected') {

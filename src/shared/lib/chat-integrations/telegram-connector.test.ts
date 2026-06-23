@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { TelegramConnector } from './telegram-connector'
+import { TelegramConnector, renderDashboardCard } from './telegram-connector'
 import type { IncomingMessage } from './base-connector'
 import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 
@@ -251,7 +251,9 @@ describe('TelegramConnector.sendDashboardCard', () => {
   let sendMessage: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    connector = new TelegramConnector({ botToken: 'x' })
+    // richMessages: false routes sendRichOrHtml straight to the mocked sendMessage
+    // (the HTML sink), so we assert the rendered card without stubbing the rich API.
+    connector = new TelegramConnector({ botToken: 'x', richMessages: false })
     sendMessage = vi.fn().mockResolvedValue({ message_id: 1 })
     ;(connector as any).bot = { api: { sendMessage } }
   })
@@ -272,7 +274,8 @@ describe('TelegramConnector.sendDashboardCard', () => {
 
     const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]
     expect(chatIdArg).toBe('chat1')
-    expect(textArg).toBe('Weekly')
+    expect(textArg).toContain('Weekly')
+    expect(optsArg.parse_mode).toBe('HTML')
 
     const webAppUrl: string = optsArg.reply_markup.inline_keyboard[0][0].web_app.url
     expect(webAppUrl).toContain('https://host.example/api/telegram-miniapp')
@@ -298,8 +301,8 @@ describe('TelegramConnector.sendDashboardCard', () => {
 
     const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]
     expect(chatIdArg).toBe('chat1')
-    expect(textArg).toBe('Weekly')
-    // No web_app button — either no options arg, or reply_markup is absent
+    expect(textArg).toContain('Weekly')
+    // No web_app button — reply_markup is absent on the text-fallback path
     expect(optsArg?.reply_markup).toBeUndefined()
 
     expect(warnSpy).toHaveBeenCalledWith(
@@ -327,10 +330,49 @@ describe('TelegramConnector.sendDashboardCard', () => {
     expect(sendMessage).toHaveBeenCalledOnce()
     const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]
     expect(chatIdArg).toBe('chat1')
-    expect(textArg).toBe('Weekly')
+    expect(textArg).toContain('Weekly')
     expect(optsArg?.reply_markup).toBeUndefined()
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no owner'))
 
     warnSpy.mockRestore()
+  })
+
+  it('includes the agent-supplied emoji + caption in the card text', async () => {
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+
+    await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'World Cup 2026 Tracker',
+      allowButton: true,
+      emoji: '⚽',
+      caption: 'Live group standings + bracket',
+    })
+
+    const [, textArg] = sendMessage.mock.calls[0]
+    expect(textArg).toContain('⚽')
+    expect(textArg).toContain('World Cup 2026 Tracker')
+    expect(textArg).toContain('Live group standings + bracket')
+  })
+})
+
+describe('renderDashboardCard', () => {
+  it('renders a bold "<emoji> <name>" title with the caption on its own line', () => {
+    expect(renderDashboardCard('Weekly', '⚽', 'Live standings')).toBe('**⚽ Weekly**\nLive standings')
+  })
+
+  it('defaults to a chart emoji when none is supplied', () => {
+    expect(renderDashboardCard('Weekly')).toBe('**📊 Weekly**')
+  })
+
+  it('omits the blurb line when the caption is blank', () => {
+    expect(renderDashboardCard('Weekly', '⚽', '   ')).toBe('**⚽ Weekly**')
+  })
+
+  it('escapes markdown metacharacters in the agent-supplied name/caption', () => {
+    const out = renderDashboardCard('a*b', '📊', 'c_d')
+    expect(out).toContain('a\\*b')
+    expect(out).toContain('c\\_d')
   })
 })

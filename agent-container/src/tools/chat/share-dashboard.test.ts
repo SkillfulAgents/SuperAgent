@@ -29,6 +29,20 @@ describe('shareDashboardHandler', () => {
     expect(result.content[0].text).toContain('Open dashboard')
   })
 
+  it('forwards the agent-supplied emoji and caption to the host', async () => {
+    vi.mocked(callChatHost).mockResolvedValue({ chatId: 'chat1', delivery: 'button' })
+
+    await shareDashboardHandler({ slug: 'weekly-report', emoji: '⚽', caption: 'Live group standings + bracket' })
+
+    expect(callChatHost).toHaveBeenCalledWith('share-dashboard', {
+      slug: 'weekly-report',
+      emoji: '⚽',
+      caption: 'Live group standings + bracket',
+      integration_id: undefined,
+      chat_id: undefined,
+    })
+  })
+
   it('success (text fallback): tells the agent a plain-text message was sent with no button', async () => {
     vi.mocked(callChatHost).mockResolvedValue({ chatId: 'chat1', delivery: 'text' })
 

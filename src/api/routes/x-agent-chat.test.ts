@@ -371,6 +371,21 @@ describe('x-agent chat route', () => {
       )
     })
 
+    it('forwards emoji and caption from the request body to the connector', async () => {
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report', emoji: '⚽', caption: 'Live group standings + bracket' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockShareDashboard).toHaveBeenCalledWith(
+        'integration-1',
+        'chat-1',
+        expect.objectContaining({ emoji: '⚽', caption: 'Live group standings + bracket' }),
+      )
+    })
+
     it('passes through delivery=text when the connector falls back to plain text', async () => {
       mockShareDashboard.mockResolvedValue('text')
 

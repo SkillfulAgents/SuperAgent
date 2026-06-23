@@ -46,6 +46,22 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
 }
 
+/**
+ * Render the dashboard share card body as markdown: a bold "<emoji> <name>"
+ * title with an optional blurb line under it. Goes through the same rich-markdown
+ * send path as every other outbound message (rich, with an HTML fallback). The
+ * agent-supplied emoji/caption and the name are escapeMarkdown'd so they render
+ * literally instead of as stray markup. Defaults to a chart icon when the agent
+ * passes no emoji.
+ */
+export function renderDashboardCard(name: string, emoji?: string, caption?: string): string {
+  const icon = emoji?.trim() || '📊'
+  let md = `**${escapeMarkdown(icon)} ${escapeMarkdown(name)}**`
+  const blurb = caption?.trim()
+  if (blurb) md += `\n${escapeMarkdown(blurb)}`
+  return md
+}
+
 const telegramMarked = new Marked({ async: false, gfm: true })
 
 /**
@@ -598,15 +614,19 @@ export class TelegramConnector extends ChatClientConnector {
 
   async sendDashboardCard(
     chatId: string,
-    opts: { integrationId: string; agentSlug: string; dashboardSlug: string; name: string; allowButton: boolean },
+    opts: { integrationId: string; agentSlug: string; dashboardSlug: string; name: string; allowButton: boolean; emoji?: string; caption?: string },
   ): Promise<DashboardDelivery> {
     if (!this.bot) throw new Error('Bot not connected')
+    // Render once; send through the same rich-markdown path as every other
+    // outbound message (rich with an HTML fallback), so the card formats
+    // consistently whether or not it carries the button.
+    const card = renderDashboardCard(opts.name, opts.emoji, opts.caption)
     const base = getPlatformBaseUrl()
     // A working button needs both a public URL to point at and a caller that's
-    // cleared to mint a Mini App cookie (allowButton). Without either, send plain
-    // text rather than a button that would dead-end when tapped.
+    // cleared to mint a Mini App cookie (allowButton). Without either, send the
+    // formatted card as text rather than a button that would dead-end when tapped.
     if (!base || !opts.allowButton) {
-      await this.bot.api.sendMessage(chatId, opts.name)
+      await this.sendRichOrHtml(chatId, card)
       if (!base) {
         console.warn('[telegram] dashboard sharing needs a public HTTPS base URL (web/server mode); sent plain text without the Open dashboard button')
       } else {
@@ -615,7 +635,7 @@ export class TelegramConnector extends ChatClientConnector {
       return 'text'
     }
     const url = `${base.replace(/\/$/, '')}/api/telegram-miniapp?i=${encodeURIComponent(opts.integrationId)}&a=${encodeURIComponent(opts.agentSlug)}&d=${encodeURIComponent(opts.dashboardSlug)}`
-    await this.bot.api.sendMessage(chatId, opts.name, {
+    await this.sendRichOrHtml(chatId, card, {
       reply_markup: { inline_keyboard: [[{ text: 'Open dashboard', web_app: { url } }]] },
     })
     return 'button'
