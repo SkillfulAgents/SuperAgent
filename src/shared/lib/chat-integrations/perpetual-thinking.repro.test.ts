@@ -284,6 +284,41 @@ describe('REPRO: idle-silence watchdog', () => {
       vi.useRealTimers()
     }
   })
+
+  it('a FAILED watchdog notice releases the latch, so a later real session_error still reaches the user', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      // The watchdog notice send fails (transient), every later send succeeds.
+      let failNext = true
+      const realSend = connector.sendMessage.bind(connector)
+      connector.sendMessage = async (chatId, message) => {
+        if (failNext) {
+          failNext = false
+          throw new Error('transient send failure')
+        }
+        return realSend(chatId, message)
+      }
+      const managed = makeManaged(connector, 'chat-watch')
+
+      // Arm, then total silence trips the watchdog — whose notice send throws.
+      await processSSEEvent(managed, { type: 'stream_start' })
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 1000)
+
+      // A genuine error then arrives. It must NOT be suppressed by the failed notice.
+      await processSSEEvent(managed, {
+        type: 'session_error',
+        error: 'boom',
+        apiErrorCode: 'rate_limit_error',
+        isActive: false,
+      })
+
+      const errorDelivered = connector.sentMessages.some((m) => /rate limit/i.test(m.message.text))
+      expect(errorDelivered).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 // ── session_error → curated, code-specific message (and NEVER the raw error) ──
@@ -308,6 +343,19 @@ describe('finalizeStreaming: concurrent calls send the final text exactly once',
     const finalSends = connector.sentMessages.filter((m) => m.message.text === 'final answer')
     expect(finalSends.length).toBe(1)
     expect(managed.streamingState.accumulatedText).toBe('')
+  })
+
+  it('restores the buffer if delivery fails, so a later finalize can retry (does not silently drop)', async () => {
+    const connector = new MockChatClientConnector()
+    connector.sendMessage = async () => {
+      throw new Error('chat unreachable')
+    }
+    const managed = makeManaged(connector, 'chat-fin')
+    managed.streamingState = { currentMessageId: null, accumulatedText: 'answer', lastUpdateTime: 0 }
+
+    await expect(finalizeStreaming(managed)).rejects.toThrow()
+    // The claimed text is restored (not lost) so a later terminal path can resend.
+    expect(managed.streamingState.accumulatedText).toBe('answer')
   })
 })
 

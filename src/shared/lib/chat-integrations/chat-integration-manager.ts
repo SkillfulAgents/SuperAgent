@@ -1502,11 +1502,15 @@ async function onWorkingWatchdogFired(managed: ManagedConnector): Promise<void> 
   // flatly assert the agent died.
   if (!managed.turnNotified) {
     managed.turnNotified = true
-    await managed.connector
-      .sendMessage(managed.chatId, {
+    try {
+      await managed.connector.sendMessage(managed.chatId, {
         text: "⚠️ This is taking longer than expected. If you don't see a reply soon, send your message again.",
       })
-      .catch(() => {})
+    } catch {
+      // Delivery failed — release the latch so a later terminal notice (e.g. a real
+      // session_error) can still reach the user instead of being suppressed.
+      managed.turnNotified = false
+    }
   }
 }
 
@@ -1690,11 +1694,13 @@ export async function processSSEEvent(
       await settleTurn(managed)
       if (!managed.turnNotified) {
         managed.turnNotified = true
-        await managed.connector
-          .sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null) })
-          .catch((err) => {
-            console.error('[ChatIntegrationManager] Failed to send error message:', err)
-          })
+        try {
+          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null) })
+        } catch (err) {
+          // Delivery failed — release the latch so a later notice isn't suppressed.
+          managed.turnNotified = false
+          console.error('[ChatIntegrationManager] Failed to send error message:', err)
+        }
       }
       break
     }
@@ -1728,14 +1734,25 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
     lastUpdateTime: 0,
   }
 
-  if (messageId) {
-    try {
-      await managed.connector.finalizeStreamingMessage(managed.chatId, messageId, finalText)
-    } catch {
+  try {
+    if (messageId) {
+      try {
+        await managed.connector.finalizeStreamingMessage(managed.chatId, messageId, finalText)
+      } catch {
+        await managed.connector.sendMessage(managed.chatId, { text: finalText })
+      }
+    } else {
       await managed.connector.sendMessage(managed.chatId, { text: finalText })
     }
-  } else {
-    await managed.connector.sendMessage(managed.chatId, { text: finalText })
+  } catch (err) {
+    // Both delivery attempts failed (chat unreachable). Restore the claimed buffer so
+    // a later terminal path can retry — but only if no concurrent finalize has since
+    // claimed a new one, so we never resurrect already-sent text. Re-throw so callers
+    // log/handle the failure exactly as before.
+    if (!managed.streamingState.accumulatedText) {
+      managed.streamingState = { currentMessageId: messageId, accumulatedText: finalText, lastUpdateTime: 0 }
+    }
+    throw err
   }
 }
 
