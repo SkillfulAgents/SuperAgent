@@ -8,6 +8,7 @@ import { chatIntegrations } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { captureException } from '@shared/lib/error-reporting'
+import { isAuthMode } from '@shared/lib/auth/mode'
 
 export type { ChatIntegration, NewChatIntegration }
 
@@ -74,7 +75,11 @@ export function createChatIntegration(params: CreateChatIntegrationParams): stri
     sessionTimeout: params.sessionTimeout ?? null,
     model: params.model ?? null,
     effort: params.effort ?? null,
-    createdByUserId: params.createdByUserId ?? null,
+    // Default the owner to the single-user 'local' sentinel (matches
+    // getCurrentUserId) so non-auth integrations always have an owner and the
+    // dashboard button/photo path isn't blocked. In auth mode we can't fabricate
+    // an owner, so leave it null when the caller didn't attribute one.
+    createdByUserId: params.createdByUserId ?? (isAuthMode() ? null : 'local'),
     createdAt: now,
     updatedAt: now,
   }

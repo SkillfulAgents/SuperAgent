@@ -380,6 +380,53 @@ describe('x-agent chat route', () => {
     expect(connector.sendMessage).not.toHaveBeenCalled()
   })
 
+  describe('POST /add — owner attribution', () => {
+    afterEach(() => {
+      delete process.env.AUTH_MODE
+    })
+
+    beforeEach(() => {
+      mockValidateChatIntegrationConfig.mockReturnValue(undefined)
+      mockCreateChatIntegration.mockReturnValue('new-int-id')
+      mockAddIntegration.mockResolvedValue(undefined)
+      mockGetChatIntegration.mockReturnValue(createIntegration({ id: 'new-int-id', provider: 'telegram' }))
+    })
+
+    async function postAdd() {
+      return app.request('http://localhost/api/x-agent/chat/add', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'telegram', config: { botToken: 'tok' } }),
+      })
+    }
+
+    it('attributes the agent owner in auth mode', async () => {
+      process.env.AUTH_MODE = 'true'
+      // Seed the caller agent's owner ACL row in the real in-memory DB.
+      testSqlite
+        .prepare(`INSERT INTO agent_acl (id, user_id, agent_slug, role, created_at) VALUES (?,?,?,?,?)`)
+        .run('acl-1', 'owner-9', 'agent-one', 'owner', Date.now())
+
+      const res = await postAdd()
+
+      expect(res.status).toBe(201)
+      expect(mockCreateChatIntegration).toHaveBeenCalledWith(
+        expect.objectContaining({ agentSlug: 'agent-one', createdByUserId: 'owner-9' }),
+      )
+    })
+
+    it('passes no owner in non-auth mode (service applies the local default)', async () => {
+      delete process.env.AUTH_MODE
+
+      const res = await postAdd()
+
+      expect(res.status).toBe(201)
+      expect(mockCreateChatIntegration).toHaveBeenCalledWith(
+        expect.objectContaining({ agentSlug: 'agent-one', createdByUserId: undefined }),
+      )
+    })
+  })
+
   describe('POST /share-dashboard', () => {
     function createTelegramIntegration(overrides: Record<string, unknown> = {}) {
       return createIntegration({ provider: 'telegram', status: 'active', createdByUserId: 'owner-1', ...overrides })

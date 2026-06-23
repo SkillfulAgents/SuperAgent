@@ -74,6 +74,45 @@ describe('chat-integration-service', () => {
       expect(rows).toHaveLength(1)
     })
 
+    describe('owner attribution', () => {
+      afterEach(() => {
+        delete process.env.AUTH_MODE
+      })
+
+      it("defaults the owner to the 'local' sentinel in single-user (non-auth) mode", () => {
+        delete process.env.AUTH_MODE
+        const id = createChatIntegration({
+          agentSlug: 'agent-a',
+          provider: 'telegram',
+          config: { botToken: 'token-local' },
+        })
+        const row = getChatIntegration(id)
+        expect(row?.createdByUserId).toBe('local')
+      })
+
+      it('keeps an explicitly-provided owner id', () => {
+        const id = createChatIntegration({
+          agentSlug: 'agent-a',
+          provider: 'telegram',
+          config: { botToken: 'token-explicit' },
+          createdByUserId: 'user-123',
+        })
+        const row = getChatIntegration(id)
+        expect(row?.createdByUserId).toBe('user-123')
+      })
+
+      it('leaves the owner null in auth mode when none is provided (cannot fabricate one)', () => {
+        process.env.AUTH_MODE = 'true'
+        const id = createChatIntegration({
+          agentSlug: 'agent-a',
+          provider: 'telegram',
+          config: { botToken: 'token-auth' },
+        })
+        const row = getChatIntegration(id)
+        expect(row?.createdByUserId).toBeNull()
+      })
+    })
+
     it('allows different tokens for the same agent', () => {
       createChatIntegration({
         agentSlug: 'agent-a',

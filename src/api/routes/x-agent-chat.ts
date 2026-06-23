@@ -28,6 +28,8 @@ import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
 import { listArtifactsFromFilesystem, getArtifactScreenshotPath } from '@shared/lib/services/artifact-service'
+import { getAgentOwnerIds } from '@shared/lib/services/agent-owners'
+import { isAuthMode } from '@shared/lib/auth/mode'
 import { shareDashboardRequestSchema } from './x-agent-chat-schema'
 
 type XAgentChatVariables = { callerSlug: string }
@@ -129,6 +131,13 @@ xAgentChat.post('/add', async (c) => {
       return c.json({ error: `Invalid config: ${message}` }, 400)
     }
 
+    // Attribute the integration to an owner so the dashboard button/photo path
+    // isn't blocked. In auth mode that's the caller agent's owner; in non-auth
+    // mode we leave it unset and the service applies the 'local' sentinel.
+    const createdByUserId = isAuthMode()
+      ? (await getAgentOwnerIds(callerSlug))[0]
+      : undefined
+
     let id: string
     try {
       id = createChatIntegration({
@@ -136,6 +145,7 @@ xAgentChat.post('/add', async (c) => {
         provider: provider as ChatProvider,
         name,
         config,
+        createdByUserId,
       })
     } catch (err) {
       if (err instanceof DuplicateBotTokenError) {
