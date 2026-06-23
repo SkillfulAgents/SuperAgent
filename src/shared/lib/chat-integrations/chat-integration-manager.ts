@@ -1745,10 +1745,10 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
       await managed.connector.sendMessage(managed.chatId, { text: finalText })
     }
   } catch (err) {
-    // Both delivery attempts failed (chat unreachable). Restore the claimed buffer so
-    // a later terminal path can retry — but only if no concurrent finalize has since
-    // claimed a new one, so we never resurrect already-sent text. Re-throw so callers
-    // log/handle the failure exactly as before.
+    // Both delivery attempts failed (chat unreachable) — nothing reached the user.
+    // Restore the claimed buffer so a later terminal path can retry, but only if it
+    // is still empty, so we never overwrite newer streamed text (a later stream_delta
+    // repopulated it). Re-throw so callers log/handle the failure exactly as before.
     if (!managed.streamingState.accumulatedText) {
       managed.streamingState = { currentMessageId: messageId, accumulatedText: finalText, lastUpdateTime: 0 }
     }
