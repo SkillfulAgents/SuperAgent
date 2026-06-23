@@ -277,7 +277,9 @@ describe('TelegramConnector.sendDashboardCard', () => {
     expect(textArg).toContain('Weekly')
     expect(optsArg.parse_mode).toBe('HTML')
 
-    const webAppUrl: string = optsArg.reply_markup.inline_keyboard[0][0].web_app.url
+    const button = optsArg.reply_markup.inline_keyboard[0][0]
+    expect(button.text).toBe('📊 Open dashboard') // default icon when no emoji supplied
+    const webAppUrl: string = button.web_app.url
     expect(webAppUrl).toContain('https://host.example/api/telegram-miniapp')
     expect(webAppUrl).toContain('i=int1')
     expect(webAppUrl).toContain('a=sales')
@@ -350,16 +352,18 @@ describe('TelegramConnector.sendDashboardCard', () => {
       caption: 'Live group standings + bracket',
     })
 
-    const [, textArg] = sendMessage.mock.calls[0]
+    const [, textArg, optsArg] = sendMessage.mock.calls[0]
     expect(textArg).toContain('⚽')
     expect(textArg).toContain('World Cup 2026 Tracker')
     expect(textArg).toContain('Live group standings + bracket')
+    // The contextual emoji also rides the button label.
+    expect(optsArg.reply_markup.inline_keyboard[0][0].text).toBe('⚽ Open dashboard')
   })
 })
 
 describe('renderDashboardCard', () => {
-  it('renders a bold "<emoji> <name>" title with the caption on its own line', () => {
-    expect(renderDashboardCard('Weekly', '⚽', 'Live standings')).toBe('**⚽ Weekly**\nLive standings')
+  it('renders a bold "<emoji> <name>" title with the caption on its own line (blank line so Telegram does not collapse it)', () => {
+    expect(renderDashboardCard('Weekly', '⚽', 'Live standings')).toBe('**⚽ Weekly**\n\nLive standings')
   })
 
   it('defaults to a chart emoji when none is supplied', () => {

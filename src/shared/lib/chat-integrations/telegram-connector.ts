@@ -46,19 +46,28 @@ function escapeHtml(text: string): string {
     .replace(/>/g, '&gt;')
 }
 
+/** Icon shown before the dashboard name when the agent supplies no emoji. */
+const DASHBOARD_DEFAULT_EMOJI = '📊'
+
+/** Resolve the card's icon: the agent's emoji if given, else the default. */
+export function resolveDashboardEmoji(emoji?: string): string {
+  return emoji?.trim() || DASHBOARD_DEFAULT_EMOJI
+}
+
 /**
  * Render the dashboard share card body as markdown: a bold "<emoji> <name>"
- * title with an optional blurb line under it. Goes through the same rich-markdown
- * send path as every other outbound message (rich, with an HTML fallback). The
- * agent-supplied emoji/caption and the name are escapeMarkdown'd so they render
- * literally instead of as stray markup. Defaults to a chart icon when the agent
- * passes no emoji.
+ * title with an optional blurb on its own line under it. Goes through the same
+ * rich-markdown send path as every other outbound message (rich, with an HTML
+ * fallback). The agent-supplied emoji/caption and the name are escapeMarkdown'd
+ * so they render literally instead of as stray markup. The blurb is separated by
+ * a blank line (paragraph break) because Telegram's rich markdown collapses a
+ * single newline into a space.
  */
 export function renderDashboardCard(name: string, emoji?: string, caption?: string): string {
-  const icon = emoji?.trim() || '📊'
+  const icon = resolveDashboardEmoji(emoji)
   let md = `**${escapeMarkdown(icon)} ${escapeMarkdown(name)}**`
   const blurb = caption?.trim()
-  if (blurb) md += `\n${escapeMarkdown(blurb)}`
+  if (blurb) md += `\n\n${escapeMarkdown(blurb)}`
   return md
 }
 
@@ -635,8 +644,10 @@ export class TelegramConnector extends ChatClientConnector {
       return 'text'
     }
     const url = `${base.replace(/\/$/, '')}/api/telegram-miniapp?i=${encodeURIComponent(opts.integrationId)}&a=${encodeURIComponent(opts.agentSlug)}&d=${encodeURIComponent(opts.dashboardSlug)}`
+    // Carry the contextual emoji onto the button so it ties to the card.
+    const buttonLabel = `${resolveDashboardEmoji(opts.emoji)} Open dashboard`
     await this.sendRichOrHtml(chatId, card, {
-      reply_markup: { inline_keyboard: [[{ text: 'Open dashboard', web_app: { url } }]] },
+      reply_markup: { inline_keyboard: [[{ text: buttonLabel, web_app: { url } }]] },
     })
     return 'button'
   }
