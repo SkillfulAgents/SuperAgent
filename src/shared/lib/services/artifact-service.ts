@@ -5,6 +5,15 @@ import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 
 const ARTIFACT_SCREENSHOT_FILENAME = 'screenshot.png'
 
+/**
+ * Absolute path to a dashboard's screenshot.png (whether or not it exists yet).
+ * Single source of the screenshot location, reused by the listing above and by
+ * callers that need to read the file (e.g. the Telegram photo-preview card).
+ */
+export function getArtifactScreenshotPath(agentSlug: string, slug: string): string {
+  return path.join(getAgentWorkspaceDir(agentSlug), 'artifacts', slug, ARTIFACT_SCREENSHOT_FILENAME)
+}
+
 export interface ArtifactInfo {
   slug: string
   name: string
@@ -40,11 +49,7 @@ export async function listArtifactsFromFilesystem(
     try {
       const pkgContent = await fs.promises.readFile(pkgPath, 'utf-8')
       const pkg = JSON.parse(pkgContent)
-      const screenshotPath = path.join(
-        artifactsDir,
-        entry.name,
-        ARTIFACT_SCREENSHOT_FILENAME
-      )
+      const screenshotPath = getArtifactScreenshotPath(agentSlug, entry.name)
       const hasScreenshot = await fileExists(screenshotPath)
       const info: ArtifactInfo = {
         slug: entry.name,

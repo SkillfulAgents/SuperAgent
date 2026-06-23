@@ -365,7 +365,7 @@ class ChatIntegrationManager {
   async shareDashboard(
     integrationId: string,
     chatId: string,
-    opts: { agentSlug: string; dashboardSlug: string; name: string; allowButton: boolean; emoji?: string; caption?: string },
+    opts: { agentSlug: string; dashboardSlug: string; name: string; allowButton: boolean; emoji?: string; caption?: string; screenshotPath?: string },
   ): Promise<DashboardDelivery> {
     const connector = this.getConnector(integrationId)
     if (!connector) throw new Error('Integration not connected')
@@ -380,6 +380,7 @@ class ChatIntegrationManager {
       allowButton: opts.allowButton,
       emoji: opts.emoji,
       caption: opts.caption,
+      screenshotPath: opts.screenshotPath,
     })
   }
 

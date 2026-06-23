@@ -89,9 +89,11 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 const mockListArtifactsFromFilesystem = vi.fn()
+const mockGetArtifactScreenshotPath = vi.fn()
 
 vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: (...args: unknown[]) => mockListArtifactsFromFilesystem(...args),
+  getArtifactScreenshotPath: (...args: unknown[]) => mockGetArtifactScreenshotPath(...args),
 }))
 
 const mockExistsSync = vi.fn()
@@ -462,6 +464,46 @@ describe('x-agent chat route', () => {
 
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ chatId: 'chat-1', delivery: 'text' })
+    })
+
+    it('threads the screenshot path and surfaces delivery=photo when the dashboard has a screenshot', async () => {
+      mockListArtifactsFromFilesystem.mockResolvedValue([
+        { slug: 'weekly-report', name: 'Weekly', description: '', status: 'stopped', port: 0, hasScreenshot: true },
+      ])
+      mockGetArtifactScreenshotPath.mockReturnValue('/data/agent-one/weekly-report/screenshot.png')
+      mockShareDashboard.mockResolvedValue('photo')
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ chatId: 'chat-1', delivery: 'photo' })
+      expect(mockGetArtifactScreenshotPath).toHaveBeenCalledWith('agent-one', 'weekly-report')
+      expect(mockShareDashboard).toHaveBeenCalledWith(
+        'integration-1',
+        'chat-1',
+        expect.objectContaining({ screenshotPath: '/data/agent-one/weekly-report/screenshot.png' }),
+      )
+    })
+
+    it('does not resolve a screenshot path when the dashboard has none', async () => {
+      // Default mockListArtifactsFromFilesystem returns the dashboard without hasScreenshot.
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockGetArtifactScreenshotPath).not.toHaveBeenCalled()
+      expect(mockShareDashboard).toHaveBeenCalledWith(
+        'integration-1',
+        'chat-1',
+        expect.objectContaining({ screenshotPath: undefined }),
+      )
     })
 
     it('passes allowButton=false when the integration has no owner (createdByUserId null)', async () => {

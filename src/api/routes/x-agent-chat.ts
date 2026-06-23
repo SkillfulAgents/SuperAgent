@@ -27,7 +27,7 @@ import {
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
-import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
+import { listArtifactsFromFilesystem, getArtifactScreenshotPath } from '@shared/lib/services/artifact-service'
 import { shareDashboardRequestSchema } from './x-agent-chat-schema'
 
 type XAgentChatVariables = { callerSlug: string }
@@ -306,6 +306,12 @@ xAgentChat.post('/share-dashboard', zValidator('json', shareDashboardRequestSche
     // was captured) the button would 401 on tap, so fall back to plain text.
     const allowButton = !!integration.createdByUserId
 
+    // When a screenshot is already on disk (captured on dashboard boot/start), lead
+    // the card with it. The connector only uses this on the button path.
+    const screenshotPath = dash.hasScreenshot
+      ? getArtifactScreenshotPath(integration.agentSlug, slug)
+      : undefined
+
     let delivery: DashboardDelivery
     try {
       delivery = await chatIntegrationManager.shareDashboard(integration.id, resolvedChatId, {
@@ -315,6 +321,7 @@ xAgentChat.post('/share-dashboard', zValidator('json', shareDashboardRequestSche
         allowButton,
         emoji,
         caption,
+        screenshotPath,
       })
     } catch (err) {
       if (err instanceof Error && err.message === 'Integration not connected') {

@@ -21,6 +21,9 @@ vi.mock('grammy', () => ({
     start(opts: { onStart?: () => void }): Promise<void> { opts?.onStart?.(); return Promise.resolve() }
     async stop(): Promise<void> {}
   },
+  // sendDashboardCard's photo path does `const { InputFile } = await import('grammy')`;
+  // the mock records the file arg so tests can assert the screenshot path was passed.
+  InputFile: class { constructor(public file: unknown, public filename?: string) {} },
 }))
 
 vi.mock('@shared/lib/platform-auth/config', async (orig) => ({
@@ -249,13 +252,15 @@ describe('TelegramConnector — media handlers (photo/document)', () => {
 describe('TelegramConnector.sendDashboardCard', () => {
   let connector: TelegramConnector
   let sendMessage: ReturnType<typeof vi.fn>
+  let sendPhoto: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     // richMessages: false routes sendRichOrHtml straight to the mocked sendMessage
     // (the HTML sink), so we assert the rendered card without stubbing the rich API.
     connector = new TelegramConnector({ botToken: 'x', richMessages: false })
     sendMessage = vi.fn().mockResolvedValue({ message_id: 1 })
-    ;(connector as any).bot = { api: { sendMessage } }
+    sendPhoto = vi.fn().mockResolvedValue({ message_id: 2 })
+    ;(connector as any).bot = { api: { sendMessage, sendPhoto } }
   })
 
   it('sends a web_app button with the correct URL when base URL is set', async () => {
@@ -383,6 +388,82 @@ describe('TelegramConnector.sendDashboardCard', () => {
     expect(textArg).toContain('Live group standings + bracket')
     // The contextual emoji also rides the button label.
     expect(optsArg.reply_markup.inline_keyboard[0][0].text).toBe('⚽ Open dashboard')
+  })
+
+  it('leads with a photo (caption + button) when a screenshot is on disk', async () => {
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: true,
+      screenshotPath: '/data/agents/sales/workspace/artifacts/weekly-report/screenshot.png',
+    })
+
+    expect(delivery).toBe('photo')
+    expect(sendPhoto).toHaveBeenCalledOnce()
+    expect(sendMessage).not.toHaveBeenCalled()
+
+    const [chatIdArg, photoArg, optsArg] = sendPhoto.mock.calls[0]
+    expect(chatIdArg).toBe('chat1')
+    // The screenshot path is uploaded as an InputFile.
+    expect((photoArg as { file: unknown }).file).toBe(
+      '/data/agents/sales/workspace/artifacts/weekly-report/screenshot.png',
+    )
+    expect(optsArg.parse_mode).toBe('HTML')
+    expect(optsArg.caption).toContain('Weekly')
+    // Same web_app button as the text-card button path.
+    const button = optsArg.reply_markup.inline_keyboard[0][0]
+    expect(button.text).toBe('📊 Open dashboard')
+    expect(button.web_app.url).toContain('https://host.example/api/telegram-miniapp')
+  })
+
+  it('falls back to the text card with button when the photo send fails', async () => {
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+    sendPhoto.mockRejectedValueOnce(new Error('upload failed'))
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: true,
+      screenshotPath: '/data/agents/sales/workspace/artifacts/weekly-report/screenshot.png',
+    })
+
+    expect(delivery).toBe('button')
+    expect(sendPhoto).toHaveBeenCalledOnce()
+    // Recovered by sending the text card carrying the same button.
+    expect(sendMessage).toHaveBeenCalledOnce()
+    const [, , optsArg] = sendMessage.mock.calls[0]
+    expect(optsArg.reply_markup.inline_keyboard[0][0].web_app.url).toContain('https://host.example')
+
+    warnSpy.mockRestore()
+  })
+
+  it('does not send a photo on the text-fallback path even when a screenshot exists', async () => {
+    // No button (no owner) -> plain-text card; a screenshot must not promote it to a
+    // tappable-looking photo that dead-ends.
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: false,
+      screenshotPath: '/data/agents/sales/workspace/artifacts/weekly-report/screenshot.png',
+    })
+
+    expect(delivery).toBe('text')
+    expect(sendPhoto).not.toHaveBeenCalled()
+    expect(sendMessage).toHaveBeenCalledOnce()
+
+    warnSpy.mockRestore()
   })
 })
 

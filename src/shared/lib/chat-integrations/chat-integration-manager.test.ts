@@ -63,6 +63,25 @@ describe('chatIntegrationManager.shareDashboard', () => {
     })
   })
 
+  it('forwards the screenshot path through to the connector', async () => {
+    const conn = new TelegramConnector({ botToken: 'x' })
+    const spy = vi.spyOn(conn, 'sendDashboardCard').mockResolvedValue('photo')
+    ;(chatIntegrationManager as unknown as { connections: Map<string, unknown> }).connections.set('int1', { connector: conn })
+
+    const delivery = await chatIntegrationManager.shareDashboard('int1', 'chat1', {
+      agentSlug: 'sales',
+      dashboardSlug: 'wr',
+      name: 'WR',
+      allowButton: true,
+      screenshotPath: '/data/sales/wr/screenshot.png',
+    })
+
+    expect(delivery).toBe('photo')
+    expect(spy).toHaveBeenCalledWith('chat1', expect.objectContaining({
+      screenshotPath: '/data/sales/wr/screenshot.png',
+    }))
+  })
+
   it('rejects with "Telegram" error when connector is not a TelegramConnector', async () => {
     ;(chatIntegrationManager as unknown as { connections: Map<string, unknown> }).connections.set('int1', {
       connector: { provider: 'slack' } as unknown,

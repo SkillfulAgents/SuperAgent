@@ -149,8 +149,11 @@ export function markdownToTelegramHtml(md: string): string {
 
 // ── Connector ───────────────────────────────────────────────────────────
 
-/** How a shared dashboard reached the chat: an interactive web_app button, or the plain-text fallback. */
-export type DashboardDelivery = 'button' | 'text'
+/**
+ * How a shared dashboard reached the chat: a photo preview carrying the button,
+ * an interactive web_app button on a text card, or the plain-text fallback.
+ */
+export type DashboardDelivery = 'photo' | 'button' | 'text'
 
 export class TelegramConnector extends ChatClientConnector {
   readonly provider = 'telegram' as const
@@ -636,7 +639,7 @@ export class TelegramConnector extends ChatClientConnector {
 
   async sendDashboardCard(
     chatId: string,
-    opts: { integrationId: string; agentSlug: string; dashboardSlug: string; name: string; allowButton: boolean; emoji?: string; caption?: string },
+    opts: { integrationId: string; agentSlug: string; dashboardSlug: string; name: string; allowButton: boolean; emoji?: string; caption?: string; screenshotPath?: string },
   ): Promise<DashboardDelivery> {
     if (!this.bot) throw new Error('Bot not connected')
     // Render once; send through the same rich-markdown path as every other
@@ -660,9 +663,26 @@ export class TelegramConnector extends ChatClientConnector {
     const url = `${httpsBase.replace(/\/$/, '')}/api/telegram-miniapp?i=${encodeURIComponent(opts.integrationId)}&a=${encodeURIComponent(opts.agentSlug)}&d=${encodeURIComponent(opts.dashboardSlug)}`
     // Carry the contextual emoji onto the button so it ties to the card.
     const buttonLabel = `${resolveDashboardEmoji(opts.emoji)} Open dashboard`
-    await this.sendRichOrHtml(chatId, card, {
-      reply_markup: { inline_keyboard: [[{ text: buttonLabel, web_app: { url } }]] },
-    })
+    const replyMarkup = { inline_keyboard: [[{ text: buttonLabel, web_app: { url } }]] }
+    // Lead with the dashboard screenshot when one is on disk: a visual preview is a
+    // far stronger pull than a title. The card markdown rides as the photo caption
+    // (HTML, like the message path) and the same button sits beneath it. Any photo
+    // failure falls back to the text card carrying the button.
+    if (opts.screenshotPath) {
+      try {
+        const { InputFile } = await import('grammy')
+        await this.bot.api.sendPhoto(chatId, new InputFile(opts.screenshotPath), {
+          caption: this.markdownToHtml(card),
+          parse_mode: 'HTML',
+          reply_markup: replyMarkup,
+        })
+        return 'photo'
+      } catch (err) {
+        console.warn('[telegram] dashboard photo send failed; falling back to the text card with button', err)
+        captureException(err, { tags: { component: 'chat-integration', operation: 'dashboard-photo-fallback' }, extra: { provider: 'telegram', chatId } })
+      }
+    }
+    await this.sendRichOrHtml(chatId, card, { reply_markup: replyMarkup })
     return 'button'
   }
 
