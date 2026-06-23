@@ -189,22 +189,21 @@ xAgentChat.post('/send', async (c) => {
     // Resolve chatId
     let resolvedChatId: string = chat_id
     if (!resolvedChatId) {
-      const sessions = listChatIntegrationSessions(integration_id)
-      const activeChats = sessions.filter((s) => !s.archivedAt)
-      if (activeChats.length === 0) {
+      const resolution = resolveSingleActiveChat(integration_id)
+      if (resolution.kind === 'none') {
         return c.json({
           error: 'No active chats found for this integration. Someone needs to message the bot first, or specify a chat_id directly.',
         }, 400)
       }
-      if (activeChats.length > 1) {
-        const chatList = activeChats.map((s) =>
+      if (resolution.kind === 'many') {
+        const chatList = resolution.chats.map((s) =>
           `  - chatId: ${s.externalChatId}${s.displayName ? ` (${s.displayName})` : ''}`,
         ).join('\n')
         return c.json({
           error: `Multiple active chats — specify chat_id. Available:\n${chatList}`,
         }, 400)
       }
-      resolvedChatId = activeChats[0].externalChatId
+      resolvedChatId = resolution.chatId
     }
 
     if (!isChatAllowed(integration_id, resolvedChatId)) {
@@ -285,11 +284,10 @@ xAgentChat.post('/share-dashboard', zValidator('json', shareDashboardRequestSche
     if (chat_id) {
       resolvedChatId = chat_id
     } else {
-      const sessions = listChatIntegrationSessions(integration.id)
-      const active = sessions.filter((s) => !s.archivedAt)
-      if (active.length === 0) return c.json({ error: 'No active chat for this integration' }, 400)
-      if (active.length > 1) return c.json({ error: 'Multiple active chats; specify chat_id' }, 400)
-      resolvedChatId = active[0].externalChatId
+      const resolution = resolveSingleActiveChat(integration.id)
+      if (resolution.kind === 'none') return c.json({ error: 'No active chat for this integration' }, 400)
+      if (resolution.kind === 'many') return c.json({ error: 'Multiple active chats; specify chat_id' }, 400)
+      resolvedChatId = resolution.chatId
     }
 
     // Same access-control gate as /send: never deliver to a conversation that isn't approved.
@@ -333,6 +331,23 @@ xAgentChat.post('/share-dashboard', zValidator('json', shareDashboardRequestSche
 })
 
 // --- Helpers ---
+
+/**
+ * Resolve the single active (non-archived) chat for an integration when the caller
+ * didn't pass a chat_id. Returns a discriminated result so each route maps it to its
+ * own existing error response rather than sharing one error string.
+ */
+type ActiveChatResolution =
+  | { kind: 'one'; chatId: string }
+  | { kind: 'none' }
+  | { kind: 'many'; chats: ReturnType<typeof listChatIntegrationSessions> }
+
+function resolveSingleActiveChat(integrationId: string): ActiveChatResolution {
+  const active = listChatIntegrationSessions(integrationId).filter((s) => !s.archivedAt)
+  if (active.length === 0) return { kind: 'none' }
+  if (active.length > 1) return { kind: 'many', chats: active }
+  return { kind: 'one', chatId: active[0].externalChatId }
+}
 
 async function notifySessionOfOutboundMessage(
   integrationId: string,

@@ -344,6 +344,40 @@ describe('x-agent chat route', () => {
     expect(connector.sendMessage).toHaveBeenCalledWith('chat-1', { text: 'Hello' })
   })
 
+  it('returns 400 with the no-active-chats message when none can be auto-resolved', async () => {
+    mockListChatIntegrationSessions.mockReturnValue([])
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ integration_id: 'integration-1', message: 'Hello' }),
+    })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('No active chats found')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 listing the chats when more than one is active and no chat_id is given', async () => {
+    mockListChatIntegrationSessions.mockReturnValue([
+      { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
+      { externalChatId: 'chat-2', displayName: 'Sales', archivedAt: null },
+    ])
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ integration_id: 'integration-1', message: 'Hello' }),
+    })
+
+    expect(res.status).toBe(400)
+    const error: string = (await res.json()).error
+    expect(error).toContain('Multiple active chats')
+    expect(error).toContain('chat-1 (General)')
+    expect(error).toContain('chat-2 (Sales)')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
   describe('POST /share-dashboard', () => {
     function createTelegramIntegration(overrides: Record<string, unknown> = {}) {
       return createIntegration({ provider: 'telegram', status: 'active', createdByUserId: 'owner-1', ...overrides })
@@ -369,6 +403,37 @@ describe('x-agent chat route', () => {
         'chat-1',
         { agentSlug: 'agent-one', dashboardSlug: 'weekly-report', name: 'Weekly', allowButton: true },
       )
+    })
+
+    it('returns 400 when no chat can be auto-resolved', async () => {
+      mockListChatIntegrationSessions.mockReturnValue([])
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'No active chat for this integration' })
+      expect(mockShareDashboard).not.toHaveBeenCalled()
+    })
+
+    it('returns 400 when more than one chat is active and no chat_id is given', async () => {
+      mockListChatIntegrationSessions.mockReturnValue([
+        { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
+        { externalChatId: 'chat-2', displayName: 'Sales', archivedAt: null },
+      ])
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'Multiple active chats; specify chat_id' })
+      expect(mockShareDashboard).not.toHaveBeenCalled()
     })
 
     it('forwards emoji and caption from the request body to the connector', async () => {
