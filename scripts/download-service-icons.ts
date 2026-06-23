@@ -30,7 +30,7 @@ const ALL_SLUGS = [
   'ramp', 'morningstar', 'dodo-payments', 'mercadolibre', 'mercadopago',
   'amplitude', 'ahrefs', 'thoughtspot', 'meta-ads', 'octagon', 'egnyte',
   'canva', 'cloudinary', 'invideo', 'exa', 'jina', 'apify', 'deepwiki',
-  'huggingface', 'aws-knowledge', 'context7', 'microsoft-learn', 'tally',
+  'huggingface', 'context7', 'microsoft-learn', 'tally',
   'zapier', 'pipedream', 'composio', 'make', 'waystation', 'indeed',
   'backdocket', 'peek', 'ean-search', 'supermemory', 'globalping', 'short-io',
 ]
@@ -54,7 +54,6 @@ const SLUG_TO_API_NAME: Record<string, string> = {
   'googlemeet': 'google-meet',
   'googletasks': 'google-tasks',
   'dodo-payments': 'dodo',
-  'aws-knowledge': 'aws',
   'microsoft-learn': 'microsoft',
   'meta-ads': 'meta',
   'ean-search': 'ean',
