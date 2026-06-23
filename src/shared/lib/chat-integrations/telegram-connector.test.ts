@@ -362,8 +362,8 @@ describe('TelegramConnector.sendDashboardCard', () => {
 })
 
 describe('renderDashboardCard', () => {
-  it('renders a bold "<emoji> <name>" title with the caption on its own line (blank line so Telegram does not collapse it)', () => {
-    expect(renderDashboardCard('Weekly', '⚽', 'Live standings')).toBe('**⚽ Weekly**\n\nLive standings')
+  it('renders a bold "<emoji> <name>" title with an italic caption on its own line (blank line so Telegram does not collapse it)', () => {
+    expect(renderDashboardCard('Weekly', '⚽', 'Live standings')).toBe('**⚽ Weekly**\n\n_Live standings_')
   })
 
   it('defaults to a chart emoji when none is supplied', () => {
