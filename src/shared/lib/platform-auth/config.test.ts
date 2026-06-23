@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getPlatformBaseUrl, getPlatformProxyBaseUrl } from './config'
+import { getPlatformBaseUrl, getPlatformProxyBaseUrl, httpsBaseUrlOrEmpty } from './config'
 
 describe('platform auth config', () => {
   afterEach(() => {
@@ -26,5 +26,20 @@ describe('platform auth config', () => {
     vi.stubGlobal('__PLATFORM_PROXY_URL__', 'https://proxy.example.com/v1/')
 
     expect(getPlatformProxyBaseUrl()).toBe('https://proxy.example.com')
+  })
+
+  describe('httpsBaseUrlOrEmpty', () => {
+    it('returns the URL unchanged when it is https', () => {
+      expect(httpsBaseUrlOrEmpty('https://host.example')).toBe('https://host.example')
+    })
+
+    it('returns empty string for a non-https (http) URL', () => {
+      expect(httpsBaseUrlOrEmpty('http://host.example')).toBe('')
+    })
+
+    it('returns empty string for an empty or malformed URL', () => {
+      expect(httpsBaseUrlOrEmpty('')).toBe('')
+      expect(httpsBaseUrlOrEmpty('not a url')).toBe('')
+    })
   })
 })

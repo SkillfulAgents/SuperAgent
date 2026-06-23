@@ -16,7 +16,7 @@ import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
-import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
+import { getPlatformBaseUrl, httpsBaseUrlOrEmpty } from '@shared/lib/platform-auth/config'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -52,19 +52,6 @@ const DASHBOARD_DEFAULT_EMOJI = '📊'
 /** Resolve the card's icon: the agent's emoji if given, else the default. */
 export function resolveDashboardEmoji(emoji?: string): string {
   return emoji?.trim() || DASHBOARD_DEFAULT_EMOJI
-}
-
-/**
- * A Telegram web_app button only accepts a public https URL. Return the base URL
- * when it parses as https, otherwise the empty string so callers treat a missing,
- * malformed, or http base the same way and fall back to the plain-text card.
- */
-export function httpsBaseUrlOrEmpty(base: string): string {
-  try {
-    return new URL(base).protocol === 'https:' ? base : ''
-  } catch {
-    return ''
-  }
 }
 
 /**

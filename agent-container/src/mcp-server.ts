@@ -127,16 +127,27 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
   })
 }
 
+/**
+ * The chat tool set. share_dashboard is registered only when the host signals,
+ * via SHARE_DASHBOARD_ENABLED, that the deployment can host a public Telegram
+ * Mini App (a public https base URL). Without one the tool could only ever
+ * degrade to a plain-text message naming the dashboard — redundant with the
+ * agent's own reply — so it is omitted rather than exposed.
+ */
+export function chatToolList() {
+  return [
+    listAvailableChatProvidersTool,
+    listChatIntegrationsTool,
+    addChatIntegrationTool,
+    sendChatMessageTool,
+    ...(process.env.SHARE_DASHBOARD_ENABLED === 'true' ? [shareDashboardTool] : []),
+  ]
+}
+
 export function createChatMcpServer() {
   return createSdkMcpServer({
     name: 'chat',
     version: '1.0.0',
-    tools: [
-      listAvailableChatProvidersTool,
-      listChatIntegrationsTool,
-      addChatIntegrationTool,
-      sendChatMessageTool,
-      shareDashboardTool,
-    ],
+    tools: chatToolList(),
   })
 }

@@ -300,6 +300,46 @@ describe('containerManager.ensureRunning — env var construction', () => {
     const startOpts = mockStart.mock.calls[0][0]
     expect(startOpts.envVars.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0')
   })
+
+  // The agent only gets the share_dashboard tool when the deployment can host a
+  // public Telegram Mini App. That capability is gated host-side on a public
+  // https base URL; without one the tool can never produce a button, so we don't
+  // register it at all (the container reads SHARE_DASHBOARD_ENABLED).
+  describe('SHARE_DASHBOARD_ENABLED capability flag', () => {
+    afterEach(() => {
+      delete process.env.PLATFORM_BASE_URL
+    })
+
+    it("is 'true' when a public https platform base URL is configured", async () => {
+      setupAccountMocks([])
+      process.env.PLATFORM_BASE_URL = 'https://app.example.com'
+
+      await containerManager.ensureRunning('test-agent')
+
+      const startOpts = mockStart.mock.calls[0][0]
+      expect(startOpts.envVars.SHARE_DASHBOARD_ENABLED).toBe('true')
+    })
+
+    it('is unset when there is no public base URL', async () => {
+      setupAccountMocks([])
+      delete process.env.PLATFORM_BASE_URL
+
+      await containerManager.ensureRunning('test-agent')
+
+      const startOpts = mockStart.mock.calls[0][0]
+      expect(startOpts.envVars.SHARE_DASHBOARD_ENABLED).toBeUndefined()
+    })
+
+    it('is unset for a non-https (http) base URL', async () => {
+      setupAccountMocks([])
+      process.env.PLATFORM_BASE_URL = 'http://localhost:47891'
+
+      await containerManager.ensureRunning('test-agent')
+
+      const startOpts = mockStart.mock.calls[0][0]
+      expect(startOpts.envVars.SHARE_DASHBOARD_ENABLED).toBeUndefined()
+    })
+  })
 })
 
 // ============================================================================

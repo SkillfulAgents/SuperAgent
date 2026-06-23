@@ -33,6 +33,8 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   'HOST_PLATFORM',
   'COMPOSIO_PLATFORM_MODE',
   'CLAUDE_CODE_ATTRIBUTION_HEADER',
+  // Capability flags
+  'SHARE_DASHBOARD_ENABLED',
 ])
 
 /** True when `key` is a reserved runtime env var that custom config must not override. */

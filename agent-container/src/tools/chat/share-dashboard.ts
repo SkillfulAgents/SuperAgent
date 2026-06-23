@@ -36,7 +36,7 @@ export const shareDashboardTool = tool(
 
 Pass the dashboard's slug (see list_dashboards for slugs), plus a fitting emoji and a short one-line caption so the share card reads as an inviting card rather than a bare name (e.g. emoji "⚽", caption "Live group standings + bracket"). The chat is resolved automatically when you have a single active Telegram integration with one active chat; otherwise pass integration_id and/or chat_id (use list_chat_integrations to find them).
 
-Telegram only. If no public web URL is configured, the bot sends a plain text message naming the dashboard instead of a button.`,
+Telegram only.`,
   shareDashboardInput,
   shareDashboardHandler,
 )

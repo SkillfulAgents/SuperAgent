@@ -20,6 +20,20 @@ export function getPlatformBaseUrl(): string {
 }
 
 /**
+ * A Telegram web_app button (and anything else that opens in a public webview)
+ * only accepts a public https URL. Return the base URL when it parses as https,
+ * otherwise the empty string so callers treat a missing, malformed, or http base
+ * the same way and fall back to a non-interactive surface.
+ */
+export function httpsBaseUrlOrEmpty(base: string): string {
+  try {
+    return new URL(base).protocol === 'https:' ? base : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Resolve the platform proxy base URL (no trailing slash, no /v1 suffix).
  * Used by the LLM provider, STT provider, and Composio client.
  */
