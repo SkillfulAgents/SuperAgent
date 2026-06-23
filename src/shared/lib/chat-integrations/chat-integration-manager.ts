@@ -1716,25 +1716,26 @@ export async function resolvePendingToolMessages(managed: ManagedConnector): Pro
 export async function finalizeStreaming(managed: ManagedConnector): Promise<void> {
   const finalText = managed.streamingState.accumulatedText
   if (!finalText) return
+  const messageId = managed.streamingState.currentMessageId
 
-  if (managed.streamingState.currentMessageId) {
+  // Claim the buffer synchronously, before the first await, so a concurrent
+  // finalize (e.g. the idle watchdog tearing down while a late stream event is
+  // processed) reads an empty buffer and can't double-send the same text. The
+  // reset previously ran only after the await, leaving that window open.
+  managed.streamingState = {
+    currentMessageId: null,
+    accumulatedText: '',
+    lastUpdateTime: 0,
+  }
+
+  if (messageId) {
     try {
-      await managed.connector.finalizeStreamingMessage(
-        managed.chatId,
-        managed.streamingState.currentMessageId,
-        finalText,
-      )
+      await managed.connector.finalizeStreamingMessage(managed.chatId, messageId, finalText)
     } catch {
       await managed.connector.sendMessage(managed.chatId, { text: finalText })
     }
   } else {
     await managed.connector.sendMessage(managed.chatId, { text: finalText })
-  }
-
-  managed.streamingState = {
-    currentMessageId: null,
-    accumulatedText: '',
-    lastUpdateTime: 0,
   }
 }
 

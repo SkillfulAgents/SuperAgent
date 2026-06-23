@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { processSSEEvent, type ManagedConnector } from './chat-integration-manager'
+import { processSSEEvent, finalizeStreaming, type ManagedConnector } from './chat-integration-manager'
 import { TelegramConnector } from './telegram-connector'
 import { MockChatClientConnector } from './mock-connector'
 import type { ChatIntegration } from '@shared/lib/db/schema'
@@ -291,6 +291,25 @@ describe('REPRO: idle-silence watchdog', () => {
 // sanitized message keyed off apiErrorCode. The producer puts the raw internal
 // error (which can carry file paths / tokens) in `data.error`; the consumer must
 // read only `apiErrorCode` and never echo `data.error` into the chat.
+
+// ── finalizeStreaming is synchronously idempotent ──────────────────────────
+// The watchdog tears down off the per-chat SSE queue, so its settleTurn can race
+// a late stream event that also finalizes. finalizeStreaming must claim its buffer
+// before its first await, so two concurrent calls send the final text only once.
+
+describe('finalizeStreaming: concurrent calls send the final text exactly once', () => {
+  it('claims the buffer synchronously, so a racing finalize is a no-op', async () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-fin')
+    managed.streamingState = { currentMessageId: null, accumulatedText: 'final answer', lastUpdateTime: 0 }
+
+    await Promise.all([finalizeStreaming(managed), finalizeStreaming(managed)])
+
+    const finalSends = connector.sentMessages.filter((m) => m.message.text === 'final answer')
+    expect(finalSends.length).toBe(1)
+    expect(managed.streamingState.accumulatedText).toBe('')
+  })
+})
 
 describe('session_error: curated message by apiErrorCode, raw error never leaked', () => {
   const RAW_LEAK = '/Users/secret/path tok-abc123 stack-trace-line'
