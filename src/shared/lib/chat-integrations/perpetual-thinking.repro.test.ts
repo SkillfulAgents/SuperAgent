@@ -319,6 +319,31 @@ describe('REPRO: idle-silence watchdog', () => {
       vi.useRealTimers()
     }
   })
+
+  it('emits at most ONE stall notice per turn, even if it stalls again in a later segment', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-watch')
+
+      // Segment 1 of the turn: arm, then total silence trips the watchdog → notice #1.
+      await processSSEEvent(managed, { type: 'stream_start' })
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 1000)
+
+      // Same turn continues (a new segment, NO new user dispatch in between) and
+      // stalls again. The once-per-turn latch — reset at dispatch, not per
+      // segment — must suppress a second notice.
+      await processSSEEvent(managed, { type: 'stream_start' })
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 1000)
+
+      const stallNotices = connector.sentMessages.filter((m) =>
+        /taking longer|send your message again/i.test(m.message.text),
+      )
+      expect(stallNotices.length).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 // ── session_error → curated, code-specific message (and NEVER the raw error) ──

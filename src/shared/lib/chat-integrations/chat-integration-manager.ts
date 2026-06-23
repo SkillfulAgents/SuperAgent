@@ -146,9 +146,9 @@ export interface ManagedConnector {
   // working indicator is shown, reset on every SSE event, cleared on teardown.
   watchdogTimer?: ReturnType<typeof setTimeout> | null
   // True once a terminal user-facing notice (the session_error message or the
-  // watchdog stall notice) has gone out for the current turn, so a watchdog /
-  // session_error overlap can't double-notify. Reset whenever the indicator is
-  // (re)armed for a new turn or segment.
+  // watchdog stall notice) has gone out for the current turn, so a turn can't
+  // emit repeated/duplicate notices. Reset once per turn at dispatch (not per
+  // segment), so a multi-stall turn still yields at most one notice.
   turnNotified?: boolean
 }
 
@@ -845,6 +845,11 @@ class ChatIntegrationManager {
     // Show the "Thinking…" indicator (the connector keeps it alive) until the first token streams.
     const dispatched = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
     if (dispatched) {
+      // New user turn: re-allow exactly one terminal notice (the watchdog stall
+      // notice OR the session_error message). Reset here, once per turn, rather
+      // than on every stream_start, so a single multi-stall turn can't emit
+      // repeated notices.
+      dispatched.turnNotified = false
       dispatched.connector.startWorking(dispatched.chatId).catch(() => {})
       armWorkingWatchdog(dispatched)
     }
@@ -1462,8 +1467,6 @@ function clearWorkingWatchdog(managed: ManagedConnector): void {
  */
 function armWorkingWatchdog(managed: ManagedConnector): void {
   clearWorkingWatchdog(managed)
-  // A freshly-shown indicator is a fresh turn/segment: allow one terminal notice.
-  managed.turnNotified = false
   const timer = setTimeout(() => {
     // Ignore a stale fire. If the watchdog was cleared or re-armed after this
     // timer was scheduled (clearTimeout can't un-queue an already-fired timer),
