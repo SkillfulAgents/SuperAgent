@@ -55,6 +55,19 @@ export function resolveDashboardEmoji(emoji?: string): string {
 }
 
 /**
+ * A Telegram web_app button only accepts a public https URL. Return the base URL
+ * when it parses as https, otherwise the empty string so callers treat a missing,
+ * malformed, or http base the same way and fall back to the plain-text card.
+ */
+export function httpsBaseUrlOrEmpty(base: string): string {
+  try {
+    return new URL(base).protocol === 'https:' ? base : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Render the dashboard share card body as markdown: a bold "<emoji> <name>"
  * title with an optional italic blurb as a subtitle on its own line. Goes through
  * the same rich-markdown send path as every other outbound message (rich, with an
@@ -630,20 +643,21 @@ export class TelegramConnector extends ChatClientConnector {
     // outbound message (rich with an HTML fallback), so the card formats
     // consistently whether or not it carries the button.
     const card = renderDashboardCard(opts.name, opts.emoji, opts.caption)
-    const base = getPlatformBaseUrl()
-    // A working button needs both a public URL to point at and a caller that's
-    // cleared to mint a Mini App cookie (allowButton). Without either, send the
-    // formatted card as text rather than a button that would dead-end when tapped.
-    if (!base || !opts.allowButton) {
+    const httpsBase = httpsBaseUrlOrEmpty(getPlatformBaseUrl())
+    // A working button needs both a public https URL to point at (Telegram rejects
+    // anything else) and a caller that's cleared to mint a Mini App cookie
+    // (allowButton). Without either, send the formatted card as text rather than a
+    // button that would dead-end when tapped.
+    if (!httpsBase || !opts.allowButton) {
       await this.sendRichOrHtml(chatId, card)
-      if (!base) {
+      if (!httpsBase) {
         console.warn('[telegram] dashboard sharing needs a public HTTPS base URL (web/server mode); sent plain text without the Open dashboard button')
       } else {
         console.warn('[telegram] dashboard integration has no owner to act as; sent plain text without the Open dashboard button')
       }
       return 'text'
     }
-    const url = `${base.replace(/\/$/, '')}/api/telegram-miniapp?i=${encodeURIComponent(opts.integrationId)}&a=${encodeURIComponent(opts.agentSlug)}&d=${encodeURIComponent(opts.dashboardSlug)}`
+    const url = `${httpsBase.replace(/\/$/, '')}/api/telegram-miniapp?i=${encodeURIComponent(opts.integrationId)}&a=${encodeURIComponent(opts.agentSlug)}&d=${encodeURIComponent(opts.dashboardSlug)}`
     // Carry the contextual emoji onto the button so it ties to the card.
     const buttonLabel = `${resolveDashboardEmoji(opts.emoji)} Open dashboard`
     await this.sendRichOrHtml(chatId, card, {

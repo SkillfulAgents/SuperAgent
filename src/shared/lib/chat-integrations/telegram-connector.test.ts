@@ -314,6 +314,31 @@ describe('TelegramConnector.sendDashboardCard', () => {
     warnSpy.mockRestore()
   })
 
+  it('sends plain text with no web_app button when the base URL is not https', async () => {
+    // A web_app button requires an https URL; an http base would dead-end on tap,
+    // so treat it the same as no base URL and fall back to the plain-text card.
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('http://host.example')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: true,
+    })
+
+    expect(delivery).toBe('text')
+    expect(sendMessage).toHaveBeenCalledOnce()
+    const [, , optsArg] = sendMessage.mock.calls[0]
+    expect(optsArg?.reply_markup).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('public HTTPS base URL'),
+    )
+
+    warnSpy.mockRestore()
+  })
+
   it('sends plain text with no button when allowButton is false even if base URL is set', async () => {
     // No integration owner to act as -> the button would dead-end on tap, so the
     // connector must fall back to plain text despite a configured base URL.
