@@ -139,6 +139,31 @@ describe('REPRO: perpetual "Thinking…" after a non-idle terminal event', () =>
     }
   })
 
+  it('LEAKS (race): a fire-and-forget startWorking must register the heartbeat before its send, so a racing stopWorking clears it', async () => {
+    vi.useFakeTimers()
+    try {
+      const { connector, sendRichMessageDraft } = makeRealDmConnector()
+
+      // Real dispatch / stream_start call startWorking fire-and-forget (un-awaited).
+      // If the keep-alive interval is registered only AFTER the initial awaited send,
+      // a terminal stopWorking that runs in that window finds no timer, and the late
+      // startWorking installs one after teardown — "Thinking…" leaks. The fix
+      // registers the interval synchronously, before the await.
+      void connector.startWorking(DM_CHAT)
+      // A terminal event settles the turn immediately, before the initial send resolves.
+      await connector.stopWorking(DM_CHAT)
+      // Let the in-flight startWorking send resolve.
+      await vi.advanceTimersByTimeAsync(1)
+      const sendsAfterStop = sendRichMessageDraft.mock.calls.length
+
+      // No heartbeat should remain after the racing stop.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(sendRichMessageDraft.mock.calls.length).toBe(sendsAfterStop)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('CONTROL: the same flow ending in session_idle correctly stops the heartbeat', async () => {
     vi.useFakeTimers()
     try {
