@@ -2,7 +2,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { callChatHost, textResult, XAgentError } from './host-client'
 
-interface ShareResult { chatId: string; delivery: 'button' | 'text' }
+interface ShareResult { chatId: string; delivery: 'photo' | 'button' | 'text' }
 
 export const shareDashboardInput = {
   slug: z.string().regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/, 'Slug must be lowercase alphanumeric with hyphens, not starting/ending with hyphen').describe('Slug of the existing dashboard to share'),
@@ -15,9 +15,14 @@ export const shareDashboardInput = {
 export async function shareDashboardHandler({ slug, emoji, caption, integration_id, chat_id }: { slug: string; emoji?: string; caption?: string; integration_id?: string; chat_id?: string }) {
   try {
     const data = await callChatHost<ShareResult>('share-dashboard', { slug, emoji, caption, integration_id, chat_id })
-    const message = data.delivery === 'button'
-      ? `Shared dashboard "${slug}" to chat ${data.chatId}. The user can tap "Open dashboard" to open it inside Telegram.`
-      : `Shared dashboard "${slug}" to chat ${data.chatId} as a plain-text message. The user sees the dashboard name but no clickable "Open dashboard" button. Don't point them to a button that isn't there.`
+    let message: string
+    if (data.delivery === 'text') {
+      message = `Shared dashboard "${slug}" to chat ${data.chatId} as a plain-text message. The user sees the dashboard name but no clickable "Open dashboard" button. Don't point them to a button that isn't there.`
+    } else if (data.delivery === 'photo') {
+      message = `Shared dashboard "${slug}" to chat ${data.chatId} as a photo preview with a tappable "Open dashboard" button. The user can tap it to open the dashboard inside Telegram.`
+    } else {
+      message = `Shared dashboard "${slug}" to chat ${data.chatId}. The user can tap "Open dashboard" to open it inside Telegram.`
+    }
     return textResult(message)
   } catch (error) {
     const msg = error instanceof XAgentError ? error.message : String(error)

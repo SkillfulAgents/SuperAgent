@@ -43,6 +43,19 @@ describe('shareDashboardHandler', () => {
     })
   })
 
+  it('success (photo): tells the agent a photo preview carrying the tappable button was sent', async () => {
+    vi.mocked(callChatHost).mockResolvedValue({ chatId: 'chat1', delivery: 'photo' })
+
+    const result = await shareDashboardHandler({ slug: 'weekly-report' })
+
+    expect(result.isError).toBeFalsy()
+    expect(result.content[0].text).toContain('weekly-report')
+    expect(result.content[0].text).toContain('photo')
+    expect(result.content[0].text).toContain('Open dashboard')
+    // The photo card DOES carry the button — must not claim it's a buttonless plain-text message.
+    expect(result.content[0].text).not.toContain('plain-text')
+  })
+
   it('success (text fallback): tells the agent a plain-text message was sent with no button', async () => {
     vi.mocked(callChatHost).mockResolvedValue({ chatId: 'chat1', delivery: 'text' })
 
