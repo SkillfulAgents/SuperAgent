@@ -1241,6 +1241,16 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'Task scheduled successfully. ID: task_123',
       'I\'ve scheduled the daily issue summary task.'
     )],
+    // Wide, many-column markdown table to exercise table breakout (SUP-319).
+    ['wide table', new SimpleTextResponseScenario(
+      'Here is the quarterly breakdown:\n\n' +
+      '| Region | Q1 Revenue | Q2 Revenue | Q3 Revenue | Q4 Revenue | Headcount | Churn % | NPS | CAC | LTV |\n' +
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n' +
+      '| North America | $1,240,000 | $1,380,000 | $1,510,000 | $1,720,000 | 142 | 3.2% | 48 | $310 | $4,200 |\n' +
+      '| Europe | $980,000 | $1,050,000 | $1,190,000 | $1,330,000 | 118 | 4.1% | 41 | $290 | $3,800 |\n' +
+      '| Asia Pacific | $720,000 | $860,000 | $1,020,000 | $1,240,000 | 96 | 5.0% | 39 | $265 | $3,500 |\n' +
+      '| Latin America | $410,000 | $470,000 | $540,000 | $620,000 | 54 | 6.3% | 35 | $240 | $3,100 |\n'
+    )],
   ])
   static defaultScenario: MockScenario = new SimpleTextResponseScenario(
     'This is a mock response from the E2E test container.'

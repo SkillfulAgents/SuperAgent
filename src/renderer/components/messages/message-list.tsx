@@ -661,7 +661,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
   return (
     <div className="relative flex-1 min-h-0 overflow-hidden">
-      <div className="overflow-y-auto h-full" style={{ overflowAnchor: 'none' }} ref={scrollRef} onScroll={handleScroll} data-testid="message-list">
+      <div className="overflow-y-auto h-full" style={{ overflowAnchor: 'none' }} ref={scrollRef} onScroll={handleScroll} data-testid="message-list" data-message-content-area>
         <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-14 space-y-4">
         {hiddenCount > 0 && (
           <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
