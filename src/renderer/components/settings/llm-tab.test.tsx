@@ -25,6 +25,9 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
 import { LlmTab } from './llm-tab'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 
+type TestProvider = 'anthropic' | 'openrouter' | 'platform'
+type TestUser = ReturnType<typeof userEvent.setup>
+
 const BUILTIN: ModelDefinition[] = [
   {
     id: 'gpt-5.4',
@@ -48,10 +51,14 @@ const BUILTIN: ModelDefinition[] = [
 function renderWithSettings(options?: {
   modelCatalog?: Record<string, { overrides: unknown[] }>
   catalog?: ModelDefinition[]
-  providerId?: 'platform' | 'openrouter'
+  providerId?: TestProvider
   modelSearch?: boolean
 }) {
-  const providerId = options?.providerId ?? 'platform'
+  // Default to a self-managed provider so the catalog editor is rendered (the
+  // platform provider intentionally hides it).
+  const providerId = options?.providerId ?? 'anthropic'
+  const providerName =
+    providerId === 'openrouter' ? 'OpenRouter' : providerId === 'platform' ? 'Platform' : 'Anthropic'
   useSettingsMock.mockReturnValue({
     isLoading: false,
     data: {
@@ -59,7 +66,7 @@ function renderWithSettings(options?: {
       llmProviderStatus: [
         {
           id: providerId,
-          name: providerId === 'openrouter' ? 'OpenRouter' : 'Platform',
+          name: providerName,
           isConfigured: true,
           catalog: options?.catalog ?? BUILTIN,
           builtinCatalog: BUILTIN,
@@ -81,6 +88,11 @@ function renderWithSettings(options?: {
   return render(<LlmTab />)
 }
 
+/** The catalog editor is collapsed by default; open it before touching rows. */
+async function openCatalog(user: TestUser) {
+  await user.click(screen.getByTestId('catalog-disclosure-trigger'))
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   apiFetchMock.mockResolvedValue({
@@ -96,22 +108,41 @@ beforeEach(() => {
 })
 
 describe('LlmTab model catalog editor', () => {
+  it('keeps the catalog collapsed until the disclosure is opened', async () => {
+    const user = userEvent.setup()
+    renderWithSettings()
+
+    // Editor wrapper is present, but rows are hidden behind the disclosure.
+    expect(screen.getByTestId('model-catalog-editor')).toBeInTheDocument()
+    expect(screen.queryByTestId('catalog-toggle-gpt-5.5')).not.toBeInTheDocument()
+
+    await openCatalog(user)
+    expect(screen.getByTestId('catalog-toggle-gpt-5.5')).toBeInTheDocument()
+  })
+
+  it('does not render the catalog editor for the platform provider', () => {
+    renderWithSettings({ providerId: 'platform' })
+    expect(screen.queryByTestId('model-catalog-editor')).not.toBeInTheDocument()
+  })
+
   it('toggles a built-in model by writing a disabled override', async () => {
     const user = userEvent.setup()
     renderWithSettings()
+    await openCatalog(user)
 
     await user.click(screen.getByTestId('catalog-toggle-gpt-5.5'))
 
     expect(mutateMock).toHaveBeenCalledWith({
       modelCatalog: {
-        platform: { overrides: [{ id: 'gpt-5.5', disabled: true }] },
+        anthropic: { overrides: [{ id: 'gpt-5.5', disabled: true }] },
       },
     })
   })
 
-  it('opens a customization modal from the built-in row gear and writes pricing patches', async () => {
+  it('opens a pricing modal from the built-in row gear and writes pricing patches', async () => {
     const user = userEvent.setup()
     const firstRender = renderWithSettings()
+    await openCatalog(user)
 
     await user.click(screen.getByTestId('catalog-customize-gpt-5.5'))
     expect(screen.getByLabelText('Input price')).toBe(screen.getByTestId('catalog-builtin-price-input'))
@@ -126,7 +157,7 @@ describe('LlmTab model catalog editor', () => {
 
     expect(mutateMock).toHaveBeenCalledWith({
       modelCatalog: {
-        platform: {
+        anthropic: {
           overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 30 } }],
         },
       },
@@ -136,11 +167,12 @@ describe('LlmTab model catalog editor', () => {
     firstRender.unmount()
     renderWithSettings({
       modelCatalog: {
-        platform: {
+        anthropic: {
           overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 30 } }],
         },
       },
     })
+    fireEvent.click(screen.getByTestId('catalog-disclosure-trigger'))
     fireEvent.click(screen.getByTestId('catalog-customize-gpt-5.5'))
     fireEvent.click(screen.getByTestId('catalog-reset-pricing-gpt-5.5'))
     expect(mutateMock).toHaveBeenCalledWith({ modelCatalog: {} })
@@ -149,6 +181,7 @@ describe('LlmTab model catalog editor', () => {
   it('requires a label and effort before adding a custom model', async () => {
     const user = userEvent.setup()
     renderWithSettings()
+    await openCatalog(user)
 
     await user.click(screen.getByTestId('catalog-open-add-custom-model'))
     expect(screen.getByLabelText('Model ID')).toBeInTheDocument()
@@ -166,7 +199,7 @@ describe('LlmTab model catalog editor', () => {
 
     expect(mutateMock).toHaveBeenCalledWith({
       modelCatalog: {
-        platform: {
+        anthropic: {
           overrides: [
             {
               id: 'custom-model-1',
@@ -186,6 +219,7 @@ describe('LlmTab model catalog editor', () => {
       json: async () => ({ icon: 'uploaded:test-icon.svg' }),
     })
     renderWithSettings()
+    await openCatalog(user)
 
     await user.click(screen.getByTestId('catalog-open-add-custom-model'))
     await user.upload(
@@ -205,7 +239,7 @@ describe('LlmTab model catalog editor', () => {
 
     expect(mutateMock).toHaveBeenCalledWith({
       modelCatalog: {
-        platform: {
+        anthropic: {
           overrides: [
             {
               id: 'custom-model-1',
@@ -232,6 +266,7 @@ describe('LlmTab model catalog editor', () => {
           pricing: { inputPerMtok: 0.4, outputPerMtok: 1.2 },
           contextWindow: 262144,
           supportsWebSearch: false,
+          supportsImageInput: true,
         },
       ],
       isLoading: false,
@@ -239,6 +274,7 @@ describe('LlmTab model catalog editor', () => {
       error: null,
     })
     renderWithSettings({ providerId: 'openrouter', modelSearch: true })
+    await openCatalog(user)
 
     await user.click(screen.getByTestId('catalog-open-add-custom-model'))
     await user.type(screen.getByLabelText('Search provider models'), 'qwen')
@@ -269,6 +305,59 @@ describe('LlmTab model catalog editor', () => {
               pricing: { inputPerMtok: 0.4, outputPerMtok: 1.2 },
               contextWindow: 262144,
               supportsWebSearch: false,
+              supportsImageInput: true,
+            },
+          ],
+        },
+      },
+    })
+  })
+
+  it('fully edits a custom model from its row gear, preserving id and carried-through fields', async () => {
+    const user = userEvent.setup()
+    const custom: ModelDefinition = {
+      id: 'custom-model-1',
+      label: 'Custom Model',
+      family: 'custom',
+      icon: 'uploaded:test-icon.svg',
+      blurb: 'A carried-through blurb.',
+      contextWindow: 100000,
+      supportsWebSearch: false,
+      supportedEfforts: ['low'],
+      pricing: { inputPerMtok: 1, outputPerMtok: 2 },
+    }
+    renderWithSettings({
+      modelCatalog: { anthropic: { overrides: [custom] } },
+      catalog: [BUILTIN[0], custom],
+    })
+    await openCatalog(user)
+
+    // Built-in gear is pricing-only; the custom gear opens the full editor.
+    await user.click(screen.getByTestId('catalog-customize-custom-model-1'))
+    expect(screen.getByLabelText('Model ID')).toHaveValue('custom-model-1')
+    expect(screen.getByLabelText('Model ID')).toBeDisabled()
+    expect(screen.getByLabelText('Display label')).toHaveValue('Custom Model')
+    expect(screen.getByLabelText('Family')).toHaveValue('custom')
+
+    const labelField = screen.getByLabelText('Display label')
+    await user.clear(labelField)
+    await user.type(labelField, 'Renamed Model')
+    await user.click(screen.getByTestId('catalog-save-custom-model'))
+
+    expect(mutateMock).toHaveBeenCalledWith({
+      modelCatalog: {
+        anthropic: {
+          overrides: [
+            {
+              id: 'custom-model-1',
+              label: 'Renamed Model',
+              family: 'custom',
+              icon: 'uploaded:test-icon.svg',
+              supportedEfforts: ['low'],
+              pricing: { inputPerMtok: 1, outputPerMtok: 2 },
+              blurb: 'A carried-through blurb.',
+              contextWindow: 100000,
+              supportsWebSearch: false,
             },
           ],
         },
@@ -287,7 +376,7 @@ describe('LlmTab model catalog editor', () => {
 
     renderWithSettings({
       modelCatalog: {
-        platform: {
+        anthropic: {
           overrides: [
             { id: 'gpt-5.5', disabled: true },
             {
@@ -301,9 +390,10 @@ describe('LlmTab model catalog editor', () => {
       },
       catalog: [BUILTIN[0], custom],
     })
+    await openCatalog(user)
 
     expect(screen.getByText('GPT-5.5')).toBeInTheDocument()
-    expect(screen.getByText('$1/$2')).toBeInTheDocument()
+    expect(screen.getByText('$1/$2/MTok')).toBeInTheDocument()
     expect(screen.getByTestId('catalog-toggle-custom-model-1')).toHaveAttribute('data-state', 'checked')
     expect(screen.getByTestId('catalog-customize-custom-model-1')).toBeInTheDocument()
     await user.click(screen.getByTestId('catalog-remove-custom-custom-model-1'))
@@ -312,7 +402,7 @@ describe('LlmTab model catalog editor', () => {
 
     expect(mutateMock).toHaveBeenCalledWith({
       modelCatalog: {
-        platform: { overrides: [{ id: 'gpt-5.5', disabled: true }] },
+        anthropic: { overrides: [{ id: 'gpt-5.5', disabled: true }] },
       },
     })
   })
@@ -329,18 +419,19 @@ describe('LlmTab model catalog editor', () => {
     }
     const firstRender = renderWithSettings({
       modelCatalog: {
-        platform: {
+        anthropic: {
           overrides: [customOverride],
         },
       },
       catalog: [BUILTIN[0], customOverride],
     })
+    await openCatalog(user)
 
     await user.click(screen.getByTestId('catalog-toggle-custom-model-1'))
 
     expect(mutateMock).toHaveBeenCalledWith({
       modelCatalog: {
-        platform: {
+        anthropic: {
           overrides: [{ ...customOverride, disabled: true }],
         },
       },
@@ -350,22 +441,23 @@ describe('LlmTab model catalog editor', () => {
     firstRender.unmount()
     renderWithSettings({
       modelCatalog: {
-        platform: {
+        anthropic: {
           overrides: [{ ...customOverride, disabled: true }],
         },
       },
       catalog: BUILTIN,
     })
+    await openCatalog(user)
 
     expect(screen.getByText('Custom Model')).toBeInTheDocument()
-    expect(screen.getByText('$1/$2')).toBeInTheDocument()
+    expect(screen.getByText('$1/$2/MTok')).toBeInTheDocument()
     expect(screen.getByTestId('catalog-toggle-custom-model-1')).toHaveAttribute('data-state', 'unchecked')
 
     await user.click(screen.getByTestId('catalog-toggle-custom-model-1'))
 
     expect(mutateMock).toHaveBeenCalledWith({
       modelCatalog: {
-        platform: {
+        anthropic: {
           overrides: [customOverride],
         },
       },

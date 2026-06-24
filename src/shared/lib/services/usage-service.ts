@@ -109,39 +109,46 @@ function rateCardFromCatalogModel(
   return pricing
 }
 
-function getProviderCatalogPricing(
-  model: string,
-  providerId: LlmProviderId,
-  staticPricing: PricingEntry | undefined,
-): PricingEntry | null | undefined {
-  const definition = getEffectiveCatalog(providerId).find((entry) => entry.id === model)
-  if (!definition) return undefined
-  return rateCardFromCatalogModel(definition, staticPricing)
+/**
+ * A provider's effective catalog flattened to a per-id rate card. Built ONCE per
+ * usage load (see loadDailyUsageData) so the hot per-line cost path is a Map
+ * lookup instead of a full catalog rebuild + zod re-validation each line.
+ *
+ * A `null` value means the model is in the catalog but has no pricing (cost 0);
+ * a missing key means "not in catalog" → fall back to the static pricing table.
+ */
+type CatalogPricingMap = Map<string, PricingEntry | null>
+
+function buildCatalogPricingMap(providerId: LlmProviderId): CatalogPricingMap {
+  const map: CatalogPricingMap = new Map()
+  for (const model of getEffectiveCatalog(providerId)) {
+    const staticPricing = (MODEL_PRICING as Record<string, PricingEntry>)[model.id]
+    map.set(model.id, rateCardFromCatalogModel(model, staticPricing))
+  }
+  return map
 }
 
 /**
- * Calculate cost from token counts.
- *
- * When `providerId` is supplied, pricing comes first from that provider's
- * effective catalog so user patches and custom models are honored. Legacy
- * static pricing remains as a fallback for transcript ids outside the catalog.
- * Returns 0 for unknown models.
+ * Resolve a model's rate card: a provider catalog entry (when supplied) wins
+ * over the static pricing table; an in-catalog model with no pricing resolves to
+ * `null` (cost 0). Returns null when nothing prices the model.
  */
-export function calculateCost(
+function resolveRateCard(
   model: string,
+  catalogPricing: CatalogPricingMap | undefined,
+): PricingEntry | null {
+  if (catalogPricing?.has(model)) return catalogPricing.get(model) ?? null
+  return (MODEL_PRICING as Record<string, PricingEntry>)[model] ?? null
+}
+
+/** Token counts → cost for an already-resolved rate card (null ⇒ 0). */
+function costFromRateCard(
+  pricing: PricingEntry | null,
   inputTokens: number,
   outputTokens: number,
   cacheCreationTokens: number,
   cacheReadTokens: number,
-  providerId?: LlmProviderId,
 ): number {
-  const staticPricing = (MODEL_PRICING as Record<string, PricingEntry>)[model]
-  const catalogPricing = providerId
-    ? getProviderCatalogPricing(model, providerId, staticPricing)
-    : undefined
-  if (catalogPricing === null) return 0
-
-  const pricing = catalogPricing ?? staticPricing
   if (!pricing) return 0
 
   // Cliff triggers on full prompt input (input excludes cache reads in this
@@ -157,6 +164,36 @@ export function calculateCost(
       cacheCreationTokens * rates.cacheCreation +
       cacheReadTokens * rates.cacheRead) /
     1_000_000
+  )
+}
+
+/**
+ * Calculate cost from token counts.
+ *
+ * When `providerId` is supplied, pricing comes first from that provider's
+ * effective catalog so user patches and custom models are honored. Legacy
+ * static pricing remains as a fallback for transcript ids outside the catalog.
+ * Returns 0 for unknown models.
+ *
+ * Passing `providerId` rebuilds the provider catalog, so this is for one-off
+ * call sites. The hot per-line path in loadDailyUsageData builds the map once
+ * and calls resolveRateCard/costFromRateCard directly.
+ */
+export function calculateCost(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  cacheCreationTokens: number,
+  cacheReadTokens: number,
+  providerId?: LlmProviderId,
+): number {
+  const catalogPricing = providerId ? buildCatalogPricingMap(providerId) : undefined
+  return costFromRateCard(
+    resolveRateCard(model, catalogPricing),
+    inputTokens,
+    outputTokens,
+    cacheCreationTokens,
+    cacheReadTokens,
   )
 }
 
@@ -231,6 +268,10 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
   }
 
   if (files.length === 0) return []
+
+  // Resolve the provider catalog pricing ONCE for this load. processLine closes
+  // over it so per-line cost is a Map lookup, not a per-line catalog rebuild.
+  const catalogPricing = providerId ? buildCatalogPricingMap(providerId) : undefined
 
   // Stream-read files with concurrency limit.
   // Pre-filter lines with a cheap string check before JSON.parse — most lines
@@ -324,7 +365,13 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
     const cacheCreationTokens = usage.cache_creation_input_tokens || 0
     const cacheReadTokens = usage.cache_read_input_tokens || 0
     const cost = entry.costUSD ??
-      calculateCost(model, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, providerId)
+      costFromRateCard(
+        resolveRateCard(model, catalogPricing),
+        inputTokens,
+        outputTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+      )
 
     const countedUsage: CountedUsage = {
       date,

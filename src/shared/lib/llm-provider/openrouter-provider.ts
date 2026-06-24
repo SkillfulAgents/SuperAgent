@@ -12,6 +12,7 @@ const DISCOVERED_MODEL_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 interface OpenRouterModelListing {
   architecture?: {
     tokenizer?: unknown
+    input_modalities?: unknown
   }
   context_length?: unknown
   description?: unknown
@@ -62,6 +63,15 @@ function inferFamily(modelId: string, modelName: string, tokenizer?: string): st
   return sanitizeFamily(slug.split(/[-:/]/)[0]) ?? sanitizeFamily(modelName.split(/\s+/)[0])
 }
 
+/**
+ * Whether a listing accepts image input, from its advertised input modalities.
+ * Returns undefined when the modalities aren't reported so the UI can stay silent.
+ */
+function supportsImageInput(inputModalities: unknown): boolean | undefined {
+  if (!Array.isArray(inputModalities)) return undefined
+  return inputModalities.some((modality) => typeof modality === 'string' && modality.toLowerCase() === 'image')
+}
+
 function iconForModelId(modelId: string): string | undefined {
   const vendor = modelId.split('/')[0]?.toLowerCase().replace(/^~/, '')
   switch (vendor) {
@@ -94,6 +104,7 @@ function mapOpenRouterModel(model: OpenRouterModelListing): ModelSearchResult | 
   const family = inferFamily(id, label, stringValue(model.architecture?.tokenizer))
   const isClaude = id.toLowerCase().includes('claude') || label.toLowerCase().includes('claude')
   const isGpt = family === 'gpt'
+  const imageInput = supportsImageInput(model.architecture?.input_modalities)
 
   return {
     id,
@@ -107,6 +118,7 @@ function mapOpenRouterModel(model: OpenRouterModelListing): ModelSearchResult | 
       : {}),
     ...(positiveInteger(model.context_length) ? { contextWindow: positiveInteger(model.context_length) } : {}),
     ...(isClaude ? {} : { supportsWebSearch: false }),
+    ...(imageInput !== undefined ? { supportsImageInput: imageInput } : {}),
     ...(isGpt ? { promptHints: GPT_TOOL_USE_PROMPT_HINTS } : {}),
   }
 }

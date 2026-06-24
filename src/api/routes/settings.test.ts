@@ -148,9 +148,15 @@ vi.mock('@shared/lib/analytics/tenant-id', () => ({
   getTenantId: () => 'mock-tenant-id',
 }))
 
-vi.mock('path', () => ({
-  default: { join: (...args: string[]) => args.join('/') },
-}))
+vi.mock('path', async (importOriginal) => {
+  // Keep the simplified, deterministic join, but delegate the rest (resolve,
+  // relative, isAbsolute, sep) to the real module so path-safety helpers work.
+  const actual = await importOriginal<typeof import('path')>()
+  return {
+    ...actual,
+    default: { ...actual, join: (...args: string[]) => args.join('/') },
+  }
+})
 
 import settings from './settings'
 

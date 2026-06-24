@@ -5,6 +5,7 @@ import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema } from '
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
+import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -116,7 +117,11 @@ async function serveUploadedModelIcon(c: Context) {
       return c.json({ error: 'Invalid model icon filename' }, 400)
     }
 
-    const bytes = await fs.promises.readFile(path.join(getModelIconsDataDir(), fileName))
+    // Defense-in-depth: the filename regex already forbids separators/traversal,
+    // but contain the join under the icons dir before reading, per house style.
+    const iconsDir = getModelIconsDataDir()
+    const filePath = assertPathWithinDir(iconsDir, path.join(iconsDir, fileName), 'Invalid model icon filename')
+    const bytes = await fs.promises.readFile(filePath)
     c.header('Cache-Control', 'public, max-age=31536000, immutable')
     c.header('Content-Security-Policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'")
     c.header('Content-Type', mimeType)

@@ -1,5 +1,7 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest'
 import * as path from 'path'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
 
 const settingsMock = vi.fn()
 vi.mock('../config/settings', () => ({
@@ -493,6 +495,53 @@ describe('usage-service', () => {
       expect(dec11!.inputTokens).toBe(600)
       expect(dec11!.cacheCreationTokens).toBe(100)
       expect(dec11!.cacheReadTokens).toBe(200)
+    })
+  })
+
+  describe('loadDailyUsageData — provider catalog pricing (per-line)', () => {
+    it('prices a custom catalog model via the once-built map, and 0 without a provider', async () => {
+      settingsMock.mockReturnValue({
+        llmProvider: 'anthropic',
+        modelCatalog: {
+          anthropic: {
+            overrides: [
+              {
+                id: 'custom-priced-1',
+                label: 'Custom Priced',
+                supportedEfforts: ['low'],
+                pricing: { inputPerMtok: 1, outputPerMtok: 2 },
+              },
+            ],
+          },
+        },
+      })
+
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-catalog-'))
+      try {
+        mkdirSync(path.join(dir, 'projects'), { recursive: true })
+        const entry = {
+          timestamp: '2026-06-20T12:00:00.000Z',
+          requestId: 'req-1',
+          message: {
+            id: 'msg-1',
+            model: 'custom-priced-1',
+            usage: { input_tokens: 100_000, output_tokens: 1_000 },
+          },
+        }
+        writeFileSync(path.join(dir, 'projects', 'session.jsonl'), `${JSON.stringify(entry)}\n`)
+
+        // With a provider, the per-line path applies the catalog pricing.
+        const withProvider = await loadDailyUsageDataLightweight({ claudePath: dir, providerId: 'anthropic' })
+        expect(withProvider).toHaveLength(1)
+        expect(withProvider[0].totalCost).toBeCloseTo((100_000 * 1 + 1_000 * 2) / 1_000_000, 9)
+        expect(withProvider[0].modelBreakdowns[0]).toMatchObject({ modelName: 'custom-priced-1' })
+
+        // Without a provider the custom id isn't in the static table → 0.
+        const withoutProvider = await loadDailyUsageDataLightweight({ claudePath: dir })
+        expect(withoutProvider[0].totalCost).toBe(0)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
     })
   })
 })

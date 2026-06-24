@@ -36,6 +36,11 @@ export const modelDefinitionSchema = z.object({
    * non-Claude models routed via OpenRouter so the picker can warn.
    */
   supportsWebSearch: z.boolean().optional(),
+  /**
+   * Whether the model accepts image input (vision). Populated from a provider's
+   * advertised input modalities during model search. Omit/undefined ⇒ unknown.
+   */
+  supportsImageInput: z.boolean().optional(),
   /** Extra system-prompt guidance needed by model families with weaker tool priors. */
   promptHints: z.array(z.string().min(1)).optional(),
   /**
