@@ -1,5 +1,5 @@
 import { cn } from '@shared/lib/utils/cn'
-import { useState, useCallback, memo, type ReactNode } from 'react'
+import { useState, useCallback, useRef, useLayoutEffect, memo, type ReactNode } from 'react'
 import { Check, Copy, Link2 } from 'lucide-react'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
@@ -63,6 +63,76 @@ function extractText(node: ReactNode): string {
 
 const REMARK_PLUGINS = [remarkGfm]
 
+// Side breathing room kept between an expanded table and the chat edges.
+const TABLE_BREAKOUT_GUTTER = 16
+
+// A wide (many-column) table shouldn't be crammed into the narrow readable text
+// column. Like Notion, we let a table that's wider than the column break out and
+// centre itself across the available chat width, scrolling horizontally only
+// once it still exceeds that. Narrow tables are left untouched in the normal
+// text flow. The breakout is measured rather than pure-CSS because the table is
+// nested several constrained, off-centre ancestors deep, so there is no static
+// containing block to anchor a symmetric breakout to. Only assistant messages
+// opt in (via `data-allow-table-breakout`); elsewhere the table just scrolls
+// inside its own column.
+function ExpandingTable({ children }: { children: ReactNode }) {
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const scrollerRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    const wrapper = wrapperRef.current
+    const scroller = scrollerRef.current
+    if (!wrapper || !scroller) return
+
+    const contentArea = wrapper.closest('[data-message-content-area]') as HTMLElement | null
+    const canBreakOut = !!wrapper.closest('[data-allow-table-breakout]')
+
+    const measure = () => {
+      // Always start from the natural in-flow geometry before deciding.
+      wrapper.style.width = ''
+      wrapper.style.marginLeft = ''
+
+      if (!contentArea || !canBreakOut) return
+
+      const columnWidth = wrapper.clientWidth
+      const naturalWidth = scroller.scrollWidth
+      // Only break out when the table genuinely wants more than the column.
+      if (naturalWidth <= columnWidth + 1) return
+
+      const available = contentArea.clientWidth - TABLE_BREAKOUT_GUTTER * 2
+      if (available <= columnWidth) return // window too narrow to gain anything
+
+      const target = Math.min(naturalWidth, available)
+      const areaLeft = contentArea.getBoundingClientRect().left + TABLE_BREAKOUT_GUTTER
+      const currentLeft = wrapper.getBoundingClientRect().left
+      const desiredLeft = areaLeft + (available - target) / 2
+
+      wrapper.style.width = `${target}px`
+      wrapper.style.marginLeft = `${desiredLeft - currentLeft}px`
+    }
+
+    measure()
+
+    if (!contentArea || typeof ResizeObserver === 'undefined') return
+    // Re-centre when the chat area resizes. Content changes (e.g. a table still
+    // streaming) re-run this effect via the `children` dependency, so we don't
+    // observe the table itself — that would risk a resize-observer feedback loop.
+    const observer = new ResizeObserver(() => measure())
+    observer.observe(contentArea)
+    return () => observer.disconnect()
+  }, [children])
+
+  return (
+    <div ref={wrapperRef} className="my-3" data-testid="markdown-table">
+      <div ref={scrollerRef} className="code-scrollbar overflow-x-auto">
+        <table className="w-max min-w-full border-collapse text-sm">
+          {children}
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // Hoisted to a stable module-level reference. The memoized <MarkdownBlock> below
 // must NOT be handed a fresh `components`/`remarkPlugins` object each render, or
 // its memo would never bail and every settled streaming block would re-parse.
@@ -82,28 +152,24 @@ const MARKDOWN_COMPONENTS: Components = {
       <code className={cn(className, 'text-foreground')}>{children}</code>
     )
   },
-  // Style tables with borders and horizontal scroll
-  table: ({ children }) => (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-sm">
-        {children}
-      </table>
-    </div>
-  ),
+  // Wide tables expand beyond the readable column and scroll; see ExpandingTable.
+  table: ({ children }) => <ExpandingTable>{children}</ExpandingTable>,
+  // Cap individual cell width so prose-heavy cells wrap instead of stretching the
+  // table to one giant line, while many short columns still drive the breakout.
   th: ({ children }) => (
     <th className={cn(
-      'border-b-2 px-3 py-1.5 text-left font-semibold',
+      'border-b-2 px-3 py-1.5 text-left font-semibold align-top',
       'border-border'
     )}>
-      {children}
+      <div className="max-w-[32rem]">{children}</div>
     </th>
   ),
   td: ({ children }) => (
     <td className={cn(
-      'border-b px-3 py-1.5',
+      'border-b px-3 py-1.5 align-top',
       'border-border'
     )}>
-      {children}
+      <div className="max-w-[32rem]">{children}</div>
     </td>
   ),
   // Ensure links open in new tab
@@ -210,8 +276,11 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined}>
             <div
               dir="auto"
+              // Assistant bubbles opt into table breakout and must not clip it.
+              data-allow-table-breakout={isAssistant ? '' : undefined}
               className={cn(
-                'rounded-lg max-w-full overflow-hidden text-foreground',
+                'rounded-lg max-w-full text-foreground',
+                !isAssistant && 'overflow-hidden',
                 isUser && 'bg-zinc-100 dark:bg-zinc-800/70 px-4 py-2',
                 isAssistant && 'py-1'
               )}
