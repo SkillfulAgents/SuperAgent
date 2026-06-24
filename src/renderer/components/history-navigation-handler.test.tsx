@@ -92,6 +92,21 @@ describe('HistoryNavigationHandler', () => {
     expect(mockForward).toHaveBeenCalledTimes(1)
   })
 
+  it('ignores Alt+Arrow on macOS so Option+Arrow word-jump still works', () => {
+    vi.stubGlobal('__WEB__', false)
+    mockIsElectron.mockReturnValue(true)
+    mockGetPlatform.mockReturnValue('darwin')
+    render(<HistoryNavigationHandler />)
+
+    const backEvent = dispatchKeyboardEvent({ key: 'ArrowLeft', altKey: true })
+    const forwardEvent = dispatchKeyboardEvent({ key: 'ArrowRight', altKey: true })
+
+    expect(backEvent.defaultPrevented).toBe(false)
+    expect(forwardEvent.defaultPrevented).toBe(false)
+    expect(mockBack).not.toHaveBeenCalled()
+    expect(mockForward).not.toHaveBeenCalled()
+  })
+
   it('handles Electron auxiliary mouse buttons', () => {
     vi.stubGlobal('__WEB__', false)
     mockIsElectron.mockReturnValue(true)
