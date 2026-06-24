@@ -98,6 +98,16 @@ const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow t
 
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
+// Idle-silence watchdog: if a turn shows the working indicator and then goes
+// completely silent (no SSE events) for this long, assume it stalled and tear
+// the indicator down. The backstop for any missing-terminal-event path (SDK
+// stall, dropped stream, an event type nobody handles). Reset on any activity,
+// so a healthy long turn never trips it. Set generously: a single silent tool
+// call (a long build / install / search that streams nothing) is legitimate
+// work, so the threshold must clear that before it assumes a stall — and even
+// then the notice is softened (see onWorkingWatchdogFired) because it can be a
+// false positive on slow-but-alive work.
+const WORKING_WATCHDOG_MS = 5 * 60 * 1000
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024 // 50 MB
 
@@ -132,6 +142,14 @@ export interface ManagedConnector {
   }
   currentToolInput: string
   pendingToolMessages: Array<{ messageId: string; text: string }>
+  // Idle-silence watchdog timer (see WORKING_WATCHDOG_MS). Armed when the
+  // working indicator is shown, reset on every SSE event, cleared on teardown.
+  watchdogTimer?: ReturnType<typeof setTimeout> | null
+  // True once a terminal user-facing notice (the session_error message or the
+  // watchdog stall notice) has gone out for the current turn, so a turn can't
+  // emit repeated/duplicate notices. Reset once per turn at dispatch (not per
+  // segment), so a multi-stall turn still yields at most one notice.
+  turnNotified?: boolean
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────
@@ -826,7 +844,15 @@ class ChatIntegrationManager {
 
     // Show the "Thinking…" indicator (the connector keeps it alive) until the first token streams.
     const dispatched = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
-    if (dispatched) dispatched.connector.startWorking(dispatched.chatId).catch(() => {})
+    if (dispatched) {
+      // New user turn: re-allow exactly one terminal notice (the watchdog stall
+      // notice OR the session_error message). Reset here, once per turn, rather
+      // than on every stream_start, so a single multi-stall turn can't emit
+      // repeated notices.
+      dispatched.turnNotified = false
+      dispatched.connector.startWorking(dispatched.chatId).catch(() => {})
+      armWorkingWatchdog(dispatched)
+    }
   }
 
   /**
@@ -908,6 +934,7 @@ class ChatIntegrationManager {
   private stopSession(session: ManagedConnector): void {
     session.sseUnsubscribe?.()
     session.connector.stopWorking(session.chatId).catch(() => {})
+    clearWorkingWatchdog(session)
   }
 
   private teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): void {
@@ -1404,6 +1431,108 @@ class ChatIntegrationManager {
   }
 }
 
+// ── Working-indicator teardown + idle watchdog ─────────────────────────
+
+/**
+ * Tear down a turn's live UI: stop the working indicator (kills the keep-alive
+ * heartbeat), commit any streamed text, and settle pending tool pills. Shared by
+ * session_idle, session_error, and the idle watchdog so every terminal path
+ * clears the indicator the same way. Idempotent.
+ */
+async function settleTurn(managed: ManagedConnector): Promise<void> {
+  clearWorkingWatchdog(managed)
+  managed.connector.stopWorking(managed.chatId).catch(() => {})
+  try {
+    await finalizeStreaming(managed)
+    await resolvePendingToolMessages(managed)
+  } catch (err) {
+    console.error('[ChatIntegrationManager] Failed to finalize turn:', err)
+    reportError(err, 'settle-turn', { integrationId: managed.integration.id, chatId: managed.chatId })
+  }
+}
+
+/** Clear the idle watchdog timer (if armed). */
+function clearWorkingWatchdog(managed: ManagedConnector): void {
+  if (managed.watchdogTimer) {
+    clearTimeout(managed.watchdogTimer)
+    managed.watchdogTimer = null
+  }
+}
+
+/**
+ * (Re)arm the idle watchdog. Called when the working indicator is shown (dispatch
+ * / stream_start) and reset on every subsequent SSE event, so it fires only after
+ * a full WORKING_WATCHDOG_MS of total silence — a stalled turn that never emits a
+ * terminal event.
+ */
+function armWorkingWatchdog(managed: ManagedConnector): void {
+  clearWorkingWatchdog(managed)
+  const timer = setTimeout(() => {
+    // Ignore a stale fire. If the watchdog was cleared or re-armed after this
+    // timer was scheduled (clearTimeout can't un-queue an already-fired timer),
+    // managed.watchdogTimer no longer points at us — do nothing.
+    if (managed.watchdogTimer !== timer) return
+    managed.watchdogTimer = null
+    void onWorkingWatchdogFired(managed)
+  }, WORKING_WATCHDOG_MS)
+  managed.watchdogTimer = timer
+}
+
+/** Reset the watchdog only if it is currently armed — any SSE event proves liveness. */
+function resetWatchdogIfRunning(managed: ManagedConnector): void {
+  if (managed.watchdogTimer) armWorkingWatchdog(managed)
+}
+
+async function onWorkingWatchdogFired(managed: ManagedConnector): Promise<void> {
+  console.warn(
+    `[ChatIntegrationManager] Working-indicator watchdog fired after ${WORKING_WATCHDOG_MS}ms of silence (chat ${managed.chatId})`,
+  )
+  reportError(
+    new Error('working-indicator watchdog fired after SSE silence'),
+    'working-indicator-watchdog',
+    {
+      integrationId: managed.integration.id,
+      chatId: managed.chatId,
+      agentSlug: managed.integration.agentSlug,
+      silenceMs: WORKING_WATCHDOG_MS,
+    },
+    'warning',
+  )
+  await settleTurn(managed)
+  // Notify at most once per turn: if a near-simultaneous session_error already
+  // surfaced its message, don't pile a second notice on top. Softened copy — the
+  // watchdog can be a false positive on a slow-but-alive turn, so it must not
+  // flatly assert the agent died.
+  if (!managed.turnNotified) {
+    managed.turnNotified = true
+    try {
+      await managed.connector.sendMessage(managed.chatId, {
+        text: "⚠️ This is taking longer than expected. If you don't see a reply soon, send your message again.",
+      })
+    } catch {
+      // Delivery failed — release the latch so a later terminal notice (e.g. a real
+      // session_error) can still reach the user instead of being suppressed.
+      managed.turnNotified = false
+    }
+  }
+}
+
+/**
+ * A short, user-facing message for a turn that ended in an error. Curated by the
+ * SDK error code; never echoes the raw internal error (which can leak file paths,
+ * tokens, or stack text into the chat).
+ */
+function friendlyErrorMessage(apiErrorCode: string | null | undefined): string {
+  const code = (apiErrorCode ?? '').toLowerCase()
+  if (code.includes('overload')) return '⚠️ The assistant is overloaded right now. Please try again in a moment.'
+  if (code.includes('rate') || code.includes('429')) return '⚠️ Hit a rate limit. Please wait a few seconds and try again.'
+  if (code.includes('auth') || code.includes('permission')) return '⚠️ The assistant could not authenticate. Please check the integration settings.'
+  if (code.includes('context') || code.includes('too_long') || code.includes('too_large') || code.includes('length')) {
+    return '⚠️ This conversation got too long for the assistant. Try starting a new conversation.'
+  }
+  return '⚠️ The assistant hit an error and stopped. Please try again.'
+}
+
 // ── SSE event processing (exported for testing) ────────────────────────
 
 /**
@@ -1418,6 +1547,10 @@ export async function processSSEEvent(
   const data = event as Record<string, unknown>
   const eventType = data.type as string
 
+  // Any agent activity proves the turn is alive: push the idle watchdog out.
+  // No-op when the indicator isn't currently armed.
+  resetWatchdogIfRunning(managed)
+
   switch (eventType) {
     case 'stream_delta': {
       const text = data.text as string
@@ -1427,6 +1560,7 @@ export async function processSSEEvent(
       // not on every streamed token.
       if (managed.streamingState.accumulatedText === '') {
         managed.connector.stopWorking(managed.chatId).catch(() => {})
+        clearWorkingWatchdog(managed)
       }
       managed.streamingState.accumulatedText += text
 
@@ -1458,6 +1592,7 @@ export async function processSSEEvent(
       // "Thinking…" again for the next segment. startWorking self-keep-alives, so a
       // long gap before the next token no longer drops it; the first token replaces it.
       managed.connector.startWorking(managed.chatId).catch(() => {})
+      armWorkingWatchdog(managed)
       break
     }
 
@@ -1536,6 +1671,9 @@ export async function processSSEEvent(
     case 'browser_input_request':
     case 'script_run_request':
     case 'computer_use_request': {
+      // The agent is now waiting on the user, so the silence that follows is the
+      // human, not a stall — pause the idle watchdog until the next turn re-arms it.
+      clearWorkingWatchdog(managed)
       try {
         await managed.connector.sendUserRequestCard(managed.chatId, data as UserRequestEvent)
       } catch (err) {
@@ -1546,13 +1684,26 @@ export async function processSSEEvent(
     }
 
     case 'session_idle': {
-      managed.connector.stopWorking(managed.chatId).catch(() => {})
-      try {
-        await finalizeStreaming(managed)
-        await resolvePendingToolMessages(managed)
-      } catch (err) {
-        console.error('[ChatIntegrationManager] Failed to finalize on session_idle:', err)
-        reportError(err, 'session-idle-finalize', { integrationId: managed.integration.id, chatId: managed.chatId })
+      await settleTurn(managed)
+      break
+    }
+
+    case 'session_error': {
+      // An errored turn emits session_error (NOT session_idle), and the host
+      // suppresses the later authoritative idle. Without this case the working
+      // indicator's keep-alive heartbeat is never torn down and re-stamps
+      // "Thinking…" forever. Settle the turn the same way session_idle does, then
+      // surface the error so the user isn't left staring at a frozen indicator.
+      await settleTurn(managed)
+      if (!managed.turnNotified) {
+        managed.turnNotified = true
+        try {
+          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null) })
+        } catch (err) {
+          // Delivery failed — release the latch so a later notice isn't suppressed.
+          managed.turnNotified = false
+          console.error('[ChatIntegrationManager] Failed to send error message:', err)
+        }
       }
       break
     }
@@ -1574,25 +1725,37 @@ export async function resolvePendingToolMessages(managed: ManagedConnector): Pro
 export async function finalizeStreaming(managed: ManagedConnector): Promise<void> {
   const finalText = managed.streamingState.accumulatedText
   if (!finalText) return
+  const messageId = managed.streamingState.currentMessageId
 
-  if (managed.streamingState.currentMessageId) {
-    try {
-      await managed.connector.finalizeStreamingMessage(
-        managed.chatId,
-        managed.streamingState.currentMessageId,
-        finalText,
-      )
-    } catch {
-      await managed.connector.sendMessage(managed.chatId, { text: finalText })
-    }
-  } else {
-    await managed.connector.sendMessage(managed.chatId, { text: finalText })
-  }
-
+  // Claim the buffer synchronously, before the first await, so a concurrent
+  // finalize (e.g. the idle watchdog tearing down while a late stream event is
+  // processed) reads an empty buffer and can't double-send the same text. The
+  // reset previously ran only after the await, leaving that window open.
   managed.streamingState = {
     currentMessageId: null,
     accumulatedText: '',
     lastUpdateTime: 0,
+  }
+
+  try {
+    if (messageId) {
+      try {
+        await managed.connector.finalizeStreamingMessage(managed.chatId, messageId, finalText)
+      } catch {
+        await managed.connector.sendMessage(managed.chatId, { text: finalText })
+      }
+    } else {
+      await managed.connector.sendMessage(managed.chatId, { text: finalText })
+    }
+  } catch (err) {
+    // Both delivery attempts failed (chat unreachable) — nothing reached the user.
+    // Restore the claimed buffer so a later terminal path can retry, but only if it
+    // is still empty, so we never overwrite newer streamed text (a later stream_delta
+    // repopulated it). Re-throw so callers log/handle the failure exactly as before.
+    if (!managed.streamingState.accumulatedText) {
+      managed.streamingState = { currentMessageId: messageId, accumulatedText: finalText, lastUpdateTime: 0 }
+    }
+    throw err
   }
 }
 
