@@ -472,7 +472,7 @@ class ChatIntegrationManager {
       }
       case 'slack': {
         const { SlackConnector } = await import('./slack-connector')
-        return new SlackConnector(config as import('./slack-connector').SlackConfig)
+        return new SlackConnector(config as import('./slack-connector').SlackConfig, integration.id)
       }
       case 'imessage': {
         const { IMessageConnector } = await import('./imessage-connector')

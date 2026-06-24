@@ -10,7 +10,7 @@ describe('SlackConnector.finalizeStreamingMessage', () => {
   let mockPostMessage: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' }, 'int-test')
     mockUpdate = vi.fn().mockResolvedValue({ ok: true })
     mockPostMessage = vi.fn().mockResolvedValue({ ok: true, ts: '1234.5678' })
     // Inject mock Slack app

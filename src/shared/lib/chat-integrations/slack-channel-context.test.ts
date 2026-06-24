@@ -62,7 +62,7 @@ describe('selectChannelContextMessages', () => {
 })
 
 function makeConnector() {
-  const c = new SlackConnector({ botToken: 'xoxb-x', appToken: 'xapp-x' } as any)
+  const c = new SlackConnector({ botToken: 'xoxb-x', appToken: 'xapp-x' } as any, 'int-test')
   ;(c as any).botUserId = 'U_BOT'
   ;(c as any).botId = 'B_BOT'
   ;(c as any).userNameCache = new Map([
@@ -72,7 +72,7 @@ function makeConnector() {
   return c
 }
 
-describe('fetchChannelHistory', () => {
+describe('fetchHistorySince', () => {
   it('builds a channel-context block, skips the bot, and surfaces file presence', async () => {
     const c = makeConnector()
     ;(c as any).app = { client: { conversations: { history: async () => ({
@@ -83,7 +83,7 @@ describe('fetchChannelHistory', () => {
         { ts: '1001.0', user: 'U1', text: 'the deploy is broken' },
       ],
     }) } } }
-    const result = await (c as any).fetchChannelHistory('C1', '1004.0')
+    const result = await (c as any).fetchHistorySince('C1', null, '1004.0', 15)
     expect(result).not.toBeNull()
     expect(result.text).toContain('[Channel context - 2 previous messages]')
     expect(result.text).toContain('Alice: the deploy is broken')
@@ -93,50 +93,71 @@ describe('fetchChannelHistory', () => {
     expect(result.files[0].name).toBe('report.pdf')
   })
 
-  it('caps downloaded files to the 3 newest and ignores non-downloadable (permalink-only) files', async () => {
+  it('passes oldest when a marker is given and downloads ALL files (no cap)', async () => {
     const c = makeConnector()
+    const calls: any[] = []
     const fileMsg = (ts: string, n: string) => ({ ts, user: 'U1', files: [{ name: n, url_private_download: `https://files.slack.com/files-pri/T1-F${n}/${n}` }] })
-    ;(c as any).app = { client: { conversations: { history: async () => ({
+    ;(c as any).app = { client: { conversations: { history: async (args: any) => { calls.push(args); return {
       ok: true,
-      messages: [
-        fileMsg('105.0', 'e'), fileMsg('104.0', 'd'), fileMsg('103.0', 'c'), fileMsg('102.0', 'b'),
-        { ts: '101.0', user: 'U1', files: [{ name: 'permalink-only', permalink: 'https://slack.com/archives/x' }] },
-      ],
-    }) } } }
-    const result = await (c as any).fetchChannelHistory('C1', '999.0')
-    // Newest 3 downloadable by ts: c, d, e. permalink-only is surfaced in text but not queued.
-    expect(result.files.map((f: any) => f.name)).toEqual(['c', 'd', 'e'])
-    expect(result.text).toContain('[shared file: permalink-only]')
+      messages: [fileMsg('105.0', 'e'), fileMsg('104.0', 'd'), fileMsg('103.0', 'c'), fileMsg('102.0', 'b'), fileMsg('101.0', 'a')],
+    } } } } }
+    const result = await (c as any).fetchHistorySince('C1', '100.0', '999.0', 15)
+    expect(calls[0].oldest).toBe('100.0')
+    expect(calls[0].latest).toBe('999.0')
+    expect(calls[0].limit).toBe(15)
+    expect(result.files.map((f: any) => f.name)).toEqual(['a', 'b', 'c', 'd', 'e']) // all five, chronological, no cap
+  })
+
+  it('omits oldest on a cold start (null marker)', async () => {
+    const c = makeConnector()
+    const calls: any[] = []
+    ;(c as any).app = { client: { conversations: { history: async (args: any) => { calls.push(args); return { ok: true, messages: [{ ts: '100.0', user: 'U1', text: 'hi' }] } } } } }
+    await (c as any).fetchHistorySince('C1', null, '999.0', 15)
+    expect(calls[0].oldest).toBeUndefined()
+    expect(calls[0].limit).toBe(15)
+  })
+
+  it('drops this bot\'s own messages but keeps other bots', async () => {
+    const c = makeConnector()
+    ;(c as any).app = { client: { conversations: { history: async () => ({ ok: true, messages: [
+      { ts: '103.0', user: 'U_BOT', text: 'on it' },                                              // our bot -> dropped
+      { ts: '102.0', bot_id: 'B_OTHER', subtype: 'bot_message', text: 'deploy done' },            // other bot -> kept
+      { ts: '101.0', user: 'U1', text: 'the deploy is broken' },                                  // human -> kept
+    ] }) } } }
+    const result = await (c as any).fetchHistorySince('C1', null, '104.0', 15)
+    expect(result.text).toContain('the deploy is broken')
+    expect(result.text).toContain('deploy done')
+    expect(result.text).not.toContain('on it') // our bot's own line dropped
   })
 
   it('returns null on API failure (missing scope, etc.)', async () => {
     const c = makeConnector()
     ;(c as any).app = { client: { conversations: { history: async () => { throw new Error('missing_scope') } } } }
-    expect(await (c as any).fetchChannelHistory('C1', '999.0')).toBeNull()
+    expect(await (c as any).fetchHistorySince('C1', null, '999.0', 15)).toBeNull()
   })
 
   it('returns null when nothing survives selection', async () => {
     const c = makeConnector()
     ;(c as any).app = { client: { conversations: { history: async () => ({ ok: true, messages: [{ ts: '1.0', user: 'U_BOT', text: 'mine' }] }) } } }
-    expect(await (c as any).fetchChannelHistory('C1', '999.0')).toBeNull()
+    expect(await (c as any).fetchHistorySince('C1', null, '999.0', 15)).toBeNull()
   })
 
   it('returns null when the API responds not-ok (missing scope without throwing)', async () => {
     const c = makeConnector()
     ;(c as any).app = { client: { conversations: { history: async () => ({ ok: false, error: 'missing_scope' }) } } }
-    expect(await (c as any).fetchChannelHistory('C1', '999.0')).toBeNull()
+    expect(await (c as any).fetchHistorySince('C1', null, '999.0', 15)).toBeNull()
   })
 
   it('returns null when the API response omits messages', async () => {
     const c = makeConnector()
     ;(c as any).app = { client: { conversations: { history: async () => ({ ok: true }) } } }
-    expect(await (c as any).fetchChannelHistory('C1', '999.0')).toBeNull()
+    expect(await (c as any).fetchHistorySince('C1', null, '999.0', 15)).toBeNull()
   })
 
   it('uses singular wording for a single previous message', async () => {
     const c = makeConnector()
     ;(c as any).app = { client: { conversations: { history: async () => ({ ok: true, messages: [{ ts: '100.0', user: 'U1', text: 'just one' }] }) } } }
-    const result = await (c as any).fetchChannelHistory('C1', '999.0')
+    const result = await (c as any).fetchHistorySince('C1', null, '999.0', 15)
     expect(result.text).toContain('[Channel context - 1 previous message]')
   })
 })

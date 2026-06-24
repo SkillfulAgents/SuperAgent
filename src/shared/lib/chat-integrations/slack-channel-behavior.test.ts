@@ -387,31 +387,6 @@ describe('routeSlackMessage', () => {
   })
 })
 
-describe('shouldSeedChannelContext', () => {
-  it('is true for a top-level channel mention when onlyMentioned is on', () => {
-    const result = routeSlackMessage(makeParams({ rawText: '<@U_BOT> can you log that', config: { onlyMentioned: true } }))
-    expect(result.shouldProcess).toBe(true)
-    expect(result.shouldSeedChannelContext).toBe(true)
-  })
-  it('is false when onlyMentioned is off (session already sees everything)', () => {
-    const result = routeSlackMessage(makeParams({ rawText: '<@U_BOT> hi', config: { onlyMentioned: false } }))
-    expect(result.shouldSeedChannelContext).toBe(false)
-  })
-  it('is false for an in-thread mention (thread path handles context)', () => {
-    const result = routeSlackMessage(makeParams({ rawText: '<@U_BOT> hi', threadTs: '900.000', config: { onlyMentioned: true } }))
-    expect(result.shouldSeedChannelContext).toBe(false)
-  })
-  it('is false for DMs', () => {
-    const result = routeSlackMessage(makeParams({ rawText: 'hi', channelType: 'im', config: { onlyMentioned: true } }))
-    expect(result.shouldSeedChannelContext).toBe(false)
-  })
-  it('is false on a filtered (non-process) message', () => {
-    const result = routeSlackMessage(makeParams({ rawText: 'no mention here', config: { onlyMentioned: true } }))
-    expect(result.shouldProcess).toBe(false)
-    expect(result.shouldSeedChannelContext).toBe(false)
-  })
-})
-
 // ── resolveSlackChannel ────────────────────────────────────────────────
 
 describe('resolveSlackChannel', () => {
