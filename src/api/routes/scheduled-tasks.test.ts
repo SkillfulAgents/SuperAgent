@@ -71,6 +71,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   // resolveActiveProviderModel (host-direct summarizer resolution) reads the
   // active provider via getSettings; default to anthropic for the catalog.
   getSettings: () => ({ llmProvider: 'anthropic' }),
+  getModelCatalogSettings: () => ({}),
 }))
 
 const mockValidateCronExpression = vi.fn()

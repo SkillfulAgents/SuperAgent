@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
-import type { ModelDefinition } from './model-catalog-schema'
+import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 
 export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock' | 'platform'
 
@@ -14,6 +14,8 @@ export abstract class BaseLlmProvider {
   protected abstract readonly settingsKeyField: keyof ApiKeySettings
   /** Environment variable name for this provider's key. */
   protected abstract readonly envVarName: string
+  /** Whether this provider can discover remote catalog models by search query. */
+  readonly supportsModelSearch: boolean = false
 
   /** Check whether an API key is configured and its source. */
   getApiKeyStatus(): ApiKeyStatus {
@@ -80,4 +82,13 @@ export abstract class BaseLlmProvider {
 
   /** Validate an API key. */
   abstract validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }>
+
+  /**
+   * Search provider-native model catalogs and return normalized local-catalog
+   * entries. Providers that do not opt in via supportsModelSearch should leave
+   * the default implementation untouched.
+   */
+  async searchModels(_query: string): Promise<ModelSearchResult[]> {
+    throw new Error(`${this.name} does not support model search`)
+  }
 }

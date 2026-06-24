@@ -8,6 +8,10 @@ import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { EffortLevel } from '@shared/lib/container/types'
+import {
+  modelCatalogSettingsSchema,
+  type ModelCatalogSettings,
+} from '../llm-provider/model-catalog-schema'
 
 export interface ContainerSettings {
   containerRunner: string
@@ -190,6 +194,7 @@ export interface AppSettings {
   llmProvider?: LlmProviderId
   app?: AppPreferences
   models?: ModelSettings
+  modelCatalog?: ModelCatalogSettings
   agentLimits?: AgentLimitsSettings
   customEnvVars?: Record<string, string>
   skillsets?: SkillsetConfig[]
@@ -243,6 +248,7 @@ export interface GlobalSettingsResponse {
   runnerAvailability: RunnerAvailability[]
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
+  modelCatalog?: ModelCatalogSettings
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus
@@ -322,6 +328,16 @@ function getSettingsPath(): string {
   return path.join(getDataDir(), 'settings.json')
 }
 
+function parseModelCatalogSettings(value: unknown): ModelCatalogSettings | undefined {
+  if (value === undefined) return undefined
+  const parsed = modelCatalogSettingsSchema.safeParse(value)
+  if (!parsed.success) {
+    console.warn('Invalid modelCatalog in settings.json; ignoring model catalog overrides:', parsed.error.message)
+    return undefined
+  }
+  return parsed.data
+}
+
 /**
  * Load settings from the JSON file.
  * Returns default settings if file doesn't exist.
@@ -366,6 +382,7 @@ export function loadSettings(): AppSettings {
           agentImage = getDefaultAgentImage()
         }
       }
+      const modelCatalog = parseModelCatalogSettings(loaded.modelCatalog)
 
       // Merge with defaults to ensure all fields exist
       return {
@@ -401,6 +418,7 @@ export function loadSettings(): AppSettings {
             dashboardBuilderModel: migrateLegacyModelDefault(merged.dashboardBuilderModel),
           }
         })(),
+        modelCatalog,
         agentLimits: loaded.agentLimits,
         customEnvVars: loaded.customEnvVars,
         skillsets: loaded.skillsets !== undefined
@@ -628,6 +646,11 @@ export function getEffectiveModels(): ModelSettings {
 export function getEffectiveAgentLimits(): AgentLimitsSettings {
   const settings = getSettings()
   return settings.agentLimits ?? {}
+}
+
+export function getModelCatalogSettings(): ModelCatalogSettings {
+  const settings = getSettings()
+  return settings.modelCatalog ?? {}
 }
 
 /**

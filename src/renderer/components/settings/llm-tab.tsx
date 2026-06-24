@@ -6,6 +6,7 @@ import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 import { BedrockCredentialsInput } from './bedrock-credentials-input'
 import { SettingsModelSelect } from './settings-model-select'
+import { CatalogEditor } from './model-catalog/catalog-editor'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 import type { EffortLevel } from '@shared/lib/container/types'
 
@@ -204,7 +205,11 @@ export function LlmTab() {
           const isSelected = activeProvider === provider.id
           const platformLocked = provider.id === 'platform' && !isPlatformConnected
           const modelOptions = provider.catalog ?? []
+          const builtinOptions = provider.builtinCatalog ?? modelOptions
           const keyConfig = SIMPLE_PROVIDER_KEY_CONFIG[provider.id]
+          // Catalog editing is for self-managed providers; the platform provider's
+          // models and pricing come from the connected account, not local overrides.
+          const showCatalogEditor = provider.id !== 'platform'
 
           return (
             <ProviderCard
@@ -243,42 +248,47 @@ export function LlmTab() {
               ) : null}
 
               {/* Model selection lives inside the selected provider since available models are provider-specific */}
-              <div className="mt-6 -mx-4 -mb-6 border-t border-border/50">
-                {modelOptions.length === 0 ? (
-                  <p className="px-4 py-3 text-[11px] text-muted-foreground">
-                    Configure credentials to load available models.
-                  </p>
-                ) : (
-                  <div className="divide-y divide-border/50">
-                    <ModelEffortRow
-                      name="Default model"
-                      subtitle="Model and effort new sessions start with, before any per-message override"
-                      model={settings?.models?.agentModel}
-                      effort={settings?.models?.agentEffort ?? 'medium'}
-                      includeEffort
-                      disabled={isLoading}
-                      onModelChange={(model) => updateSettings.mutate({ models: { agentModel: model } })}
-                      onEffortChange={(effort) => updateSettings.mutate({ models: { agentEffort: effort } })}
-                    />
-                    <ModelEffortRow
-                      name="Summarizer model"
-                      subtitle="Used for session name generation and API key validation"
-                      model={settings?.models?.summarizerModel}
-                      includeEffort={false}
-                      disabled={isLoading}
-                      onModelChange={(model) => updateSettings.mutate({ models: { summarizerModel: model } })}
-                    />
-                    <ModelEffortRow
-                      name="Dashboard model"
-                      subtitle="Used by the dashboard-builder subagent that creates and edits artifacts"
-                      model={settings?.models?.dashboardBuilderModel}
-                      includeEffort={false}
-                      disabled={isLoading}
-                      onModelChange={(model) => updateSettings.mutate({ models: { dashboardBuilderModel: model } })}
-                    />
-                  </div>
-                )}
+              <div className="mt-6 -mx-4 border-t border-border/50">
+                <div className="divide-y divide-border/50">
+                  <ModelEffortRow
+                    name="Default model"
+                    subtitle="Model and effort new sessions start with, before any per-message override"
+                    model={settings?.models?.agentModel}
+                    effort={settings?.models?.agentEffort ?? 'medium'}
+                    includeEffort
+                    disabled={isLoading}
+                    onModelChange={(model) => updateSettings.mutate({ models: { agentModel: model } })}
+                    onEffortChange={(effort) => updateSettings.mutate({ models: { agentEffort: effort } })}
+                  />
+                  <ModelEffortRow
+                    name="Summarizer model"
+                    subtitle="Used for session name generation and API key validation"
+                    model={settings?.models?.summarizerModel}
+                    includeEffort={false}
+                    disabled={isLoading}
+                    onModelChange={(model) => updateSettings.mutate({ models: { summarizerModel: model } })}
+                  />
+                  <ModelEffortRow
+                    name="Dashboard model"
+                    subtitle="Used by the dashboard-builder subagent that creates and edits artifacts"
+                    model={settings?.models?.dashboardBuilderModel}
+                    includeEffort={false}
+                    disabled={isLoading}
+                    onModelChange={(model) => updateSettings.mutate({ models: { dashboardBuilderModel: model } })}
+                  />
+                </div>
               </div>
+              {showCatalogEditor && (
+                <CatalogEditor
+                  providerId={provider.id}
+                  builtinCatalog={builtinOptions}
+                  effectiveCatalog={modelOptions}
+                  modelCatalog={settings?.modelCatalog}
+                  supportsModelSearch={provider.capabilities?.modelSearch}
+                  disabled={isLoading}
+                  onChange={(modelCatalog) => updateSettings.mutate({ modelCatalog })}
+                />
+              )}
             </ProviderCard>
           )
         })}

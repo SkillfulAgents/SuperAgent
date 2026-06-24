@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const settingsMock = vi.fn()
 vi.mock('../config/settings', () => ({
   getSettings: () => settingsMock(),
+  getModelCatalogSettings: () => settingsMock().modelCatalog ?? {},
 }))
 
 import { getContainerModelPromptHints } from './resolve-model'

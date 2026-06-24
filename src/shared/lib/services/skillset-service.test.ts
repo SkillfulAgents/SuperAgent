@@ -69,6 +69,7 @@ vi.mock('@shared/lib/config/settings', () => ({
     apiKeys: mockGetApiKey() ? { anthropicApiKey: mockGetApiKey() } : {},
   })),
   getEffectiveModels: mockGetModels,
+  getModelCatalogSettings: () => ({}),
 }))
 
 // Bypass retry delays in tests

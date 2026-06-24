@@ -5,9 +5,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const settingsMock = vi.fn()
 vi.mock('../config/settings', () => ({
   getSettings: () => settingsMock(),
+  getModelCatalogSettings: () => settingsMock().modelCatalog ?? {},
 }))
 
 import {
+  getEffectiveCatalog,
   getProviderCatalog,
   getModelDefinition,
   getModelContextWindow,
@@ -99,6 +101,188 @@ describe('getProviderCatalog', () => {
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
     expect(catalog.some((m) => m.id === 'glm-5.2')).toBe(false)
+  })
+})
+
+describe('getEffectiveCatalog', () => {
+  it('returns the built-in catalog unchanged when no overrides are configured', () => {
+    expect(getEffectiveCatalog('anthropic')).toEqual(getProviderCatalog('anthropic'))
+  })
+
+  it('disables built-ins and treats unknown disables as a no-op', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: {
+          overrides: [
+            { id: 'claude-haiku-4-5', disabled: true },
+            { id: 'missing-model', disabled: true },
+          ],
+        },
+      },
+    })
+
+    const catalog = getEffectiveCatalog('anthropic')
+    expect(catalog.some((model) => model.id === 'claude-haiku-4-5')).toBe(false)
+    expect(catalog.some((model) => model.id === 'missing-model')).toBe(false)
+  })
+
+  it('shallow-patches built-ins while preserving siblings', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: {
+          overrides: [
+            {
+              id: 'claude-opus-4-8',
+              label: 'Opus patched',
+              blurb: 'Fresh label',
+              pricing: { inputPerMtok: 7, outputPerMtok: 31 },
+            },
+          ],
+        },
+      },
+    })
+
+    const opus = getEffectiveCatalog('anthropic').find((model) => model.id === 'claude-opus-4-8')!
+    expect(opus).toMatchObject({
+      label: 'Opus patched',
+      blurb: 'Fresh label',
+      family: 'opus',
+      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      pricing: { inputPerMtok: 7, outputPerMtok: 31 },
+    })
+  })
+
+  it('appends valid net-new models after built-ins', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: {
+          overrides: [
+            {
+              id: 'claude-opus-4-9-custom',
+              label: 'Opus 4.9 Custom',
+              family: 'opus',
+              icon: 'anthropic',
+              supportedEfforts: ['low', 'medium', 'high'],
+            },
+          ],
+        },
+      },
+    })
+
+    const catalog = getEffectiveCatalog('anthropic')
+    expect(catalog[catalog.length - 1]?.id).toBe('claude-opus-4-9-custom')
+  })
+
+  it('removes disabled custom models from the effective selectable catalog', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: {
+          overrides: [
+            {
+              id: 'claude-opus-4-9-custom',
+              label: 'Opus 4.9 Custom',
+              family: 'opus',
+              supportedEfforts: ['low', 'medium', 'high'],
+              disabled: true,
+            },
+          ],
+        },
+      },
+    })
+
+    expect(getEffectiveCatalog('anthropic').some((model) => model.id === 'claude-opus-4-9-custom')).toBe(false)
+  })
+
+  it('keeps one entry for same-id patches and lets duplicate overrides resolve last-wins', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: {
+          overrides: [
+            { id: 'claude-opus-4-8', label: 'First label' },
+            { id: 'claude-opus-4-8', label: 'Last label' },
+          ],
+        },
+      },
+    })
+
+    const catalog = getEffectiveCatalog('anthropic')
+    expect(catalog.filter((model) => model.id === 'claude-opus-4-8')).toHaveLength(1)
+    expect(catalog.find((model) => model.id === 'claude-opus-4-8')?.label).toBe('Last label')
+  })
+
+  it('lets disabled win when a single override also contains patch fields', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: {
+          overrides: [{ id: 'claude-opus-4-8', disabled: true, label: 'Hidden Opus' }],
+        },
+      },
+    })
+
+    expect(getEffectiveCatalog('anthropic').some((model) => model.id === 'claude-opus-4-8')).toBe(false)
+  })
+
+  it('drops and warns for structurally invalid effective entries', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: {
+          overrides: [
+            { id: 'incomplete-custom' },
+            { id: 'claude-opus-4-8', pricing: { inputPerMtok: 7 } as never },
+          ],
+        },
+      },
+    })
+
+    const catalog = getEffectiveCatalog('anthropic')
+    expect(catalog.some((model) => model.id === 'incomplete-custom')).toBe(false)
+    expect(catalog.some((model) => model.id === 'claude-opus-4-8')).toBe(false)
+    expect(warn).toHaveBeenCalledTimes(2)
+    warn.mockRestore()
+  })
+
+  it('normalizes family latest flags after custom and family patches', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: {
+          overrides: [
+            {
+              id: 'claude-opus-4-9-custom',
+              label: 'Opus 4.9 Custom',
+              family: 'opus',
+              isLatest: true,
+              supportedEfforts: ['low', 'medium', 'high'],
+            },
+            { id: 'claude-fable-5', family: 'opus' },
+          ],
+        },
+      },
+    })
+
+    const catalog = getEffectiveCatalog('anthropic')
+    expect(catalog.filter((model) => model.family === 'opus' && model.isLatest).map((model) => model.id))
+      .toEqual(['claude-opus-4-9-custom'])
+  })
+
+  it('keeps provider overrides isolated even for shared Claude catalog entries', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: { overrides: [{ id: 'claude-opus-4-8', disabled: true }] },
+      },
+    })
+
+    expect(getEffectiveCatalog('anthropic').some((model) => model.id === 'claude-opus-4-8')).toBe(false)
+    expect(getEffectiveCatalog('openrouter').some((model) => model.id === 'claude-opus-4-8')).toBe(true)
   })
 })
 
@@ -203,6 +387,41 @@ describe('resolveModelForProvider', () => {
     // version segment would hit the default; but a versioned unknown passes
     // through. Use a bare unknown alias to exercise the default path.
     expect(resolveModelForProvider('unknown-alias', 'bedrock', 'agent')).toBe('us.anthropic.claude-sonnet-4-6')
+  })
+
+  it('resolves custom model ids and custom latest aliases through the effective catalog', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: {
+          overrides: [
+            {
+              id: 'claude-opus-4-9-custom',
+              label: 'Opus 4.9 Custom',
+              family: 'opus',
+              isLatest: true,
+              supportedEfforts: ['low', 'medium', 'high'],
+            },
+          ],
+        },
+      },
+    })
+
+    expect(resolveModelForProvider('claude-opus-4-9-custom', 'anthropic', 'agent')).toBe('claude-opus-4-9-custom')
+    expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-4-9-custom')
+  })
+
+  it('falls back cleanly when the only latest member of a family is disabled', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'anthropic',
+      modelCatalog: {
+        anthropic: {
+          overrides: [{ id: 'claude-haiku-4-5', disabled: true }],
+        },
+      },
+    })
+
+    expect(resolveModelForProvider('haiku', 'anthropic', 'summarizer')).toBe('haiku')
   })
 })
 

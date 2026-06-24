@@ -1,6 +1,11 @@
 import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
-import type { ModelDefinition } from './model-catalog-schema'
+import {
+  modelDefinitionSchema,
+  type CatalogOverrideEntry,
+  type ModelDefinition,
+} from './model-catalog-schema'
 import { getLlmProvider } from './index'
+import { getModelCatalogSettings } from '../config/settings'
 
 /**
  * Host-side source of truth for which concrete models a provider offers and
@@ -18,19 +23,25 @@ export function hasVersionSegment(s: string): boolean {
 }
 
 /**
- * Normalize a raw built-in catalog so each family has at most one `isLatest`
- * entry (keep the first, clear the rest). A safety net — built-ins are
- * authored with exactly one latest per family, but user catalogs (SUP-276)
- * may not be.
+ * Normalize a catalog so each family has at most one `isLatest` entry. When
+ * multiple entries claim latest for a family, keep the last one in catalog
+ * order. Built-ins are authored oldest→newest within a family, and SUP-276
+ * custom entries are appended after built-ins, so this lets a custom model
+ * deliberately become the family alias target.
  */
 function normalizeCatalog(catalog: ModelDefinition[]): ModelDefinition[] {
-  const seenLatestFamilies = new Set<string>()
-  return catalog.map(model => {
+  const latestIndexByFamily = new Map<string, number>()
+  catalog.forEach((model, index) => {
     if (model.isLatest && model.family) {
-      if (seenLatestFamilies.has(model.family)) {
+      latestIndexByFamily.set(model.family, index)
+    }
+  })
+
+  return catalog.map((model, index) => {
+    if (model.isLatest && model.family) {
+      if (latestIndexByFamily.get(model.family) !== index) {
         return { ...model, isLatest: false }
       }
-      seenLatestFamilies.add(model.family)
     }
     return model
   })
@@ -41,12 +52,67 @@ export function getProviderCatalog(providerId: LlmProviderId): ModelDefinition[]
   return normalizeCatalog(getLlmProvider(providerId).getBuiltinCatalog())
 }
 
+function withoutDisabled(entry: CatalogOverrideEntry): Partial<ModelDefinition> & { id: string } {
+  const model = { ...entry }
+  delete model.disabled
+  return model
+}
+
+/**
+ * A provider's user-effective catalog:
+ * built-ins → shallow per-id overrides → disabled entries removed → structural
+ * validation → family latest normalization.
+ */
+export function getEffectiveCatalog(providerId: LlmProviderId): ModelDefinition[] {
+  const builtins = getProviderCatalog(providerId)
+  const builtinById = new Map(builtins.map(model => [model.id, model]))
+  const byId = new Map<string, Partial<ModelDefinition> & { id: string }>(
+    builtins.map(model => [model.id, model]),
+  )
+  const order = builtins.map(model => model.id)
+  const overrides = getModelCatalogSettings()[providerId]?.overrides ?? []
+
+  for (const entry of overrides) {
+    const current = byId.get(entry.id)
+    const builtin = builtinById.get(entry.id)
+
+    if (entry.disabled === true) {
+      if (current || builtin) byId.delete(entry.id)
+      continue
+    }
+
+    const patch = withoutDisabled(entry)
+    const base = current ?? builtin
+    const next = base ? { ...base, ...patch } : patch
+    if (!base && !order.includes(entry.id)) order.push(entry.id)
+    byId.set(entry.id, next)
+  }
+
+  const valid: ModelDefinition[] = []
+  for (const id of order) {
+    const model = byId.get(id)
+    if (!model) continue
+
+    const parsed = modelDefinitionSchema.safeParse(model)
+    if (!parsed.success) {
+      console.warn(
+        `Dropping invalid model catalog entry "${id}" for provider "${providerId}":`,
+        parsed.error.issues[0]?.message ?? parsed.error.message,
+      )
+      continue
+    }
+    valid.push(parsed.data)
+  }
+
+  return normalizeCatalog(valid)
+}
+
 /** Look up a concrete model definition by id within a provider's catalog. */
 export function getModelDefinition(
   id: string,
   providerId: LlmProviderId,
 ): ModelDefinition | undefined {
-  return getProviderCatalog(providerId).find(model => model.id === id)
+  return getEffectiveCatalog(providerId).find(model => model.id === id)
 }
 
 /** Static catalog context-window for a model, or undefined if unset. */
@@ -83,7 +149,7 @@ export function resolveModelForProvider(
   providerId: LlmProviderId,
   purpose: ModelPurpose,
 ): string {
-  const catalog = getProviderCatalog(providerId)
+  const catalog = getEffectiveCatalog(providerId)
 
   // exact concrete id (pin/passthrough), else bare family alias → its isLatest id
   const resolveExactOrAlias = (s: string): string | undefined => {

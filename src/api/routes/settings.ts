@@ -1,8 +1,11 @@
 import path from 'path'
-import { Hono } from 'hono'
-import { getLlmProvider, getAllProviderInfo } from '@shared/lib/llm-provider'
+import { randomUUID } from 'crypto'
+import { Hono, type Context } from 'hono'
+import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema } from '@shared/lib/llm-provider'
+import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
+import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
@@ -63,6 +66,76 @@ import fs from 'fs'
 
 const settings = new Hono()
 
+const MODEL_ICON_UPLOAD_PREFIX = 'uploaded:'
+const MODEL_ICON_UPLOAD_MAX_BYTES = 512 * 1024
+const MODEL_ICON_MIME_EXTENSIONS: Record<string, string> = {
+  'image/svg+xml': 'svg',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+}
+const MODEL_ICON_EXTENSION_MIME_TYPES: Record<string, string> = {
+  svg: 'image/svg+xml',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+}
+const UPLOADED_MODEL_ICON_FILENAME_RE = /^[a-f0-9-]+\.(?:svg|png|jpg|jpeg|webp)$/
+
+function getModelIconsDataDir(): string {
+  return path.join(getDataDir(), 'model-icons')
+}
+
+function isUploadedFile(value: unknown): value is File {
+  return typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { arrayBuffer?: unknown }).arrayBuffer === 'function' &&
+    typeof (value as { size?: unknown }).size === 'number' &&
+    typeof (value as { type?: unknown }).type === 'string'
+}
+
+function getModelIconMimeType(fileName: string): string | undefined {
+  const extension = fileName.split('.').pop()?.toLowerCase()
+  if (!extension) return undefined
+  return MODEL_ICON_EXTENSION_MIME_TYPES[extension]
+}
+
+async function serveUploadedModelIcon(c: Context) {
+  try {
+    const fileName = c.req.param('fileName')
+    if (!fileName) {
+      return c.json({ error: 'Invalid model icon filename' }, 400)
+    }
+
+    if (!UPLOADED_MODEL_ICON_FILENAME_RE.test(fileName)) {
+      return c.json({ error: 'Invalid model icon filename' }, 400)
+    }
+
+    const mimeType = getModelIconMimeType(fileName)
+    if (!mimeType) {
+      return c.json({ error: 'Invalid model icon filename' }, 400)
+    }
+
+    // Defense-in-depth: the filename regex already forbids separators/traversal,
+    // but contain the join under the icons dir before reading, per house style.
+    const iconsDir = getModelIconsDataDir()
+    const filePath = assertPathWithinDir(iconsDir, path.join(iconsDir, fileName), 'Invalid model icon filename')
+    const bytes = await fs.promises.readFile(filePath)
+    c.header('Cache-Control', 'public, max-age=31536000, immutable')
+    c.header('Content-Security-Policy', "default-src 'none'; img-src data:; style-src 'unsafe-inline'")
+    c.header('Content-Type', mimeType)
+    c.header('X-Content-Type-Options', 'nosniff')
+    return c.body(bytes)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return c.json({ error: 'Model icon not found' }, 404)
+    }
+    console.error('Failed to read model icon:', error)
+    return c.json({ error: 'Failed to read model icon' }, 500)
+  }
+}
+
 /**
  * Canonical set of agent/app-owned relational tables wiped by factory reset.
  *
@@ -105,6 +178,10 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   auditLog,
 ]
 
+// Custom model icons are used in regular model pickers, so any authenticated
+// user may read them. Writes and the rest of settings stay admin-only.
+settings.get('/model-icons/:fileName', Authenticated(), serveUploadedModelIcon)
+
 settings.use('*', Authenticated(), IsAdmin())
 
 /** All keys in ApiKeySettings — used to generically handle set/delete in PUT. */
@@ -125,6 +202,73 @@ const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
   'accountProviderUserId',
 ]
 
+// GET /api/settings/llm-providers/:providerId/models/search - Provider-native model discovery
+settings.get('/llm-providers/:providerId/models/search', async (c) => {
+  try {
+    const providerId = c.req.param('providerId') as LlmProviderId
+    const provider = getLlmProvider(providerId)
+    if (!provider.supportsModelSearch) {
+      return c.json({ error: `${provider.name} does not support model search` }, 400)
+    }
+
+    const query = c.req.query('q') ?? ''
+    if (query.trim().length < 2) {
+      return c.json({ data: [] })
+    }
+
+    const data = await provider.searchModels(query)
+    return c.json({ data })
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Unknown LLM provider')) {
+      return c.json({ error: error.message }, 404)
+    }
+    if (error instanceof Error && error.message.includes('API key not configured')) {
+      return c.json({ error: error.message }, 400)
+    }
+    console.error('Failed to search provider models:', error)
+    return c.json({ error: 'Failed to search provider models' }, 500)
+  }
+})
+
+// POST /api/settings/model-icons - Upload a custom model icon into the data dir
+settings.post('/model-icons', async (c) => {
+  try {
+    const body = await c.req.parseBody()
+    const maybeFile = Array.isArray(body.file) ? body.file[0] : body.file
+    if (!isUploadedFile(maybeFile)) {
+      return c.json({ error: 'Icon file is required' }, 400)
+    }
+
+    if (maybeFile.size === 0) {
+      return c.json({ error: 'Icon file is empty' }, 400)
+    }
+
+    if (maybeFile.size > MODEL_ICON_UPLOAD_MAX_BYTES) {
+      return c.json({ error: 'Icon file must be 512 KB or smaller' }, 400)
+    }
+
+    const contentType = maybeFile.type.toLowerCase()
+    const extension = MODEL_ICON_MIME_EXTENSIONS[contentType]
+    if (!extension) {
+      return c.json({ error: 'Icon file must be SVG, PNG, JPEG, or WebP' }, 400)
+    }
+
+    const fileName = `${randomUUID()}.${extension}`
+    const dataDir = getModelIconsDataDir()
+    await fs.promises.mkdir(dataDir, { recursive: true })
+    await fs.promises.writeFile(
+      path.join(dataDir, fileName),
+      Buffer.from(await maybeFile.arrayBuffer()),
+      { mode: 0o600 },
+    )
+
+    return c.json({ icon: `${MODEL_ICON_UPLOAD_PREFIX}${fileName}` })
+  } catch (error) {
+    console.error('Failed to upload model icon:', error)
+    return c.json({ error: 'Failed to upload model icon' }, 500)
+  }
+})
+
 type AppPreferencesPatch = Partial<AppPreferences> & {
   faviconDataUrl?: unknown
   hostBrowserProvider?: unknown
@@ -144,6 +288,7 @@ function buildSettingsResponse(
     runnerAvailability,
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
+    modelCatalog: appSettings.modelCatalog ?? {},
     apiKeyStatus: {
       anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
@@ -245,6 +390,15 @@ settings.put('/', async (c) => {
       }
     }
 
+    let parsedModelCatalog = currentSettings.modelCatalog
+    if (body.modelCatalog !== undefined) {
+      const parsed = modelCatalogSettingsSchema.safeParse(body.modelCatalog)
+      if (!parsed.success) {
+        return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid modelCatalog' }, 400)
+      }
+      parsedModelCatalog = parsed.data
+    }
+
     let appPatch = body.app as AppPreferencesPatch | undefined
     if (appPatch && Object.prototype.hasOwnProperty.call(appPatch, 'faviconDataUrl')) {
       const validation = validateFaviconDataUrl(appPatch.faviconDataUrl)
@@ -307,6 +461,7 @@ settings.put('/', async (c) => {
         : providerDefaultModels
           ? { ...currentSettings.models, ...providerDefaultModels }
           : currentSettings.models,
+      modelCatalog: parsedModelCatalog,
       agentLimits: body.agentLimits !== undefined
         ? { ...currentSettings.agentLimits, ...body.agentLimits }
         : currentSettings.agentLimits,

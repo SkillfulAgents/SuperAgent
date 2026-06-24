@@ -14,6 +14,7 @@ import type {
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-errors'
+import type { ModelCatalogSettings, ModelSearchResult } from '@shared/lib/llm-provider'
 
 export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
 
@@ -27,6 +28,27 @@ export function useSettings(options?: { enabled?: boolean }) {
     },
     refetchInterval: 60000, // Poll less frequently - container status is cached server-side
     enabled: options?.enabled,
+  })
+}
+
+export function useProviderModelSearch(
+  providerId: LlmProviderId,
+  query: string,
+  options?: { enabled?: boolean },
+) {
+  const trimmedQuery = query.trim()
+  return useQuery<ModelSearchResult[]>({
+    queryKey: ['settings', 'llm-provider-model-search', providerId, trimmedQuery],
+    queryFn: async () => {
+      const res = await apiFetch(
+        `/api/settings/llm-providers/${providerId}/models/search?q=${encodeURIComponent(trimmedQuery)}`,
+      )
+      const body = await res.json().catch(() => ({})) as { data?: ModelSearchResult[]; error?: string }
+      if (!res.ok) throw new Error(body.error || 'Failed to search provider models')
+      return Array.isArray(body.data) ? body.data : []
+    },
+    enabled: options?.enabled !== false && trimmedQuery.length >= 2,
+    staleTime: 5 * 60 * 1000,
   })
 }
 
@@ -51,6 +73,7 @@ export interface UpdateSettingsParams {
     accountProviderUserId?: string
   }
   models?: Partial<ModelSettings>
+  modelCatalog?: ModelCatalogSettings
   agentLimits?: Partial<AgentLimitsSettings>
   customEnvVars?: Record<string, string>
   auth?: Partial<AuthSettings>

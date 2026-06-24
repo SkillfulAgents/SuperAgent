@@ -1,5 +1,13 @@
-import { describe, it, expect } from 'vitest'
+import { beforeEach, describe, it, expect, vi } from 'vitest'
 import * as path from 'path'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+
+const settingsMock = vi.fn()
+vi.mock('../config/settings', () => ({
+  getSettings: () => settingsMock(),
+  getModelCatalogSettings: () => settingsMock().modelCatalog ?? {},
+}))
 
 import { loadDailyUsageData as loadDailyUsageDataLightweight, calculateCost } from './usage-service'
 
@@ -70,6 +78,10 @@ function normalize(data: DailyResult[]): DailyResult[] {
 }
 
 describe('usage-service', () => {
+  beforeEach(() => {
+    settingsMock.mockReturnValue({ llmProvider: 'anthropic' })
+  })
+
   describe('loadDailyUsageData — matches ccusage stable token counts', () => {
     for (const slug of AGENT_SLUGS) {
       it(`matches ccusage stable counts for agent ${slug}`, async () => {
@@ -311,6 +323,95 @@ describe('usage-service', () => {
     it('returns 0 for unknown models', () => {
       expect(calculateCost('totally-unknown', 100_000, 1_000, 0, 0)).toBe(0)
     })
+
+    it('uses a patched built-in price from the effective provider catalog', () => {
+      settingsMock.mockReturnValue({
+        modelCatalog: {
+          platform: {
+            overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 36 } }],
+          },
+        },
+      })
+
+      expect(calculateCost('gpt-5.5', 100_000, 1_000, 0, 0, 'platform')).toBeCloseTo(
+        (100_000 * 6 + 1_000 * 36) / 1_000_000,
+        9,
+      )
+    })
+
+    it('uses net-new custom model pricing and returns 0 when pricing is absent', () => {
+      settingsMock.mockReturnValue({
+        modelCatalog: {
+          anthropic: {
+            overrides: [
+              {
+                id: 'custom-priced-1',
+                label: 'Custom Priced',
+                supportedEfforts: ['low'],
+                pricing: { inputPerMtok: 1, outputPerMtok: 2 },
+              },
+              {
+                id: 'custom-freeform-1',
+                label: 'Custom Freeform',
+                supportedEfforts: ['low'],
+              },
+            ],
+          },
+        },
+      })
+
+      expect(calculateCost('custom-priced-1', 100_000, 1_000, 0, 0, 'anthropic')).toBeCloseTo(
+        (100_000 * 1 + 1_000 * 2) / 1_000_000,
+        9,
+      )
+      expect(calculateCost('custom-freeform-1', 100_000, 1_000, 0, 0, 'anthropic')).toBe(0)
+    })
+
+    it('honors a patched custom long-context cliff', () => {
+      settingsMock.mockReturnValue({
+        modelCatalog: {
+          anthropic: {
+            overrides: [
+              {
+                id: 'custom-cliff-1',
+                label: 'Custom Cliff',
+                supportedEfforts: ['low'],
+                pricing: { inputPerMtok: 1, outputPerMtok: 2 },
+                longContextPriceCliff: {
+                  thresholdTokens: 100,
+                  inputMultiplier: 3,
+                  outputMultiplier: 4,
+                },
+              },
+            ],
+          },
+        },
+      })
+
+      expect(calculateCost('custom-cliff-1', 200, 10, 0, 0, 'anthropic')).toBeCloseTo(
+        (200 * 3 + 10 * 8) / 1_000_000,
+        9,
+      )
+    })
+
+    it('keeps pricing patches isolated by provider', () => {
+      settingsMock.mockReturnValue({
+        modelCatalog: {
+          anthropic: {
+            overrides: [{ id: 'claude-opus-4-8', pricing: { inputPerMtok: 9, outputPerMtok: 45 } }],
+          },
+        },
+      })
+
+      expect(calculateCost('claude-opus-4-8', 100_000, 1_000, 0, 0, 'anthropic')).toBeCloseTo(
+        (100_000 * 9 + 1_000 * 45) / 1_000_000,
+        9,
+      )
+      expect(calculateCost('claude-opus-4-8', 100_000, 1_000, 0, 0, 'openrouter')).toBeCloseTo(
+        (100_000 * 5 + 1_000 * 25) / 1_000_000,
+        9,
+      )
+    })
   })
 
   describe('loadDailyUsageData — edge cases', () => {
@@ -394,6 +495,53 @@ describe('usage-service', () => {
       expect(dec11!.inputTokens).toBe(600)
       expect(dec11!.cacheCreationTokens).toBe(100)
       expect(dec11!.cacheReadTokens).toBe(200)
+    })
+  })
+
+  describe('loadDailyUsageData — provider catalog pricing (per-line)', () => {
+    it('prices a custom catalog model via the once-built map, and 0 without a provider', async () => {
+      settingsMock.mockReturnValue({
+        llmProvider: 'anthropic',
+        modelCatalog: {
+          anthropic: {
+            overrides: [
+              {
+                id: 'custom-priced-1',
+                label: 'Custom Priced',
+                supportedEfforts: ['low'],
+                pricing: { inputPerMtok: 1, outputPerMtok: 2 },
+              },
+            ],
+          },
+        },
+      })
+
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-catalog-'))
+      try {
+        mkdirSync(path.join(dir, 'projects'), { recursive: true })
+        const entry = {
+          timestamp: '2026-06-20T12:00:00.000Z',
+          requestId: 'req-1',
+          message: {
+            id: 'msg-1',
+            model: 'custom-priced-1',
+            usage: { input_tokens: 100_000, output_tokens: 1_000 },
+          },
+        }
+        writeFileSync(path.join(dir, 'projects', 'session.jsonl'), `${JSON.stringify(entry)}\n`)
+
+        // With a provider, the per-line path applies the catalog pricing.
+        const withProvider = await loadDailyUsageDataLightweight({ claudePath: dir, providerId: 'anthropic' })
+        expect(withProvider).toHaveLength(1)
+        expect(withProvider[0].totalCost).toBeCloseTo((100_000 * 1 + 1_000 * 2) / 1_000_000, 9)
+        expect(withProvider[0].modelBreakdowns[0]).toMatchObject({ modelName: 'custom-priced-1' })
+
+        // Without a provider the custom id isn't in the static table → 0.
+        const withoutProvider = await loadDailyUsageDataLightweight({ claudePath: dir })
+        expect(withoutProvider[0].totalCost).toBe(0)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
     })
   })
 })
