@@ -32,6 +32,7 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 const mockGetSettings = vi.fn((): Record<string, unknown> => ({}))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => mockGetSettings(),
+  getModelCatalogSettings: () => mockGetSettings().modelCatalog ?? {},
   VALID_SCRIPT_TYPES: {
     darwin: ['applescript', 'shell'],
     linux: ['shell'],
