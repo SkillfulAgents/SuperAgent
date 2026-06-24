@@ -373,13 +373,24 @@ export class SlackConnector extends ChatClientConnector {
       // Non-thread (top-level channel or DM): backfill the gap since the
       // conversation's marker. Thread messages keep the fetchThreadHistory path
       // above. Setting-independent - the marker, not onlyMentioned, decides.
+      // Read the marker by effectiveChatId (the key the manager advances the row
+      // under); the history fetch still targets the real channel (chatId). Wrapped
+      // best-effort: the marker read is a synchronous DB query and must never block
+      // the reply (fetchHistorySince already degrades internally). This runs before
+      // the manager's per-chat queue, so concurrent messages may re-seed overlapping
+      // windows - bounded (<=15 msgs, files deduped) and the forward-only marker
+      // guard prevents any skip, so it is accepted best-effort.
       let contextFiles: { name: string; url: string; mimeType?: string }[] | undefined
       if (!threadTs) {
-        const marker = getLastSeenTs(this.integrationId, chatId)
-        const ctx = await this.fetchHistorySince(chatId, marker, ts, SlackConnector.CHANNEL_CONTEXT_LIMIT)
-        if (ctx) {
-          text = ctx.text + '\n\n' + text
-          contextFiles = ctx.files.length ? ctx.files : undefined
+        try {
+          const marker = getLastSeenTs(this.integrationId, effectiveChatId)
+          const ctx = await this.fetchHistorySince(chatId, marker, ts, SlackConnector.CHANNEL_CONTEXT_LIMIT)
+          if (ctx) {
+            text = ctx.text + '\n\n' + text
+            contextFiles = ctx.files.length ? ctx.files : undefined
+          }
+        } catch (err) {
+          console.warn('[SlackConnector] channel-context seed failed (non-critical):', err instanceof Error ? err.message : err)
         }
       }
 
