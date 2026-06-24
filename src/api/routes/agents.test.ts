@@ -338,6 +338,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAgentLimits: () => ({}),
   getCustomEnvVars: () => ({}),
   getSettings: () => ({ container: {}, skillsets: [] }),
+  getModelCatalogSettings: () => ({}),
 }))
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
