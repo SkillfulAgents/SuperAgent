@@ -5,6 +5,14 @@ import * as os from 'os'
 import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient } from './base-container-client'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
 
+const enableToolSearch = vi.fn((): boolean | undefined => true)
+vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => ({ enableToolSearch: enableToolSearch() }),
+}))
+vi.mock('@shared/lib/llm-provider', () => ({
+  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({ ANTHROPIC_API_KEY: 'provider-key' }) }),
+}))
+
 /** Minimal concrete subclass to exercise protected run-error classification. */
 class TestContainerClient extends BaseContainerClient {
   protected getRunnerCommand(): string {
@@ -17,7 +25,33 @@ class TestContainerClient extends BaseContainerClient {
   public testExtractInaccessibleMountPath(error: unknown): string | null {
     return this.extractInaccessibleMountPath(error)
   }
+  public testBuildAgentEnv(extra?: Record<string, string>): Record<string, string> {
+    return this.buildAgentEnv(extra)
+  }
 }
+
+describe('buildAgentEnv', () => {
+  afterEach(() => enableToolSearch.mockReturnValue(true))
+
+  it('merges provider env, constants, config.envVars and per-start extra (later wins)', () => {
+    const client = new TestContainerClient({
+      agentId: 'a',
+      envVars: { FROM_CONFIG: 'c', ANTHROPIC_API_KEY: 'from-config' }, // config beats provider
+    })
+    const env = client.testBuildAgentEnv({ FROM_EXTRA: 'e', FROM_CONFIG: 'from-extra' }) // extra beats config
+    expect(env.ANTHROPIC_API_KEY).toBe('from-config')
+    expect(env.FROM_CONFIG).toBe('from-extra')
+    expect(env.FROM_EXTRA).toBe('e')
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/workspace/.claude')
+    expect(env.ENABLE_TOOL_SEARCH).toBe('true')
+  })
+
+  it('sets ENABLE_TOOL_SEARCH=false only when the setting is explicitly false', () => {
+    enableToolSearch.mockReturnValue(false)
+    const env = new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
+  })
+})
 
 describe('writeEnvFile', () => {
   const cleanups: (() => void)[] = []
