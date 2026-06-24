@@ -1,6 +1,10 @@
 import crypto from 'node:crypto'
 import { initDataSchema, type InitData } from './init-data-schema'
 
+// Allow a little clock skew so a server running slightly behind Telegram doesn't
+// reject otherwise-valid initData whose auth_date reads as marginally in the future.
+const MAX_CLOCK_SKEW_SECONDS = 300
+
 type Result =
   | { ok: true; data: InitData }
   | { ok: false; reason: 'signature' | 'stale' | 'malformed' }
@@ -46,6 +50,9 @@ export function verifyInitData(initData: string, botToken: string, maxAgeSeconds
 
   const ageSeconds = Math.floor(Date.now() / 1000) - parsed.data.auth_date
   if (ageSeconds > maxAgeSeconds) return { ok: false, reason: 'stale' }
+  // A future auth_date yields a negative age that would otherwise slip past the
+  // staleness check; reject anything beyond the small clock-skew allowance.
+  if (ageSeconds < -MAX_CLOCK_SKEW_SECONDS) return { ok: false, reason: 'stale' }
 
   return { ok: true, data: parsed.data }
 }

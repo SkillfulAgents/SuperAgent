@@ -58,10 +58,12 @@ export function resolveDashboardEmoji(emoji?: string): string {
  * Render the dashboard share card body as markdown: a bold "<emoji> <name>"
  * title with an optional italic blurb as a subtitle on its own line. Goes through
  * the same rich-markdown send path as every other outbound message (rich, with an
- * HTML fallback). The agent-supplied emoji/caption and the name are escapeMarkdown'd
- * so they render literally instead of as stray markup. The blurb is separated by a
- * blank line (paragraph break) because Telegram's rich markdown collapses a single
- * newline into a space.
+ * HTML fallback). The agent-supplied emoji/caption and the name are escapeMarkdown'd,
+ * which neutralizes markdown control characters so injected `*`/`_`/`[](...)` markup
+ * renders as literal text. Bare URLs in the caption still autolink under gfm; that is
+ * acceptable because the agent is the trust principal here and can already post links
+ * via send_chat_message. The blurb is separated by a blank line (paragraph break)
+ * because Telegram's rich markdown collapses a single newline into a space.
  */
 export function renderDashboardCard(name: string, emoji?: string, caption?: string): string {
   const icon = resolveDashboardEmoji(emoji)

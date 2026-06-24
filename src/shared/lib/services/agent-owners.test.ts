@@ -39,6 +39,16 @@ describe('getAgentOwnerIds', () => {
     expect(owners.sort()).toEqual(['owner-1', 'owner-2'])
   })
 
+  it('returns owner ids in a stable ascending order regardless of insertion order', async () => {
+    addAcl('a1', 'owner-charlie', 'agent-z', 'owner')
+    addAcl('a2', 'owner-alice', 'agent-z', 'owner')
+    addAcl('a3', 'owner-bob', 'agent-z', 'owner')
+
+    // No .sort() here: the service must return a deterministic order so the [0] pick
+    // used for integration owner attribution is stable.
+    expect(await getAgentOwnerIds('agent-z')).toEqual(['owner-alice', 'owner-bob', 'owner-charlie'])
+  })
+
   it('returns an empty array when the agent has no owner rows', async () => {
     addAcl('a1', 'viewer-1', 'agent-x', 'viewer')
     expect(await getAgentOwnerIds('agent-x')).toEqual([])

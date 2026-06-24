@@ -37,6 +37,23 @@ describe('verifyInitData', () => {
     expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: false, reason: 'stale' })
   })
 
+  it('rejects initData dated in the future beyond the clock-skew allowance', () => {
+    // A future auth_date makes the age negative; without an upper bound it would
+    // slip past the staleness check.
+    const authDate = Math.floor(Date.now() / 1000) + 100000
+    const initData = signInitData({ auth_date: String(authDate) })
+    expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: false, reason: 'stale' })
+  })
+
+  it('accepts a slightly-future auth_date within the clock-skew allowance', () => {
+    const authDate = Math.floor(Date.now() / 1000) + 30
+    const initData = signInitData({
+      auth_date: String(authDate),
+      user: JSON.stringify({ id: 7 }),
+    })
+    expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: true })
+  })
+
   it('returns malformed (not throws) when user field is invalid JSON despite valid HMAC', () => {
     const authDate = Math.floor(Date.now() / 1000)
     const initData = signInitData({ auth_date: String(authDate), user: 'not{json' })
