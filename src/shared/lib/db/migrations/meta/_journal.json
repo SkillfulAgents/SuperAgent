@@ -176,6 +176,13 @@
       "when": 1781000000000,
       "tag": "0024_seed_chat_access",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1782339535562,
+      "tag": "0025_chilly_rumiko_fujikawa",
+      "breakpoints": true
     }
   ]
 }

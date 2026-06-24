@@ -444,6 +444,7 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   externalChatId: text('external_chat_id').notNull(), // Telegram chat_id or Slack channel_id
   sessionId: text('session_id').notNull(),
   displayName: text('display_name'), // e.g. "John's DM", "#general"
+  lastSeenTs: text('last_seen_ts'), // newest Slack ts this conversation's session has ingested; null until first ingest
   archivedAt: integer('archived_at', { mode: 'timestamp_ms' }), // Set when session is cleared; null = active
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),

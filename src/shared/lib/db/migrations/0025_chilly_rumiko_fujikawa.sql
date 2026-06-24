@@ -1,0 +1,1 @@
+ALTER TABLE `chat_integration_sessions` ADD `last_seen_ts` text;
