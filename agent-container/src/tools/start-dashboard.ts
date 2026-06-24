@@ -1,8 +1,10 @@
 import * as fs from 'fs'
+import * as path from 'path'
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import { dashboardManager } from '../dashboard-manager'
+import { dashboardManager, ARTIFACTS_DIR } from '../dashboard-manager'
 import { resizeScreenshot } from '../image-utils'
+import { lintDashboardDir, formatUrlFindings } from '../dashboard-url-lint'
 
 type ToolContentBlock =
   | { type: 'text'; text: string }
@@ -47,6 +49,19 @@ The dashboard must exist at /workspace/artifacts/<slug>/ with a valid package.js
           }
         } else {
           text += `\n\n(Screenshot unavailable: ${shot.reason})`
+        }
+
+        // Catch client-side absolute URLs that will 404 once the dashboard is
+        // served under its /api/agents/.../artifacts/<slug>/ subpath. Surfaced
+        // here (the agent's verification touchpoint) with exact file:line so it
+        // self-corrects. Best-effort: a lint failure must never break start.
+        try {
+          const urlFindings = lintDashboardDir(path.join(ARTIFACTS_DIR, args.slug))
+          if (urlFindings.length > 0) {
+            text = `${formatUrlFindings(urlFindings)}\n\n${text}`
+          }
+        } catch {
+          // ignore lint errors
         }
       } else if (info.status === 'crashed' || info.status === 'stopped') {
         // Include recent logs so the agent can debug without a separate tool call
