@@ -141,6 +141,12 @@ export interface SlackMessageRoutingResult {
    * passed in — i.e. before the caller marks this thread active.
    */
   isNewThreadEntry: boolean
+  /**
+   * True only for a genuinely top-level channel mention while `onlyMentioned`
+   * is on. The caller seeds recent channel history in this case. Mutually
+   * exclusive with `isNewThreadEntry` (which requires a threadTs).
+   */
+  shouldSeedChannelContext: boolean
 }
 
 export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessageRoutingResult {
@@ -151,7 +157,7 @@ export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessa
     const isMentioned = botUserId ? rawText.includes(`<@${botUserId}>`) : false
     if (!isMentioned) {
       if (!threadTs || !activeThreads.has(`${chatId}|${threadTs}`)) {
-        return { shouldProcess: false, effectiveChatId: chatId, isNewThreadEntry: false }
+        return { shouldProcess: false, effectiveChatId: chatId, isNewThreadEntry: false, shouldSeedChannelContext: false }
       }
     }
   }
@@ -188,8 +194,12 @@ export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessa
   // when the message is itself in a thread (threadTs) and we haven't tracked
   // that thread yet — a brand-new top-level message has no history to fetch.
   const isNewThreadEntry = !!(threadKey && threadTs && !activeThreads.has(threadKey))
+  // Top-level channel mention with onlyMentioned on: no thread to backfill, so
+  // seed recent channel history instead. !threadTs makes this exclusive with
+  // isNewThreadEntry.
+  const shouldSeedChannelContext = isChannel && !!config.onlyMentioned && !threadTs
 
-  return { shouldProcess: true, effectiveChatId, threadContext, threadKey, isNewThreadEntry }
+  return { shouldProcess: true, effectiveChatId, threadContext, threadKey, isNewThreadEntry, shouldSeedChannelContext }
 }
 
 export function resolveSlackChannel(
