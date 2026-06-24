@@ -57,6 +57,7 @@ import {
   getMicrovmRuntimeConfig,
   resolveIdleSeconds,
 } from './lambda-microvm-runtime'
+import { consumeBootstrapEnv, resetBootstrapEnvStoreForTests } from './agent-bootstrap-env-store'
 
 const REQUIRED_ENV = {
   MICROVM_AWS_REGION: 'us-east-2',
@@ -88,6 +89,7 @@ beforeEach(() => {
   })
   vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true }) as Response))
   resetMicrovmRuntimeForTests()
+  resetBootstrapEnvStoreForTests()
 })
 
 afterEach(() => {
@@ -242,8 +244,19 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(typeof input.clientToken).toBe('string')
     expect(input.clientToken.length).toBeGreaterThan(0)
     const payload = JSON.parse(input.runHookPayload)
-    expect(payload.env.FOO).toBe('bar') // the agent's configured env is delivered
+    // Env no longer rides the payload (4096 cap); only a small bootstrap credential does.
+    expect(payload.env).toBeUndefined()
+    expect(payload.bootstrap.url).toBe('https://host.example/api/agent-bootstrap/agent-xyz/env')
     expect(payload.mount).toBeUndefined() // no mount configured here
+    // The full env is stashed host-side for the VM to fetch at boot.
+    expect(consumeBootstrapEnv('agent-xyz')).toMatchObject({ FOO: 'bar' })
+  })
+
+  it('the bootstrap credential carries the agent PROXY_TOKEN for the boot fetch', async () => {
+    const client = new LambdaMicroVmRuntimeClient({ agentId: 'agent-tok', envVars: { PROXY_TOKEN: 'synth_abc' } })
+    await client.start()
+    const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
+    expect(JSON.parse(input.runHookPayload).bootstrap.token).toBe('synth_abc')
   })
 
   it('uses a unique clientToken per start (fixed tokens collide on idempotency → InternalFailure)', async () => {
@@ -266,7 +279,7 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     await newClient().start()
     const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
     const payload = JSON.parse(input.runHookPayload)
-    expect(payload.env.FOO).toBe('bar')
+    expect(payload.bootstrap.url).toContain('/api/agent-bootstrap/agent-xyz/env')
     expect(payload.mount).toEqual({ fsId: 'fs-1', accessPoint: 'fsap-1', mountTargetIp: '10.0.0.5' })
   })
 
@@ -297,11 +310,55 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect((await client.getInfoFromRuntime()).status).toBe('running')
   })
 
-  it('getInfoFromRuntime reports stopped when the VM is TERMINATED', async () => {
+  it('getInfoFromRuntime reports stopped when the VM is TERMINATED and cleans up local state', async () => {
     const client = newClient()
     await client.start()
     responses.getState = 'TERMINATED'
     expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+
+    // Terminal state must drop local state (mirror NotFound): a subsequent start()
+    // re-runs a fresh VM rather than reusing the dead one's proxy.
+    responses.getState = 'RUNNING'
+    sendMock.mockClear()
+    await client.start()
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(true)
+  })
+
+  it('getInfoFromRuntime keeps last known running state on a transient (non-NotFound) error', async () => {
+    const client = newClient()
+    await client.start()
+    const port = (await client.getInfoFromRuntime()).port
+
+    // A throttling/network blip must not be reported as stopped (which would orphan
+    // the live VM when start()/ensureRunning react to it).
+    sendMock.mockImplementationOnce(async () => { throw new Error('ThrottlingException') })
+    const info = await client.getInfoFromRuntime()
+    expect(info.status).toBe('running')
+    expect(info.port).toBe(port)
+
+    // State is retained: the next start() short-circuits (no new RunMicrovm).
+    sendMock.mockClear()
+    await client.start()
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+  })
+
+  it('start stops the prior proxy across a terminate→restart cycle (no leaked listener)', async () => {
+    const stopSpy = vi.spyOn(LocalAuthForwardProxy.prototype, 'stop')
+    const client = newClient()
+    await client.start()
+    expect((await client.getInfoFromRuntime()).status).toBe('running')
+
+    // VM dies → getInfo cleans up the old proxy; the next request restarts it.
+    responses.getState = 'TERMINATED'
+    expect(await client.getInfoFromRuntime()).toEqual({ status: 'stopped', port: null })
+    expect(stopSpy).toHaveBeenCalled() // old loopback server was closed, not leaked
+
+    responses.getState = 'RUNNING'
+    await client.start()
+    const info = await client.getInfoFromRuntime()
+    expect(info.status).toBe('running')
+    expect(typeof info.port).toBe('number')
+    stopSpy.mockRestore()
   })
 
   it('stop terminates the MicroVM', async () => {

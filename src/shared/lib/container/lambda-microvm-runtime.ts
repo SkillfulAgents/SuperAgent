@@ -16,6 +16,7 @@ import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-c
 import type { ContainerConfig, ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
+import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
 
 // RunMicrovm caps runHookPayload at 4096 bytes (API constraint; the prose "16KB"
 // in some docs is wrong). It's meant for small per-agent data (session ids /
@@ -329,21 +330,25 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
     const config = getMicrovmRuntimeConfig()
     const client = getMicrovmClient(config.region)
-    // runHookPayload (env + workspace mount) requires the image to declare a run
-    // hook; omit it entirely when there's nothing to pass so hook-less images still run.
+    // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
+    // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
     const env = this.buildAgentEnv(options?.envVars)
+    const hasEnv = Object.keys(env).length > 0
     const mount = config.fsId && config.accessPoint && config.mountTargetIp
       ? { fsId: config.fsId, accessPoint: config.accessPoint, mountTargetIp: config.mountTargetIp }
       : undefined
-    const runHookPayload = Object.keys(env).length > 0 || mount
-      ? JSON.stringify(mount ? { env, mount } : { env })
+    const bootstrap = hasEnv
+      ? {
+          url: `${this.getHostApiBaseUrl()}/api/agent-bootstrap/${this.config.agentId}/env`,
+          token: env.PROXY_TOKEN ?? '',
+        }
       : undefined
+    const payloadObj = { ...(bootstrap ? { bootstrap } : {}), ...(mount ? { mount } : {}) }
+    const runHookPayload = bootstrap || mount ? JSON.stringify(payloadObj) : undefined
     const payloadBytes = runHookPayload ? Buffer.byteLength(runHookPayload, 'utf8') : 0
     if (payloadBytes > RUN_HOOK_PAYLOAD_MAX_BYTES) {
-      const keys = Object.keys(env).sort((a, b) => env[b].length - env[a].length).slice(0, 5)
       throw new Error(
-        `MicroVM runHookPayload is ${payloadBytes} bytes, over the ${RUN_HOOK_PAYLOAD_MAX_BYTES} limit. ` +
-          `${Object.keys(env).length} env keys; largest: ${keys.map((k) => `${k}=${env[k].length}b`).join(', ')}`,
+        `MicroVM runHookPayload is ${payloadBytes} bytes, over the ${RUN_HOOK_PAYLOAD_MAX_BYTES} limit.`,
       )
     }
 
@@ -380,6 +385,10 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       mintToken: () => this.mintToken(run.microvmId!),
     })
     const proxyPort = await proxy.start()
+    // Stop any stale proxy before overwriting state (no leaked port/listener); stash
+    // env after the cleanup (which clears stale stashes) so it isn't wiped.
+    this.cleanupLocal()
+    if (hasEnv) setBootstrapEnv(this.config.agentId, env)
     agentStates.set(this.config.agentId, { microvmId: run.microvmId, endpoint: run.endpoint, proxy, proxyPort })
 
     try {
@@ -427,14 +436,18 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       if (mvm.state === 'RUNNING' || mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
         return { status: 'running', port: state.proxyPort }
       }
+      // Terminal: VM is gone — drop state + proxy (mirror NotFound) so it isn't leaked.
+      this.cleanupLocal()
       return { status: 'stopped', port: null }
     } catch (error) {
       if (isNotFound(error)) {
         this.cleanupLocal()
         return { status: 'stopped', port: null }
       }
+      // Transient (throttling/network): keep last known state so we don't orphan a live
+      // VM; container-manager's TTL /health re-probe backstops a genuinely dead one.
       captureException(error, { tags: { area: 'container', op: 'microvm.getInfo' }, extra: { microvmId: state.microvmId } })
-      return { status: 'stopped', port: null }
+      return { status: 'running', port: state.proxyPort }
     }
   }
 
@@ -527,6 +540,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const state = agentStates.get(this.config.agentId)
     state?.proxy.stop()
     agentStates.delete(this.config.agentId)
+    clearBootstrapEnv(this.config.agentId)
   }
 }
 

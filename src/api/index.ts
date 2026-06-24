@@ -30,6 +30,7 @@ import adminUsersRouter from './routes/admin-users'
 import auditLogRouter from './routes/audit-log'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
+import agentBootstrap from './routes/agent-bootstrap'
 import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { sql } from 'drizzle-orm'
@@ -175,6 +176,7 @@ app.route('/api/webhook-triggers', webhookTriggers)
 app.route('/api/chat-integrations', chatIntegrationsRouter)
 app.route('/api/notifications', notifications)
 app.route('/api/proxy', proxy)
+app.route('/api/agent-bootstrap', agentBootstrap)
 app.route('/api/mcp-proxy', mcpProxy)
 app.route('/api/browser', browser)
 app.route('/api/skillsets', skillsets)

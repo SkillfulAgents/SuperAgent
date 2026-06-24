@@ -20,6 +20,7 @@ const LOCALHOST_ADDRS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1'])
  */
 const CONTAINER_FACING_PREFIXES = [
   '/api/proxy/',
+  '/api/agent-bootstrap/',
   '/api/mcp-proxy/',
   '/api/x-agent/', // covers /api/x-agent and /api/x-agent/chat
   '/api/browser/',
