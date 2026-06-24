@@ -4,9 +4,23 @@ export { AnthropicLlmProvider } from './anthropic-provider'
 export { OpenRouterLlmProvider } from './openrouter-provider'
 export { BedrockLlmProvider } from './bedrock-provider'
 export { PlatformLlmProvider } from './platform-provider'
-export { modelDefinitionSchema, modelCatalogSchema } from './model-catalog-schema'
-export type { ModelDefinition } from './model-catalog-schema'
 export {
+  modelDefinitionSchema,
+  modelCatalogSchema,
+  catalogOverrideEntrySchema,
+  providerCatalogOverridesSchema,
+  modelCatalogSettingsSchema,
+  modelSearchResultSchema,
+} from './model-catalog-schema'
+export type {
+  ModelDefinition,
+  ModelSearchResult,
+  CatalogOverrideEntry,
+  ProviderCatalogOverrides,
+  ModelCatalogSettings,
+} from './model-catalog-schema'
+export {
+  getEffectiveCatalog,
   getProviderCatalog,
   getModelDefinition,
   getModelContextWindow,
@@ -18,7 +32,7 @@ export {
 import type { LlmProviderId, ModelPurpose } from './base-llm-provider'
 import { BaseLlmProvider } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
-import { getProviderCatalog, resolveModelForProvider } from './model-catalog'
+import { getEffectiveCatalog, getProviderCatalog, resolveModelForProvider } from './model-catalog'
 import { AnthropicLlmProvider } from './anthropic-provider'
 import { OpenRouterLlmProvider } from './openrouter-provider'
 import { BedrockLlmProvider } from './bedrock-provider'
@@ -66,10 +80,15 @@ export interface LlmProviderInfo {
   id: LlmProviderId
   name: string
   isConfigured: boolean
-  /** Concrete model ids this provider offers, normalized to ≤1 isLatest/family. */
+  /** Concrete model ids this provider offers after user overrides. */
   catalog: ModelDefinition[]
+  /** Built-in provider catalog, before user disables, patches, or custom entries. */
+  builtinCatalog?: ModelDefinition[]
   /** Per-purpose default selections (bare aliases). */
   defaultModels: ProviderDefaultModels
+  capabilities: {
+    modelSearch: boolean
+  }
 }
 
 function defaultModelsFor(provider: BaseLlmProvider): ProviderDefaultModels {
@@ -86,7 +105,11 @@ export function getAllProviderInfo(): LlmProviderInfo[] {
     id: p.id,
     name: p.name,
     isConfigured: p.getApiKeyStatus().isConfigured,
-    catalog: getProviderCatalog(p.id),
+    catalog: getEffectiveCatalog(p.id),
+    builtinCatalog: getProviderCatalog(p.id),
     defaultModels: defaultModelsFor(p),
+    capabilities: {
+      modelSearch: p.supportsModelSearch,
+    },
   }))
 }

@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { listAgents, getAgent } from '@shared/lib/services/agent-service'
 import { getAgentClaudeConfigDir } from '@shared/lib/utils/file-storage'
 import { loadDailyUsageData } from '@shared/lib/services/usage-service'
+import { getSettings } from '@shared/lib/config/settings'
 import { subDays, format, addDays } from 'date-fns'
 import type { DailyUsageEntry, UsageResponse } from '@shared/lib/types/usage'
 import { Authenticated } from '../middleware/auth'
@@ -71,6 +72,7 @@ usage.get('/', async (c) => {
   } else {
     agents = await listAgents()
   }
+  const providerId = getSettings().llmProvider ?? 'anthropic'
 
   // Aggregate: date -> { totalCost, totalTokens, byAgent, byModel }
   const dateMap = new Map<string, {
@@ -89,7 +91,7 @@ usage.get('/', async (c) => {
       batch.map(async (agent) => {
         try {
           const claudePath = getAgentClaudeConfigDir(agent.slug)
-          const dailyData = await loadDailyUsageData({ claudePath, since })
+          const dailyData = await loadDailyUsageData({ claudePath, since, providerId })
           return { agent, dailyData }
         } catch {
           return null

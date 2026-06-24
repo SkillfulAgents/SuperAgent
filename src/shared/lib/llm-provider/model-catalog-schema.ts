@@ -66,4 +66,30 @@ export const modelDefinitionSchema = z.object({
 
 export type ModelDefinition = z.infer<typeof modelDefinitionSchema>
 
+/**
+ * Normalized provider-discovery result. Providers may source this from their
+ * own catalogs, but by the time it reaches the renderer it is already shaped
+ * like a model that can be added to the local catalog.
+ */
+export const modelSearchResultSchema = modelDefinitionSchema
+export type ModelSearchResult = z.infer<typeof modelSearchResultSchema>
+
 export const modelCatalogSchema = z.array(modelDefinitionSchema)
+
+export const catalogOverrideEntrySchema = modelDefinitionSchema.partial().extend({
+  id: z.string().min(1),
+  disabled: z.boolean().optional(),
+})
+
+export const providerCatalogOverridesSchema = z.object({
+  overrides: z.array(catalogOverrideEntrySchema).default([]),
+})
+
+export const modelCatalogSettingsSchema = z.record(
+  z.string(),
+  providerCatalogOverridesSchema,
+)
+
+export type CatalogOverrideEntry = z.infer<typeof catalogOverrideEntrySchema>
+export type ProviderCatalogOverrides = z.infer<typeof providerCatalogOverridesSchema>
+export type ModelCatalogSettings = z.infer<typeof modelCatalogSettingsSchema>

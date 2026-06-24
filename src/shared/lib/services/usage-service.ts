@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import pLimit from 'p-limit'
+import { getEffectiveCatalog, type LlmProviderId, type ModelDefinition } from '../llm-provider'
 
 export interface ModelBreakdown {
   modelName: string
@@ -41,6 +42,7 @@ interface LoadOptions {
   claudePath: string
   since?: string
   concurrency?: number
+  providerId?: LlmProviderId
 }
 
 interface CountedUsage {
@@ -71,8 +73,58 @@ interface PricingEntry extends RateCard {
   longContext?: RateCard & { thresholdTokens: number }
 }
 
+function deriveInputRelatedRate(
+  inputRate: number,
+  staticPricing: PricingEntry | undefined,
+  field: 'cacheCreation' | 'cacheRead',
+): number {
+  if (!staticPricing || staticPricing.input <= 0) {
+    return field === 'cacheRead' ? inputRate * 0.1 : inputRate
+  }
+  return inputRate * (staticPricing[field] / staticPricing.input)
+}
+
+function rateCardFromCatalogModel(
+  model: ModelDefinition,
+  staticPricing: PricingEntry | undefined,
+): PricingEntry | null {
+  if (!model.pricing) return null
+
+  const input = model.pricing.inputPerMtok
+  const output = model.pricing.outputPerMtok
+  const cacheCreation = deriveInputRelatedRate(input, staticPricing, 'cacheCreation')
+  const cacheRead = deriveInputRelatedRate(input, staticPricing, 'cacheRead')
+  const pricing: PricingEntry = { input, output, cacheCreation, cacheRead }
+
+  if (model.longContextPriceCliff) {
+    pricing.longContext = {
+      thresholdTokens: model.longContextPriceCliff.thresholdTokens,
+      input: input * model.longContextPriceCliff.inputMultiplier,
+      output: output * model.longContextPriceCliff.outputMultiplier,
+      cacheCreation: cacheCreation * model.longContextPriceCliff.inputMultiplier,
+      cacheRead: cacheRead * model.longContextPriceCliff.inputMultiplier,
+    }
+  }
+
+  return pricing
+}
+
+function getProviderCatalogPricing(
+  model: string,
+  providerId: LlmProviderId,
+  staticPricing: PricingEntry | undefined,
+): PricingEntry | null | undefined {
+  const definition = getEffectiveCatalog(providerId).find((entry) => entry.id === model)
+  if (!definition) return undefined
+  return rateCardFromCatalogModel(definition, staticPricing)
+}
+
 /**
- * Calculate cost from token counts using hardcoded pricing.
+ * Calculate cost from token counts.
+ *
+ * When `providerId` is supplied, pricing comes first from that provider's
+ * effective catalog so user patches and custom models are honored. Legacy
+ * static pricing remains as a fallback for transcript ids outside the catalog.
  * Returns 0 for unknown models.
  */
 export function calculateCost(
@@ -81,8 +133,15 @@ export function calculateCost(
   outputTokens: number,
   cacheCreationTokens: number,
   cacheReadTokens: number,
+  providerId?: LlmProviderId,
 ): number {
-  const pricing = (MODEL_PRICING as Record<string, PricingEntry>)[model]
+  const staticPricing = (MODEL_PRICING as Record<string, PricingEntry>)[model]
+  const catalogPricing = providerId
+    ? getProviderCatalogPricing(model, providerId, staticPricing)
+    : undefined
+  if (catalogPricing === null) return 0
+
+  const pricing = catalogPricing ?? staticPricing
   if (!pricing) return 0
 
   // Cliff triggers on full prompt input (input excludes cache reads in this
@@ -123,7 +182,7 @@ async function findJsonlFiles(dir: string): Promise<string[]> {
  * - Uses costUSD field when available
  */
 export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsageData[]> {
-  const { claudePath, since, concurrency = 10 } = options
+  const { claudePath, since, concurrency = 10, providerId } = options
 
   const projectsDir = path.join(claudePath, 'projects')
   try {
@@ -265,7 +324,7 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
     const cacheCreationTokens = usage.cache_creation_input_tokens || 0
     const cacheReadTokens = usage.cache_read_input_tokens || 0
     const cost = entry.costUSD ??
-      calculateCost(model, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens)
+      calculateCost(model, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, providerId)
 
     const countedUsage: CountedUsage = {
       date,

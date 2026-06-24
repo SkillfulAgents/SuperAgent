@@ -26,6 +26,7 @@ import {
   getComposioUserId,
   getEffectiveModels,
   getEffectiveAgentLimits,
+  getModelCatalogSettings,
   getCustomEnvVars,
   DEFAULT_SETTINGS,
   DEFAULT_AUTH_SETTINGS,
@@ -347,6 +348,30 @@ describe('loadSettings', () => {
       expect(result.customEnvVars).toEqual(envVars)
     })
 
+    it('preserves a valid modelCatalog override map', () => {
+      const modelCatalog = {
+        anthropic: {
+          overrides: [{ id: 'claude-opus-4-8', disabled: true }],
+        },
+      }
+      mockSettingsFile(JSON.stringify({ modelCatalog }))
+
+      const result = loadSettings()
+
+      expect(result.modelCatalog).toEqual(modelCatalog)
+    })
+
+    it('ignores a malformed modelCatalog instead of failing settings load', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      mockSettingsFile(JSON.stringify({ modelCatalog: { anthropic: { overrides: [{ id: '' }] } } }))
+
+      const result = loadSettings()
+
+      expect(result.modelCatalog).toBeUndefined()
+      expect(warn).toHaveBeenCalledOnce()
+      warn.mockRestore()
+    })
+
     it('preserves skillsets as-is', () => {
       const skillsets = [
         {
@@ -381,6 +406,7 @@ describe('loadSettings', () => {
       expect(result.apiKeys).toBeUndefined()
       expect(result.agentLimits).toBeUndefined()
       expect(result.customEnvVars).toBeUndefined()
+      expect(result.modelCatalog).toBeUndefined()
       expect(result.skillsets).toEqual(DEFAULT_SETTINGS.skillsets)
     })
   })
@@ -1200,6 +1226,38 @@ describe('getCustomEnvVars', () => {
     mockSettingsFile(JSON.stringify({ customEnvVars: null }))
 
     expect(getCustomEnvVars()).toEqual({})
+  })
+})
+
+// ============================================================================
+// getModelCatalogSettings()
+// ============================================================================
+
+describe('getModelCatalogSettings', () => {
+  it('returns empty overrides when no model catalog is configured', () => {
+    mockNoSettingsFile()
+
+    expect(getModelCatalogSettings()).toEqual({})
+  })
+
+  it('returns configured model catalog overrides', () => {
+    const modelCatalog = {
+      platform: {
+        overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 36 } }],
+      },
+    }
+    mockSettingsFile(JSON.stringify({ modelCatalog }))
+
+    expect(getModelCatalogSettings()).toEqual(modelCatalog)
+  })
+
+  it('returns empty overrides when modelCatalog is null', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    mockSettingsFile(JSON.stringify({ modelCatalog: null }))
+
+    expect(getModelCatalogSettings()).toEqual({})
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
   })
 })
 

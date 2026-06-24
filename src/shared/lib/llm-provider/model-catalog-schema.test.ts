@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { modelDefinitionSchema, modelCatalogSchema } from './model-catalog-schema'
+import {
+  catalogOverrideEntrySchema,
+  modelCatalogSchema,
+  modelCatalogSettingsSchema,
+  modelDefinitionSchema,
+} from './model-catalog-schema'
 
 const base = {
   id: 'claude-opus-4-8',
@@ -85,5 +90,47 @@ describe('modelDefinitionSchema', () => {
 
   it('validates a catalog array', () => {
     expect(modelCatalogSchema.parse([base])).toHaveLength(1)
+  })
+})
+
+describe('catalogOverrideEntrySchema', () => {
+  it('accepts id-only, disabled, and partial patch entries', () => {
+    expect(catalogOverrideEntrySchema.parse({ id: 'claude-opus-4-8' })).toEqual({ id: 'claude-opus-4-8' })
+    expect(catalogOverrideEntrySchema.parse({ id: 'claude-opus-4-8', disabled: true })).toMatchObject({
+      id: 'claude-opus-4-8',
+      disabled: true,
+    })
+    expect(catalogOverrideEntrySchema.parse({
+      id: 'claude-opus-4-8',
+      label: 'Patched label',
+      supportedEfforts: ['low'],
+    })).toMatchObject({ label: 'Patched label' })
+  })
+
+  it('rejects missing or empty ids', () => {
+    expect(() => catalogOverrideEntrySchema.parse({ label: 'No id' })).toThrow()
+    expect(() => catalogOverrideEntrySchema.parse({ id: '' })).toThrow()
+  })
+
+  it('rejects wrong-typed fields and invalid effort values', () => {
+    expect(() => catalogOverrideEntrySchema.parse({ id: 'x', pricing: 'cheap' })).toThrow()
+    expect(() => catalogOverrideEntrySchema.parse({ id: 'x', supportedEfforts: ['turbo'] })).toThrow()
+  })
+})
+
+describe('modelCatalogSettingsSchema', () => {
+  it('accepts an empty provider-keyed map and unknown provider keys', () => {
+    expect(modelCatalogSettingsSchema.parse({})).toEqual({})
+    expect(modelCatalogSettingsSchema.parse({
+      futureProvider: { overrides: [{ id: 'future-model', disabled: true }] },
+    })).toEqual({
+      futureProvider: { overrides: [{ id: 'future-model', disabled: true }] },
+    })
+  })
+
+  it('defaults missing per-provider overrides to an empty list', () => {
+    expect(modelCatalogSettingsSchema.parse({ anthropic: {} })).toEqual({
+      anthropic: { overrides: [] },
+    })
   })
 })

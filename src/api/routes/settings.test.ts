@@ -20,6 +20,18 @@ const mockGetNangoApiKeyStatus = vi.fn()
 const mockGetAccountProviderUserId = vi.fn()
 const mockGetDefaultAccountProviderType = vi.fn()
 const mockGetNangoSecretKey = vi.fn()
+const mockFsPromises = vi.hoisted(() => ({
+  rm: vi.fn().mockResolvedValue(undefined),
+  mkdir: vi.fn().mockResolvedValue(undefined),
+  writeFile: vi.fn().mockResolvedValue(undefined),
+  readFile: vi.fn().mockResolvedValue(Buffer.from('<svg />')),
+}))
+const mockAuthenticatedMiddleware = vi.hoisted(() =>
+  vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
+)
+const mockIsAdminMiddleware = vi.hoisted(() =>
+  vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
+)
 
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
@@ -30,6 +42,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getComposioUserId: (...args: unknown[]) => mockGetComposioUserId(...args),
   getEffectiveModels: (...args: unknown[]) => mockGetEffectiveModels(...args),
   getEffectiveAgentLimits: (...args: unknown[]) => mockGetEffectiveAgentLimits(...args),
+  getModelCatalogSettings: () => mockGetSettings().modelCatalog ?? {},
   getCustomEnvVars: (...args: unknown[]) => mockGetCustomEnvVars(...args),
   getVoiceSettings: (...args: unknown[]) => mockGetVoiceSettings(...args),
   getBrowserbaseApiKeyStatus: (...args: unknown[]) => mockGetBrowserbaseApiKeyStatus(...args),
@@ -88,8 +101,8 @@ vi.mock('@shared/lib/stt', () => ({
 
 // Auth middleware: no-op in tests (non-auth mode)
 vi.mock('../middleware/auth', () => ({
-  Authenticated: () => async (_c: unknown, next: () => Promise<void>) => next(),
-  IsAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  Authenticated: () => mockAuthenticatedMiddleware,
+  IsAdmin: () => mockIsAdminMiddleware,
 }))
 
 vi.mock('@shared/lib/auth/mode', () => ({
@@ -128,7 +141,7 @@ vi.mock('@shared/lib/db/schema', () => ({
 }))
 
 vi.mock('fs', () => ({
-  default: { promises: { rm: vi.fn().mockResolvedValue(undefined) } },
+  default: { promises: mockFsPromises },
 }))
 
 vi.mock('@shared/lib/analytics/tenant-id', () => ({
@@ -216,6 +229,10 @@ describe('settings route', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mockFsPromises.rm.mockResolvedValue(undefined)
+    mockFsPromises.mkdir.mockResolvedValue(undefined)
+    mockFsPromises.writeFile.mockResolvedValue(undefined)
+    mockFsPromises.readFile.mockResolvedValue(Buffer.from('<svg />'))
     setupDefaults()
     app = createApp()
   })
@@ -669,6 +686,35 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.customEnvVars).toEqual({ MY_OK: 'fine', ANOTHER: 'x' })
+    })
+
+    it('replaces modelCatalog entirely when valid overrides are provided', async () => {
+      const modelCatalog = {
+        anthropic: {
+          overrides: [{ id: 'claude-opus-4-8', disabled: true }],
+        },
+      }
+
+      const res = await putSettings({ modelCatalog })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.modelCatalog).toEqual(modelCatalog)
+    })
+
+    it('rejects invalid modelCatalog payloads and does not persist', async () => {
+      const res = await putSettings({
+        modelCatalog: {
+          anthropic: {
+            overrides: [{ id: '', disabled: true }],
+          },
+        },
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toBeTruthy()
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
     })
 
     it('merges auth settings with existing', async () => {
@@ -1322,6 +1368,7 @@ describe('settings route', () => {
       expect(body).toHaveProperty('runnerAvailability')
       expect(body).toHaveProperty('llmProvider')
       expect(body).toHaveProperty('llmProviderStatus')
+      expect(body).toHaveProperty('modelCatalog')
       expect(body).toHaveProperty('apiKeyStatus')
       expect(body).toHaveProperty('models')
       expect(body).toHaveProperty('agentLimits')
@@ -1355,6 +1402,134 @@ describe('settings route', () => {
     })
   })
 
+  describe('model icon uploads', () => {
+    it('stores uploaded icons in the data dir and returns a catalog icon key', async () => {
+      const formData = new FormData()
+      formData.set('file', new File(['<svg />'], 'custom.svg', { type: 'image/svg+xml' }))
+
+      const res = await app.request('http://localhost/api/settings/model-icons', {
+        method: 'POST',
+        body: formData,
+      })
+
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.icon).toMatch(/^uploaded:[a-f0-9-]+\.svg$/)
+      expect(mockFsPromises.mkdir).toHaveBeenCalledWith('/mock/data/model-icons', { recursive: true })
+      expect(mockFsPromises.writeFile).toHaveBeenCalledWith(
+        expect.stringMatching(/^\/mock\/data\/model-icons\/[a-f0-9-]+\.svg$/),
+        expect.any(Buffer),
+        { mode: 0o600 },
+      )
+    })
+
+    it('rejects unsupported icon file types', async () => {
+      const formData = new FormData()
+      formData.set('file', new File(['not an image'], 'custom.txt', { type: 'text/plain' }))
+
+      const res = await app.request('http://localhost/api/settings/model-icons', {
+        method: 'POST',
+        body: formData,
+      })
+
+      expect(res.status).toBe(400)
+      expect(mockFsPromises.writeFile).not.toHaveBeenCalled()
+    })
+
+    it('serves uploaded icons from the data dir', async () => {
+      mockFsPromises.readFile.mockResolvedValueOnce(Buffer.from('<svg />'))
+
+      const res = await app.request('http://localhost/api/settings/model-icons/abc-123.svg')
+
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toContain('image/svg+xml')
+      expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+      expect(await res.text()).toBe('<svg />')
+      expect(mockFsPromises.readFile).toHaveBeenCalledWith('/mock/data/model-icons/abc-123.svg')
+    })
+
+    it('serves uploaded icons without requiring admin authorization', async () => {
+      mockFsPromises.readFile.mockResolvedValueOnce(Buffer.from('<svg />'))
+
+      const res = await app.request('http://localhost/api/settings/model-icons/abc-123.svg')
+
+      expect(res.status).toBe(200)
+      expect(mockAuthenticatedMiddleware).toHaveBeenCalled()
+      expect(mockIsAdminMiddleware).not.toHaveBeenCalled()
+    })
+
+    it('rejects invalid uploaded icon filenames', async () => {
+      const res = await app.request('http://localhost/api/settings/model-icons/not-allowed.gif')
+
+      expect(res.status).toBe(400)
+      expect(mockFsPromises.readFile).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('provider model search', () => {
+    it('rejects providers that do not support model search', async () => {
+      const res = await app.request('http://localhost/api/settings/llm-providers/anthropic/models/search?q=claude')
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('does not support model search')
+    })
+
+    it('searches provider-native catalogs and returns normalized model listings', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: {
+          ...defaultSettings().apiKeys,
+          openrouterApiKey: 'sk-or-test',
+        },
+      })
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          data: [
+            {
+              id: 'openai/gpt-4',
+              name: 'GPT-4',
+              description: 'GPT-4 is a capable model.',
+              context_length: 8192,
+              architecture: { tokenizer: 'GPT' },
+              pricing: { prompt: '0.00003', completion: '0.00006' },
+            },
+          ],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+
+      try {
+        const res = await app.request('http://localhost/api/settings/llm-providers/openrouter/models/search?q=gpt')
+
+        expect(res.status).toBe(200)
+        expect(fetchSpy).toHaveBeenCalledOnce()
+        expect(String(fetchSpy.mock.calls[0][0])).toContain('q=gpt')
+        expect(fetchSpy.mock.calls[0][1]).toMatchObject({
+          headers: { Authorization: 'Bearer sk-or-test' },
+        })
+        const body = await res.json()
+        expect(body.data).toEqual([
+          expect.objectContaining({
+            id: 'openai/gpt-4',
+            label: 'GPT-4',
+            family: 'gpt',
+            icon: 'openai',
+            blurb: 'GPT-4 is a capable model.',
+            supportedEfforts: ['low', 'medium', 'high'],
+            pricing: { inputPerMtok: 30, outputPerMtok: 60 },
+            contextWindow: 8192,
+            supportsWebSearch: false,
+          }),
+        ])
+      } finally {
+        fetchSpy.mockRestore()
+      }
+    })
+  })
+
   // =========================================================================
   // GET response shape
   // =========================================================================
@@ -1371,6 +1546,7 @@ describe('settings route', () => {
       expect(body).toHaveProperty('runnerAvailability')
       expect(body).toHaveProperty('llmProvider')
       expect(body).toHaveProperty('llmProviderStatus')
+      expect(body).toHaveProperty('modelCatalog')
       expect(body).toHaveProperty('apiKeyStatus')
       expect(body).toHaveProperty('models')
       expect(body).toHaveProperty('agentLimits')
