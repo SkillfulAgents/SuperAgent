@@ -186,3 +186,37 @@ export function deleteChatIntegrationSessionsByIntegration(integrationId: string
     .run()
   return result.changes
 }
+
+// ── Marker (last seen message) ────────────────────────────────────────────
+
+/**
+ * Newest ingested Slack ts for a conversation, across ALL rows (active +
+ * archived). Reading across rows is what carries the marker forward when a
+ * session rotates: a fresh row starts with a null marker, so the max comes
+ * from the archived predecessor. Compared numerically (Slack ts are decimal
+ * strings; a lexical sort would order "9.0" after "10.0").
+ */
+export function getLastSeenTs(integrationId: string, externalChatId: string): string | null {
+  const rows = db.select({ lastSeenTs: chatIntegrationSessions.lastSeenTs })
+    .from(chatIntegrationSessions)
+    .where(and(
+      eq(chatIntegrationSessions.integrationId, integrationId),
+      eq(chatIntegrationSessions.externalChatId, externalChatId),
+    ))
+    .all()
+  let best: string | null = null
+  for (const r of rows) {
+    if (r.lastSeenTs == null) continue
+    if (best == null || Number(r.lastSeenTs) > Number(best)) best = r.lastSeenTs
+  }
+  return best
+}
+
+/** Record the newest ingested Slack ts on a single session row. */
+export function setLastSeenTs(sessionRowId: string, ts: string): boolean {
+  const result = db.update(chatIntegrationSessions)
+    .set({ lastSeenTs: ts })
+    .where(eq(chatIntegrationSessions.id, sessionRowId))
+    .run()
+  return result.changes > 0
+}
