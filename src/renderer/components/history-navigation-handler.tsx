@@ -22,7 +22,17 @@ function getKeyboardNavigationCommand(event: KeyboardEvent): HistoryNavigationCo
     if (isBracketKey(event, ']')) return 'forward'
   }
 
-  if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+  // Alt+Arrow is the native back/forward gesture on Windows/Linux (word-jump
+  // there is Ctrl+Arrow, so no conflict). On macOS, Option+Arrow is reserved
+  // for word-jump in text fields and was never a nav gesture — Mac uses
+  // Cmd+[ / Cmd+] instead — so we skip it there to avoid hijacking editing.
+  if (
+    getPlatform() !== 'darwin' &&
+    event.altKey &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.shiftKey
+  ) {
     if (event.key === 'ArrowLeft') return 'back'
     if (event.key === 'ArrowRight') return 'forward'
   }
