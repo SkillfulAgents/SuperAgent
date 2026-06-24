@@ -202,6 +202,44 @@ export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessa
   return { shouldProcess: true, effectiveChatId, threadContext, threadKey, isNewThreadEntry, shouldSeedChannelContext }
 }
 
+export interface SlackHistoryMessage {
+  ts?: string
+  user?: string
+  bot_id?: string
+  subtype?: string
+  text?: string
+  files?: unknown[]
+}
+
+// Content-bearing subtypes to keep. A message with NO subtype is kept too.
+// Everything else (channel_join, topic/purpose/name changes, message_changed,
+// message_deleted, etc.) is system noise and dropped.
+const KEEP_HISTORY_SUBTYPES = new Set(['bot_message', 'me_message', 'file_share', 'thread_broadcast'])
+
+/**
+ * Filter raw `conversations.history` messages down to the ones worth seeding as
+ * channel context, in chronological (oldest-first) order. Drops the triggering
+ * message, the bot's own messages (by user id or bot id), non-content subtypes,
+ * and empty messages. Threaded replies never appear here - history is top-level.
+ */
+export function selectChannelContextMessages(
+  messages: SlackHistoryMessage[],
+  currentTs: string,
+  botUserId: string | null,
+  botId: string | null,
+): SlackHistoryMessage[] {
+  const kept = messages.filter((m) => {
+    if (!m.ts || m.ts === currentTs) return false
+    if (botUserId && m.user === botUserId) return false
+    if (botId && m.bot_id && m.bot_id === botId) return false
+    if (m.subtype && !KEEP_HISTORY_SUBTYPES.has(m.subtype)) return false
+    const hasText = !!(m.text && m.text.trim())
+    const hasFiles = Array.isArray(m.files) && m.files.length > 0
+    return hasText || hasFiles
+  })
+  return kept.sort((a, b) => Number(a.ts) - Number(b.ts))
+}
+
 export function resolveSlackChannel(
   effectiveChatId: string,
   threadContextMap: ReadonlyMap<string, { channel: string; threadTs: string }>,
