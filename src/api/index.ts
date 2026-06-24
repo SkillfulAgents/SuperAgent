@@ -172,7 +172,7 @@ app.get('/api/llm/anthropic-sdk.js', (c) => {
 // The bare path carries the AgentAdmin-guarded DELETE/PATCH management endpoints; a
 // dashboard cookie must not authorize those destructive operations.
 // Note: Hono 4's /* wildcard also matches the bare :artifactSlug path, so we guard via
-// shouldRunDashboardSession (method-gated + encoding-safe; see the middleware module).
+// shouldRunDashboardSession (encoding-safe bare-path exclusion; see the middleware module).
 const dashboardSession = TelegramDashboardSession()
 app.use('/api/agents/:id/artifacts/:artifactSlug/*', async (c, next) => {
   if (!shouldRunDashboardSession(c)) return next()

@@ -81,7 +81,7 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
       if (!shouldRunDashboardSession(c)) return next()
       return dashboardSession(c, next)
     })
-    app.get('/api/agents/:id/artifacts/:artifactSlug/*', (c) =>
+    app.all('/api/agents/:id/artifacts/:artifactSlug/*', (c) =>
       c.json({ user: (c.get as any)('user') ?? null }),
     )
     app.delete('/api/agents/:id/artifacts/:artifactSlug', (c) =>
@@ -116,6 +116,18 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
     const res = await makeArtifactApp().request(
       '/api/agents/sales/artifacts/weekly-report/index.html',
       { headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
+    )
+    const body = await res.json()
+    expect(body.user?.id).toBe('u1')
+  })
+
+  it('sets user on POST to a content sub-path (dashboard backend write — in-app parity)', async () => {
+    // The cookie authorizes writes to the dashboard's own (container-sandboxed)
+    // backend, matching what an in-app AgentRead viewer can do.
+    const token = makeCookie()
+    const res = await makeArtifactApp().request(
+      '/api/agents/sales/artifacts/weekly-report/api/save',
+      { method: 'POST', headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
     )
     const body = await res.json()
     expect(body.user?.id).toBe('u1')
@@ -198,12 +210,20 @@ describe('shouldRunDashboardSession (unit)', () => {
   it('runs for llm routes (no :artifactSlug to scope)', async () => {
     expect(await probe('GET', '/api/llm/anthropic')).toBe(true)
   })
-  it('does not run for mutating methods', async () => {
-    expect(await probe('DELETE', '/api/agents/sales/artifacts/weekly-report/x')).toBe(false)
-    expect(await probe('PATCH', '/api/agents/sales/artifacts/weekly-report/x')).toBe(false)
+  it('runs for mutating methods on a content sub-path (dashboard backend writes)', async () => {
+    // Parity with the in-app AgentRead viewer: the cookie authorizes writes to the
+    // dashboard's own backend (container-sandboxed), not just reads.
+    expect(await probe('POST', '/api/agents/sales/artifacts/weekly-report/api/save')).toBe(true)
+    expect(await probe('DELETE', '/api/agents/sales/artifacts/weekly-report/api/item/5')).toBe(true)
+    expect(await probe('PATCH', '/api/agents/sales/artifacts/weekly-report/x')).toBe(true)
   })
-  it('does not run on the bare management path (decoded compare)', async () => {
-    expect(await probe('GET', '/api/agents/sales/artifacts/weekly-report')).toBe(false)
-    expect(await probe('GET', '/api/agents/sales/artifacts/weekly-report%2F')).toBe(false)
+  it('does not run on the bare management path for ANY method (decoded compare)', async () => {
+    // The AgentAdmin DELETE/PATCH management endpoints live on the bare path and
+    // must stay off-limits to the cookie regardless of method — with the read-only
+    // method gate removed, this decoded-path exclusion is now their SOLE guard.
+    for (const m of ['GET', 'DELETE', 'PATCH', 'POST']) {
+      expect(await probe(m, '/api/agents/sales/artifacts/weekly-report'), m).toBe(false)
+      expect(await probe(m, '/api/agents/sales/artifacts/weekly-report%2F'), m).toBe(false)
+    }
   })
 })

@@ -4,24 +4,30 @@ import { verifyDashboardCookie, DASHBOARD_COOKIE_NAME } from '@shared/lib/telegr
 import { getOrCreateAuthSecret } from '@shared/lib/auth/secret'
 
 /**
- * shouldRunDashboardSession — decides whether the dashboard cookie may even be
+ * shouldRunDashboardSession — decides whether the dashboard cookie may be
  * consulted on this request. Mounted on `:artifactSlug/*`, which in Hono 4 also
  * fires on the bare `:artifactSlug` management path (AgentAdmin DELETE/PATCH).
  *
- * Two independent guards, either of which is sufficient:
- * - A dashboard cookie only ever grants reads, so it must never be consulted on
- *   a mutating method. Gate to GET/HEAD.
- * - On the bare management path (no content after the slug) the cookie must not
- *   apply. Compare against the DECODED path: Hono keeps `%2F` in `c.req.path`
- *   but decodes `c.req.param()`, so reconstructing from params would let a
- *   `%2F`-encoded slug evade a raw-path comparison. Fail closed on bad encoding.
+ * The cookie grants the same access an in-app AgentRead viewer has on a dashboard's
+ * content sub-paths — including writes (POST/PUT/DELETE/PATCH) to the dashboard's
+ * own backend — so the Telegram and in-app experiences match. That reachability is
+ * bounded: every sub-path request hits only the
+ * `agents.all('…/artifacts/:artifactSlug/*', AgentRead())` proxy, which forwards
+ * into the agent's sandboxed container; no host-side mutation lives under a
+ * sub-path. (A dashboard backend could already cause side effects on a GET, so
+ * gating the method added little containment here — the container sandbox is the
+ * real boundary, and the cookie can never reach SuperAgent's other host routes
+ * because it is mounted only on the artifact, llm, and stt surfaces.)
+ *
+ * The one hard exclusion is the bare `:artifactSlug` management path (the
+ * AgentAdmin DELETE/PATCH endpoints): the cookie must NEVER apply there, for any
+ * method. Compare against the DECODED path — Hono keeps `%2F` in `c.req.path` but
+ * decodes `c.req.param()`, so reconstructing from params would let a `%2F`-encoded
+ * slug evade a raw-path comparison. Fail closed on bad encoding.
  *
  * Exported so the real predicate is what gets tested, not a copy.
  */
 export function shouldRunDashboardSession(c: Context): boolean {
-  const method = c.req.method
-  if (method !== 'GET' && method !== 'HEAD') return false
-
   const artifactSlug = c.req.param('artifactSlug')
   if (artifactSlug === undefined) return true // non-artifact routes (llm/stt)
 
