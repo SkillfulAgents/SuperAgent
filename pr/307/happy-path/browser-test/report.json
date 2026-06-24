@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature tested successfully - agent opens browser, navigates to specified URL, retrieves page title, and reports back correctly",
+  "steps": [
+    "Navigated to http://localhost:47891 - Initial page loaded successfully showing Gamut home with list of agents",
+    "Clicked on \"QA-20260624-181313-kfsm\" agent link from sidebar - Agent configuration page loaded with chat input interface",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message submitted successfully, agent status changed to \"working\"",
+    "Waited for response (completed in 12 seconds) - Agent executed browser_open, browser_get_state, and browser_close tools as shown in tool call cards with green checkmarks",
+    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is \"Example Domain\"\" and \"its title/heading is \"Example Domain\"\" - VERIFIED"
+  ],
+  "bugs": [],
+  "durationMs": 81576,
+  "sessionId": "b7cabe85-c85e-40b9-954d-777bcdd5640f",
+  "cost": {
+    "inputTokens": 435,
+    "outputTokens": 13388,
+    "cacheCreationTokens": 128816,
+    "cacheReadTokens": 1366852,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.36508
+  }
+}
