@@ -25,9 +25,13 @@ describe('selectChannelContextMessages', () => {
     const kept = run([{ ts: '100.0', user: 'U1', text: 'human' }, { ts: '101.0', bot_id: 'B_OTHER', subtype: 'bot_message', text: 'deploy done' }])
     expect(kept.map(m => m.text)).toEqual(['human', 'deploy done'])
   })
-  it('keeps me_message and thread_broadcast', () => {
-    const kept = run([{ ts: '100.0', user: 'U1', subtype: 'me_message', text: 'waves' }, { ts: '101.0', user: 'U2', subtype: 'thread_broadcast', text: 'also here' }])
-    expect(kept.map(m => m.text)).toEqual(['waves', 'also here'])
+  it('keeps the content subtypes on the allowlist (me_message, thread_broadcast, file_share)', () => {
+    const kept = run([
+      { ts: '100.0', user: 'U1', subtype: 'me_message', text: 'waves' },
+      { ts: '101.0', user: 'U2', subtype: 'thread_broadcast', text: 'also here' },
+      { ts: '102.0', user: 'U3', subtype: 'file_share', text: 'sharing', files: [{ name: 'x.pdf' }] },
+    ])
+    expect(kept.map(m => m.text)).toEqual(['waves', 'also here', 'sharing'])
   })
   it('drops system subtypes not on the allowlist (channel_join has text)', () => {
     const kept = run([{ ts: '100.0', user: 'U1', text: 'real' }, { ts: '101.0', subtype: 'channel_join', text: 'has joined' }])
@@ -41,9 +45,19 @@ describe('selectChannelContextMessages', () => {
     const kept = run([{ ts: '100.0', user: 'U1', text: '   ' }])
     expect(kept).toHaveLength(0)
   })
-  it('returns chronological order from newest-first input', () => {
-    const kept = run([{ ts: '300.0', user: 'U1', text: 'c' }, { ts: '100.0', user: 'U1', text: 'a' }, { ts: '200.0', user: 'U1', text: 'b' }])
-    expect(kept.map(m => m.text)).toEqual(['a', 'b', 'c'])
+  it('drops a message with no ts', () => {
+    const kept = run([{ user: 'U1', text: 'no ts' }, { ts: '100.0', user: 'U1', text: 'has ts' }])
+    expect(kept.map(m => m.text)).toEqual(['has ts'])
+  })
+  it('returns chronological order by NUMERIC ts (not lexical) from newest-first input', () => {
+    // A lexical string sort would order these '10.0' < '100.0' < '9.0' < '90.0'; numeric is 9 < 10 < 90 < 100.
+    const kept = run([
+      { ts: '100.0', user: 'U1', text: 'd' },
+      { ts: '9.0', user: 'U1', text: 'a' },
+      { ts: '10.0', user: 'U1', text: 'b' },
+      { ts: '90.0', user: 'U1', text: 'c' },
+    ])
+    expect(kept.map(m => m.text)).toEqual(['a', 'b', 'c', 'd'])
   })
 })
 
@@ -71,7 +85,7 @@ describe('fetchChannelHistory', () => {
     }) } } }
     const result = await (c as any).fetchChannelHistory('C1', '1004.0')
     expect(result).not.toBeNull()
-    expect(result.text).toContain('[Channel context')
+    expect(result.text).toContain('[Channel context - 2 previous messages]')
     expect(result.text).toContain('Alice: the deploy is broken')
     expect(result.text).toContain('Bob: [shared file: report.pdf]')
     expect(result.text).not.toContain('on it')
@@ -105,5 +119,24 @@ describe('fetchChannelHistory', () => {
     const c = makeConnector()
     ;(c as any).app = { client: { conversations: { history: async () => ({ ok: true, messages: [{ ts: '1.0', user: 'U_BOT', text: 'mine' }] }) } } }
     expect(await (c as any).fetchChannelHistory('C1', '999.0')).toBeNull()
+  })
+
+  it('returns null when the API responds not-ok (missing scope without throwing)', async () => {
+    const c = makeConnector()
+    ;(c as any).app = { client: { conversations: { history: async () => ({ ok: false, error: 'missing_scope' }) } } }
+    expect(await (c as any).fetchChannelHistory('C1', '999.0')).toBeNull()
+  })
+
+  it('returns null when the API response omits messages', async () => {
+    const c = makeConnector()
+    ;(c as any).app = { client: { conversations: { history: async () => ({ ok: true }) } } }
+    expect(await (c as any).fetchChannelHistory('C1', '999.0')).toBeNull()
+  })
+
+  it('uses singular wording for a single previous message', async () => {
+    const c = makeConnector()
+    ;(c as any).app = { client: { conversations: { history: async () => ({ ok: true, messages: [{ ts: '100.0', user: 'U1', text: 'just one' }] }) } } }
+    const result = await (c as any).fetchChannelHistory('C1', '999.0')
+    expect(result.text).toContain('[Channel context - 1 previous message]')
   })
 })
