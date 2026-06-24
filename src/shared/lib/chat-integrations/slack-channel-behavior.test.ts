@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, type SlackMessageRoutingParams } from './slack-connector'
+import { routeSlackMessage, resolveSlackChannel, type SlackMessageRoutingParams } from './slack-connector'
+import { touchAndCapSet, touchAndCapMap } from './collection-utils'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
