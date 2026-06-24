@@ -24,6 +24,7 @@ import {
 } from '@shared/lib/services/chat-integration-service'
 import {
   getChatIntegrationSession,
+  getChatIntegrationSessionById,
   getChatIntegrationSessionBySessionId,
   createChatIntegrationSession,
   updateChatIntegrationSessionName,
@@ -33,6 +34,7 @@ import {
   listActiveChatIntegrationSessions,
   resolveActiveSession,
   getLastDisplayName,
+  setLastSeenTs,
 } from '@shared/lib/services/chat-integration-session-service'
 import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
@@ -816,6 +818,10 @@ class ChatIntegrationManager {
       if (!isChatAllowed(integrationId, chatId)) return
 
       await client.sendMessage(sessionId, messageText)
+      if (integration.provider === 'slack') {
+        try { advanceConversationMarker(chatSession.id, message.externalMessageId) }
+        catch (err) { console.warn('[ChatIntegrationManager] marker advance failed (non-critical):', err instanceof Error ? err.message : err) }
+      }
       messagePersister.markSessionActive(sessionId, integration.agentSlug)
       const now = Date.now()
       const lastTouch = this.lastSessionTouch.get(chatSession.id) ?? 0
@@ -922,12 +928,16 @@ class ChatIntegrationManager {
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
     })
 
-    createChatIntegrationSession({
+    const newRowId = createChatIntegrationSession({
       integrationId: integration.id,
       externalChatId: chatId,
       sessionId,
       displayName,
     })
+    if (integration.provider === 'slack') {
+      try { advanceConversationMarker(newRowId, message.externalMessageId) }
+      catch (err) { console.warn('[ChatIntegrationManager] marker advance failed (non-critical):', err instanceof Error ? err.message : err) }
+    }
 
     await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
     messagePersister.markSessionActive(sessionId, integration.agentSlug)
@@ -1923,6 +1933,18 @@ export function buildSessionName(
     return `${baseName} — ${formatSessionTimestamp(now)}`
   }
   return baseName
+}
+
+/**
+ * Advance a conversation's marker to a processed Slack message's ts, never
+ * backward (out-of-order/duplicate deliveries must not rewind the gap window).
+ * Slack-only: callers gate on provider, so externalMessageId is always a numeric ts.
+ */
+export function advanceConversationMarker(sessionRowId: string, externalMessageId: string): void {
+  if (!externalMessageId) return
+  const row = getChatIntegrationSessionById(sessionRowId)
+  if (row?.lastSeenTs != null && Number(row.lastSeenTs) >= Number(externalMessageId)) return
+  setLastSeenTs(sessionRowId, externalMessageId)
 }
 
 // ── Singleton (globalThis for HMR persistence) ─────────────────────────
