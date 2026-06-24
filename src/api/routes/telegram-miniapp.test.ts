@@ -55,6 +55,7 @@ import app from './telegram-miniapp'
 import { signDashboardCookie, DASHBOARD_COOKIE_NAME, DASHBOARD_COOKIE_TTL_SECONDS } from '@shared/lib/telegram/dashboard-cookie'
 import { getOrCreateAuthSecret } from '@shared/lib/auth/secret'
 import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
+import { getChatIntegration } from '@shared/lib/services/chat-integration-service'
 
 // ============================================================================
 // Helper — produce a correctly-signed Telegram initData string
@@ -190,6 +191,137 @@ describe('POST /session', () => {
     const body = await res.json()
     expect(body).toMatchObject({ ok: false, reason: 'not_bound' })
     expect(res.headers.get('set-cookie')).toBeNull()
+  })
+})
+
+// Full integration row so per-test overrides stay terse and type-safe.
+type MiniAppIntegration = NonNullable<ReturnType<typeof getChatIntegration>>
+function integrationFixture(overrides: Partial<MiniAppIntegration> = {}): MiniAppIntegration {
+  return {
+    id: 'int1',
+    agentSlug: 'sales',
+    provider: 'telegram',
+    config: JSON.stringify({ botToken: BOT_TOKEN }),
+    createdByUserId: 'u1',
+    name: null,
+    status: 'active',
+    showToolCalls: false,
+    requireApproval: false,
+    sessionTimeout: null,
+    model: null,
+    effort: null,
+    errorMessage: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  }
+}
+
+function postSession(body: Record<string, unknown>, headers: Record<string, string> = {}) {
+  return app.request('/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  })
+}
+
+// Characterization tests for the /session rejection gates (steps 1–10). These lock in the
+// authorization branches the e2e header points here for, and assert no tg_dash cookie ever
+// leaks on a reject path.
+describe('POST /session — rejection branches', () => {
+  const boundInitData = () =>
+    signInitData({
+      auth_date: String(Math.floor(Date.now() / 1000)),
+      user: JSON.stringify({ id: 42, username: 'alice' }),
+    })
+
+  it('returns 400 bad_request for a non-JSON body', async () => {
+    const res = await app.request('/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: 'not json',
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ ok: false, reason: 'bad_request' })
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('returns 404 not_found when the integration does not exist', async () => {
+    vi.mocked(getChatIntegration).mockReturnValueOnce(null)
+    const res = await postSession({
+      initData: 'stub', integrationId: 'missing', agentSlug: 'sales', dashboardSlug: 'weekly-report',
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toMatchObject({ ok: false, reason: 'not_found' })
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('returns 400 not_telegram for a non-telegram integration', async () => {
+    vi.mocked(getChatIntegration).mockReturnValueOnce(integrationFixture({ provider: 'slack' }))
+    const res = await postSession({
+      initData: 'stub', integrationId: 'int1', agentSlug: 'sales', dashboardSlug: 'weekly-report',
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ ok: false, reason: 'not_telegram' })
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('returns 400 bad_integration when the telegram config carries no bot token', async () => {
+    vi.mocked(getChatIntegration).mockReturnValueOnce(integrationFixture({ config: JSON.stringify({}) }))
+    const res = await postSession({
+      initData: 'stub', integrationId: 'int1', agentSlug: 'sales', dashboardSlug: 'weekly-report',
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ ok: false, reason: 'bad_integration' })
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('returns 403 not_bound when a valid signature carries no user id', async () => {
+    // Signature valid but initData has no `user` object → step 6 (tgUserId === undefined),
+    // distinct from the step-7 unbound-user case above.
+    const initData = signInitData({ auth_date: String(Math.floor(Date.now() / 1000)) })
+    const res = await postSession({
+      initData, integrationId: 'int1', agentSlug: 'sales', dashboardSlug: 'weekly-report',
+    })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ ok: false, reason: 'not_bound' })
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('returns 400 agent_mismatch when the body agentSlug differs from the integration', async () => {
+    const res = await postSession({
+      initData: boundInitData(), integrationId: 'int1', agentSlug: 'marketing', dashboardSlug: 'weekly-report',
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ ok: false, reason: 'agent_mismatch' })
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('returns 404 dashboard_not_found when the dashboard does not belong to the agent', async () => {
+    const res = await postSession({
+      initData: boundInitData(), integrationId: 'int1', agentSlug: 'sales', dashboardSlug: 'no-such-dashboard',
+    })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toMatchObject({ ok: false, reason: 'dashboard_not_found' })
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('returns 401 no_owner when the integration has no owner to act on behalf of', async () => {
+    vi.mocked(getChatIntegration).mockReturnValueOnce(integrationFixture({ createdByUserId: null }))
+    const res = await postSession({
+      initData: boundInitData(), integrationId: 'int1', agentSlug: 'sales', dashboardSlug: 'weekly-report',
+    })
+    expect(res.status).toBe(401)
+    expect(await res.json()).toMatchObject({ ok: false, reason: 'no_owner' })
+    expect(res.headers.get('set-cookie')).toBeNull()
+  })
+
+  it('bounds the minted cookie lifetime with Max-Age', async () => {
+    const res = await postSession({
+      initData: boundInitData(), integrationId: 'int1', agentSlug: 'sales', dashboardSlug: 'weekly-report',
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('set-cookie')).toContain(`Max-Age=${DASHBOARD_COOKIE_TTL_SECONDS}`)
   })
 })
 

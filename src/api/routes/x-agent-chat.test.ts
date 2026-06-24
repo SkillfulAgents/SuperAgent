@@ -630,5 +630,32 @@ describe('x-agent chat route', () => {
       expect(res.status).toBe(404)
       expect(mockShareDashboard).not.toHaveBeenCalled()
     })
+
+    it('returns 400 when the resolved integration is not on Telegram', async () => {
+      mockGetChatIntegration.mockReturnValueOnce(createTelegramIntegration({ provider: 'slack' }))
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report', integration_id: 'integration-1' }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'Dashboards are only supported on Telegram' })
+      expect(mockShareDashboard).not.toHaveBeenCalled()
+    })
+
+    it('returns 503 when the integration is not connected', async () => {
+      mockShareDashboard.mockRejectedValueOnce(new Error('Integration not connected'))
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({ error: 'Integration not connected' })
+    })
   })
 })
