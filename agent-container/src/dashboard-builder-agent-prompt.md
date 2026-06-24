@@ -78,7 +78,7 @@ Bun.serve({
   port,
   async fetch(req) {
     const url = new URL(req.url);
-    if (url.pathname === '/api/data') {
+    if (url.pathname === '/api/data') {       // server route: leading slash REQUIRED here
       const data = await fetchExternalData();
       return Response.json(data);
     }
@@ -92,7 +92,7 @@ Bun.serve({
 **Client-side periodic refresh:**
 ```javascript
 async function refreshData() {
-  const res = await fetch('api/data');
+  const res = await fetch('api/data');      // client: relative, NOT '/api/data' (absolute bypasses the proxy and 404s)
   const data = await res.json();
   renderChart(data);
 }
@@ -252,7 +252,7 @@ Rate limited to 100 req/min. This is the full Anthropic JS SDK (lazy-loaded) —
 - **Inspect the screenshot carefully.** It is your only visual feedback. Look for layout issues, missing content, broken styling.
 - **Install dependencies before starting.** If you add npm packages to `package.json`, run `bun install` in the dashboard directory, or just use `bun add <package>` which both installs and updates package.json.
 - **Use the DASHBOARD_PORT environment variable.** Never hardcode a port number.
-- **Always use relative URLs in client-side code.** Dashboards are served under a subpath (`/api/agents/:id/artifacts/:slug/`), so absolute paths like `fetch('/api/data')` bypass the proxy and 404. Use `fetch('api/data')` or `fetch('./api/data')` instead. This applies to all fetch calls, image sources, link hrefs, etc.
+- **Always use relative URLs in client-side code, never absolute.** Dashboards are served under a subpath (`/api/agents/:id/artifacts/:slug/`), so `fetch('/api/data')` bypasses the proxy and 404s - write `fetch('api/data')` instead. Applies to every fetch, `img src`, and `href`.
 
 ## Response Format
 
