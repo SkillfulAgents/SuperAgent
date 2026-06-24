@@ -1,27 +1,17 @@
 {
   "storyId": "agent-chat",
-  "passed": true,
-  "reason": "Successfully verified agent QA-20260624-183546-a71j can receive messages and respond with correct mathematical calculation",
-  "steps": [
-    "Navigated to http://localhost:47891 — Page loaded showing sidebar with agent list",
-    "Found \"QA-20260624-183546-a71j\" agent in the sidebar — Agent was visible with \"idle\" status",
-    "Clicked on the agent to open it — Agent detail page loaded, showing agent landing page with message input",
-    "Verified agent status — Agent status was \"idle\" which satisfies the requirement (running or idle)",
-    "Typed message \"Hello! What is 2+2?\" in the input field — Message was successfully entered in the textbox",
-    "Clicked the Send message button — Message was submitted and page navigated to session page",
-    "Waited for response — Agent responded within approximately 1 second with the message \"2+2 = 4\"",
-    "Verified response mentions \"4\" — Response clearly shows \"2+2 = 4\" which includes the number \"4\"",
-    "Took screenshot of the response — Screenshot captured showing the conversation with user message and agent response mentioning \"4\""
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ty indicator disappeared confirming completion\n\n**[STEP]** Step 6: Verified response mentions \"4\" and took screenshot — Agent response displayed: \"2 + 2 = 4\"; screenshot captured showing complete conversation with correct answer containing \"4\"\n\n**All test steps passed successfully. No bugs found.**\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 51570,
-  "sessionId": "17452eaf-834c-4f63-a14d-c98ef03c4bf2",
+  "durationMs": 67414,
+  "sessionId": "1eda7946-3a91-4a55-9bb6-77375d1aa8c7",
   "cost": {
-    "inputTokens": 248,
-    "outputTokens": 7552,
-    "cacheCreationTokens": 99808,
-    "cacheReadTokens": 650654,
+    "inputTokens": 288,
+    "outputTokens": 10500,
+    "cacheCreationTokens": 109362,
+    "cacheReadTokens": 811541,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.227833
+    "totalCostUsd": 0.270645
   }
 }

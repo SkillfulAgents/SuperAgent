@@ -1,23 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature successfully navigates to URLs, retrieves page titles, and reports results accurately.",
+  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report back the result.",
   "steps": [
-    "Step 1: Navigate to http://localhost:47891 — Page loaded successfully showing agent list",
-    "Step 2: Find and click the \"QA-20260624-183548-fd9w\" agent in sidebar — Agent page opened successfully",
-    "Step 3: Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message sent successfully, agent status changed to \"working\"",
-    "Step 4: Wait up to 3 minutes for response — Response completed in 17 seconds with agent returning to \"idle\" status",
-    "Step 5: Verify response mentions \"Example Domain\" — Response clearly states \"The page title is \\\"Example Domain\\\"\" confirming successful browser navigation and page title retrieval"
+    "Navigated to http://localhost:47891 — Page loaded successfully with \"Gamut\" title, showing sidebar with agent list",
+    "Found and clicked on \"QA-20260624-202327-7abs\" agent in sidebar — Agent page loaded successfully, showing message input field and agent settings",
+    "Clicked on message input field — Input field became focused and active",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared in input field correctly",
+    "Clicked \"Send message\" button — Message was sent, session created with title \"Browser Page Title Lookup\", agent status changed to \"working\"",
+    "Waited for agent response (up to 3 minutes) — Agent completed processing in 17 seconds, \"Working...\" indicator disappeared",
+    "Verified response mentions \"Example Domain\" — Response clearly shows:",
+    "Took screenshot of final response — Screenshot saved showing complete agent interaction and response with multiple mentions of \"Example Domain\""
   ],
   "bugs": [],
-  "durationMs": 101434,
-  "sessionId": "4775bca3-8fd2-4004-b376-27d6c5728c23",
+  "durationMs": 71062,
+  "sessionId": "ce07b6bd-ae87-446c-b38f-8bafcb6c85f3",
   "cost": {
-    "inputTokens": 387,
-    "outputTokens": 12611,
-    "cacheCreationTokens": 73928,
-    "cacheReadTokens": 1168688,
+    "inputTokens": 288,
+    "outputTokens": 9087,
+    "cacheCreationTokens": 63421,
+    "cacheReadTokens": 821184,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.272721
+    "totalCostUsd": 0.207118
   }
 }
