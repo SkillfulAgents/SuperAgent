@@ -1225,6 +1225,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'File delivered successfully (size: 256 bytes)',
       'Here is the contacts export.'
     )],
+    ['deliver video', new ToolUseScenario(
+      'mcp__user-input__deliver_file',
+      { filePath: '/workspace/output/clip.mp4', description: 'Demo clip' },
+      'File delivered successfully (size: 4096 bytes)',
+      'Here is the demo clip.'
+    )],
     // API error scenarios
     ['auth error', new ApiErrorScenario('authentication_failed', 'Invalid API key')],
     ['rate limit error', new ApiErrorScenario('rate_limit', 'Rate limit exceeded, please try again later')],

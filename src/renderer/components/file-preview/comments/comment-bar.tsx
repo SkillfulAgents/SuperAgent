@@ -3,6 +3,7 @@ import { MessageSquare, X, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
 import { useSendMessage } from '@renderer/hooks/use-messages'
+import { formatMediaTime } from './format-media-time'
 
 interface CommentBarProps {
   comments: FileComment[]
@@ -45,6 +46,14 @@ export function formatComments(filePath: string, comments: FileComment[]): strin
       lines.push(comment.text)
     } else if (comment.selectedText) {
       lines.push(`> "${comment.selectedText}"`)
+      lines.push(comment.text)
+    } else if (comment.timestamp != null) {
+      // Video comment: tie the feedback to the frame time and, when present, the
+      // in-frame position the user marked.
+      const pos = comment.x != null && comment.y != null
+        ? ` at position (${Math.round(comment.x)}%, ${Math.round(comment.y)}%)`
+        : ''
+      lines.push(`At ${formatMediaTime(comment.timestamp)}${pos}:`)
       lines.push(comment.text)
     } else if (comment.x != null && comment.y != null) {
       lines.push(`At position (${Math.round(comment.x)}%, ${Math.round(comment.y)}%):`)
@@ -94,7 +103,13 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
               {comment.selectedText && (
                 <div className="text-muted-foreground/70 italic truncate">&ldquo;{comment.selectedText}&rdquo;</div>
               )}
-              {comment.x != null && comment.y != null && (
+              {comment.timestamp != null && (
+                <div className="text-muted-foreground/70">
+                  At {formatMediaTime(comment.timestamp)}
+                  {comment.x != null && comment.y != null && <span> &middot; ({Math.round(comment.x)}%, {Math.round(comment.y)}%)</span>}
+                </div>
+              )}
+              {comment.timestamp == null && comment.x != null && comment.y != null && (
                 <div className="text-muted-foreground/70">({Math.round(comment.x)}%, {Math.round(comment.y)}%)</div>
               )}
               <div className="text-foreground">{comment.text}</div>

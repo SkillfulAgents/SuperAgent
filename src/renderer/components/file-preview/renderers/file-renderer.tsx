@@ -5,6 +5,7 @@ import { MarkdownRenderer } from './markdown-renderer'
 import { TextRenderer } from './text-renderer'
 import { CsvRenderer } from './csv-renderer'
 import { ImageRenderer } from './image-renderer'
+import { VideoRenderer } from './video-renderer'
 import { HtmlRenderer } from './html-renderer'
 import { UnsupportedRenderer } from './unsupported-renderer'
 
@@ -20,6 +21,7 @@ const TEXT_EXTS = new Set([
   'c', 'cpp', 'h', 'hpp', 'r',
 ])
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'])
+const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v', 'ogv'])
 
 interface FileRendererProps {
   filePath: string
@@ -48,6 +50,10 @@ export function FileRenderer({ filePath, fileUrl, agentSlug }: FileRendererProps
 
   if (IMAGE_EXTS.has(ext)) {
     return <ImageRenderer url={fileUrl} filePath={filePath} />
+  }
+
+  if (VIDEO_EXTS.has(ext)) {
+    return <VideoRenderer url={fileUrl} filePath={filePath} />
   }
 
   if (ext === 'pdf') {

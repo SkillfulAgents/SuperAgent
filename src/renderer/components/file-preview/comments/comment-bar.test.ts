@@ -23,6 +23,25 @@ describe('formatComments', () => {
     expect(result).toContain('Button misaligned')
   })
 
+  it('formats video comments with a timestamp and in-frame position', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/clip.mp4', text: 'Cut this scene', timestamp: 75.4, x: 30.2, y: 60.9 },
+    ]
+    const result = formatComments('/workspace/clip.mp4', comments)
+    expect(result).toContain('File feedback on `clip.mp4`')
+    expect(result).toContain('At 1:15 at position (30%, 61%):')
+    expect(result).toContain('Cut this scene')
+  })
+
+  it('formats a video comment with a timestamp but no in-frame position', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/clip.mp4', text: 'Audio drops out', timestamp: 5 },
+    ]
+    const result = formatComments('/workspace/clip.mp4', comments)
+    expect(result).toContain('At 0:05:')
+    expect(result).not.toContain('position')
+  })
+
   it('formats multiple comments with blank line separators', () => {
     const comments: FileComment[] = [
       { id: '1', filePath: '/workspace/doc.md', text: 'Fix typo', selectedText: 'teh' },
