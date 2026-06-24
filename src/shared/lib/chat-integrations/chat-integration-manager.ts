@@ -16,6 +16,7 @@ import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
 import { formatProviderName, formatSessionTimestamp } from './utils'
+import { touchAndCapMap } from './collection-utils'
 import {
   listStartupChatIntegrations,
   getChatIntegration,
@@ -110,6 +111,20 @@ const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
 const WORKING_WATCHDOG_MS = 5 * 60 * 1000
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024 // 50 MB
+const MAX_SLACK_FILE_CACHE = 500
+
+/**
+ * Extract the Slack file id from a private download URL, requiring a Slack host
+ * and an anchored /files-pri/<team>-<fileId>/ path. Returns null otherwise, so a
+ * stray URL cannot forge a cache key or a files.info lookup.
+ */
+export function extractSlackFileId(url: string): string | null {
+  let parsed: URL
+  try { parsed = new URL(url) } catch { return null }
+  if (!/(^|\.)slack\.com$/.test(parsed.hostname)) return null
+  const m = parsed.pathname.match(/^\/files-pri\/[A-Z0-9]+-([A-Z0-9]+)(?:\/|$)/)
+  return m ? m[1] : null
+}
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -168,6 +183,9 @@ class ChatIntegrationManager {
   // chain settles (see scheduleQueueEviction), so the map stays bounded.
   private messageQueues: Map<string, Promise<void>> = new Map()
   private lastSessionTouch: Map<string, number> = new Map()
+  // Slack context-file cache: `${agentSlug}:${fileId}` -> container workspace path.
+  // Lets re-seeded window files reuse one download instead of re-fetching.
+  private slackFileCache: Map<string, string> = new Map()
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -1048,7 +1066,9 @@ class ChatIntegrationManager {
     const prefix = message.chatName && message.userName ? `\\[${message.userName}]: ` : ''
     const text = prefix + (message.text || '')
 
-    if (!message.files || message.files.length === 0) {
+    const hasFiles = (message.files?.length ?? 0) > 0
+    const hasContextFiles = (message.contextFiles?.length ?? 0) > 0
+    if (!hasFiles && !hasContextFiles) {
       return { text, failedFiles: [] }
     }
 
@@ -1057,7 +1077,7 @@ class ChatIntegrationManager {
     const failedFiles: string[] = []
 
     let transcribedText = text
-    for (const file of message.files) {
+    for (const file of message.files ?? []) {
       if (!file.url) {
         failedFiles.push(file.name)
         continue
@@ -1087,7 +1107,51 @@ class ChatIntegrationManager {
       }
     }
 
+    for (const file of message.contextFiles ?? []) {
+      try {
+        const ctxPath = await this.downloadContextFile(integration, file)
+        if (ctxPath) uploadedPaths.push(ctxPath)
+      } catch (err) {
+        console.warn(`[ChatIntegrationManager] Context file download failed (non-critical) for ${file.name}:`, err instanceof Error ? err.message : err)
+      }
+    }
+
     return { text: appendAttachedFiles(transcribedText, uploadedPaths), failedFiles }
+  }
+
+  /**
+   * Download a seeded context file once, then serve it from a per-agent cache on
+   * re-seed. Returns the container workspace path, or null on failure.
+   */
+  private async downloadContextFile(
+    integration: ChatIntegration,
+    file: { name: string; url: string; mimeType?: string },
+  ): Promise<string | null> {
+    if (!file.url) return null
+    const { getAgentWorkspaceDir } = await import('@shared/lib/config/data-dir')
+    const path = await import('path')
+    const fs = await import('fs')
+
+    const fileId = extractSlackFileId(file.url)
+    const cacheKey = fileId ? `${integration.agentSlug}:${fileId}` : null
+
+    if (cacheKey) {
+      const cached = this.slackFileCache.get(cacheKey)
+      if (cached) {
+        // `cached` is a container path; the bytes live under the host uploads dir.
+        const hostPath = path.resolve(getAgentWorkspaceDir(integration.agentSlug), 'uploads', path.basename(cached))
+        if (fs.existsSync(hostPath)) {
+          touchAndCapMap(this.slackFileCache, cacheKey, cached, MAX_SLACK_FILE_CACHE)
+          return cached
+        }
+      }
+    }
+
+    const data = await this.downloadFileBuffer(integration, file.url)
+    if (!data) return null
+    const workspacePath = await this.writeToWorkspace(integration.agentSlug, file.name, data)
+    if (cacheKey) touchAndCapMap(this.slackFileCache, cacheKey, workspacePath, MAX_SLACK_FILE_CACHE)
+    return workspacePath
   }
 
   /** Download a file from the chat platform, returning a Buffer. */
@@ -1117,14 +1181,11 @@ class ChatIntegrationManager {
 
   /** Download a Slack file using the Web API (requires files:read scope). */
   private async downloadSlackFile(botToken: string, fileUrl: string): Promise<Buffer | null> {
-    // Extract file ID from Slack URL: .../files-pri/TEAM-FILEID/...
-    const fileIdMatch = fileUrl.match(/files-pri\/[A-Z0-9]+-([A-Z0-9]+)/)
-    if (!fileIdMatch) {
+    const fileId = extractSlackFileId(fileUrl)
+    if (!fileId) {
       // Fallback: try direct download with auth
       return this.downloadWithAuth(fileUrl, botToken)
     }
-
-    const fileId = fileIdMatch[1]
 
     // Use files.info API to get a proper download URL
     const infoRes = await fetch(`https://slack.com/api/files.info?file=${fileId}`, {
