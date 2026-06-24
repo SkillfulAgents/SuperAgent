@@ -26,13 +26,32 @@ test.describe('Connections Page — Policy Modal After OAuth', () => {
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
     await page.locator('[data-testid="settings-nav-connections"]').click()
 
-    // 2. Open the "Add New Connection" directory dialog (APIs tab is default)
-    const addButton = page.locator('[data-testid="connections-add-button"]')
+    // 2. Open the "Add New Connection" directory dialog (APIs tab is default).
+    //    Scope to .first(): the empty-state CTA also carries this test id, so
+    //    when no connections exist the bare locator matches two elements.
+    const addButton = page.locator('[data-testid="connections-add-button"]').first()
     await expect(addButton).toBeVisible()
     await addButton.click()
 
     const dialog = page.getByRole('dialog', { name: 'Add New Connection' })
     await expect(dialog).toBeVisible()
+
+    // 2b. Initiate a connection so the OAuth callback listener is active — it
+    //     only registers while a connect flow is in flight (SUP-265). /initiate
+    //     hits Composio, which isn't reachable under E2E_MOCK, so stub it.
+    await page.route('**/api/connected-accounts/initiate', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          connectionId: 'e2e-pending-conn',
+          redirectUrl: 'about:blank',
+          providerSlug: 'slack',
+          providerName: 'composio',
+        }),
+      })
+    })
+    await page.getByTestId('directory-connect-api-slack').click()
 
     // 3. Create an account server-side (simulates what the OAuth callback
     //    endpoint does when Composio returns a successful connection)
@@ -82,6 +101,21 @@ test.describe('Connections Page — Policy Modal After OAuth', () => {
     await page.locator('[data-testid="connections-add-button"]').click()
     const dialog = page.getByRole('dialog', { name: 'Add New Connection' })
     await expect(dialog).toBeVisible()
+
+    // Initiate a connection so the OAuth callback listener is active (SUP-265).
+    await page.route('**/api/connected-accounts/initiate', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          connectionId: 'e2e-pending-conn',
+          redirectUrl: 'about:blank',
+          providerSlug: 'slack',
+          providerName: 'composio',
+        }),
+      })
+    })
+    await page.getByTestId('directory-connect-api-slack').click()
 
     // Create account server-side
     const providerConnectionId = `e2e-policy-modal-agent-${Date.now()}`
