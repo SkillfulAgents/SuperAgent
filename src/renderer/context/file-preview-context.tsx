@@ -29,6 +29,8 @@ export interface FileComment {
   x?: number
   y?: number
   cell?: CellRef
+  /** Playback position in seconds for video comments (paired with x/y in-frame). */
+  timestamp?: number
 }
 
 interface FilePreviewContextType {

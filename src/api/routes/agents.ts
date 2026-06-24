@@ -23,6 +23,7 @@ import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTri
 import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
+import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   listSessions,
@@ -4139,9 +4140,6 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     }
 
     const filename = path.basename(filePath)
-    const fileStream = fs.createReadStream(fullPath)
-    const webStream = Readable.toWeb(fileStream) as ReadableStream
-
     const encodedFilename = encodeURIComponent(filename)
     const inline = new URL(c.req.url).searchParams.get('inline') === 'true'
     if (inline) {
@@ -4151,8 +4149,32 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
       c.header('Content-Disposition', `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
       c.header('Content-Type', 'application/octet-stream')
     }
-    c.header('Content-Length', stat.size.toString())
 
+    // Advertise range support so media players (e.g. <video>) can seek. When the
+    // client requests a byte range, serve just that slice as 206 Partial
+    // Content; otherwise stream the whole file. Only the stream we actually
+    // return is opened, so we never leak a dangling read descriptor.
+    c.header('Accept-Ranges', 'bytes')
+    const size = stat.size
+    const rangeHeader = c.req.header('range')
+    const parsedRange = rangeHeader ? parseByteRange(rangeHeader, size) : null
+
+    if (rangeHeader && !parsedRange) {
+      // Unsatisfiable range → 416 with the valid extent so the client can retry.
+      c.header('Content-Range', `bytes */${size}`)
+      return c.body(null, 416)
+    }
+
+    if (parsedRange) {
+      const { start, end } = parsedRange
+      const chunk = Readable.toWeb(fs.createReadStream(fullPath, { start, end })) as ReadableStream
+      c.header('Content-Range', `bytes ${start}-${end}/${size}`)
+      c.header('Content-Length', (end - start + 1).toString())
+      return c.body(chunk, 206)
+    }
+
+    const webStream = Readable.toWeb(fs.createReadStream(fullPath)) as ReadableStream
+    c.header('Content-Length', size.toString())
     return c.body(webStream)
   } catch (error) {
     console.error('Failed to download file:', error)

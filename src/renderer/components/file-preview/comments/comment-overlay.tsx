@@ -3,15 +3,18 @@ import { MessageSquarePlus } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import type { TextSelectionInfo } from './use-text-selection'
+import { formatMediaTime } from './format-media-time'
 
 interface CommentOverlayProps {
   selection: TextSelectionInfo
   filePath: string
   onClose: () => void
+  /** Skip the intermediate "Comment" button and open the editor immediately. */
+  autoEdit?: boolean
 }
 
-export function CommentOverlay({ selection, filePath, onClose }: CommentOverlayProps) {
-  const [isEditing, setIsEditing] = useState(false)
+export function CommentOverlay({ selection, filePath, onClose, autoEdit = false }: CommentOverlayProps) {
+  const [isEditing, setIsEditing] = useState(autoEdit)
   const [commentText, setCommentText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const { addComment } = useFilePreview()
@@ -31,6 +34,7 @@ export function CommentOverlay({ selection, filePath, onClose }: CommentOverlayP
       x: selection.x,
       y: selection.y,
       cell: selection.cell,
+      timestamp: selection.timestamp,
     })
     setCommentText('')
     setIsEditing(false)
@@ -78,7 +82,15 @@ export function CommentOverlay({ selection, filePath, onClose }: CommentOverlayP
             &ldquo;{selection.text}&rdquo;
           </div>
         )}
-        {selection.x != null && selection.y != null && (
+        {selection.timestamp != null && (
+          <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5">
+            At {formatMediaTime(selection.timestamp)}
+            {selection.x != null && selection.y != null && (
+              <span> &middot; ({Math.round(selection.x)}%, {Math.round(selection.y)}%)</span>
+            )}
+          </div>
+        )}
+        {selection.timestamp == null && selection.x != null && selection.y != null && (
           <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5">
             Point at ({Math.round(selection.x)}%, {Math.round(selection.y)}%)
           </div>

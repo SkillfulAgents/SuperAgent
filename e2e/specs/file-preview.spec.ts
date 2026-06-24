@@ -185,6 +185,42 @@ test.describe('File Preview', () => {
     await expect(page.getByText('At cell 1:Email', { exact: false })).toBeVisible({ timeout: 10000 })
   })
 
+  test('renders a video and pins a timestamped comment via the Add Comment button', async ({ page }) => {
+    await agentPage.createAgent(`VideoComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    // A handful of bytes is enough: the comment flow keys off the default frame
+    // (timestamp 0) and never depends on the file actually decoding.
+    seedWorkspaceFile(agentSlug, 'output/clip.mp4', Buffer.from('00000018667479706d70343200000000', 'hex'))
+
+    await sessionPage.sendMessage('deliver video')
+    await sessionPage.waitForResponse(15000)
+
+    const filePill = getFilePill(page, 'clip.mp4').first()
+    await expect(filePill).toBeVisible({ timeout: 10000 })
+    await filePill.click()
+
+    await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByTestId('video-renderer')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByTestId('video-element')).toBeVisible()
+
+    // The Add Comment button opens the editor directly and pins the timestamp.
+    await page.getByTestId('video-add-comment').click()
+    const overlay = page.locator('[data-comment-overlay]')
+    await expect(overlay.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
+
+    await page.getByPlaceholder('Add your comment...').fill('Trim the intro here')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    // The comment bar lists the timestamped comment.
+    const tray = page.getByTestId('file-preview-tray')
+    await expect(tray.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(tray.getByText('Trim the intro here')).toBeVisible()
+
+    // Submitting posts the formatted feedback back into the conversation.
+    await tray.getByRole('button', { name: 'Submit' }).click()
+    await expect(page.getByText('At 0:00', { exact: false }).first()).toBeVisible({ timeout: 10000 })
+  })
+
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {
     await agentPage.createAgent(`MultiFile ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
