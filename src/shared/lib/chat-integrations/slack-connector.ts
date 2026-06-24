@@ -266,6 +266,9 @@ export class SlackConnector extends ChatClientConnector {
   private app: SlackApp | null = null
   private connected = false
   private botUserId: string | null = null
+  // Bot id from auth.test (xoxb tokens). Used to drop the bot's OWN historical
+  // messages even when they carry only a bot_id and no user field.
+  private botId: string | null = null
 
   // Track action_id → toolUseId mappings for interactive responses
   private actionDataMap: Map<string, { toolUseId: string; value: unknown; ts: number }> = new Map()
@@ -293,6 +296,10 @@ export class SlackConnector extends ChatClientConnector {
   // least-recently-touched threads; an evicted thread just re-fetches history /
   // requires a re-mention if it ever resurfaces.
   private static readonly MAX_TRACKED_THREADS = 1000
+  // Recent top-level channel messages seeded as context on a top-level mention.
+  private static readonly CHANNEL_CONTEXT_LIMIT = 10
+  // Newest historical files eagerly downloaded per seeded window.
+  private static readonly CHANNEL_CONTEXT_FILE_LIMIT = 3
 
   constructor(private config: SlackConfig) {
     super()
@@ -374,6 +381,17 @@ export class SlackConnector extends ChatClientConnector {
         if (history) text = history + '\n\n' + text
       }
 
+      // Top-level channel mention with onlyMentioned on: seed recent channel
+      // history (mutually exclusive with the thread block above).
+      let contextFiles: { name: string; url: string; mimeType?: string }[] | undefined
+      if (routing.shouldSeedChannelContext) {
+        const channelCtx = await this.fetchChannelHistory(chatId, ts)
+        if (channelCtx) {
+          text = channelCtx.text + '\n\n' + text
+          contextFiles = channelCtx.files.length ? channelCtx.files : undefined
+        }
+      }
+
       // Handle file uploads
       const files = msg.files?.map((f: any) => ({
         name: f.name || 'file',
@@ -389,6 +407,7 @@ export class SlackConnector extends ChatClientConnector {
         userName,
         chatName,
         files: files?.length ? files : undefined,
+        contextFiles,
         timestamp: new Date(Number(ts) * 1000),
       })
     })
@@ -450,6 +469,7 @@ export class SlackConnector extends ChatClientConnector {
         throw new Error(`Slack auth.test failed: ${authResult.error}`)
       }
       this.botUserId = authResult.user_id || null
+      this.botId = authResult.bot_id || null
       console.log(`[SlackConnector] Authenticated as ${authResult.user} in workspace ${authResult.team}`)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -806,6 +826,63 @@ export class SlackConnector extends ChatClientConnector {
       return `[Thread context — ${label}]\n${lines.join('\n')}`
     } catch (err) {
       console.warn('[SlackConnector] Failed to fetch thread history (non-critical):', err instanceof Error ? err.message : err)
+      return null
+    }
+  }
+
+  /**
+   * Build a channel-context block for a top-level mention, mirroring
+   * fetchThreadHistory but over conversations.history. Returns the prepend text
+   * plus metadata for the newest downloadable files (capped) so the manager can
+   * fetch them. Null on failure or when nothing is worth seeding (graceful).
+   */
+  private async fetchChannelHistory(
+    channel: string,
+    beforeTs: string,
+  ): Promise<{ text: string; files: { name: string; url: string; mimeType?: string }[] } | null> {
+    if (!this.app) return null
+    try {
+      const result = await this.app.client.conversations.history({
+        channel,
+        latest: beforeTs,
+        inclusive: false,
+        limit: SlackConnector.CHANNEL_CONTEXT_LIMIT,
+      })
+      if (!result.ok || !result.messages) return null
+
+      const selected = selectChannelContextMessages(
+        result.messages as SlackHistoryMessage[],
+        beforeTs,
+        this.botUserId,
+        this.botId,
+      )
+      if (selected.length === 0) return null
+
+      const lines: string[] = []
+      const files: { name: string; url: string; mimeType?: string }[] = []
+      for (const m of selected) {
+        const name = m.user ? (await this.resolveUserName(m.user) || m.user) : 'Unknown'
+        const textPart = m.text ? await this.resolveMentionsInText(m.text) : ''
+        const fileObjs = Array.isArray(m.files) ? (m.files as any[]) : []
+        const fileNames = fileObjs.map((f) => f?.name || 'file')
+        const filePart = fileNames.length ? `[shared file: ${fileNames.join(', ')}]` : ''
+        const combined = [textPart, filePart].filter(Boolean).join(' ')
+        if (combined) lines.push(`${name}: ${combined}`)
+        // Only queue downloadable files (private URLs). Permalink-only files are
+        // surfaced in the text above but cannot be fetched by the private path.
+        for (const f of fileObjs) {
+          const url = f?.url_private_download || f?.url_private || ''
+          if (url) files.push({ name: f?.name || 'file', url, mimeType: f?.mimetype })
+        }
+      }
+      if (lines.length === 0) return null
+
+      // selected is chronological, so the newest downloadable files are at the tail.
+      const capped = files.slice(-SlackConnector.CHANNEL_CONTEXT_FILE_LIMIT)
+      const label = lines.length === 1 ? '1 previous message' : `${lines.length} previous messages`
+      return { text: `[Channel context - ${label}]\n${lines.join('\n')}`, files: capped }
+    } catch (err) {
+      console.warn('[SlackConnector] Failed to fetch channel history (non-critical):', err instanceof Error ? err.message : err)
       return null
     }
   }

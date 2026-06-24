@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { selectChannelContextMessages, type SlackHistoryMessage } from './slack-connector'
+import { selectChannelContextMessages, SlackConnector, type SlackHistoryMessage } from './slack-connector'
 
 const BOT_USER = 'U_BOT'
 const BOT_ID = 'B_BOT'
@@ -44,5 +44,66 @@ describe('selectChannelContextMessages', () => {
   it('returns chronological order from newest-first input', () => {
     const kept = run([{ ts: '300.0', user: 'U1', text: 'c' }, { ts: '100.0', user: 'U1', text: 'a' }, { ts: '200.0', user: 'U1', text: 'b' }])
     expect(kept.map(m => m.text)).toEqual(['a', 'b', 'c'])
+  })
+})
+
+function makeConnector() {
+  const c = new SlackConnector({ botToken: 'xoxb-x', appToken: 'xapp-x' } as any)
+  ;(c as any).botUserId = 'U_BOT'
+  ;(c as any).botId = 'B_BOT'
+  ;(c as any).userNameCache = new Map([
+    ['U1', { value: 'Alice', ts: Date.now() }],
+    ['U2', { value: 'Bob', ts: Date.now() }],
+  ])
+  return c
+}
+
+describe('fetchChannelHistory', () => {
+  it('builds a channel-context block, skips the bot, and surfaces file presence', async () => {
+    const c = makeConnector()
+    ;(c as any).app = { client: { conversations: { history: async () => ({
+      ok: true,
+      messages: [
+        { ts: '1003.0', user: 'U_BOT', text: 'on it' },
+        { ts: '1002.0', user: 'U2', files: [{ name: 'report.pdf', url_private_download: 'https://files.slack.com/files-pri/T1-F1/report.pdf', mimetype: 'application/pdf' }] },
+        { ts: '1001.0', user: 'U1', text: 'the deploy is broken' },
+      ],
+    }) } } }
+    const result = await (c as any).fetchChannelHistory('C1', '1004.0')
+    expect(result).not.toBeNull()
+    expect(result.text).toContain('[Channel context')
+    expect(result.text).toContain('Alice: the deploy is broken')
+    expect(result.text).toContain('Bob: [shared file: report.pdf]')
+    expect(result.text).not.toContain('on it')
+    expect(result.files).toHaveLength(1)
+    expect(result.files[0].name).toBe('report.pdf')
+  })
+
+  it('caps downloaded files to the 3 newest and ignores non-downloadable (permalink-only) files', async () => {
+    const c = makeConnector()
+    const fileMsg = (ts: string, n: string) => ({ ts, user: 'U1', files: [{ name: n, url_private_download: `https://files.slack.com/files-pri/T1-F${n}/${n}` }] })
+    ;(c as any).app = { client: { conversations: { history: async () => ({
+      ok: true,
+      messages: [
+        fileMsg('105.0', 'e'), fileMsg('104.0', 'd'), fileMsg('103.0', 'c'), fileMsg('102.0', 'b'),
+        { ts: '101.0', user: 'U1', files: [{ name: 'permalink-only', permalink: 'https://slack.com/archives/x' }] },
+      ],
+    }) } } }
+    const result = await (c as any).fetchChannelHistory('C1', '999.0')
+    // Newest 3 downloadable by ts: c, d, e. permalink-only is surfaced in text but not queued.
+    expect(result.files.map((f: any) => f.name)).toEqual(['c', 'd', 'e'])
+    expect(result.text).toContain('[shared file: permalink-only]')
+  })
+
+  it('returns null on API failure (missing scope, etc.)', async () => {
+    const c = makeConnector()
+    ;(c as any).app = { client: { conversations: { history: async () => { throw new Error('missing_scope') } } } }
+    expect(await (c as any).fetchChannelHistory('C1', '999.0')).toBeNull()
+  })
+
+  it('returns null when nothing survives selection', async () => {
+    const c = makeConnector()
+    ;(c as any).app = { client: { conversations: { history: async () => ({ ok: true, messages: [{ ts: '1.0', user: 'U_BOT', text: 'mine' }] }) } } }
+    expect(await (c as any).fetchChannelHistory('C1', '999.0')).toBeNull()
   })
 })

@@ -22,6 +22,12 @@ export interface IncomingMessage {
   userName?: string            // Display name of the user (for session naming)
   chatName?: string            // Display name of the chat/channel (for session naming)
   files?: { name: string; url: string; mimeType?: string }[]
+  /**
+   * Historical attachments from seeded channel context (Slack only for now).
+   * Distinct from `files` (current-message attachments): best-effort, capped,
+   * and de-duplicated by the manager so re-seeds never re-download.
+   */
+  contextFiles?: { name: string; url: string; mimeType?: string }[]
   timestamp: Date
 }
 
