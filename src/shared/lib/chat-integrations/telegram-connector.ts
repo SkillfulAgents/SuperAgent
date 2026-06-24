@@ -49,6 +49,13 @@ function escapeHtml(text: string): string {
 /** Icon shown before the dashboard name when the agent supplies no emoji. */
 const DASHBOARD_DEFAULT_EMOJI = '📊'
 
+/**
+ * Constant glyph on the "Open dashboard" button. Always the same regardless of the
+ * dashboard's topical emoji, so the button reads as a consistent, learnable affordance
+ * ("this is the tappable action") instead of echoing the title emoji.
+ */
+const DASHBOARD_BUTTON_EMOJI = '▶️'
+
 /** Resolve the card's icon: the agent's emoji if given, else the default. */
 export function resolveDashboardEmoji(emoji?: string): string {
   return emoji?.trim() || DASHBOARD_DEFAULT_EMOJI
@@ -654,8 +661,9 @@ export class TelegramConnector extends ChatClientConnector {
       return 'text'
     }
     const url = `${httpsBase.replace(/\/$/, '')}/api/telegram-miniapp?i=${encodeURIComponent(opts.integrationId)}&a=${encodeURIComponent(opts.agentSlug)}&d=${encodeURIComponent(opts.dashboardSlug)}`
-    // Carry the contextual emoji onto the button so it ties to the card.
-    const buttonLabel = `${resolveDashboardEmoji(opts.emoji)} Open dashboard`
+    // Constant button glyph (not the topical emoji): a consistent affordance that
+    // reads as "the tappable action" without echoing the title's emoji.
+    const buttonLabel = `${DASHBOARD_BUTTON_EMOJI} Open dashboard`
     const replyMarkup = { inline_keyboard: [[{ text: buttonLabel, web_app: { url } }]] }
     // Lead with the dashboard screenshot when one is on disk: a visual preview is a
     // far stronger pull than a title. The card markdown rides as the photo caption

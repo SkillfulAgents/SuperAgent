@@ -283,7 +283,7 @@ describe('TelegramConnector.sendDashboardCard', () => {
     expect(optsArg.parse_mode).toBe('HTML')
 
     const button = optsArg.reply_markup.inline_keyboard[0][0]
-    expect(button.text).toBe('📊 Open dashboard') // default icon when no emoji supplied
+    expect(button.text).toBe('▶️ Open dashboard') // constant button glyph, not the topical icon
     const webAppUrl: string = button.web_app.url
     expect(webAppUrl).toContain('https://host.example/api/telegram-miniapp')
     expect(webAppUrl).toContain('i=int1')
@@ -386,8 +386,8 @@ describe('TelegramConnector.sendDashboardCard', () => {
     expect(textArg).toContain('⚽')
     expect(textArg).toContain('World Cup 2026 Tracker')
     expect(textArg).toContain('Live group standings + bracket')
-    // The contextual emoji also rides the button label.
-    expect(optsArg.reply_markup.inline_keyboard[0][0].text).toBe('⚽ Open dashboard')
+    // The topical emoji rides the card title only; the button uses a constant glyph.
+    expect(optsArg.reply_markup.inline_keyboard[0][0].text).toBe('▶️ Open dashboard')
   })
 
   it('leads with a photo (caption + button) when a screenshot is on disk', async () => {
@@ -416,7 +416,7 @@ describe('TelegramConnector.sendDashboardCard', () => {
     expect(optsArg.caption).toContain('Weekly')
     // Same web_app button as the text-card button path.
     const button = optsArg.reply_markup.inline_keyboard[0][0]
-    expect(button.text).toBe('📊 Open dashboard')
+    expect(button.text).toBe('▶️ Open dashboard')
     expect(button.web_app.url).toContain('https://host.example/api/telegram-miniapp')
   })
 
