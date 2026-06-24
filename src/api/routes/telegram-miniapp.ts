@@ -79,10 +79,9 @@ const SHELL_HTML = `<!DOCTYPE html>
       body: JSON.stringify({ initData: initData, integrationId: integrationId, agentSlug: agentSlug, dashboardSlug: dashboardSlug }),
     })
       .then(function (res) {
-        if (res.status === 401) { onFail(401); return; }
-        if (res.status === 403) { onFail(403); return; }
-        if (!res.ok)            { onFail(0);   return; }
-        res.json().then(function (body) { onOk(body); }).catch(function () { onFail(0); });
+        if (res.ok) { res.json().then(function (body) { onOk(body); }).catch(function () { onFail(0); }); return; }
+        // Read the server's reason on failures so we can give a more accurate message.
+        res.json().then(function (body) { onFail(res.status, body && body.reason); }).catch(function () { onFail(res.status); });
       })
       .catch(function () { onFail(0); });
   }
@@ -100,8 +99,9 @@ const SHELL_HTML = `<!DOCTYPE html>
         });
       }, 630000);
     },
-    function (code) {
-      if (code === 401) { showError("Couldn’t verify this dashboard link. Reopen it from your chat."); }
+    function (code, reason) {
+      if (reason === 'no_owner') { showError("This dashboard isn’t available to open. Ask whoever set up this bot."); }
+      else if (code === 401) { showError("Couldn’t verify this dashboard link. Reopen it from your chat."); }
       else if (code === 403) { showError("You don’t have access to this dashboard."); }
       else { showError("Couldn’t load the dashboard."); }
     }

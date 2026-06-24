@@ -34,6 +34,24 @@ export function httpsBaseUrlOrEmpty(base: string): string {
 }
 
 /**
+ * One-line, operator-facing summary of whether Telegram dashboard sharing is
+ * available, logged at server boot. A button that dead-ends is usually a
+ * misconfigured PLATFORM_BASE_URL; this makes the configured value visible so an
+ * operator can see at a glance whether sharing is on and what URL it points at.
+ */
+export function dashboardSharingStatus(): string {
+  const base = getPlatformBaseUrl()
+  const publicUrl = httpsBaseUrlOrEmpty(base)
+  if (publicUrl) {
+    return `Telegram dashboard sharing enabled; Mini Apps open from ${publicUrl}`
+  }
+  if (base) {
+    return `Telegram dashboard sharing disabled: PLATFORM_BASE_URL ("${base}") is not a public HTTPS URL`
+  }
+  return 'Telegram dashboard sharing disabled: no PLATFORM_BASE_URL set (agents get a plain-text fallback)'
+}
+
+/**
  * Resolve the platform proxy base URL (no trailing slash, no /v1 suffix).
  * Used by the LLM provider, STT provider, and Composio client.
  */
