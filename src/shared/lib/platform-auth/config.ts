@@ -34,6 +34,20 @@ export function httpsBaseUrlOrEmpty(base: string): string {
 }
 
 /**
+ * The base URL the Telegram dashboard Mini App can actually be served from, or
+ * empty if there isn't one. This is NOT the same as getPlatformBaseUrl(): in the
+ * Electron desktop app PLATFORM_BASE_URL is baked to the cloud platform URL (for
+ * login/proxy), but the embedded local server isn't reachable there, so a
+ * dashboard button would dead-end. Electron (process.type === 'browser') is
+ * therefore treated as "no servable URL". Web/server mode (hosted or self-hosted)
+ * is the only place this server actually serves the Mini App.
+ */
+export function miniAppBaseUrlOrEmpty(): string {
+  if (process.type === 'browser') return ''
+  return httpsBaseUrlOrEmpty(getPlatformBaseUrl())
+}
+
+/**
  * One-line, operator-facing summary of whether Telegram dashboard sharing is
  * available, logged at server boot. A button that dead-ends is usually a
  * misconfigured PLATFORM_BASE_URL; this makes the configured value visible so an

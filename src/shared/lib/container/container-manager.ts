@@ -19,7 +19,7 @@ import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/li
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
-import { getPlatformBaseUrl, httpsBaseUrlOrEmpty } from '@shared/lib/platform-auth/config'
+import { miniAppBaseUrlOrEmpty } from '@shared/lib/platform-auth/config'
 import { mergeCustomEnvVars } from './reserved-env-vars'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
@@ -608,11 +608,12 @@ class ContainerManager {
         envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
       }
 
-      // Expose the share_dashboard tool only when the deployment can host a public
-      // Telegram Mini App (a public https base URL). Without one the button can never
-      // be rendered, so the tool would only degrade to a redundant text message — the
-      // container omits it entirely when this flag is unset.
-      if (httpsBaseUrlOrEmpty(getPlatformBaseUrl())) {
+      // Expose the share_dashboard tool only when this deployment can actually host
+      // a public Telegram Mini App (web/server mode with a public https base URL).
+      // Excludes Electron, where PLATFORM_BASE_URL is the cloud login URL, not a URL
+      // this local server serves — so a button would dead-end. Without a servable URL
+      // the tool would only degrade to a redundant text message, so it's omitted.
+      if (miniAppBaseUrlOrEmpty()) {
         envVars['SHARE_DASHBOARD_ENABLED'] = 'true'
       }
 

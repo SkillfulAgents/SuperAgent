@@ -633,6 +633,10 @@ export class TelegramConnector extends ChatClientConnector {
     // outbound message (rich with an HTML fallback), so the card formats
     // consistently whether or not it carries the button.
     const card = renderDashboardCard(opts.name, opts.emoji, opts.caption)
+    // Same-process web-mode safety net. The host gate (miniAppBaseUrlOrEmpty in
+    // container-manager) is the authority for whether share_dashboard exists at
+    // all, and it excludes Electron; this path is only reached once that gate let
+    // the tool through (web/server mode), so a plain https check is sufficient here.
     const httpsBase = httpsBaseUrlOrEmpty(getPlatformBaseUrl())
     // A working button needs both a public https URL to point at (Telegram rejects
     // anything else) and a caller that's cleared to mint a Mini App cookie

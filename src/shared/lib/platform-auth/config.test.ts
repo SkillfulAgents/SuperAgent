@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getPlatformBaseUrl, getPlatformProxyBaseUrl, httpsBaseUrlOrEmpty, dashboardSharingStatus } from './config'
+import { getPlatformBaseUrl, getPlatformProxyBaseUrl, httpsBaseUrlOrEmpty, dashboardSharingStatus, miniAppBaseUrlOrEmpty } from './config'
 
 describe('platform auth config', () => {
   afterEach(() => {
@@ -48,6 +48,26 @@ describe('platform auth config', () => {
       const line = dashboardSharingStatus()
       expect(line).toContain('disabled')
       expect(line.toLowerCase()).toContain('no platform_base_url')
+    })
+  })
+
+  describe('miniAppBaseUrlOrEmpty', () => {
+    const prevType = (process as { type?: string }).type
+    afterEach(() => {
+      if (prevType === undefined) delete (process as { type?: string }).type
+      else (process as { type?: string }).type = prevType
+    })
+
+    it('returns the public https base in web/server mode', () => {
+      delete (process as { type?: string }).type
+      process.env.PLATFORM_BASE_URL = 'https://app.example.com'
+      expect(miniAppBaseUrlOrEmpty()).toBe('https://app.example.com')
+    })
+
+    it('returns empty in Electron (process.type=browser) even with a valid https base baked in', () => {
+      ;(process as { type?: string }).type = 'browser'
+      process.env.PLATFORM_BASE_URL = 'https://app.example.com'
+      expect(miniAppBaseUrlOrEmpty()).toBe('')
     })
   })
 
