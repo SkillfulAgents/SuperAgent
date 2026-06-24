@@ -1,23 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature tested successfully - agent opens browser, navigates to specified URL, retrieves page title, and reports back correctly",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported back with the correct result.",
   "steps": [
-    "Navigated to http://localhost:47891 - Initial page loaded successfully showing Gamut home with list of agents",
-    "Clicked on \"QA-20260624-181313-kfsm\" agent link from sidebar - Agent configuration page loaded with chat input interface",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message submitted successfully, agent status changed to \"working\"",
-    "Waited for response (completed in 12 seconds) - Agent executed browser_open, browser_get_state, and browser_close tools as shown in tool call cards with green checkmarks",
-    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is \"Example Domain\"\" and \"its title/heading is \"Example Domain\"\" - VERIFIED"
+    "Navigated to http://localhost:47891 — Page loaded successfully with the Gamut interface showing available agents.",
+    "Found and clicked the \"QA-20260624-193852-kkz9\" agent in the sidebar — Agent page opened with chat interface ready for input.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input box — Message was entered into the text field.",
+    "Clicked the \"Send message\" button to submit the message — Message was sent and a new session \"Browser Page Title Lookup\" was created.",
+    "Waited up to 3 minutes for the agent to process the request — Agent completed the task in 14 seconds, well within the time limit.",
+    "Verified the response mentions \"Example Domain\" — Response clearly states: \"The page title is \\\"Example Domain\\\".\" and confirms \"The page at https://example.com loaded with the heading \\\"Example Domain\\\". I've closed the browser.\"",
+    "Took a screenshot of the successful response — Screenshot captured showing the complete conversation with the agent's response including browser tool calls (Open Browser, Browser Get State, Close Browser) and the final result confirming \"Example Domain\"."
   ],
   "bugs": [],
-  "durationMs": 81576,
-  "sessionId": "b7cabe85-c85e-40b9-954d-777bcdd5640f",
+  "durationMs": 104183,
+  "sessionId": "8f07a18a-d495-4595-8e9e-e9d0b38b96b9",
   "cost": {
-    "inputTokens": 435,
-    "outputTokens": 13388,
-    "cacheCreationTokens": 128816,
-    "cacheReadTokens": 1366852,
+    "inputTokens": 351,
+    "outputTokens": 11270,
+    "cacheCreationTokens": 67687,
+    "cacheReadTokens": 1088780,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.36508
+    "totalCostUsd": 0.250188
   }
 }
