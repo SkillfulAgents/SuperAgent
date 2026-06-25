@@ -46,13 +46,16 @@ describe('getLastSeenTs / setLastSeenTs', () => {
     expect(getLastSeenTs(INT, 'C1')).toBe('10.0')
   })
 
-  it('carries forward across rotation: reads the max even from an archived row', () => {
+  it('is session-scoped: a refreshed session starts cold (archived marker is ignored)', () => {
     const oldId = createChatIntegrationSession({ integrationId: INT, externalChatId: 'C1', sessionId: 's-old' })
     setLastSeenTs(oldId, '500.0')
     archiveChatIntegrationSession(oldId)
-    // New (active) row has no marker yet.
+    // Once the session is refreshed, its marker lives on the archived row and is
+    // no longer read - the next message must cold-start (seed recent history).
+    expect(getLastSeenTs(INT, 'C1')).toBeNull()
+    // A fresh active row also starts with no marker -> still null (cold start).
     createChatIntegrationSession({ integrationId: INT, externalChatId: 'C1', sessionId: 's-new' })
-    expect(getLastSeenTs(INT, 'C1')).toBe('500.0')
+    expect(getLastSeenTs(INT, 'C1')).toBeNull()
   })
 
   it('scopes by conversation (integrationId + externalChatId)', () => {

@@ -190,11 +190,18 @@ export function deleteChatIntegrationSessionsByIntegration(integrationId: string
 // ── Marker (last seen message) ────────────────────────────────────────────
 
 /**
- * Newest ingested Slack ts for a conversation, across ALL rows (active +
- * archived). Reading across rows is what carries the marker forward when a
- * session rotates: a fresh row starts with a null marker, so the max comes
- * from the archived predecessor. Compared numerically (Slack ts are decimal
- * strings; a lexical sort would order "9.0" after "10.0").
+ * Newest ingested Slack ts for a conversation's ACTIVE session row (archived
+ * rows are ignored). The marker is session-scoped: a fresh session has no active
+ * marker, so this returns null and the connector cold-starts - seeds recent
+ * channel history so the agent is never context-blind on a new session. Within a
+ * live session the marker advances, so only the unseen gap is seeded instead of
+ * re-dumping recent history on every message. An explicit clear archives the row
+ * (its marker moves to the archived row this read skips), so the next message
+ * cold-starts with no reset code. (Auto-delete removes only the agent transcript,
+ * not this mapping row, so its next message self-heals first - gap-fills once,
+ * then cold-starts; after a multi-day idle that gap is ~the newest 15 anyway.)
+ * Compared numerically (Slack ts are decimal strings; a lexical sort would order
+ * "9.0" after "10.0").
  */
 export function getLastSeenTs(integrationId: string, externalChatId: string): string | null {
   const rows = db.select({ lastSeenTs: chatIntegrationSessions.lastSeenTs })
@@ -202,6 +209,7 @@ export function getLastSeenTs(integrationId: string, externalChatId: string): st
     .where(and(
       eq(chatIntegrationSessions.integrationId, integrationId),
       eq(chatIntegrationSessions.externalChatId, externalChatId),
+      isNull(chatIntegrationSessions.archivedAt),
     ))
     .all()
   let best: string | null = null
