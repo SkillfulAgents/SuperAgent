@@ -155,7 +155,6 @@ async function runUpdateCheckBody() {
   }
   try {
     const autoUpdater = await getAutoUpdater()
-    const isPreRelease = app.getVersion().includes('-')
     const wantPrerelease = !!getUserSettings('local').allowPrereleaseUpdates
 
     autoUpdater.allowPrerelease = wantPrerelease
@@ -166,21 +165,35 @@ async function runUpdateCheckBody() {
     // the older 0.3.21 stable).
     autoUpdater.allowDowngrade = false
 
-    if (!isPreRelease || !wantPrerelease) {
-      // Stable user: electron-updater handles this correctly.
-      //   wantPrerelease=false → latest stable
-      //   wantPrerelease=true  → absolute latest (feed order = newest first)
+    if (!wantPrerelease) {
+      // Prereleases off: read the stable `latest` channel only. We must set the
+      // channel EXPLICITLY rather than rely on the build's baked default — an rc
+      // build bakes `channel: rc` into app-update.yml, so without this an rc user
+      // who turns prereleases off would keep reading rc-*.yml and never drop back
+      // to the stable line. (For the generic provider `allowPrerelease` is a
+      // no-op — the channel file is the only lever — so the channel is what
+      // matters here.)
+      autoUpdater.channel = 'latest'
+      autoUpdater.allowDowngrade = false // channel setter just flipped this on
       await autoUpdater.checkForUpdates()
       return
     }
 
-    // Pre-release user: electron-updater only matches releases on the same
-    // prerelease channel (e.g. "rc"), so it misses newer stable releases.
-    // Check both channels and offer whichever version is highest.
+    // Prereleases on: with the generic provider, each check reads exactly ONE
+    // channel file and never auto-discovers others (unlike the old GitHub
+    // provider, which enumerated every release). So `allowPrerelease=true` on a
+    // single `latest`-channel check does NOT surface an rc — the rc lives in
+    // rc-mac.yml, which the `latest` channel never reads. We must explicitly
+    // check BOTH the prerelease channel and `latest` and offer whichever version
+    // is highest. This applies whether the current build is itself a prerelease
+    // OR a stable build whose user opted into prereleases (the reported
+    // 0.4.0 → 0.4.1-rc.1 case).
 
-    // Derive the prerelease channel from the current version (e.g. "rc" from "0.3.0-rc.1").
-    // We must set it explicitly because autoUpdater.channel can be null when never set,
-    // and assigning null back after changing it corrupts the internal state.
+    // Derive the prerelease channel from the current version (e.g. "rc" from
+    // "0.3.0-rc.1"); a stable build has no prerelease tag, so default to "rc"
+    // (the only prerelease channel we publish). We must set it explicitly
+    // because autoUpdater.channel can be null when never set, and assigning null
+    // back after changing it corrupts the internal state.
     const preChannel = app.getVersion().match(/-([a-zA-Z]+)/)?.[1] ?? 'rc'
 
     // 1. Check prerelease channel
