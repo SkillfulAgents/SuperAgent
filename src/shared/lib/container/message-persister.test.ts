@@ -941,6 +941,28 @@ describe('MessagePersister', () => {
       expect(ready[0].toolName).toBe('Read')
     })
 
+    it('raises session_awaiting_input for a subagent browser_input_request', () => {
+      // The generic awaiting mark only lives on the MAIN stream path, so a
+      // subagent that requests browser input emitted the card without raising
+      // awaiting — a stuck-indicator gap once the chat manager stops settling
+      // per request type. handleBrowserInputRequestTool must mark awaiting itself.
+      setupTaskTool()
+      sseEvents.length = 0
+
+      sendSidechainStreamEvent({
+        type: 'content_block_start',
+        content_block: { type: 'tool_use', id: 'sub-bi-1', name: 'mcp__user-input__request_browser_input' },
+      })
+      sendSidechainStreamEvent({
+        type: 'content_block_delta',
+        delta: { type: 'input_json_delta', partial_json: JSON.stringify({ message: 'Please log in' }) },
+      })
+      sendSidechainStreamEvent({ type: 'content_block_stop' })
+
+      expect(sseEvents.some(e => e.type === 'browser_input_request')).toBe(true)
+      expect(sseEvents.some(e => e.type === 'session_awaiting_input')).toBe(true)
+    })
+
     it('does NOT corrupt main agent streaming state with sidechain events', () => {
       // Start main agent streaming
       mockClient._sendMessage({

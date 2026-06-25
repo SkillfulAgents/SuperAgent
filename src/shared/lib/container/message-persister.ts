@@ -2602,6 +2602,11 @@ class MessagePersister {
         agentSlug,
       })
 
+      // Raise awaiting here so all three call sites are covered — including the
+      // subagent/sidechain ones, which never hit the main-stream generic mark.
+      // Idempotent, so the main-path double-mark is harmless.
+      this.markSessionAwaitingInput(sessionId)
+
       // Renderer-side gate handles suppression; see session_complete trigger.
       if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'browser_input').catch((err) => {
