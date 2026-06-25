@@ -12,6 +12,8 @@ import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
+import { touchAndCapSet, touchAndCapMap } from './collection-utils'
+import { getLastSeenTs } from '@shared/lib/services/chat-integration-session-service'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -191,6 +193,44 @@ export function routeSlackMessage(params: SlackMessageRoutingParams): SlackMessa
   return { shouldProcess: true, effectiveChatId, threadContext, threadKey, isNewThreadEntry }
 }
 
+export interface SlackHistoryMessage {
+  ts?: string
+  user?: string
+  bot_id?: string
+  subtype?: string
+  text?: string
+  files?: unknown[]
+}
+
+// Content-bearing subtypes to keep. A message with NO subtype is kept too.
+// Everything else (channel_join, topic/purpose/name changes, message_changed,
+// message_deleted, etc.) is system noise and dropped.
+const KEEP_HISTORY_SUBTYPES = new Set(['bot_message', 'me_message', 'file_share', 'thread_broadcast'])
+
+/**
+ * Filter raw `conversations.history` messages down to the ones worth seeding as
+ * channel context, in chronological (oldest-first) order. Drops the triggering
+ * message, the bot's own messages (by user id or bot id), non-content subtypes,
+ * and empty messages. Threaded replies never appear here - history is top-level.
+ */
+export function selectChannelContextMessages(
+  messages: SlackHistoryMessage[],
+  currentTs: string,
+  botUserId: string | null,
+  botId: string | null,
+): SlackHistoryMessage[] {
+  const kept = messages.filter((m) => {
+    if (!m.ts || m.ts === currentTs) return false
+    if (botUserId && m.user === botUserId) return false
+    if (botId && m.bot_id && m.bot_id === botId) return false
+    if (m.subtype && !KEEP_HISTORY_SUBTYPES.has(m.subtype)) return false
+    const hasText = !!(m.text && m.text.trim())
+    const hasFiles = Array.isArray(m.files) && m.files.length > 0
+    return hasText || hasFiles
+  })
+  return kept.sort((a, b) => Number(a.ts) - Number(b.ts))
+}
+
 export function resolveSlackChannel(
   effectiveChatId: string,
   threadContextMap: ReadonlyMap<string, { channel: string; threadTs: string }>,
@@ -209,34 +249,6 @@ export function resolveSlackChannel(
   return { channel: effectiveChatId }
 }
 
-/**
- * Insert `key` at the most-recently-used position of an insertion-ordered Set,
- * evicting the oldest entries once size exceeds `max`. Keeps long-lived tracking
- * sets bounded so a connector that touches more and more threads over a
- * long-running process can't leak memory. Re-inserting an existing key refreshes
- * its recency (delete + re-add).
- */
-export function touchAndCapSet(set: Set<string>, key: string, max: number): void {
-  set.delete(key)
-  set.add(key)
-  while (set.size > max) {
-    const oldest = set.values().next().value
-    if (oldest === undefined) break
-    set.delete(oldest)
-  }
-}
-
-/** Map counterpart of {@link touchAndCapSet}: (re)inserts `key` as MRU and evicts the oldest beyond `max`. */
-export function touchAndCapMap<V>(map: Map<string, V>, key: string, value: V, max: number): void {
-  map.delete(key)
-  map.set(key, value)
-  while (map.size > max) {
-    const oldest = map.keys().next().value
-    if (oldest === undefined) break
-    map.delete(oldest)
-  }
-}
-
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class SlackConnector extends ChatClientConnector {
@@ -245,6 +257,9 @@ export class SlackConnector extends ChatClientConnector {
   private app: SlackApp | null = null
   private connected = false
   private botUserId: string | null = null
+  // Bot id from auth.test (xoxb tokens). Used to drop the bot's OWN historical
+  // messages even when they carry only a bot_id and no user field.
+  private botId: string | null = null
 
   // Track action_id → toolUseId mappings for interactive responses
   private actionDataMap: Map<string, { toolUseId: string; value: unknown; ts: number }> = new Map()
@@ -272,8 +287,10 @@ export class SlackConnector extends ChatClientConnector {
   // least-recently-touched threads; an evicted thread just re-fetches history /
   // requires a re-mention if it ever resurfaces.
   private static readonly MAX_TRACKED_THREADS = 1000
+  // Recent top-level channel messages seeded as context on a top-level mention.
+  private static readonly CHANNEL_CONTEXT_LIMIT = 15
 
-  constructor(private config: SlackConfig) {
+  constructor(private config: SlackConfig, private integrationId: string) {
     super()
   }
 
@@ -353,6 +370,30 @@ export class SlackConnector extends ChatClientConnector {
         if (history) text = history + '\n\n' + text
       }
 
+      // Non-thread (top-level channel or DM): backfill the gap since the
+      // conversation's marker. Thread messages keep the fetchThreadHistory path
+      // above. Setting-independent - the marker, not onlyMentioned, decides.
+      // Read the marker by effectiveChatId (the key the manager advances the row
+      // under); the history fetch still targets the real channel (chatId). Wrapped
+      // best-effort: the marker read is a synchronous DB query and must never block
+      // the reply (fetchHistorySince already degrades internally). This runs before
+      // the manager's per-chat queue, so concurrent messages may re-seed overlapping
+      // windows - bounded (<=15 msgs, files deduped) and the forward-only marker
+      // guard prevents any skip, so it is accepted best-effort.
+      let contextFiles: { name: string; url: string; mimeType?: string }[] | undefined
+      if (!threadTs) {
+        try {
+          const marker = getLastSeenTs(this.integrationId, effectiveChatId)
+          const ctx = await this.fetchHistorySince(chatId, marker, ts, SlackConnector.CHANNEL_CONTEXT_LIMIT)
+          if (ctx) {
+            text = ctx.text + '\n\n' + text
+            contextFiles = ctx.files.length ? ctx.files : undefined
+          }
+        } catch (err) {
+          console.warn('[SlackConnector] channel-context seed failed (non-critical):', err instanceof Error ? err.message : err)
+        }
+      }
+
       // Handle file uploads
       const files = msg.files?.map((f: any) => ({
         name: f.name || 'file',
@@ -368,6 +409,7 @@ export class SlackConnector extends ChatClientConnector {
         userName,
         chatName,
         files: files?.length ? files : undefined,
+        contextFiles,
         timestamp: new Date(Number(ts) * 1000),
       })
     })
@@ -429,6 +471,7 @@ export class SlackConnector extends ChatClientConnector {
         throw new Error(`Slack auth.test failed: ${authResult.error}`)
       }
       this.botUserId = authResult.user_id || null
+      this.botId = authResult.bot_id || null
       console.log(`[SlackConnector] Authenticated as ${authResult.user} in workspace ${authResult.team}`)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -782,9 +825,70 @@ export class SlackConnector extends ChatClientConnector {
       if (lines.length === 0) return null
 
       const label = lines.length === 1 ? '1 previous message' : `${lines.length} previous messages`
-      return `[Thread context — ${label}]\n${lines.join('\n')}`
+      return `[Thread context - ${label}]\n${lines.join('\n')}`
     } catch (err) {
       console.warn('[SlackConnector] Failed to fetch thread history (non-critical):', err instanceof Error ? err.message : err)
+      return null
+    }
+  }
+
+  /**
+   * Backfill the gap between `sinceTs` (exclusive; null = cold start) and
+   * `latestTs` (exclusive) for a channel or DM, capped at the newest `limit`
+   * messages. Slack returns messages newest-first, so the most recent
+   * messages in the (oldest, latest) window come first; `limit` yields the
+   * newest `limit`. Drops this bot's own messages (selector), keeps other
+   * senders, surfaces every file, queues ALL downloadable files. Null on
+   * failure or when nothing survives.
+   */
+  private async fetchHistorySince(
+    channel: string,
+    sinceTs: string | null,
+    latestTs: string,
+    limit: number,
+  ): Promise<{ text: string; files: { name: string; url: string; mimeType?: string }[] } | null> {
+    if (!this.app) return null
+    try {
+      const result = await this.app.client.conversations.history({
+        channel,
+        latest: latestTs,
+        ...(sinceTs != null ? { oldest: sinceTs } : {}),
+        inclusive: false,
+        limit,
+      })
+      if (!result.ok || !result.messages) return null
+
+      const selected = selectChannelContextMessages(
+        result.messages as SlackHistoryMessage[],
+        latestTs,
+        this.botUserId,
+        this.botId,
+      )
+      if (selected.length === 0) return null
+
+      const lines: string[] = []
+      const files: { name: string; url: string; mimeType?: string }[] = []
+      for (const m of selected) {
+        const name = m.user ? (await this.resolveUserName(m.user) || m.user) : 'Unknown'
+        const textPart = m.text ? await this.resolveMentionsInText(m.text) : ''
+        const fileObjs = Array.isArray(m.files) ? (m.files as any[]) : []
+        const fileNames = fileObjs.map((f) => f?.name || 'file')
+        const filePart = fileNames.length ? `[shared file: ${fileNames.join(', ')}]` : ''
+        const combined = [textPart, filePart].filter(Boolean).join(' ')
+        if (combined) lines.push(`${name}: ${combined}`)
+        // Only queue downloadable files (private URLs). Permalink-only files are
+        // surfaced in the text above but cannot be fetched by the private path.
+        for (const f of fileObjs) {
+          const url = f?.url_private_download || f?.url_private || ''
+          if (url) files.push({ name: f?.name || 'file', url, mimeType: f?.mimetype })
+        }
+      }
+      if (lines.length === 0) return null
+
+      const label = lines.length === 1 ? '1 previous message' : `${lines.length} previous messages`
+      return { text: `[Channel context - ${label}]\n${lines.join('\n')}`, files }
+    } catch (err) {
+      console.warn('[SlackConnector] Failed to fetch channel history (non-critical):', err instanceof Error ? err.message : err)
       return null
     }
   }
