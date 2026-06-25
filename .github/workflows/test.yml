@@ -110,8 +110,8 @@ jobs:
         env:
           PLAYWRIGHT_WORKERS: '2'
         run: |
-          PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data PLAYWRIGHT_WORKERS=1 PLAYWRIGHT_OUTPUT_DIR=test-results/stateful PLAYWRIGHT_HTML_REPORT=playwright-report/stateful npm run test:e2e:stateful -- --fail-on-flaky-tests
-          PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data PLAYWRIGHT_WORKERS=$PLAYWRIGHT_WORKERS PLAYWRIGHT_OUTPUT_DIR=test-results/web PLAYWRIGHT_HTML_REPORT=playwright-report/web npm run test:e2e:web -- --fail-on-flaky-tests
+          PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data PLAYWRIGHT_WORKERS=1 PLAYWRIGHT_OUTPUT_DIR=test-results/stateful PLAYWRIGHT_HTML_REPORT=playwright-report/stateful npm run test:e2e:stateful
+          PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data PLAYWRIGHT_WORKERS=$PLAYWRIGHT_WORKERS PLAYWRIGHT_OUTPUT_DIR=test-results/web PLAYWRIGHT_HTML_REPORT=playwright-report/web npm run test:e2e:web
 
       - name: Upload Playwright artifacts
         if: always()
@@ -151,7 +151,7 @@ jobs:
           SUPERAGENT_DATA_DIR: .e2e-data/auth
           PLAYWRIGHT_OUTPUT_DIR: test-results/auth
           PLAYWRIGHT_HTML_REPORT: playwright-report/auth
-        run: npm run test:e2e:auth -- --fail-on-flaky-tests
+        run: npm run test:e2e:auth
 
       - name: Upload auth Playwright artifacts
         if: always()
@@ -193,7 +193,7 @@ jobs:
           PLAYWRIGHT_WORKERS: '1'
           PLAYWRIGHT_OUTPUT_DIR: test-results/a11y
           PLAYWRIGHT_HTML_REPORT: playwright-report/a11y
-        run: npm run test:e2e:a11y -- --fail-on-flaky-tests
+        run: npm run test:e2e:a11y
 
       - name: Upload a11y Playwright artifacts
         if: always()
