@@ -402,6 +402,45 @@ describe('indicator settles on session_awaiting_input (generic, no per-type case
   })
 })
 
+// ── Indicator lifecycle: honesty (auto-approved script) + re-arm on resume ───
+// Two completeness cases the unification must preserve: an auto-approved script
+// is NOT awaiting (the agent keeps running), so the indicator stays on and
+// settles only on idle; and after the human answers a request, the indicator
+// returns on the resumed turn's stream_start.
+
+describe('indicator lifecycle: auto-approved script honesty + re-arm on resume', () => {
+  it('auto-approved script_run keeps the indicator on (no awaiting), settles on session_idle', async () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-script')
+
+    await processSSEEvent(managed, { type: 'stream_start' }) // arm
+    // Auto-approved: message-persister broadcasts the card but does NOT raise
+    // awaiting (the agent is still working), so no settle here.
+    await processSSEEvent(managed, { type: 'script_run_request', toolUseId: 'tu-s', autoApproved: true })
+    expect(connector.stoppedWorking).not.toContain('chat-script') // still working
+
+    await processSSEEvent(managed, { type: 'session_idle' })
+    expect(connector.stoppedWorking).toContain('chat-script') // settles on idle, not the request event
+  })
+
+  it('re-arms the indicator on the next stream_start after the human answers', async () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-rearm')
+
+    await processSSEEvent(managed, { type: 'stream_start' }) // turn working
+    await processSSEEvent(managed, { type: 'session_awaiting_input', sessionId: 's', agentSlug: 'a' })
+    expect(connector.stoppedWorking).toContain('chat-rearm') // settled while awaiting
+
+    // The human answers → the container resumes and emits stream_start, which
+    // re-arms the indicator. handleInteractiveResponse itself does not re-arm;
+    // the resumed dispatch does — so "Thinking…" returns without a stuck-on-
+    // failed-resolve risk, and the watchdog backstops a resume that never comes.
+    const startsBefore = connector.typingIndicators.length
+    await processSSEEvent(managed, { type: 'stream_start' })
+    expect(connector.typingIndicators.length).toBeGreaterThan(startsBefore)
+  })
+})
+
 // ── session_error → curated, code-specific message (and NEVER the raw error) ──
 // The headline fix: an errored turn settles the indicator AND surfaces a short,
 // sanitized message keyed off apiErrorCode. The producer puts the raw internal
