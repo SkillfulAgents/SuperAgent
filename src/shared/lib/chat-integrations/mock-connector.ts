@@ -41,8 +41,8 @@ export class MockChatClientConnector extends ChatClientConnector {
   }
 
   /** Simulate an interactive response (button click / callback query). */
-  simulateInteractiveResponse(toolUseId: string, response: unknown): void {
-    this.emitInteractiveResponse(toolUseId, response)
+  simulateInteractiveResponse(toolUseId: string, response: unknown, chatId?: string): void {
+    this.emitInteractiveResponse(toolUseId, response, chatId)
   }
 
   /** Simulate a connection error. */

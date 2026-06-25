@@ -1341,6 +1341,24 @@ class ChatIntegrationManager {
 
   // ── Interactive response handling ─────────────────────────────────
 
+  /**
+   * After the human answers a request, the agent's blocked tool call unblocks and
+   * the model is invoked again — it is working before it emits its first token. So
+   * re-arm the working indicator on the confirmed resolve, rather than waiting for
+   * the resumed turn's stream_start, closing the honest gap between "you answered"
+   * and "Thinking…". Only fires on a successful resolve (a failed forward never
+   * shows a false indicator) and only when the connector reported a chatId to locate
+   * the chat (Telegram does; a connector that omits it falls back to the stream_start
+   * re-arm). Idempotent — the subsequent stream_start re-arm is a harmless no-op.
+   */
+  private rearmIndicatorAfterResponse(integrationId: string, chatId?: string): void {
+    if (!chatId) return
+    const managed = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
+    if (!managed) return
+    managed.connector.startWorking(managed.chatId).catch(() => {})
+    armWorkingWatchdog(managed)
+  }
+
   private async handleInteractiveResponse(
     integrationId: string,
     toolUseId: string,
@@ -1391,6 +1409,8 @@ class ChatIntegrationManager {
           const text = await resolveResponse.text().catch(() => '')
           console.error(`[ChatIntegrationManager] Failed to resolve question ${toolUseId}:`, text)
           reportError(new Error(`Resolve question failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
+        } else {
+          this.rearmIndicatorAfterResponse(integrationId, chatId)
         }
         return
       }
@@ -1407,6 +1427,8 @@ class ChatIntegrationManager {
         const text = await resolveResponse.text().catch(() => '')
         console.error(`[ChatIntegrationManager] Failed to resolve input ${toolUseId}:`, text)
         reportError(new Error(`Resolve input failed: ${resolveResponse.status}`), 'resolve-input', { integrationId, toolUseId, status: resolveResponse.status })
+      } else {
+        this.rearmIndicatorAfterResponse(integrationId, chatId)
       }
     } catch (err) {
       console.error(`[ChatIntegrationManager] Failed to handle interactive response:`, err)

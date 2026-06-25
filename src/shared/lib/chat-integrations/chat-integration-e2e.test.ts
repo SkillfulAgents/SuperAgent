@@ -509,6 +509,27 @@ describe('Chat integration E2E', () => {
       expect(mockConnector.typingIndicators).toContain('chat-1')
     })
 
+    it('re-arms the indicator the moment a request answer reaches the container', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      // Establish a live managed session for chat-1.
+      mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+      await waitForCondition(
+        () => mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0,
+        3000,
+      )
+
+      // Isolate the re-arm: the agent answered a request, so the next startWorking
+      // must come from the confirmed resolve — not from a stream_start.
+      mockConnector.typingIndicators = []
+      mockConnector.simulateInteractiveResponse('tu-1', { question: 'Q', answer: 'A' }, 'chat-1')
+
+      await waitForCondition(() => mockConnector.typingIndicators.includes('chat-1'), 2000)
+      expect(mockConnector.typingIndicators).toContain('chat-1')
+    })
+
     it('stops the working indicator when the integration is torn down', async () => {
       const integrationId = createTestIntegration()
       await chatIntegrationManager.addIntegration(integrationId)
