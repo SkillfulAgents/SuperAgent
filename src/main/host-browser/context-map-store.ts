@@ -50,3 +50,47 @@ export async function setContextMapping(filePath: string, key: string, contextId
     saveContextMap(filePath, map)
   })
 }
+
+// In-flight context creations, keyed by `${resolved file}::${key}`. Dedups
+// concurrent first-opens for the SAME key within this process (SUP-315 P2): the
+// file lock only protects the WRITE, so without this, two concurrent calls that
+// both miss the map would each create a paid remote context and the second
+// would orphan/leak the first. Different keys are NOT serialized — they create
+// in parallel. (Residual: a multi-process/replica race could still double-create
+// across processes; acceptable for the host-browser providers.)
+const inflightContextCreations = new Map<string, Promise<string>>()
+
+/**
+ * Return the existing `key → contextId` mapping, or create one exactly once.
+ * `create` performs the (paid, network) remote-context creation and returns its
+ * id; it is invoked at most once per key even under concurrent callers, and the
+ * result is persisted via {@link setContextMapping} before returning.
+ */
+export async function getOrCreateMapping(
+  filePath: string,
+  key: string,
+  create: () => Promise<string>,
+): Promise<string> {
+  const existing = loadContextMap(filePath)[key]
+  if (existing) return existing
+
+  const inflightKey = `${path.resolve(filePath)}::${key}`
+  const pending = inflightContextCreations.get(inflightKey)
+  if (pending) return pending
+
+  const p = (async () => {
+    // Re-check inside the in-flight guard: a create for this key may have landed
+    // (and been persisted) between the read above and us claiming the slot.
+    const fresh = loadContextMap(filePath)[key]
+    if (fresh) return fresh
+    const contextId = await create()
+    await setContextMapping(filePath, key, contextId)
+    return contextId
+  })()
+  inflightContextCreations.set(inflightKey, p)
+  try {
+    return await p
+  } finally {
+    inflightContextCreations.delete(inflightKey)
+  }
+}

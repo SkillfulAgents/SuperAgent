@@ -463,7 +463,10 @@ export function loadSettingsStrict(): AppSettings {
   } catch (err) {
     // Absent file = legitimate first run → bare defaults (preserves the original
     // behavior, which did NOT default-merge auth/analytics for a missing file).
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { ...DEFAULT_SETTINGS }
+    // Deep-clone: callers (mutateSettings) mutate nested objects in place, and a
+    // shallow `{ ...DEFAULT_SETTINGS }` shares `.container`/`.app`/… with the
+    // module constant — so a first-run mutation would corrupt DEFAULT_SETTINGS.
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return structuredClone(DEFAULT_SETTINGS)
     throw err // other IO error (EACCES/EIO/…) — propagate, never default-then-save
   }
   // Validate the boundary (object shape); torn JSON / non-object → throw.
@@ -507,7 +510,9 @@ export function loadSettings(): AppSettings {
     if (error instanceof CorruptFileError) {
       captureException(error, { tags: { area: 'settings', op: 'load' } })
     }
-    return { ...DEFAULT_SETTINGS }
+    // Deep-clone so a caller mutating a nested field can't pollute the module
+    // constant (see loadSettingsStrict).
+    return structuredClone(DEFAULT_SETTINGS)
   }
 }
 

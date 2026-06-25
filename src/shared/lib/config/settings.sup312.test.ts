@@ -167,6 +167,24 @@ describe('mutateSettings — serialized, fresh, fail-closed', () => {
     // The real (corrupt-but-recoverable) bytes are intact — not replaced.
     expect(fs.readFileSync(settingsPath(), 'utf-8')).toBe(corrupt)
   })
+
+  it('first-run nested mutation does NOT pollute the DEFAULT_SETTINGS constant', () => {
+    // No settings.json on disk → loadSettingsStrict returns a clone of defaults.
+    // A mutator that writes a NESTED field must not reach through into the shared
+    // module constant (the shallow-copy bug). Capture the canonical value first.
+    expect(fs.existsSync(settingsPath())).toBe(false)
+    const originalRunner = DEFAULT_SETTINGS.container.containerRunner
+
+    mutateSettings((s) => {
+      s.container.containerRunner = 'a-totally-different-runner'
+    })
+
+    // The on-disk file got the new value...
+    const onDisk = JSON.parse(fs.readFileSync(settingsPath(), 'utf-8'))
+    expect(onDisk.container.containerRunner).toBe('a-totally-different-runner')
+    // ...but the module default is untouched.
+    expect(DEFAULT_SETTINGS.container.containerRunner).toBe(originalRunner)
+  })
 })
 
 describe('updateSettings — atomic full replace', () => {

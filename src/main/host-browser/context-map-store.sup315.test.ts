@@ -10,8 +10,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { loadContextMap, saveContextMap, setContextMapping } from './context-map-store'
+import { loadContextMap, saveContextMap, setContextMapping, getOrCreateMapping } from './context-map-store'
 import { CorruptFileError } from '@shared/lib/utils/file-storage'
+
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 let tmpDir: string
 let mapPath: string
@@ -78,5 +80,63 @@ describe('setContextMapping — serialized + atomic upsert (the headline fix)', 
     fs.writeFileSync(mapPath, corrupt)
     await expect(setContextMapping(mapPath, 'fresh', 'ctx-fresh')).rejects.toThrow(CorruptFileError)
     expect(fs.readFileSync(mapPath, 'utf-8')).toBe(corrupt)
+  })
+})
+
+describe('getOrCreateMapping — dedups same-key creates (no duplicate context leak)', () => {
+  it('concurrent first-opens for the SAME key create the context exactly once', async () => {
+    let creates = 0
+    const create = async () => {
+      await delay(5) // hold the "remote create" open so all three race in the gap
+      creates++
+      return `ctx-${creates}`
+    }
+    const results = await Promise.all([
+      getOrCreateMapping(mapPath, 'agentA', create),
+      getOrCreateMapping(mapPath, 'agentA', create),
+      getOrCreateMapping(mapPath, 'agentA', create),
+    ])
+    expect(creates).toBe(1) // the P2 leak: would be 3 without dedup
+    expect(new Set(results).size).toBe(1) // every caller got the same id
+    expect(loadContextMap(mapPath)).toEqual({ agentA: results[0] })
+  })
+
+  it('returns an already-persisted mapping without creating', async () => {
+    saveContextMap(mapPath, { agentA: 'ctx-existing' })
+    let creates = 0
+    const id = await getOrCreateMapping(mapPath, 'agentA', async () => {
+      creates++
+      return 'ctx-new'
+    })
+    expect(id).toBe('ctx-existing')
+    expect(creates).toBe(0)
+  })
+
+  it('different keys still create concurrently (not serialized by the dedup)', async () => {
+    let creates = 0
+    const create = (id: string) => async () => {
+      await delay(5)
+      creates++
+      return id
+    }
+    const [a, b] = await Promise.all([
+      getOrCreateMapping(mapPath, 'A', create('ctx-A')),
+      getOrCreateMapping(mapPath, 'B', create('ctx-B')),
+    ])
+    expect([a, b]).toEqual(['ctx-A', 'ctx-B'])
+    expect(creates).toBe(2)
+    expect(loadContextMap(mapPath)).toEqual({ A: 'ctx-A', B: 'ctx-B' })
+  })
+
+  it('a failed create does not cache; the next call retries', async () => {
+    let attempts = 0
+    const flaky = async () => {
+      attempts++
+      if (attempts === 1) throw new Error('remote create failed')
+      return 'ctx-ok'
+    }
+    await expect(getOrCreateMapping(mapPath, 'agentA', flaky)).rejects.toThrow('remote create failed')
+    expect(await getOrCreateMapping(mapPath, 'agentA', flaky)).toBe('ctx-ok')
+    expect(attempts).toBe(2)
   })
 })

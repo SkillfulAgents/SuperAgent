@@ -3,7 +3,7 @@ import { getSettings } from '@shared/lib/config/settings'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { loadContextMap as loadContextMapFile, setContextMapping } from './context-map-store'
+import { getOrCreateMapping } from './context-map-store'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 const CONTEXTS_FILE = 'platform-browserbase-contexts.json'
@@ -210,34 +210,26 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     return path.join(getDataDir(), CONTEXTS_FILE)
   }
 
-  /** Load the persistent contextKey → contextId map from disk (fail-closed). */
-  private loadContextMap(): Record<string, string> {
-    return loadContextMapFile(this.contextMapPath())
-  }
-
   private async getOrCreateContext(contextKey: string, token: string): Promise<string> {
-    const map = this.loadContextMap()
-    if (map[contextKey]) {
-      return map[contextKey]
-    }
+    // getOrCreateMapping dedups concurrent first-opens for the same key so we
+    // never create (and then orphan/leak) two paid contexts; it re-reads the map
+    // and persists atomically (SUP-315).
+    return getOrCreateMapping(this.contextMapPath(), contextKey, async () => {
+      const response = await fetch(`${this.proxyBase()}/contexts`, {
+        method: 'POST',
+        headers: this.authHeaders(token, true),
+        body: JSON.stringify({}),
+      })
 
-    const response = await fetch(`${this.proxyBase()}/contexts`, {
-      method: 'POST',
-      headers: this.authHeaders(token, true),
-      body: JSON.stringify({}),
+      if (!response.ok) {
+        const body = await response.text()
+        throw new Error(`Failed to create platform Browserbase context: ${response.status} ${body}`)
+      }
+
+      const context = await response.json() as { id: string }
+      console.log(`[PlatformBrowserProvider] Created context ${context.id} for ${contextKey}`)
+      return context.id
     })
-
-    if (!response.ok) {
-      const body = await response.text()
-      throw new Error(`Failed to create platform Browserbase context: ${response.status} ${body}`)
-    }
-
-    const context = await response.json() as { id: string }
-    // Serialized + atomic upsert (re-reads fresh under the lock) so a context
-    // created concurrently for another key isn't clobbered (SUP-315).
-    await setContextMapping(this.contextMapPath(), contextKey, context.id)
-    console.log(`[PlatformBrowserProvider] Created context ${context.id} for ${contextKey}`)
-    return context.id
   }
 
   private async getDebugBrowserUrl(sessionId: string, token: string): Promise<string | null> {

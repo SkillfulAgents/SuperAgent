@@ -315,6 +315,39 @@ describe('withCrossProcessFileLock', () => {
     expect(fs.existsSync(lockPath)).toBe(false)
   })
 
+  it('on release, does NOT delete a lock another writer took over (owner-token guard)', async () => {
+    // Models the P2 hazard: writer A stalls past staleMs, writer B steals the
+    // lock (writing B's token), then A resumes. A's release must NOT delete B's
+    // lock — otherwise a third writer could enter while B is mid-critical-section.
+    const p = path.join(tmpDir, 'xp-owner-token.txt')
+    const lockPath = `${p}.lock`
+    let unblock: () => void = () => {}
+    const blocked = new Promise<void>((r) => { unblock = r })
+
+    const held = withCrossProcessFileLock(p, async () => {
+      // While A holds the lock, simulate B stealing it and writing ITS token.
+      fs.writeFileSync(lockPath, 'writer-B-token')
+      await blocked
+    })
+
+    await new Promise((r) => setTimeout(r, 15)) // let A enter its critical section
+    unblock()
+    await held
+
+    // A must have left B's lock untouched.
+    expect(fs.existsSync(lockPath)).toBe(true)
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe('writer-B-token')
+    fs.rmSync(lockPath, { force: true })
+  })
+
+  it('removes its OWN lock on release (token matches)', async () => {
+    const p = path.join(tmpDir, 'xp-own-token.txt')
+    await withCrossProcessFileLock(p, async () => {
+      expect(fs.existsSync(`${p}.lock`)).toBe(true)
+    })
+    expect(fs.existsSync(`${p}.lock`)).toBe(false)
+  })
+
   it('times out when a fresh lock is held by another (non-stale) holder', async () => {
     const p = path.join(tmpDir, 'xp-timeout.txt')
     const lockPath = `${p}.lock`

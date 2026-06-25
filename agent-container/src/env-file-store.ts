@@ -34,13 +34,15 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  */
 export async function withEnvFileLock<T>(targetPath: string, fn: () => Promise<T>): Promise<T> {
   const lockPath = `${targetPath}.lock`;
+  // Unique owner token so release only removes a lock we still hold.
+  const ownerToken = `${process.pid}.${Math.random().toString(36).slice(2)}`;
   const deadline = Date.now() + TIMEOUT_MS;
 
   for (;;) {
     try {
       const handle = await fs.promises.open(lockPath, 'wx');
       try {
-        await handle.writeFile(String(process.pid));
+        await handle.writeFile(ownerToken);
       } finally {
         await handle.close();
       }
@@ -66,6 +68,12 @@ export async function withEnvFileLock<T>(targetPath: string, fn: () => Promise<T
   try {
     return await fn();
   } finally {
-    await fs.promises.rm(lockPath, { force: true }).catch(() => {});
+    // Release only if we still own it — if the host app stole our stale lock,
+    // the file holds its token now and we must not delete it (would reopen the
+    // cross-process lost-update race the lock exists to prevent).
+    const current = await fs.promises.readFile(lockPath, 'utf-8').catch(() => null);
+    if (current === ownerToken) {
+      await fs.promises.rm(lockPath, { force: true }).catch(() => {});
+    }
   }
 }

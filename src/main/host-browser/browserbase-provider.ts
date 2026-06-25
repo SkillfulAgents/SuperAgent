@@ -1,7 +1,7 @@
 import path from 'path'
 import { getSettings, getEffectiveBrowserbaseApiKey, getEffectiveBrowserbaseProjectId } from '@shared/lib/config/settings'
 import { getDataDir } from '@shared/lib/config/data-dir'
-import { loadContextMap as loadContextMapFile, setContextMapping } from './context-map-store'
+import { getOrCreateMapping } from './context-map-store'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 const BROWSERBASE_API_BASE = 'https://api.browserbase.com/v1'
@@ -212,38 +212,30 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     return path.join(getDataDir(), CONTEXTS_FILE)
   }
 
-  /** Load the persistent instanceId → contextId map from disk (fail-closed). */
-  private loadContextMap(): Record<string, string> {
-    return loadContextMapFile(this.contextMapPath())
-  }
-
   /** Get or create a Browserbase context for the given instance */
   private async getOrCreateContext(instanceId: string, projectId: string, apiKey: string): Promise<string> {
-    const map = this.loadContextMap()
-    if (map[instanceId]) {
-      return map[instanceId]
-    }
+    // getOrCreateMapping dedups concurrent first-opens for the same instance so
+    // we never create (and then orphan/leak) two paid contexts; it re-reads the
+    // map and persists atomically (SUP-315).
+    return getOrCreateMapping(this.contextMapPath(), instanceId, async () => {
+      const response = await fetch(`${BROWSERBASE_API_BASE}/contexts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-BB-API-Key': apiKey,
+        },
+        body: JSON.stringify({ projectId }),
+      })
 
-    const response = await fetch(`${BROWSERBASE_API_BASE}/contexts`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-BB-API-Key': apiKey,
-      },
-      body: JSON.stringify({ projectId }),
+      if (!response.ok) {
+        const body = await response.text()
+        throw new Error(`Failed to create Browserbase context: ${response.status} ${body}`)
+      }
+
+      const context = await response.json() as { id: string }
+      console.log(`[BrowserbaseProvider] Created context ${context.id} for instance ${instanceId}`)
+      return context.id
     })
-
-    if (!response.ok) {
-      const body = await response.text()
-      throw new Error(`Failed to create Browserbase context: ${response.status} ${body}`)
-    }
-
-    const context = await response.json() as { id: string }
-    // Serialized + atomic upsert (re-reads fresh under the lock) so a context
-    // created concurrently for another instance isn't clobbered (SUP-315).
-    await setContextMapping(this.contextMapPath(), instanceId, context.id)
-    console.log(`[BrowserbaseProvider] Created context ${context.id} for instance ${instanceId}`)
-    return context.id
   }
 
   /** Get the debug browser-level WebSocket URL for a session */

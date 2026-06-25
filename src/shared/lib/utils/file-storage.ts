@@ -577,6 +577,40 @@ function fsyncDirSync(dir: string): void {
   }
 }
 
+// Windows can transiently fail a rename-replace with EPERM/EACCES/EBUSY when an
+// external process (antivirus, Search indexer, backup) briefly holds the target
+// open WITHOUT FILE_SHARE_DELETE — POSIX renames don't hit this. Retry a few
+// times with a short backoff (mirrors npm `write-file-atomic`); a no-op on
+// platforms/filesystems where rename doesn't raise these codes.
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY'])
+
+async function renameWithRetry(from: string, to: string, attempts = 10): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      await fs.promises.rename(from, to)
+      return
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (i >= attempts || !code || !RENAME_RETRY_CODES.has(code)) throw err
+      await new Promise((r) => setTimeout(r, 10 * (i + 1)))
+    }
+  }
+}
+
+/** Sync rename with bounded immediate retries (a sync sleep would block the
+ *  event loop). Best-effort Windows resilience for the synchronous writers. */
+function renameWithRetrySync(from: string, to: string, attempts = 10): void {
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(from, to)
+      return
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (i >= attempts || !code || !RENAME_RETRY_CODES.has(code)) throw err
+    }
+  }
+}
+
 /**
  * Atomically write `content` to `filePath`:
  *   1. write to a sibling temp file in the same directory
@@ -612,12 +646,14 @@ export async function writeFileAtomic(
     const handle = await fs.promises.open(tmpPath, 'wx', options?.mode ?? 0o666)
     try {
       await handle.writeFile(content, 'utf-8')
-      if (existingMode !== undefined) await handle.chmod(existingMode)
+      // Best-effort: object-storage / perms-less mounts (e.g. an S3 FUSE driver)
+      // may reject chmod — a permission tweak must never fail the data write.
+      if (existingMode !== undefined) await handle.chmod(existingMode).catch(() => {})
       await handle.sync()
     } finally {
       await handle.close()
     }
-    await fs.promises.rename(tmpPath, filePath)
+    await renameWithRetry(tmpPath, filePath)
   } catch (err) {
     await fs.promises.rm(tmpPath, { force: true }).catch(() => {})
     throw err
@@ -643,12 +679,20 @@ export function writeFileAtomicSync(
     const fd = fs.openSync(tmpPath, 'wx', options?.mode ?? 0o666)
     try {
       fs.writeFileSync(fd, content, 'utf-8')
-      if (existingMode !== undefined) fs.fchmodSync(fd, existingMode)
+      // Best-effort (see writeFileAtomic): never let a perms-less mount's chmod
+      // rejection fail the data write.
+      if (existingMode !== undefined) {
+        try {
+          fs.fchmodSync(fd, existingMode)
+        } catch {
+          // ignore — perms are advisory on object-storage mounts
+        }
+      }
       fs.fsyncSync(fd)
     } finally {
       fs.closeSync(fd)
     }
-    fs.renameSync(tmpPath, filePath)
+    renameWithRetrySync(tmpPath, filePath)
   } catch (err) {
     try {
       fs.rmSync(tmpPath, { force: true })
@@ -801,6 +845,9 @@ export async function withCrossProcessFileLock<T>(
   const retryIntervalMs = options?.retryIntervalMs ?? 50
   const staleMs = options?.staleMs ?? 30_000
   const lockPath = `${targetPath}.lock`
+  // Unique per-acquisition owner token written INTO the lockfile, so release can
+  // verify we still own it (see the finally below).
+  const ownerToken = `${process.pid}.${generateRandomSuffix(12)}`
 
   return withFileLock(targetPath, async () => {
     const deadline = Date.now() + timeoutMs
@@ -809,7 +856,7 @@ export async function withCrossProcessFileLock<T>(
       try {
         const handle = await fs.promises.open(lockPath, 'wx')
         try {
-          await handle.writeFile(String(process.pid))
+          await handle.writeFile(ownerToken)
         } finally {
           await handle.close()
         }
@@ -837,7 +884,14 @@ export async function withCrossProcessFileLock<T>(
     try {
       return await fn()
     } finally {
-      await fs.promises.rm(lockPath, { force: true }).catch(() => {})
+      // Release ONLY if we still own the lock. If a later writer stole it as
+      // stale (we stalled past staleMs — plausible on a hung network fs), the
+      // file now holds THEIR token; deleting it would let a third writer in
+      // while they're mid-critical-section, reopening the lost-update race.
+      const current = await fs.promises.readFile(lockPath, 'utf-8').catch(() => null)
+      if (current === ownerToken) {
+        await fs.promises.rm(lockPath, { force: true }).catch(() => {})
+      }
     }
   })
 }

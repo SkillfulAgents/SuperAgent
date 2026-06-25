@@ -87,7 +87,9 @@ export async function writeFileAtomic(filePath: string, content: string, mode = 
     const handle = await fs.promises.open(tmpPath, 'wx', mode);
     try {
       await handle.writeFile(content, 'utf-8');
-      if (existingMode !== undefined) await handle.chmod(existingMode);
+      // Best-effort: a perms-less mount (e.g. an S3 FUSE driver) may reject
+      // chmod — never let a permission tweak fail the data write.
+      if (existingMode !== undefined) await handle.chmod(existingMode).catch(() => {});
       await handle.sync();
     } finally {
       await handle.close();
@@ -114,7 +116,15 @@ export function writeFileAtomicSync(filePath: string, content: string, mode = 0o
     const fd = fs.openSync(tmpPath, 'wx', mode);
     try {
       fs.writeFileSync(fd, content, 'utf-8');
-      if (existingMode !== undefined) fs.fchmodSync(fd, existingMode);
+      // Best-effort (see writeFileAtomic): a perms-less mount's chmod rejection
+      // must not fail the data write.
+      if (existingMode !== undefined) {
+        try {
+          fs.fchmodSync(fd, existingMode);
+        } catch {
+          // ignore — perms are advisory on object-storage mounts
+        }
+      }
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
