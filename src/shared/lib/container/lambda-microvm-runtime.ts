@@ -24,6 +24,11 @@ import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
 // env-delivery note in start().
 const RUN_HOOK_PAYLOAD_MAX_BYTES = 4_096
 const AUTH_TOKEN_EXPIRATION_MINUTES = 60
+// Max wait to kick a (possibly suspended) VM back to a serveable agent before a real
+// request. Covers auto-resume (~2-10s) with headroom; returns as soon as /health is ok.
+const RESUME_KICK_TIMEOUT_MS = 60_000
+// Gap between proxy retries while a suspended VM wakes (it 502s for ~2-3s).
+const RESUME_RETRY_DELAY_MS = 400
 
 // ---------------------------------------------------------------------------
 // Runtime config (env-driven, zod-validated, memoized)
@@ -46,9 +51,6 @@ const microvmRuntimeSchema = z.object({
   // suspended VM survives "until killed" — the next request auto-resumes it and
   // only the 8h ceiling force-terminates an untouched VM.
   maxDurationSeconds: z.coerce.number().int().positive().max(28_800).default(28_800),
-  // Idle→suspend window. Optional: an explicit env override wins, otherwise it's
-  // derived from the app's autoSleepTimeoutMinutes at start() (see resolveIdleSeconds).
-  idleSeconds: z.coerce.number().int().positive().optional(),
   // How long a suspended VM is kept before AWS terminates it. Maxed so suspend
   // lasts "until killed" within the 8h lifetime cap.
   suspendedSeconds: z.coerce.number().int().positive().max(28_800).default(28_800),
@@ -77,7 +79,6 @@ function computeConfigOrNull(): MicrovmRuntimeConfig | null {
     ingressConnectorArn: process.env.MICROVM_INGRESS_CONNECTOR_ARN,
     agentPort: process.env.MICROVM_AGENT_PORT,
     maxDurationSeconds: process.env.MICROVM_MAX_DURATION_SECONDS,
-    idleSeconds: process.env.MICROVM_IDLE_SECONDS,
     suspendedSeconds: process.env.MICROVM_SUSPENDED_SECONDS,
     logGroup: process.env.MICROVM_LOG_GROUP,
     fsId: process.env.MICROVM_FS_ID,
@@ -113,13 +114,8 @@ export function isMicrovmRuntimeConfigured(): boolean {
   return resolveMicrovmRuntimeConfigOrNull() !== null
 }
 
-// Single source of truth for "when does an idle VM suspend": an explicit
-// MICROVM_IDLE_SECONDS override wins; otherwise it tracks the app's auto-sleep
-// setting (read live so a UI change applies on the next start). When auto-sleep
-// is disabled (<= 0) we never idle-suspend — fall back to the lifetime cap.
-// Clamped to maxDurationSeconds since idle can't outlast the VM.
+// Idle→suspend window: app settings are the single source of truth.
 export function resolveIdleSeconds(config: MicrovmRuntimeConfig): number {
-  if (config.idleSeconds !== undefined) return Math.min(config.idleSeconds, config.maxDurationSeconds)
   const minutes = getSettings().app?.autoSleepTimeoutMinutes ?? 30
   if (minutes <= 0) return config.maxDurationSeconds
   return Math.min(minutes * 60, config.maxDurationSeconds)
@@ -208,36 +204,73 @@ export class LocalAuthForwardProxy {
     return out
   }
 
+  private readBody(req: http.IncomingMessage): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = []
+      req.on('data', (c) => chunks.push(c as Buffer))
+      req.on('end', () => resolve(Buffer.concat(chunks)))
+      req.on('error', reject)
+    })
+  }
+
+  private forwardOnce(method: string, path: string, headers: Record<string, string>, body: Buffer): Promise<http.IncomingMessage> {
+    return new Promise((resolve, reject) => {
+      const upstream = https.request(
+        { host: this.options.endpoint, port: 443, method, path, servername: this.options.endpoint, headers },
+        resolve,
+      )
+      upstream.on('error', reject)
+      if (body.length) upstream.write(body)
+      upstream.end()
+    })
+  }
+
+  // Replay requests across the brief resume window, where AWS may 502/refuse.
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    let auth: Record<string, string>
+    let body: Buffer
     try {
-      auth = await this.authHeaders()
-    } catch (error) {
-      captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' }, extra: { endpoint: this.options.endpoint } })
-      res.writeHead(502)
-      res.end('microvm auth token unavailable')
-      return
-    }
-    const upstream = https.request(
-      {
-        host: this.options.endpoint,
-        port: 443,
-        method: req.method,
-        path: req.url,
-        servername: this.options.endpoint,
-        headers: { ...this.forwardableHeaders(req.headers), host: this.options.endpoint, ...auth },
-      },
-      (upstreamRes) => {
-        res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
-        upstreamRes.pipe(res)
-      },
-    )
-    upstream.on('error', (error) => {
-      captureException(error, { tags: { area: 'container', op: 'microvm.proxy.request' }, extra: { endpoint: this.options.endpoint, path: req.url } })
+      body = await this.readBody(req)
+    } catch {
       if (!res.headersSent) res.writeHead(502)
       res.end()
-    })
-    req.pipe(upstream)
+      return
+    }
+    const deadline = Date.now() + RESUME_KICK_TIMEOUT_MS
+    for (;;) {
+      let auth: Record<string, string>
+      try {
+        auth = await this.authHeaders()
+      } catch (error) {
+        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.token' }, extra: { endpoint: this.options.endpoint } })
+        if (!res.headersSent) res.writeHead(502)
+        res.end('microvm auth token unavailable')
+        return
+      }
+      const headers = { ...this.forwardableHeaders(req.headers), host: this.options.endpoint, ...auth }
+      let upstreamRes: http.IncomingMessage
+      try {
+        upstreamRes = await this.forwardOnce(req.method ?? 'GET', req.url ?? '/', headers, body)
+      } catch (error) {
+        // Connection error = VM still waking; retry within the resume budget.
+        if (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, RESUME_RETRY_DELAY_MS))
+          continue
+        }
+        captureException(error, { tags: { area: 'container', op: 'microvm.proxy.request' }, extra: { endpoint: this.options.endpoint, path: req.url } })
+        if (!res.headersSent) res.writeHead(502)
+        res.end()
+        return
+      }
+      // 502 from the endpoint = VM resuming; drain and retry within the budget.
+      if (upstreamRes.statusCode === 502 && Date.now() < deadline) {
+        upstreamRes.resume()
+        await new Promise((r) => setTimeout(r, RESUME_RETRY_DELAY_MS))
+        continue
+      }
+      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
+      upstreamRes.pipe(res)
+      return
+    }
   }
 
   private async handleUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): Promise<void> {
@@ -334,8 +367,14 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
     const env = this.buildAgentEnv(options?.envVars)
     const hasEnv = Object.keys(env).length > 0
+    // Mount the same per-agent workspace path the k8s runtime uses.
     const mount = config.fsId && config.accessPoint && config.mountTargetIp
-      ? { fsId: config.fsId, accessPoint: config.accessPoint, mountTargetIp: config.mountTargetIp }
+      ? {
+          fsId: config.fsId,
+          accessPoint: config.accessPoint,
+          mountTargetIp: config.mountTargetIp,
+          subPath: `${process.env.K8S_WORKSPACES_SUBPATH_PREFIX || 'agents'}/${this.config.agentId}/workspace`,
+        }
       : undefined
     const bootstrap = hasEnv
       ? {
@@ -402,17 +441,15 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     }
   }
 
+  // Proxy-level retry handles the suspend→resume 502 window for all HTTP calls.
+
   async stop(options?: StopOptions): Promise<StopResult> {
     this.terminateWebSocketConnections()
-    // Background auto-sleep passes escalateToForceStop:false. For MicroVMs that
-    // means "go idle, keep state" — suspend (preserving memory+disk) instead of
-    // terminating, so the next request resumes (~2s) rather than cold-starts.
-    // A user-initiated / shutdown stop (default) still terminates to free the VM.
+    // Auto-sleep is handled by AWS idlePolicy; the host-app sweep is a no-op.
     if (options?.escalateToForceStop === false) {
-      await this.suspendForAutoSleep()
       return { forceStopUsed: false, stopped: true }
     }
-    await this.teardown()
+    await this.suspend()
     return { forceStopUsed: false, stopped: true }
   }
 
@@ -495,10 +532,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     throw new Error(`Timed out waiting for MicroVM ${microvmId} to become RUNNING`)
   }
 
-  // Idle (auto-sleep) suspend: keep agentStates + proxy so the next start()
-  // short-circuits and traffic auto-resumes the VM. Lost VM is reclaimed by the
-  // idlePolicy's suspendedDurationSeconds. Never throws into the sweep loop.
-  private async suspendForAutoSleep(): Promise<void> {
+  // Keep local proxy state so the next request auto-resumes the same VM.
+  private async suspend(): Promise<void> {
     const state = agentStates.get(this.config.agentId)
     if (!state) return
     const config = getMicrovmRuntimeConfig()

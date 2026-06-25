@@ -21,7 +21,7 @@ import { LambdaMicroVmRuntimeClient } from './lambda-microvm-runtime'
 const enabled = process.env.RUN_MICROVM_E2E === '1'
 
 describe.skipIf(!enabled)('LambdaMicroVmRuntimeClient e2e (real AWS)', () => {
-  it('runs a real MicroVM, serves /health through the proxy, then terminates', async () => {
+  it('runs a real MicroVM, serves /health through the proxy, then suspends', async () => {
     const client = new LambdaMicroVmRuntimeClient({ agentId: `e2e-${Date.now()}` })
     try {
       await client.start()
@@ -63,40 +63,28 @@ describe.skipIf(!enabled)('LambdaMicroVmRuntimeClient e2e (real AWS)', () => {
     expect(max).toBeLessThan(30_000)
   }, 600_000)
 
-  // Verifies the auto-sleep contract end-to-end: idle stop suspends (not
-  // terminates), and the SAME VM auto-resumes on demand far faster than a cold
-  // start would.
-  //
-  // Two deliberate choices keep this faithful to production rather than to a
-  // worst-case race:
-  //  1. Wait for the VM to settle into SUSPENDED before resuming. stop() issues
-  //     SuspendMicrovm and returns without waiting, so an immediate request races
-  //     a still-SUSPENDING VM — a worst case that never happens in production,
-  //     where requests arrive long after the VM has settled.
-  //  2. Measure time-to-healthy via waitForHealthy (kick + poll), not a single
-  //     fetch. The first request to a suspended VM triggers the async resume and
-  //     may itself 502 before the agent is back; what matters is how quickly the
-  //     agent becomes serveable, which is what a real caller (and the host) sees.
-  it('auto-sleep suspends, then auto-resumes faster than cold start', async () => {
+  // Stop means suspend; the next plain request resumes the same VM warmly.
+  it('auto-sleep suspends, then a plain request transparently auto-resumes (warm)', async () => {
     const client = new LambdaMicroVmRuntimeClient({ agentId: `e2e-resume-${Date.now()}` })
     try {
       await client.start()
       expect((await client.getInfoFromRuntime()).status).toBe('running')
 
-      await client.stop({ escalateToForceStop: false }) // auto-sleep -> suspend
+      await client.stop() // plain stop -> suspend (default)
       // Let the suspend settle (SuspendMicrovm completes in ~1s); the client maps
       // SUSPENDED/SUSPENDING to 'running' since the VM auto-resumes on demand.
       await new Promise((r) => setTimeout(r, 10_000))
       expect((await client.getInfoFromRuntime()).status).toBe('running')
 
+      // No waitForHealthy kick: a normal request resumes + succeeds via the proxy.
       const t0 = Date.now()
-      const healthy = await client.waitForHealthy(30_000) // kick + poll until agent serveable
+      const res = await client.fetch('/health')
       const resumeMs = Date.now() - t0
-      expect(healthy).toBe(true)
-      console.log(`[E2E-RESUME] suspend -> agent healthy (auto-resume): ${resumeMs}ms`)
+      expect(res.ok).toBe(true)
+      console.log(`[E2E-RESUME] suspend -> /health ok (transparent auto-resume): ${resumeMs}ms`)
       expect(resumeMs).toBeLessThan(15_000)
     } finally {
-      await client.stop() // explicit terminate to free the VM
+      await client.stop()
     }
   }, 600_000)
 })
