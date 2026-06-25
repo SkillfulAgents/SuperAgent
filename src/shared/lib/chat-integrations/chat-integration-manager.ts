@@ -1298,6 +1298,12 @@ class ChatIntegrationManager {
           const key = `${chatSession.integrationId}:${chatSession.externalChatId}`
           const managed = this.chatSessions.get(key)
           if (managed) {
+            // The agent is blocked awaiting this approval, so settle the working
+            // indicator — the card is the waiting affordance. Proxy reviews route
+            // through this GLOBAL path, not per-session SSE, so they miss the
+            // session_awaiting_input settle and would otherwise show a perpetual
+            // "Thinking…" until the idle watchdog.
+            settleIndicator(managed)
             await managed.connector.sendUserRequestCard(managed.chatId, card)
             return
           }
@@ -1313,6 +1319,7 @@ class ChatIntegrationManager {
       if (conn.integration.agentSlug !== agentSlug) continue
       for (const [key, session] of this.chatSessions) {
         if (!key.startsWith(`${conn.integration.id}:`)) continue
+        settleIndicator(session) // same awaiting settle as the sessionId path above
         try {
           await session.connector.sendUserRequestCard(session.chatId, card)
         } catch (err) {
@@ -1353,6 +1360,10 @@ class ChatIntegrationManager {
    */
   private rearmIndicatorAfterResponse(integrationId: string, chatId?: string): void {
     if (!chatId) return
+    // Re-check after the resolve await: a revoke could have landed while we were
+    // forwarding the answer. Mirrors the post-await re-checks on the SSE and
+    // send paths — never re-show the indicator for a chat that is no longer allowed.
+    if (!isChatAllowed(integrationId, chatId)) return
     const managed = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
     if (!managed) return
     managed.connector.startWorking(managed.chatId).catch(() => {})

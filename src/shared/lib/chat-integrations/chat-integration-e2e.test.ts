@@ -530,6 +530,35 @@ describe('Chat integration E2E', () => {
       expect(mockConnector.typingIndicators).toContain('chat-1')
     })
 
+    it('settles the indicator when a proxy-review approval card is routed to chat', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      // Establish a live, working managed session for chat-1.
+      mockConnector.simulateIncomingMessage('Do something privileged', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+      await waitForCondition(() => listChatIntegrationSessions(integrationId).length > 0)
+      const sessionId = listChatIntegrationSessions(integrationId)[0].sessionId
+
+      // Mid-turn the agent blocks on a host-side tool approval (proxy review). That
+      // card routes through the GLOBAL notification path, not per-session SSE, so it
+      // would otherwise miss the session_awaiting_input settle and leave a perpetual
+      // "Thinking…" until the 5-min watchdog.
+      mockConnector.stoppedWorking = []
+      await (chatIntegrationManager as unknown as {
+        handleGlobalNotification: (e: unknown) => Promise<void>
+      }).handleGlobalNotification({
+        type: 'session_awaiting_input',
+        sessionId,
+        agentSlug: 'test-agent',
+        review: { type: 'proxy_review_request', reviewId: 'rev-1', displayText: 'Allow GitHub?', toolkit: 'github' },
+      })
+
+      // The approval card is shown AND the indicator settles (no perpetual "Thinking…").
+      expect(mockConnector.sentCards.some((c) => c.event.type === 'user_question_request')).toBe(true)
+      expect(mockConnector.stoppedWorking).toContain('chat-1')
+    })
+
     it('stops the working indicator when the integration is torn down', async () => {
       const integrationId = createTestIntegration()
       await chatIntegrationManager.addIntegration(integrationId)
