@@ -237,21 +237,26 @@ describe('REPRO: idle-silence watchdog', () => {
     }
   })
 
-  it('is paused while a user-request card is outstanding (silence is the user, not a stall)', async () => {
+  it('is paused while awaiting input (the awaiting signal settles the indicator + disarms the watchdog)', async () => {
     vi.useFakeTimers()
     try {
       const connector = new MockChatClientConnector()
       const managed = makeManaged(connector, 'chat-watch')
 
       await processSSEEvent(managed, { type: 'stream_start' }) // arm
+      // The request card renders the affordance; the generic awaiting signal —
+      // which message-persister now raises on the per-session stream — is what
+      // settles the indicator and disarms the watchdog (no per-type clear).
       await processSSEEvent(managed, {
         type: 'user_question_request',
         toolUseId: 'tu-1',
         questions: [{ question: 'Which DB?' }],
       })
+      await processSSEEvent(managed, { type: 'session_awaiting_input', sessionId: 's', agentSlug: 'a' })
       await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 60 * 1000) // long human wait, past threshold
 
-      expect(stalledMessageSent(connector)).toBe(false)
+      expect(connector.stoppedWorking).toContain('chat-watch') // indicator settled
+      expect(stalledMessageSent(connector)).toBe(false) // no stall notice during the human wait
     } finally {
       vi.useRealTimers()
     }
@@ -340,6 +345,57 @@ describe('REPRO: idle-silence watchdog', () => {
         /taking longer|send your message again/i.test(m.message.text),
       )
       expect(stallNotices.length).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+// ── Indicator settles off the generic session_awaiting_input signal ──────────
+// The unification: the chat manager settles its working indicator on the
+// session-lifecycle "awaiting input" signal, NOT off a hand-maintained allowlist
+// of the eight *_request event types. Any request type — including ones the
+// manager never enumerates — settles through this one signal.
+
+describe('indicator settles on session_awaiting_input (generic, no per-type case)', () => {
+  it('Mock: session_awaiting_input stops the working indicator', async () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-await')
+
+    await processSSEEvent(managed, { type: 'stream_start' }) // arm
+    await processSSEEvent(managed, { type: 'session_awaiting_input', sessionId: 's', agentSlug: 'a' })
+
+    expect(connector.stoppedWorking).toContain('chat-await')
+  })
+
+  it('OPEN/CLOSED: an UNKNOWN request type still settles via session_awaiting_input — no allowlist entry', async () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-new')
+
+    await processSSEEvent(managed, { type: 'stream_start' }) // arm
+    // A brand-new request type the chat manager does NOT enumerate in its switch:
+    await processSSEEvent(managed, { type: 'slack_write_request', toolUseId: 'tu-x' })
+    expect(connector.stoppedWorking).not.toContain('chat-new') // the unknown type alone does nothing
+    // message-persister raises the generic signal for it; the manager settles on
+    // THAT, not on the request type — so no new chat-manager case is needed.
+    await processSSEEvent(managed, { type: 'session_awaiting_input', sessionId: 's', agentSlug: 'a' })
+
+    expect(connector.stoppedWorking).toContain('chat-new')
+  })
+
+  it('Telegram: session_awaiting_input tears down the keep-alive heartbeat', async () => {
+    vi.useFakeTimers()
+    try {
+      const { connector, sendRichMessageDraft } = makeRealDmConnector()
+      const managed = makeManaged(connector, DM_CHAT)
+
+      await connector.startWorking(DM_CHAT)
+      await processSSEEvent(managed, { type: 'session_awaiting_input', sessionId: 's', agentSlug: 'a' })
+      const at = sendRichMessageDraft.mock.calls.length
+
+      // No more "Thinking…" drafts re-sent after awaiting settles the indicator.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(sendRichMessageDraft.mock.calls.length).toBe(at)
     } finally {
       vi.useRealTimers()
     }

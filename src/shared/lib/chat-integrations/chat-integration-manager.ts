@@ -1434,14 +1434,25 @@ class ChatIntegrationManager {
 // ── Working-indicator teardown + idle watchdog ─────────────────────────
 
 /**
- * Tear down a turn's live UI: stop the working indicator (kills the keep-alive
- * heartbeat), commit any streamed text, and settle pending tool pills. Shared by
- * session_idle, session_error, and the idle watchdog so every terminal path
- * clears the indicator the same way. Idempotent.
+ * Settle the visible working indicator: stop the per-provider keep-alive
+ * heartbeat and disarm the idle watchdog. Idempotent and provider-agnostic — the
+ * one primitive every "agent is no longer actively working" path goes through
+ * (terminal teardown AND awaiting input). It does NOT finalize streamed text, so
+ * a non-terminal settle (awaiting) leaves the in-progress response intact.
+ */
+function settleIndicator(managed: ManagedConnector): void {
+  managed.connector.stopWorking(managed.chatId).catch(() => {})
+  clearWorkingWatchdog(managed)
+}
+
+/**
+ * Tear down a turn's live UI: settle the working indicator (kills the keep-alive
+ * heartbeat + watchdog), commit any streamed text, and settle pending tool pills.
+ * Shared by session_idle, session_error, and the idle watchdog so every terminal
+ * path clears the indicator the same way. Idempotent.
  */
 async function settleTurn(managed: ManagedConnector): Promise<void> {
-  clearWorkingWatchdog(managed)
-  managed.connector.stopWorking(managed.chatId).catch(() => {})
+  settleIndicator(managed)
   try {
     await finalizeStreaming(managed)
     await resolvePendingToolMessages(managed)
@@ -1671,15 +1682,27 @@ export async function processSSEEvent(
     case 'browser_input_request':
     case 'script_run_request':
     case 'computer_use_request': {
-      // The agent is now waiting on the user, so the silence that follows is the
-      // human, not a stall — pause the idle watchdog until the next turn re-arms it.
-      clearWorkingWatchdog(managed)
+      // Render the request card. The working indicator is settled by the generic
+      // session_awaiting_input signal (below), NOT per request type here. Dropping
+      // the old per-request watchdog-clear is deliberate: it keeps the idle
+      // watchdog armed as the backstop if a request path ever fails to raise
+      // awaiting, and means a new request type needs no case added here to settle.
       try {
         await managed.connector.sendUserRequestCard(managed.chatId, data as UserRequestEvent)
       } catch (err) {
         console.error(`[ChatIntegrationManager] Failed to send user request card (${eventType}):`, err)
         reportError(err, 'send-user-request-card', { integrationId: managed.integration.id, provider: managed.integration.provider, eventType })
       }
+      break
+    }
+
+    case 'session_awaiting_input': {
+      // The agent is now waiting on the human. Settle the working indicator — the
+      // request card is the waiting affordance, so "Thinking…" would be a lie.
+      // Generic: any request type reaches here via this one signal, so there is no
+      // per-type case to maintain. The turn is NOT over, so do NOT finalize the
+      // streamed response — the next stream_start re-arms the indicator.
+      settleIndicator(managed)
       break
     }
 
