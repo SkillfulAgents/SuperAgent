@@ -1,6 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
+import { getAgentWorkspaceDir, writeFileAtomic } from '@shared/lib/utils/file-storage'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 
 const ARTIFACT_SCREENSHOT_FILENAME = 'screenshot.png'
@@ -101,7 +101,9 @@ export async function renameArtifactOnFilesystem(
     throw new Error(`Failed to parse ${pkgPath}`)
   }
   pkg.name = newName
-  await fs.promises.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8')
+  // Atomic write (SUP-317): the read already throws on a corrupt package.json,
+  // so this never overwrites with a default — just make the write crash-safe.
+  await writeFileAtomic(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 }
 
 /**

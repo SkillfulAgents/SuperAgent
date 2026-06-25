@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import {
   getSettings,
-  updateSettings,
+  mutateSettings,
 } from '@shared/lib/config/settings'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import {
@@ -140,11 +140,11 @@ skillsets.post('/', IsAdmin(), async (c) => {
       provider,
     }
 
-    const newSettings = {
-      ...settings,
-      skillsets: [...existing, config],
-    }
-    updateSettings(newSettings)
+    // Upsert by id against a FRESH read inside the serialized mutation so a
+    // concurrent add of a different skillset isn't lost (SUP-312).
+    mutateSettings((s) => {
+      s.skillsets = [...(s.skillsets ?? []).filter((x) => x.id !== config.id), config]
+    })
 
     return c.json(configToApiResponse(config, index.skills.length, index.agents?.length ?? 0), 201)
   } catch (error) {
@@ -165,8 +165,11 @@ skillsets.delete('/:id', IsAdmin(), async (c) => {
       return c.json({ error: 'Skillset not found' }, 404)
     }
 
-    // Remove from settings
-    updateSettings({ ...settings, skillsets: filtered })
+    // Remove from settings — filter against a FRESH read inside the serialized
+    // mutation so a concurrent change to another skillset isn't lost (SUP-312).
+    mutateSettings((s) => {
+      s.skillsets = (s.skillsets ?? []).filter((x) => x.id !== id)
+    })
 
     // Clean up cache
     await removeSkillsetCache(toSkillsetRef(existing.find((s) => s.id === id)!))
@@ -254,32 +257,28 @@ skillsets.post('/sync-remote', IsAdmin(), async (c) => {
       return c.json({ synced: 0, skillsets: [] })
     }
 
-    const settings = getSettings()
-    const existing = settings.skillsets || []
+    // Build the new skillset list against a FRESH read inside the serialized
+    // mutation so concurrent changes to unrelated skillsets aren't lost (SUP-312).
     const added: SkillsetConfig[] = []
-    let updatedExisting = false
+    const finalSettings = mutateSettings((s) => {
+      const current = s.skillsets ?? []
+      for (const remote of remoteSkillsets) {
+        const skillsetId = `${providerId}--${remote.repoId}--${remote.name}`
 
-    for (const remote of remoteSkillsets) {
-      const skillsetId = `${providerId}--${remote.repoId}--${remote.name}`
-
-      const existingConfig = existing.find((s) => s.id === skillsetId)
-      if (existingConfig) {
-        if (provider.updateSkillsetConfig(existingConfig, remote)) {
-          updatedExisting = true
+        const existingConfig = current.find((x) => x.id === skillsetId)
+        if (existingConfig) {
+          provider.updateSkillsetConfig(existingConfig, remote)
+          continue
         }
-        continue
+
+        const config = provider.buildSkillsetConfig(remote)
+        current.push(config)
+        added.push(config)
       }
+      s.skillsets = current
+    })
 
-      const config = provider.buildSkillsetConfig(remote)
-      existing.push(config)
-      added.push(config)
-    }
-
-    if (added.length > 0 || updatedExisting) {
-      updateSettings({ ...settings, skillsets: existing })
-    }
-
-    const allForProvider = existing.filter((s) => s.provider === providerId)
+    const allForProvider = (finalSettings.skillsets ?? []).filter((s) => s.provider === providerId)
     const cloned = new Set<string>()
     for (const config of allForProvider) {
       const configRef = toSkillsetRef(config)

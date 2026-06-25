@@ -15,7 +15,7 @@ import {
   ensureDirectory,
   removeDirectory,
   readFileOrNull,
-  writeFile,
+  writeFileAtomic,
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
   generateUniqueAgentSlug,
@@ -223,7 +223,7 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
 
   const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
   const content = serializeMarkdownWithFrontmatter(frontmatter, body)
-  await writeFile(claudeMdPath, content)
+  await writeFileAtomic(claudeMdPath, content)
 
   // Return in API format (new agents are always stopped)
   return {
@@ -268,7 +268,7 @@ export async function updateAgent(
   // Write back to file
   const claudeMdPath = getAgentClaudeMdPath(slug)
   const content = serializeMarkdownWithFrontmatter(newFrontmatter, newInstructions)
-  await writeFile(claudeMdPath, content)
+  await writeFileAtomic(claudeMdPath, content)
 
   // Get container status
   const client = containerManager.getClient(slug)
@@ -361,7 +361,7 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
 
   const body = DEFAULT_AGENT_INSTRUCTIONS
   const content = serializeMarkdownWithFrontmatter(frontmatter, body)
-  await writeFile(claudeMdPath, content)
+  await writeFileAtomic(claudeMdPath, content)
 
   return {
     slug,
@@ -396,5 +396,5 @@ export async function setAgentClaudeMdContent(
   content: string
 ): Promise<void> {
   const claudeMdPath = getAgentClaudeMdPath(slug)
-  await writeFile(claudeMdPath, content)
+  await writeFileAtomic(claudeMdPath, content)
 }

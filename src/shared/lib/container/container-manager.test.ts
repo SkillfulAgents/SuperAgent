@@ -100,6 +100,13 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }),
   updateSettings: vi.fn(),
+  // SUP-312: the runner auto-switch now persists via mutateSettings; apply the
+  // mutator to a fresh snapshot and return it (matching the real return shape).
+  mutateSettings: (mutator: (s: { container: { agentImage: string; containerRunner: string }; app: Record<string, unknown> }) => void) => {
+    const s = { container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }
+    mutator(s)
+    return s
+  },
 }))
 
 vi.mock('@shared/lib/config/data-dir', () => ({

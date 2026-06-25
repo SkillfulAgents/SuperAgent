@@ -8,6 +8,15 @@ const mockUpdateSettings = vi.fn()
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
   updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
+  // SUP-312: persistToSettings now uses the serialized fresh-read mutateSettings.
+  // Reproduce its observable effect against the seeded mock so the existing
+  // mockUpdateSettings assertions still hold.
+  mutateSettings: (mutator: (s: Record<string, unknown>) => void) => {
+    const s = structuredClone(mockGetSettings() ?? {})
+    mutator(s)
+    mockUpdateSettings(s)
+    return s
+  },
 }))
 
 describe('ComputerUsePermissionManager', () => {

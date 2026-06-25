@@ -15,6 +15,7 @@ import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
 import { runBrowserUpload } from './browser-upload';
+import { withEnvFileLock, writeFileAtomic } from './env-file-store';
 
 import { getEditingCommands } from './cdp-editing-commands';
 
@@ -344,39 +345,44 @@ async function updateEnvFile(key: string, value: string): Promise<void> {
   const envFilePath = '/workspace/.env';
 
   try {
-    // Read existing .env file or start fresh
-    let envContent = '';
-    try {
-      envContent = await fs.promises.readFile(envFilePath, 'utf-8');
-    } catch {
-      // File doesn't exist yet, start fresh
-    }
+    // The host app also writes this file (user secrets). Serialize via the shared
+    // on-disk lock and write atomically (SUP-313) so neither side drops the
+    // other's keys or sees a torn file. Read-modify-write happens INSIDE the lock.
+    await withEnvFileLock(envFilePath, async () => {
+      // Read existing .env file or start fresh
+      let envContent = '';
+      try {
+        envContent = await fs.promises.readFile(envFilePath, 'utf-8');
+      } catch {
+        // File doesn't exist yet, start fresh
+      }
 
-    // Parse existing entries
-    const lines = envContent.split('\n');
-    const entries = new Map<string, string>();
+      // Parse existing entries
+      const lines = envContent.split('\n');
+      const entries = new Map<string, string>();
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith('#')) {
-        const eqIndex = trimmed.indexOf('=');
-        if (eqIndex > 0) {
-          const k = trimmed.substring(0, eqIndex);
-          const v = trimmed.substring(eqIndex + 1);
-          entries.set(k, v);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('#')) {
+          const eqIndex = trimmed.indexOf('=');
+          if (eqIndex > 0) {
+            const k = trimmed.substring(0, eqIndex);
+            const v = trimmed.substring(eqIndex + 1);
+            entries.set(k, v);
+          }
         }
       }
-    }
 
-    // Update or add the new entry (quote the value to handle special chars)
-    entries.set(key, `"${value.replace(/"/g, '\\"')}"`);
+      // Update or add the new entry (quote the value to handle special chars)
+      entries.set(key, `"${value.replace(/"/g, '\\"')}"`);
 
-    // Write back
-    const newContent = Array.from(entries.entries())
-      .map(([k, v]) => `${k}=${v}`)
-      .join('\n') + '\n';
+      // Write back atomically
+      const newContent = Array.from(entries.entries())
+        .map(([k, v]) => `${k}=${v}`)
+        .join('\n') + '\n';
 
-    await fs.promises.writeFile(envFilePath, newContent, { mode: 0o600 });
+      await writeFileAtomic(envFilePath, newContent, 0o600);
+    });
     console.log(`[ENV] Updated .env file with ${key}`);
   } catch (error) {
     console.error(`[ENV] Failed to update .env file:`, error);

@@ -1,9 +1,9 @@
-import fs from 'fs'
 import path from 'path'
 import { getSettings } from '@shared/lib/config/settings'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { loadContextMap as loadContextMapFile, setContextMapping } from './context-map-store'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 const CONTEXTS_FILE = 'platform-browserbase-contexts.json'
@@ -206,19 +206,13 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     return headers
   }
 
-  private loadContextMap(): Record<string, string> {
-    try {
-      const filePath = path.join(getDataDir(), CONTEXTS_FILE)
-      return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
-    } catch {
-      return {}
-    }
+  private contextMapPath(): string {
+    return path.join(getDataDir(), CONTEXTS_FILE)
   }
 
-  private saveContextMap(map: Record<string, string>): void {
-    const filePath = path.join(getDataDir(), CONTEXTS_FILE)
-    fs.mkdirSync(path.dirname(filePath), { recursive: true })
-    fs.writeFileSync(filePath, JSON.stringify(map, null, 2))
+  /** Load the persistent contextKey → contextId map from disk (fail-closed). */
+  private loadContextMap(): Record<string, string> {
+    return loadContextMapFile(this.contextMapPath())
   }
 
   private async getOrCreateContext(contextKey: string, token: string): Promise<string> {
@@ -239,8 +233,9 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     }
 
     const context = await response.json() as { id: string }
-    map[contextKey] = context.id
-    this.saveContextMap(map)
+    // Serialized + atomic upsert (re-reads fresh under the lock) so a context
+    // created concurrently for another key isn't clobbered (SUP-315).
+    await setContextMapping(this.contextMapPath(), contextKey, context.id)
     console.log(`[PlatformBrowserProvider] Created context ${context.id} for ${contextKey}`)
     return context.id
   }

@@ -9,7 +9,7 @@ import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
-import { getSettings, updateSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
 import { messagePersister } from './message-persister'
@@ -928,8 +928,11 @@ class ContainerManager {
         if (alternativeRunner) {
           console.log(`Configured runner ${configuredRunner} not available, auto-switching to ${alternativeRunner.runner}`)
           configuredRunner = alternativeRunner.runner as ContainerRunner
-          settings = { ...settings, container: { ...settings.container, containerRunner: configuredRunner } }
-          updateSettings(settings)
+          // Serialized fresh-read + atomic write (SUP-312); re-bind the local
+          // snapshot to the persisted result so later reads see fresh state.
+          settings = mutateSettings((s) => {
+            s.container.containerRunner = configuredRunner
+          })
         } else {
           const displayName = getRunnerDisplayName(configuredRunner)
           const detail = !runnerStatus?.installed

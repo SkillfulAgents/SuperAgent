@@ -110,10 +110,13 @@ export function SessionContextMenu({
         </ContextMenuTrigger>
         <ContextMenuContent>
           {isOwner && (
-            <ContextMenuItem onClick={() => {
-              setNewName(sessionName)
-              setShowRenameDialog(true)
-            }}>
+            <ContextMenuItem
+              data-testid="rename-session-item"
+              onClick={() => {
+                setNewName(sessionName)
+                setShowRenameDialog(true)
+              }}
+            >
               <Pencil className="h-4 w-4 mr-2" />
               Rename Session
             </ContextMenuItem>

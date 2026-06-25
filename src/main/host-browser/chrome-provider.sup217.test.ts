@@ -157,6 +157,14 @@ vi.mock('fs', () => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
     },
     writeFileSync: () => undefined,
+    // Low-level calls used by the atomic writer (writeFileAtomicSync) for the
+    // Chrome Preferences write (SUP-315) — stubbed; this test only asserts CDP
+    // bind behaviour, not Preferences contents.
+    openSync: () => 1,
+    fsyncSync: () => undefined,
+    fchmodSync: () => undefined,
+    closeSync: () => undefined,
+    renameSync: () => undefined,
     statSync: () => ({ size: 0, mtimeMs: 0 }),
     accessSync: () => undefined,
     readdirSync: () => [],

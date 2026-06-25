@@ -1,7 +1,7 @@
-import fs from 'fs'
 import path from 'path'
 import { getSettings, getEffectiveBrowserbaseApiKey, getEffectiveBrowserbaseProjectId } from '@shared/lib/config/settings'
 import { getDataDir } from '@shared/lib/config/data-dir'
+import { loadContextMap as loadContextMapFile, setContextMapping } from './context-map-store'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
 
 const BROWSERBASE_API_BASE = 'https://api.browserbase.com/v1'
@@ -208,21 +208,13 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     return this.sessions.size > 0
   }
 
-  /** Load the persistent instanceId → contextId map from disk */
-  private loadContextMap(): Record<string, string> {
-    try {
-      const filePath = path.join(getDataDir(), CONTEXTS_FILE)
-      return JSON.parse(fs.readFileSync(filePath, 'utf-8'))
-    } catch {
-      return {}
-    }
+  private contextMapPath(): string {
+    return path.join(getDataDir(), CONTEXTS_FILE)
   }
 
-  /** Save the persistent instanceId → contextId map to disk */
-  private saveContextMap(map: Record<string, string>): void {
-    const filePath = path.join(getDataDir(), CONTEXTS_FILE)
-    fs.mkdirSync(path.dirname(filePath), { recursive: true })
-    fs.writeFileSync(filePath, JSON.stringify(map, null, 2))
+  /** Load the persistent instanceId → contextId map from disk (fail-closed). */
+  private loadContextMap(): Record<string, string> {
+    return loadContextMapFile(this.contextMapPath())
   }
 
   /** Get or create a Browserbase context for the given instance */
@@ -247,8 +239,9 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     }
 
     const context = await response.json() as { id: string }
-    map[instanceId] = context.id
-    this.saveContextMap(map)
+    // Serialized + atomic upsert (re-reads fresh under the lock) so a context
+    // created concurrently for another instance isn't clobbered (SUP-315).
+    await setContextMapping(this.contextMapPath(), instanceId, context.id)
     console.log(`[BrowserbaseProvider] Created context ${context.id} for instance ${instanceId}`)
     return context.id
   }

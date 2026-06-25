@@ -2,7 +2,11 @@ import path from 'path'
 import os from 'os'
 import fs from 'fs'
 import crypto from 'crypto'
-import { getAgentDir } from '@shared/lib/utils/file-storage'
+import {
+  getAgentDir,
+  readJsonFileStrictSync,
+  writeJsonFileAtomicSync,
+} from '@shared/lib/utils/file-storage'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
 import { agentMountsSchema } from './mount-schema'
@@ -11,14 +15,17 @@ function getMountsFilePath(slug: string): string {
   return path.join(getAgentDir(slug), 'mounts.json')
 }
 
+/**
+ * Read the agent's mounts. Fail-closed (SUP-314): an absent file is `[]` (no
+ * mounts yet), but a corrupt/torn `mounts.json` or any IO error THROWS instead
+ * of silently returning `[]`. The previous catch-all swallowed parse AND raw IO
+ * errors, so a transiently-unreadable file became `[]`, and the next `addMount`
+ * persisted only the new mount — dropping every prior mount. Throwing here aborts
+ * that read-modify-write so the existing file is preserved.
+ */
 export function getMounts(slug: string): AgentMount[] {
   const filePath = getMountsFilePath(slug)
-  try {
-    const data = fs.readFileSync(filePath, 'utf-8')
-    return agentMountsSchema.parse(JSON.parse(data))
-  } catch {
-    return []
-  }
+  return readJsonFileStrictSync(filePath, agentMountsSchema, [])
 }
 
 /**
@@ -59,7 +66,9 @@ export const CLOUD_MOUNT_MESSAGE =
 function writeMounts(slug: string, mounts: AgentMount[]): void {
   const filePath = getMountsFilePath(slug)
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  fs.writeFileSync(filePath, JSON.stringify(agentMountsSchema.parse(mounts), null, 2))
+  // Atomic temp-file + rename (SUP-314): an interrupted write can never truncate
+  // mounts.json into the half-state the old reader would have swallowed.
+  writeJsonFileAtomicSync(filePath, agentMountsSchema.parse(mounts))
 }
 
 export function addMount(slug: string, hostPath: string): AgentMount {

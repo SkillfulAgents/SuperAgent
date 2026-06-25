@@ -358,6 +358,17 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
   ensureDirectory: vi.fn(),
   removeDirectory: vi.fn(),
+  // SUP-310 atomic/lock/strict-read primitives, used by the real (unmocked)
+  // services in the route's import graph (agent-preferences, artifact, …).
+  readJsonFileStrict: vi.fn(async () => ({})),
+  readJsonFileStrictSync: vi.fn(() => ({})),
+  writeJsonFileAtomic: vi.fn(async () => {}),
+  writeJsonFileAtomicSync: vi.fn(() => {}),
+  writeFileAtomic: vi.fn(async () => {}),
+  writeFileAtomicSync: vi.fn(() => {}),
+  withFileLock: vi.fn(async (_path: string, fn: () => Promise<unknown>) => fn()),
+  withCrossProcessFileLock: vi.fn(async (_path: string, fn: () => Promise<unknown>) => fn()),
+  CorruptFileError: class CorruptFileError extends Error {},
 }))
 
 vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))

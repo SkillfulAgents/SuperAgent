@@ -1,7 +1,7 @@
 import { errors as joseErrors } from 'jose'
 import { eq, and, desc } from 'drizzle-orm'
 
-import { getSettings, updateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { fetchPlatformJson } from '@shared/lib/platform-auth/platform-fetch'
 import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema } from '@shared/lib/types/skillset-schema'
@@ -206,9 +206,12 @@ function readRecord(): PlatformAuthRecord | null {
 }
 
 function writeRecord(record: PlatformAuthRecord | null): void {
-  const settings = getSettings()
-  settings.platformAuth = record ?? undefined
-  updateSettings(settings)
+  // Serialized fresh-read + atomic write so a background token refresh can't
+  // lose-update a concurrent settings change or clobber real settings from a
+  // defaulted cache (SUP-312).
+  mutateSettings((settings) => {
+    settings.platformAuth = record ?? undefined
+  })
 }
 
 /**

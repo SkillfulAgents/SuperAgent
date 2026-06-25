@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { writeFileAtomicSync } from './atomic-file';
 import type { EffortLevel } from './types';
 
 interface SessionMetadata {
@@ -47,7 +48,13 @@ export class SessionPersistence {
   private save(): void {
     try {
       const data = Object.fromEntries(this.sessions.entries());
-      fs.writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
+      // Atomic temp-file + rename (SUP-310): this map is rewritten on every
+      // message (updateLastActivity), and a container force-stop mid-write would
+      // otherwise tear the file — making the next load() swallow the parse error
+      // and silently wipe ALL session metadata. The atomic write guarantees the
+      // previous good file survives an interrupted write. /workspace is fully
+      // bind-mounted, so the rename is same-filesystem and reaches the host.
+      writeFileAtomicSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
     } catch (error) {
       console.error('Error saving persisted sessions:', error);
     }
