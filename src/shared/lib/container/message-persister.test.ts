@@ -2205,6 +2205,26 @@ describe('MessagePersister', () => {
       globalCleanup()
     })
 
+    it('emits session_awaiting_input on the per-session SSE stream (not only global)', () => {
+      // The chat-integration-manager is a per-session SSE subscriber, so the
+      // awaiting signal must reach the per-session stream for it to settle the
+      // working indicator off the generic signal — global-only left it blind.
+      const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+
+      const perSession = sseEvents.filter(e => e.type === 'session_awaiting_input')
+      expect(perSession).toHaveLength(1)
+      expect(perSession[0].sessionId).toBe(SESSION_ID)
+      expect(perSession[0].agentSlug).toBe(AGENT_SLUG)
+
+      // Existing global consumers (sidebar / promotion) must still receive it.
+      const global = globalEvents.filter(e => e.type === 'session_awaiting_input')
+      expect(global).toHaveLength(1)
+
+      globalCleanup()
+    })
+
     it('does not double-broadcast when already awaiting input', () => {
       const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
 
@@ -2447,6 +2467,36 @@ describe('MessagePersister', () => {
       const awaitingEvents = globalEvents.filter(e => e.type === 'session_awaiting_input')
       // First broadcast is immediate (before promotion), second is after metadata update
       expect(awaitingEvents.length).toBeGreaterThanOrEqual(2)
+
+      globalCleanup()
+    })
+
+    it('promotion re-emit stays global-only (never reaches the per-session stream)', async () => {
+      // The promotion re-broadcast runs asynchronously after the user may have
+      // already answered and the chat indicator re-armed. If it reached the
+      // per-session stream it would stale-settle a live indicator, so it must
+      // stay global: the per-session stream sees the awaiting signal exactly once.
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-1',
+      })
+
+      const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+
+      simulateToolUse('AskUserQuestion', 'tool-1', {
+        questions: [{ question: 'Pick?', header: 'Q', options: [], multiSelect: false }],
+      })
+
+      await vi.waitFor(() => {
+        expect(updateSessionMetadata).toHaveBeenCalled()
+      })
+
+      // Global got the initial mark + the promotion re-emit (≥2)...
+      const global = globalEvents.filter(e => e.type === 'session_awaiting_input')
+      expect(global.length).toBeGreaterThanOrEqual(2)
+      // ...but the per-session stream got only the initial mark (exactly 1).
+      const perSession = sseEvents.filter(e => e.type === 'session_awaiting_input')
+      expect(perSession).toHaveLength(1)
 
       globalCleanup()
     })

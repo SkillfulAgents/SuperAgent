@@ -583,16 +583,21 @@ class MessagePersister {
     })
   }
 
-  // Mark session as awaiting user input and broadcast globally
+  // Mark session as awaiting user input and broadcast the signal.
   private markSessionAwaitingInput(sessionId: string): void {
     const state = this.streamingStates.get(sessionId)
     if (state && !state.isAwaitingInput) {
       state.isAwaitingInput = true
-      this.broadcastGlobal({
+      const payload = {
         type: 'session_awaiting_input',
         sessionId,
         agentSlug: state.agentSlug,
-      })
+      }
+      // Per-session SSE so the chat-integration-manager (a per-session subscriber)
+      // can settle its working indicator off this generic signal instead of a
+      // per-request-type allowlist. Global stays for the sidebar/promotion consumers.
+      this.broadcastToSSE(sessionId, payload)
+      this.broadcastGlobal(payload)
       if (state.agentSlug) {
         this.promoteAutomatedSession(sessionId, state.agentSlug).catch((err) => {
           console.error('[MessagePersister] Failed to promote automated session:', err)
