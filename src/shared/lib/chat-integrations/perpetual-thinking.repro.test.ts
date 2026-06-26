@@ -358,16 +358,6 @@ describe('REPRO: idle-silence watchdog', () => {
 // manager never enumerates — settles through this one signal.
 
 describe('indicator settles on session_awaiting_input (generic, no per-type case)', () => {
-  it('Mock: session_awaiting_input stops the working indicator', async () => {
-    const connector = new MockChatClientConnector()
-    const managed = makeManaged(connector, 'chat-await')
-
-    await processSSEEvent(managed, { type: 'stream_start' }) // arm
-    await processSSEEvent(managed, { type: 'session_awaiting_input', sessionId: 's', agentSlug: 'a' })
-
-    expect(connector.stoppedWorking).toContain('chat-await')
-  })
-
   it('OPEN/CLOSED: an UNKNOWN request type still settles via session_awaiting_input — no allowlist entry', async () => {
     const connector = new MockChatClientConnector()
     const managed = makeManaged(connector, 'chat-new')
@@ -432,9 +422,10 @@ describe('indicator lifecycle: auto-approved script honesty + re-arm on resume',
     expect(connector.stoppedWorking).toContain('chat-rearm') // settled while awaiting
 
     // The human answers → the container resumes and emits stream_start, which
-    // re-arms the indicator. handleInteractiveResponse itself does not re-arm;
-    // the resumed dispatch does — so "Thinking…" returns without a stuck-on-
-    // failed-resolve risk, and the watchdog backstops a resume that never comes.
+    // re-arms the indicator. handleInteractiveResponse re-arms on a confirmed
+    // resolve for connectors that report a chatId (Telegram); this test covers the
+    // stream_start fallback that re-arms otherwise (Slack) and idempotently
+    // double-fires for Telegram — the watchdog backstops a resume that never comes.
     const startsBefore = connector.typingIndicators.length
     await processSSEEvent(managed, { type: 'stream_start' })
     expect(connector.typingIndicators.length).toBeGreaterThan(startsBefore)
