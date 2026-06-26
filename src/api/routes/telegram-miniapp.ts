@@ -202,7 +202,7 @@ app.post('/session', async (c) => {
 
   // 11. Mint the scoped dashboard cookie
   const exp = Math.floor(Date.now() / 1000) + DASHBOARD_COOKIE_TTL_SECONDS
-  const token = signDashboardCookie(
+  const token = await signDashboardCookie(
     {
       userId: integration.createdByUserId,
       agentSlug: integration.agentSlug,
@@ -232,7 +232,7 @@ app.post('/browser-link', async (c) => {
   // 1. Verify existing tg_dash cookie — the dashboard scope comes from the
   //    signed cookie, never from caller-supplied input.
   const raw = getCookie(c, DASHBOARD_COOKIE_NAME)
-  const payload = raw ? verifyDashboardCookie(raw, getOrCreateAuthSecret()) : null
+  const payload = raw ? await verifyDashboardCookie(raw, getOrCreateAuthSecret()) : null
   if (!payload) {
     return c.json({ ok: false, reason: 'unauthorized' }, 401)
   }
@@ -245,7 +245,7 @@ app.post('/browser-link', async (c) => {
 
   // 3. Mint a short-TTL link token (120s) carrying the cookie's dashboard scope
   const exp = Math.floor(Date.now() / 1000) + 120
-  const token = signDashboardCookie(
+  const token = await signDashboardCookie(
     {
       userId: payload.userId,
       agentSlug: payload.agentSlug,
@@ -270,7 +270,7 @@ app.get('/browser', async (c) => {
   }
 
   // 2. Verify link token
-  const payload = verifyDashboardCookie(token, getOrCreateAuthSecret())
+  const payload = await verifyDashboardCookie(token, getOrCreateAuthSecret())
   if (!payload) {
     return new Response(
       '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Link expired</title></head><body>This link has expired. Reopen the dashboard from your Telegram chat.</body></html>',
@@ -280,7 +280,7 @@ app.get('/browser', async (c) => {
 
   // 3. Mint a fresh full-TTL tg_dash cookie from the trusted token payload
   const exp = Math.floor(Date.now() / 1000) + DASHBOARD_COOKIE_TTL_SECONDS
-  const cookie = signDashboardCookie(
+  const cookie = await signDashboardCookie(
     {
       userId: payload.userId,
       agentSlug: payload.agentSlug,

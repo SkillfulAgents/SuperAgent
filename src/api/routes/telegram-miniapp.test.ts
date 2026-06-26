@@ -328,7 +328,7 @@ describe('POST /session — rejection branches', () => {
 describe('POST /browser-link', () => {
   it('returns 200 with a url containing the browser endpoint and token (scope rides the signed token, no d param)', async () => {
     const now = Math.floor(Date.now() / 1000)
-    const cookieValue = signDashboardCookie(
+    const cookieValue = await signDashboardCookie(
       { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp: now + 900 },
       getOrCreateAuthSecret(),
     )
@@ -356,7 +356,7 @@ describe('POST /browser-link', () => {
 
   it('returns 400 no_public_url when no public base URL is configured', async () => {
     const now = Math.floor(Date.now() / 1000)
-    const cookieValue = signDashboardCookie(
+    const cookieValue = await signDashboardCookie(
       { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp: now + 900 },
       getOrCreateAuthSecret(),
     )
@@ -375,7 +375,7 @@ describe('POST /browser-link', () => {
 describe('GET /browser', () => {
   it('returns 200 HTML with Set-Cookie, iframe, and artifact path from the token scope', async () => {
     const now = Math.floor(Date.now() / 1000)
-    const token = signDashboardCookie(
+    const token = await signDashboardCookie(
       { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp: now + 120 },
       getOrCreateAuthSecret(),
     )
@@ -402,7 +402,7 @@ describe('GET /browser', () => {
 
   it('returns 401 HTML with no Set-Cookie for an expired token', async () => {
     const past = Math.floor(Date.now() / 1000) - 1
-    const token = signDashboardCookie(
+    const token = await signDashboardCookie(
       { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp: past },
       getOrCreateAuthSecret(),
     )
@@ -417,7 +417,7 @@ describe('GET /browser', () => {
 
   it('serves an access-expiry overlay keyed to the cookie TTL', async () => {
     const now = Math.floor(Date.now() / 1000)
-    const token = signDashboardCookie(
+    const token = await signDashboardCookie(
       { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp: now + 120 },
       getOrCreateAuthSecret(),
     )

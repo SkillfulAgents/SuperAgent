@@ -1357,7 +1357,7 @@ describe('Auth Middleware', () => {
       // Sign a real cookie using the same secret set at module level
       const exp = Math.floor(Date.now() / 1000) + 900
       const secret = process.env.BETTER_AUTH_SECRET!
-      const cookieValue = signDashboardCookie(
+      const cookieValue = await signDashboardCookie(
         { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'x', integrationId: 'int-1', exp },
         secret,
       )
