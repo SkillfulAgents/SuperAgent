@@ -216,7 +216,18 @@ export function isConnectionError(err: Error): boolean {
 
 export const AGENT_CONTAINER_PATH = './agent-container'
 export const CONTAINER_INTERNAL_PORT = 3000
-const BASE_PORT = 4000
+// Host port where findAvailablePort() starts scanning. Overridable via
+// SUPERAGENT_BASE_PORT so a second app instance (e.g. `dev:electron` alongside a
+// prod install) can publish containers in a non-overlapping range. Cross-runtime
+// instances (Lima vs Docker) can't see each other's published ports, and a
+// loopback-specific bind shadows a 0.0.0.0 bind on localhost — so without a
+// separate base they both land on 4000 and dev traffic is silently routed to the
+// prod container. Invalid values fall back to the default.
+const BASE_PORT = (() => {
+  const raw = process.env.SUPERAGENT_BASE_PORT
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN
+  return Number.isInteger(parsed) && parsed > 0 && parsed < 65536 ? parsed : 4000
+})()
 // Max time for a single /health probe (isHealthy). Kept short because it gates
 // the request hot path via ensureRunning's stale-cache liveness check.
 const HEALTH_PROBE_TIMEOUT_MS = 2000
