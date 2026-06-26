@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report it back in the chat interface.",
+  "reason": "Browser-use feature allows agent to open browser, navigate to URL, and return page title correctly",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut home screen with agents listed in sidebar",
-    "Clicked on \"QA-20260625-235601-wynl\" agent in sidebar — Agent page opened successfully showing chat interface with input box",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was sent and a new session \"Browser Navigation and Page Title\" was created",
-    "Waited up to 3 minutes for response — Agent processed the request and returned complete response within approximately 31 seconds",
-    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is 'Example Domain'.\" and confirms \"The page at https://example.com has the title 'Example Domain'.\" All browser tools executed successfully (ToolSearch, Open Browser, Browser Get State, Close Browser)"
+    "Navigated to http://localhost:47891 — SUCCESS: Application loaded with Gamut interface displaying agent sidebar",
+    "Found and clicked the \"QA-20260626-010318-wew5\" agent in the sidebar — SUCCESS: Agent page opened with chat interface ready",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — SUCCESS: Message typed into input box and sent with Send button",
+    "Waited up to 3 minutes for response — SUCCESS: Agent responded within 13 seconds",
+    "Verified response mentions \"Example Domain\" — SUCCESS: Response clearly states \"The page title is \\\"Example Domain\\\"\" and \"Done — the page at https://example.com has the title \\\"Example Domain\\\". Browser closed.\"",
+    "Took screenshot of successful response — SUCCESS: Screenshot shows complete agent response with browser tool calls (Open Browser, Browser Get State, Close Browser) and the correct page title \"Example Domain\""
   ],
   "bugs": [],
-  "durationMs": 306678,
-  "sessionId": "ff4fb604-204e-4d74-8bf0-820404348696",
+  "durationMs": 255568,
+  "sessionId": "f991cab6-57a3-4d03-b99b-974aa6ba9b85",
   "cost": {
-    "inputTokens": 582,
-    "outputTokens": 19243,
-    "cacheCreationTokens": 97619,
-    "cacheReadTokens": 2183908,
+    "inputTokens": 315,
+    "outputTokens": 9738,
+    "cacheCreationTokens": 72466,
+    "cacheReadTokens": 953683,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.437212
+    "totalCostUsd": 0.234956
   }
 }
