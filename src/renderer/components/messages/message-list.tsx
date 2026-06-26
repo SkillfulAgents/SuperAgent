@@ -13,6 +13,7 @@ import { isTurnStartingUserMessage, type PendingMessage } from './pending-messag
 import { MessageItem } from './message-item'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
+import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
 import { MessageErrorBoundary } from './message-error-boundary'
@@ -756,6 +757,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   sessionId={sessionId}
                   agentSlug={agentSlug}
                   isSessionActive={isActive}
+                  activeSubagent={activeSubagents?.find(s => s.parentToolId === tool.id) ?? null}
+                  isCompleted={completedSubagents?.has(tool.id) ?? false}
+                />
+              )
+            } else if (tool.name === 'Workflow') {
+              inner = (
+                <WorkflowBlock
+                  toolCall={syntheticToolCall}
                   activeSubagent={activeSubagents?.find(s => s.parentToolId === tool.id) ?? null}
                   isCompleted={completedSubagents?.has(tool.id) ?? false}
                 />

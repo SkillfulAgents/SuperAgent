@@ -619,6 +619,50 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'subagent_completed')).toHaveLength(1)
     })
 
+    // A dynamic workflow (task_type 'local_workflow') must get the same treatment as a
+    // backgrounded Bash command: registered as a background task, surfaced via
+    // session_waiting_background, and NOT phantom-cleared/finalized when the SDK fires a
+    // premature turn-end idle while it is still running. (Synthetic — mirrors the real
+    // background-bash-premature-idle capture shape; replace with a real workflow capture
+    // fixture when one is available.)
+    it('treats a local_workflow as a background task and survives a premature idle', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      // Make session_state_changed the idle authority (matches the container handshake).
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      sseEvents.length = 0
+
+      // Workflow launches mid-turn → registered as a background task.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_started', task_type: 'local_workflow',
+        task_id: 'wf1', tool_use_id: 'wf-tool', workflow_name: 'demo', description: 'demo workflow',
+      })
+      expect(sseEvents.filter(e => e.type === 'background_task_started' && e.taskId === 'wf1')).toHaveLength(1)
+
+      // Launch turn ends, but the workflow keeps running in the background.
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+      expect(sseEvents.some(e => e.type === 'session_waiting_background')).toBe(true)
+
+      // Premature idle while the workflow is still running → must stay waiting-background.
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.some(e => e.type === 'session_idle')).toBe(false)
+      expect(sseEvents.some(e => e.type === 'background_task_completed')).toBe(false)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      // Workflow settles → its terminal clears the background task exactly once.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_notification', task_id: 'wf1', tool_use_id: 'wf-tool', status: 'completed',
+      })
+      expect(sseEvents.filter(e => e.type === 'background_task_completed' && e.taskId === 'wf1')).toHaveLength(1)
+
+      // The subsequent, truly-settled idle finalizes the session.
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.some(e => e.type === 'session_idle')).toBe(true)
+    })
+
     it('does not broadcast subagent_completed for non-matching tool_result', () => {
       // Set up Task tool tracking
       mockClient._sendMessage({

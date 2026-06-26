@@ -398,9 +398,14 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   )
 }
 
-function BackgroundTasksSection({ tasks }: { tasks: Array<{ taskId: string; startedAt: number }> }) {
+function BackgroundTasksSection({ tasks }: { tasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean }> }) {
   const earliest = Math.min(...tasks.map(t => t.startedAt))
   const elapsed = useElapsedTimer(new Date(earliest))
+  // Label as "workflow" when every active background task is a dynamic workflow;
+  // fall back to the generic "process" wording for backgrounded Bash (or a mix).
+  const allWorkflows = tasks.every(t => t.isWorkflow)
+  const noun = allWorkflows ? 'workflow' : 'process'
+  const label = `${tasks.length} background ${tasks.length === 1 ? noun : allWorkflows ? `${noun}s` : `${noun}es`}`
   return (
     <div className="mt-2 text-sm pl-5">
       <div className="flex items-center gap-2">
@@ -409,7 +414,7 @@ function BackgroundTasksSection({ tasks }: { tasks: Array<{ taskId: string; star
           <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
         </span>
         <span className="text-xs text-muted-foreground">
-          {tasks.length} background {tasks.length === 1 ? 'process' : 'processes'}
+          {label}
         </span>
         {elapsed && (
           <span className="text-xs text-muted-foreground tabular-nums">{elapsed}</span>

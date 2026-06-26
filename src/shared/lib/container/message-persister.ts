@@ -81,7 +81,7 @@ interface StreamingState {
   // /stream route replays them on (re)connect. Cleared at turn boundaries (session_active/idle).
   pendingInputRequests: Map<string, { type: string; toolUseId: string; [k: string]: unknown }>
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
-  activeBackgroundTasks: Map<string, { startedAt: number }> // Background Bash commands still running (keyed by task ID)
+  activeBackgroundTasks: Map<string, { startedAt: number; isWorkflow?: boolean }> // Backgrounded Bash commands + dynamic workflows still running (keyed by task ID)
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
   // True when the runtime publishes session_state_changed events — then IT is
   // the idle authority: a 'result' alone does not end the session (queued
@@ -372,12 +372,13 @@ class MessagePersister {
     }
   }
 
-  getActiveBackgroundTasks(sessionId: string): Array<{ taskId: string; startedAt: number }> {
+  getActiveBackgroundTasks(sessionId: string): Array<{ taskId: string; startedAt: number; isWorkflow?: boolean }> {
     const state = this.streamingStates.get(sessionId)
     if (!state) return []
     return Array.from(state.activeBackgroundTasks.entries()).map(([taskId, info]) => ({
       taskId,
       startedAt: info.startedAt,
+      isWorkflow: info.isWorkflow,
     }))
   }
 
@@ -923,6 +924,23 @@ class MessagePersister {
               description: content.description,
             })
           }
+          // A dynamic workflow (task_type 'local_workflow') is a background task that
+          // outlives its launch turn — register it exactly like a backgrounded Bash
+          // command so it surfaces in the same "N background processes" UI and holds the
+          // session in the waiting-background state. The idle handler already keeps the
+          // session alive whenever activeBackgroundTasks is non-empty (the SDK fires idle
+          // at turn-end while the work runs, then wakes on completion), and the terminal
+          // task_updated/task_notification handlers below clear it by task_id — so no
+          // workflow-specific handling is needed anywhere else.
+          if (content.task_type === 'local_workflow') {
+            const workflowTaskId = content.task_id as string | undefined
+            if (workflowTaskId && !state.activeBackgroundTasks.has(workflowTaskId)) {
+              const startedAt = Date.now()
+              state.activeBackgroundTasks.set(workflowTaskId, { startedAt, isWorkflow: true })
+              this.broadcastToSSE(sessionId, { type: 'background_task_started', taskId: workflowTaskId, startedAt, isWorkflow: true })
+              this.broadcastGlobal({ type: 'background_task_started', sessionId, agentSlug: state.agentSlug, taskId: workflowTaskId })
+            }
+          }
         } else if (content.subtype === 'task_progress') {
           // Subagent progress with usage stats (description intentionally omitted —
           // task_progress.description can change to reflect current action, but the
@@ -1019,11 +1037,12 @@ class MessagePersister {
             // session_idle (and a bogus completion notification).
             if (state.isActive && state.lastResultSubtype !== null) {
               if (state.activeBackgroundTasks.size > 0) {
-                // Idle here does NOT mean "settled". activeBackgroundTasks only
-                // ever holds backgrounded Bash commands (task_type=local_bash);
-                // for those the SDK fires `idle` at TURN-END while the command is
-                // still running, then re-fires `running` + task_notification when
-                // it actually finishes. Phantom-clearing + finalizing here would
+                // Idle here does NOT mean "settled". activeBackgroundTasks holds
+                // backgrounded Bash commands (task_type=local_bash) and dynamic
+                // workflows (local_workflow); for both the SDK fires `idle` at
+                // TURN-END while the work is still running, then re-fires `running`
+                // + task_notification when it actually finishes. Phantom-clearing
+                // + finalizing here would
                 // drop the indicator and un-gate auto-sleep mid-job — the exact
                 // failure run_in_background is meant to prevent. Keep the session
                 // alive and surface it as waiting-on-background; the per-task

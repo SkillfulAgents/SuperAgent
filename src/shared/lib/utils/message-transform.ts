@@ -124,7 +124,9 @@ export function isTaskNotificationMessage(entry: JsonlMessageEntry): boolean {
   // TODO deprecate 2026-08-01: XML fallback for JSONL files written before SDK 0.3.144 added the origin field
   const content = entry.message.content
   if (typeof content !== 'string') return false
-  return content.trimStart().startsWith('<task-notification>')
+  // Match both the bare `<task-notification>` form and attributed variants
+  // (`<task-notification id="..." type="workflow-complete" ...>`).
+  return /^<task-notification[\s>]/.test(content.trimStart())
 }
 
 /**

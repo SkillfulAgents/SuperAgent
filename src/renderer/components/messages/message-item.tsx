@@ -5,6 +5,9 @@ import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
 import { ToolCallItem } from './tool-call-item'
 import { SubAgentBlock } from './subagent-block'
+import { WorkflowBlock } from './workflow-block'
+import { WorkflowResultCard } from './workflow-result-card'
+import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
@@ -221,7 +224,12 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const rawText = message.content.text
   const { cleanText: textAfterFiles, attachedFiles } = isUser && rawText ? parseAttachedFiles(rawText) : { cleanText: rawText, attachedFiles: [] }
   const { cleanText, mountedFolders } = isUser && textAfterFiles ? parseMountedFolders(textAfterFiles) : { cleanText: textAfterFiles, mountedFolders: [] }
-  const text = cleanText
+  // Strip SDK-injected `<task-notification>` blocks that land in assistant text on
+  // the busy path; surface any `workflow-complete` result as a structured card.
+  const { cleanText: textAfterNotifs, workflowResults } = isAssistant && cleanText
+    ? parseTaskNotifications(cleanText)
+    : { cleanText, workflowResults: [] }
+  const text = textAfterNotifs
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
 
@@ -365,6 +373,15 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           </div>
         )}
 
+        {/* Workflow result cards parsed from inline task-notification blocks */}
+        {isAssistant && workflowResults.length > 0 && (
+          <div className="w-full space-y-2">
+            {workflowResults.map((wf, idx) => (
+              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} />
+            ))}
+          </div>
+        )}
+
         {/* Tool calls - shown below assistant message */}
         {isAssistant && toolCalls.length > 0 && (
           <div className="w-full space-y-2">
@@ -378,6 +395,12 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                         sessionId={sessionId}
                         agentSlug={agentSlug!}
                         isSessionActive={isSessionActive}
+                        activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
+                        isCompleted={completedSubagents?.has(toolCall.id) ?? false}
+                      />
+                    ) : toolCall.name === 'Workflow' ? (
+                      <WorkflowBlock
+                        toolCall={toolCall}
                         activeSubagent={activeSubagents?.find(s => s.parentToolId === toolCall.id) ?? null}
                         isCompleted={completedSubagents?.has(toolCall.id) ?? false}
                       />

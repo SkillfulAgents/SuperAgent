@@ -436,6 +436,14 @@ export class ClaudeCodeProcess extends EventEmitter {
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
         agentProgressSummaries: true,
+        // Expose the dynamic-workflows `Workflow` tool. In headless/SDK mode the
+        // feature is hidden unless explicitly opted in (there is no interactive
+        // /config to record consent, so the SDK defaults it OFF). There is no
+        // enable env var — only CLAUDE_CODE_DISABLE_WORKFLOWS — so we set it via
+        // the `settings` flag layer (`enableWorkflows` is a Settings field, not a
+        // top-level Option). Without it the model can't see a Workflow tool at all
+        // and falls back to simulating with Agent subagents.
+        settings: { enableWorkflows: true },
         settingSources: ['user', 'project'],
         allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
         disallowedTools: [

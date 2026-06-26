@@ -24,7 +24,7 @@ const mockStreamState = {
   activeSubagents: [] as any[],
   completedSubagents: null as Set<string> | null,
   slashCommands: [],
-  backgroundTasks: [] as Array<{ taskId: string; startedAt: number }>,
+  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean }>,
 }
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -603,6 +603,29 @@ describe('AgentActivityIndicator', () => {
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.queryByText(/background process/)).not.toBeInTheDocument()
+  })
+
+  it('labels a background workflow as "workflow" instead of "process"', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'wf-1', startedAt: Date.now() - 4000, isWorkflow: true },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('1 background workflow')).toBeInTheDocument()
+  })
+
+  it('pluralizes multiple background workflows as "workflows"', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'wf-1', startedAt: Date.now() - 5000, isWorkflow: true },
+      { taskId: 'wf-2', startedAt: Date.now() - 3000, isWorkflow: true },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('2 background workflows')).toBeInTheDocument()
   })
 
   describe('subagent status', () => {
