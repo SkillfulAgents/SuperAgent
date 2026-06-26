@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the response.",
+  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report it back in the chat interface.",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully showing the Gamut interface with agent sidebar",
-    "Clicked on \"QA-20260624-230154-hd0q\" agent in the sidebar - Agent page opened successfully, displaying the chat interface for the agent",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was successfully transmitted to the agent, and the agent status changed from \"idle\" to \"working\"",
-    "Waited for agent response (up to 3 minutes) - Agent completed the task and returned a response within 11 seconds",
-    "Verified response mentions \"Example Domain\" - Response clearly states \"The page title is \"Example Domain\".\" and confirms \"Done — the page at https://example.com has the title \"Example Domain\". Browser closed.\""
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut home screen with agents listed in sidebar",
+    "Clicked on \"QA-20260625-235601-wynl\" agent in sidebar — Agent page opened successfully showing chat interface with input box",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was sent and a new session \"Browser Navigation and Page Title\" was created",
+    "Waited up to 3 minutes for response — Agent processed the request and returned complete response within approximately 31 seconds",
+    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is 'Example Domain'.\" and confirms \"The page at https://example.com has the title 'Example Domain'.\" All browser tools executed successfully (ToolSearch, Open Browser, Browser Get State, Close Browser)"
   ],
   "bugs": [],
-  "durationMs": 58835,
-  "sessionId": "327a5b6b-78b6-4636-80d1-ae6017b44834",
+  "durationMs": 306678,
+  "sessionId": "ff4fb604-204e-4d74-8bf0-820404348696",
   "cost": {
-    "inputTokens": 306,
-    "outputTokens": 11129,
-    "cacheCreationTokens": 64761,
-    "cacheReadTokens": 906085,
+    "inputTokens": 582,
+    "outputTokens": 19243,
+    "cacheCreationTokens": 97619,
+    "cacheReadTokens": 2183908,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.227511
+    "totalCostUsd": 0.437212
   }
 }
