@@ -22,6 +22,7 @@ import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, Fragment, type ReactNode } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
@@ -130,8 +131,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     apiErrorCode,
     typingUser,
     peerUserMessages,
+    workflows,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
+
+  // Auto-open the drawer to a workflow the moment it launches (once per run, only while
+  // still active). On reload there's no workflow_started replay, so completed runs won't
+  // re-pop — the user opens those from the inline block.
+  const { openWorkflow } = useWorkflow()
+  const autoOpenedWorkflowsRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    for (const w of workflows ?? []) {
+      if (!w.completedAt && w.runId && !autoOpenedWorkflowsRef.current.has(w.runId)) {
+        autoOpenedWorkflowsRef.current.add(w.runId)
+        openWorkflow(w.runId, w.name)
+      }
+    }
+  }, [workflows, openWorkflow])
 
   const hasPendingMessages = !!pendingUserMessages?.length
   // Pending messages sent from idle start a NEW turn, so the previous turn is
@@ -767,6 +783,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   toolCall={syntheticToolCall}
                   activeSubagent={activeSubagents?.find(s => s.parentToolId === tool.id) ?? null}
                   isCompleted={completedSubagents?.has(tool.id) ?? false}
+                  runId={workflows?.find(w => w.toolUseId === tool.id)?.runId}
                 />
               )
             } else {

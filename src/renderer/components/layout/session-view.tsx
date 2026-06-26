@@ -1,5 +1,6 @@
 import { SessionChatColumn } from './session-chat-column'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
+import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { ChevronLeft, CalendarClock, Zap } from 'lucide-react'
 import { useEffect } from 'react'
 import { useSession } from '@renderer/hooks/use-sessions'
@@ -129,22 +130,24 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
       )}
 
       <FilePreviewProvider>
-        <div className="flex-1 flex flex-col min-h-0">
-          <SessionSearchBar search={search} />
-          <SessionChatColumn
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            pendingUserMessages={getPendingMessages(sessionId)}
-            isViewOnly={isViewOnly}
-            contextPercent={contextPercent}
-            effort={session?.effort}
-            model={session?.model}
-            onPendingMessageAppeared={onPendingMessageAppeared}
-            onMessageSent={onMessageSent}
-            onMessageUuidAssigned={onMessageUuidAssigned}
-            onMessageFailed={onPendingMessageAppeared}
-          />
-        </div>
+        <WorkflowProvider>
+          <div className="flex-1 flex flex-col min-h-0">
+            <SessionSearchBar search={search} />
+            <SessionChatColumn
+              sessionId={sessionId}
+              agentSlug={agentSlug}
+              pendingUserMessages={getPendingMessages(sessionId)}
+              isViewOnly={isViewOnly}
+              contextPercent={contextPercent}
+              effort={session?.effort}
+              model={session?.model}
+              onPendingMessageAppeared={onPendingMessageAppeared}
+              onMessageSent={onMessageSent}
+              onMessageUuidAssigned={onMessageUuidAssigned}
+              onMessageFailed={onPendingMessageAppeared}
+            />
+          </div>
+        </WorkflowProvider>
       </FilePreviewProvider>
     </>
   )

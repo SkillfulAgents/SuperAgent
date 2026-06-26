@@ -39,6 +39,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
 import { getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
+import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
 import * as path from 'path'
 // Per-subagent streaming state (supports multiple concurrent background agents)
@@ -81,7 +82,14 @@ interface StreamingState {
   // /stream route replays them on (re)connect. Cleared at turn boundaries (session_active/idle).
   pendingInputRequests: Map<string, { type: string; toolUseId: string; [k: string]: unknown }>
   lastApiErrorCode: string | null // SDK error code from last assistant message (e.g., 'authentication_failed', 'rate_limit')
-  activeBackgroundTasks: Map<string, { startedAt: number; isWorkflow?: boolean }> // Backgrounded Bash commands + dynamic workflows still running (keyed by task ID)
+  // Backgrounded Bash commands + dynamic workflows still running, keyed by the SDK task_id.
+  // For workflows we also carry the launching tool's id, the meta.name, and — once the
+  // Workflow tool result arrives — the real on-disk runId (`wf_…`), which is DISTINCT from
+  // the task_id and is the name of the `subagents/workflows/<runId>` dir.
+  activeBackgroundTasks: Map<
+    string,
+    { startedAt: number; isWorkflow?: boolean; toolUseId?: string; workflowName?: string; runId?: string }
+  >
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
   // True when the runtime publishes session_state_changed events — then IT is
   // the idle authority: a 'result' alone does not end the session (queued
@@ -114,6 +122,8 @@ class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
   private subscriptions: Map<string, () => void> = new Map()
   private sseClients: Map<string, Set<(data: unknown) => void>> = new Map()
+  // Per-run journal tailers driving the live workflow drawer, keyed `${sessionId}::${runId}`
+  private workflowTailers: Map<string, WorkflowJournalTailer> = new Map()
   // Global notification subscribers (e.g., Electron main process)
   private globalNotificationClients: Set<(data: unknown) => void> = new Set()
   // Track container clients per session for reconnection
@@ -487,6 +497,7 @@ class MessagePersister {
       state.currentToolInput = ''
       state.activeSubagents.clear()
       state.activeBackgroundTasks.clear()
+      this.stopAllWorkflowTailers(sessionId)
     }
 
     // Broadcast to session-specific clients
@@ -696,11 +707,14 @@ class MessagePersister {
     if (content.type === 'system' && state.activeBackgroundTasks.size > 0) {
       const taskId = content.task_id as string | undefined
       if (taskId && content.status && state.activeBackgroundTasks.has(taskId)) {
-        state.activeBackgroundTasks.delete(taskId)
-        this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
-        this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+        this.clearBackgroundTask(sessionId, state, taskId)
       }
     }
+
+    // A workflow's REAL runId arrives only in its tool result (the next message after
+    // task_started). Wire it up here: emit workflow_started + start the journal tailer
+    // keyed by the real `wf_…` runId (the on-disk dir name), not the task_id.
+    this.wireWorkflowFromToolResult(sessionId, content, state)
 
     // Filter sidechain (subagent) messages — they should not affect main streaming state
     // SDK emitted format uses parent_tool_use_id (non-null for subagent messages)
@@ -936,9 +950,18 @@ class MessagePersister {
             const workflowTaskId = content.task_id as string | undefined
             if (workflowTaskId && !state.activeBackgroundTasks.has(workflowTaskId)) {
               const startedAt = Date.now()
-              state.activeBackgroundTasks.set(workflowTaskId, { startedAt, isWorkflow: true })
+              state.activeBackgroundTasks.set(workflowTaskId, {
+                startedAt,
+                isWorkflow: true,
+                toolUseId,
+                workflowName: typeof content.workflow_name === 'string' ? content.workflow_name : undefined,
+              })
               this.broadcastToSSE(sessionId, { type: 'background_task_started', taskId: workflowTaskId, startedAt, isWorkflow: true })
               this.broadcastGlobal({ type: 'background_task_started', sessionId, agentSlug: state.agentSlug, taskId: workflowTaskId })
+              // NOTE: we do NOT emit workflow_started or start the journal tailer yet — the
+              // real on-disk runId (`wf_…`, the name of the subagents/workflows/<runId> dir)
+              // is NOT the task_id; it only appears in the Workflow tool RESULT, which the
+              // SDK delivers as the very next message. See wireWorkflowFromToolResult().
             }
           }
         } else if (content.subtype === 'task_progress') {
@@ -953,6 +976,10 @@ class MessagePersister {
             usage: content.usage,
             lastToolName: content.last_tool_name,
           })
+          // A dynamic workflow's task_progress carries a full live snapshot of its agent
+          // tree in `workflow_progress[]` (per-agent state incl. failed, tokens, toolCalls,
+          // current tool) plus cumulative `usage`. Forward it for the drawer's live view.
+          this.emitWorkflowProgress(sessionId, content, state)
         } else if (content.subtype === 'task_updated') {
           // Background task state change. When a backgrounded Bash command completes
           // while the agent is still busy (a foreground tool was in flight when it
@@ -967,9 +994,7 @@ class MessagePersister {
           const status = (content.patch as { status?: string } | undefined)?.status
           const isTerminal = status === 'completed' || status === 'failed' || status === 'killed'
           if (taskId && isTerminal && state.activeBackgroundTasks.has(taskId)) {
-            state.activeBackgroundTasks.delete(taskId)
-            this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
-            this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+            this.clearBackgroundTask(sessionId, state, taskId)
           }
           // A background *subagent* (task_type 'local_agent') settles via a
           // task_updated whose task_id equals the subagent's agentId. The busy
@@ -1256,6 +1281,7 @@ class MessagePersister {
     state.currentToolInput = ''
     state.activeSubagents.clear()
     state.activeBackgroundTasks.clear()
+    this.stopAllWorkflowTailers(sessionId)
     this.finalizeIdle(sessionId, state)
   }
 
@@ -1369,6 +1395,140 @@ class MessagePersister {
         parentToolId,
         agentId: sub.agentId,
       })
+    }
+  }
+
+  // Clear a finished background task (backgrounded Bash OR a dynamic workflow),
+  // emitting the shared `background_task_completed` plus, for workflows, the
+  // `workflow_completed` event and stopping the journal tailer. Returns whether a
+  // task was actually present. Centralized so every terminal path — the idle/wake
+  // `task_notification` and the busy `task_updated` — behaves identically.
+  private clearBackgroundTask(sessionId: string, state: StreamingState, taskId: string): boolean {
+    const info = state.activeBackgroundTasks.get(taskId)
+    if (!info) return false
+    state.activeBackgroundTasks.delete(taskId)
+    this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
+    this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
+    // Use the real on-disk runId (learned from the tool result), NOT the task_id.
+    if (info.isWorkflow && info.runId) {
+      this.broadcastToSSE(sessionId, { type: 'workflow_completed', runId: info.runId })
+      this.stopWorkflowTailer(sessionId, info.runId)
+    }
+    return true
+  }
+
+  // The Workflow tool returns its result (`WorkflowOutput`) as a `user` message carrying a
+  // structured `tool_use_result` with the real `wf_…` runId + transcriptDir. That runId is
+  // the on-disk `subagents/workflows/<runId>` dir name and is DISTINCT from the task_id, so
+  // it's the only correct key for the tree route + journal tailer. We match it back to the
+  // workflow background task by the launching tool_use_id and fire workflow_started here.
+  private wireWorkflowFromToolResult(sessionId: string, content: any, state: StreamingState): void {
+    const tur = content?.tool_use_result as { taskType?: string; runId?: string } | undefined
+    let runId = tur?.taskType === 'local_workflow' && typeof tur.runId === 'string' ? tur.runId : undefined
+    // tool_use_id is on the tool_result block inside the user message.
+    const blocks = content?.message?.content
+    const toolUseId = Array.isArray(blocks)
+      ? (blocks.find((b: { type?: string }) => b?.type === 'tool_result') as { tool_use_id?: string } | undefined)
+          ?.tool_use_id
+      : undefined
+    if (!toolUseId) return
+    // Fallback: parse the runId out of the result text if the structured field is absent.
+    if (!runId) {
+      const block = (blocks as Array<{ tool_use_id?: string; content?: unknown }>).find(
+        (b) => b?.tool_use_id === toolUseId
+      )
+      const text = typeof block?.content === 'string' ? block.content : ''
+      const m = text.match(/Run ID:\s*(wf_[A-Za-z0-9_-]+)/) || text.match(/workflows\/(wf_[A-Za-z0-9_-]+)/)
+      if (m) runId = m[1]
+    }
+    if (!runId) return
+    for (const [, info] of state.activeBackgroundTasks) {
+      if (info.isWorkflow && info.toolUseId === toolUseId && !info.runId) {
+        info.runId = runId
+        this.broadcastToSSE(sessionId, {
+          type: 'workflow_started',
+          toolUseId,
+          runId,
+          name: info.workflowName,
+          startedAt: info.startedAt,
+        })
+        this.startWorkflowTailer(sessionId, state.agentSlug, runId)
+        break
+      }
+    }
+  }
+
+  // Forward the rich live snapshot in a workflow's task_progress.workflow_progress[] to
+  // the drawer: per-agent state (incl. failed/killed) + tokens + toolCalls + current tool,
+  // plus the workflow's cumulative usage. Resolves runId via the launching tool_use_id.
+  private emitWorkflowProgress(sessionId: string, content: any, state: StreamingState): void {
+    const wp = content?.workflow_progress
+    const toolUseId = content?.tool_use_id as string | undefined
+    if (!Array.isArray(wp) || !toolUseId) return
+    let runId: string | undefined
+    for (const [, info] of state.activeBackgroundTasks) {
+      if (info.isWorkflow && info.toolUseId === toolUseId) {
+        runId = info.runId
+        break
+      }
+    }
+    if (!runId) return // the tool result hasn't landed yet — next tick will carry it
+    const agents = wp
+      .filter((e: { type?: string }) => e?.type === 'workflow_agent')
+      .map((e: Record<string, unknown>) => ({
+        agentId: e.agentId as string,
+        label: typeof e.label === 'string' ? e.label : undefined,
+        phase: typeof e.phaseTitle === 'string' ? e.phaseTitle : null,
+        state: typeof e.state === 'string' ? e.state : 'progress',
+        tokens: typeof e.tokens === 'number' ? e.tokens : 0,
+        toolCalls: typeof e.toolCalls === 'number' ? e.toolCalls : 0,
+        lastTool:
+          (typeof e.lastToolSummary === 'string' && e.lastToolSummary) ||
+          (typeof e.lastToolName === 'string' && e.lastToolName) ||
+          null,
+      }))
+      .filter((a: { agentId?: string }) => typeof a.agentId === 'string')
+    const u = content.usage as { total_tokens?: number; tool_uses?: number; duration_ms?: number } | undefined
+    this.broadcastToSSE(sessionId, {
+      type: 'workflow_progress',
+      runId,
+      agents,
+      usage: u
+        ? { totalTokens: u.total_tokens ?? 0, toolUses: u.tool_uses ?? 0, durationMs: u.duration_ms ?? 0 }
+        : undefined,
+    })
+  }
+
+  private startWorkflowTailer(sessionId: string, agentSlug: string | undefined, runId: string): void {
+    if (!agentSlug) return // can't resolve the workspace dir without a slug
+    const key = `${sessionId}::${runId}`
+    if (this.workflowTailers.has(key)) return
+    const tailer = new WorkflowJournalTailer({
+      sessionsDir: getAgentSessionsDir(agentSlug),
+      sessionId,
+      runId,
+      emit: (update) => this.broadcastToSSE(sessionId, update),
+    })
+    this.workflowTailers.set(key, tailer)
+    tailer.start()
+  }
+
+  private stopWorkflowTailer(sessionId: string, runId: string): void {
+    const key = `${sessionId}::${runId}`
+    const tailer = this.workflowTailers.get(key)
+    if (tailer) {
+      tailer.stop()
+      this.workflowTailers.delete(key)
+    }
+  }
+
+  private stopAllWorkflowTailers(sessionId: string): void {
+    const prefix = `${sessionId}::`
+    for (const [key, tailer] of this.workflowTailers) {
+      if (key.startsWith(prefix)) {
+        tailer.stop()
+        this.workflowTailers.delete(key)
+      }
     }
   }
 

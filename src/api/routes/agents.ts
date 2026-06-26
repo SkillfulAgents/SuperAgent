@@ -113,6 +113,7 @@ import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
+import { workflowRoutes } from './workflows'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
@@ -4934,5 +4935,9 @@ agents.put('/:id/bookmarks', AgentAdmin(), async (c) => {
     return c.json({ error: 'Failed to update bookmarks' }, 500)
   }
 })
+
+// Dynamic-workflow (`Workflow` tool) per-agent drawer routes, kept in their own
+// module for isolation/testability; mounted at the same `/api/agents` root.
+agents.route('/', workflowRoutes)
 
 export default agents

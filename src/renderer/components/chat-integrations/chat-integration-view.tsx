@@ -10,6 +10,7 @@ import { MessageCircle, MoreVertical, Loader2, ExternalLink, RotateCcw, AlertTri
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
+import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -416,6 +417,7 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
 
         return (
           <FilePreviewProvider sessionId={activeSessionId}>
+          <WorkflowProvider sessionId={activeSessionId}>
           <div className="flex-1 min-h-0 flex flex-col">
             {/* Session selector + read-only banner */}
             <div className="shrink-0 border-b bg-muted/50 px-4 py-2">
@@ -503,6 +505,7 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
               }
             />
           </div>
+          </WorkflowProvider>
           </FilePreviewProvider>
         )
       })()}

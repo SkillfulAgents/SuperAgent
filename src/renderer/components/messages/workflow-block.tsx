@@ -2,6 +2,7 @@ import { Workflow } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { StatusIndicator } from './tool-call-item'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
+import { useWorkflow } from '@renderer/context/workflow-context'
 import type { ApiToolCall } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 
@@ -29,6 +30,8 @@ interface WorkflowBlockProps {
   toolCall: ApiToolCall
   activeSubagent?: SubagentInfo | null
   isCompleted?: boolean // subagent_completed SSE fired for this tool
+  /** Live-stream runId fallback for the brief window before the tool result persists. */
+  runId?: string
   // NOTE: intentionally no `isSessionActive` (unlike SubAgentBlock). A workflow is a
   // background task that outlives its launch turn, so its running state is driven by
   // its own subagent lifecycle — see the status comment below.
@@ -38,6 +41,30 @@ function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
   if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`
   return `${tokens}`
+}
+
+/**
+ * The Workflow tool's result (`WorkflowOutput`) carries the `wf_...` runId, so the
+ * inline block can open the drawer without threading stream state down. Tolerates a
+ * string-or-object result and falls back to a regex scan.
+ */
+function parseRunId(toolCall: ApiToolCall): string | null {
+  const r: unknown = toolCall.result
+  if (r == null) return null
+  if (typeof r === 'object' && typeof (r as { runId?: unknown }).runId === 'string') {
+    return (r as { runId: string }).runId
+  }
+  if (typeof r === 'string') {
+    try {
+      const obj = JSON.parse(r) as { runId?: unknown }
+      if (typeof obj.runId === 'string') return obj.runId
+    } catch {
+      /* fall through to regex */
+    }
+    const m = r.match(/wf_[A-Za-z0-9_-]+/)
+    if (m) return m[0]
+  }
+  return null
 }
 
 /** Best-effort `meta.name` from the workflow script (input.script) — used only as a fallback label. */
@@ -55,7 +82,9 @@ export function WorkflowBlock({
   toolCall,
   activeSubagent,
   isCompleted,
+  runId,
 }: WorkflowBlockProps) {
+  const { openWorkflow } = useWorkflow()
   const isActive = activeSubagent?.parentToolId === toolCall.id
 
   // A workflow is a BACKGROUND task that outlives the turn: the agent launches it
@@ -82,24 +111,40 @@ export function WorkflowBlock({
   const currentAgent = isRunning && isActive ? activeSubagent?.lastToolName : null
   const usage = isActive ? activeSubagent?.usage : null
 
+  // Clickable when we can resolve the run (from the tool result, or the live stream
+  // fallback) → opens the per-agent drawer to this run.
+  const resolvedRunId = runId ?? parseRunId(toolCall)
+  const rowInner = (
+    <>
+      <Workflow className="h-3.5 w-3.5 shrink-0 text-foreground/45 group-hover:text-foreground transition-colors" />
+      <span className={LABEL_CLASS}>Workflow:</span>
+      <span className="text-muted-foreground/80 truncate text-xs leading-none">{label}</span>
+      {currentAgent && (
+        <>
+          <span aria-hidden className="shrink-0 text-foreground/40 text-sm leading-none">→</span>
+          <span className="text-muted-foreground/70 truncate text-xs leading-none font-mono">{currentAgent}</span>
+        </>
+      )}
+      <span className="ml-auto flex h-4 w-4 shrink-0 items-center justify-center">
+        <StatusIndicator status={status} />
+      </span>
+    </>
+  )
+
   return (
     <div className="text-sm border border-border/70 rounded-md overflow-hidden">
-      <div className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group">
-        <Workflow className="h-3.5 w-3.5 shrink-0 text-foreground/45" />
-        <span className={LABEL_CLASS}>Workflow:</span>
-        <span className="text-muted-foreground/80 truncate text-xs leading-none">{label}</span>
-        {currentAgent && (
-          <>
-            <span aria-hidden className="shrink-0 text-foreground/40 text-sm leading-none">→</span>
-            <span className="text-muted-foreground/70 truncate text-xs leading-none font-mono">
-              {currentAgent}
-            </span>
-          </>
-        )}
-        <span className="ml-auto flex h-4 w-4 shrink-0 items-center justify-center">
-          <StatusIndicator status={status} />
-        </span>
-      </div>
+      {resolvedRunId ? (
+        <button
+          type="button"
+          onClick={() => openWorkflow(resolvedRunId, label)}
+          title="View workflow agents"
+          className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group hover:bg-muted/50 transition-colors text-left cursor-pointer"
+        >
+          {rowInner}
+        </button>
+      ) : (
+        <div className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group">{rowInner}</div>
+      )}
       {isRunning && usage && (usage.total_tokens > 0 || usage.duration_ms > 0) && (
         <div className={cn('border-t border-border/70 bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground italic')}>
           {formatElapsed(usage.duration_ms)}

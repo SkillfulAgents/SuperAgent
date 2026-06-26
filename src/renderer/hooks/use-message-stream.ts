@@ -5,6 +5,7 @@ import { getApiBaseUrl } from '@renderer/lib/env'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
+import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 
 interface SecretRequest {
   toolUseId: string
@@ -184,6 +185,51 @@ const sessionSlashCommands = new Map<string, SlashCommandInfo[]>()
 interface ThinkingState { text: string; isThinking: boolean }
 const EMPTY_THINKING: ThinkingState = { text: '', isThinking: false }
 const sessionThinking = new Map<string, ThinkingState>()
+
+// Live state for dynamic-workflow (`Workflow` tool) runs in this session. Kept
+// outside StreamState (like thinking/slash commands) so the ~15 full state-rebuild
+// sites don't thread it through. A workflow's per-agent tree lives on disk (fetched
+// via the tree route); this holds only the wire-driven live signals: the
+// runId↔Workflow-tool link (for click-through), per-agent status patches (from the
+// journal tailer), and completion. Stored as immutable arrays so the hook's
+// reference-equality check skips re-render on non-workflow events.
+// The live status vocabulary is the same enum the disk tree uses (single source of
+// truth in workflow-schemas), so the overlay can't drift from the tree's statuses.
+export type WorkflowAgentLiveStatus = WorkflowAgentNode['status']
+export interface WorkflowAgentLive {
+  status: WorkflowAgentLiveStatus
+  result: string | null
+  tokens?: number
+  toolCount?: number
+  lastTool?: string | null
+  label?: string
+  phase?: string | null
+}
+export interface WorkflowRunLive {
+  toolUseId: string
+  runId: string
+  name?: string
+  startedAt: number
+  completedAt?: number
+  agents: Record<string, WorkflowAgentLive>
+  /** Cumulative workflow usage from the live wire snapshot (task_progress.usage). */
+  usage?: { totalTokens: number; toolUses: number; durationMs: number }
+}
+const EMPTY_WORKFLOWS: WorkflowRunLive[] = []
+const sessionWorkflows = new Map<string, WorkflowRunLive[]>()
+
+// `done`/`failed` are terminal and sticky: a later `running`/`progress` snapshot must
+// never downgrade them (snapshots can momentarily lag or reorder).
+function mergeAgentStatus(prev: WorkflowAgentLiveStatus | undefined, next: WorkflowAgentLiveStatus): WorkflowAgentLiveStatus {
+  if (prev === 'done' || prev === 'failed') return next === 'done' || next === 'failed' ? next : prev
+  return next
+}
+
+function mapWorkflowAgentState(s: string): WorkflowAgentLiveStatus {
+  if (s === 'done') return 'done'
+  if (s === 'failed' || s === 'error' || s === 'killed' || s === 'cancelled') return 'failed'
+  return 'running' // 'start' | 'progress' | queued | anything else
+}
 
 // Stable empty Set so the hook return is referentially stable when nothing is auto-approved.
 const EMPTY_AUTO_APPROVED_SET: ReadonlySet<string> = new Set()
@@ -496,6 +542,74 @@ function getOrCreateEventSource(
             // task clears without a follow-up idle, the composer would stay pinned.
             isWaitingBackground: current.isWaitingBackground && backgroundTasks.length > 0,
           })
+        }
+      }
+      // Dynamic-workflow live events (the per-agent tree itself is read from disk via
+      // the tree route; these drive click-through + live status without client polling).
+      else if (data.type === 'workflow_started') {
+        const runs = sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS
+        const exists = runs.some(r => r.runId === data.runId)
+        const next = exists
+          ? runs.map(r => r.runId === data.runId
+              ? { ...r, toolUseId: data.toolUseId, name: data.name, startedAt: data.startedAt }
+              : r)
+          : [...runs, { toolUseId: data.toolUseId, runId: data.runId, name: data.name, startedAt: data.startedAt, agents: {} }]
+        sessionWorkflows.set(sessionId, next)
+        streamListeners.get(sessionId)?.forEach((l) => l())
+      }
+      else if (data.type === 'workflow_agent_updated') {
+        // Journal-tailer signal: authoritative for status transitions + the result string.
+        const runs = sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS
+        const incoming = data.status as WorkflowAgentLiveStatus
+        const patchAgents = (agents: Record<string, WorkflowAgentLive>) => {
+          const prev = agents[data.agentId]
+          return {
+            ...agents,
+            [data.agentId]: {
+              ...prev,
+              status: mergeAgentStatus(prev?.status, incoming),
+              result: data.result ?? prev?.result ?? null,
+            },
+          }
+        }
+        const exists = runs.some(r => r.runId === data.runId)
+        const next = exists
+          ? runs.map(r => r.runId === data.runId ? { ...r, agents: patchAgents(r.agents) } : r)
+          // An agent update can arrive before workflow_started (e.g. a late-joining
+          // client that missed the start); stub the run so the signal isn't lost.
+          : [...runs, { toolUseId: '', runId: data.runId, startedAt: Date.now(), agents: patchAgents({}) }]
+        sessionWorkflows.set(sessionId, next)
+        streamListeners.get(sessionId)?.forEach((l) => l())
+      }
+      else if (data.type === 'workflow_progress') {
+        // Rich live snapshot from the wire: per-agent state (incl. failed), tokens,
+        // toolCalls, current tool, + workflow usage. Merge onto the run (status never
+        // downgrades; result is owned by workflow_agent_updated).
+        const runs = sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS
+        const run = runs.find(r => r.runId === data.runId)
+        if (run) {
+          const agents = { ...run.agents }
+          for (const a of (data.agents ?? []) as Array<{ agentId: string; label?: string; phase?: string | null; state: string; tokens?: number; toolCalls?: number; lastTool?: string | null }>) {
+            const prev = agents[a.agentId]
+            agents[a.agentId] = {
+              status: mergeAgentStatus(prev?.status, mapWorkflowAgentState(a.state)),
+              result: prev?.result ?? null,
+              tokens: a.tokens ?? prev?.tokens,
+              toolCount: a.toolCalls ?? prev?.toolCount,
+              lastTool: a.lastTool ?? prev?.lastTool ?? null,
+              label: a.label ?? prev?.label,
+              phase: a.phase ?? prev?.phase ?? null,
+            }
+          }
+          sessionWorkflows.set(sessionId, runs.map(r => r.runId === data.runId ? { ...r, agents, usage: data.usage ?? r.usage } : r))
+          streamListeners.get(sessionId)?.forEach((l) => l())
+        }
+      }
+      else if (data.type === 'workflow_completed') {
+        const runs = sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS
+        if (runs.some(r => r.runId === data.runId && r.completedAt === undefined)) {
+          sessionWorkflows.set(sessionId, runs.map(r => r.runId === data.runId ? { ...r, completedAt: Date.now() } : r))
+          streamListeners.get(sessionId)?.forEach((l) => l())
         }
       }
       // Streaming events - update streaming state, preserve isActive
@@ -1347,6 +1461,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
   const [thinking, setThinking] = useState<ThinkingState>(EMPTY_THINKING)
   const [autoApprovedScriptRunIds, setAutoApprovedScriptRunIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
+  const [workflows, setWorkflows] = useState<WorkflowRunLive[]>(EMPTY_WORKFLOWS)
   const queryClient = useQueryClient()
 
   // Update local state when global state changes
@@ -1380,6 +1495,9 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         }
         return new Set(approved)
       })
+      // Workflows are stored as immutable arrays (a new ref only on workflow events),
+      // so a plain ref-equal set bails out of re-render on every other event.
+      setWorkflows(sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS)
     }
   }, [sessionId])
 
@@ -1391,6 +1509,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
       setState(EMPTY_STREAM_STATE)
       setSlashCommands([])
       setThinking(EMPTY_THINKING)
+      setWorkflows(EMPTY_WORKFLOWS)
       return
     }
 
@@ -1420,5 +1539,5 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     }
   }, [sessionId, agentSlug, updateState, queryClient])
 
-  return { ...state, slashCommands, autoApprovedScriptRunIds, isThinking: thinking.isThinking, thinkingText: thinking.text }
+  return { ...state, slashCommands, autoApprovedScriptRunIds, workflows, isThinking: thinking.isThinking, thinkingText: thinking.text }
 }

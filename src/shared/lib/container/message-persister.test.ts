@@ -631,12 +631,46 @@ describe('MessagePersister', () => {
       mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
       sseEvents.length = 0
 
-      // Workflow launches mid-turn → registered as a background task.
+      // Workflow launches mid-turn → registered as a background task. The real runId
+      // (wf_…) is NOT the task_id, so workflow_started does NOT fire yet.
       mockClient._sendMessage({
         type: 'system', subtype: 'task_started', task_type: 'local_workflow',
         task_id: 'wf1', tool_use_id: 'wf-tool', workflow_name: 'demo', description: 'demo workflow',
       })
       expect(sseEvents.filter(e => e.type === 'background_task_started' && e.taskId === 'wf1')).toHaveLength(1)
+      expect(sseEvents.filter(e => e.type === 'workflow_started')).toHaveLength(0)
+
+      // The Workflow tool result (next message) carries the real on-disk runId → NOW the
+      // drawer gets the runId↔tool link + live tailing starts.
+      mockClient._sendMessage({
+        type: 'user',
+        parent_tool_use_id: null,
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'wf-tool', content: 'Run ID: wf_demo-123', is_error: false }],
+        },
+        tool_use_result: { status: 'async_launched', taskType: 'local_workflow', taskId: 'wf1', runId: 'wf_demo-123' },
+      })
+      expect(sseEvents.filter(e => e.type === 'workflow_started' && e.runId === 'wf_demo-123' && e.toolUseId === 'wf-tool' && e.name === 'demo')).toHaveLength(1)
+
+      // A task_progress with a workflow_progress[] snapshot → forwarded as workflow_progress,
+      // keyed by the resolved runId, with mapped per-agent state + usage.
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_progress', task_id: 'wf1', tool_use_id: 'wf-tool',
+        usage: { total_tokens: 100, tool_uses: 2, duration_ms: 5000 },
+        workflow_progress: [
+          { type: 'workflow_phase', index: 1, title: 'Wait' },
+          { type: 'workflow_agent', agentId: 'ag1', label: 'agent-A', phaseTitle: 'Wait', state: 'progress', tokens: 50, toolCalls: 1, lastToolName: 'Bash', lastToolSummary: 'sleep 40' },
+          { type: 'workflow_agent', agentId: 'ag2', label: 'agent-B', phaseTitle: 'Wait', state: 'done', tokens: 60, toolCalls: 0 },
+        ],
+      })
+      const wp = sseEvents.filter(e => e.type === 'workflow_progress' && e.runId === 'wf_demo-123')
+      expect(wp).toHaveLength(1)
+      expect(wp[0].usage).toEqual({ totalTokens: 100, toolUses: 2, durationMs: 5000 })
+      expect(wp[0].agents).toHaveLength(2) // phase entries filtered out
+      expect(wp[0].agents[0]).toMatchObject({ agentId: 'ag1', label: 'agent-A', phase: 'Wait', state: 'progress', tokens: 50, toolCalls: 1, lastTool: 'sleep 40' })
+      expect(wp[0].agents[1]).toMatchObject({ agentId: 'ag2', state: 'done', lastTool: null })
 
       // Launch turn ends, but the workflow keeps running in the background.
       mockClient._sendMessage({
@@ -657,6 +691,8 @@ describe('MessagePersister', () => {
         type: 'system', subtype: 'task_notification', task_id: 'wf1', tool_use_id: 'wf-tool', status: 'completed',
       })
       expect(sseEvents.filter(e => e.type === 'background_task_completed' && e.taskId === 'wf1')).toHaveLength(1)
+      // …and the workflow-specific terminal (keyed by the real runId) so the drawer marks it done.
+      expect(sseEvents.filter(e => e.type === 'workflow_completed' && e.runId === 'wf_demo-123')).toHaveLength(1)
 
       // The subsequent, truly-settled idle finalizes the session.
       mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
