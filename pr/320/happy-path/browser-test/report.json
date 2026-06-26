@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the response.",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back to the user. The response explicitly mentions \"Example Domain\" as required.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\" showing the agent dashboard.",
-    "Found and clicked the \"QA-20260626-004453-7inf\" agent in the sidebar — Successfully opened the agent configuration page.",
-    "Clicked on the message input field — The textbox became active and ready for input.",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared in the input field correctly.",
-    "Sent the message using Ctrl+Enter — Message was sent and the page navigated to a new session view showing the agent processing the request.",
-    "Waited for the agent to complete processing (up to 3 minutes) — Agent completed all task steps within 10 seconds.",
-    "Verified the response mentions \"Example Domain\" — The agent's response clearly stated: \"The page at https://example.com loaded successfully, and its title is \"Example Domain\".\""
+    "Step 1: Navigated to http://localhost:47891 - Page loaded successfully showing the Gamut app home page with list of agents including \"QA-20260626-011258-44df\"",
+    "Step 2: Found and clicked the \"QA-20260626-011258-44df\" agent in the sidebar - Successfully navigated to the agent's chat page at /agents/qa-20260626-011258-44df-v6g982",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field - Message was correctly filled into the textbox",
+    "Step 4: Clicked the \"Send message\" button - Message was sent successfully, creating a new session with title \"Browser Navigation and Page Title\"",
+    "Step 5: Waited for agent response - Agent completed processing in 11 seconds. The working indicator disappeared and response was fully rendered.",
+    "Step 6: Verified response mentions \"Example Domain\" - Response clearly states \"The page title is \"Example Domain\".\" and \"Done. The page at https://example.com has the title \"Example Domain\", with body text noting the domain is for use in documentation examples. Browser closed.\""
   ],
   "bugs": [],
-  "durationMs": 166153,
-  "sessionId": "6f9928ec-4bac-4b6a-b6fb-7d42aa269d32",
+  "durationMs": 72552,
+  "sessionId": "59273d46-ea5b-42fb-a6bb-ea2487410fb4",
   "cost": {
-    "inputTokens": 453,
-    "outputTokens": 13090,
-    "cacheCreationTokens": 62922,
-    "cacheReadTokens": 1373642,
+    "inputTokens": 369,
+    "outputTokens": 12069,
+    "cacheCreationTokens": 78468,
+    "cacheReadTokens": 1165633,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.28192
+    "totalCostUsd": 0.275362
   }
 }
