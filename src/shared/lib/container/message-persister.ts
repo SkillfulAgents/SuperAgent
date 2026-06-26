@@ -586,17 +586,23 @@ class MessagePersister {
   // Mark session as awaiting user input and broadcast the signal.
   private markSessionAwaitingInput(sessionId: string): void {
     const state = this.streamingStates.get(sessionId)
-    if (state && !state.isAwaitingInput) {
+    if (!state) return
+    const payload = {
+      type: 'session_awaiting_input',
+      sessionId,
+      agentSlug: state.agentSlug,
+    }
+    // Per-session SSE so the chat-integration-manager (a per-session subscriber) can
+    // settle its working indicator off this generic signal instead of a per-request-
+    // type allowlist. This fires on EVERY awaiting tool — even when the session is
+    // already flagged awaiting — because the settle is idempotent and must not be
+    // suppressible by the transition flag: a card shown while already-awaiting would
+    // otherwise strand "Thinking…" until the watchdog.
+    this.broadcastToSSE(sessionId, payload)
+    // Global (sidebar) + promotion fire once, on the transition into awaiting, so
+    // those consumers aren't re-notified on every subsequent request in the turn.
+    if (!state.isAwaitingInput) {
       state.isAwaitingInput = true
-      const payload = {
-        type: 'session_awaiting_input',
-        sessionId,
-        agentSlug: state.agentSlug,
-      }
-      // Per-session SSE so the chat-integration-manager (a per-session subscriber)
-      // can settle its working indicator off this generic signal instead of a
-      // per-request-type allowlist. Global stays for the sidebar/promotion consumers.
-      this.broadcastToSSE(sessionId, payload)
       this.broadcastGlobal(payload)
       if (state.agentSlug) {
         this.promoteAutomatedSession(sessionId, state.agentSlug).catch((err) => {

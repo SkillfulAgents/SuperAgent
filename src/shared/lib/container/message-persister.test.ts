@@ -2247,16 +2247,23 @@ describe('MessagePersister', () => {
       globalCleanup()
     })
 
-    it('does not double-broadcast when already awaiting input', () => {
+    it('dedupes the global broadcast but re-broadcasts the per-session settle (settle is not suppressible)', () => {
       const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
 
-      // Fire two user-input tools in sequence
+      // Fire two user-input tools in sequence — the session is already awaiting on the second.
       simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY1' })
       simulateToolUse('mcp__user-input__request_file', 'tool-2', { description: 'CSV' })
 
-      const awaitingEvents = globalEvents.filter(e => e.type === 'session_awaiting_input')
-      // Should only broadcast once (first transition)
-      expect(awaitingEvents).toHaveLength(1)
+      // Global (sidebar/promotion) dedupes to the first transition only — those
+      // consumers should not be re-notified on every request within the turn.
+      const global = globalEvents.filter(e => e.type === 'session_awaiting_input')
+      expect(global).toHaveLength(1)
+
+      // Per-session settle re-broadcasts on EVERY awaiting tool. The chat manager's
+      // indicator settle must never be suppressed by the transition flag, or a card
+      // shown while already-awaiting would strand "Thinking…". Idempotent on the manager.
+      const perSession = sseEvents.filter(e => e.type === 'session_awaiting_input')
+      expect(perSession).toHaveLength(2)
 
       globalCleanup()
     })
