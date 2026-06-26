@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature successfully executed - agent opened browser, navigated to https://example.com, retrieved page title \"Example Domain\", and reported the result correctly.",
+  "reason": "Browser-use feature test: Agent successfully opened browser, navigated to example.com, retrieved page title, and returned response mentioning \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing sidebar with agents list.",
-    "Found and clicked on agent \"QA-20260626-175016-yezc\" in the sidebar — Successfully navigated to the agent chat page showing the message input field.",
-    "Typed and sent message: \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully sent and agent transitioned to \"working\" status.",
-    "Waited for response (up to 3 minutes) — Agent completed processing in approximately 15 seconds.",
-    "Verified response mentions \"Example Domain\" — Confirmed the agent response contains the exact text: \"The page title is \\\"Example Domain\\\".\"",
-    "Took screenshot of response — Screenshot successfully captured showing the agent's response with all browser tool calls (Open Browser, Run JavaScript, Close Browser) and the final result."
+    "Navigated to http://localhost:47891 — Successfully loaded Gamut application with agent list visible",
+    "Found and clicked on \"QA-20260626-194759-e7wq\" agent in the sidebar — Successfully opened the agent interface with chat view and input field",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully submitted message; agent transitioned to \"working\" status",
+    "Waited up to 3 minutes for agent response — Agent completed task in 17 seconds (well within timeout)",
+    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\".\" and \"The page at https://example.com loaded with the heading \"Example Domain\".\""
   ],
   "bugs": [],
-  "durationMs": 145552,
-  "sessionId": "76e47e5c-e90f-4da5-92d6-069405e00957",
+  "durationMs": 109893,
+  "sessionId": "13141bce-1362-4b52-bc7b-dd5f6de272db",
   "cost": {
-    "inputTokens": 426,
-    "outputTokens": 12362,
-    "cacheCreationTokens": 63198,
-    "cacheReadTokens": 1268678,
+    "inputTokens": 450,
+    "outputTokens": 15085,
+    "cacheCreationTokens": 80901,
+    "cacheReadTokens": 1488553,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.268101
+    "totalCostUsd": 0.325857
   }
 }
