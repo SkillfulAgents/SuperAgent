@@ -426,9 +426,13 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     modelCatalog,
     agentLimits: loaded.agentLimits,
     customEnvVars: loaded.customEnvVars,
+    // Deep-clone the default when defaulting: callers mutate `s.skillsets` in
+    // place (e.g. sync-remote's `current.push(config)`), and returning the shared
+    // DEFAULT_SETTINGS.skillsets reference would poison the module constant for a
+    // settings.json that merely omits `skillsets`.
     skillsets: loaded.skillsets !== undefined
       ? loaded.skillsets
-      : DEFAULT_SETTINGS.skillsets,
+      : structuredClone(DEFAULT_SETTINGS.skillsets),
     auth: {
       ...DEFAULT_AUTH_SETTINGS,
       ...loaded.auth,

@@ -185,6 +185,27 @@ describe('mutateSettings — serialized, fresh, fail-closed', () => {
     // ...but the module default is untouched.
     expect(DEFAULT_SETTINGS.container.containerRunner).toBe(originalRunner)
   })
+
+  it('a settings file that OMITS skillsets cannot poison DEFAULT_SETTINGS via in-place mutation', () => {
+    // settings.json exists but has no `skillsets` key → mergeLoadedSettings must
+    // return a CLONE of the default array, not the shared reference. Otherwise
+    // sync-remote's `current.push(config)` grows DEFAULT_SETTINGS.skillsets.
+    writeOnDisk({ apiKeys: { anthropicApiKey: 'sk-real' } }) // note: no skillsets key
+    const originalLen = DEFAULT_SETTINGS.skillsets!.length
+
+    const loaded = loadSettingsStrict()
+    expect(loaded.skillsets).not.toBe(DEFAULT_SETTINGS.skillsets) // distinct reference
+    expect(loaded.skillsets).toEqual(DEFAULT_SETTINGS.skillsets) // same content
+
+    // Emulate the in-place push sync-remote performs on the defaulted array.
+    mutateSettings((s) => {
+      const current = s.skillsets ?? []
+      current.push(structuredClone(current[0]))
+      s.skillsets = current
+    })
+
+    expect(DEFAULT_SETTINGS.skillsets!.length).toBe(originalLen) // module default untouched
+  })
 })
 
 describe('updateSettings — atomic full replace', () => {

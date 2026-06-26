@@ -90,4 +90,15 @@ describe('atomic .env writes', () => {
     expect(await deleteSecret('agent', 'NOPE')).toBe(false)
     expect(fs.readFileSync(envPath('agent'), 'utf-8')).toBe(before)
   })
+
+  it('deleteSecret returns false (does NOT throw) when the workspace/.env is absent', async () => {
+    // The agent's workspace dir doesn't exist, so opening the cross-process
+    // lockfile would ENOENT. deleteSecret must short-circuit to false (→ route
+    // 404) instead of letting the ENOENT bubble up (→ route 500).
+    const { deleteSecret } = await importService()
+    expect(fs.existsSync(path.dirname(envPath('ghost-agent')))).toBe(false)
+    await expect(deleteSecret('ghost-agent', 'ANY_VAR')).resolves.toBe(false)
+    // And it didn't create the workspace dir or a stray lockfile as a side effect.
+    expect(fs.existsSync(path.dirname(envPath('ghost-agent')))).toBe(false)
+  })
 })

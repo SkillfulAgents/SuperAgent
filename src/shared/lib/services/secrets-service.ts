@@ -220,6 +220,13 @@ export async function setSecret(agentSlug: string, secret: AgentSecret): Promise
  */
 export async function deleteSecret(agentSlug: string, envVar: string): Promise<boolean> {
   const envPath = getAgentEnvPath(agentSlug)
+  // Nothing to delete if the .env (or its workspace dir) is absent. Short-circuit
+  // BEFORE taking the cross-process lock — otherwise opening `<env>.lock` inside a
+  // missing workspace dir throws ENOENT, which the route surfaces as a 500 instead
+  // of the correct 404 (the pre-lock behaviour returned false → "Secret not found").
+  if (!(await fileExists(envPath))) {
+    return false
+  }
   return withCrossProcessFileLock(envPath, async () => {
     const secrets = await listSecrets(agentSlug)
     const filtered = secrets.filter((s) => s.envVar !== envVar)
