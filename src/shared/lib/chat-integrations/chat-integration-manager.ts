@@ -372,16 +372,7 @@ class ChatIntegrationManager {
     if (!(connector instanceof TelegramConnector)) {
       throw new Error('Dashboards are only supported on Telegram integrations')
     }
-    return connector.sendDashboardCard(chatId, {
-      integrationId,
-      agentSlug: opts.agentSlug,
-      dashboardSlug: opts.dashboardSlug,
-      name: opts.name,
-      allowButton: opts.allowButton,
-      emoji: opts.emoji,
-      caption: opts.caption,
-      screenshotPath: opts.screenshotPath,
-    })
+    return connector.sendDashboardCard(chatId, { integrationId, ...opts })
   }
 
   isIntegrationConnected(integrationId: string): boolean {

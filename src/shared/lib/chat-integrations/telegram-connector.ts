@@ -56,11 +56,6 @@ const DASHBOARD_DEFAULT_EMOJI = '📊'
  */
 const DASHBOARD_BUTTON_EMOJI = '▶️'
 
-/** Resolve the card's icon: the agent's emoji if given, else the default. */
-export function resolveDashboardEmoji(emoji?: string): string {
-  return emoji?.trim() || DASHBOARD_DEFAULT_EMOJI
-}
-
 /**
  * Render the dashboard share card body as markdown: a bold "<emoji> <name>"
  * title with an optional italic blurb as a subtitle on its own line. Goes through
@@ -73,7 +68,7 @@ export function resolveDashboardEmoji(emoji?: string): string {
  * because Telegram's rich markdown collapses a single newline into a space.
  */
 export function renderDashboardCard(name: string, emoji?: string, caption?: string): string {
-  const icon = resolveDashboardEmoji(emoji)
+  const icon = emoji?.trim() || DASHBOARD_DEFAULT_EMOJI
   let md = `**${escapeMarkdown(icon)} ${escapeMarkdown(name)}**`
   const blurb = caption?.trim()
   if (blurb) md += `\n\n_${escapeMarkdown(blurb)}_`
