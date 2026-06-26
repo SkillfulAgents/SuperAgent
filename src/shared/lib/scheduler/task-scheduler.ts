@@ -20,8 +20,8 @@ import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
 import type { EffortLevel } from '@shared/lib/container/types'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import {
+  getSessionForScheduledExecution,
   registerSession,
-  updateSessionMetadata,
 } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
@@ -168,6 +168,20 @@ class TaskScheduler {
       `[TaskScheduler] Executing task ${task.id} for agent ${task.agentSlug}`
     )
 
+    const existingSession = await getSessionForScheduledExecution(
+      task.agentSlug,
+      task.id,
+      task.nextExecutionAt,
+    )
+
+    if (existingSession) {
+      console.log(
+        `[TaskScheduler] Task ${task.id} already has session ${existingSession.id}; reconciling task status`
+      )
+      await this.recordTaskExecution(task, existingSession.id)
+      return
+    }
+
     // Verify agent still exists
     if (!(await agentExists(task.agentSlug))) {
       console.error(
@@ -199,14 +213,11 @@ class TaskScheduler {
     const sessionId = containerSession.id
     const sessionName = task.name || 'Scheduled Task'
 
-    // Register the session
-    await registerSession(task.agentSlug, sessionId, sessionName)
-
-    // Update session metadata to mark it as created from a scheduled task
-    await updateSessionMetadata(task.agentSlug, sessionId, {
+    await registerSession(task.agentSlug, sessionId, sessionName, {
       isScheduledExecution: true,
       scheduledTaskId: task.id,
       scheduledTaskName: task.name || undefined,
+      scheduledExecutionAt: task.nextExecutionAt.toISOString(),
     })
 
     // Subscribe to the session for SSE updates
@@ -232,7 +243,10 @@ class TaskScheduler {
       console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)
     })
 
-    // Update task status
+    await this.recordTaskExecution(task, sessionId)
+  }
+
+  private async recordTaskExecution(task: ScheduledTask, sessionId: string): Promise<void> {
     if (task.isRecurring) {
       // Update next execution time for recurring tasks
       const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
