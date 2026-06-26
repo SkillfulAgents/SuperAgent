@@ -1,58 +1,43 @@
-import crypto from 'node:crypto'
-import { initDataSchema, type InitData } from './init-data-schema'
-
-// Allow a little clock skew so a server running slightly behind Telegram doesn't
-// reject otherwise-valid initData whose auth_date reads as marginally in the future.
-const MAX_CLOCK_SKEW_SECONDS = 300
+import { validate } from '@tma.js/init-data-node'
 
 type Result =
-  | { ok: true; data: InitData }
+  | { ok: true; data: { user?: { id: number } } }
   | { ok: false; reason: 'signature' | 'stale' | 'malformed' }
 
+/**
+ * verifyInitData — verify a Telegram Mini App `initData` blob and extract the
+ * Telegram user id. The HMAC verification and freshness check are delegated to
+ * @tma.js/init-data-node (`validate`); this function is the stable seam the rest
+ * of the app depends on, keeping the vendor swappable.
+ *
+ * We deliberately do NOT use the library's `parse()`: it additionally requires a
+ * Bot API 8.0 `signature` field and a full Telegram `User` shape. We only need
+ * the user id, and `validate()` has already proven the blob is authentic, so we
+ * read the id directly and stay uncoupled from that evolving schema.
+ */
 export function verifyInitData(initData: string, botToken: string, maxAgeSeconds: number): Result {
-  let params: URLSearchParams
   try {
-    params = new URLSearchParams(initData)
+    validate(initData, botToken, { expiresIn: maxAgeSeconds })
+  } catch (e) {
+    // The library's exported error classes do NOT satisfy `instanceof` against the
+    // instances it throws (a dual class-identity quirk), so discriminate on the
+    // stable error name — `instanceof` would silently map everything to `malformed`.
+    const name = e instanceof Error ? e.name : ''
+    if (name === 'ExpiredError') return { ok: false, reason: 'stale' }
+    if (name === 'SignatureInvalidError' || name === 'HexStringLengthInvalidError') {
+      return { ok: false, reason: 'signature' }
+    }
+    // SignatureMissingError, AuthDateInvalidError, etc. → malformed input
+    return { ok: false, reason: 'malformed' }
+  }
+
+  const rawUser = new URLSearchParams(initData).get('user')
+  if (!rawUser) return { ok: true, data: {} }
+  try {
+    const parsed: unknown = JSON.parse(rawUser)
+    const id = (parsed as { id?: unknown })?.id
+    return { ok: true, data: typeof id === 'number' ? { user: { id } } : {} }
   } catch {
     return { ok: false, reason: 'malformed' }
   }
-  const hash = params.get('hash')
-  if (!hash) return { ok: false, reason: 'malformed' }
-
-  // data_check_string: every field except hash, sorted by key, "k=v" joined by \n
-  const pairs: string[] = []
-  for (const [k, v] of params.entries()) {
-    if (k === 'hash') continue
-    pairs.push(`${k}=${v}`)
-  }
-  pairs.sort()
-  const dcs = pairs.join('\n')
-
-  const secret = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest()
-  const computed = crypto.createHmac('sha256', secret).update(dcs).digest('hex')
-  if (computed.length !== hash.length ||
-      !crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(hash))) {
-    return { ok: false, reason: 'signature' }
-  }
-
-  const userRaw = params.get('user')
-  let userParsed: unknown = undefined
-  if (userRaw) {
-    try { userParsed = JSON.parse(userRaw) } catch { return { ok: false, reason: 'malformed' } }
-  }
-  const parsed = initDataSchema.safeParse({
-    user: userParsed,
-    auth_date: Number(params.get('auth_date')),
-    query_id: params.get('query_id') ?? undefined,
-    hash,
-  })
-  if (!parsed.success) return { ok: false, reason: 'malformed' }
-
-  const ageSeconds = Math.floor(Date.now() / 1000) - parsed.data.auth_date
-  if (ageSeconds > maxAgeSeconds) return { ok: false, reason: 'stale' }
-  // A future auth_date yields a negative age that would otherwise slip past the
-  // staleness check; reject anything beyond the small clock-skew allowance.
-  if (ageSeconds < -MAX_CLOCK_SKEW_SECONDS) return { ok: false, reason: 'stale' }
-
-  return { ok: true, data: parsed.data }
 }
