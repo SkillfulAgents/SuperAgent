@@ -11,6 +11,7 @@
 import { Bot, type Context as GrammyContext } from 'grammy'
 import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
@@ -138,6 +139,9 @@ export class TelegramConnector extends ChatClientConnector {
   private activeDrafts: Map<string, number> = new Map()
   // Keep-alive timers re-sending the "working" indicator, one per chat.
   private workingTimers: Map<string, ReturnType<typeof setInterval>> = new Map()
+  // Latest activity per chat, so the keep-alive heartbeat re-sends the current
+  // label even when it changes mid-turn (working → thinking → compacting …).
+  private workingActivity: Map<string, SessionActivity> = new Map()
 
   constructor(private config: TelegramConfig) {
     super()
@@ -283,6 +287,7 @@ export class TelegramConnector extends ChatClientConnector {
     this.activeDrafts.clear()
     for (const timer of this.workingTimers.values()) clearInterval(timer)
     this.workingTimers.clear()
+    this.workingActivity.clear()
 
     if (this.bot) {
       await this.bot.stop()
@@ -423,13 +428,16 @@ export class TelegramConnector extends ChatClientConnector {
     }
   }
 
-  async startWorking(chatId: string): Promise<void> {
+  async startWorking(chatId: string, activity: SessionActivity): Promise<void> {
     if (!this.bot) return
+    // Record the latest activity first, so both the immediate send below AND the
+    // keep-alive heartbeat render the current label (it can change mid-turn).
+    this.workingActivity.set(chatId, activity)
     // Register the keep-alive heartbeat synchronously BEFORE the first awaited send.
     // stopWorking() is fire-and-forget and can run while this initial send is still
     // in flight; if the interval were registered only after the await, that
     // stopWorking would find no timer and this call would install one *after*
-    // teardown, leaking "Thinking…" forever. Registering first means a concurrent
+    // teardown, leaking the indicator forever. Registering first means a concurrent
     // stopWorking always sees (and clears) the timer. Idempotent: one timer per chat.
     if (!this.workingTimers.has(chatId)) {
       this.workingTimers.set(chatId, setInterval(() => {
@@ -445,8 +453,19 @@ export class TelegramConnector extends ChatClientConnector {
       clearInterval(timer)
       this.workingTimers.delete(chatId)
     }
+    this.workingActivity.delete(chatId)
     // The streaming response shares the draft_id and replaces the draft in place,
     // so there is nothing else to tear down.
+  }
+
+  /** The native-draft label for a busy activity (`<tg-thinking>` inner HTML). */
+  private workingLabel(activity: SessionActivity | undefined): string {
+    switch (activity) {
+      case 'compacting': return '🗜 Compacting…'
+      case 'retrying': return '🔄 Retrying…'
+      case 'thinking': return '✨ Thinking…'
+      default: return '✨ Working…' // 'working' and any non-busy fallback
+    }
   }
 
   /** Post the "working" indicator once: a native draft in rich DMs, else typing. */
@@ -454,16 +473,17 @@ export class TelegramConnector extends ChatClientConnector {
     if (!this.bot) return
     try {
       if (this.useRich && this.config.draftStreaming !== false && this.isPrivateChat(chatId)) {
-        // Native Telegram "Thinking…" placeholder (RichBlockThinking / <tg-thinking>).
-        // Draft-only, so DM-only. Static ✨: the animated AIActions custom emoji only
-        // render when the bot's owner has Telegram Premium (otherwise Telegram strips the
-        // entity), so we use a plain sparkle that renders for everyone. The keep-alive
-        // timer re-sends it (drafts expire ~30s) and it shares the streaming draft_id, so
-        // the response replaces it.
+        // Native Telegram placeholder (RichBlockThinking / <tg-thinking>), labeled
+        // by the agent's current activity. Draft-only, so DM-only. Static glyph:
+        // the animated AIActions custom emoji only render when the bot's owner has
+        // Telegram Premium (otherwise Telegram strips the entity), so we use plain
+        // glyphs that render for everyone. The keep-alive timer re-sends it (drafts
+        // expire ~30s) and it shares the streaming draft_id, so the response replaces it.
+        const label = this.workingLabel(this.workingActivity.get(chatId))
         await this.bot.api.raw.sendRichMessageDraft({
           chat_id: Number(chatId),
           draft_id: this.draftIdFor(chatId),
-          rich_message: { html: '<tg-thinking>✨ Thinking…</tg-thinking>' },
+          rich_message: { html: `<tg-thinking>${label}</tg-thinking>` },
         })
         return
       }

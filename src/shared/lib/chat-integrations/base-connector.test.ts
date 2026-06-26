@@ -219,8 +219,8 @@ describe('MockChatClientConnector', () => {
   it('records working indicators', async () => {
     const mock = new MockChatClientConnector()
 
-    await mock.startWorking('chat-1')
-    await mock.startWorking('chat-2')
+    await mock.startWorking('chat-1', 'working')
+    await mock.startWorking('chat-2', 'working')
 
     expect(mock.typingIndicators).toEqual(['chat-1', 'chat-2'])
   })
@@ -256,7 +256,7 @@ describe('MockChatClientConnector', () => {
     await mock.sendMessage('chat-1', { text: 'hello' })
     await mock.sendStreamingUpdate('chat-1', 'partial')
     await mock.finalizeStreamingMessage('chat-1', 'msg-1', 'final')
-    await mock.startWorking('chat-1')
+    await mock.startWorking('chat-1', 'working')
     await mock.sendUserRequestCard('chat-1', { type: 'secret_request', toolUseId: 'tu-1', secretName: 'KEY' } as any)
 
     mock.reset()

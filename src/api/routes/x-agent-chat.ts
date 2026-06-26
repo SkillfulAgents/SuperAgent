@@ -225,7 +225,7 @@ xAgentChat.post('/send', async (c) => {
     }
 
     const typingDelay = 100 + Math.random() * 1100
-    await connector.startWorking(resolvedChatId).catch(() => {})
+    await connector.startWorking(resolvedChatId, 'working').catch(() => {})
     await new Promise((resolve) => setTimeout(resolve, typingDelay))
 
     await connector.sendMessage(resolvedChatId, { text: message })

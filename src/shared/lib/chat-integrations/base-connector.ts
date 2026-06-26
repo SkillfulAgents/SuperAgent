@@ -6,6 +6,7 @@
  */
 
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { SessionActivity } from '@shared/lib/types/agent'
 import type { ChatProvider } from './config-schema'
 import { captureException } from '@shared/lib/error-reporting'
 
@@ -67,11 +68,13 @@ export abstract class ChatClientConnector {
   abstract finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void>
 
   /**
-   * Signal that the agent is working (processing, no output yet). The connector
-   * owns the representation AND any keep-alive needed to survive provider-side
-   * expiry. Idempotent — safe to call repeatedly for the same chat.
+   * Signal that the agent is busy, labeled by what it is doing (`activity`). The
+   * connector owns how that maps to its surface (Telegram labels a draft, Slack
+   * reacts) AND any keep-alive needed to survive provider-side expiry. Called
+   * again with a new activity when the label changes mid-turn. Idempotent — safe
+   * to call repeatedly for the same chat.
    */
-  abstract startWorking(chatId: string): Promise<void>
+  abstract startWorking(chatId: string, activity: SessionActivity): Promise<void>
 
   /**
    * Stop the working indicator as the response takes over. Idempotent — safe to

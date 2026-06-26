@@ -1,5 +1,5 @@
 import type { ContainerClient, StreamMessage, SlashCommandInfo } from './types'
-import type { SessionUsage } from '@shared/lib/types/agent'
+import type { SessionUsage, SessionActivity } from '@shared/lib/types/agent'
 import type { AskUserQuestionInput } from '@shared/lib/tool-definitions/ask-user-question'
 import type { RequestSecretInput } from '@shared/lib/tool-definitions/request-secret'
 import type { RequestFileInput } from '@shared/lib/tool-definitions/request-file'
@@ -105,6 +105,8 @@ interface StreamingState {
   // Subtype of the most recent result — gates the completion notification when
   // idle arrives via session_state_changed (resume-exits pause, not finish).
   lastResultSubtype: string | null
+  isRetrying: boolean // True while an API retry is in progress, cleared when the next message starts
+  lastEmittedActivity?: SessionActivity // Deduplication guard — undefined = not yet emitted
 }
 
 // Lazy import to break circular dependency: container-manager -> message-persister
@@ -201,6 +203,7 @@ class MessagePersister {
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: null,
+      isRetrying: false,
     })
 
     // Store container client for reconnection checks
@@ -240,6 +243,7 @@ class MessagePersister {
   // session_state_changed handler (authoritative idle), and markSessionInactive.
   private finalizeIdle(sessionId: string, state: StreamingState): void {
     state.isActive = false
+    this.emitActivityState(sessionId)
     this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
     this.broadcastGlobal({
       type: 'session_idle',
@@ -334,6 +338,47 @@ class MessagePersister {
   isSessionAwaitingInput(sessionId: string): boolean {
     const state = this.streamingStates.get(sessionId)
     return state?.isAwaitingInput ?? false
+  }
+
+  /**
+   * Project the session's streaming state onto a single activity label, using
+   * the same precedence as the app's activity indicator. Streamed assistant
+   * TEXT (not a thinking or tool block) owns the reply surface, so it yields the
+   * placeholder; a thinking/tool block does not. See {@link SessionActivity}.
+   */
+  private computeActivity(state: StreamingState): SessionActivity {
+    if (!state.isActive) return 'idle'
+    if (state.isAwaitingInput) return 'awaiting'
+    // Mirror the app's busy precedence exactly: compacting > retrying > thinking
+    // > working. Checked BEFORE 'streaming' so a stale isStreaming (e.g. an
+    // api_retry mid-stream) can't make chat yield the placeholder while the app
+    // honestly shows "Compacting…"/"Retrying…" for the same underlying state.
+    if (state.isCompacting) return 'compacting'
+    if (state.isRetrying) return 'retrying'
+    if (state.currentThinking) return 'thinking'
+    // Assistant TEXT streaming (not a tool block) owns the reply surface, so it
+    // yields the placeholder. Thinking is already handled above.
+    if (state.isStreaming && !state.currentToolUse) return 'streaming'
+    return 'working'
+  }
+
+  // Public snapshot of the activity — the chat manager reads it for the
+  // subscribe-time reconcile (cold-start), alongside the session_activity event.
+  getSessionActivity(sessionId: string): SessionActivity {
+    const state = this.streamingStates.get(sessionId)
+    return state ? this.computeActivity(state) : 'idle'
+  }
+
+  /** Recompute the activity and broadcast session_activity iff it changed. */
+  private emitActivityState(sessionId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state) return
+    const activity = this.computeActivity(state)
+    if (activity === state.lastEmittedActivity) return
+    state.lastEmittedActivity = activity
+    // Per-session only: the chat manager subscribes per session and is the sole
+    // consumer. (No global broadcast — nothing listens for session_activity there.)
+    this.broadcastToSSE(sessionId, { type: 'session_activity', sessionId, activity, agentSlug: state.agentSlug })
   }
 
   // Get pending computer use requests for a session (for SSE replay on reconnect)
@@ -492,6 +537,7 @@ class MessagePersister {
       state.isStreaming = false
       state.isActive = false
       state.isAwaitingInput = false
+      this.emitActivityState(sessionId)
       state.currentText = ''
       state.currentToolUse = null
       state.currentToolInput = ''
@@ -563,6 +609,7 @@ class MessagePersister {
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
         lastResultSubtype: null,
+        isRetrying: false,
       }
       this.streamingStates.set(sessionId, state)
       if (this.capture && agentSlug) {
@@ -574,6 +621,13 @@ class MessagePersister {
     state.isActive = true
     state.isInterrupted = false // Reset interrupted flag on new message
     state.isAwaitingInput = false // Reset awaiting input on new message
+    state.isRetrying = false // Reset retry flag on new message
+    // Reset compaction/thinking too, mirroring the app's session_active reset: a
+    // turn that ended mid-compaction/-thinking (error/interrupt before the clearing
+    // event) must not wedge the next turn's label. State is reused across turns.
+    state.isCompacting = false
+    state.currentThinking = false
+    this.emitActivityState(sessionId)
     state.lastApiErrorCode = null // Clear previous API error on new message
     // Clear the previous turn's result subtype so a late idle from an
     // already-finished (or interrupted) run can't fire a stale "success"
@@ -600,6 +654,7 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     if (state && !state.isAwaitingInput) {
       state.isAwaitingInput = true
+      this.emitActivityState(sessionId)
       this.broadcastGlobal({
         type: 'session_awaiting_input',
         sessionId,
@@ -846,6 +901,7 @@ class MessagePersister {
         // may not always carry the isCompactSummary metadata flag.
         if (state.isCompacting || content.isCompactSummary) {
           state.isCompacting = false
+          this.emitActivityState(sessionId) // re-project: the indicator must leave 'compacting' now, not at the next token
           // Compaction complete — broadcast so frontend transitions from spinner to boundary
           this.broadcastToSSE(sessionId, { type: 'compact_complete' })
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
@@ -854,6 +910,7 @@ class MessagePersister {
         // Clear awaiting input when tool results arrive (user provided input)
         if (state.isAwaitingInput) {
           state.isAwaitingInput = false
+          this.emitActivityState(sessionId)
           this.broadcastGlobal({
             type: 'session_input_provided',
             sessionId,
@@ -887,6 +944,7 @@ class MessagePersister {
           if (content.status === 'compacting' && !state.isCompacting) {
             state.isCompacting = true
             this.broadcastToSSE(sessionId, { type: 'compact_start' })
+            this.emitActivityState(sessionId)
           }
           if (content.status === 'requesting') {
             // The CLI is composing the next model request — the moment it
@@ -901,9 +959,11 @@ class MessagePersister {
           if (!state.isCompacting) {
             state.isCompacting = true
             this.broadcastToSSE(sessionId, { type: 'compact_start' })
+            this.emitActivityState(sessionId)
           }
         } else if (content.subtype === 'api_retry') {
           // API retry in progress — broadcast details so the UI can show retry state
+          state.isRetrying = true
           this.broadcastToSSE(sessionId, {
             type: 'api_retry',
             attempt: content.attempt,
@@ -911,6 +971,7 @@ class MessagePersister {
             delayMs: content.delay_ms,
             errorStatus: content.error_status,
           })
+          this.emitActivityState(sessionId)
         } else if (content.subtype === 'task_started') {
           // Subagent started — set agentId deterministically from task_id (SDK 0.3.142+
           // guarantees task_id === subagent session ID === JSONL filename).
@@ -1092,6 +1153,7 @@ class MessagePersister {
             // The runtime started a turn we didn't initiate via POST (e.g. a
             // queued message picked up after an out-of-order idle) — self-heal.
             state.isActive = true
+            this.emitActivityState(sessionId)
             this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
             this.broadcastGlobal({
               type: 'session_active',
@@ -1111,8 +1173,16 @@ class MessagePersister {
 
       case 'result': {
         // Query completed
+        const isError = content.subtype === 'error_during_execution' || content.subtype === 'error'
         state.isStreaming = false
         state.isAwaitingInput = false
+        // On error the turn ends here, so settle isActive too BEFORE the single
+        // emit. Collapsing every terminal flag change into ONE emit (reflecting
+        // the final state) avoids a spurious working(true)→(false) pair — the
+        // intermediate "isActive still true, streaming just cleared" snapshot
+        // would read working=true and race connectors into a stuck indicator.
+        if (isError) state.isActive = false
+        this.emitActivityState(sessionId)
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
 
@@ -1120,9 +1190,9 @@ class MessagePersister {
         this.handleResultUsage(sessionId, state, content)
 
         // Check if this is an error result. Errors end the user-visible work
-        // immediately in both lifecycle modes.
-        if (content.subtype === 'error_during_execution' || content.subtype === 'error') {
-          state.isActive = false
+        // immediately in both lifecycle modes. (isActive + the working emit were
+        // already settled above, before the session_error broadcasts below.)
+        if (isError) {
           const errorMessage = content.error || content.message || 'An error occurred during execution'
           // Use SDK error code from the preceding assistant message (e.g., 'authentication_failed', 'rate_limit')
           const apiErrorCode = state.lastApiErrorCode || null
@@ -1282,6 +1352,10 @@ class MessagePersister {
     state.activeSubagents.clear()
     state.activeBackgroundTasks.clear()
     this.stopAllWorkflowTailers(sessionId)
+    // finalizeIdle clears isActive and emits the single settling working(false).
+    // Don't emit here first: clearing streaming while isActive is still true
+    // would read working=true and emit a spurious working(true)→(false) pair
+    // that races connectors into a stuck indicator.
     this.finalizeIdle(sessionId, state)
   }
 
@@ -1678,6 +1752,10 @@ class MessagePersister {
         state.isStreaming = true
         state.currentToolUse = null
         state.currentThinking = false
+        state.isRetrying = false // a streaming message means any retry resolved
+        // Emit after the resets so the activity reads 'streaming' (text owns the
+        // reply surface), not a stale 'thinking'/'working' from the prior block.
+        this.emitActivityState(sessionId)
         this.broadcastToSSE(sessionId, { type: 'stream_start' })
         break
 
@@ -1702,6 +1780,9 @@ class MessagePersister {
           state.currentThinking = true
           this.broadcastToSSE(sessionId, { type: 'thinking_start' })
         }
+        // A tool block projects 'working'; a thinking block 'thinking' — both
+        // differ from the 'streaming' set at message_start, so re-project.
+        this.emitActivityState(sessionId)
         break
 
       case 'content_block_delta':
@@ -1735,6 +1816,8 @@ class MessagePersister {
         if (state.currentThinking) {
           state.currentThinking = false
           this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
+          // Thinking ended → re-project ('thinking' → 'streaming'/'working').
+          this.emitActivityState(sessionId)
         }
         // Tool use block finished streaming
         if (state.currentToolUse) {
@@ -1969,6 +2052,7 @@ class MessagePersister {
       case 'message_stop':
         // Don't save here - JSONL is the source of truth
         state.isStreaming = false
+        this.emitActivityState(sessionId)
         state.currentToolUse = null
         state.currentToolInput = ''
         // Defensive: ensure thinking state is cleared if a stop was missed

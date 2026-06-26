@@ -8,6 +8,7 @@
 
 import WebSocket from 'ws'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
@@ -248,7 +249,8 @@ export class IMessageConnector extends ChatClientConnector {
     await this.sendMessage(chatId, { text: finalText })
   }
 
-  async startWorking(chatId: string): Promise<void> {
+  async startWorking(chatId: string, _activity: SessionActivity): Promise<void> {
+    // iMessage shows only a typing indicator, so the activity label is unused.
     const targetChatId = chatId || this.lastChatId || undefined
     this.send({ type: 'start_typing', data: { chatId: targetChatId } })
   }

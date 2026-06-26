@@ -25,6 +25,7 @@ import { processSSEEvent, finalizeStreaming, type ManagedConnector } from './cha
 import { TelegramConnector } from './telegram-connector'
 import { MockChatClientConnector } from './mock-connector'
 import type { ChatIntegration } from '@shared/lib/db/schema'
+import type { SessionActivity } from '@shared/lib/types/agent'
 
 function makeManaged(connector: ManagedConnector['connector'], chatId: string): ManagedConnector {
   return {
@@ -74,7 +75,7 @@ describe('REPRO: perpetual "Thinking…" after a non-idle terminal event', () =>
       const managed = makeManaged(connector, DM_CHAT)
 
       // 1) A message arrives → the manager arms the indicator (dispatch site).
-      await connector.startWorking(DM_CHAT)
+      await connector.startWorking(DM_CHAT, 'working')
 
       // 2) The agent streams a full answer. The first token clears the bubble and
       //    the user SEES the response ("it finished its response").
@@ -88,9 +89,11 @@ describe('REPRO: perpetual "Thinking…" after a non-idle terminal event', () =>
       // Let the (un-awaited) startWorking inside processSSEEvent arm its interval.
       await vi.advanceTimersByTimeAsync(1)
 
-      // 4) ...but the turn ends in an ERROR (e.g. API overloaded / rate limit), so
-      //    the host broadcasts `session_error`, NOT `session_idle`. processSSEEvent
-      //    has no case for it → stopWorking is never called.
+      // 4) ...but the turn ends in an ERROR (e.g. API overloaded / rate limit). In
+      //    production the persister sets isActive=false → emits session_activity('idle')
+      //    → THEN broadcasts session_error. The idle activity tears the
+      //    indicator down; session_error only finalizes + surfaces the message.
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'idle' })
       await processSSEEvent(managed, {
         type: 'session_error',
         error: 'Overloaded (API 529)',
@@ -121,7 +124,10 @@ describe('REPRO: perpetual "Thinking…" after a non-idle terminal event', () =>
 
       // Message arrives → indicator armed. Agent errors immediately (no stream_delta
       // ever clears it). e.g. rate-limit / auth / context-overflow on the first turn.
-      await connector.startWorking(DM_CHAT)
+      // In production the persister emits session_activity('idle') before session_error;
+      // that signal — not the terminal case — tears the indicator down.
+      await connector.startWorking(DM_CHAT, 'working')
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'idle' })
       await processSSEEvent(managed, {
         type: 'session_error',
         error: 'rate_limit',
@@ -149,7 +155,7 @@ describe('REPRO: perpetual "Thinking…" after a non-idle terminal event', () =>
       // a terminal stopWorking that runs in that window finds no timer, and the late
       // startWorking installs one after teardown — "Thinking…" leaks. The fix
       // registers the interval synchronously, before the await.
-      void connector.startWorking(DM_CHAT)
+      void connector.startWorking(DM_CHAT, 'working')
       // A terminal event settles the turn immediately, before the initial send resolves.
       await connector.stopWorking(DM_CHAT)
       // Let the in-flight startWorking send resolve.
@@ -170,14 +176,16 @@ describe('REPRO: perpetual "Thinking…" after a non-idle terminal event', () =>
       const { connector, sendRichMessageDraft } = makeRealDmConnector()
       const managed = makeManaged(connector, DM_CHAT)
 
-      await connector.startWorking(DM_CHAT)
+      await connector.startWorking(DM_CHAT, 'working')
       await processSSEEvent(managed, { type: 'stream_start' })
       managed.streamingState.lastUpdateTime = 0
       await processSSEEvent(managed, { type: 'stream_delta', text: 'Here is your answer.' })
       await processSSEEvent(managed, { type: 'stream_start' })
       await vi.advanceTimersByTimeAsync(1)
 
-      // Proper terminal event → stopWorking → timer cleared.
+      // Proper terminal flow: the persister emits session_activity('idle') (which stops
+      // the indicator + clears the timer) right before the authoritative session_idle.
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'idle' })
       await processSSEEvent(managed, { type: 'session_idle' })
       const sendsAtIdle = sendRichMessageDraft.mock.calls.length
 
@@ -208,8 +216,8 @@ describe('REPRO: idle-silence watchdog', () => {
       const connector = new MockChatClientConnector()
       const managed = makeManaged(connector, 'chat-watch')
 
-      // A turn begins (stream_start arms the indicator + the watchdog), then total silence.
-      await processSSEEvent(managed, { type: 'stream_start' })
+      // A turn begins (a busy session_activity arms the indicator + the watchdog), then total silence.
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'working' })
       await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 1000)
 
       expect(connector.stoppedWorking).toContain('chat-watch')
@@ -225,7 +233,7 @@ describe('REPRO: idle-silence watchdog', () => {
       const connector = new MockChatClientConnector()
       const managed = makeManaged(connector, 'chat-watch')
 
-      await processSSEEvent(managed, { type: 'stream_start' }) // arm
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'working' }) // arm
       await vi.advanceTimersByTimeAsync(2 * 60 * 1000) // 2 min — still alive
       await processSSEEvent(managed, { type: 'tool_use_start', toolId: 't1', toolName: 'Bash' }) // activity → reset
       await vi.advanceTimersByTimeAsync(2 * 60 * 1000) // 2 min since reset (< threshold)
@@ -243,7 +251,11 @@ describe('REPRO: idle-silence watchdog', () => {
       const connector = new MockChatClientConnector()
       const managed = makeManaged(connector, 'chat-watch')
 
-      await processSSEEvent(managed, { type: 'stream_start' }) // arm
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'working' }) // arm
+      // In production a *_request makes the persister flip isAwaitingInput → emit
+      // session_activity('awaiting'), which clears the watchdog before the card is shown.
+      // Model that paired signal here so the silence below is a genuine human wait.
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'awaiting' })
       await processSSEEvent(managed, {
         type: 'user_question_request',
         toolUseId: 'tu-1',
@@ -263,9 +275,11 @@ describe('REPRO: idle-silence watchdog', () => {
       const connector = new MockChatClientConnector()
       const managed = makeManaged(connector, 'chat-watch')
 
-      // A turn arms the indicator + watchdog, then errors. session_error settles
-      // the turn (clearing the watchdog) and sends ONE curated error message.
-      await processSSEEvent(managed, { type: 'stream_start' })
+      // A turn arms the indicator + watchdog, then errors. In production the persister
+      // emits session_activity('idle') before session_error: the idle activity clears
+      // the watchdog, and session_error sends ONE curated error message.
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'working' })
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'idle' })
       await processSSEEvent(managed, {
         type: 'session_error',
         error: 'boom',
@@ -302,7 +316,7 @@ describe('REPRO: idle-silence watchdog', () => {
       const managed = makeManaged(connector, 'chat-watch')
 
       // Arm, then total silence trips the watchdog — whose notice send throws.
-      await processSSEEvent(managed, { type: 'stream_start' })
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'working' })
       await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 1000)
 
       // A genuine error then arrives. It must NOT be suppressed by the failed notice.
@@ -327,13 +341,13 @@ describe('REPRO: idle-silence watchdog', () => {
       const managed = makeManaged(connector, 'chat-watch')
 
       // Segment 1 of the turn: arm, then total silence trips the watchdog → notice #1.
-      await processSSEEvent(managed, { type: 'stream_start' })
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'working' })
       await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 1000)
 
       // Same turn continues (a new segment, NO new user dispatch in between) and
       // stalls again. The once-per-turn latch — reset at dispatch, not per
       // segment — must suppress a second notice.
-      await processSSEEvent(managed, { type: 'stream_start' })
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'working' })
       await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 1000)
 
       const stallNotices = connector.sentMessages.filter((m) =>
@@ -384,6 +398,32 @@ describe('finalizeStreaming: concurrent calls send the final text exactly once',
   })
 })
 
+describe('reconcileIndicator via session_activity', () => {
+  it('a busy activity starts the indicator + arms the watchdog', async () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-w')
+    await processSSEEvent(managed, { type: 'session_activity', activity: 'working' })
+    expect(connector.typingIndicators).toContain('chat-w')
+  })
+
+  it('a non-busy activity stops the indicator', async () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-w')
+    await processSSEEvent(managed, { type: 'session_activity', activity: 'working' })
+    await processSSEEvent(managed, { type: 'session_activity', activity: 'idle' })
+    expect(connector.stoppedWorking).toContain('chat-w')
+  })
+
+  it('projects the activity-specific label onto the connector (working/thinking/compacting/retrying)', async () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-w')
+    for (const activity of ['working', 'thinking', 'compacting', 'retrying'] as const) {
+      await processSSEEvent(managed, { type: 'session_activity', activity })
+    }
+    expect(connector.workingActivities).toEqual(['working', 'thinking', 'compacting', 'retrying'])
+  })
+})
+
 describe('session_error: curated message by apiErrorCode, raw error never leaked', () => {
   const RAW_LEAK = '/Users/secret/path tok-abc123 stack-trace-line'
   const cases: Array<{ code: string | null; expect: RegExp }> = [
@@ -400,6 +440,9 @@ describe('session_error: curated message by apiErrorCode, raw error never leaked
       const connector = new MockChatClientConnector()
       const managed = makeManaged(connector, 'chat-err')
 
+      // The persister emits session_activity('idle') before session_error; that signal
+      // settles the indicator, session_error only surfaces the curated message.
+      await processSSEEvent(managed, { type: 'session_activity', activity: 'idle' })
       await processSSEEvent(managed, {
         type: 'session_error',
         error: RAW_LEAK,
@@ -415,4 +458,63 @@ describe('session_error: curated message by apiErrorCode, raw error never leaked
       expect(connector.stoppedWorking).toContain('chat-err')
     })
   }
+})
+
+// ── Task 5: settleTurn split into indicator-free finalizeTurn ──────────────
+// Terminal cases (session_idle / session_error) now ONLY finalize the turn; the
+// indicator is reconcile-driven off session_activity. In production the persister
+// emits a non-busy session_activity immediately BEFORE the terminal broadcast, so the
+// manager stops the indicator on that signal — not on the terminal case itself.
+// The watchdog is the one exception: a stall means state still says working, so
+// it must force the indicator off directly.
+
+describe('Task 5: finalizeTurn split — terminal cases finalize, indicator is reconcile-driven', () => {
+  it('session_idle finalizes streamed text but does not itself stop the indicator (session_activity does)', async () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-i')
+    await processSSEEvent(managed, { type: 'session_activity', activity: 'working' })
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'Answer.' })
+    connector.stoppedWorking = []
+    await processSSEEvent(managed, { type: 'session_idle' })
+    // idle commits the streamed text…
+    expect(connector.finalizedMessages.some((m) => /Answer\./.test(m.finalText))).toBe(true)
+    // …but does NOT itself tear down the indicator — that is session_activity's job now.
+    expect(connector.stoppedWorking).not.toContain('chat-i')
+    // The indicator settles via the session_activity('idle') the persister emits on idle:
+    await processSSEEvent(managed, { type: 'session_activity', activity: 'idle' })
+    expect(connector.stoppedWorking).toContain('chat-i')
+  })
+})
+
+// ── Honest, activity-specific Telegram label ───────────────────────────────
+// The native draft is labeled by what the agent is actually doing, not a single
+// hardcoded "Thinking…". The label tracks the latest activity even mid-turn.
+
+describe('Telegram: the native draft is labeled by activity', () => {
+  const cases: Array<{ activity: SessionActivity; label: string }> = [
+    { activity: 'working', label: '✨ Working…' },
+    { activity: 'thinking', label: '✨ Thinking…' },
+    { activity: 'compacting', label: '🗜 Compacting…' },
+    { activity: 'retrying', label: '🔄 Retrying…' },
+  ]
+  for (const { activity, label } of cases) {
+    it(`${activity} → "${label}"`, async () => {
+      const { connector, sendRichMessageDraft } = makeRealDmConnector()
+      await connector.startWorking(DM_CHAT, activity)
+      expect(sendRichMessageDraft).toHaveBeenLastCalledWith(expect.objectContaining({
+        rich_message: { html: `<tg-thinking>${label}</tg-thinking>` },
+      }))
+      await connector.stopWorking(DM_CHAT)
+    })
+  }
+
+  it('relabels in place when the activity changes mid-turn (working → compacting)', async () => {
+    const { connector, sendRichMessageDraft } = makeRealDmConnector()
+    await connector.startWorking(DM_CHAT, 'working')
+    await connector.startWorking(DM_CHAT, 'compacting')
+    expect(sendRichMessageDraft).toHaveBeenLastCalledWith(expect.objectContaining({
+      rich_message: { html: '<tg-thinking>🗜 Compacting…</tg-thinking>' },
+    }))
+    await connector.stopWorking(DM_CHAT)
+  })
 })

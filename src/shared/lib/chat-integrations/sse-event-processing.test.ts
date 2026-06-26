@@ -55,29 +55,10 @@ async function processEvents(
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
-describe('working indicator', () => {
-  it('stops the indicator once, on the first streamed token of a segment', async () => {
-    const managed = createManagedConnector()
-    const mock = getMock(managed)
-
-    await processSSEEvent(managed, { type: 'stream_delta', text: 'Hello' })
-    expect(mock.stoppedWorking).toEqual(['chat-123']) // fired on the thinking→streaming transition
-
-    // Later tokens in the same segment must not re-fire stopWorking (no API call per token).
-    await processSSEEvent(managed, { type: 'stream_delta', text: ' world' })
-    expect(mock.stoppedWorking).toEqual(['chat-123'])
-  })
-
-  it('re-shows the indicator at the start of a new segment', async () => {
-    const managed = createManagedConnector()
-    const mock = getMock(managed)
-
-    await processSSEEvent(managed, { type: 'stream_delta', text: 'first segment' })
-    const before = mock.typingIndicators.length
-    await processSSEEvent(managed, { type: 'stream_start' })
-    expect(mock.typingIndicators.length).toBe(before + 1) // startWorking re-shown for the next segment
-  })
-})
+// NOTE: indicator arming/settling is no longer driven by stream_start / stream_delta —
+// session_activity is the sole driver. New-model coverage (a busy activity arms,
+// a non-busy one settles) lives in perpetual-thinking.repro.test.ts under
+// 'reconcileIndicator via session_activity'.
 
 describe('processSSEEvent', () => {
   let managed: ManagedConnector
@@ -162,13 +143,6 @@ describe('processSSEEvent', () => {
       // State should be reset
       expect(managed.streamingState.accumulatedText).toBe('')
       expect(managed.streamingState.currentMessageId).toBeNull()
-    })
-
-    it('shows typing indicator', async () => {
-      await processSSEEvent(managed, { type: 'stream_start' })
-
-      const mock = getMock(managed)
-      expect(mock.typingIndicators.length).toBe(1)
     })
   })
 
@@ -352,11 +326,6 @@ describe('processSSEEvent', () => {
   // ── Typing indicator ────────────────────────────────────────────
 
   describe('typing indicator', () => {
-    it('sends typing on stream_start', async () => {
-      await processSSEEvent(managed, { type: 'stream_start' })
-      expect(getMock(managed).typingIndicators.length).toBe(1)
-    })
-
     it('does not re-show "Thinking…" on messages_updated (would clobber the streaming draft)', async () => {
       // Even mid-stream, messages_updated must not re-send the thinking draft over
       // already-streamed content — the thinking indicator is a pre-stream-only state.
@@ -370,7 +339,7 @@ describe('processSSEEvent', () => {
         { type: 'tool_use_start', toolId: 't1', toolName: 'Bash' },
         { type: 'tool_use_ready', toolId: 't1', toolName: 'Bash' },
       ])
-      // No typing from tool_use_ready (only from stream_start)
+      // No typing from tool_use_ready
       expect(getMock(managed).typingIndicators.length).toBe(0)
     })
   })
@@ -721,7 +690,6 @@ describe('edge cases', () => {
 
     const mock = getMock(managed)
     expect(mock.finalizedMessages.length).toBe(1) // Only one finalization
-    expect(mock.typingIndicators.length).toBe(2) // Typing sent for both
   })
 
   it('handles session_idle followed by more streaming', async () => {
@@ -1052,14 +1020,6 @@ describe('no-streaming connector (iMessage-style)', () => {
 
     expect(outputLog.some(t => t.includes('Let me check...'))).toBe(true)
     expect(outputLog.some(t => t.includes('Here are the results.'))).toBe(true)
-  })
-
-  it('shows typing indicator on stream_start', async () => {
-    const managed = createNoStreamManaged()
-    await processSSEEvent(managed, { type: 'stream_start' })
-
-    const mock = managed.connector as MockChatClientConnector
-    expect(mock.typingIndicators.length).toBe(1)
   })
 })
 

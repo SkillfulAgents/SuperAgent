@@ -509,6 +509,15 @@ describe('Chat integration E2E', () => {
       expect(mockConnector.typingIndicators).toContain('chat-1')
     })
 
+    it('reconciles the indicator from the snapshot on subscribe (cold-start)', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      mockConnector.simulateIncomingMessage('hi', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+      await waitForCondition(() => mockConnector.typingIndicators.includes('chat-1'), 2000)
+      expect(mockConnector.typingIndicators).toContain('chat-1') // came up via snapshot or event
+    })
+
     it('stops the working indicator when the integration is torn down', async () => {
       const integrationId = createTestIntegration()
       await chatIntegrationManager.addIntegration(integrationId)

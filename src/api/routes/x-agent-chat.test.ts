@@ -248,7 +248,7 @@ describe('x-agent chat route', () => {
     expect(await res.json()).toEqual({ chatId: 'chat-1', provider: 'slack' })
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('getConnector returned undefined'))
     expect(mockAddIntegration).toHaveBeenCalledWith('integration-1')
-    expect(connector.startWorking).toHaveBeenCalledWith('chat-1')
+    expect(connector.startWorking).toHaveBeenCalledWith('chat-1', 'working')
     expect(connector.sendMessage).toHaveBeenCalledWith('chat-1', { text: 'Ship the update' })
     expect(mockEnsureSession).toHaveBeenCalledWith('integration-1', 'chat-1')
     expect(mockEnsureRunning).toHaveBeenCalledWith('agent-one')

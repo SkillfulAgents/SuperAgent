@@ -233,6 +233,28 @@ export interface JsonlFileHistoryEntry {
 export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry | JsonlAttachmentEntry
 
 // ============================================================================
+// Session activity (working-indicator projection)
+// ============================================================================
+
+/**
+ * What the agent is doing right now, projected from a session's streaming state.
+ * Mirrors the app activity-indicator precedence so chat connectors can surface
+ * the same honest label instead of a single hardcoded "Thinking…".
+ *
+ * 'idle' | 'awaiting' | 'streaming' show NO placeholder — the surface is owned
+ * by the reply (streaming) or a request card (awaiting), or there is nothing to
+ * show (idle). The rest are "busy" states that drive a labeled placeholder.
+ */
+export type SessionActivity =
+  | 'idle'        // not active
+  | 'awaiting'    // waiting on the user (question / secret / file / etc.)
+  | 'streaming'   // assistant TEXT is streaming into the reply — it owns the surface
+  | 'compacting'  // context compaction in progress
+  | 'retrying'    // API retry in progress
+  | 'thinking'    // an extended-thinking block is streaming
+  | 'working'     // active with nothing more specific to show
+
+// ============================================================================
 // Content Block Types (from Anthropic API)
 // ============================================================================
 

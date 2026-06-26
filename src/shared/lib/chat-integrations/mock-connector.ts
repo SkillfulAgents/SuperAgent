@@ -6,6 +6,7 @@
  */
 
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 
 export class MockChatClientConnector extends ChatClientConnector {
@@ -22,6 +23,7 @@ export class MockChatClientConnector extends ChatClientConnector {
   finalizedMessages: { chatId: string; messageId: string; finalText: string }[] = []
   typingIndicators: string[] = []
   stoppedWorking: string[] = []
+  workingActivities: SessionActivity[] = [] // activity passed to each startWorking call
 
   private nextMessageId = 1
 
@@ -112,8 +114,9 @@ export class MockChatClientConnector extends ChatClientConnector {
     this.finalizedMessages.push({ chatId, messageId, finalText })
   }
 
-  async startWorking(chatId: string): Promise<void> {
+  async startWorking(chatId: string, activity: SessionActivity): Promise<void> {
     this.typingIndicators.push(chatId)
+    this.workingActivities.push(activity)
   }
 
   async stopWorking(chatId: string): Promise<void> {

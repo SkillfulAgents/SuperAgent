@@ -861,7 +861,7 @@ describe('IMessageConnector', () => {
       const connector = createConnector()
       const ws = wireUp(connector)
 
-      await connector.startWorking('chat-1')
+      await connector.startWorking('chat-1', 'working')
 
       const messages = parseSent(ws)
       expect(messages).toHaveLength(1)

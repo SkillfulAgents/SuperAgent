@@ -164,10 +164,7 @@ describe('stream_start error resilience', () => {
     mock.sendMessage = async () => { throw new Error('fallback also failed') }
 
     // Should not throw
-    await processSSEEvent(managed, { type: 'stream_start' })
-
-    // Typing indicator should still be sent
-    expect(mock.typingIndicators.length).toBe(1)
+    await expect(processSSEEvent(managed, { type: 'stream_start' })).resolves.toBeUndefined()
   })
 })
 

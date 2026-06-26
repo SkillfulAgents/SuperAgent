@@ -9,6 +9,7 @@
 
 import { App as SlackApp } from '@slack/bolt'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
@@ -588,9 +589,11 @@ export class SlackConnector extends ChatClientConnector {
     await this.clearThinkingReaction(chatId)
   }
 
-  async startWorking(chatId: string): Promise<void> {
+  async startWorking(chatId: string, _activity: SessionActivity): Promise<void> {
     if (!this.app) return
 
+    // Slack's surface is a single reaction, so it can't show distinct labels —
+    // the activity is intentionally ignored here (coarse "busy" fidelity).
     // Slack doesn't support typing indicators for bots.
     // Workaround: add a :thinking_face: reaction to the user's last message.
     // The reaction persists until removed, so no keep-alive timer is needed.

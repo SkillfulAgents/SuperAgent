@@ -410,7 +410,7 @@ describe('TelegramConnector.startWorking / stopWorking', () => {
     const sendChatAction = vi.fn().mockResolvedValue(true)
     ;(connector as any).bot = { api: { raw: { sendRichMessageDraft }, sendChatAction } }
 
-    await connector.startWorking('999')
+    await connector.startWorking('999', 'thinking')
     expect(sendRichMessageDraft).toHaveBeenCalledWith(expect.objectContaining({
       chat_id: 999,
       rich_message: { html: '<tg-thinking>✨ Thinking…</tg-thinking>' },
@@ -427,7 +427,7 @@ describe('TelegramConnector.startWorking / stopWorking', () => {
       const sendRichMessageDraft = vi.fn().mockResolvedValue(true)
       ;(connector as any).bot = { api: { raw: { sendRichMessageDraft }, sendChatAction: vi.fn() } }
 
-      await connector.startWorking('999')
+      await connector.startWorking('999', 'working')
       expect(sendRichMessageDraft).toHaveBeenCalledTimes(1) // sent right away
 
       await vi.advanceTimersByTimeAsync(1000)
@@ -452,7 +452,7 @@ describe('TelegramConnector.startWorking / stopWorking', () => {
     const sendChatAction = vi.fn().mockResolvedValue(true)
     ;(connector as any).bot = { api: { raw: { sendRichMessageDraft }, sendChatAction } }
 
-    await connector.startWorking('-1001')
+    await connector.startWorking('-1001', 'working')
     expect(sendChatAction).toHaveBeenCalledWith('-1001', 'typing')
     expect(sendRichMessageDraft).not.toHaveBeenCalled()
     await connector.stopWorking('-1001') // clear the keep-alive timer

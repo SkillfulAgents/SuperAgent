@@ -364,6 +364,21 @@ describe('MessagePersister', () => {
       const compactStarts = sseEvents.filter(e => e.type === 'compact_start')
       expect(compactStarts).toHaveLength(1)
     })
+
+    it('emits a non-compacting session_activity when compaction completes (no stale "Compacting…")', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
+      mockClient._sendMessage({ type: 'system', subtype: 'status', status: 'compacting', session_id: SESSION_ID, uuid: 's1' })
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('compacting')
+      sseEvents.length = 0 // isolate the completion transition
+
+      // The compact-summary user message clears isCompacting (state.isCompacting was true).
+      mockClient._sendMessage({ type: 'user', session_id: SESSION_ID, uuid: 'summary-1' })
+
+      const activity = sseEvents.filter(e => e.type === 'session_activity')
+      expect(activity.length).toBeGreaterThan(0) // the clear must emit, or the chat stays stale "Compacting…"
+      expect(activity.at(-1).activity).not.toBe('compacting')
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('working')
+    })
   })
 
   // ============================================================================
@@ -2385,6 +2400,64 @@ describe('MessagePersister', () => {
   })
 
   // ============================================================================
+  // getSessionActivity
+  // ============================================================================
+
+  describe('getSessionActivity', () => {
+    it('projects the streaming-state flags onto an activity label', () => {
+      // helper sets the three lifecycle flags on the session's streaming state
+      const setFlags = (a: boolean, aw: boolean, s: boolean) => {
+        const st = (messagePersister as any).streamingStates.get(SESSION_ID)
+        st.isActive = a; st.isAwaitingInput = aw; st.isStreaming = s
+      }
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // ensures a state exists
+
+      setFlags(true, false, false);  expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('working')   // nothing more specific
+      setFlags(true, false, true);   expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('streaming') // assistant text owns the surface
+      setFlags(true, true, false);   expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('awaiting')  // waiting on the user
+      setFlags(false, false, false); expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('idle')      // not active
+    })
+
+    it('honors the busy precedence (compacting > retrying > thinking > streaming), even with isStreaming set', () => {
+      // isStreaming stale-true throughout (the api_retry-mid-stream case): the busy
+      // states must still win, so chat shows "Compacting…/Retrying…/Thinking…" like the
+      // app rather than dishonestly yielding to 'streaming'. As each clears, the next
+      // down the ladder shows, and once all clear, streamed text owns the surface.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      const st = (messagePersister as any).streamingStates.get(SESSION_ID)
+      st.isActive = true; st.isAwaitingInput = false; st.currentToolUse = null
+      st.isStreaming = true
+
+      st.isCompacting = true; st.isRetrying = true; st.currentThinking = true
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('compacting')
+      st.isCompacting = false
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('retrying')
+      st.isRetrying = false
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('thinking')
+      st.currentThinking = false
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('streaming')
+    })
+
+    it('a new turn (markSessionActive) clears a stale isCompacting/currentThinking from an abnormally-ended prior turn', () => {
+      // The desktop app resets these on session_active/idle/error; chat must too, or a
+      // turn that ended mid-compaction (error/interrupt before the compact summary)
+      // wedges the next turn's label to "Compacting…". The state object is reused across turns.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      const st = (messagePersister as any).streamingStates.get(SESSION_ID)
+      st.isActive = false; st.isCompacting = true; st.currentThinking = true
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // next user message
+      expect(st.isCompacting).toBe(false)
+      expect(st.currentThinking).toBe(false)
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('working')
+    })
+
+    it('is idle for an unknown session', () => {
+      expect(messagePersister.getSessionActivity('nope')).toBe('idle')
+    })
+  })
+
+  // ============================================================================
   // Automated session promotion
   // ============================================================================
 
@@ -4029,6 +4102,71 @@ describe('MessagePersister', () => {
 
       expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(1)
       expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)[0].taskId).toBe('snake-1')
+    })
+  })
+
+  // ============================================================================
+  // session_activity emission
+  // ============================================================================
+
+  describe('session_activity emission', () => {
+    const BUSY = new Set(['working', 'thinking', 'compacting', 'retrying'])
+
+    it('emits session_activity on the per-session stream when the activity flips', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // isActive true → 'working'
+
+      const perSession = sseEvents.filter(e => e.type === 'session_activity')
+      expect(perSession.at(-1)).toMatchObject({ activity: 'working', sessionId: SESSION_ID })
+    })
+
+    it('does not re-emit session_activity when the activity is unchanged', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      const before = sseEvents.filter(e => e.type === 'session_activity').length
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // still 'working' → no change
+      const after = sseEvents.filter(e => e.type === 'session_activity').length
+      expect(after).toBe(before)
+    })
+
+    // Regression: a mid-stream error must NOT emit a spurious busy activity right
+    // before settling. The terminal transition has to settle in a SINGLE non-busy
+    // emit reflecting the final state — an intermediate "isActive still true,
+    // streaming just cleared" snapshot would briefly read 'working' and race
+    // connectors (Slack's async reaction add/remove) into a stuck indicator.
+    it('emits no spurious busy session_activity on a mid-stream error result', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } }) // → 'streaming'
+      sseEvents.length = 0 // isolate the terminal transition
+
+      mockClient._sendMessage({ type: 'result', subtype: 'error', error: 'boom' })
+
+      const activity = sseEvents.filter(e => e.type === 'session_activity')
+      // Old code emitted a busy state (isActive still true) before settling.
+      expect(activity.filter(e => BUSY.has(e.activity))).toHaveLength(0)
+      // The session settles to idle.
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('idle')
+    })
+
+    // Same invariant for the connection-closed → markSessionInactive terminal
+    // path: finalizeIdle's single non-busy emit covers the settle; clearing
+    // streaming/awaiting must not emit a busy activity first.
+    it('emits no spurious busy session_activity when markSessionInactive finalizes a streaming session', async () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } }) // → 'streaming'
+      sseEvents.length = 0 // isolate the terminal transition
+
+      // Default mock getSession() resolves null → handleConnectionClosed marks inactive.
+      mockClient._messageCallback!({
+        type: 'connection_closed',
+        content: { type: 'connection_closed' },
+        timestamp: new Date(),
+        sessionId: SESSION_ID,
+      })
+      // Let getSession().then(...) settle.
+      await new Promise((r) => setTimeout(r, 0))
+
+      const activity = sseEvents.filter(e => e.type === 'session_activity')
+      expect(activity.filter(e => BUSY.has(e.activity))).toHaveLength(0)
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('idle')
     })
   })
 })
