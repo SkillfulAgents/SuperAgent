@@ -1,0 +1,5 @@
+# Drizzle writes a full-schema snapshot (and journal) per migration. These must
+# be committed - drizzle-kit diffs the latest snapshot to generate the next
+# migration - but they are machine-generated and never need human review.
+# Collapse them in GitHub diffs and keep them out of the language stats.
+src/shared/lib/db/migrations/meta/** linguist-generated=true
