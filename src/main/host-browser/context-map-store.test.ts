@@ -1,5 +1,5 @@
 /**
- * SUP-315 — host-browser context maps (browserbase-provider / platform-provider).
+ * Host-browser context maps (browserbase-provider / platform-provider).
  * The instanceId → contextId map is read-modify-written from concurrent
  * getOrCreateContext calls that await a network create between read and write.
  * The old read swallowed errors to `{}` and the write was non-atomic, so a bad
@@ -19,7 +19,7 @@ let tmpDir: string
 let mapPath: string
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-map-sup315-')))
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-map-')))
   mapPath = path.join(tmpDir, 'contexts.json')
 })
 

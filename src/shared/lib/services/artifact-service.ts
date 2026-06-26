@@ -101,7 +101,7 @@ export async function renameArtifactOnFilesystem(
     throw new Error(`Failed to parse ${pkgPath}`)
   }
   pkg.name = newName
-  // Atomic write (SUP-317): the read already throws on a corrupt package.json,
+  // Atomic write: the read already throws on a corrupt package.json,
   // so this never overwrites with a default — just make the write crash-safe.
   await writeFileAtomic(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 }

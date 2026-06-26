@@ -337,7 +337,7 @@ settings.get('/', async (c) => {
 settings.put('/', async (c) => {
   try {
     const body = await c.req.json()
-    // Read FRESH and fail-closed (SUP-312): never merge onto the possibly-
+    // Read FRESH and fail-closed: never merge onto the possibly-
     // corruption-defaulted cache (that is what overwrote real API keys/auth). A
     // corrupt settings.json throws here → caught below → 500, instead of being
     // silently replaced with defaults. The write path below this point has no

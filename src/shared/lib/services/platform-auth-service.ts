@@ -208,7 +208,7 @@ function readRecord(): PlatformAuthRecord | null {
 function writeRecord(record: PlatformAuthRecord | null): void {
   // Serialized fresh-read + atomic write so a background token refresh can't
   // lose-update a concurrent settings change or clobber real settings from a
-  // defaulted cache (SUP-312).
+  // defaulted cache.
   mutateSettings((settings) => {
     settings.platformAuth = record ?? undefined
   })

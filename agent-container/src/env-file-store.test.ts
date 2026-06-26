@@ -1,5 +1,5 @@
 /**
- * SUP-313 — container-side cross-process-safe .env writes. Must stay
+ * Container-side cross-process-safe .env writes. Must stay
  * protocol-compatible with the host's withCrossProcessFileLock / writeFileAtomic
  * (same `<target>.lock` O_EXCL convention, same atomic temp+rename).
  */
@@ -13,7 +13,7 @@ let tmpDir: string;
 let envPath: string;
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'env-store-sup313-')));
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'env-store-')));
   envPath = path.join(tmpDir, '.env');
 });
 

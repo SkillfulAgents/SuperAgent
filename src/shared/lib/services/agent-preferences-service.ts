@@ -13,7 +13,7 @@ import {
 
 /**
  * Strict read: returns `{}` only when the file is absent; a corrupt/torn file
- * THROWS so the read-modify-write aborts instead of overwriting (SUP-316).
+ * THROWS so the read-modify-write aborts instead of overwriting.
  */
 async function readAgentPreferencesStrict(agentSlug: string): Promise<AgentPreferences> {
   const prefsPath = getAgentPreferencesPath(agentSlug)

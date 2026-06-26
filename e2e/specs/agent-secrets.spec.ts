@@ -5,7 +5,7 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 
 /**
- * SUP-313 — agent secrets (the hardened `.env` store) end-to-end.
+ * Agent secrets (the hardened `.env` store) end-to-end.
  *
  * This is a TRUE end-to-end test: a secret added through the UI must travel the
  * full path — setSecret → atomic `.env` write → listSecrets/getSecretEnvVars read
@@ -51,7 +51,7 @@ async function waitForRecord(predicate: (r: MockRecord) => boolean, timeoutMs = 
   throw new Error(`Timed out waiting for record. Seen: ${JSON.stringify(readRecords().slice(-10), null, 2)}`)
 }
 
-test.describe('Agent Secrets (SUP-313 — reach the container & persist)', () => {
+test.describe('Agent Secrets (reach the container & persist)', () => {
   let appPage: AppPage
   let agentPage: AgentPage
   let agentName: string

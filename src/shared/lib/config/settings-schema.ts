@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 /**
  * Boundary check for `settings.json`, used by the fail-closed strict loader
- * (SUP-310). It deliberately validates ONLY that the file parsed to a JSON
+ * It deliberately validates ONLY that the file parsed to a JSON
  * *object*:
  *   - a torn / half-written file is rejected earlier by `JSON.parse`, and
  *   - a non-object (array / string / number / null) is rejected here.

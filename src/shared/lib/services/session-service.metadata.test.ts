@@ -1,7 +1,7 @@
 /**
- * SUP-309 — session-metadata.json must never silently lose session names.
+ * session-metadata.json must never silently lose session names.
  *
- * Regression coverage for the data-loss bug-class fixed in SUP-310: a non-atomic
+ * Regression coverage for the data-loss bug-class: a non-atomic
  * read-modify-write with no serialization, plus a read that swallowed parse
  * errors into `{}` which was then written back. Under concurrent/interrupted
  * writes this permanently wiped every session name. These tests assert the three
@@ -26,7 +26,7 @@ function makeAgent(slug: string): void {
 }
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'session-meta-sup309-')))
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'session-meta-')))
   process.env.SUPERAGENT_DATA_DIR = tmpDir
 })
 
@@ -40,7 +40,7 @@ async function importService() {
   return import('./session-service')
 }
 
-describe('SUP-309: lost-update protection (serialized read-modify-write)', () => {
+describe('lost-update protection (serialized read-modify-write)', () => {
   it('preserves ALL names when many registrations race concurrently', async () => {
     const { registerSession, readSessionMetadata } = await importService()
     makeAgent('busy-agent')
@@ -98,7 +98,7 @@ describe('SUP-309: lost-update protection (serialized read-modify-write)', () =>
   })
 })
 
-describe('SUP-309: atomic writes', () => {
+describe('atomic writes', () => {
   it('writes valid JSON and leaves no temp file behind', async () => {
     const { registerSession } = await importService()
     makeAgent('agent')
@@ -112,7 +112,7 @@ describe('SUP-309: atomic writes', () => {
   })
 })
 
-describe('SUP-309: fail-closed on corrupt metadata (no clobbering)', () => {
+describe('fail-closed on corrupt metadata (no clobbering)', () => {
   it('registerSession THROWS and does NOT overwrite a corrupt file with a near-empty map', async () => {
     const { registerSession } = await importService()
     makeAgent('agent')
@@ -158,7 +158,7 @@ describe('SUP-309: fail-closed on corrupt metadata (no clobbering)', () => {
   })
 })
 
-describe('SUP-309: deletes preserve siblings', () => {
+describe('deletes preserve siblings', () => {
   it('deleteSessionsBatch only removes metadata for sessions whose JSONL it removed', async () => {
     const { registerSession, deleteSessionsBatch, readSessionMetadata } = await importService()
     makeAgent('agent')

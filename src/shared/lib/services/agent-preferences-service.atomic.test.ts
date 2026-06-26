@@ -1,5 +1,5 @@
 /**
- * SUP-316 — agent-preferences.json hardening: serialized + atomic writes, and
+ * agent-preferences.json hardening: serialized + atomic writes, and
  * never persist a `{}` synthesized from a parse error (which would drop all prefs).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
@@ -18,7 +18,7 @@ function makeAgent(slug: string): void {
 }
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-prefs-sup316-')))
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-prefs-')))
   process.env.SUPERAGENT_DATA_DIR = tmpDir
 })
 
@@ -27,7 +27,7 @@ afterEach(() => {
   delete process.env.SUPERAGENT_DATA_DIR
 })
 
-describe('SUP-316: fail-closed + atomic agent preferences', () => {
+describe('fail-closed + atomic agent preferences', () => {
   it('update on a CORRUPT file THROWS and does NOT overwrite it with the merged value', async () => {
     makeAgent('agent')
     const corrupt = '{ "autoDeleteInactiveDays": 3'

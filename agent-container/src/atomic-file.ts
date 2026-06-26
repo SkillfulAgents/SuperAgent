@@ -7,7 +7,7 @@
  *   write a sibling temp file in the same dir → fsync → rename → fsync dir.
  * A reader sees the whole old file or the whole new file, never a torn mix, and
  * an interrupted/killed write leaves the previous good file intact — closing the
- * SUP-310 data-loss bug-class for the container's own /workspace state files.
+ * data-loss bug-class for the container's own /workspace state files.
  *
  * `mode` (matching fs.writeFile) applies only when CREATING the target; an
  * existing file's permissions are preserved so the rename doesn't reset perms

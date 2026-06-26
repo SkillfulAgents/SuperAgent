@@ -36,7 +36,7 @@ const mockIsAdminMiddleware = vi.hoisted(() =>
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
   // The PUT route now reads currentSettings via the fail-closed strict loader
-  // (SUP-312); map it to the same seeded settings the tests already provide.
+  // map it to the same seeded settings the tests already provide.
   loadSettingsStrict: (...args: unknown[]) => mockGetSettings(...args),
   updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
   clearSettingsCache: (...args: unknown[]) => mockClearSettingsCache(...args),

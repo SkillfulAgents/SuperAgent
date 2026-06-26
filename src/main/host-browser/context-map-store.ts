@@ -2,7 +2,7 @@
  * Persistent instanceId → Browserbase contextId map shared by the Browserbase
  * and platform host-browser providers.
  *
- * Hardened for SUP-315: the map is a single JSON file read-modify-written from
+ * Hardened: the map is a single JSON file read-modify-written from
  * concurrent `getOrCreateContext` calls (which `await` a network create between
  * read and write). The old code read with a swallow-to-`{}` catch and wrote
  * non-atomically, so a transient bad read or two instances racing wiped every
@@ -52,7 +52,7 @@ export async function setContextMapping(filePath: string, key: string, contextId
 }
 
 // In-flight context creations, keyed by `${resolved file}::${key}`. Dedups
-// concurrent first-opens for the SAME key within this process (SUP-315 P2): the
+// concurrent first-opens for the SAME key within this process (P2): the
 // file lock only protects the WRITE, so without this, two concurrent calls that
 // both miss the map would each create a paid remote context and the second
 // would orphan/leak the first. Different keys are NOT serialized — they create

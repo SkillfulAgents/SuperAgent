@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 /**
  * Zod schema for the per-agent `session-metadata.json` map, validated at the
- * file read boundary (project convention; SUP-310 fail-closed hardening).
+ * file read boundary (project convention; fail-closed hardening).
  *
  * Design: deliberately LENIENT so it never rejects a legitimately-evolving file
  * (a too-strict schema would refuse to write and wedge the feature). The

@@ -1,5 +1,5 @@
 /**
- * SUP-312 — settings.json (API keys, auth policy, skillsets, customEnvVars) must
+ * settings.json (API keys, auth policy, skillsets, customEnvVars) must
  * be hardened against the silent data-loss bug-class:
  *   1. atomic writes (no torn settings.json),
  *   2. fail-closed reads (a corrupt file is NEVER replaced with defaults), and
@@ -37,7 +37,7 @@ function writeOnDisk(obj: unknown): void {
 }
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'settings-sup312-')))
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'settings-')))
   process.env.SUPERAGENT_DATA_DIR = tmpDir
   clearSettingsCache()
 })
@@ -126,7 +126,7 @@ describe('mutateSettings — serialized, fresh, fail-closed', () => {
     writeOnDisk({ apiKeys: { anthropicApiKey: 'sk-real' } })
     expect(getEffectiveAnthropicApiKey()).toBe('sk-real')
 
-    // 2. Simulate the SUP-309/312 hazard: the cache is poisoned with defaults
+    // 2. Simulate the hazard: the cache is poisoned with defaults
     //    (e.g. a transient corrupt read happened earlier), while disk is fine.
     fs.writeFileSync(settingsPath(), 'CORRUPT')
     clearSettingsCache()

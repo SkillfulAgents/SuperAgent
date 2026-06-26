@@ -214,7 +214,7 @@ export class ComputerUsePermissionManager {
         }
       }
 
-      // Serialized fresh-read + atomic write (SUP-312): preserves any concurrent
+      // Serialized fresh-read + atomic write: preserves any concurrent
       // settings change instead of overwriting from a stale snapshot.
       mutateSettings((settings) => {
         settings.computerUse = {

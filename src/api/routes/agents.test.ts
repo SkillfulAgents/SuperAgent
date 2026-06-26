@@ -358,7 +358,7 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
   getTempUploadsDir: vi.fn(() => '/mock/tmp/uploads'),
   ensureDirectory: vi.fn(),
   removeDirectory: vi.fn(),
-  // SUP-310 atomic/lock/strict-read primitives, used by the real (unmocked)
+  // The atomic/lock/strict-read primitives, used by the real (unmocked)
   // services in the route's import graph (agent-preferences, artifact, …).
   readJsonFileStrict: vi.fn(async () => ({})),
   readJsonFileStrictSync: vi.fn(() => ({})),

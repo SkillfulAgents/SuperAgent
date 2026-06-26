@@ -1,5 +1,5 @@
 /**
- * SUP-313 — agent `.env` secrets: serialized (cross-process-aware) + atomic
+ * Agent `.env` secrets: serialized (cross-process-aware) + atomic
  * writes so an interleaved or interrupted read-modify-write can't drop other
  * secrets or truncate the file (which doubles as the container runtime env).
  */
@@ -15,7 +15,7 @@ function envPath(slug: string): string {
 }
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'secrets-sup313-')))
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'secrets-')))
   process.env.SUPERAGENT_DATA_DIR = tmpDir
 })
 
@@ -28,7 +28,7 @@ async function importService() {
   return import('./secrets-service')
 }
 
-describe('SUP-313: serialized .env writes (no lost secrets)', () => {
+describe('serialized .env writes (no lost secrets)', () => {
   it('many concurrent setSecret calls with distinct keys ALL survive', async () => {
     const { setSecret, listSecrets } = await importService()
     const keys = Array.from({ length: 30 }, (_, i) => `KEY_${i}`)
@@ -59,7 +59,7 @@ describe('SUP-313: serialized .env writes (no lost secrets)', () => {
   })
 })
 
-describe('SUP-313: atomic .env writes', () => {
+describe('atomic .env writes', () => {
   it('setSecret leaves no temp/lock file behind and writes a parseable file', async () => {
     const { setSecret, listSecrets } = await importService()
     await setSecret('agent', { envVar: 'API_KEY', key: 'My API Key', value: 'sk-123' })

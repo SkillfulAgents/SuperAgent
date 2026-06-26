@@ -478,7 +478,7 @@ export async function copyDirectoryFiltered(
  *
  * Delegates to {@link writeJsonFileAtomic} so every existing caller gets crash-safe
  * temp-file + rename semantics for free — a torn/half-written JSON file can never
- * replace a good one (the SUP-310 data-loss bug-class). The parent directory must
+ * replace a good one (the data-loss bug-class). The parent directory must
  * already exist (same precondition as before).
  */
 export async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
@@ -486,7 +486,7 @@ export async function writeJsonFile(filePath: string, data: unknown): Promise<vo
 }
 
 // ============================================================================
-// Atomic Writes, Serialized Read-Modify-Write & Strict JSON Reads (SUP-310)
+// Atomic Writes, Serialized Read-Modify-Write & Strict JSON Reads
 // ============================================================================
 //
 // The file-based stores in this app (session metadata, settings, secrets,
@@ -494,7 +494,7 @@ export async function writeJsonFile(filePath: string, data: unknown): Promise<vo
 // `fs.writeFile` overwrites with read-modify-write of a whole map/array and no
 // serialization, plus reads that swallowed parse errors into an empty default.
 // Under concurrent or interrupted writes that combination silently and
-// permanently destroys data (SUP-309: 34 session names wiped). The primitives
+// permanently destroys data (34 session names wiped in an earlier incident). The primitives
 // below close that bug-class:
 //
 //  * writeFileAtomic / writeJsonFileAtomic — temp-file → fsync → rename → fsync
@@ -518,7 +518,7 @@ export async function writeJsonFile(filePath: string, data: unknown): Promise<vo
  * or wrong shape) — as distinct from the file simply being absent.
  *
  * Callers MUST let this propagate and abort the surrounding read-modify-write
- * rather than treating it as an empty default and overwriting (the SUP-309
+ * rather than treating it as an empty default and overwriting (the original
  * failure mode). The on-disk file is left untouched so it can be recovered.
  */
 export class CorruptFileError extends Error {
@@ -778,7 +778,7 @@ function parseJsonStrict<T>(filePath: string, content: string, schema: ZodType<T
  *
  * Use this everywhere a read-modify-write previously swallowed errors into an
  * empty default, so a transiently-unreadable file aborts the write instead of
- * being overwritten with the default (SUP-309 / CLAUDE.md fail-closed rule).
+ * being overwritten with the default (the CLAUDE.md fail-closed rule).
  */
 export async function readJsonFileStrict<T>(
   filePath: string,

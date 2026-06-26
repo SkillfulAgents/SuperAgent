@@ -1,5 +1,5 @@
 /**
- * SUP-310 — container-side atomic file writes (shared by the .env store and the
+ * Container-side atomic file writes (shared by the .env store and the
  * /workspace session-persistence map). Sensitive infra: a regression re-opens
  * the torn-write data-loss bug-class, so the crash-safety properties are covered
  * for both the async and sync writers.
@@ -13,7 +13,7 @@ import { writeFileAtomic, writeFileAtomicSync } from './atomic-file';
 let tmpDir: string;
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-file-sup310-')));
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-file-')));
 });
 
 afterEach(() => {

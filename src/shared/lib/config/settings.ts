@@ -444,7 +444,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
 }
 
 /**
- * Strict, fail-closed load (SUP-310/SUP-312). Reads fresh from disk (bypassing
+ * Strict, fail-closed load. Reads fresh from disk (bypassing
  * the cache) and:
  *   - absent file (ENOENT) → defaults (legitimate first run),
  *   - torn/corrupt JSON or a non-object → THROWS CorruptFileError,
@@ -497,7 +497,7 @@ function parseJsonStrict(settingsPath: string, content: string): Record<string, 
 /**
  * Load settings for READ-ONLY consumers (display, getters). Tolerant: never
  * throws, so a corrupt file degrades to in-memory defaults rather than crashing
- * the app — but it NEVER writes those defaults back (the SUP-309/312
+ * the app — but it NEVER writes those defaults back (the data-loss
  * amplification). Writes go through {@link mutateSettings}/{@link loadSettingsStrict},
  * which re-throw on corruption, so defaults surfaced here can't overwrite a real
  * but temporarily-unreadable file.
@@ -528,7 +528,7 @@ export function saveSettings(settings: AppSettings): void {
     fs.mkdirSync(dataDir, { recursive: true })
   }
 
-  // Atomic temp-file + rename (SUP-310): an interrupted write can never leave a
+  // Atomic temp-file + rename: an interrupted write can never leave a
   // torn settings.json that a later read would mistake for corruption (or that
   // the tolerant loader would mask with defaults). Mode 0o600 (owner-only) since
   // the file holds API keys.
@@ -562,7 +562,7 @@ export function updateSettings(settings: AppSettings): void {
 }
 
 /**
- * Serialized, fail-closed read-modify-write of settings (SUP-312).
+ * Serialized, fail-closed read-modify-write of settings.
  *
  * Synchronous on purpose: with no `await` between the fresh strict read and the
  * atomic write, concurrent callers cannot interleave, so this serializes for

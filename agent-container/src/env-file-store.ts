@@ -3,7 +3,7 @@
  *
  * The agent `.env` is written by BOTH the host app (secrets-service) AND this
  * container (POST /env, reserved runtime vars), against the same bind-mounted
- * file. SUP-313: without coordination an interleaved read-modify-write drops the
+ * file. Without coordination an interleaved read-modify-write drops the
  * other writer's keys, and a non-atomic write can truncate the file mid-stream —
  * which breaks the running session (the file doubles as the runtime env).
  *

@@ -47,7 +47,7 @@ import { captureException } from '@shared/lib/error-reporting'
  *
  * This is what the read-modify-write helper below uses, so a transiently
  * unreadable file aborts the write instead of being overwritten with a near-empty
- * map — the SUP-309 permanent-data-loss mechanism. Do NOT use this on read-only
+ * map — the permanent-data-loss mechanism. Do NOT use this on read-only
  * display paths; use {@link readSessionMetadata}, which degrades gracefully.
  */
 async function readSessionMetadataStrict(agentSlug: string): Promise<SessionMetadataMap> {

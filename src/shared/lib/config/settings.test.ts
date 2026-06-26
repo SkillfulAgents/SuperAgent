@@ -148,7 +148,7 @@ describe('loadSettings', () => {
 
       loadSettings()
 
-      // Fail-closed read (SUP-312): a corrupt file surfaces a CorruptFileError
+      // Fail-closed read: a corrupt file surfaces a CorruptFileError
       // and loadSettings degrades to in-memory defaults WITHOUT overwriting.
       expect(consoleSpy).toHaveBeenCalledWith(
         'Failed to load settings; using in-memory defaults (NOT overwriting the file):',
@@ -712,7 +712,7 @@ describe('saveSettings', () => {
     const settings = makeFullSettings()
     saveSettings(settings)
 
-    // Atomic write (SUP-312): the serialized content is written to a temp file
+    // Atomic write: the serialized content is written to a temp file
     // (by fd) which is then renamed onto the real settings path.
     expect(mockedFs.writeFileSync.mock.calls[0][1]).toBe(JSON.stringify(settings, null, 2))
     expect(mockedFs.renameSync).toHaveBeenCalledWith(

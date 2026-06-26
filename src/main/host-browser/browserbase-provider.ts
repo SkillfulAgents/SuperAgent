@@ -216,7 +216,7 @@ export class BrowserbaseProvider implements HostBrowserProvider {
   private async getOrCreateContext(instanceId: string, projectId: string, apiKey: string): Promise<string> {
     // getOrCreateMapping dedups concurrent first-opens for the same instance so
     // we never create (and then orphan/leak) two paid contexts; it re-reads the
-    // map and persists atomically (SUP-315).
+    // map and persists atomically.
     return getOrCreateMapping(this.contextMapPath(), instanceId, async () => {
       const response = await fetch(`${BROWSERBASE_API_BASE}/contexts`, {
         method: 'POST',

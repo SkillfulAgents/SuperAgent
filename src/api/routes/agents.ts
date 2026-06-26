@@ -4925,7 +4925,7 @@ agents.put('/:id/bookmarks', AgentAdmin(), async (c) => {
       return c.json({ error: 'Bookmarks must be an array' }, 400)
     }
     const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
-    // Atomic write (SUP-317): full-replace from client input, but crash-safe so
+    // Atomic write: full-replace from client input, but crash-safe so
     // an interrupted write can't truncate bookmarks.json.
     await writeJsonFileAtomic(bookmarksPath, bookmarks)
     return c.json(bookmarks)

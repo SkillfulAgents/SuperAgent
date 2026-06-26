@@ -928,7 +928,7 @@ class ContainerManager {
         if (alternativeRunner) {
           console.log(`Configured runner ${configuredRunner} not available, auto-switching to ${alternativeRunner.runner}`)
           configuredRunner = alternativeRunner.runner as ContainerRunner
-          // Serialized fresh-read + atomic write (SUP-312); re-bind the local
+          // Serialized fresh-read + atomic write; re-bind the local
           // snapshot to the persisted result so later reads see fresh state.
           settings = mutateSettings((s) => {
             s.container.containerRunner = configuredRunner

@@ -1,10 +1,10 @@
 /**
- * SUP-311 — foundational atomic-write / per-path write-queue / strict JSON reader
+ * Foundational atomic-write / per-path write-queue / strict JSON reader
  * primitives in file-storage.ts.
  *
- * These back the codebase-wide file-storage hardening (SUP-310). They are
+ * These back the codebase-wide file-storage hardening. They are
  * sensitive infra: a regression here silently re-opens the data-loss bug-class
- * (SUP-309), so the coverage below is deliberately exhaustive — atomicity &
+ * so the coverage below is deliberately exhaustive — atomicity &
  * crash-safety, fail-closed reads, and read-modify-write serialization.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'

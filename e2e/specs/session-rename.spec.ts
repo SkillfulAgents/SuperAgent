@@ -3,14 +3,14 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 
 /**
- * SUP-309 / SUP-310 — session names are persisted to `session-metadata.json` via
+ * Session names are persisted to `session-metadata.json` via
  * the hardened (atomic + serialized + fail-closed) write path. The incident was
  * that custom session names silently vanished. This spec exercises the real
  * end-to-end rename flow against the real on-disk metadata store (E2E uses a real
  * SUPERAGENT_DATA_DIR), and — crucially — asserts the name survives a reload,
  * which is what regressed in production.
  */
-test.describe('Session Rename (SUP-309 — names must persist)', () => {
+test.describe('Session Rename (names must persist)', () => {
   let appPage: AppPage
   let agentPage: AgentPage
   let agentName: string

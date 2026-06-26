@@ -48,7 +48,7 @@ export interface InstalledTemplateLocation {
  */
 export function reconcileSkillsetConfigsForCurrentAuth(): { removed: number } {
   // Filter against a FRESH read inside the serialized mutation so a concurrent
-  // add/remove of an unrelated skillset isn't lost (SUP-312).
+  // add/remove of an unrelated skillset isn't lost.
   let removed = 0
   mutateSettings((settings) => {
     const before = settings.skillsets ?? []

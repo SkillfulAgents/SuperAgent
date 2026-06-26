@@ -16,7 +16,7 @@ function getMountsFilePath(slug: string): string {
 }
 
 /**
- * Read the agent's mounts. Fail-closed (SUP-314): an absent file is `[]` (no
+ * Read the agent's mounts. Fail-closed: an absent file is `[]` (no
  * mounts yet), but a corrupt/torn `mounts.json` or any IO error THROWS instead
  * of silently returning `[]`. The previous catch-all swallowed parse AND raw IO
  * errors, so a transiently-unreadable file became `[]`, and the next `addMount`
@@ -66,7 +66,7 @@ export const CLOUD_MOUNT_MESSAGE =
 function writeMounts(slug: string, mounts: AgentMount[]): void {
   const filePath = getMountsFilePath(slug)
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  // Atomic temp-file + rename (SUP-314): an interrupted write can never truncate
+  // Atomic temp-file + rename: an interrupted write can never truncate
   // mounts.json into the half-state the old reader would have swallowed.
   writeJsonFileAtomicSync(filePath, agentMountsSchema.parse(mounts))
 }

@@ -213,7 +213,7 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
   private async getOrCreateContext(contextKey: string, token: string): Promise<string> {
     // getOrCreateMapping dedups concurrent first-opens for the same key so we
     // never create (and then orphan/leak) two paid contexts; it re-reads the map
-    // and persists atomically (SUP-315).
+    // and persists atomically.
     return getOrCreateMapping(this.contextMapPath(), contextKey, async () => {
       const response = await fetch(`${this.proxyBase()}/contexts`, {
         method: 'POST',

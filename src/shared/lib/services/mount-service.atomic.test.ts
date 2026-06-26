@@ -1,5 +1,5 @@
 /**
- * SUP-314 — mounts.json must fail closed (stop swallowing parse/IO into `[]`)
+ * mounts.json must fail closed (stop swallowing parse/IO into `[]`)
  * and write atomically, so a transiently-unreadable file can't make the next
  * addMount persist only the new mount and drop every prior one.
  */
@@ -24,7 +24,7 @@ function makeHostDir(name: string): string {
 }
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mount-sup314-')))
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mount-')))
   process.env.SUPERAGENT_DATA_DIR = tmpDir
 })
 
@@ -37,7 +37,7 @@ async function importService() {
   return import('./mount-service')
 }
 
-describe('SUP-314: fail-closed mounts.json reads', () => {
+describe('fail-closed mounts.json reads', () => {
   it('absent file → [] (legitimate "no mounts yet")', async () => {
     const { getMounts } = await importService()
     makeAgentDir('agent')
@@ -63,7 +63,7 @@ describe('SUP-314: fail-closed mounts.json reads', () => {
   })
 })
 
-describe('SUP-314: atomic mounts.json writes', () => {
+describe('atomic mounts.json writes', () => {
   it('addMount writes atomically (no temp file left behind) and round-trips', async () => {
     const { addMount, getMounts } = await importService()
     makeAgentDir('agent')

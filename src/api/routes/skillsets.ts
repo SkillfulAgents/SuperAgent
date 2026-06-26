@@ -141,7 +141,7 @@ skillsets.post('/', IsAdmin(), async (c) => {
     }
 
     // Upsert by id against a FRESH read inside the serialized mutation so a
-    // concurrent add of a different skillset isn't lost (SUP-312).
+    // concurrent add of a different skillset isn't lost.
     mutateSettings((s) => {
       s.skillsets = [...(s.skillsets ?? []).filter((x) => x.id !== config.id), config]
     })
@@ -166,7 +166,7 @@ skillsets.delete('/:id', IsAdmin(), async (c) => {
     }
 
     // Remove from settings — filter against a FRESH read inside the serialized
-    // mutation so a concurrent change to another skillset isn't lost (SUP-312).
+    // mutation so a concurrent change to another skillset isn't lost.
     mutateSettings((s) => {
       s.skillsets = (s.skillsets ?? []).filter((x) => x.id !== id)
     })
@@ -258,7 +258,7 @@ skillsets.post('/sync-remote', IsAdmin(), async (c) => {
     }
 
     // Build the new skillset list against a FRESH read inside the serialized
-    // mutation so concurrent changes to unrelated skillsets aren't lost (SUP-312).
+    // mutation so concurrent changes to unrelated skillsets aren't lost.
     const added: SkillsetConfig[] = []
     const finalSettings = mutateSettings((s) => {
       const current = s.skillsets ?? []

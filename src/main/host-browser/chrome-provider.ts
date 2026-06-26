@@ -304,7 +304,7 @@ export class ChromeProvider implements HostBrowserProvider {
     const prefsDir = path.join(userDataDir, 'Default')
     const prefsPath = path.join(prefsDir, 'Preferences')
     fs.mkdirSync(prefsDir, { recursive: true })
-    // Read Chrome's existing Preferences fail-closed (SUP-315): a missing file is
+    // Read Chrome's existing Preferences fail-closed: a missing file is
     // a fresh profile (→ {}), but a present-but-corrupt one must NOT be silently
     // replaced with just `{ download }` — that would wipe every other Chrome
     // preference. On corruption, skip the download tweak rather than clobber.

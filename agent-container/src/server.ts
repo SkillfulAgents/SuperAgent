@@ -346,7 +346,7 @@ async function updateEnvFile(key: string, value: string): Promise<void> {
 
   try {
     // The host app also writes this file (user secrets). Serialize via the shared
-    // on-disk lock and write atomically (SUP-313) so neither side drops the
+    // on-disk lock and write atomically so neither side drops the
     // other's keys or sees a torn file. Read-modify-write happens INSIDE the lock.
     await withEnvFileLock(envFilePath, async () => {
       // Read existing .env file or start fresh

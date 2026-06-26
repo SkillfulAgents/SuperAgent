@@ -198,7 +198,7 @@ export async function setSecret(agentSlug: string, secret: AgentSecret): Promise
   // The agent .env is written by BOTH this app AND the container's POST /env
   // handler (reserved runtime vars). Serialize across processes with an on-disk
   // lock the container honors too, re-read FRESH under the lock, and write
-  // atomically (SUP-313) so an interleaved/interrupted write can't drop other
+  // atomically so an interleaved/interrupted write can't drop other
   // secrets or truncate the file (which doubles as the container runtime env).
   // mode 0o666 is preserved so the container (different uid) can still write it.
   await withCrossProcessFileLock(envPath, async () => {
