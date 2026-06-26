@@ -5,7 +5,6 @@ import { z } from 'zod'
 import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
 import type { ContainerConfig, ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
 import { getSettings } from '@shared/lib/config/settings'
-import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { captureException } from '@shared/lib/error-reporting'
 import { isRunningInKubernetes } from './runtime-env'
 
@@ -118,7 +117,7 @@ export class PlatformK8sRuntimeClient extends BaseContainerClient {
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/pods/${this.podName()}`)
     await deleteResource(`/api/v1/namespaces/${kube.namespace}/services/${this.serviceName()}`)
     await createResource(`/api/v1/namespaces/${kube.namespace}/services`, buildAgentServiceManifest(kube, this.serviceName(), this.podName(), ownerRef))
-    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, options?.envVars ?? {}, ownerRef))
+    await createResource(`/api/v1/namespaces/${kube.namespace}/pods`, buildAgentPodManifest(kube, this.podName(), this.config, this.buildAgentEnv(options?.envVars), ownerRef))
 
     await waitForPodReady(kube.namespace, this.podName(), 300_000)
 
@@ -285,16 +284,9 @@ export function buildAgentPodManifest(
 ): KubeResource {
   const settings = getSettings()
   const image = process.env.K8S_AGENT_IMAGE || settings.container.agentImage
-  const mergedEnvVars: Record<string, string | undefined> = {
-    ...getActiveLlmProvider().getContainerEnvVars(),
-    CLAUDE_CONFIG_DIR: '/workspace/.claude',
-    ENABLE_TOOL_SEARCH: settings.enableToolSearch !== false ? 'true' : 'false',
-    ...config.envVars,
-    ...envVars,
-  }
-  const env = Object.entries(mergedEnvVars)
-    .filter((entry): entry is [string, string] => entry[1] !== undefined)
-    .map(([name, value]) => ({ name, value }))
+  // envVars is already the final agent env (built by the client via buildAgentEnv);
+  // this builder only serializes it into pod env entries.
+  const env = Object.entries(envVars).map(([name, value]) => ({ name, value }))
   const resources = buildAgentContainerResources(settings.container.resourceLimits)
 
   const spec: Record<string, unknown> = {

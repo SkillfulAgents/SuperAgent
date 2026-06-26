@@ -70,6 +70,14 @@ vi.mock('./platform-k8s-runtime', () => ({
   },
 }))
 
+vi.mock('./lambda-microvm-runtime', () => ({
+  LambdaMicroVmRuntimeClient: class {
+    static isEligible() { return false }
+    static async isAvailable() { return false }
+    static async isRunning() { return false }
+  },
+}))
+
 const mockExecWithPath = vi.fn()
 const mockSpawnWithPath = vi.fn()
 vi.mock('./base-container-client', () => ({

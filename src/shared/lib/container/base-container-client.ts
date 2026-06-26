@@ -1430,21 +1430,27 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  /**
-   * Write env vars to a temp file and return the --env-file flag.
-   * This avoids shell quoting issues and Windows command length limits.
-   * The caller must clean up the file after the container starts.
-   */
-  protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
+  // The final agent env, transport-agnostic; subclasses only serialize it.
+  // Merge order: provider defaults < runtime constants < config.envVars < extra.
+  protected buildAgentEnv(extra?: Record<string, string>): Record<string, string> {
     const settings = getSettings()
-    const envVars: Record<string, string | undefined> = {
+    const merged: Record<string, string | undefined> = {
       ...getActiveLlmProvider().getContainerEnvVars(),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ENABLE_TOOL_SEARCH: settings.enableToolSearch !== false ? 'true' : 'false',
       ...this.config.envVars,
-      ...additionalEnvVars,
+      ...extra,
     }
+    const out: Record<string, string> = {}
+    for (const [key, value] of Object.entries(merged)) {
+      if (value !== undefined) out[key] = value
+    }
+    return out
+  }
 
-    return writeEnvFile(envVars, this.config.agentId)
+  // Serialize the agent env to a temp --env-file (avoids shell-quoting + Windows
+  // command-length limits). Caller cleans up the file after start.
+  protected buildEnvFile(additionalEnvVars?: Record<string, string>): { flag: string; cleanup: () => void } {
+    return writeEnvFile(this.buildAgentEnv(additionalEnvVars), this.config.agentId)
   }
 }

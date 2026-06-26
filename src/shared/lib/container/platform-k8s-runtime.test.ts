@@ -103,7 +103,15 @@ describe('PlatformK8sRuntimeClient manifests', () => {
       envVars: { EXTRA_ENV: 'extra' },
     }
 
-    const pod = buildAgentPodManifest(kube, 'superagent-agent-with-spaces-12345678', config, { RUNTIME_ENV: 'runtime' })
+    // buildAgentPodManifest is a pure serializer now: it maps the FINAL env
+    // (built by the client via buildAgentEnv) into pod env entries. Pass the
+    // already-merged env and assert it round-trips.
+    const pod = buildAgentPodManifest(kube, 'superagent-agent-with-spaces-12345678', config, {
+      ANTHROPIC_API_KEY: 'test-key',
+      EXTRA_ENV: 'extra',
+      RUNTIME_ENV: 'runtime',
+      CLAUDE_CONFIG_DIR: '/workspace/.claude',
+    })
 
     expect(pod.metadata.labels).toEqual({
       'app.kubernetes.io/managed-by': 'superagent',
