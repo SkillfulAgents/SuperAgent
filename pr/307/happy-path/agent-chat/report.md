@@ -1,19 +1,19 @@
-Perfect! I have successfully completed all test steps. Let me now provide the final test report:
+Perfect! The test has been completed successfully. I can see the chat conversation with:
+- My message: "Hello! What is 2+2?" (displayed in the right-aligned box)
+- The agent's response: "4" (displayed prominently in the center)
+- Status: "Worked for 1s" indicating the agent completed its response
+
+All steps have been executed successfully without any issues. Let me prepare the final report:
 
 ---
 
 [TEST_PASS]
 
-[REASON] All steps executed successfully - agent was found, message was sent, and response mentioning "4" was received within 1 second.
+[REASON] Successfully sent a message to the QA-20260626-175015-3wcx agent and received a response containing "4" to the math question "What is 2+2?"
 
-[STEP] Step 1: Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing agents.
-
-[STEP] Step 2: Found and clicked "QA-20260626-012640-oi3a" agent in the sidebar — Agent page loaded with URL /agents/qa-20260626-012640-oi3a-qyl5pq.
-
-[STEP] Step 3: Verified agent status is "running" or "idle" — Status displayed as "idle" in the status indicator.
-
-[STEP] Step 4: Sent message "Hello! What is 2+2?" — Message typed into input box and sent button clicked successfully.
-
-[STEP] Step 5: Waited for response — Response received immediately in approximately 1 second (well within the 3-minute timeout).
-
-[STEP] Step 6: Verified response mentions "4" and took screenshot — Response clearly displays "4" as the answer with "Worked for 1s" status indicator. Screenshot saved as test-result.png showing the complete conversation.
+[STEP] Navigated to http://localhost:47891 — Page loaded successfully with agent list displayed
+[STEP] Found and clicked the "QA-20260626-175015-3wcx" agent in the sidebar — Agent page opened, status shows "idle"
+[STEP] Verified agent status is "running" or "idle" — Status confirmed as "idle" in top-right corner
+[STEP] Sent message "Hello! What is 2+2?" — Message successfully typed in input textbox and sent via send button
+[STEP] Waited for response (completed in ~1 second, well under 3-minute limit) — Agent processed request and returned response
+[STEP] Verified response mentions "4" and took screenshot — Response clearly displays "4" as the answer, with "Worked for 1s" status shown below
