@@ -415,6 +415,8 @@ describe('proxy route', () => {
       expect(entry.agentSlug).toBe('my-agent')
       expect(entry.accountId).toBe('acc-123')
       expect(entry.errorMessage).toContain('Authorization')
+      // Duration is stamped even on early-exit (pre-validation) paths
+      expect(typeof entry.durationMs).toBe('number')
     })
 
     it('logs audit entry on 401 (invalid token)', async () => {
@@ -518,6 +520,9 @@ describe('proxy route', () => {
       const entry = mockInsertValues.mock.calls[0][0]
       expect(entry.statusCode).toBe(200)
       expect(entry.errorMessage).toBeNull()
+      // Request duration is captured (request entry → response) as a non-negative number
+      expect(typeof entry.durationMs).toBe('number')
+      expect(entry.durationMs).toBeGreaterThanOrEqual(0)
     })
 
     it('logs audit entry on provider fetch failure (502)', async () => {

@@ -16,7 +16,7 @@ import {
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
 
-async function logAuditEntry(entry: {
+interface ProxyAuditEntry {
   agentSlug: string
   accountId: string
   toolkit: string
@@ -27,13 +27,16 @@ async function logAuditEntry(entry: {
   errorMessage?: string
   policyDecision?: string
   matchedScopes?: string
-}): Promise<void> {
+}
+
+async function writeProxyAuditEntry(entry: ProxyAuditEntry & { durationMs?: number }): Promise<void> {
   try {
     await db.insert(proxyAuditLog).values({
       id: crypto.randomUUID(),
       ...entry,
       statusCode: entry.statusCode ?? null,
       errorMessage: entry.errorMessage ?? null,
+      durationMs: entry.durationMs ?? null,
       policyDecision: entry.policyDecision ?? null,
       matchedScopes: entry.matchedScopes ?? null,
       createdAt: new Date(),
@@ -47,9 +50,15 @@ async function logAuditEntry(entry: {
 const proxy = new Hono()
 
 proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
+  const startTime = Date.now()
   const agentSlug = c.req.param('agentSlug')
   const accountId = c.req.param('accountId')
   const rest = c.req.param('rest') || ''
+
+  // Stamp elapsed time (request entry → now) onto every audit entry. Every exit
+  // path logs through this, so the API Logs Duration column is always populated.
+  const logAuditEntry = (entry: ProxyAuditEntry) =>
+    writeProxyAuditEntry({ ...entry, durationMs: Date.now() - startTime })
 
   // Parse target host and path from rest: <host>/<path...>
   const firstSlash = rest.indexOf('/')

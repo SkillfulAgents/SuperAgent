@@ -221,6 +221,7 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   method: text('method').notNull(),
   statusCode: integer('status_code'),
   errorMessage: text('error_message'),
+  durationMs: integer('duration_ms'),
   policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
   matchedScopes: text('matched_scopes'), // JSON array string of matched scope names
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
