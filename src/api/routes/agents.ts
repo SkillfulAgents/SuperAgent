@@ -3844,7 +3844,7 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
         method: e.method,
         statusCode: e.statusCode ?? null,
         errorMessage: e.errorMessage ?? null,
-        durationMs: null as number | null,
+        durationMs: e.durationMs ?? null,
         policyDecision: e.policyDecision ?? null,
         matchedScopes: e.matchedScopes ?? null,
         createdAt: e.createdAt,

@@ -1608,6 +1608,7 @@ describe('audit log — GET /:id/audit-log', () => {
         method: 'GET',
         statusCode: 200,
         errorMessage: null,
+        durationMs: 87,
         createdAt: '2026-01-01T12:00:00Z',
       },
     ]
@@ -1624,7 +1625,31 @@ describe('audit log — GET /:id/audit-log', () => {
     expect(entry.method).toBe('GET')
     expect(entry.statusCode).toBe(200)
     expect(entry.errorMessage).toBeNull()
-    expect(entry.durationMs).toBeNull() // proxy entries don't have durationMs
+    expect(entry.durationMs).toBe(87) // captured proxy request duration flows through
+  })
+
+  it('handles entries with null durationMs in proxy', async () => {
+    const proxyEntries = [
+      {
+        id: 'p1',
+        agentSlug: 'test-agent',
+        toolkit: 'stripe',
+        targetHost: 'https://api.stripe.com',
+        targetPath: 'v1/charges',
+        method: 'GET',
+        statusCode: 401,
+        errorMessage: 'Invalid proxy token',
+        durationMs: null,
+        createdAt: '2026-01-01T12:00:00Z',
+      },
+    ]
+
+    setupAuditLogMocks(proxyEntries, 1, [], 0)
+
+    const res = await getReq(app, AUDIT_URL)
+    const body = await res.json()
+    expect(body.entries[0].durationMs).toBeNull()
+    expect(body.entries[0].errorMessage).toBe('Invalid proxy token')
   })
 
   it('normalizes MCP entries to common shape', async () => {
