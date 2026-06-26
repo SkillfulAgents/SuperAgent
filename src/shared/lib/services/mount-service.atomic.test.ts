@@ -37,18 +37,31 @@ async function importService() {
   return import('./mount-service')
 }
 
-describe('fail-closed mounts.json reads', () => {
+describe('mounts.json reads — tolerant display, fail-closed writes', () => {
   it('absent file → [] (legitimate "no mounts yet")', async () => {
     const { getMounts } = await importService()
     makeAgentDir('agent')
     expect(getMounts('agent')).toEqual([])
   })
 
-  it('corrupt/torn file → THROWS CorruptFileError (not [])', async () => {
+  it('corrupt file → getMounts degrades to [] (tolerant) and does NOT overwrite', async () => {
+    // getMounts feeds read-only display + getMountsWithHealth (container start);
+    // a corrupt file must NOT throw (which used to brick the whole agent) — it
+    // degrades to [] while leaving the bytes intact for recovery.
     const { getMounts } = await importService()
     makeAgentDir('agent')
+    const corrupt = '[ { "id": "a", '
+    fs.writeFileSync(mountsPath('agent'), corrupt)
+    expect(getMounts('agent')).toEqual([])
+    expect(fs.readFileSync(mountsPath('agent'), 'utf-8')).toBe(corrupt) // not clobbered
+  })
+
+  it('getMountsWithHealth on a corrupt file → [] (does NOT throw → container start survives)', async () => {
+    const { getMountsWithHealth } = await importService()
+    makeAgentDir('agent')
     fs.writeFileSync(mountsPath('agent'), '[ { "id": "a", ')
-    expect(() => getMounts('agent')).toThrow(CorruptFileError)
+    expect(() => getMountsWithHealth('agent')).not.toThrow()
+    expect(getMountsWithHealth('agent')).toEqual([])
   })
 
   it('addMount on a corrupt file THROWS and does NOT overwrite (prior mounts preserved)', async () => {
@@ -57,7 +70,7 @@ describe('fail-closed mounts.json reads', () => {
     const corrupt = '[ { "id": "old-mount", "hostPath": "/x"'
     fs.writeFileSync(mountsPath('agent'), corrupt)
 
-    expect(() => addMount('agent', makeHostDir('newfolder'))).toThrow()
+    expect(() => addMount('agent', makeHostDir('newfolder'))).toThrow(CorruptFileError)
     // The unreadable file is left intact — NOT clobbered with just the new mount.
     expect(fs.readFileSync(mountsPath('agent'), 'utf-8')).toBe(corrupt)
   })

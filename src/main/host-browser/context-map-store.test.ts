@@ -139,4 +139,19 @@ describe('getOrCreateMapping — dedups same-key creates (no duplicate context l
     expect(await getOrCreateMapping(mapPath, 'agentA', flaky)).toBe('ctx-ok')
     expect(attempts).toBe(2)
   })
+
+  it('rethrows (does not swallow) when persisting a freshly-created paid context fails', async () => {
+    // create() succeeds (a paid remote context now exists), but the map file is
+    // corrupt by persist time, so setContextMapping's strict re-read throws. The
+    // error must propagate (so the orphaned id is captured/surfaced, not silently
+    // dropped) rather than be swallowed.
+    let creates = 0
+    const create = async () => {
+      creates++
+      fs.writeFileSync(mapPath, '{ corrupt') // map becomes unreadable between create and persist
+      return 'ctx-paid'
+    }
+    await expect(getOrCreateMapping(mapPath, 'agentA', create)).rejects.toThrow(CorruptFileError)
+    expect(creates).toBe(1) // the paid context was created — confirms the leak surface this guards
+  })
 })

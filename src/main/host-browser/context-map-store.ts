@@ -18,6 +18,7 @@ import {
   writeJsonFileAtomicSync,
   withFileLock,
 } from '@shared/lib/utils/file-storage'
+import { captureException } from '@shared/lib/error-reporting'
 
 const contextMapSchema = z.record(z.string(), z.string())
 
@@ -84,7 +85,20 @@ export async function getOrCreateMapping(
     const fresh = loadContextMap(filePath)[key]
     if (fresh) return fresh
     const contextId = await create()
-    await setContextMapping(filePath, key, contextId)
+    try {
+      await setContextMapping(filePath, key, contextId)
+    } catch (err) {
+      // The remote context was created and BILLED, but persisting it failed
+      // (corrupt map file, disk full, …). Surface the orphaned id so it can be
+      // reclaimed/deleted out-of-band instead of silently leaking — and so a
+      // recurring persist failure (which would re-create a paid context on every
+      // launch) is visible — then rethrow.
+      captureException(err, {
+        tags: { area: 'host-browser-context-map', op: 'persist' },
+        extra: { filePath, key, orphanedContextId: contextId },
+      })
+      throw err
+    }
     return contextId
   })()
   inflightContextCreations.set(inflightKey, p)

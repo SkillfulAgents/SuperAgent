@@ -37,6 +37,7 @@ export async function withEnvFileLock<T>(targetPath: string, fn: () => Promise<T
   // Unique owner token so release only removes a lock we still hold.
   const ownerToken = `${process.pid}.${Math.random().toString(36).slice(2)}`;
   const deadline = Date.now() + TIMEOUT_MS;
+  let acquiredAt = 0;
 
   for (;;) {
     try {
@@ -46,6 +47,7 @@ export async function withEnvFileLock<T>(targetPath: string, fn: () => Promise<T
       } finally {
         await handle.close();
       }
+      acquiredAt = Date.now();
       break; // acquired
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
@@ -70,9 +72,12 @@ export async function withEnvFileLock<T>(targetPath: string, fn: () => Promise<T
   } finally {
     // Release only if we still own it — if the host app stole our stale lock,
     // the file holds its token now and we must not delete it (would reopen the
-    // cross-process lost-update race the lock exists to prevent).
+    // cross-process lost-update race the lock exists to prevent). If the readback
+    // fails transiently (→ null) we can't see the token, but a steal only happens
+    // after STALE_MS, so while we've held it for less than that it's provably ours
+    // — remove it rather than leak our own lock.
     const current = await fs.promises.readFile(lockPath, 'utf-8').catch(() => null);
-    if (current === ownerToken) {
+    if (current === ownerToken || (current === null && Date.now() - acquiredAt < STALE_MS)) {
       await fs.promises.rm(lockPath, { force: true }).catch(() => {});
     }
   }

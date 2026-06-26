@@ -851,6 +851,7 @@ export async function withCrossProcessFileLock<T>(
 
   return withFileLock(targetPath, async () => {
     const deadline = Date.now() + timeoutMs
+    let acquiredAt = 0
     // Acquire
     for (;;) {
       try {
@@ -860,6 +861,7 @@ export async function withCrossProcessFileLock<T>(
         } finally {
           await handle.close()
         }
+        acquiredAt = Date.now()
         break // acquired
       } catch (err) {
         if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
@@ -888,8 +890,13 @@ export async function withCrossProcessFileLock<T>(
       // stale (we stalled past staleMs — plausible on a hung network fs), the
       // file now holds THEIR token; deleting it would let a third writer in
       // while they're mid-critical-section, reopening the lost-update race.
+      // If the readback itself fails transiently (EIO/EACCES → null) we can't see
+      // the token — but a steal can only happen after staleMs, so while we've held
+      // it for less than that it's provably still ours; remove it rather than
+      // leak our own lock (which would make other writers time out until it ages
+      // into stale).
       const current = await fs.promises.readFile(lockPath, 'utf-8').catch(() => null)
-      if (current === ownerToken) {
+      if (current === ownerToken || (current === null && Date.now() - acquiredAt < staleMs)) {
         await fs.promises.rm(lockPath, { force: true }).catch(() => {})
       }
     }

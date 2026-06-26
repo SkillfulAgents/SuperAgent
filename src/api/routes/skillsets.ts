@@ -261,7 +261,10 @@ skillsets.post('/sync-remote', IsAdmin(), async (c) => {
     // mutation so concurrent changes to unrelated skillsets aren't lost.
     const added: SkillsetConfig[] = []
     const finalSettings = mutateSettings((s) => {
-      const current = s.skillsets ?? []
+      // Copy into a fresh array — never push() into whatever `s.skillsets` points
+      // at. Defense-in-depth: even if a future change handed back a shared
+      // default reference, this can't mutate it in place.
+      const current = [...(s.skillsets ?? [])]
       for (const remote of remoteSkillsets) {
         const skillsetId = `${providerId}--${remote.repoId}--${remote.name}`
 

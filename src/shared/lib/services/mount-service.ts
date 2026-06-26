@@ -6,8 +6,10 @@ import {
   getAgentDir,
   readJsonFileStrictSync,
   writeJsonFileAtomicSync,
+  CorruptFileError,
 } from '@shared/lib/utils/file-storage'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { captureException } from '@shared/lib/error-reporting'
 import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
 import { agentMountsSchema } from './mount-schema'
 
@@ -16,16 +18,36 @@ function getMountsFilePath(slug: string): string {
 }
 
 /**
- * Read the agent's mounts. Fail-closed: an absent file is `[]` (no
- * mounts yet), but a corrupt/torn `mounts.json` or any IO error THROWS instead
- * of silently returning `[]`. The previous catch-all swallowed parse AND raw IO
- * errors, so a transiently-unreadable file became `[]`, and the next `addMount`
- * persisted only the new mount — dropping every prior mount. Throwing here aborts
- * that read-modify-write so the existing file is preserved.
+ * Strict read for the read-modify-write paths (addMount/removeMount): an absent
+ * file is `[]`, but a corrupt/torn `mounts.json` or IO error THROWS so the write
+ * aborts instead of clobbering the file with just the new/remaining mount (the
+ * previous catch-all swallowed bad reads, so the next write dropped every prior
+ * mount). Do NOT use this on read-only display paths — use {@link getMounts}.
+ */
+function readMountsStrict(slug: string): AgentMount[] {
+  return readJsonFileStrictSync(getMountsFilePath(slug), agentMountsSchema, [])
+}
+
+/**
+ * Read the agent's mounts for READ-ONLY consumers (the mounts UI, health checks,
+ * and CONTAINER START). Tolerant: an absent file is `[]`, and a corrupt/unreadable
+ * file degrades to `[]` (logged + captured) rather than throwing — a bad
+ * mounts.json must not brick `getMountsWithHealth` (which runs on every container
+ * start) or 500 the mounts route. This never writes, so degrading to `[]` is safe;
+ * writes go through addMount/removeMount, which use the strict read and abort on
+ * corruption instead of overwriting.
  */
 export function getMounts(slug: string): AgentMount[] {
-  const filePath = getMountsFilePath(slug)
-  return readJsonFileStrictSync(filePath, agentMountsSchema, [])
+  try {
+    return readMountsStrict(slug)
+  } catch (error) {
+    if (error instanceof CorruptFileError) {
+      console.error(`Corrupt mounts.json for agent ${slug}; treating as no mounts (NOT overwriting)`, error)
+      captureException(error, { tags: { area: 'mounts', op: 'read' }, extra: { agentSlug: slug } })
+      return []
+    }
+    throw error
+  }
 }
 
 /**
@@ -90,7 +112,7 @@ export function addMount(slug: string, hostPath: string): AgentMount {
     throw new Error('hostPath must be a directory')
   }
 
-  const mounts = getMounts(slug)
+  const mounts = readMountsStrict(slug)
   const baseName = path.basename(resolved)
 
   // Pick container path, append -2, -3, etc. on collision
@@ -115,7 +137,7 @@ export function addMount(slug: string, hostPath: string): AgentMount {
 }
 
 export function removeMount(slug: string, mountId: string): void {
-  const mounts = getMounts(slug)
+  const mounts = readMountsStrict(slug)
   const filtered = mounts.filter((m) => m.id !== mountId)
   writeMounts(slug, filtered)
 }
