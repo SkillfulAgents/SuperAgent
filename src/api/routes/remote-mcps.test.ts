@@ -34,11 +34,14 @@ const mockInitiateOAuthFlow = vi.fn()
 const mockInitiateNewServerOAuth = vi.fn()
 const mockCompleteOAuthFlow = vi.fn()
 const mockDiscoverOAuthMetadata = vi.fn()
+const mockValidateAndConsumeOAuthErrorResponse = vi.fn()
 
 vi.mock('@shared/lib/mcp/oauth', () => ({
   initiateOAuthFlow: (...args: unknown[]) => mockInitiateOAuthFlow(...args),
   initiateNewServerOAuth: (...args: unknown[]) => mockInitiateNewServerOAuth(...args),
   completeOAuthFlow: (...args: unknown[]) => mockCompleteOAuthFlow(...args),
+  validateAndConsumeOAuthErrorResponse: (...args: unknown[]) =>
+    mockValidateAndConsumeOAuthErrorResponse(...args),
   discoverOAuthMetadata: (...args: unknown[]) => mockDiscoverOAuthMetadata(...args),
 }))
 
@@ -1066,14 +1069,53 @@ describe('OAuth callback — postMessage origin', () => {
   })
 
   it('uses window.location.origin (not wildcard) on error', async () => {
+    mockValidateAndConsumeOAuthErrorResponse.mockReturnValueOnce({ valid: true })
+
     const res = await app.request(
-      'http://localhost/api/remote-mcps/oauth-callback?error=access_denied'
+      'http://localhost/api/remote-mcps/oauth-callback?error=access_denied&state=xyz'
     )
 
     expect(res.status).toBe(200)
     const html = await res.text()
     expect(html).toContain('window.location.origin')
     expect(html).not.toContain("'*'")
+  })
+
+  it('escapes authorization-server error text once on the callback page', async () => {
+    mockValidateAndConsumeOAuthErrorResponse.mockReturnValueOnce({ valid: true })
+
+    const res = await app.request(
+      'http://localhost/api/remote-mcps/oauth-callback?error=%3Cbad%3E&state=xyz'
+    )
+
+    expect(res.status).toBe(200)
+    const html = await res.text()
+    expect(html).toContain('OAuth error: &lt;bad&gt;. You can close this window.')
+    expect(html).not.toContain('&amp;lt;bad&amp;gt;')
+    expect(html).toContain('"error":"\\u003cbad\\u003e"')
+  })
+
+  it('does not display authorization-server error fields when issuer validation fails', async () => {
+    mockValidateAndConsumeOAuthErrorResponse.mockReturnValueOnce({
+      valid: false,
+      error: 'OAuth issuer validation failed',
+    })
+
+    const res = await app.request(
+      'http://localhost/api/remote-mcps/oauth-callback?error=access_denied&error_description=Do+not+show+me&error_uri=https%3A%2F%2Fevil.example.com%2Fdocs&state=xyz&iss=https%3A%2F%2Fevil.example.com'
+    )
+
+    expect(res.status).toBe(200)
+    const html = await res.text()
+    expect(html).toContain('OAuth callback validation failed')
+    expect(html).not.toContain('access_denied')
+    expect(html).not.toContain('Do not show me')
+    expect(html).not.toContain('evil.example.com')
+    expect(mockValidateAndConsumeOAuthErrorResponse).toHaveBeenCalledWith(
+      'xyz',
+      'https://evil.example.com'
+    )
+    expect(mockCompleteOAuthFlow).not.toHaveBeenCalled()
   })
 
   it('uses window.location.origin (not wildcard) on token exchange failure', async () => {
@@ -1087,6 +1129,20 @@ describe('OAuth callback — postMessage origin', () => {
     const html = await res.text()
     expect(html).toContain('window.location.origin')
     expect(html).not.toContain("'*'")
+  })
+
+  it('passes iss through for successful authorization responses', async () => {
+    mockCompleteOAuthFlow.mockResolvedValue({ success: false })
+
+    await app.request(
+      'http://localhost/api/remote-mcps/oauth-callback?code=abc&state=xyz&iss=https%3A%2F%2Fauth.example.com'
+    )
+
+    expect(mockCompleteOAuthFlow).toHaveBeenCalledWith(
+      'xyz',
+      'abc',
+      'https://auth.example.com'
+    )
   })
 
   it('uses window.location.origin (not wildcard) on success', async () => {
@@ -1121,5 +1177,41 @@ describe('OAuth callback — postMessage origin', () => {
     const html = await res.text()
     expect(html).toContain('window.location.origin')
     expect(html).not.toContain("'*'")
+  })
+
+  it('emits callback fallbacks for web popups whose opener was severed', async () => {
+    mockCompleteOAuthFlow.mockResolvedValue({ success: true, mcpId: 'mcp-new' })
+    mockDbFrom.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      { id: 'mcp-new', url: 'https://mcp.example.com', accessToken: 'tok' },
+    ])
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ jsonrpc: '2.0', result: {}, id: 1 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }))
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ jsonrpc: '2.0', result: { tools: [] }, id: 2 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
+    mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+    const res = await app.request(
+      'http://localhost/api/remote-mcps/oauth-callback?code=abc&state=xyz'
+    )
+
+    expect(res.status).toBe(200)
+    const html = await res.text()
+    expect(html).toContain("new BroadcastChannel('mcp-oauth-callback')")
+    expect(html).toContain("localStorage.setItem('superagent.mcp-oauth-callback'")
+    expect(html).toContain('window.opener?.postMessage')
+    expect(html).toContain('setTimeout(() => window.close(), 0)')
+    expect(html).toContain('"success":true')
+    expect(html).toContain('"mcpId":"mcp-new"')
   })
 })

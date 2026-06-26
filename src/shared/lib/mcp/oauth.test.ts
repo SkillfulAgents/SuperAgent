@@ -34,6 +34,7 @@ import {
   initiateOAuthFlow,
   initiateNewServerOAuth,
   completeOAuthFlow,
+  validateAndConsumeOAuthErrorResponse,
   refreshMcpToken,
 } from './oauth'
 
@@ -401,7 +402,10 @@ describe('oauth', () => {
   // initiateOAuthFlow — authorization URL construction
   // =========================================================================
   describe('initiateOAuthFlow', () => {
-    function setupDiscoveryMocks() {
+    function setupDiscoveryMocks(options: {
+      issuer?: string
+      supportsIss?: boolean
+    } = {}) {
       // Probe: 401 with resource_metadata
       mockFetch.mockResolvedValueOnce(
         new Response(null, {
@@ -429,6 +433,10 @@ describe('oauth', () => {
             authorization_endpoint: 'https://auth.example.com/authorize',
             token_endpoint: 'https://auth.example.com/token',
             scopes_supported: ['read', 'write'],
+            ...(options.issuer ? { issuer: options.issuer } : {}),
+            ...(options.supportsIss === undefined
+              ? {}
+              : { authorization_response_iss_parameter_supported: options.supportsIss }),
           }),
           { status: 200 }
         )
@@ -473,6 +481,45 @@ describe('oauth', () => {
       // WWW-Authenticate, request all advertised scopes_supported — regardless
       // of whether the client was freshly registered or pre-existing.
       expect(url.searchParams.get('scope')).toBe('read write')
+    })
+
+    it('records issuer metadata for existing-server re-auth flows', async () => {
+      setupDiscoveryMocks({
+        issuer: 'https://auth.example.com',
+        supportsIss: true,
+      })
+
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([
+        { oauthClientId: 'existing-client-id', oauthClientSecret: null },
+      ])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+      const initiated = await initiateOAuthFlow(
+        'mcp-1',
+        'https://mcp.example.com/mcp',
+        'http://localhost:3000/callback'
+      )
+      expect(initiated).not.toBeNull()
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: 'access-tok-123',
+            token_type: 'Bearer',
+          }),
+          { status: 200 }
+        )
+      )
+
+      const result = await completeOAuthFlow(
+        initiated!.state,
+        'auth-code-xyz',
+        'https://auth.example.com'
+      )
+
+      expect(result).toEqual({ success: true, mcpId: 'mcp-1' })
     })
 
     it('sends scopes_supported from the resource metadata when DCR returns no scope (Robinhood case)', async () => {
@@ -855,7 +902,10 @@ describe('oauth', () => {
     // We need to first initiate a flow to populate the pendingOAuthFlows map,
     // then complete it. We'll use initiateNewServerOAuth to set up state.
 
-    async function setupFlowAndGetState(): Promise<string> {
+    async function setupFlowAndGetState(options: {
+      issuer?: string
+      supportsIss?: boolean
+    } = {}): Promise<string> {
       // Full discovery + registration
       mockFetch.mockResolvedValueOnce(
         new Response(null, {
@@ -881,6 +931,10 @@ describe('oauth', () => {
             authorization_endpoint: 'https://auth.example.com/authorize',
             token_endpoint: 'https://auth.example.com/token',
             registration_endpoint: 'https://auth.example.com/register',
+            ...(options.issuer ? { issuer: options.issuer } : {}),
+            ...(options.supportsIss === undefined
+              ? {}
+              : { authorization_response_iss_parameter_supported: options.supportsIss }),
           }),
           { status: 200 }
         )
@@ -936,6 +990,243 @@ describe('oauth', () => {
       expect(body.get('grant_type')).toBe('authorization_code')
       expect(body.get('code')).toBe('auth-code-xyz')
       expect(body.get('redirect_uri')).toBe('http://localhost/callback')
+    })
+
+    it('stores issuer metadata and accepts a matching iss when advertised as supported', async () => {
+      const state = await setupFlowAndGetState({
+        issuer: 'https://auth.example.com',
+        supportsIss: true,
+      })
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: 'access-tok-123',
+            token_type: 'Bearer',
+          }),
+          { status: 200 }
+        )
+      )
+      mockInsertValues.mockResolvedValue(undefined)
+
+      const result = await completeOAuthFlow(
+        state,
+        'auth-code-xyz',
+        'https://auth.example.com'
+      )
+
+      expect(result.success).toBe(true)
+      expect(mockFetch.mock.calls[mockFetch.mock.calls.length - 1][0]).toBe(
+        'https://auth.example.com/token'
+      )
+    })
+
+    it('rejects a missing iss before token exchange when metadata advertises support', async () => {
+      const state = await setupFlowAndGetState({
+        issuer: 'https://auth.example.com',
+        supportsIss: true,
+      })
+      const fetchCallsBefore = mockFetch.mock.calls.length
+
+      const result = await completeOAuthFlow(state, 'auth-code-xyz')
+
+      expect(result.success).toBe(false)
+      expect(mockFetch).toHaveBeenCalledTimes(fetchCallsBefore)
+      expect(mockInsertValues).not.toHaveBeenCalled()
+      expect(
+        validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com').valid
+      ).toBe(true)
+    })
+
+    it('rejects a mismatched iss before token exchange when metadata advertises support', async () => {
+      const state = await setupFlowAndGetState({
+        issuer: 'https://auth.example.com',
+        supportsIss: true,
+      })
+      const fetchCallsBefore = mockFetch.mock.calls.length
+
+      const result = await completeOAuthFlow(
+        state,
+        'auth-code-xyz',
+        'https://evil.example.com'
+      )
+
+      expect(result.success).toBe(false)
+      expect(mockFetch).toHaveBeenCalledTimes(fetchCallsBefore)
+      expect(mockInsertValues).not.toHaveBeenCalled()
+      expect(
+        validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com').valid
+      ).toBe(true)
+    })
+
+    it('compares iss with simple string comparison without URI normalization', async () => {
+      const state = await setupFlowAndGetState({
+        issuer: 'https://auth.example.com',
+        supportsIss: true,
+      })
+      const fetchCallsBefore = mockFetch.mock.calls.length
+
+      const result = await completeOAuthFlow(
+        state,
+        'auth-code-xyz',
+        'https://AUTH.example.com/'
+      )
+
+      expect(result.success).toBe(false)
+      expect(mockFetch).toHaveBeenCalledTimes(fetchCallsBefore)
+      expect(
+        validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com').valid
+      ).toBe(true)
+    })
+
+    it('accepts a matching iss even when metadata does not advertise support', async () => {
+      const state = await setupFlowAndGetState({
+        issuer: 'https://auth.example.com',
+        supportsIss: false,
+      })
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: 'access-tok-123',
+            token_type: 'Bearer',
+          }),
+          { status: 200 }
+        )
+      )
+      mockInsertValues.mockResolvedValue(undefined)
+
+      const result = await completeOAuthFlow(
+        state,
+        'auth-code-xyz',
+        'https://auth.example.com'
+      )
+
+      expect(result.success).toBe(true)
+    })
+
+    it('compares a present iss when the support flag is absent', async () => {
+      const state = await setupFlowAndGetState({
+        issuer: 'https://auth.example.com',
+      })
+      const fetchCallsBefore = mockFetch.mock.calls.length
+
+      const result = await completeOAuthFlow(
+        state,
+        'auth-code-xyz',
+        'https://evil.example.com'
+      )
+
+      expect(result.success).toBe(false)
+      expect(mockFetch).toHaveBeenCalledTimes(fetchCallsBefore)
+      expect(
+        validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com').valid
+      ).toBe(true)
+    })
+
+    it('rejects a mismatched iss even when metadata does not advertise support', async () => {
+      const state = await setupFlowAndGetState({
+        issuer: 'https://auth.example.com',
+        supportsIss: false,
+      })
+      const fetchCallsBefore = mockFetch.mock.calls.length
+
+      const result = await completeOAuthFlow(
+        state,
+        'auth-code-xyz',
+        'https://evil.example.com'
+      )
+
+      expect(result.success).toBe(false)
+      expect(mockFetch).toHaveBeenCalledTimes(fetchCallsBefore)
+      expect(
+        validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com').valid
+      ).toBe(true)
+    })
+
+    it('does not consume a pending flow when issuer validation fails', async () => {
+      const state = await setupFlowAndGetState({
+        issuer: 'https://auth.example.com',
+        supportsIss: true,
+      })
+
+      const invalid = await completeOAuthFlow(
+        state,
+        'auth-code-xyz',
+        'https://evil.example.com'
+      )
+      expect(invalid.success).toBe(false)
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: 'access-tok-123',
+            token_type: 'Bearer',
+          }),
+          { status: 200 }
+        )
+      )
+      mockInsertValues.mockResolvedValue(undefined)
+
+      const valid = await completeOAuthFlow(
+        state,
+        'auth-code-xyz',
+        'https://auth.example.com'
+      )
+      expect(valid.success).toBe(true)
+    })
+
+    it('validates and consumes trusted authorization error responses', async () => {
+      const state = await setupFlowAndGetState({
+        issuer: 'https://auth.example.com',
+        supportsIss: true,
+      })
+
+      const validation = validateAndConsumeOAuthErrorResponse(
+        state,
+        'https://auth.example.com'
+      )
+
+      expect(validation.valid).toBe(true)
+
+      const result = await completeOAuthFlow(
+        state,
+        'auth-code-xyz',
+        'https://auth.example.com'
+      )
+      expect(result.success).toBe(false)
+    })
+
+    it('rejects untrusted authorization error responses without consuming the pending flow', async () => {
+      const state = await setupFlowAndGetState({
+        issuer: 'https://auth.example.com',
+        supportsIss: true,
+      })
+
+      const validation = validateAndConsumeOAuthErrorResponse(
+        state,
+        'https://evil.example.com'
+      )
+
+      expect(validation.valid).toBe(false)
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: 'access-tok-123',
+            token_type: 'Bearer',
+          }),
+          { status: 200 }
+        )
+      )
+      mockInsertValues.mockResolvedValue(undefined)
+
+      const result = await completeOAuthFlow(
+        state,
+        'auth-code-xyz',
+        'https://auth.example.com'
+      )
+      expect(result.success).toBe(true)
     })
 
     it('calculates expiry correctly from expires_in', async () => {

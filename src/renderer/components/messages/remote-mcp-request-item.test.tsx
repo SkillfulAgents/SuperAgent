@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { RemoteMcpRequestItem } from './remote-mcp-request-item'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
 const mockApiFetch = vi.fn()
+const mockInitiateOAuthMutateAsync = vi.hoisted(() => vi.fn())
+const mockUseMcpOAuthListener = vi.hoisted(() => vi.fn())
+
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
@@ -19,9 +22,13 @@ vi.mock('@renderer/lib/oauth-popup', () => ({
 
 vi.mock('@renderer/hooks/use-remote-mcps', () => ({
   useInitiateMcpOAuth: () => ({
-    mutateAsync: vi.fn(),
+    mutateAsync: mockInitiateOAuthMutateAsync,
     isPending: false,
   }),
+}))
+
+vi.mock('@renderer/hooks/use-mcp-oauth-listener', () => ({
+  useMcpOAuthListener: (...args: unknown[]) => mockUseMcpOAuthListener(...args),
 }))
 
 vi.mock('./pending-request-stack', () => ({
@@ -69,6 +76,7 @@ const defaultServer = {
 describe('RemoteMcpRequestItem', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockInitiateOAuthMutateAsync.mockReset()
     mockServerListResponse([defaultServer])
   })
 
@@ -158,6 +166,38 @@ describe('RemoteMcpRequestItem', () => {
     // When no servers match, the component shows an inline Connect button
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /Connect/i })).toBeInTheDocument()
+    })
+  })
+
+  it('uses the shared OAuth callback listener while waiting for web OAuth', async () => {
+    const user = userEvent.setup()
+    mockServerListResponse([])
+    mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/oauth' })
+
+    renderWithProviders(
+      <RemoteMcpRequestItem
+        {...defaultProps}
+        url="https://new-server.example.com/sse"
+        authHint="oauth"
+      />
+    )
+
+    await user.click(await screen.findByRole('button', { name: /Connect/i }))
+
+    await waitFor(() => {
+      expect(mockUseMcpOAuthListener).toHaveBeenCalledWith(true, expect.any(Function))
+    })
+
+    const activeCall = mockUseMcpOAuthListener.mock.calls.find(([active]) => active === true)
+    const onOAuthComplete = activeCall?.[1] as ((result: { success: boolean; error?: string }) => void) | undefined
+    expect(onOAuthComplete).toBeDefined()
+
+    act(() => {
+      onOAuthComplete?.({ success: false, error: 'OAuth failed in popup' })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/Error:.*OAuth failed in popup/)).toBeInTheDocument()
     })
   })
 

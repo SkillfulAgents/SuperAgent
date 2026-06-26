@@ -12,11 +12,13 @@ export interface RemoteMcpConfig {
 }
 
 export interface OAuthMetadata {
+  issuer?: string
   authorization_endpoint: string
   token_endpoint: string
   registration_endpoint?: string
   code_challenge_methods_supported?: string[]
   scopes_supported?: string[]
+  authorization_response_iss_parameter_supported?: boolean
 }
 
 export interface OAuthTokenResponse {

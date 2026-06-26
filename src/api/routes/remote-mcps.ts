@@ -3,7 +3,13 @@ import crypto from 'crypto'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers, agentRemoteMcps } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
-import { initiateOAuthFlow, initiateNewServerOAuth, completeOAuthFlow, discoverOAuthMetadata } from '@shared/lib/mcp/oauth'
+import {
+  initiateOAuthFlow,
+  initiateNewServerOAuth,
+  completeOAuthFlow,
+  validateAndConsumeOAuthErrorResponse,
+  discoverOAuthMetadata,
+} from '@shared/lib/mcp/oauth'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -43,6 +49,46 @@ function escapeHtml(str: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;')
+}
+
+type McpOAuthCallbackPayload = {
+  type: 'mcp-oauth-callback'
+  success: boolean
+  mcpId?: string
+  error?: string
+}
+
+function safeScriptJson(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+}
+
+function renderMcpOAuthCallbackHtml(payload: McpOAuthCallbackPayload, message: string): string {
+  const safeMessage = escapeHtml(message)
+  const payloadJson = safeScriptJson(payload)
+  const storageValueJson = safeScriptJson(JSON.stringify({
+    ...payload,
+    deliveredAt: Date.now(),
+  }))
+
+  return `
+    <html><body><script>
+      const payload = ${payloadJson};
+      window.opener?.postMessage(payload, window.location.origin);
+      try {
+        const channel = new BroadcastChannel('mcp-oauth-callback');
+        channel.postMessage(payload);
+        channel.close();
+      } catch {}
+      try {
+        localStorage.setItem('superagent.mcp-oauth-callback', ${storageValueJson});
+        localStorage.removeItem('superagent.mcp-oauth-callback');
+      } catch {}
+      setTimeout(() => window.close(), 0);
+    </script><p>${safeMessage}</p></body></html>
+  `
 }
 
 // Entry-path SSRF guard for the user-supplied MCP server URL. Delegates to the
@@ -240,32 +286,34 @@ remoteMcps.get('/oauth-callback', async (c) => {
   const code = c.req.query('code')
   const state = c.req.query('state')
   const error = c.req.query('error')
+  const iss = c.req.query('iss')
 
   if (error) {
-    const safeError = escapeHtml(error)
-    const errorPayload = JSON.stringify({ type: 'mcp-oauth-callback', success: false, error: safeError })
-    return c.html(`
-      <html><body><script>
-        window.opener?.postMessage(${errorPayload}, window.location.origin);
-        window.close();
-      </script><p>OAuth error: ${safeError}. You can close this window.</p></body></html>
-    `)
+    const issuerValidation = validateAndConsumeOAuthErrorResponse(state, iss)
+    if (!issuerValidation.valid) {
+      return c.html(renderMcpOAuthCallbackHtml(
+        { type: 'mcp-oauth-callback', success: false, error: 'OAuth callback validation failed' },
+        'OAuth callback validation failed. You can close this window.',
+      ))
+    }
+
+    return c.html(renderMcpOAuthCallbackHtml(
+      { type: 'mcp-oauth-callback', success: false, error },
+      `OAuth error: ${error}. You can close this window.`,
+    ))
   }
 
   if (!code || !state) {
     return c.json({ error: 'Missing code or state parameter' }, 400)
   }
 
-  const result = await completeOAuthFlow(state, code)
+  const result = await completeOAuthFlow(state, code, iss)
 
   if (!result.success || !result.mcpId) {
-    const failPayload = JSON.stringify({ type: 'mcp-oauth-callback', success: false, error: 'Token exchange failed' })
-    return c.html(`
-      <html><body><script>
-        window.opener?.postMessage(${failPayload}, window.location.origin);
-        window.close();
-      </script><p>OAuth failed. You can close this window.</p></body></html>
-    `)
+    return c.html(renderMcpOAuthCallbackHtml(
+      { type: 'mcp-oauth-callback', success: false, error: 'Token exchange failed' },
+      'OAuth failed. You can close this window.',
+    ))
   }
 
   // Discover tools to verify the connection works
@@ -293,23 +341,21 @@ remoteMcps.get('/oauth-callback', async (c) => {
     // Tool discovery failed — delete the server so we don't leave a broken entry
     await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, result.mcpId))
     const errorMsg = err.message || 'Tool discovery failed'
-    const payload = JSON.stringify({ type: 'mcp-oauth-callback', success: false, error: `Connected but failed to discover tools: ${errorMsg}` })
-    return c.html(`
-      <html><body><script>
-        window.opener?.postMessage(${payload}, window.location.origin);
-        window.close();
-      </script><p>OAuth succeeded but tool discovery failed. You can close this window.</p></body></html>
-    `)
+    return c.html(renderMcpOAuthCallbackHtml(
+      {
+        type: 'mcp-oauth-callback',
+        success: false,
+        error: `Connected but failed to discover tools: ${errorMsg}`,
+      },
+      'OAuth succeeded but tool discovery failed. You can close this window.',
+    ))
   }
 
   trackServerEvent('mcp_oauth_succeeded', { url: serverUrl, mcpId: result.mcpId })
-  const successPayload = JSON.stringify({ type: 'mcp-oauth-callback', success: true, mcpId: result.mcpId })
-  return c.html(`
-    <html><body><script>
-      window.opener?.postMessage(${successPayload}, window.location.origin);
-      window.close();
-    </script><p>OAuth successful! You can close this window.</p></body></html>
-  `)
+  return c.html(renderMcpOAuthCallbackHtml(
+    { type: 'mcp-oauth-callback', success: true, mcpId: result.mcpId },
+    'OAuth successful! You can close this window.',
+  ))
 })
 
 // Get a single MCP server

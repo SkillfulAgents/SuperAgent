@@ -17,6 +17,7 @@ import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useInitiateMcpOAuth } from '@renderer/hooks/use-remote-mcps'
+import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { type RemoteMcpServer, getMcpServiceKey, McpSourceIcon, McpServerCard } from './mcp-server-card'
 import { McpServicePicker } from './mcp-service-picker'
@@ -154,7 +155,7 @@ export function RemoteMcpRequestItem({
     }
   }, [servers, targetServiceServers, targetUrl])
 
-  // Handle OAuth completion (shared by Electron IPC and web postMessage)
+  // Handle OAuth completion from Electron IPC, postMessage, BroadcastChannel, or storage fallback.
   const handleOAuthComplete = useCallback((success: boolean, errorMessage?: string) => {
     if (success) {
       setError(null)
@@ -175,33 +176,9 @@ export function RemoteMcpRequestItem({
     }
   }, [refetch, targetUrl])
 
-  // Listen for MCP OAuth callback from Electron main process
-  useEffect(() => {
-    if (!window.electronAPI || status !== 'oauth_pending') return
-
-    const unsubscribe = window.electronAPI.onMcpOAuthCallback((params) => {
-      handleOAuthComplete(params.success, params.error ?? undefined)
-    })
-
-    return () => {
-      unsubscribe?.()
-    }
-  }, [status, handleOAuthComplete])
-
-  // Listen for MCP OAuth callback via postMessage (web mode)
-  useEffect(() => {
-    if (status !== 'oauth_pending') return
-
-    const handleMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return
-      if (event.data?.type === 'mcp-oauth-callback') {
-        handleOAuthComplete(event.data.success, event.data.error)
-      }
-    }
-
-    window.addEventListener('message', handleMessage)
-    return () => window.removeEventListener('message', handleMessage)
-  }, [status, handleOAuthComplete])
+  useMcpOAuthListener(status === 'oauth_pending', ({ success, error: oauthError }) => {
+    handleOAuthComplete(success, oauthError)
+  })
 
   const startOAuthFlow = async (popup: ReturnType<typeof prepareOAuthPopup>) => {
     try {

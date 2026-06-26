@@ -205,21 +205,89 @@ export async function registerDynamicClient(
   }
 }
 
+type PendingOAuthFlow = {
+  codeVerifier: string
+  redirectUri: string
+  resource: string
+  tokenEndpoint: string
+  expectedIssuer?: string
+  authorizationResponseIssParameterSupported: boolean
+  clientId: string
+  clientSecret?: string
+  mcpId?: string
+  newServer?: { name: string; url: string }
+  userId?: string
+}
+
+type OAuthIssuerValidationResult =
+  | { valid: true }
+  | { valid: false; error: string }
+
 // In-memory store for pending OAuth flows
-const pendingOAuthFlows = new Map<
-  string,
-  {
-    codeVerifier: string
-    redirectUri: string
-    resource: string
-    tokenEndpoint: string
-    clientId: string
-    clientSecret?: string
-    mcpId?: string
-    newServer?: { name: string; url: string }
-    userId?: string
+const pendingOAuthFlows = new Map<string, PendingOAuthFlow>()
+
+function validateAuthorizationResponseIssuer(
+  flow: PendingOAuthFlow,
+  iss: string | null | undefined,
+): OAuthIssuerValidationResult {
+  const hasIss = iss !== undefined && iss !== null
+
+  if (flow.authorizationResponseIssParameterSupported && !hasIss) {
+    return {
+      valid: false,
+      error: 'Missing OAuth issuer parameter',
+    }
   }
->()
+
+  if (!hasIss) {
+    return { valid: true }
+  }
+
+  if (!flow.expectedIssuer) {
+    return {
+      valid: false,
+      error: 'Missing expected OAuth issuer',
+    }
+  }
+
+  if (iss !== flow.expectedIssuer) {
+    return {
+      valid: false,
+      error: 'OAuth issuer mismatch',
+    }
+  }
+
+  return { valid: true }
+}
+
+export function validateAndConsumeOAuthErrorResponse(
+  state: string | null | undefined,
+  iss: string | null | undefined,
+): OAuthIssuerValidationResult {
+  if (!state) {
+    return {
+      valid: false,
+      error: 'Missing OAuth state parameter',
+    }
+  }
+
+  const flow = pendingOAuthFlows.get(state)
+  if (!flow) {
+    return {
+      valid: false,
+      error: 'No pending OAuth flow for state',
+    }
+  }
+
+  const validation = validateAuthorizationResponseIssuer(flow, iss)
+  if (!validation.valid) {
+    console.error('[mcp/oauth] Authorization error issuer validation failed:', validation.error)
+    return validation
+  }
+
+  pendingOAuthFlows.delete(state)
+  return { valid: true }
+}
 
 /**
  * Initiate an OAuth flow for a remote MCP server.
@@ -307,6 +375,9 @@ export async function initiateOAuthFlow(
     redirectUri,
     resource,
     tokenEndpoint: metadata.token_endpoint,
+    expectedIssuer: metadata.issuer,
+    authorizationResponseIssParameterSupported:
+      metadata.authorization_response_iss_parameter_supported === true,
     clientId,
     clientSecret,
     mcpId,
@@ -408,6 +479,9 @@ export async function initiateNewServerOAuth(
     redirectUri,
     resource,
     tokenEndpoint: metadata.token_endpoint,
+    expectedIssuer: metadata.issuer,
+    authorizationResponseIssParameterSupported:
+      metadata.authorization_response_iss_parameter_supported === true,
     clientId,
     clientSecret,
     newServer: { name, url: mcpUrl },
@@ -453,10 +527,17 @@ export async function initiateNewServerOAuth(
 export async function completeOAuthFlow(
   state: string,
   code: string,
+  iss?: string | null,
 ): Promise<{ success: boolean; mcpId?: string }> {
   const flow = pendingOAuthFlows.get(state)
   if (!flow) {
     console.error('[mcp/oauth] No pending flow for state:', state)
+    return { success: false }
+  }
+
+  const issuerValidation = validateAuthorizationResponseIssuer(flow, iss)
+  if (!issuerValidation.valid) {
+    console.error('[mcp/oauth] Authorization response issuer validation failed:', issuerValidation.error)
     return { success: false }
   }
 
