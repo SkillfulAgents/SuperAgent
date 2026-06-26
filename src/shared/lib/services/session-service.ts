@@ -143,10 +143,12 @@ export async function getSessionMetadata(
 export async function registerSession(
   agentSlug: string,
   sessionId: string,
-  name?: string
+  name?: string,
+  initialMetadata?: Partial<SessionMetadata>,
 ): Promise<void> {
   await mutateSessionMetadata(agentSlug, (metadata) => {
     metadata[sessionId] = {
+      ...initialMetadata,
       name: name || 'New Session',
       createdAt: new Date().toISOString(),
     }
@@ -864,6 +866,26 @@ export async function getSessionsByScheduledTask(
   scheduledTaskId: string
 ): Promise<SessionInfo[]> {
   return getSessionsByMetadata(agentSlug, (meta) => meta.scheduledTaskId === scheduledTaskId)
+}
+
+/**
+ * Get the session for a specific scheduled task execution slot.
+ */
+export async function getSessionForScheduledExecution(
+  agentSlug: string,
+  scheduledTaskId: string,
+  scheduledExecutionAt: Date,
+): Promise<SessionInfo | null> {
+  const executionAt = scheduledExecutionAt.toISOString()
+  const sessions = await getSessionsByMetadata(
+    agentSlug,
+    (meta) =>
+      meta.isScheduledExecution === true &&
+      meta.scheduledTaskId === scheduledTaskId &&
+      meta.scheduledExecutionAt === executionAt,
+  )
+
+  return sessions[0] ?? null
 }
 
 /**

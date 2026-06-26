@@ -84,6 +84,7 @@ export interface SessionMetadata {
   isScheduledExecution?: boolean
   scheduledTaskId?: string
   scheduledTaskName?: string
+  scheduledExecutionAt?: string
   // Webhook trigger fields - present when session was created from a webhook trigger
   isWebhookExecution?: boolean
   webhookTriggerId?: string

@@ -42,6 +42,7 @@ export const sessionMetadataSchema = z
     isScheduledExecution: z.boolean().optional(),
     scheduledTaskId: z.string().optional(),
     scheduledTaskName: z.string().optional(),
+    scheduledExecutionAt: z.string().optional(),
     isWebhookExecution: z.boolean().optional(),
     webhookTriggerId: z.string().optional(),
     webhookTriggerName: z.string().optional(),

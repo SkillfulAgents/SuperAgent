@@ -27,6 +27,7 @@ import {
   removeMessage,
   removeToolCall,
   getSessionsByScheduledTask,
+  getSessionForScheduledExecution,
   getSessionsByWebhookTrigger,
 } from './session-service'
 
@@ -128,6 +129,30 @@ describe('session-service', () => {
 
       const metadata = await getSessionMetadata('test-agent', 'session-123')
       expect(metadata?.name).toBe('New Session')
+    })
+
+    it('stores initial metadata in the same registration write', async () => {
+      await fs.promises.mkdir(
+        path.join(testDir, 'agents', 'test-agent', 'workspace'),
+        { recursive: true }
+      )
+
+      await registerSession('test-agent', 'session-123', 'Scheduled Run', {
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-abc',
+        scheduledTaskName: 'Daily report',
+        scheduledExecutionAt: '2026-01-24T02:00:00.000Z',
+      })
+
+      const metadata = await getSessionMetadata('test-agent', 'session-123')
+      expect(metadata).toMatchObject({
+        name: 'Scheduled Run',
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-abc',
+        scheduledTaskName: 'Daily report',
+        scheduledExecutionAt: '2026-01-24T02:00:00.000Z',
+      })
+      expect(metadata?.createdAt).toBeDefined()
     })
   })
 
@@ -2303,6 +2328,70 @@ describe('session-service', () => {
       const sessions = await getSessionsByScheduledTask('test-agent', 'task-abc')
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('sess-1')
+    })
+  })
+
+  // ============================================================================
+  // getSessionForScheduledExecution Tests
+  // ============================================================================
+
+  describe('getSessionForScheduledExecution', () => {
+    it('returns the session for the exact scheduled task execution time', async () => {
+      await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'sess-2', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'sess-3', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'sess-1': {
+          name: 'Earlier Run',
+          createdAt: '2026-01-24T01:00:00.000Z',
+          scheduledTaskId: 'task-abc',
+          scheduledExecutionAt: '2026-01-24T01:00:00.000Z',
+          isScheduledExecution: true,
+        },
+        'sess-2': {
+          name: 'Target Run',
+          createdAt: '2026-01-24T02:00:00.000Z',
+          scheduledTaskId: 'task-abc',
+          scheduledExecutionAt: '2026-01-24T02:00:00.000Z',
+          isScheduledExecution: true,
+        },
+        'sess-3': {
+          name: 'Different Task Same Time',
+          createdAt: '2026-01-24T02:00:00.000Z',
+          scheduledTaskId: 'task-xyz',
+          scheduledExecutionAt: '2026-01-24T02:00:00.000Z',
+          isScheduledExecution: true,
+        },
+      })
+
+      const session = await getSessionForScheduledExecution(
+        'test-agent',
+        'task-abc',
+        new Date('2026-01-24T02:00:00.000Z'),
+      )
+
+      expect(session?.id).toBe('sess-2')
+    })
+
+    it('returns null when the task matches but the execution time does not', async () => {
+      await createSessionFile('test-agent', 'sess-1', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'sess-1': {
+          name: 'Earlier Run',
+          createdAt: '2026-01-24T01:00:00.000Z',
+          scheduledTaskId: 'task-abc',
+          scheduledExecutionAt: '2026-01-24T01:00:00.000Z',
+          isScheduledExecution: true,
+        },
+      })
+
+      const session = await getSessionForScheduledExecution(
+        'test-agent',
+        'task-abc',
+        new Date('2026-01-24T02:00:00.000Z'),
+      )
+
+      expect(session).toBeNull()
     })
   })
 
