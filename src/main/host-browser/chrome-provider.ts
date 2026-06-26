@@ -8,6 +8,8 @@ import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/c
 import { containerManager } from '@shared/lib/container/container-manager'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
+import { z } from 'zod'
 
 // Chrome's DevTools Protocol has no auth token: any host/process that can reach
 // the CDP port gets full remote control of the dedicated browser profile (read
@@ -302,18 +304,30 @@ export class ChromeProvider implements HostBrowserProvider {
     const prefsDir = path.join(userDataDir, 'Default')
     const prefsPath = path.join(prefsDir, 'Preferences')
     fs.mkdirSync(prefsDir, { recursive: true })
-    let prefs: Record<string, unknown> = {}
+    // Read Chrome's existing Preferences fail-closed: a missing file is
+    // a fresh profile (→ {}), but a present-but-corrupt one must NOT be silently
+    // replaced with just `{ download }` — that would wipe every other Chrome
+    // preference. On corruption, skip the download tweak rather than clobber.
+    let prefs: Record<string, unknown>
     try {
-      prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'))
-    } catch {
-      // No existing preferences file
+      prefs = readJsonFileStrictSync(prefsPath, z.object({}).loose(), {}) as Record<string, unknown>
+    } catch (error) {
+      if (error instanceof CorruptFileError) {
+        console.warn(`[ChromeProvider] Corrupt Chrome Preferences at ${prefsPath}; leaving it untouched`)
+        prefs = null as unknown as Record<string, unknown>
+      } else {
+        throw error
+      }
     }
-    prefs.download = {
-      ...(prefs.download as Record<string, unknown> | undefined),
-      default_directory: downloadDir,
-      prompt_for_download: false,
+    if (prefs) {
+      prefs.download = {
+        ...(prefs.download as Record<string, unknown> | undefined),
+        default_directory: downloadDir,
+        prompt_for_download: false,
+      }
+      // Atomic write so an interrupted write can't truncate Chrome's Preferences.
+      writeFileAtomicSync(prefsPath, JSON.stringify(prefs, null, 2))
     }
-    fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2))
 
     const headless = options?.chromeHeadless === 'true'
 

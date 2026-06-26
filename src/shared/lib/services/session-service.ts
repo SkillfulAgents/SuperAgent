@@ -16,11 +16,15 @@ import {
   listDirectories,
   directoryExists,
   fileExists,
-  readFileOrNull,
   writeFile,
+  writeJsonFileAtomic,
+  readJsonFileStrict,
+  withFileLock,
+  CorruptFileError,
   readJsonlFile,
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
+import { sessionMetadataMapSchema } from './session-metadata-schema'
 import {
   SessionInfo,
   SessionMetadata,
@@ -38,33 +42,71 @@ import { captureException } from '@shared/lib/error-reporting'
 // ============================================================================
 
 /**
- * Read session metadata map from file
+ * Strict read of the session metadata map: returns `{}` ONLY when the file is
+ * absent (ENOENT); a present-but-unreadable file (torn/corrupt/IO error) THROWS.
+ *
+ * This is what the read-modify-write helper below uses, so a transiently
+ * unreadable file aborts the write instead of being overwritten with a near-empty
+ * map — the permanent-data-loss mechanism. Do NOT use this on read-only
+ * display paths; use {@link readSessionMetadata}, which degrades gracefully.
+ */
+async function readSessionMetadataStrict(agentSlug: string): Promise<SessionMetadataMap> {
+  const metadataPath = getAgentSessionMetadataPath(agentSlug)
+  const parsed = await readJsonFileStrict(metadataPath, sessionMetadataMapSchema, {})
+  return parsed as SessionMetadataMap
+}
+
+/**
+ * Read session metadata map for READ-ONLY consumers (listing, display, lookup).
+ *
+ * Behaviour preserved from before, plus loud reporting: missing file → `{}`;
+ * corrupt/torn file → log + capture + `{}` (so the sessions view degrades to
+ * auto-titles instead of crashing). Returning `{}` here is safe ONLY because
+ * these callers never write — the destructive overwrite came from a write that
+ * followed a swallowed bad read, and writes now go through
+ * {@link mutateSessionMetadata}, which re-throws on corruption. A non-ENOENT IO
+ * error still propagates (matches the original `readFileOrNull` behaviour).
  */
 export async function readSessionMetadata(agentSlug: string): Promise<SessionMetadataMap> {
-  const metadataPath = getAgentSessionMetadataPath(agentSlug)
-  const content = await readFileOrNull(metadataPath)
-
-  if (!content) {
-    return {}
-  }
-
   try {
-    return JSON.parse(content) as SessionMetadataMap
-  } catch {
-    console.warn(`Failed to parse session metadata for agent ${agentSlug}`)
-    return {}
+    return await readSessionMetadataStrict(agentSlug)
+  } catch (error) {
+    if (error instanceof CorruptFileError) {
+      console.error(
+        `Corrupt session metadata for agent ${agentSlug}; using empty map for read-only access (NOT overwriting)`,
+        error
+      )
+      captureException(error, {
+        tags: { area: 'session-metadata', op: 'read' },
+        extra: { agentSlug },
+      })
+      return {}
+    }
+    throw error
   }
 }
 
 /**
- * Write session metadata map to file
+ * Serialized read-modify-write of an agent's session metadata map.
+ *
+ * Holds a per-file in-process lock so concurrent mutations can't interleave
+ * (lost-update protection), re-reads fresh under the lock with the STRICT reader
+ * (so a corrupt file throws and aborts the write rather than clobbering), and
+ * persists with an atomic temp-file+rename (so an interrupted write never leaves
+ * a torn file). The `mutator` returns `false` to signal "no change" and skip the
+ * write entirely (avoids materializing an empty file for a no-op).
  */
-async function writeSessionMetadata(
+async function mutateSessionMetadata(
   agentSlug: string,
-  metadata: SessionMetadataMap
+  mutator: (metadata: SessionMetadataMap) => boolean | void
 ): Promise<void> {
   const metadataPath = getAgentSessionMetadataPath(agentSlug)
-  await writeFile(metadataPath, JSON.stringify(metadata, null, 2))
+  await withFileLock(metadataPath, async () => {
+    const metadata = await readSessionMetadataStrict(agentSlug)
+    const changed = mutator(metadata)
+    if (changed === false) return
+    await writeJsonFileAtomic(metadataPath, metadata)
+  })
 }
 
 /**
@@ -75,14 +117,12 @@ export async function updateSessionMetadata(
   sessionId: string,
   updates: Partial<SessionMetadata>
 ): Promise<void> {
-  const metadata = await readSessionMetadata(agentSlug)
-
-  metadata[sessionId] = {
-    ...metadata[sessionId],
-    ...updates,
-  }
-
-  await writeSessionMetadata(agentSlug, metadata)
+  await mutateSessionMetadata(agentSlug, (metadata) => {
+    metadata[sessionId] = {
+      ...metadata[sessionId],
+      ...updates,
+    }
+  })
 }
 
 /**
@@ -105,14 +145,12 @@ export async function registerSession(
   sessionId: string,
   name?: string
 ): Promise<void> {
-  const metadata = await readSessionMetadata(agentSlug)
-
-  metadata[sessionId] = {
-    name: name || 'New Session',
-    createdAt: new Date().toISOString(),
-  }
-
-  await writeSessionMetadata(agentSlug, metadata)
+  await mutateSessionMetadata(agentSlug, (metadata) => {
+    metadata[sessionId] = {
+      name: name || 'New Session',
+      createdAt: new Date().toISOString(),
+    }
+  })
 }
 
 /**
@@ -497,13 +535,17 @@ export async function deleteSession(
     )
   }
 
-  // Remove from metadata regardless, so dangling entries can be cleared.
-  const metadata = await readSessionMetadata(agentSlug)
-  const hadMetadata = metadata[sessionId] !== undefined
-  if (hadMetadata) {
+  // Remove from metadata regardless, so dangling entries can be cleared. Done
+  // under the serialized read-modify-write so a concurrent registration/rename
+  // can't lose updates, and a corrupt metadata file aborts (throws) rather than
+  // being rewritten without this entry's siblings.
+  let hadMetadata = false
+  await mutateSessionMetadata(agentSlug, (metadata) => {
+    hadMetadata = metadata[sessionId] !== undefined
+    if (!hadMetadata) return false // nothing to delete — skip the write
     delete metadata[sessionId]
-    await writeSessionMetadata(agentSlug, metadata)
-  }
+    return true
+  })
 
   return jsonlExisted || hadMetadata
 }
@@ -518,7 +560,6 @@ export async function deleteSessionsBatch(
 ): Promise<string[]> {
   if (sessionIds.length === 0) return []
 
-  const metadata = await readSessionMetadata(agentSlug)
   const deleted: string[] = []
 
   for (const sessionId of sessionIds) {
@@ -526,19 +567,32 @@ export async function deleteSessionsBatch(
     try {
       await fs.promises.unlink(jsonlPath)
       deleted.push(sessionId)
-      delete metadata[sessionId]
     } catch (error: unknown) {
       const code = (error as NodeJS.ErrnoException).code
       if (code === 'ENOENT') {
         deleted.push(sessionId)
-        delete metadata[sessionId]
       } else {
+        // Keep this session's metadata: its transcript is still on disk.
         console.error(`Failed to delete session file ${sessionId}:`, error)
       }
     }
   }
 
-  await writeSessionMetadata(agentSlug, metadata)
+  // Drop metadata only for the sessions whose JSONL was actually removed, in a
+  // single serialized + atomic read-modify-write.
+  if (deleted.length > 0) {
+    await mutateSessionMetadata(agentSlug, (metadata) => {
+      let changed = false
+      for (const sessionId of deleted) {
+        if (metadata[sessionId] !== undefined) {
+          delete metadata[sessionId]
+          changed = true
+        }
+      }
+      return changed
+    })
+  }
+
   return deleted
 }
 

@@ -12,6 +12,7 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import {
   getSettings,
+  loadSettingsStrict,
   updateSettings,
   clearSettingsCache,
   getBrowserbaseApiKeyStatus,
@@ -336,7 +337,12 @@ settings.get('/', async (c) => {
 settings.put('/', async (c) => {
   try {
     const body = await c.req.json()
-    const currentSettings = getSettings()
+    // Read FRESH and fail-closed: never merge onto the possibly-
+    // corruption-defaulted cache (that is what overwrote real API keys/auth). A
+    // corrupt settings.json throws here → caught below → 500, instead of being
+    // silently replaced with defaults. The write path below this point has no
+    // `await`, so the read-merge-write stays atomic (no interleaving).
+    const currentSettings = loadSettingsStrict()
     const hasRunningAgents = containerManager.hasRunningAgents()
 
     // Check if trying to change restricted settings while agents are running

@@ -7,7 +7,7 @@
  * - "always": persisted to settings.json + in-memory
  */
 
-import { getSettings, updateSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import type {
   ComputerUsePermissionLevel,
   PermissionGrant,
@@ -199,7 +199,6 @@ export class ComputerUsePermissionManager {
    */
   persistToSettings(): void {
     try {
-      const settings = getSettings()
       const agentPermissions: ComputerUseSettings['agentPermissions'] = {}
 
       for (const [agentSlug, agentGrants] of this.grants) {
@@ -215,12 +214,13 @@ export class ComputerUsePermissionManager {
         }
       }
 
-      updateSettings({
-        ...settings,
-        computerUse: {
+      // Serialized fresh-read + atomic write: preserves any concurrent
+      // settings change instead of overwriting from a stale snapshot.
+      mutateSettings((settings) => {
+        settings.computerUse = {
           ...settings.computerUse,
           agentPermissions,
-        },
+        }
       })
     } catch (error) {
       console.error('[ComputerUsePermissionManager] Failed to persist to settings:', error)

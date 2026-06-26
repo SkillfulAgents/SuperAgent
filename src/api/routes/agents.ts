@@ -39,7 +39,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import {
   listUserSecrets,
@@ -4925,7 +4925,9 @@ agents.put('/:id/bookmarks', AgentAdmin(), async (c) => {
       return c.json({ error: 'Bookmarks must be an array' }, 400)
     }
     const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
-    await fs.promises.writeFile(bookmarksPath, JSON.stringify(bookmarks, null, 2), 'utf-8')
+    // Atomic write: full-replace from client input, but crash-safe so
+    // an interrupted write can't truncate bookmarks.json.
+    await writeJsonFileAtomic(bookmarksPath, bookmarks)
     return c.json(bookmarks)
   } catch (error) {
     console.error('Failed to update bookmarks:', error)

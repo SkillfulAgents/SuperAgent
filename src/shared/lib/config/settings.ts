@@ -4,6 +4,12 @@ import os from 'os'
 import { getDataDir } from './data-dir'
 import { isRunningInKubernetes } from '@shared/lib/container/runtime-env'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
+import {
+  writeFileAtomicSync,
+  CorruptFileError,
+} from '@shared/lib/utils/file-storage'
+import { captureException } from '@shared/lib/error-reporting'
+import { persistedSettingsSchema } from './settings-schema'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
@@ -364,84 +370,154 @@ function migrateLegacyModelDefault<T extends string | undefined>(value: T): T {
   return (value !== undefined ? (LEGACY_MODEL_DEFAULTS[value] ?? value) : value) as T
 }
 
-export function loadSettings(): AppSettings {
-  const settingsPath = getSettingsPath()
-
-  try {
-    if (fs.existsSync(settingsPath)) {
-      const content = fs.readFileSync(settingsPath, 'utf-8')
-      const loaded = JSON.parse(content)
-
-      // Migrate agent image tag: if the saved image uses the default GHCR registry
-      // with a :main or :semver tag, update it to the current version's default.
-      // This ensures upgrades automatically pull the matching agent container.
-      let agentImage = loaded.container?.agentImage
-      if (agentImage && agentImage.startsWith(AGENT_IMAGE_REGISTRY + ':')) {
-        const savedTag = agentImage.split(':').pop()
-        if (savedTag === 'main' || /^\d+\.\d+\.\d+/.test(savedTag!)) {
-          agentImage = getDefaultAgentImage()
-        }
-      }
-      const modelCatalog = parseModelCatalogSettings(loaded.modelCatalog)
-
-      // Merge with defaults to ensure all fields exist
-      return {
-        container: {
-          ...DEFAULT_SETTINGS.container,
-          ...loaded.container,
-          ...(agentImage && { agentImage }),
-          resourceLimits: {
-            ...DEFAULT_SETTINGS.container.resourceLimits,
-            ...loaded.container?.resourceLimits,
-          },
-          // Ensure runtimeSettings exists (may be missing in old settings files)
-          runtimeSettings: loaded.container?.runtimeSettings ?? {},
-        },
-        app: {
-          ...DEFAULT_SETTINGS.app,
-          ...loaded.app,
-          notifications: {
-            ...DEFAULT_SETTINGS.app?.notifications,
-            ...loaded.app?.notifications,
-          },
-        },
-        apiKeys: loaded.apiKeys,
-        llmProvider: loaded.llmProvider,
-        models: (() => {
-          const merged = { ...DEFAULT_SETTINGS.models!, ...loaded.models }
-          // One-time normalization of legacy concrete defaults → bare aliases.
-          return {
-            ...merged,
-            summarizerModel: migrateLegacyModelDefault(merged.summarizerModel),
-            agentModel: migrateLegacyModelDefault(merged.agentModel),
-            browserModel: migrateLegacyModelDefault(merged.browserModel),
-            dashboardBuilderModel: migrateLegacyModelDefault(merged.dashboardBuilderModel),
-          }
-        })(),
-        modelCatalog,
-        agentLimits: loaded.agentLimits,
-        customEnvVars: loaded.customEnvVars,
-        skillsets: loaded.skillsets !== undefined
-          ? loaded.skillsets
-          : DEFAULT_SETTINGS.skillsets,
-        auth: {
-          ...DEFAULT_AUTH_SETTINGS,
-          ...loaded.auth,
-        },
-        voice: loaded.voice,
-        computerUse: loaded.computerUse,
-        shareAnalytics: loaded.shareAnalytics ?? true,
-        analyticsTargets: loaded.analyticsTargets,
-        shareErrorReports: loaded.shareErrorReports,
-        platformAuth: loaded.platformAuth,
-        enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
-      }
+/**
+ * Merge a raw, JSON-parsed settings object onto the defaults. Pure: no IO.
+ * Tolerant of missing/partial fields (each is defaulted) — this is where the
+ * permissive shape handling lives, so the strict reader can keep its boundary
+ * check minimal.
+ */
+function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
+  // Migrate agent image tag: if the saved image uses the default GHCR registry
+  // with a :main or :semver tag, update it to the current version's default.
+  // This ensures upgrades automatically pull the matching agent container.
+  let agentImage = loaded.container?.agentImage
+  if (agentImage && agentImage.startsWith(AGENT_IMAGE_REGISTRY + ':')) {
+    const savedTag = agentImage.split(':').pop()
+    if (savedTag === 'main' || /^\d+\.\d+\.\d+/.test(savedTag!)) {
+      agentImage = getDefaultAgentImage()
     }
-  } catch (error) {
-    console.error('Failed to load settings, using defaults:', error)
   }
+  const modelCatalog = parseModelCatalogSettings(loaded.modelCatalog)
 
-  return { ...DEFAULT_SETTINGS }
+  // Merge with defaults to ensure all fields exist
+  return {
+    container: {
+      ...DEFAULT_SETTINGS.container,
+      ...loaded.container,
+      ...(agentImage && { agentImage }),
+      resourceLimits: {
+        ...DEFAULT_SETTINGS.container.resourceLimits,
+        ...loaded.container?.resourceLimits,
+      },
+      // Ensure runtimeSettings exists (may be missing in old settings files)
+      runtimeSettings: loaded.container?.runtimeSettings ?? {},
+    },
+    app: {
+      ...DEFAULT_SETTINGS.app,
+      ...loaded.app,
+      notifications: {
+        ...DEFAULT_SETTINGS.app?.notifications,
+        ...loaded.app?.notifications,
+      },
+    },
+    apiKeys: loaded.apiKeys,
+    llmProvider: loaded.llmProvider,
+    models: (() => {
+      const merged = { ...DEFAULT_SETTINGS.models!, ...loaded.models }
+      // One-time normalization of legacy concrete defaults → bare aliases.
+      return {
+        ...merged,
+        summarizerModel: migrateLegacyModelDefault(merged.summarizerModel),
+        agentModel: migrateLegacyModelDefault(merged.agentModel),
+        browserModel: migrateLegacyModelDefault(merged.browserModel),
+        dashboardBuilderModel: migrateLegacyModelDefault(merged.dashboardBuilderModel),
+      }
+    })(),
+    modelCatalog,
+    agentLimits: loaded.agentLimits,
+    customEnvVars: loaded.customEnvVars,
+    // Deep-clone the default when defaulting: callers mutate `s.skillsets` in
+    // place (e.g. sync-remote's `current.push(config)`), and returning the shared
+    // DEFAULT_SETTINGS.skillsets reference would poison the module constant for a
+    // settings.json that merely omits `skillsets`.
+    skillsets: loaded.skillsets !== undefined
+      ? loaded.skillsets
+      : structuredClone(DEFAULT_SETTINGS.skillsets),
+    auth: {
+      ...DEFAULT_AUTH_SETTINGS,
+      ...loaded.auth,
+    },
+    voice: loaded.voice,
+    computerUse: loaded.computerUse,
+    shareAnalytics: loaded.shareAnalytics ?? true,
+    analyticsTargets: loaded.analyticsTargets,
+    shareErrorReports: loaded.shareErrorReports,
+    platformAuth: loaded.platformAuth,
+    enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
+  }
+}
+
+/**
+ * Strict, fail-closed load. Reads fresh from disk (bypassing
+ * the cache) and:
+ *   - absent file (ENOENT) → defaults (legitimate first run),
+ *   - torn/corrupt JSON or a non-object → THROWS CorruptFileError,
+ *   - other IO errors → propagate.
+ *
+ * This is what every WRITE path re-reads under, so a momentarily unreadable
+ * `settings.json` aborts the write instead of being silently replaced by
+ * defaults (which would permanently wipe API keys, auth policy, skillsets, …).
+ * Never default-then-save here.
+ */
+export function loadSettingsStrict(): AppSettings {
+  const settingsPath = getSettingsPath()
+  let content: string
+  try {
+    content = fs.readFileSync(settingsPath, 'utf-8')
+  } catch (err) {
+    // Absent file = legitimate first run → bare defaults (preserves the original
+    // behavior, which did NOT default-merge auth/analytics for a missing file).
+    // Deep-clone: callers (mutateSettings) mutate nested objects in place, and a
+    // shallow `{ ...DEFAULT_SETTINGS }` shares `.container`/`.app`/… with the
+    // module constant — so a first-run mutation would corrupt DEFAULT_SETTINGS.
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return structuredClone(DEFAULT_SETTINGS)
+    throw err // other IO error (EACCES/EIO/…) — propagate, never default-then-save
+  }
+  // Validate the boundary (object shape); torn JSON / non-object → throw.
+  const raw = parseJsonStrict(settingsPath, content)
+  return mergeLoadedSettings(raw)
+}
+
+/** Parse + shape-validate raw settings content; throws CorruptFileError on a
+ *  torn file or a non-object value. */
+function parseJsonStrict(settingsPath: string, content: string): Record<string, any> {
+  let loaded: unknown
+  try {
+    loaded = JSON.parse(content)
+  } catch (err) {
+    throw new CorruptFileError(settingsPath, 'settings.json is not valid JSON', { cause: err })
+  }
+  const validated = persistedSettingsSchema.safeParse(loaded)
+  if (!validated.success) {
+    throw new CorruptFileError(
+      settingsPath,
+      `settings.json is not a JSON object: ${validated.error.message}`,
+      { cause: validated.error }
+    )
+  }
+  return validated.data as Record<string, any>
+}
+
+/**
+ * Load settings for READ-ONLY consumers (display, getters). Tolerant: never
+ * throws, so a corrupt file degrades to in-memory defaults rather than crashing
+ * the app — but it NEVER writes those defaults back (the data-loss
+ * amplification). Writes go through {@link mutateSettings}/{@link loadSettingsStrict},
+ * which re-throw on corruption, so defaults surfaced here can't overwrite a real
+ * but temporarily-unreadable file.
+ */
+export function loadSettings(): AppSettings {
+  try {
+    return loadSettingsStrict()
+  } catch (error) {
+    console.error('Failed to load settings; using in-memory defaults (NOT overwriting the file):', error)
+    if (error instanceof CorruptFileError) {
+      captureException(error, { tags: { area: 'settings', op: 'load' } })
+    }
+    // Deep-clone so a caller mutating a nested field can't pollute the module
+    // constant (see loadSettingsStrict).
+    return structuredClone(DEFAULT_SETTINGS)
+  }
 }
 
 /**
@@ -456,8 +532,11 @@ export function saveSettings(settings: AppSettings): void {
     fs.mkdirSync(dataDir, { recursive: true })
   }
 
-  // Use mode 0o600 for security (owner read/write only) since file may contain API keys
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { encoding: 'utf-8', mode: 0o600 })
+  // Atomic temp-file + rename: an interrupted write can never leave a
+  // torn settings.json that a later read would mistake for corruption (or that
+  // the tolerant loader would mask with defaults). Mode 0o600 (owner-only) since
+  // the file holds API keys.
+  writeFileAtomicSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 })
 }
 
 /**
@@ -473,11 +552,37 @@ export function getSettings(): AppSettings {
 }
 
 /**
- * Update settings and clear cache.
+ * Replace the whole settings object and refresh the cache.
+ *
+ * Prefer {@link mutateSettings} for partial updates — it re-reads fresh from
+ * disk so it can't lose a concurrent writer's change. Use this only when the
+ * caller has already merged against a FRESH (strict) read with no `await`
+ * between the read and here (so nothing could interleave), e.g. the settings
+ * PUT route. The write itself is atomic.
  */
 export function updateSettings(settings: AppSettings): void {
   saveSettings(settings)
   cachedSettings = settings
+}
+
+/**
+ * Serialized, fail-closed read-modify-write of settings.
+ *
+ * Synchronous on purpose: with no `await` between the fresh strict read and the
+ * atomic write, concurrent callers cannot interleave, so this serializes for
+ * free and closes the lost-update race across the many background settings
+ * writers (runtime auto-switch, token refresh, permission grants, skillset
+ * reconcile, …). It re-reads FRESH from disk every call — never the possibly
+ * stale/defaulted cache — and {@link loadSettingsStrict} THROWS on a corrupt
+ * file, so a torn settings.json aborts the mutation instead of clobbering real
+ * API keys/auth with defaults. Returns the persisted settings.
+ */
+export function mutateSettings(mutator: (settings: AppSettings) => void): AppSettings {
+  const fresh = loadSettingsStrict()
+  mutator(fresh)
+  saveSettings(fresh)
+  cachedSettings = fresh
+  return fresh
 }
 
 /**

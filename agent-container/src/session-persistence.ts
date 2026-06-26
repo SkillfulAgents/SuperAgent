@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { writeFileAtomicSync } from './atomic-file';
 import type { EffortLevel } from './types';
 
 interface SessionMetadata {
@@ -31,15 +32,33 @@ export class SessionPersistence {
   }
 
   private load(): void {
+    let data: string;
     try {
-      if (fs.existsSync(SESSIONS_FILE)) {
-        const data = fs.readFileSync(SESSIONS_FILE, 'utf-8');
-        const sessions = JSON.parse(data);
-        this.sessions = new Map(Object.entries(sessions));
-        console.log(`Loaded ${this.sessions.size} persisted sessions`);
-      }
+      if (!fs.existsSync(SESSIONS_FILE)) return; // fresh container — empty map
+      data = fs.readFileSync(SESSIONS_FILE, 'utf-8');
     } catch (error) {
-      console.error('Error loading persisted sessions:', error);
+      // Genuine IO error reading an existing file. Start empty but leave the
+      // file untouched (we can't preserve what we couldn't read, and must not
+      // assume it's safe to overwrite).
+      console.error('Error reading persisted sessions:', error);
+      this.sessions = new Map();
+      return;
+    }
+
+    try {
+      const sessions = JSON.parse(data);
+      this.sessions = new Map(Object.entries(sessions));
+      console.log(`Loaded ${this.sessions.size} persisted sessions`);
+    } catch (error) {
+      // Corrupt JSON (e.g. a torn write from an older build, or disk damage). Do
+      // NOT silently overwrite it on the next save() — preserve it aside for
+      // recovery first, then start empty (fail-closed, matching the host stores).
+      console.error('Corrupt persisted sessions; preserving aside and starting empty:', error);
+      try {
+        fs.renameSync(SESSIONS_FILE, `${SESSIONS_FILE}.corrupt-${Date.now()}`);
+      } catch (renameErr) {
+        console.error('Failed to preserve corrupt sessions file:', renameErr);
+      }
       this.sessions = new Map();
     }
   }
@@ -47,7 +66,13 @@ export class SessionPersistence {
   private save(): void {
     try {
       const data = Object.fromEntries(this.sessions.entries());
-      fs.writeFileSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
+      // Atomic temp-file + rename: this map is rewritten on every
+      // message (updateLastActivity), and a container force-stop mid-write would
+      // otherwise tear the file — making the next load() swallow the parse error
+      // and silently wipe ALL session metadata. The atomic write guarantees the
+      // previous good file survives an interrupted write. /workspace is fully
+      // bind-mounted, so the rename is same-filesystem and reaches the host.
+      writeFileAtomicSync(SESSIONS_FILE, JSON.stringify(data, null, 2));
     } catch (error) {
       console.error('Error saving persisted sessions:', error);
     }

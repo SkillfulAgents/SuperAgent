@@ -13,6 +13,7 @@ vi.mock('./version', () => ({
 }))
 
 import fs from 'fs'
+import { CorruptFileError } from '@shared/lib/utils/file-storage'
 import {
   loadSettings,
   saveSettings,
@@ -48,10 +49,16 @@ function mockSettingsFile(content: string) {
 }
 
 /**
- * Configure the fs mock to simulate no settings file.
+ * Configure the fs mock to simulate no settings file. loadSettings reads via
+ * fs.readFileSync (fail-closed), so an absent file is simulated by throwing
+ * ENOENT — NOT just existsSync=false (which would leave readFileSync returning
+ * stale content from a previous test, since clearAllMocks keeps return values).
  */
 function mockNoSettingsFile() {
   mockedFs.existsSync.mockReturnValue(false)
+  mockedFs.readFileSync.mockImplementation(() => {
+    throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
+  })
 }
 
 /**
@@ -141,9 +148,11 @@ describe('loadSettings', () => {
 
       loadSettings()
 
+      // Fail-closed read: a corrupt file surfaces a CorruptFileError
+      // and loadSettings degrades to in-memory defaults WITHOUT overwriting.
       expect(consoleSpy).toHaveBeenCalledWith(
-        'Failed to load settings, using defaults:',
-        expect.any(SyntaxError)
+        'Failed to load settings; using in-memory defaults (NOT overwriting the file):',
+        expect.any(CorruptFileError)
       )
       consoleSpy.mockRestore()
     })
@@ -703,10 +712,12 @@ describe('saveSettings', () => {
     const settings = makeFullSettings()
     saveSettings(settings)
 
-    expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
-      '/mock/data/dir/settings.json',
-      JSON.stringify(settings, null, 2),
-      { encoding: 'utf-8', mode: 0o600 }
+    // Atomic write: the serialized content is written to a temp file
+    // (by fd) which is then renamed onto the real settings path.
+    expect(mockedFs.writeFileSync.mock.calls[0][1]).toBe(JSON.stringify(settings, null, 2))
+    expect(mockedFs.renameSync).toHaveBeenCalledWith(
+      expect.any(String),
+      '/mock/data/dir/settings.json'
     )
   })
 
@@ -735,8 +746,9 @@ describe('saveSettings', () => {
 
     saveSettings(makeFullSettings())
 
-    const writeCall = mockedFs.writeFileSync.mock.calls[0]
-    expect(writeCall[2]).toEqual({ encoding: 'utf-8', mode: 0o600 })
+    // 0o600 is applied when the atomic writer CREATES the temp file via openSync.
+    const openCall = mockedFs.openSync.mock.calls[0]
+    expect(openCall[2]).toBe(0o600)
   })
 
   it('serializes with pretty-printed JSON (2-space indent)', () => {
@@ -767,8 +779,8 @@ describe('settings cache', () => {
 
       // Same reference means it was cached
       expect(first).toBe(second)
-      // existsSync should only be called once (on first load)
-      expect(mockedFs.existsSync).toHaveBeenCalledTimes(1)
+      // The file is read at most once (on first load); the cache serves the rest.
+      expect(mockedFs.readFileSync).toHaveBeenCalledTimes(1)
     })
 
     it('loads from file on first call', () => {
@@ -1408,10 +1420,12 @@ describe('integration scenarios', () => {
     })
     updateSettings(updated)
 
-    // Now getSettings should return the updated value without reading file
+    // Now getSettings should return the updated value without reading file.
+    // Reset call counters first so we assert specifically that the post-update
+    // read is served from cache (the initial load did read the file once).
+    vi.clearAllMocks()
     const afterUpdate = getSettings()
     expect(afterUpdate.container.containerRunner).toBe('podman')
-    // readFileSync should only have been called once (the initial load)
     expect(mockedFs.readFileSync).not.toHaveBeenCalled()
   })
 })

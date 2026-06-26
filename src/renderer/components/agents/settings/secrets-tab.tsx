@@ -109,6 +109,7 @@ function SecretRow({ secret, agentSlug, onDelete }: SecretRowProps) {
               variant="ghost"
               onClick={handleDelete}
               disabled={deleteSecret.isPending}
+              data-testid={`delete-secret-${secret.envVar}`}
             >
               <Trash2 className="h-4 w-4 text-destructive" />
             </Button>

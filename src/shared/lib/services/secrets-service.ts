@@ -9,7 +9,8 @@ import {
   getAgentEnvPath,
   getAgentWorkspaceDir,
   readFileOrNull,
-  writeFile,
+  writeFileAtomic,
+  withCrossProcessFileLock,
   ensureDirectory,
   fileExists,
 } from '@shared/lib/utils/file-storage'
@@ -193,45 +194,56 @@ export async function setSecret(agentSlug: string, secret: AgentSecret): Promise
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
   await ensureDirectory(workspaceDir)
 
-  // Get existing secrets
-  const secrets = await listSecrets(agentSlug)
-
-  // Find and update or add
-  const existingIndex = secrets.findIndex((s) => s.envVar === secret.envVar)
-  if (existingIndex >= 0) {
-    secrets[existingIndex] = secret
-  } else {
-    secrets.push(secret)
-  }
-
-  // Write back
   const envPath = getAgentEnvPath(agentSlug)
-  const content = serializeEnvFile(secrets)
-  await writeFile(envPath, content, { mode: 0o666 })
+  // The agent .env is written by BOTH this app AND the container's POST /env
+  // handler (reserved runtime vars). Serialize across processes with an on-disk
+  // lock the container honors too, re-read FRESH under the lock, and write
+  // atomically so an interleaved/interrupted write can't drop other
+  // secrets or truncate the file (which doubles as the container runtime env).
+  // mode 0o666 is preserved so the container (different uid) can still write it.
+  await withCrossProcessFileLock(envPath, async () => {
+    const secrets = await listSecrets(agentSlug)
+
+    const existingIndex = secrets.findIndex((s) => s.envVar === secret.envVar)
+    if (existingIndex >= 0) {
+      secrets[existingIndex] = secret
+    } else {
+      secrets.push(secret)
+    }
+
+    await writeFileAtomic(envPath, serializeEnvFile(secrets), { mode: 0o666 })
+  })
 }
 
 /**
  * Delete a secret
  */
 export async function deleteSecret(agentSlug: string, envVar: string): Promise<boolean> {
-  const secrets = await listSecrets(agentSlug)
-  const filtered = secrets.filter((s) => s.envVar !== envVar)
-
-  if (filtered.length === secrets.length) {
-    return false // Secret didn't exist
-  }
-
   const envPath = getAgentEnvPath(agentSlug)
-
-  if (filtered.length === 0) {
-    // No secrets left, could delete file or leave empty
-    await writeFile(envPath, '# Superagent Secrets\n', { mode: 0o666 })
-  } else {
-    const content = serializeEnvFile(filtered)
-    await writeFile(envPath, content, { mode: 0o666 })
+  // Nothing to delete if the .env (or its workspace dir) is absent. Short-circuit
+  // BEFORE taking the cross-process lock — otherwise opening `<env>.lock` inside a
+  // missing workspace dir throws ENOENT, which the route surfaces as a 500 instead
+  // of the correct 404 (the pre-lock behaviour returned false → "Secret not found").
+  if (!(await fileExists(envPath))) {
+    return false
   }
+  return withCrossProcessFileLock(envPath, async () => {
+    const secrets = await listSecrets(agentSlug)
+    const filtered = secrets.filter((s) => s.envVar !== envVar)
 
-  return true
+    if (filtered.length === secrets.length) {
+      return false // Secret didn't exist
+    }
+
+    if (filtered.length === 0) {
+      // No secrets left — leave an empty (but valid) header file.
+      await writeFileAtomic(envPath, '# Superagent Secrets\n', { mode: 0o666 })
+    } else {
+      await writeFileAtomic(envPath, serializeEnvFile(filtered), { mode: 0o666 })
+    }
+
+    return true
+  })
 }
 
 /**

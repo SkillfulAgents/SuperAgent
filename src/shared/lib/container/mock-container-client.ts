@@ -1656,6 +1656,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       effort: options.effort,
       model,
       initialMessage: options.initialMessage,
+      // Secret env var NAMES the host resolved from the agent .env and passed to
+      // the container — lets E2E assert a UI-added secret reaches the container
+      // through the full setSecret → .env → listSecrets path.
+      availableEnvVars: options.availableEnvVars,
       timestamp: new Date().toISOString(),
     })
 

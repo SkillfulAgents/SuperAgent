@@ -17,6 +17,15 @@ const mockGetPlatformAuthStatus = vi.fn()
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
   updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
+  // routes now persist via the serialized fresh-read mutateSettings.
+  // Faithfully reproduce its observable effect against the seeded mock settings
+  // so existing assertions on mockUpdateSettings keep working.
+  mutateSettings: (mutator: (s: Record<string, unknown>) => void) => {
+    const s = structuredClone(mockGetSettings() ?? {})
+    mutator(s)
+    mockUpdateSettings(s)
+    return s
+  },
 }))
 
 vi.mock('@shared/lib/services/skillset-service', () => ({
