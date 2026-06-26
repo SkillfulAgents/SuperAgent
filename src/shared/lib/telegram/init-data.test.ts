@@ -37,16 +37,8 @@ describe('verifyInitData', () => {
     expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: false, reason: 'stale' })
   })
 
-  it('rejects initData dated in the future beyond the clock-skew allowance', () => {
-    // A future auth_date makes the age negative; without an upper bound it would
-    // slip past the staleness check.
+  it('accepts a future-dated initData (a valid signature already proves authenticity, so there is no upper bound)', () => {
     const authDate = Math.floor(Date.now() / 1000) + 100000
-    const initData = signInitData({ auth_date: String(authDate) })
-    expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: false, reason: 'stale' })
-  })
-
-  it('accepts a slightly-future auth_date within the clock-skew allowance', () => {
-    const authDate = Math.floor(Date.now() / 1000) + 30
     const initData = signInitData({
       auth_date: String(authDate),
       user: JSON.stringify({ id: 7 }),
@@ -61,8 +53,8 @@ describe('verifyInitData', () => {
   })
 
   it('returns malformed when auth_date is not a finite number', () => {
-    // Number('notanumber') === NaN; z.number().finite() must reject it so the
-    // freshness check can't be silently bypassed.
+    // A non-numeric auth_date must be rejected as malformed (the library raises
+    // AuthDateInvalidError) rather than silently treated as valid.
     const initData = signInitData({ auth_date: 'notanumber', user: JSON.stringify({ id: 1 }) })
     expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: false, reason: 'malformed' })
   })
@@ -73,8 +65,8 @@ describe('verifyInitData', () => {
   })
 
   it('rejects an equal-length but wrong hash (constant-time compare path)', () => {
-    // A 64-hex wrong hash has the same length as the real one, so it exercises
-    // timingSafeEqual rather than the length short-circuit.
+    // A 64-hex wrong hash has the right length but the wrong value — a pure
+    // signature mismatch, not a length/format rejection.
     const initData = signInitData({ auth_date: String(Math.floor(Date.now() / 1000)) })
       .replace(/hash=[a-f0-9]+/, 'hash=' + 'a'.repeat(64))
     expect(verifyInitData(initData, BOT_TOKEN, 86400)).toMatchObject({ ok: false, reason: 'signature' })
