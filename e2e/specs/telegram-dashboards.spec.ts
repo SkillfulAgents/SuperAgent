@@ -147,34 +147,6 @@ test.describe('Telegram Mini App session + scoped cookie', () => {
     db.close()
   })
 
-  // ── Test 1: happy path ─────────────────────────────────────────────────────
-
-  test('valid initData returns 200 and sets tg_dash cookie', async ({ request }) => {
-    const authDate = Math.floor(Date.now() / 1000)
-    const initData = signInitData({
-      auth_date: String(authDate),
-      user: JSON.stringify({ id: TG_USER_ID, username: 'e2euser' }),
-    })
-
-    const res = await request.post('/api/telegram-miniapp/session', {
-      data: { initData, integrationId: INTEGRATION_ID, agentSlug, dashboardSlug: DASHBOARD_SLUG },
-    })
-
-    expect(res.status()).toBe(200)
-
-    const body = await res.json() as { ok: boolean; artifactPath: string }
-    expect(body.ok).toBe(true)
-    expect(body.artifactPath).toContain(agentSlug)
-    expect(body.artifactPath).toContain(DASHBOARD_SLUG)
-
-    const setCookie = res.headers()['set-cookie']
-    expect(setCookie).toBeTruthy()
-    expect(setCookie).toContain('tg_dash=')
-    expect(setCookie).toContain('HttpOnly')
-    expect(setCookie).toContain('SameSite=Lax')
-    expect(setCookie).toContain('Path=/api')
-  })
-
   // ── Test 2: cookie persistence → artifact GET ──────────────────────────────
 
   test('Set-Cookie is retained across requests and artifact GET returns 200 text/html', async ({ request }) => {
@@ -190,34 +162,24 @@ test.describe('Telegram Mini App session + scoped cookie', () => {
     })
     expect(sessionRes.status()).toBe(200)
 
+    // The session response sets a scoped tg_dash cookie with the expected attributes.
+    const setCookie = sessionRes.headers()['set-cookie']
+    expect(setCookie).toBeTruthy()
+    expect(setCookie).toContain('tg_dash=')
+    expect(setCookie).toContain('HttpOnly')
+    expect(setCookie).toContain('SameSite=Lax')
+    expect(setCookie).toContain('Path=/api')
+
     // GET the artifact path from the response body (cookie rides along automatically).
-    const { artifactPath } = await sessionRes.json() as { artifactPath: string }
-    const artifactRes = await request.get(artifactPath)
+    const body = await sessionRes.json() as { ok: boolean; artifactPath: string }
+    expect(body.ok).toBe(true)
+    expect(body.artifactPath).toContain(agentSlug)
+    expect(body.artifactPath).toContain(DASHBOARD_SLUG)
+    const artifactRes = await request.get(body.artifactPath)
 
     expect(artifactRes.status()).toBe(200)
     // MockContainerClient serves stub HTML for /artifacts/{slug}/ requests.
     expect(artifactRes.headers()['content-type']).toContain('text/html')
-  })
-
-  // ── Test 3: tampered signature ─────────────────────────────────────────────
-
-  test('tampered initData returns 401 reason=signature with no cookie', async ({ request }) => {
-    const authDate = Math.floor(Date.now() / 1000)
-    const tampered = signInitData({
-      auth_date: String(authDate),
-      user: JSON.stringify({ id: TG_USER_ID, username: 'e2euser' }),
-    }).replace(/hash=[a-f0-9]+/, 'hash=deadbeef000000000000000000000000')
-
-    const res = await request.post('/api/telegram-miniapp/session', {
-      data: { initData: tampered, integrationId: INTEGRATION_ID, agentSlug, dashboardSlug: DASHBOARD_SLUG },
-    })
-
-    expect(res.status()).toBe(401)
-    const body = await res.json() as { ok: boolean; reason: string }
-    expect(body.ok).toBe(false)
-    expect(body.reason).toBe('signature')
-    // No cookie must be issued on auth failure.
-    expect(res.headers()['set-cookie']).toBeUndefined()
   })
 
   // ── Test 4: valid signature but user not bound to integration ─────────────

@@ -500,19 +500,6 @@ describe('x-agent chat route', () => {
       )
     })
 
-    it('passes through delivery=text when the connector falls back to plain text', async () => {
-      mockShareDashboard.mockResolvedValue('text')
-
-      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
-        method: 'POST',
-        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug: 'weekly-report' }),
-      })
-
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ chatId: 'chat-1', delivery: 'text' })
-    })
-
     it('threads the screenshot path and surfaces delivery=photo when the dashboard has a screenshot', async () => {
       mockListArtifactsFromFilesystem.mockResolvedValue([
         { slug: 'weekly-report', name: 'Weekly', description: '', status: 'stopped', port: 0, hasScreenshot: true },

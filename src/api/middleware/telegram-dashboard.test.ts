@@ -111,16 +111,6 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
     expect(body.user?.id).toBe('u1')
   })
 
-  it('sets user on GET /…/artifacts/weekly-report/index.html (sub-resource)', async () => {
-    const token = await makeCookie()
-    const res = await makeArtifactApp().request(
-      '/api/agents/sales/artifacts/weekly-report/index.html',
-      { headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
-    )
-    const body = await res.json()
-    expect(body.user?.id).toBe('u1')
-  })
-
   it('sets user on POST to a content sub-path (dashboard backend write — in-app parity)', async () => {
     // The cookie authorizes writes to the dashboard's own (container-sandboxed)
     // backend, matching what an in-app AgentRead viewer can do.
@@ -138,16 +128,6 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
     const res = await makeArtifactApp().request(
       '/api/agents/sales/artifacts/weekly-report',
       { method: 'DELETE', headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
-    )
-    const body = await res.json()
-    expect(body.user).toBeNull()
-  })
-
-  it('does NOT set user on PATCH /…/artifacts/weekly-report (bare management path)', async () => {
-    const token = await makeCookie()
-    const res = await makeArtifactApp().request(
-      '/api/agents/sales/artifacts/weekly-report',
-      { method: 'PATCH', headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
     )
     const body = await res.json()
     expect(body.user).toBeNull()

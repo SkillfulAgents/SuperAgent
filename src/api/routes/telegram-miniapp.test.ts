@@ -114,6 +114,8 @@ describe('POST /session', () => {
     expect(setCookieHeader).toContain('HttpOnly')
     expect(setCookieHeader).toContain('SameSite=Lax')
     expect(setCookieHeader).toContain('Path=/api')
+    // The minted cookie lifetime is bounded by the dashboard cookie TTL.
+    expect(setCookieHeader).toContain(`Max-Age=${DASHBOARD_COOKIE_TTL_SECONDS}`)
     // No x-forwarded-proto → http → must NOT set Secure
     expect(setCookieHeader).not.toContain('Secure')
   })
@@ -315,14 +317,6 @@ describe('POST /session — rejection branches', () => {
     expect(await res.json()).toMatchObject({ ok: false, reason: 'no_owner' })
     expect(res.headers.get('set-cookie')).toBeNull()
   })
-
-  it('bounds the minted cookie lifetime with Max-Age', async () => {
-    const res = await postSession({
-      initData: boundInitData(), integrationId: 'int1', agentSlug: 'sales', dashboardSlug: 'weekly-report',
-    })
-    expect(res.status).toBe(200)
-    expect(res.headers.get('set-cookie')).toContain(`Max-Age=${DASHBOARD_COOKIE_TTL_SECONDS}`)
-  })
 })
 
 describe('POST /browser-link', () => {
@@ -393,6 +387,9 @@ describe('GET /browser', () => {
     // Artifact path is built from the signed token's dashboardSlug, not a query param.
     expect(body).toContain('/api/agents/sales/artifacts/weekly-report/')
     expect(body).toContain('<iframe')
+    // The access-expiry overlay timer is keyed to the cookie TTL (renewal needs
+    // fresh Telegram initData, so the browser cookie cannot self-renew).
+    expect(body).toContain(String(DASHBOARD_COOKIE_TTL_SECONDS * 1000))
   })
 
   it('returns 400 when the token query param is missing', async () => {

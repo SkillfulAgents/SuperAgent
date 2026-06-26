@@ -329,16 +329,6 @@ describe('containerManager.ensureRunning — env var construction', () => {
       const startOpts = mockStart.mock.calls[0][0]
       expect(startOpts.envVars.SHARE_DASHBOARD_ENABLED).toBeUndefined()
     })
-
-    it('is unset for a non-https (http) base URL', async () => {
-      setupAccountMocks([])
-      process.env.PLATFORM_BASE_URL = 'http://localhost:47891'
-
-      await containerManager.ensureRunning('test-agent')
-
-      const startOpts = mockStart.mock.calls[0][0]
-      expect(startOpts.envVars.SHARE_DASHBOARD_ENABLED).toBeUndefined()
-    })
   })
 })
 

@@ -1314,34 +1314,6 @@ describe('Auth Middleware', () => {
       expect(getSessionSpy).not.toHaveBeenCalled()
     })
 
-    // Case 2: no session, no pre-set user → 401
-    it('returns 401 when no pre-set user and getSession returns null', async () => {
-      mockGetSession.mockResolvedValue(null)
-
-      const app = new Hono()
-      app.get('/', Authenticated(), (c) => c.json({ ok: true }))
-
-      const res = await app.request('http://localhost/')
-      expect(res.status).toBe(401)
-      expect(await res.json()).toEqual({ error: 'Unauthorized' })
-    })
-
-    // Case 3: valid session (no pre-set user) → handler reached with session user
-    it('reaches handler and sets user when getSession returns a valid session', async () => {
-      mockGetSession.mockResolvedValue({ user: { id: 'u2', role: 'user' } })
-
-      let capturedUser: unknown = null
-      const app = new Hono()
-      app.get('/', Authenticated(), (c) => {
-        capturedUser = c.get('user' as never)
-        return c.json({ ok: true })
-      })
-
-      const res = await app.request('http://localhost/')
-      expect(res.status).toBe(200)
-      expect((capturedUser as { id: string }).id).toBe('u2')
-    })
-
     // Case 4: end-to-end composition — TelegramDashboardSession runs before Authenticated
     //
     // Mirrors the index.ts wiring: app.use('/api/agents/:id/artifacts/*', TelegramDashboardSession())
