@@ -835,6 +835,17 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * A stale lock (file older than `staleMs`, e.g. left by a crashed process) is
  * stolen so a dead writer can't wedge the file forever. The lock is always
  * released in a `finally`.
+ *
+ * ACCEPTED LIMITATION (not a bug — do not "fix" by tightening the steal): there
+ * is no heartbeat, so a holder that is *alive but frozen* for longer than
+ * `staleMs` (laptop sleep, a hung network fs / S3 File Gateway NFS stall, a
+ * multi-second GC pause) is indistinguishable from a dead one and can be falsely
+ * stolen, letting two writers briefly proceed. This is deliberately tolerated:
+ * the trigger is pathological (frozen >30s mid-millisecond write WHILE another
+ * writer contends), and because every write is atomic temp-file→rename the worst
+ * case is a single lost env-var update — never a torn/corrupt file. Fully closing
+ * it needs a heartbeat lock (e.g. `proper-lockfile`); revisit only if real
+ * cross-process `.env` contention shows up.
  */
 export async function withCrossProcessFileLock<T>(
   targetPath: string,

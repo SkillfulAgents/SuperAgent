@@ -31,6 +31,11 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * Run `fn` while holding `<targetPath>.lock` (O_EXCL), mutually exclusive with
  * the host app's writer. Steals a stale lock left by a crashed writer; always
  * releases in a finally.
+ *
+ * Shares the host's accepted stale-steal limitation (no heartbeat → an
+ * alive-but-frozen >STALE_MS holder can be falsely stolen; worst case is one lost
+ * env-var update, never corruption). See `withCrossProcessFileLock` in the host's
+ * file-storage.ts for the full rationale.
  */
 export async function withEnvFileLock<T>(targetPath: string, fn: () => Promise<T>): Promise<T> {
   const lockPath = `${targetPath}.lock`;
