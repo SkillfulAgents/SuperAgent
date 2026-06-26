@@ -1018,21 +1018,30 @@ class MessagePersister {
             // turn output — must not finalize, or it fires a spurious
             // session_idle (and a bogus completion notification).
             if (state.isActive && state.lastResultSubtype !== null) {
-              // Any background tasks still tracked here are phantoms — the
-              // runtime distinguishes "done" from "paused waiting for background
-              // work", so a per-task terminal signal was missed. Clear them.
-              for (const taskId of [...state.activeBackgroundTasks.keys()]) {
-                state.activeBackgroundTasks.delete(taskId)
-                this.broadcastToSSE(sessionId, { type: 'background_task_completed', taskId })
-                this.broadcastGlobal({ type: 'background_task_completed', sessionId, agentSlug: state.agentSlug, taskId })
-              }
-              this.finalizeIdle(sessionId, state)
-              // Completion notification at the real end of the work. Skip
-              // resume-exits: the session is pausing for a resume, not done.
-              if (state.lastResultSubtype === 'success' && state.agentSlug) {
-                notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
-                  console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+              if (state.activeBackgroundTasks.size > 0) {
+                // Idle here does NOT mean "settled". activeBackgroundTasks only
+                // ever holds backgrounded Bash commands (task_type=local_bash);
+                // for those the SDK fires `idle` at TURN-END while the command is
+                // still running, then re-fires `running` + task_notification when
+                // it actually finishes. Phantom-clearing + finalizing here would
+                // drop the indicator and un-gate auto-sleep mid-job — the exact
+                // failure run_in_background is meant to prevent. Keep the session
+                // alive and surface it as waiting-on-background; the per-task
+                // terminal signal (task_notification / task_updated) clears each
+                // task, and the subsequent, truly-settled idle finalizes.
+                this.broadcastToSSE(sessionId, {
+                  type: 'session_waiting_background',
+                  backgroundTaskCount: state.activeBackgroundTasks.size,
                 })
+              } else {
+                this.finalizeIdle(sessionId, state)
+                // Completion notification at the real end of the work. Skip
+                // resume-exits: the session is pausing for a resume, not done.
+                if (state.lastResultSubtype === 'success' && state.agentSlug) {
+                  notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+                    console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+                  })
+                }
               }
             }
           } else if (content.state === 'running' && !state.isActive) {

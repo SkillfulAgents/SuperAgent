@@ -89,6 +89,13 @@ interface FixtureMeta {
   // task whose `task_notification` must NOT be mistaken for it.
   backgroundTaskId?: string
   foregroundTaskId?: string
+  // Premature-idle fixtures: replay must mark the session active first (the user's
+  // message that started the turn predates the capture) for the idle handler's
+  // `isActive && lastResultSubtype` gate to fire.
+  startActive?: boolean
+  // One entry per backgrounded local_bash task in the capture, with the anchor
+  // timestamps from the stream (documentation; the test recomputes dynamically).
+  backgroundTasks?: Array<{ taskId: string; label?: string; prematureIdleT?: number; realCompletionT?: number }>
 }
 
 async function loadFixture(fixtureName: string): Promise<{
@@ -209,6 +216,89 @@ async function replayFixture(fixtureName: string): Promise<{
   await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
 
   return { meta, sseEvents }
+}
+
+// Per-entry snapshot taken right after each stream message is processed. Lets a
+// test assert the session/background-task state *at the moment* a specific
+// message was handled — e.g. that a still-running Bash task was NOT cleared when
+// a premature `session_state_changed:'idle'` arrived mid-flight.
+interface ReplaySnapshot {
+  index: number
+  t: number
+  type?: string
+  subtype?: string
+  state?: string
+  taskId?: string
+  status?: string
+  // Terminal status for task_updated lives in `patch.status`, not top-level.
+  patchStatus?: string
+  taskType?: string
+  isActive: boolean
+  // Background task ids cleared so far (cumulative, in emission order).
+  bgCompletedIds: string[]
+  // Cumulative count of session_idle events emitted so far.
+  sessionIdleCount: number
+}
+
+// Like replayFixture, but (a) marks the session active before subscribing — the
+// turn-starting user message predates the capture, and the idle handler's
+// phantom-clear is gated on `isActive` — and (b) records a per-entry timeline so
+// a test can inspect state at the exact message that should (not) have cleared a
+// task. Background-task tracking lives entirely in the persister's in-memory
+// state, so no fs-snapshot is needed.
+async function replayFixtureTracked(fixtureName: string): Promise<{
+  meta: FixtureMeta
+  sseEvents: Array<Record<string, unknown>>
+  timeline: ReplaySnapshot[]
+}> {
+  const { meta, streamEntries } = await loadFixture(fixtureName)
+
+  vi.resetModules()
+  const { messagePersister } = await import('./message-persister')
+  const { client, send } = createReplayClient()
+
+  const sseEvents: Array<Record<string, unknown>> = []
+  const cleanup = messagePersister.addSSEClient(meta.sessionId, (data) => {
+    sseEvents.push(data as Record<string, unknown>)
+  })
+
+  // The real turn was kicked off by a user message before the capture window, so
+  // mark active first; subscribeToSession preserves the prior isActive.
+  if (meta.startActive) {
+    messagePersister.markSessionActive(meta.sessionId, meta.agentSlug)
+  }
+  await messagePersister.subscribeToSession(meta.sessionId, client, meta.sessionId, meta.agentSlug)
+
+  const timeline: ReplaySnapshot[] = []
+  for (let i = 0; i < streamEntries.length; i++) {
+    const entry = streamEntries[i]
+    send(entry.message)
+    await new Promise((r) => setImmediate(r))
+
+    const c = (entry.message?.content ?? {}) as Record<string, unknown>
+    timeline.push({
+      index: i,
+      t: entry.t,
+      type: c['type'] as string | undefined,
+      subtype: c['subtype'] as string | undefined,
+      state: c['state'] as string | undefined,
+      taskId: c['task_id'] as string | undefined,
+      status: c['status'] as string | undefined,
+      patchStatus: (c['patch'] as { status?: string } | undefined)?.status,
+      taskType: c['task_type'] as string | undefined,
+      isActive: messagePersister.isSessionActive(meta.sessionId),
+      bgCompletedIds: sseEvents
+        .filter((e) => e['type'] === 'background_task_completed')
+        .map((e) => e['taskId'] as string),
+      sessionIdleCount: sseEvents.filter((e) => e['type'] === 'session_idle').length,
+    })
+  }
+
+  await new Promise((r) => setTimeout(r, 50))
+  cleanup()
+  messagePersister.unsubscribeFromSession(meta.sessionId)
+
+  return { meta, sseEvents, timeline }
 }
 
 // =====================================================================
@@ -409,6 +499,100 @@ describe('subagent task_started / task_progress replay harness', () => {
       // produce a background_task_completed for the foreground id.
       const completed = sseEvents.filter((e) => e['type'] === 'background_task_completed')
       expect(completed.map((e) => e['taskId'])).not.toContain(fgId)
+    })
+  })
+
+  // Real capture of the premature-idle regression (ac23bdd8). A Bash
+  // run_in_background (task_type=local_bash) keeps running past turn-end, but the
+  // SDK emits session_state_changed:'idle' at turn-end ANYWAY — it re-emits
+  // 'running' + task_notification{completed} when the bash actually finishes. The
+  // idle handler must not treat the still-running task as a phantom: clearing it +
+  // finalizeIdle there drops the background indicator and un-gates auto-sleep,
+  // killing the job mid-flight. This capture has two such tasks back-to-back: a
+  // ~0.2s one (by2nbnmbo) and a 30s sleep (bp2edegys, ~28s premature-idle→done gap).
+  describe('background Bash premature-idle (real capture)', () => {
+    // Locate, for one background task, the three load-bearing stream entries:
+    //   started   — task_started{local_bash}
+    //   completed — its FIRST real terminal signal. A backgrounded Bash command
+    //               settles via task_updated{patch.status:completed} (the
+    //               busy-completion path) and/or a redundant follow-up
+    //               task_notification{status:completed}; whichever lands first is
+    //               the legitimate end.
+    //   premature — the FIRST session_state_changed:'idle' between started and
+    //               completed (turn-end fired while the bash was still running)
+    const isTerminal = (s: ReplaySnapshot, taskId: string) =>
+      s.taskId === taskId &&
+      ((s.subtype === 'task_notification' && s.status === 'completed') ||
+        (s.subtype === 'task_updated' &&
+          (s.patchStatus === 'completed' || s.patchStatus === 'failed' || s.patchStatus === 'killed')))
+    function anchors(timeline: ReplaySnapshot[], taskId: string) {
+      const startedIdx = timeline.findIndex((s) => s.subtype === 'task_started' && s.taskId === taskId)
+      const completedIdx = timeline.findIndex((s) => isTerminal(s, taskId))
+      const prematureIdx = timeline.findIndex(
+        (s, i) =>
+          i > startedIdx && i < completedIdx && s.subtype === 'session_state_changed' && s.state === 'idle'
+      )
+      return { startedIdx, prematureIdx, completedIdx }
+    }
+
+    it('keeps the session active and the task tracked for the full time the bash runs', async () => {
+      const { meta, timeline } = await replayFixtureTracked('background-bash-premature-idle')
+      expect(meta.backgroundTasks?.length ?? 0).toBeGreaterThan(0)
+
+      for (const { taskId, label } of meta.backgroundTasks!) {
+        const { startedIdx, prematureIdx, completedIdx } = anchors(timeline, taskId)
+        expect(startedIdx, `${label}: task_started present`).toBeGreaterThanOrEqual(0)
+        expect(completedIdx, `${label}: real completion present`).toBeGreaterThan(startedIdx)
+        // The fixture must actually exercise the hazard: a turn-end idle mid-flight.
+        expect(prematureIdx, `${label}: a premature idle exists mid-flight`).toBeGreaterThan(startedIdx)
+        expect(prematureIdx).toBeLessThan(completedIdx)
+
+        // Across the entire window the bash is running, the session must stay active
+        // (auto-sleep blocked) and the task must stay tracked (indicator persists).
+        for (let i = startedIdx + 1; i < completedIdx; i++) {
+          expect(timeline[i].isActive, `${label}: session finalized mid-flight at entry ${i}`).toBe(true)
+          expect(timeline[i].bgCompletedIds, `${label}: cleared mid-flight at entry ${i}`).not.toContain(taskId)
+        }
+      }
+    })
+
+    it('clears each background task exactly once, only at its real terminal signal', async () => {
+      const { meta, timeline, sseEvents } = await replayFixtureTracked('background-bash-premature-idle')
+
+      for (const { taskId, label } of meta.backgroundTasks!) {
+        const { completedIdx } = anchors(timeline, taskId)
+        // Cleared by the time the real terminal signal is processed...
+        expect(timeline[completedIdx].bgCompletedIds, `${label}: cleared at terminal signal`).toContain(taskId)
+        // ...and NOT one entry earlier (i.e. not at the premature idle / result).
+        expect(
+          timeline[completedIdx - 1].bgCompletedIds,
+          `${label}: not cleared before terminal signal`
+        ).not.toContain(taskId)
+      }
+
+      const completedIds = sseEvents
+        .filter((e) => e['type'] === 'background_task_completed')
+        .map((e) => e['taskId'])
+      for (const { taskId, label } of meta.backgroundTasks!) {
+        expect(completedIds.filter((x) => x === taskId), `${label}: completed exactly once`).toHaveLength(1)
+      }
+    })
+
+    it('does not finalize the session (session_idle) while a bash is still running', async () => {
+      const { meta, timeline } = await replayFixtureTracked('background-bash-premature-idle')
+
+      for (const { taskId, label } of meta.backgroundTasks!) {
+        const { startedIdx, completedIdx } = anchors(timeline, taskId)
+        // No new session_idle may be emitted between a task's start and its real
+        // completion — the premature turn-end idle must degrade to waiting-background.
+        const idleAtStart = timeline[startedIdx].sessionIdleCount
+        for (let i = startedIdx + 1; i < completedIdx; i++) {
+          expect(
+            timeline[i].sessionIdleCount,
+            `${label}: session_idle finalized mid-flight at entry ${i}`
+          ).toBe(idleAtStart)
+        }
+      }
     })
   })
 

@@ -3756,14 +3756,21 @@ describe('MessagePersister', () => {
       expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-x')
     })
 
-    it('backstop: session_state_changed idle clears phantom tasks and finalizes idle', () => {
-      // Simulate a MISSED per-task terminal signal: a tracked bg task that never got a
-      // task_updated/task_notification. When the SDK reports the session fully settled
-      // (state:idle), the backstop must clear it so the session isn't pinned forever.
+    it('session_state_changed idle keeps a still-running bg task tracked (no premature phantom-clear)', () => {
+      // Regression (ac23bdd8): a backgrounded Bash command (task_type=local_bash) is
+      // still running at turn-end. The SDK fires session_state_changed:idle at turn-end
+      // ANYWAY — it re-fires 'running' + a terminal task signal when the command
+      // actually finishes. The idle handler must NOT treat the still-running task as a
+      // phantom: clearing it + finalizing here drops the indicator and un-gates
+      // auto-sleep mid-job (the exact failure run_in_background prevents). It must keep
+      // the task tracked, keep the session active, and surface waiting-on-background.
+      // activeBackgroundTasks only ever holds local_bash tasks, and those always get a
+      // later terminal signal — so the old "missed signal → phantom" premise never
+      // holds. See the background-bash-premature-idle replay fixture (real capture).
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       mockClient._sendMessage({
         type: 'user',
-        tool_use_result: { backgroundTaskId: 'bg-phantom' },
+        tool_use_result: { backgroundTaskId: 'bg-running' },
         message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
       })
       // Turn ends with the task still tracked → session stays active (waiting).
@@ -3772,11 +3779,27 @@ describe('MessagePersister', () => {
 
       sseEvents.length = 0
 
-      // SDK reports the session settled while we still (wrongly) track the task.
+      // Turn-end idle arrives WHILE the bash is still running.
       mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
 
-      expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toContain('bg-phantom')
+      // Not cleared, not finalized — surfaced as waiting-on-background instead.
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-running')
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      // The real terminal signal (task_updated{completed}) then clears it...
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_updated', task_id: 'bg-running', patch: { status: 'completed' },
+      })
+      expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toContain('bg-running')
       expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+
+      // ...and the subsequent, truly-settled idle finalizes the session.
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
       expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
       expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
     })
