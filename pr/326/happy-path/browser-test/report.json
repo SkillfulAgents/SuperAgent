@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail:  Close Browser)\n- Response explicitly states: **\"The page title is \"Example Domain\".\"**\n- Confirmation message: **\"The page at https://example.com loaded with the heading/title \"Example Domain\". Browser closed.\"**\n- All browser operations completed with checkmarks (✓)\n- Task completed in 13 seconds\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 73000,
+  "sessionId": "c41e54cd-5416-4b06-8cf2-38bf51344927",
+  "cost": {
+    "inputTokens": 282,
+    "outputTokens": 10662,
+    "cacheCreationTokens": 59587,
+    "cacheReadTokens": 808305,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.208906
+  }
+}
