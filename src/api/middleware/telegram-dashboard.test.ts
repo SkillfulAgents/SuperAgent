@@ -24,7 +24,7 @@ function makeLlmApp() {
 describe('TelegramDashboardSession', () => {
   it('sets user when valid cookie and route agent matches cookie agent', async () => {
     const exp = Math.floor(Date.now() / 1000) + 900
-    const token = signDashboardCookie(
+    const token = await signDashboardCookie(
       { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp },
       getOrCreateAuthSecret(),
     )
@@ -37,7 +37,7 @@ describe('TelegramDashboardSession', () => {
 
   it('does not set user when cookie agent differs from route agent', async () => {
     const exp = Math.floor(Date.now() / 1000) + 900
-    const token = signDashboardCookie(
+    const token = await signDashboardCookie(
       { userId: 'u1', agentSlug: 'other', dashboardSlug: 'weekly-report', integrationId: 'int1', exp },
       getOrCreateAuthSecret(),
     )
@@ -50,7 +50,7 @@ describe('TelegramDashboardSession', () => {
 
   it('sets user when route has no :id param (llm/stt path) and cookie is valid', async () => {
     const exp = Math.floor(Date.now() / 1000) + 900
-    const token = signDashboardCookie(
+    const token = await signDashboardCookie(
       { userId: 'u1', agentSlug: 'sales', dashboardSlug: 'weekly-report', integrationId: 'int1', exp },
       getOrCreateAuthSecret(),
     )
@@ -102,7 +102,7 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
   }
 
   it('sets user on GET /…/artifacts/weekly-report/ (trailing-slash root)', async () => {
-    const token = makeCookie()
+    const token = await makeCookie()
     const res = await makeArtifactApp().request(
       '/api/agents/sales/artifacts/weekly-report/',
       { headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
@@ -112,7 +112,7 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
   })
 
   it('sets user on GET /…/artifacts/weekly-report/index.html (sub-resource)', async () => {
-    const token = makeCookie()
+    const token = await makeCookie()
     const res = await makeArtifactApp().request(
       '/api/agents/sales/artifacts/weekly-report/index.html',
       { headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
@@ -124,7 +124,7 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
   it('sets user on POST to a content sub-path (dashboard backend write — in-app parity)', async () => {
     // The cookie authorizes writes to the dashboard's own (container-sandboxed)
     // backend, matching what an in-app AgentRead viewer can do.
-    const token = makeCookie()
+    const token = await makeCookie()
     const res = await makeArtifactApp().request(
       '/api/agents/sales/artifacts/weekly-report/api/save',
       { method: 'POST', headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
@@ -134,7 +134,7 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
   })
 
   it('does NOT set user on DELETE /…/artifacts/weekly-report (bare management path)', async () => {
-    const token = makeCookie()
+    const token = await makeCookie()
     const res = await makeArtifactApp().request(
       '/api/agents/sales/artifacts/weekly-report',
       { method: 'DELETE', headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
@@ -144,7 +144,7 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
   })
 
   it('does NOT set user on PATCH /…/artifacts/weekly-report (bare management path)', async () => {
-    const token = makeCookie()
+    const token = await makeCookie()
     const res = await makeArtifactApp().request(
       '/api/agents/sales/artifacts/weekly-report',
       { method: 'PATCH', headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
@@ -156,7 +156,7 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
   it('does NOT set user on a %2F-encoded bare DELETE (encoding evasion)', async () => {
     // Hono keeps %2F in c.req.path but decodes c.req.param(); a raw-path compare
     // would miss this and let the cookie authorize the destructive bare route.
-    const token = makeCookie()
+    const token = await makeCookie()
     for (const slug of ['weekly-report%2F', 'weekly-report%2f', 'weekly%2Freport']) {
       const res = await makeArtifactApp().request(
         `/api/agents/sales/artifacts/${slug}`,
@@ -168,7 +168,7 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
   })
 
   it('does NOT set user on a GET to the bare management path (no sub-resource)', async () => {
-    const token = makeCookie()
+    const token = await makeCookie()
     const res = await makeArtifactApp().request(
       '/api/agents/sales/artifacts/weekly-report',
       { headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },
@@ -180,7 +180,7 @@ describe('TelegramDashboardSession — mount scope (artifacts)', () => {
   it('does NOT set user when the cookie is scoped to a different dashboard', async () => {
     // Cookie minted for weekly-report must not authorize reads of another
     // dashboard under the same agent.
-    const token = makeCookie('weekly-report')
+    const token = await makeCookie('weekly-report')
     const res = await makeArtifactApp().request(
       '/api/agents/sales/artifacts/secret-finances/',
       { headers: { cookie: `${DASHBOARD_COOKIE_NAME}=${token}` } },

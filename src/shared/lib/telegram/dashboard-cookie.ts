@@ -1,36 +1,32 @@
-import crypto from 'node:crypto'
+import { SignJWT, jwtVerify } from 'jose'
 import { dashboardCookiePayloadSchema, type DashboardCookiePayload } from './dashboard-cookie-schema'
 
 export { DASHBOARD_COOKIE_NAME, DASHBOARD_COOKIE_TTL_SECONDS } from './dashboard-cookie-schema'
 
-function b64url(buf: Buffer): string {
-  return buf.toString('base64url')
+const ALG = 'HS256'
+
+function secretKey(secret: string): Uint8Array {
+  return new TextEncoder().encode(secret)
 }
 
-export function signDashboardCookie(payload: DashboardCookiePayload, secret: string): string {
-  const body = b64url(Buffer.from(JSON.stringify(payload)))
-  const sig = crypto.createHmac('sha256', secret).update(body).digest('base64url')
-  return `${body}.${sig}`
+export async function signDashboardCookie(
+  payload: DashboardCookiePayload,
+  secret: string,
+): Promise<string> {
+  return new SignJWT(payload).setProtectedHeader({ alg: ALG }).sign(secretKey(secret))
 }
 
-export function verifyDashboardCookie(value: string, secret: string): DashboardCookiePayload | null {
-  const dot = value.lastIndexOf('.')
-  if (dot < 0) return null
-  const body = value.slice(0, dot)
-  const sig = value.slice(dot + 1)
-  const expected = crypto.createHmac('sha256', secret).update(body).digest('base64url')
-  if (expected.length !== sig.length ||
-      !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) {
-    return null
-  }
-  let json: unknown
+export async function verifyDashboardCookie(
+  value: string,
+  secret: string,
+): Promise<DashboardCookiePayload | null> {
+  let claims: unknown
   try {
-    json = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'))
+    // jose validates the HMAC signature and the `exp` claim, throwing on either.
+    claims = (await jwtVerify(value, secretKey(secret), { algorithms: [ALG] })).payload
   } catch {
     return null
   }
-  const parsed = dashboardCookiePayloadSchema.safeParse(json)
-  if (!parsed.success) return null
-  if (parsed.data.exp <= Math.floor(Date.now() / 1000)) return null
-  return parsed.data
+  const parsed = dashboardCookiePayloadSchema.safeParse(claims)
+  return parsed.success ? parsed.data : null
 }

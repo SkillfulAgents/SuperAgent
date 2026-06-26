@@ -59,7 +59,7 @@ export function TelegramDashboardSession(): MiddlewareHandler {
     const raw = getCookie(c, DASHBOARD_COOKIE_NAME)
     if (!raw) return next()
 
-    const payload = verifyDashboardCookie(raw, getOrCreateAuthSecret())
+    const payload = await verifyDashboardCookie(raw, getOrCreateAuthSecret())
     if (!payload) return next()
 
     const routeAgent = c.req.param('id')
