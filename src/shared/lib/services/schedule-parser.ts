@@ -124,21 +124,36 @@ export function getNextCronTime(cronExpression: string, timezone?: string): Date
 export const MIN_RECURRING_INTERVAL_MS = 15 * 60 * 1000
 
 /**
- * Compute the interval (in milliseconds) between the next two occurrences of a
- * cron expression. Returns null if the expression is invalid.
- *
- * Note: cron intervals aren't always constant (e.g. "0 0 1 * *" varies 28–31
- * days), so this is the gap between the *next* two runs — a good-enough proxy
- * for "is this schedule too frequent?".
+ * Number of upcoming occurrences to scan when measuring how frequently a cron
+ * fires. Comparing only the next two runs is time-dependent for bursty schedules
+ * (e.g. "0,5 * * * *" looks like a 55-minute gap at :02 but a 5-minute gap at
+ * :58), so we scan a small horizon and take the smallest gap. 32 covers
+ * intra-hour bursts and any realistic daily/weekly burst while staying cheap.
  */
-export function getCronIntervalMs(cronExpression: string, timezone?: string): number | null {
+const CRON_OCCURRENCE_SCAN_COUNT = 32
+
+/**
+ * Compute the smallest gap (in milliseconds) between consecutive runs of a cron
+ * expression over the next CRON_OCCURRENCE_SCAN_COUNT occurrences. Returns null
+ * if the expression is invalid.
+ *
+ * Scanning a horizon (rather than just the next two runs) makes the result
+ * independent of the current time and catches bursty schedules whose tightest
+ * gap isn't between the immediate next two occurrences.
+ */
+export function getMinCronIntervalMs(cronExpression: string, timezone?: string): number | null {
   try {
     const interval = CronExpressionParser.parse(cronExpression, {
       tz: timezone || 'UTC',
     })
-    const first = interval.next().toDate()
-    const second = interval.next().toDate()
-    return second.getTime() - first.getTime()
+    let prev = interval.next().toDate().getTime()
+    let minGap = Infinity
+    for (let i = 0; i < CRON_OCCURRENCE_SCAN_COUNT; i++) {
+      const next = interval.next().toDate().getTime()
+      minGap = Math.min(minGap, next - prev)
+      prev = next
+    }
+    return Number.isFinite(minGap) ? minGap : null
   } catch {
     return null
   }
@@ -172,7 +187,7 @@ export function getFrequencyWarning(
 ): string | null {
   if (scheduleType !== 'cron') return null
 
-  const intervalMs = getCronIntervalMs(scheduleExpression, timezone)
+  const intervalMs = getMinCronIntervalMs(scheduleExpression, timezone)
   if (intervalMs === null || intervalMs >= MIN_RECURRING_INTERVAL_MS) return null
 
   const thresholdMinutes = Math.round(MIN_RECURRING_INTERVAL_MS / 60_000)

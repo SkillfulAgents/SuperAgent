@@ -279,7 +279,9 @@ export function useUpdateSchedule() {
         body: JSON.stringify({ scheduleExpression }),
       })
       if (!res.ok) throw new Error('Failed to update schedule')
-      return res.json() as Promise<ApiScheduledTask>
+      // The route appends a top-level `warning` when the new cadence is below the
+      // recommended minimum interval; surface it to the caller.
+      return res.json() as Promise<ApiScheduledTask & { warning?: string }>
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })

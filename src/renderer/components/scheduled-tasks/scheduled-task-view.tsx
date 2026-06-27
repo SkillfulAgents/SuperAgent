@@ -197,16 +197,25 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
     if (!canSaveSchedule) return
 
     try {
+      let frequencyWarning: string | undefined
       if (parsedExpression) {
-        await updateSchedule.mutateAsync({
+        const result = await updateSchedule.mutateAsync({
           taskId,
           scheduleExpression: parsedExpression,
         })
+        frequencyWarning = result.warning
       }
       if (timezoneChanged) {
         await updateTimezone.mutateAsync({ taskId, timezone: pendingTimezone })
       }
       setEditScheduleOpen(false)
+      // Advisory only — the edit succeeded. Surface the too-frequent-interval
+      // note so it isn't silently dropped when the dialog closes.
+      if (frequencyWarning) {
+        toast.warning('Frequent schedule', {
+          description: <span className="whitespace-pre-line">{frequencyWarning}</span>,
+        })
+      }
     } catch (err) {
       console.error('Failed to update schedule:', err)
     }
