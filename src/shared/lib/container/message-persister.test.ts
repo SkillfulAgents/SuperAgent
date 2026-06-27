@@ -4127,6 +4127,42 @@ describe('MessagePersister', () => {
       expect(after).toBe(before)
     })
 
+    // Iddo (review): message_start must NOT optimistically project 'streaming' before
+    // the first content block's type is known. A message that opens directly with a
+    // tool call (no preamble text) would otherwise flip streaming→working here, and
+    // reconcileIndicator turns that non-busy→busy flip into stopWorking()+startWorking()
+    // — Slack removes+re-adds its reaction and iMessage blinks the typing bubble, once
+    // per tool-first assistant message in an agentic turn. 'streaming' is deferred to the
+    // first text token instead.
+    it('keeps a tool-first message on "working" without flipping through "streaming"', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
+      sseEvents.length = 0 // isolate the assistant message
+
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 't1', name: 'Bash' } },
+      })
+
+      const activities = sseEvents.filter(e => e.type === 'session_activity').map(e => e.activity)
+      expect(activities).not.toContain('streaming')
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('working')
+    })
+
+    it('projects "streaming" only when real text starts (first text_delta), not at message_start', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
+      // No content yet: the agent is honestly 'working', not optimistically 'streaming'.
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('working')
+
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hello' } },
+      })
+      // The first token yields the reply surface to the streamed text.
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('streaming')
+    })
+
     // Regression: a mid-stream error must NOT emit a spurious busy activity right
     // before settling. The terminal transition has to settle in a SINGLE non-busy
     // emit reflecting the final state — an intermediate "isActive still true,
@@ -4134,7 +4170,8 @@ describe('MessagePersister', () => {
     // connectors (Slack's async reaction add/remove) into a stuck indicator.
     it('emits no spurious busy session_activity on a mid-stream error result', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
-      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } }) // → 'streaming'
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } } }) // → 'streaming'
       sseEvents.length = 0 // isolate the terminal transition
 
       mockClient._sendMessage({ type: 'result', subtype: 'error', error: 'boom' })
@@ -4151,7 +4188,8 @@ describe('MessagePersister', () => {
     // streaming/awaiting must not emit a busy activity first.
     it('emits no spurious busy session_activity when markSessionInactive finalizes a streaming session', async () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
-      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } }) // → 'streaming'
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
+      mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } } }) // → 'streaming'
       sseEvents.length = 0 // isolate the terminal transition
 
       // Default mock getSession() resolves null → handleConnectionClosed marks inactive.

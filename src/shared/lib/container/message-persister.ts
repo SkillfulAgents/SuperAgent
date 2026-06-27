@@ -1749,12 +1749,14 @@ class MessagePersister {
     switch (event.type) {
       case 'message_start':
         state.currentText = ''
-        state.isStreaming = true
+        state.isStreaming = false // text hasn't started; set true at the first text token below
         state.currentToolUse = null
         state.currentThinking = false
-        state.isRetrying = false // a streaming message means any retry resolved
-        // Emit after the resets so the activity reads 'streaming' (text owns the
-        // reply surface), not a stale 'thinking'/'working' from the prior block.
+        state.isRetrying = false // the response is flowing now, so any retry resolved
+        // Emit after the resets. Activity reads 'working' (active, nothing surfaced
+        // yet) — 'streaming' is deferred to the first text token (content_block_delta)
+        // so a message that opens with a tool call doesn't flip streaming→working and
+        // churn connectors (Slack reaction remove+re-add, iMessage typing-bubble blink).
         this.emitActivityState(sessionId)
         this.broadcastToSSE(sessionId, { type: 'stream_start' })
         break
@@ -1780,8 +1782,8 @@ class MessagePersister {
           state.currentThinking = true
           this.broadcastToSSE(sessionId, { type: 'thinking_start' })
         }
-        // A tool block projects 'working'; a thinking block 'thinking' — both
-        // differ from the 'streaming' set at message_start, so re-project.
+        // A tool block projects 'working', a thinking block 'thinking'. A text block
+        // keeps 'working' (deduped) until its first token sets 'streaming' below.
         this.emitActivityState(sessionId)
         break
 
@@ -1792,6 +1794,11 @@ class MessagePersister {
             type: 'stream_delta',
             text: event.delta.text,
           })
+          // The streamed reply now owns the surface → project 'streaming' (deferred
+          // from message_start so a tool-first message never churns connectors).
+          // Idempotent + deduped, so the per-token cost is one cheap compare.
+          state.isStreaming = true
+          this.emitActivityState(sessionId)
         } else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
           // Stream summarized reasoning text so the UI can accumulate it for "View thinking"
           this.broadcastToSSE(sessionId, {
