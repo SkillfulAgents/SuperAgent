@@ -2704,3 +2704,134 @@ describe('useMessageStream', () => {
     expect(result.current.isWaitingBackground).toBe(false)
   })
 })
+
+// The dynamic-workflow drawer is driven entirely by these four SSE events; the
+// reducers do the live-merge that had the trickiest bugs (sticky terminal status,
+// late-join stub, failed mapping), so they're exercised directly here.
+describe('useMessageStream — workflow drawer reducers', () => {
+  const es = () => MockEventSource.instances[0]
+  const started = (over: Record<string, unknown> = {}) =>
+    es().simulateMessage({ type: 'workflow_started', toolUseId: 'tu-wf', runId: 'wf_abc', name: 'My WF', startedAt: 1000, ...over })
+
+  it('workflow_started upserts a run keyed by runId', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+
+    act(() => { started() })
+
+    expect(result.current.workflows).toHaveLength(1)
+    expect(result.current.workflows[0]).toMatchObject({
+      toolUseId: 'tu-wf', runId: 'wf_abc', name: 'My WF', startedAt: 1000, agents: {},
+    })
+  })
+
+  it('workflow_started for an existing runId updates fields without duplicating', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => { started() })
+
+    act(() => { started({ name: 'Renamed' }) })
+
+    expect(result.current.workflows).toHaveLength(1)
+    expect(result.current.workflows[0].name).toBe('Renamed')
+  })
+
+  it('workflow_agent_updated patches per-agent status then result on completion', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => { started() })
+
+    act(() => { es().simulateMessage({ type: 'workflow_agent_updated', runId: 'wf_abc', agentId: 'a1', status: 'running', result: null }) })
+    expect(result.current.workflows[0].agents.a1).toMatchObject({ status: 'running', result: null })
+
+    act(() => { es().simulateMessage({ type: 'workflow_agent_updated', runId: 'wf_abc', agentId: 'a1', status: 'done', result: 'the answer' }) })
+    expect(result.current.workflows[0].agents.a1).toMatchObject({ status: 'done', result: 'the answer' })
+  })
+
+  it('a stale running never downgrades a done agent (terminal sticky)', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => { started() })
+    act(() => { es().simulateMessage({ type: 'workflow_agent_updated', runId: 'wf_abc', agentId: 'a1', status: 'done', result: 'done!' }) })
+
+    act(() => { es().simulateMessage({ type: 'workflow_agent_updated', runId: 'wf_abc', agentId: 'a1', status: 'running', result: null }) })
+
+    expect(result.current.workflows[0].agents.a1).toMatchObject({ status: 'done', result: 'done!' })
+  })
+
+  it('workflow_agent_updated before workflow_started stubs the run (late-join)', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+
+    act(() => { es().simulateMessage({ type: 'workflow_agent_updated', runId: 'wf_late', agentId: 'a1', status: 'running', result: null }) })
+
+    const run = result.current.workflows.find(w => w.runId === 'wf_late')
+    expect(run).toBeDefined()
+    expect(run?.toolUseId).toBe('')
+    expect(run?.agents.a1.status).toBe('running')
+  })
+
+  it('workflow_progress merges live metadata, maps failed, and sets workflow usage', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => { started() })
+
+    act(() => {
+      es().simulateMessage({
+        type: 'workflow_progress',
+        runId: 'wf_abc',
+        agents: [{ agentId: 'a1', label: 'boom', phase: 'Work', state: 'failed', tokens: 500, toolCalls: 3, lastTool: 'Bash throw' }],
+        usage: { totalTokens: 900, toolUses: 5, durationMs: 1200 },
+      })
+    })
+
+    expect(result.current.workflows[0].agents.a1).toMatchObject({
+      status: 'failed', tokens: 500, toolCount: 3, lastTool: 'Bash throw', label: 'boom', phase: 'Work',
+    })
+    expect(result.current.workflows[0].usage).toEqual({ totalTokens: 900, toolUses: 5, durationMs: 1200 })
+  })
+
+  it('workflow_progress for an unknown run is a no-op (never stubs)', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+
+    act(() => {
+      es().simulateMessage({ type: 'workflow_progress', runId: 'wf_none', agents: [{ agentId: 'a1', state: 'progress' }] })
+    })
+
+    expect(result.current.workflows).toHaveLength(0)
+  })
+
+  it('workflow_progress does not downgrade a tailer-confirmed done agent, and keeps its result', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => { started() })
+    act(() => { es().simulateMessage({ type: 'workflow_agent_updated', runId: 'wf_abc', agentId: 'a1', status: 'done', result: 'disk result' }) })
+
+    act(() => {
+      es().simulateMessage({ type: 'workflow_progress', runId: 'wf_abc', agents: [{ agentId: 'a1', state: 'progress', tokens: 700 }] })
+    })
+
+    expect(result.current.workflows[0].agents.a1).toMatchObject({ status: 'done', result: 'disk result', tokens: 700 })
+  })
+
+  it('workflow_completed stamps completedAt on the matching run', async () => {
+    const { useMessageStream } = await getHookModule()
+    const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => { started() })
+    expect(result.current.workflows[0].completedAt).toBeUndefined()
+
+    act(() => { es().simulateMessage({ type: 'workflow_completed', runId: 'wf_abc' }) })
+
+    expect(typeof result.current.workflows[0].completedAt).toBe('number')
+  })
+})

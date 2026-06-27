@@ -2,15 +2,13 @@
 import { useState, useRef, useMemo, useEffect } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import { ChevronDown, ChevronRight, Workflow } from 'lucide-react'
-import { ToolCallItem, StreamingToolCallItem, StatusIndicator } from './tool-call-item'
+import { StreamingToolCallItem, StatusIndicator } from './tool-call-item'
+import { flattenAssistantMessages, TranscriptItems, TranscriptText, type FlatItem } from './agent-transcript'
 import { useSubagentMessages } from '@renderer/hooks/use-messages'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import type { ApiToolCall, ApiMessage } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { markdownUrlTransform } from '@renderer/lib/markdown-url-transform'
 
 const SUBAGENT_LABEL_CLASS =
   'font-sans font-normal shrink-0 text-sm text-foreground/65 group-hover:text-foreground leading-none transition-colors'
@@ -134,25 +132,7 @@ export function SubAgentBlock({
   const stats = toolCall.subagent
 
   // Flatten assistant messages into individual renderable items (text blocks + tool calls)
-  type FlatItem =
-    | { kind: 'text'; key: string; text: string }
-    | { kind: 'tool'; key: string; toolCall: ApiToolCall; messageCreatedAt: Date | string }
-
-  const flatItems = useMemo<FlatItem[]>(() => {
-    const assistantMessages = subMessages?.filter(
-      (m): m is ApiMessage => m.type === 'assistant'
-    ) ?? []
-    const items: FlatItem[] = []
-    for (const msg of assistantMessages) {
-      if (msg.content.text) {
-        items.push({ kind: 'text', key: `text-${msg.id}`, text: msg.content.text })
-      }
-      for (const tc of msg.toolCalls ?? []) {
-        items.push({ kind: 'tool', key: `tool-${tc.id}`, toolCall: tc, messageCreatedAt: msg.createdAt })
-      }
-    }
-    return items
-  }, [subMessages])
+  const flatItems = useMemo<FlatItem[]>(() => flattenAssistantMessages(subMessages), [subMessages])
 
   // Check if the result text is already present in the persisted flat items (dedup)
   const isResultInFlatItems = useMemo(() => {
@@ -234,31 +214,11 @@ export function SubAgentBlock({
               </button>
             )}
 
-            {visibleItems.map((item) =>
-              item.kind === 'text' ? (
-                <div key={item.key} className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
-                    {item.text}
-                  </ReactMarkdown>
-                </div>
-              ) : (
-                <ToolCallItem
-                  key={item.key}
-                  toolCall={item.toolCall}
-                  messageCreatedAt={item.messageCreatedAt}
-                  agentSlug={agentSlug}
-                  isSessionActive={isSessionActive}
-                />
-              )
-            )}
+            <TranscriptItems items={visibleItems} agentSlug={agentSlug} isSessionActive={isSessionActive} />
 
             {/* Streaming text from subagent (not yet persisted) */}
             {subagentStreamingMessage && !isStreamingMessagePersisted && (
-              <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
-                  {subagentStreamingMessage}
-                </ReactMarkdown>
-              </div>
+              <TranscriptText>{subagentStreamingMessage}</TranscriptText>
             )}
 
             {/* Streaming tool use from subagent (not yet persisted) */}
@@ -271,11 +231,7 @@ export function SubAgentBlock({
 
             {/* Result summary from tool_result (available immediately, no JSONL refetch needed) */}
             {resultText && !isResultInFlatItems && !isRunning && (
-              <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={markdownUrlTransform}>
-                  {resultText}
-                </ReactMarkdown>
-              </div>
+              <TranscriptText>{resultText}</TranscriptText>
             )}
           </div>
 

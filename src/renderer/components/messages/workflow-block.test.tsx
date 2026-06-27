@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { WorkflowBlock } from './workflow-block'
 import { createToolCall } from '@renderer/test/factories'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
@@ -14,6 +14,11 @@ vi.mock('./tool-call-item', () => ({
 
 vi.mock('@renderer/hooks/use-elapsed-timer', () => ({
   formatElapsed: (ms: number) => `${Math.floor(ms / 1000)}s`,
+}))
+
+const mockOpenWorkflow = vi.fn()
+vi.mock('@renderer/context/workflow-context', () => ({
+  useWorkflow: () => ({ openWorkflow: mockOpenWorkflow }),
 }))
 
 function makeActive(overrides: Partial<SubagentInfo>): SubagentInfo {
@@ -78,5 +83,26 @@ describe('WorkflowBlock', () => {
 
     expect(screen.getByText('capture-probe')).toBeInTheDocument()
     expect(screen.getByTestId('status-indicator')).toHaveTextContent('completed')
+  })
+
+  it('opens the drawer to the run when clicked (runId parsed from the tool result)', () => {
+    mockOpenWorkflow.mockClear()
+    const tc = createToolCall({
+      id: 'wf-tool-1',
+      name: 'Workflow',
+      input: { script: SCRIPT },
+      result: { status: 'async_launched', runId: 'wf_abc-123', workflowName: 'capture-probe' },
+    })
+
+    render(<WorkflowBlock toolCall={tc} activeSubagent={null} isCompleted />)
+
+    fireEvent.click(screen.getByTitle('View workflow agents'))
+    expect(mockOpenWorkflow).toHaveBeenCalledWith('wf_abc-123', 'capture-probe')
+  })
+
+  it('is not clickable when no runId can be resolved', () => {
+    const tc = createToolCall({ id: 'wf-tool-1', name: 'Workflow', input: { script: SCRIPT }, result: 'hello\n' })
+    render(<WorkflowBlock toolCall={tc} activeSubagent={null} isCompleted />)
+    expect(screen.queryByTitle('View workflow agents')).not.toBeInTheDocument()
   })
 })

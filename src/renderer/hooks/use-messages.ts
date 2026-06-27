@@ -3,6 +3,7 @@ import { uploadFileChunked } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { EffortLevel } from '@shared/lib/container/types'
+import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 
 // Re-export for convenience
 export type { ApiMessage, ApiMessageOrBoundary }
@@ -155,6 +156,62 @@ export function useSubagentMessages(
     },
     enabled: !!sessionId && !!agentSlug && !!subagentId,
     refetchInterval: false,
+  })
+}
+
+/**
+ * The per-agent tree (phases + agent status/label/result) for a dynamic-workflow
+ * run, joined host-side from on-disk artifacts. Disk is the source of truth (so
+ * this survives reload); the drawer overlays live SSE status patches and triggers
+ * a refetch via the returned `refetch` when a workflow_agent_updated arrives.
+ */
+export function useWorkflowTree(
+  sessionId: string | null,
+  agentSlug: string | null,
+  runId: string | null,
+  opts?: { active?: boolean }
+) {
+  return useQuery<WorkflowTree>({
+    queryKey: ['workflow-tree', sessionId, agentSlug, runId],
+    queryFn: async () => {
+      const res = await apiFetch(
+        `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/tree`
+      )
+      if (!res.ok) throw new Error('Failed to fetch workflow tree')
+      return res.json()
+    },
+    enabled: !!sessionId && !!agentSlug && !!runId,
+    // While the run is active, poll: right after launch the on-disk dir doesn't exist yet
+    // (the tree route 404s), and new agents/labels appear as the run progresses. Stops once
+    // the workflow completes (SSE-driven refetch handles the final state).
+    refetchInterval: opts?.active ? 2000 : false,
+    retry: opts?.active ? 5 : false,
+  })
+}
+
+/**
+ * One workflow subagent's transcript (same shape as a regular subagent). Polls
+ * while that agent is still running so its live activity streams into the drawer;
+ * stops once it's done.
+ */
+export function useWorkflowAgentMessages(
+  sessionId: string | null,
+  agentSlug: string | null,
+  runId: string | null,
+  agentId: string | null,
+  opts?: { isRunning?: boolean }
+) {
+  return useQuery<ApiMessageOrBoundary[]>({
+    queryKey: ['workflow-agent-messages', sessionId, agentSlug, runId, agentId],
+    queryFn: async () => {
+      const res = await apiFetch(
+        `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/agents/${agentId}/messages`
+      )
+      if (!res.ok) throw new Error('Failed to fetch workflow agent messages')
+      return res.json()
+    },
+    enabled: !!sessionId && !!agentSlug && !!runId && !!agentId,
+    refetchInterval: opts?.isRunning ? 1500 : false,
   })
 }
 

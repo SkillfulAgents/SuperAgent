@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Globe, FileText, PanelRightOpen } from 'lucide-react'
+import { Globe, FileText, PanelRightOpen, Workflow } from 'lucide-react'
 import { DrawerShell, type DrawerShellHandle } from './drawer-shell'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { TrayTabStrip, type TrayDef } from './tray-tab-strip'
 import { BrowserTrayContent } from '@renderer/components/browser/browser-tray-content'
 import { FilePreviewTrayContent } from '@renderer/components/file-preview/file-preview-tray-content'
+import { WorkflowTrayContent } from '@renderer/components/workflow/workflow-tray-content'
 import { useFilePreview } from '@renderer/context/file-preview-context'
+import { useWorkflow } from '@renderer/context/workflow-context'
 
 const DRAWER_STORAGE_KEY = 'tray_drawer_width'
 
@@ -18,6 +20,8 @@ interface TrayManagerProps {
 export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManagerProps) {
   const filePreview = useFilePreview()
   const hasOpenFiles = filePreview.openFiles.length > 0 && filePreview.isOpen
+  const workflow = useWorkflow()
+  const hasWorkflow = workflow.openWorkflows.length > 0 && workflow.isOpen
   const [selectedTrayId, setSelectedTrayId] = useState<string>('browser')
   const [isOpen, setIsOpen] = useState(false)
   const [userClosed, setUserClosed] = useState(false)
@@ -69,6 +73,17 @@ export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManager
     />
   ), [agentSlug, sessionId, handleCloseFilePreview])
 
+  const closeWorkflow = workflow.close
+  const handleCloseWorkflow = useCallback(() => closeWorkflow(), [closeWorkflow])
+
+  const workflowTrayContent = useMemo(() => (
+    <WorkflowTrayContent
+      agentSlug={agentSlug}
+      sessionId={sessionId}
+      onClose={handleCloseWorkflow}
+    />
+  ), [agentSlug, sessionId, handleCloseWorkflow])
+
   const trays: TrayDef[] = useMemo(() => [
     {
       id: 'browser',
@@ -85,7 +100,15 @@ export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManager
       badge: filePreview.openFiles.length,
       content: filePreviewTrayContent,
     },
-  ], [browserActive, hasOpenFiles, filePreview.openFiles.length, browserTrayContent, filePreviewTrayContent])
+    {
+      id: 'workflow',
+      icon: Workflow,
+      label: 'Workflow',
+      available: hasWorkflow,
+      badge: workflow.openWorkflows.length,
+      content: workflowTrayContent,
+    },
+  ], [browserActive, hasOpenFiles, filePreview.openFiles.length, browserTrayContent, filePreviewTrayContent, hasWorkflow, workflow.openWorkflows.length, workflowTrayContent])
 
   const availableTrays = trays.filter(t => t.available)
   const anyAvailable = availableTrays.length > 0
@@ -109,6 +132,19 @@ export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManager
       })
     }
   }, [hasOpenFiles, fileCount, userClosed])
+
+  // Open the drawer to the workflow tray when a run is opened (e.g. via the inline
+  // block). Re-fire on selection changes so opening a second run re-focuses it.
+  const selectedRunId = workflow.selectedRunId
+  useEffect(() => {
+    if (hasWorkflow) {
+      requestAnimationFrame(() => {
+        setIsOpen(true)
+        setUserClosed(false)
+        setSelectedTrayId('workflow')
+      })
+    }
+  }, [hasWorkflow, selectedRunId])
 
   // Close when no trays are available
   useEffect(() => {
