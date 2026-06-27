@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the browser-use feature works correctly - agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back with proper tool call cards displayed.",
+  "reason": "Successfully verified that the agent can execute browser commands to navigate to a URL and retrieve the page title, with the response correctly mentioning \"Example Domain\".",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully showing Gamut interface with sidebar containing the target agent \"QA-20260626-222250-vwrd\" in idle state",
-    "Clicked on the \"QA-20260626-222250-vwrd\" agent in the sidebar - Agent chat interface loaded successfully at /agents/qa-20260626-222250-vwrd-d400d6 with empty chat and input field ready",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was typed into the input field and sent using Cmd+Enter, creating a new session at /sessions/71c41c97-ec6b-4c3e-9e9e-9f42d54e83a7",
-    "Waited up to 3 minutes for agent response - Agent completed all browser operations within 12 seconds, all tool calls executed successfully",
-    "Verified response mentions \"Example Domain\" and took screenshot - Response confirmed with multiple mentions: \"The page title is \"Example Domain\"\" and \"The page at https://example.com has the title \"Example Domain\". Browser closed.\" All tool call cards displayed with green checkmarks (ToolSearch, Open Browser, Browser MCP: Browser Get State, Close Browser)."
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut application with agent sidebar containing \"QA-20260627-000418-7p5h\" agent.",
+    "Clicked on \"QA-20260627-000418-7p5h\" agent in sidebar — Successfully navigated to the agent's chat page with empty session ready for input.",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered in the input field and sent via Send message button.",
+    "Waited up to 3 minutes for response — Agent processing completed in approximately 12 seconds. \"Working...\" indicator disappeared indicating response was ready.",
+    "Verified response mentions \"Example Domain\" — Response clearly visible in chat showing two confirmations: \"The page title is \"Example Domain\".\" and \"The page at https://example.com has the title \"Example Domain\".\" Response also shows successful execution of browser tool calls: Open Browser, Browser Get State, and Close Browser, all marked with green checkmarks."
   ],
   "bugs": [],
-  "durationMs": 71553,
-  "sessionId": "4cb87b40-fe37-4a94-b50a-df119e6b3b33",
+  "durationMs": 63572,
+  "sessionId": "47f5576b-c47b-4a06-9130-b0a0d353353e",
   "cost": {
-    "inputTokens": 378,
-    "outputTokens": 13173,
-    "cacheCreationTokens": 69729,
-    "cacheReadTokens": 1176353,
+    "inputTokens": 288,
+    "outputTokens": 9371,
+    "cacheCreationTokens": 64198,
+    "cacheReadTokens": 824206,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.27104
+    "totalCostUsd": 0.209811
   }
 }
