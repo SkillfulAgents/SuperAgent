@@ -1,24 +1,25 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully tested agent communication: sent mathematical question \"Hello! What is 2+2?\" to agent QA-20260626-215955-maj6 and verified response contains \"4\"",
+  "reason": "Successfully navigated to agent, sent math question, received response mentioning \"4\", and verified agent status is operational.",
   "steps": [
-    "Step 1: Navigate to http://localhost:47891 — ✓ Success. Page loaded with sidebar showing two agents (QA-20260626-215957-sqnf and QA-20260626-215955-maj6)",
-    "Step 2: Find and click \"QA-20260626-215955-maj6\" agent in sidebar — ✓ Success. Agent page loaded, navigated to /agents/qa-20260626-215955-maj6-wev0u4",
-    "Step 3: Verify agent status is \"running\" or \"idle\" — ✓ Success. Agent status shows \"idle\" in the UI header",
-    "Step 4: Send message \"Hello! What is 2+2?\" — ✓ Success. Message typed into textbox and send button clicked. Page navigated to chat session",
-    "Step 5: Wait up to 3 minutes for response — ✓ Success. Response received immediately (worked for 1 second), well within the 3-minute timeout",
-    "Step 6: Verify response mentions \"4\" and take screenshot — ✓ Success. Agent response displays \"4\" which is the correct answer to 2+2. Screenshot captured showing complete conversation with user message on right and agent response \"4\" displayed below with \"Worked for 1s\" timing indicator"
+    "Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing two agents.",
+    "Found and clicked \"QA-20260627-004352-viwd\" agent in the sidebar — Successfully navigated to agent page at /agents/qa-20260627-004352-viwd-ihsce0.",
+    "Verified agent status is \"running\" or \"idle\" — Agent status shows \"idle\", which meets the requirement. Agent is ready to receive messages.",
+    "Typed message \"Hello! What is 2+2?\" in the message input field — Message successfully entered in the textbox and Send button became enabled.",
+    "Clicked Send button to submit the message — Message was sent successfully, page navigated to chat session at /agents/qa-20260627-004352-viwd-ihsce0/sessions/3c557e08-f6bb-4c6c-a4a8-6ed4ad9118ac.",
+    "Waited for agent response (max 3 minutes) — Activity indicator completed within 1 second. Agent status returned to \"idle\", indicating response is complete.",
+    "Verified response mentions \"4\" and took screenshot — Agent response displays \"2 + 2 = 4\" prominently in the chat. Screenshot captured and saved as qa-test-response.png showing the complete conversation with user message \"Hello! What is 2+2?\" and agent response \"2 + 2 = 4\"."
   ],
   "bugs": [],
-  "durationMs": 45305,
-  "sessionId": "2d630cfb-969f-44ba-a9c6-bf1b33ea5f73",
+  "durationMs": 62157,
+  "sessionId": "87f41677-cad9-484b-bced-5d2ae60bacc4",
   "cost": {
-    "inputTokens": 234,
-    "outputTokens": 8119,
-    "cacheCreationTokens": 104522,
-    "cacheReadTokens": 618921,
+    "inputTokens": 288,
+    "outputTokens": 10167,
+    "cacheCreationTokens": 108275,
+    "cacheReadTokens": 806770,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.233374
+    "totalCostUsd": 0.267144
   }
 }
