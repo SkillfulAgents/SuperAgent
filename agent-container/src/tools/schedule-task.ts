@@ -11,6 +11,15 @@ import { z } from 'zod'
 import { inputManager } from '../input-manager'
 
 /**
+ * How long to wait for the host to confirm the schedule before giving up.
+ * Unlike user-input tools (secret/question) that legitimately block on a human,
+ * schedule_task waits only on a fast automated host operation (a DB write), so a
+ * host that never responds means something is wrong — fail loud instead of
+ * hanging the agent session forever.
+ */
+const SCHEDULE_TASK_HOST_TIMEOUT_MS = 60_000
+
+/**
  * Basic validation for cron expression (5-6 space-separated fields)
  */
 function isValidCronFormat(expression: string): boolean {
@@ -48,7 +57,9 @@ For recurring tasks, use cron syntax (5 fields: minute hour day-of-month month d
 The prompt you provide will be sent to the agent as a new conversation at the scheduled time.
 The task will be executed in a new session, and the agent will have full access to tools and capabilities.
 
-Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cron') will continue executing on schedule indefinitely until cancelled — there is no expiration or time limit.`,
+Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cron') will continue executing on schedule indefinitely until cancelled — there is no expiration or time limit.
+
+Avoid recurring intervals shorter than 15 minutes unless truly necessary: frequent runs can pile up and are costly, especially on Opus or at high effort.`,
   {
     scheduleType: z
       .enum(['at', 'cron'])
@@ -131,28 +142,45 @@ Note: One-time tasks ('at') will execute once and complete. Recurring tasks ('cr
       }
     }
 
-    // Return success - the API server will intercept this and handle the actual scheduling
-    const taskType = args.scheduleType === 'cron' ? 'recurring' : 'one-time'
-    const taskName = args.name || 'Scheduled Task'
+    // Blocking: the host persists the task and resolves this tool only after the
+    // schedule is actually saved. This avoids the false-success bug where the
+    // tool reported "scheduled" while host persistence happened (and could fail)
+    // in the background. The host's resolved message also carries any
+    // too-frequent-interval warning.
+    const toolUseId = inputManager.consumeCurrentToolUseId()
+    if (!toolUseId) {
+      return {
+        content: [{ type: 'text' as const, text: 'Unable to process request — no tool use ID available.' }],
+        isError: true,
+      }
+    }
 
-    console.log(`[schedule_task] Task "${taskName}" scheduled successfully`)
+    // Bound the wait so a host that never resolves/rejects (e.g. a handler that
+    // bails before reaching the container) surfaces an error instead of hanging
+    // the session indefinitely.
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+    try {
+      const result = await Promise.race([
+        inputManager.createPendingWithType<string>(toolUseId, 'schedule_task'),
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error('Timed out waiting for the host to confirm the schedule')),
+            SCHEDULE_TASK_HOST_TIMEOUT_MS,
+          )
+        }),
+      ])
 
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Scheduled ${taskType} task "${taskName}".
-
-Schedule: ${args.scheduleExpression}
-Task: ${args.prompt.substring(0, 100)}${args.prompt.length > 100 ? '...' : ''}
-
-The task has been registered and will be executed according to the schedule. ${
-            args.scheduleType === 'cron'
-              ? 'This recurring task will continue until cancelled.'
-              : 'This one-time task will be removed after execution.'
-          }`,
-        },
-      ],
+      return {
+        content: [{ type: 'text' as const, text: result }],
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        content: [{ type: 'text' as const, text: `Failed to schedule task: ${msg}` }],
+        isError: true,
+      }
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle)
     }
   }
 )

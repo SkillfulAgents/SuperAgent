@@ -116,6 +116,77 @@ export function getNextCronTime(cronExpression: string, timezone?: string): Date
 }
 
 /**
+ * Recommended minimum interval for recurring (cron) schedules. Recurring tasks
+ * more frequent than this can pile up if a run outlasts the interval and rack up
+ * cost on expensive models — so we surface a warning below this threshold (the
+ * schedule is still allowed). 15 minutes.
+ */
+export const MIN_RECURRING_INTERVAL_MS = 15 * 60 * 1000
+
+/**
+ * Compute the interval (in milliseconds) between the next two occurrences of a
+ * cron expression. Returns null if the expression is invalid.
+ *
+ * Note: cron intervals aren't always constant (e.g. "0 0 1 * *" varies 28–31
+ * days), so this is the gap between the *next* two runs — a good-enough proxy
+ * for "is this schedule too frequent?".
+ */
+export function getCronIntervalMs(cronExpression: string, timezone?: string): number | null {
+  try {
+    const interval = CronExpressionParser.parse(cronExpression, {
+      tz: timezone || 'UTC',
+    })
+    const first = interval.next().toDate()
+    const second = interval.next().toDate()
+    return second.getTime() - first.getTime()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Format a millisecond interval as a short human-readable string (e.g. "1 minute",
+ * "30 seconds", "10 minutes").
+ */
+function formatInterval(ms: number): string {
+  if (ms < 60_000) {
+    const seconds = Math.max(1, Math.round(ms / 1000))
+    return `${seconds} second${seconds === 1 ? '' : 's'}`
+  }
+  const minutes = Math.round(ms / 60_000)
+  return `${minutes} minute${minutes === 1 ? '' : 's'}`
+}
+
+/**
+ * Build a warning for recurring schedules that fire more often than
+ * MIN_RECURRING_INTERVAL_MS. Returns null for one-time ("at") schedules,
+ * unparseable expressions, or intervals at/above the threshold.
+ *
+ * Shared by the agent tool path (message-persister) and the manual API path
+ * (scheduled-tasks route) so both surface identical guidance.
+ */
+export function getFrequencyWarning(
+  scheduleType: 'at' | 'cron',
+  scheduleExpression: string,
+  timezone?: string
+): string | null {
+  if (scheduleType !== 'cron') return null
+
+  const intervalMs = getCronIntervalMs(scheduleExpression, timezone)
+  if (intervalMs === null || intervalMs >= MIN_RECURRING_INTERVAL_MS) return null
+
+  const thresholdMinutes = Math.round(MIN_RECURRING_INTERVAL_MS / 60_000)
+  return (
+    `⚠️ Frequent schedule warning: this recurring task runs about every ${formatInterval(intervalMs)}, ` +
+    `under the recommended ${thresholdMinutes}-minute minimum.\n` +
+    `- Runs can pile up if a single execution takes longer than the interval. Overlapping runs are automatically skipped ` +
+    `(a new run won't start while the previous one is still active), so the effective rate may be lower than requested.\n` +
+    `- Frequent runs add up in cost — especially on Opus or at high effort.\n` +
+    `Consider a longer interval unless this frequency is genuinely required.`
+  )
+}
+
+/**
  * Validate a cron expression and return the next execution time.
  */
 export function validateCronExpression(cronExpression: string, timezone?: string): ParseResult {

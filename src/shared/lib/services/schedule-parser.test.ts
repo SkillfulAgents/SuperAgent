@@ -7,6 +7,9 @@ import {
   validateScheduleExpression,
   formatScheduleDescription,
   ianaToOffsetMinutes,
+  getCronIntervalMs,
+  getFrequencyWarning,
+  MIN_RECURRING_INTERVAL_MS,
 } from './schedule-parser'
 
 // ============================================================================
@@ -217,6 +220,62 @@ describe('validateCronExpression', () => {
       expect(result.valid).toBe(false)
       expect(result.error).toBeDefined()
     }
+  })
+})
+
+// ============================================================================
+// getCronIntervalMs Tests
+// ============================================================================
+
+describe('getCronIntervalMs', () => {
+  it('computes a 1-minute interval for every-minute cron', () => {
+    expect(getCronIntervalMs('* * * * *')).toBe(60_000)
+  })
+
+  it('computes a 5-minute interval for */5', () => {
+    expect(getCronIntervalMs('*/5 * * * *')).toBe(5 * 60_000)
+  })
+
+  it('computes a 1-hour interval for hourly cron', () => {
+    expect(getCronIntervalMs('0 * * * *')).toBe(60 * 60_000)
+  })
+
+  it('returns null for an invalid cron expression', () => {
+    expect(getCronIntervalMs('not a cron')).toBeNull()
+  })
+})
+
+// ============================================================================
+// getFrequencyWarning Tests
+// ============================================================================
+
+describe('getFrequencyWarning', () => {
+  it('exposes a 15-minute threshold constant', () => {
+    expect(MIN_RECURRING_INTERVAL_MS).toBe(15 * 60 * 1000)
+  })
+
+  it('warns when the interval is below the threshold', () => {
+    const warning = getFrequencyWarning('cron', '*/5 * * * *')
+    expect(warning).toBeTruthy()
+    expect(warning).toContain('Frequent schedule warning')
+    expect(warning).toContain('skipped') // mentions overlap auto-skip
+    expect(warning).toContain('cost') // mentions cost
+  })
+
+  it('does not warn at exactly the threshold (15 minutes)', () => {
+    expect(getFrequencyWarning('cron', '*/15 * * * *')).toBeNull()
+  })
+
+  it('does not warn above the threshold', () => {
+    expect(getFrequencyWarning('cron', '0 9 * * 1-5')).toBeNull()
+  })
+
+  it('never warns for one-time (at) schedules', () => {
+    expect(getFrequencyWarning('at', 'at now + 1 minute')).toBeNull()
+  })
+
+  it('does not warn for an unparseable cron expression', () => {
+    expect(getFrequencyWarning('cron', 'not a cron')).toBeNull()
   })
 })
 

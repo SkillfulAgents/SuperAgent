@@ -30,6 +30,7 @@ import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
+import { getFrequencyWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -1905,49 +1906,63 @@ class MessagePersister {
     }
   }
 
-  // Handle schedule task tool - save to database and broadcast to SSE clients
+  // Handle schedule task tool - blocking: persist to database, then resolve the
+  // container tool only after the task is actually saved (fixes the false-success
+  // bug where the tool reported success while persistence ran/failed in the
+  // background). Also appends a warning for too-frequent recurring schedules.
   private handleScheduleTaskTool(
     sessionId: string,
     toolUseId: string,
     toolInput: string,
     agentSlug?: string
   ): void {
-    // Use async IIFE since we need to await database operations
     ;(async () => {
+      if (!agentSlug) {
+        // Without an agentSlug we can't reach the container to resolve/reject.
+        console.error('[MessagePersister] Schedule task missing agentSlug')
+        return
+      }
+
+      // Parse the tool input
+      let input: {
+        scheduleType: 'at' | 'cron'
+        scheduleExpression: string
+        prompt: string
+        name?: string
+        timezone?: string
+        model?: string
+        effort?: string
+      }
       try {
-        // Parse the tool input
-        let input: {
-          scheduleType: 'at' | 'cron'
-          scheduleExpression: string
-          prompt: string
-          name?: string
-          timezone?: string
-          model?: string
-          effort?: string
-        }
-        try {
-          input = JSON.parse(toolInput)
-        } catch {
-          console.error('[MessagePersister] Failed to parse schedule task input:', toolInput)
-          return
-        }
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse schedule task input:', toolInput)
+        await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input').catch(console.error)
+        return
+      }
 
-        if (!input.scheduleType || !input.scheduleExpression || !input.prompt) {
-          console.error('[MessagePersister] Schedule task missing required fields')
-          return
-        }
+      // Trim-aware required-field check, matching the container tool's own
+      // validation (a whitespace-only prompt/expression is empty). Without the
+      // trim the host would persist a task the container already told the agent
+      // was rejected.
+      if (!input.scheduleType || !input.scheduleExpression?.trim() || !input.prompt?.trim()) {
+        await this.rejectContainerInput(
+          agentSlug,
+          toolUseId,
+          'Missing required fields: scheduleType, scheduleExpression, and prompt are required'
+        ).catch(console.error)
+        return
+      }
 
-        if (!agentSlug) {
-          console.error('[MessagePersister] Schedule task missing agentSlug')
-          return
-        }
-
+      // Persist the task. A failure here must reject — the agent is never told a
+      // false success.
+      let taskId: string
+      let timezone: string | undefined
+      try {
         // Resolve timezone: agent tool override > agent owner's timezone
-        const timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
-
-        // Create the scheduled task in the database
+        timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
         const sessionOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
-        const taskId = await createScheduledTask({
+        taskId = await createScheduledTask({
           agentSlug,
           scheduleType: input.scheduleType,
           scheduleExpression: input.scheduleExpression,
@@ -1959,7 +1974,17 @@ class MessagePersister {
           model: input.model,
           effort: input.effort,
         })
+      } catch (error) {
+        console.error('[MessagePersister] Error handling schedule task:', error)
+        const msg = error instanceof Error ? error.message : String(error)
+        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to schedule task: ${msg}`).catch(console.error)
+        return
+      }
 
+      // The task is persisted. Everything past here is best-effort: a failure
+      // delivering the result must NOT reject the tool, or the agent could be told
+      // a real success failed and retry into a duplicate schedule.
+      try {
         // Broadcast the scheduled task created event to session-specific SSE clients
         this.broadcastToSSE(sessionId, {
           type: 'scheduled_task_created',
@@ -1977,10 +2002,55 @@ class MessagePersister {
           taskId,
           agentSlug,
         })
-      } catch (error) {
-        console.error('[MessagePersister] Error handling schedule task:', error)
+
+        // Resolve the blocking tool with a success message (plus any frequency warning).
+        await this.resolveContainerInput(
+          agentSlug,
+          toolUseId,
+          this.formatScheduleTaskResult(input, taskId, timezone)
+        )
+      } catch (deliveryError) {
+        console.error('[MessagePersister] Schedule persisted but result delivery failed:', deliveryError)
       }
     })()
+  }
+
+  /**
+   * Build the success message returned to the agent after a schedule is persisted,
+   * appending a too-frequent-interval warning for recurring schedules below the
+   * recommended minimum.
+   */
+  private formatScheduleTaskResult(
+    input: {
+      scheduleType: 'at' | 'cron'
+      scheduleExpression: string
+      prompt: string
+      name?: string
+    },
+    taskId: string,
+    timezone?: string
+  ): string {
+    const taskType = input.scheduleType === 'cron' ? 'recurring' : 'one-time'
+    const taskName = input.name || 'Scheduled Task'
+    const parsed = validateScheduleExpression(input.scheduleType, input.scheduleExpression, timezone)
+    const nextRun = parsed.nextTime ? `\nNext run: ${parsed.nextTime.toISOString()}` : ''
+    const continuation =
+      input.scheduleType === 'cron'
+        ? 'This recurring task will continue until cancelled.'
+        : 'This one-time task will be removed after execution.'
+
+    let result = `Scheduled ${taskType} task "${taskName}" (ID: ${taskId}).
+
+Schedule: ${input.scheduleExpression}${timezone ? ` (${timezone})` : ''}${nextRun}
+
+${continuation}`
+
+    const warning = getFrequencyWarning(input.scheduleType, input.scheduleExpression, timezone)
+    if (warning) {
+      result += `\n\n${warning}`
+    }
+
+    return result
   }
 
   // Handle list_scheduled_tasks - blocking: read from SQLite and resolve

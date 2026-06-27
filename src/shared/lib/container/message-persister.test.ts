@@ -8,10 +8,11 @@ const mockGetScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(null))
 const mockCancelScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
 const mockPauseScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
 const mockResumeScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
+const mockCreateScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve('task_new_id'))
 
 // Mock external dependencies before importing
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
-  createScheduledTask: vi.fn(),
+  createScheduledTask: (...args: unknown[]) => mockCreateScheduledTask(...args),
   listPendingScheduledTasks: (...args: unknown[]) => mockListPendingScheduledTasks(...args),
   getScheduledTask: (...args: unknown[]) => mockGetScheduledTask(...args),
   cancelScheduledTask: (...args: unknown[]) => mockCancelScheduledTask(...args),
@@ -21,6 +22,9 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
 vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
+}))
+vi.mock('@shared/lib/services/timezone-resolver', () => ({
+  resolveTimezoneForAgent: vi.fn(() => 'UTC'),
 }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
@@ -3247,6 +3251,7 @@ describe('MessagePersister', () => {
       mockCancelScheduledTask.mockClear()
       mockPauseScheduledTask.mockClear()
       mockResumeScheduledTask.mockClear()
+      mockCreateScheduledTask.mockReset()
 
       mockContainerClientFetch.mockResolvedValue({ ok: true })
       mockListPendingScheduledTasks.mockResolvedValue([])
@@ -3254,6 +3259,137 @@ describe('MessagePersister', () => {
       mockCancelScheduledTask.mockResolvedValue(true)
       mockPauseScheduledTask.mockResolvedValue(true)
       mockResumeScheduledTask.mockResolvedValue(true)
+      mockCreateScheduledTask.mockResolvedValue('task_new_id')
+    })
+
+    describe('schedule_task (blocking)', () => {
+      function findFetchCall(suffix: string) {
+        return mockContainerClientFetch.mock.calls.find((c) => c[0] === suffix)
+      }
+
+      it('persists then resolves the tool with a success message', async () => {
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-1', {
+          scheduleType: 'cron',
+          scheduleExpression: '0 9 * * 1-5',
+          prompt: 'Send the daily report',
+          name: 'Daily report',
+        })
+
+        await flushHandlers()
+
+        expect(mockCreateScheduledTask).toHaveBeenCalledWith(
+          expect.objectContaining({
+            agentSlug: AGENT_SLUG,
+            scheduleType: 'cron',
+            scheduleExpression: '0 9 * * 1-5',
+            prompt: 'Send the daily report',
+          })
+        )
+
+        const resolveCall = findFetchCall('/inputs/tool-sched-create-1/resolve')
+        expect(resolveCall).toBeDefined()
+        const body = JSON.parse(resolveCall![1].body)
+        expect(body.value).toContain('Daily report')
+        expect(body.value).toContain('task_new_id')
+        // Daily (well above threshold) — no frequency warning.
+        expect(body.value).not.toContain('Frequent schedule warning')
+      })
+
+      it('rejects (no false success) when persistence throws', async () => {
+        mockCreateScheduledTask.mockRejectedValue(new Error('disk full'))
+
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-fail', {
+          scheduleType: 'cron',
+          scheduleExpression: '0 9 * * 1-5',
+          prompt: 'Send the daily report',
+        })
+
+        await flushHandlers()
+
+        expect(findFetchCall('/inputs/tool-sched-create-fail/resolve')).toBeUndefined()
+        const rejectCall = findFetchCall('/inputs/tool-sched-create-fail/reject')
+        expect(rejectCall).toBeDefined()
+        expect(JSON.parse(rejectCall![1].body).reason).toContain('disk full')
+      })
+
+      it('appends a frequency warning for sub-threshold recurring schedules', async () => {
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-freq', {
+          scheduleType: 'cron',
+          scheduleExpression: '* * * * *',
+          prompt: 'Poll something',
+        })
+
+        await flushHandlers()
+
+        const resolveCall = findFetchCall('/inputs/tool-sched-create-freq/resolve')
+        expect(resolveCall).toBeDefined()
+        expect(JSON.parse(resolveCall![1].body).value).toContain('Frequent schedule warning')
+      })
+
+      it('does not warn for one-time (at) schedules', async () => {
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-at', {
+          scheduleType: 'at',
+          scheduleExpression: 'at now + 1 hour',
+          prompt: 'One-off reminder',
+        })
+
+        await flushHandlers()
+
+        const resolveCall = findFetchCall('/inputs/tool-sched-create-at/resolve')
+        expect(resolveCall).toBeDefined()
+        expect(JSON.parse(resolveCall![1].body).value).not.toContain('Frequent schedule warning')
+      })
+
+      it('rejects when required fields are missing', async () => {
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-missing', {
+          scheduleType: 'cron',
+        })
+
+        await flushHandlers()
+
+        expect(mockCreateScheduledTask).not.toHaveBeenCalled()
+        const rejectCall = findFetchCall('/inputs/tool-sched-create-missing/reject')
+        expect(rejectCall).toBeDefined()
+        expect(JSON.parse(rejectCall![1].body).reason).toContain('Missing required fields')
+      })
+
+      it('rejects a whitespace-only prompt without persisting', async () => {
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-create-ws', {
+          scheduleType: 'cron',
+          scheduleExpression: '0 9 * * 1-5',
+          prompt: '   ',
+        })
+
+        await flushHandlers()
+
+        // Container and host must agree: a blank prompt is rejected, never persisted.
+        expect(mockCreateScheduledTask).not.toHaveBeenCalled()
+        const rejectCall = findFetchCall('/inputs/tool-sched-create-ws/reject')
+        expect(rejectCall).toBeDefined()
+        expect(JSON.parse(rejectCall![1].body).reason).toContain('Missing required fields')
+      })
+
+      it('does not reject (no false failure) when result delivery fails after persistence', async () => {
+        // Persistence succeeds, but the resolve fetch to the container fails. The
+        // agent must NOT be told the schedule failed — otherwise it retries into a
+        // duplicate recurring task.
+        mockContainerClientFetch.mockImplementation((url: string) =>
+          url.endsWith('/resolve')
+            ? Promise.reject(new Error('container unreachable'))
+            : Promise.resolve({ ok: true })
+        )
+
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-deliver-fail', {
+          scheduleType: 'cron',
+          scheduleExpression: '0 9 * * 1-5',
+          prompt: 'Send the daily report',
+        })
+
+        await flushHandlers()
+
+        expect(mockCreateScheduledTask).toHaveBeenCalled()
+        expect(findFetchCall('/inputs/tool-sched-deliver-fail/reject')).toBeUndefined()
+      })
     })
 
     describe('list_scheduled_tasks', () => {

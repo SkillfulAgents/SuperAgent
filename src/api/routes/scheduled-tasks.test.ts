@@ -75,9 +75,11 @@ vi.mock('@shared/lib/config/settings', () => ({
 }))
 
 const mockValidateCronExpression = vi.fn()
+const mockGetFrequencyWarning = vi.fn()
 
 vi.mock('@shared/lib/services/schedule-parser', () => ({
   validateCronExpression: (...args: unknown[]) => mockValidateCronExpression(...args),
+  getFrequencyWarning: (...args: unknown[]) => mockGetFrequencyWarning(...args),
 }))
 
 const mockMessagesCreate = vi.fn()
@@ -177,6 +179,7 @@ describe('scheduled-tasks route', () => {
       summarizerModel: 'claude-haiku-4-5',
     })
     mockValidateCronExpression.mockReturnValue({ valid: true })
+    mockGetFrequencyWarning.mockReturnValue(null)
     mockMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Every weekday at 9:00 AM' }] })
     mockExtractTextFromLlmResponse.mockReturnValue('Every weekday at 9:00 AM')
     mockPauseScheduledTask.mockResolvedValue(true)
@@ -272,6 +275,37 @@ describe('scheduled-tasks route', () => {
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: 'Invalid cron expression' })
     expect(mockUpdateScheduleExpression).not.toHaveBeenCalled()
+  })
+
+  it('appends a frequency warning when the new schedule is too frequent', async () => {
+    mockGetFrequencyWarning.mockReturnValue('⚠️ Frequent schedule warning: every 1 minute')
+
+    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/schedule', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduleExpression: '* * * * *' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockGetFrequencyWarning).toHaveBeenCalledWith('cron', '* * * * *', undefined)
+    expect(await res.json()).toMatchObject({
+      id: 'task-1',
+      warning: '⚠️ Frequent schedule warning: every 1 minute',
+    })
+  })
+
+  it('omits the warning when the new schedule is not too frequent', async () => {
+    mockGetFrequencyWarning.mockReturnValue(null)
+
+    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/schedule', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduleExpression: '0 9 * * 1-5' }),
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).not.toHaveProperty('warning')
   })
 
   it('renames a scheduled task title', async () => {
