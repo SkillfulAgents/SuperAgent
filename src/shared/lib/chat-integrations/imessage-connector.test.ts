@@ -807,7 +807,7 @@ describe('IMessageConnector', () => {
       ws = wireUp(connector)
     })
 
-    it('sends secret request text', async () => {
+    it('sends secret request as a desktop-only fallback (secrets are unsafe to type in chat)', async () => {
       const event = {
         type: 'secret_request' as const,
         toolUseId: 'sec-1',
@@ -818,9 +818,8 @@ describe('IMessageConnector', () => {
       await connector.sendUserRequestCard('chat-1', event as any)
 
       const text = (parseSent(ws)[0].data as any).parts[0].value as string
-      expect(text).toContain('Secret requested: API_KEY')
-      expect(text).toContain('Reason: Needed for authentication')
-      expect(text).toContain('reply with the secret value')
+      expect(text).toContain('API_KEY')
+      expect(text).toContain('Open Gamut on your desktop')
     })
 
     it('sends tool status with correct emoji', async () => {

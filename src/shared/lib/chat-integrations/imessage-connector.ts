@@ -344,15 +344,8 @@ export class IMessageConnector extends ChatClientConnector {
         return this.sendQuestionCard(event, targetChatId)
       }
 
-      case 'secret_request': {
-        const text = `Secret requested: ${event.secretName}${event.reason ? `\nReason: ${event.reason}` : ''}\n\nPlease reply with the secret value.`
-        return this.sendTextAndReturn(text, targetChatId)
-      }
-
-      case 'file_request': {
-        const text = `File requested:\n${event.description}${event.fileTypes ? `\n\nAccepted types: ${event.fileTypes}` : ''}\n\nPlease send the file.`
-        return this.sendTextAndReturn(text, targetChatId)
-      }
+      // secret_request / file_request are handled by the isUnsupportedInChat early-return above
+      // (desktop-only fallback); they intentionally have no prompt case here.
 
       case 'file_delivery': {
         const text = `File delivered: ${event.filePath}${event.description ? `\n${event.description}` : ''}`

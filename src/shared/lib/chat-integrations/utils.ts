@@ -25,12 +25,17 @@ export function formatProviderName(provider: string): string {
 }
 
 // Event types that need the desktop app (OAuth callbacks, browser input, script approval, etc.).
+// secret_request / file_request are here too: neither is wired to complete in chat, and a secret
+// typed into a chat thread leaks into the provider's cloud and the transcript - the vault path is
+// the desktop app's job.
 const UNSUPPORTED_IN_CHAT: ReadonlySet<UserRequestEvent['type']> = new Set([
   'connected_account_request',
   'remote_mcp_request',
   'browser_input_request',
   'script_run_request',
   'computer_use_request',
+  'secret_request',
+  'file_request',
 ])
 
 export function isUnsupportedInChat(event: UserRequestEvent): boolean {
@@ -82,6 +87,10 @@ export function describeUnsupportedRequest(event: UserRequestEvent): string {
       return `The agent wants to run a script, which needs your approval.${tail}`
     case 'computer_use_request':
       return `The agent wants to use your computer, which isn't supported in chat.${tail}`
+    case 'secret_request':
+      return `The agent needs the secret ${event.secretName}, which isn't safe to provide in chat.${tail}`
+    case 'file_request':
+      return `The agent wants you to upload a file${event.description ? ` (${event.description})` : ''}, which isn't supported in chat.${tail}`
     default:
       return `The agent sent a "${event.type}" request that isn't supported in chat.${tail}`
   }

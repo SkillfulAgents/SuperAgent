@@ -1561,6 +1561,13 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
       await messagePersister.subscribeToSession(sessionId, client, sessionId, agentSlug)
     }
 
+    // If the session is awaiting user input (an open AskUserQuestion / secret / file
+    // request, etc.), cancel the pending request first so this message starts a fresh
+    // turn instead of deadlocking behind the blocked tool. No-op when not awaiting.
+    // Runs before the wasQueued capture so its state changes (interrupt for subagent
+    // requests) are reflected in the queue-vs-fresh-turn decision below.
+    await messagePersister.cancelAwaitingInput(sessionId, agentSlug)
+
     // Captured before markSessionActive: a message sent while the agent is
     // mid-turn is queued by the agent loop rather than starting a new turn.
     const wasQueued = messagePersister.isSessionActive(sessionId)

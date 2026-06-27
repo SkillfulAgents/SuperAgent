@@ -824,6 +824,27 @@ class ChatIntegrationManager {
       // Revoke can land mid-flight (during the awaits above). Re-check before spending.
       if (!isChatAllowed(integrationId, chatId)) return
 
+      // If a single-question AskUserQuestion is open, a plain-text message is the free-form
+      // "Other" answer: resolve that question so the same turn continues, instead of cancelling.
+      // isSessionAwaitingInput is the source of truth (it reflects taps, cancels, and answers from
+      // other surfaces), so we consume the message only on a confirmed live resolve; a non-text
+      // message, a multi-question card, or any other awaiting type falls through to cancel.
+      const isPlainText = !!messageText.trim() && !(message.files && message.files.length > 0)
+      if (isPlainText && messagePersister.isSessionAwaitingInput(sessionId)) {
+        const pendingQuestion = messagePersister
+          .getPendingInputRequests(sessionId)
+          .find((r) => r.type === 'user_question_request')
+        if (pendingQuestion) {
+          const answered = await conn.connector.answerOpenQuestionWithText(chatId, pendingQuestion.toolUseId, messageText)
+          if (answered) return
+        }
+      }
+
+      // Otherwise: if the session is awaiting input, cancel the pending request first so this
+      // message starts a fresh turn instead of deadlocking behind the blocked tool. No-op
+      // when not awaiting. Mirrors the app send-message route.
+      await messagePersister.cancelAwaitingInput(sessionId, integration.agentSlug)
+
       await client.sendMessage(sessionId, messageText)
       messagePersister.markSessionActive(sessionId, integration.agentSlug)
       const now = Date.now()

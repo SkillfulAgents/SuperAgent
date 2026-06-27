@@ -402,6 +402,57 @@ class MessagePersister {
     }
   }
 
+  // When a new message arrives while the session is awaiting user input, cancel the
+  // pending request(s) so the message starts a fresh turn instead of deadlocking behind
+  // the blocked tool.
+  //
+  // Top-level requests (question / secret / file / connected_account / remote_mcp) block the
+  // main loop, so rejecting them is enough — the loop unblocks and the queued message runs.
+  // Subagent requests (browser_input / script_run / computer_use) block a subagent while the
+  // main loop is parked on the Task tool, so we additionally interrupt to unwind it (mirroring
+  // the shipped `complete-browser-input` decline recipe).
+  //
+  // No-op when the session is not awaiting input (also makes rapid double-messages idempotent).
+  // Reject/interrupt failures are swallowed: a best-effort cancel must never block the message.
+  async cancelAwaitingInput(sessionId: string, agentSlug: string): Promise<void> {
+    if (!this.isSessionAwaitingInput(sessionId)) return
+
+    // Requests in pendingInputRequests that belong to a running subagent (vs the main loop).
+    const SUBAGENT_INPUT_TYPES = new Set(['browser_input_request', 'script_run_request'])
+    const topLevelReason =
+      'The user sent a new message instead of answering. Do not respond to this — their next message contains how to proceed.'
+    const subagentReason =
+      'The user sent a new message; stopping so they can redirect you. Their next message contains how to proceed.'
+
+    let sawSubagent = false
+
+    // Sweep BOTH maps: pendingInputRequests holds the 7 broadcast types; computer_use is
+    // excluded from INPUT_REQUEST_TYPES and lives in its own pendingComputerUseRequests map.
+    for (const req of this.getPendingInputRequests(sessionId)) {
+      const isSubagent = SUBAGENT_INPUT_TYPES.has(req.type)
+      sawSubagent = sawSubagent || isSubagent
+      await this.rejectContainerInput(agentSlug, req.toolUseId, isSubagent ? subagentReason : topLevelReason).catch(
+        (e) => console.error(`[MessagePersister] cancelAwaitingInput reject failed for ${req.toolUseId}:`, e),
+      )
+    }
+    for (const req of this.getPendingComputerUseRequests(sessionId)) {
+      sawSubagent = true
+      await this.rejectContainerInput(agentSlug, req.toolUseId, subagentReason).catch(
+        (e) => console.error(`[MessagePersister] cancelAwaitingInput reject failed for ${req.toolUseId}:`, e),
+      )
+    }
+
+    // Subagent requests leave the main loop parked on the Task tool — reject alone doesn't
+    // unwind it, so interrupt. Top-level requests unblock on reject alone, so they skip the
+    // interrupt (and its abort/resume), keeping the common path provably race-free.
+    if (sawSubagent) {
+      await this.interruptContainerSession(agentSlug, sessionId).catch(
+        (e) => console.error(`[MessagePersister] cancelAwaitingInput interrupt failed for ${sessionId}:`, e),
+      )
+      await this.markSessionInterrupted(sessionId)
+    }
+  }
+
   // Get available slash commands for a session
   getSlashCommands(sessionId: string): SlashCommandInfo[] {
     return this.streamingStates.get(sessionId)?.slashCommands ?? []
@@ -2517,6 +2568,18 @@ ${continuation}`
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason }),
+    })
+  }
+
+  /**
+   * Interrupt the running query in the container (abort + resume), mirroring the
+   * `/sessions/:id/interrupt` endpoint the explicit interrupt route uses.
+   */
+  private async interruptContainerSession(agentSlug: string, sessionId: string): Promise<void> {
+    const cm = await getContainerManager()
+    const client = cm.getClient(agentSlug)
+    await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+      method: 'POST',
     })
   }
 

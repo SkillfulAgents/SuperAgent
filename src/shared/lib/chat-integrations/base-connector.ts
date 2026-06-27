@@ -100,6 +100,15 @@ export abstract class ChatClientConnector {
    */
   abstract sendUserRequestCard(chatId: string, event: UserRequestEvent): Promise<string>
 
+  /**
+   * Resolve an open single-question AskUserQuestion card with a free-typed message as the
+   * "Other" answer. Returns true only if a live card matching `toolUseId` is open for this chat,
+   * so the manager consumes the message only on a real resolve. Default: not supported (false).
+   */
+  async answerOpenQuestionWithText(_chatId: string, _toolUseId: string, _text: string): Promise<boolean> {
+    return false
+  }
+
   /** Whether the connection is healthy right now. */
   abstract isConnected(): boolean
 

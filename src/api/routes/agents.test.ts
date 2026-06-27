@@ -105,6 +105,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
     markSessionActive: vi.fn(),
+    cancelAwaitingInput: vi.fn(),
     broadcastSessionEvent: vi.fn(),
   },
 }))
@@ -2156,6 +2157,20 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {
       model: 'claude-sonnet-4-6',
     })
+  })
+
+  it('cancels any awaiting-input request before forwarding the message to the container', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+
+    const res = await postJson(app, URL, { content: 'never mind, do X instead' })
+    expect(res.status).toBe(201)
+
+    // The dispatch guard runs first so a message sent during an open request
+    // (e.g. AskUserQuestion) cancels it instead of deadlocking behind it.
+    expect(messagePersister.cancelAwaitingInput).toHaveBeenCalledWith('sess-1', 'test-agent')
+    const cancelOrder = vi.mocked(messagePersister.cancelAwaitingInput).mock.invocationCallOrder[0]
+    const sendOrder = mockSendMessage.mock.invocationCallOrder[0]
+    expect(cancelOrder).toBeLessThan(sendOrder)
   })
 
   it('strips model/effort when the session is already active (mid-turn send)', async () => {

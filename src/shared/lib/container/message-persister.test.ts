@@ -2406,6 +2406,93 @@ describe('MessagePersister', () => {
     it('returns false for unknown session IDs', () => {
       expect(messagePersister.isSessionAwaitingInput('nonexistent-session')).toBe(false)
     })
+
+    // ------------------------------------------------------------------
+    // cancelAwaitingInput: when a new message arrives while the session is
+    // awaiting input, cancel the pending request(s) so the message isn't
+    // queued behind a blocked tool (the deadlock). Top-level requests are
+    // rejected (the main loop unblocks directly); subagent requests are
+    // additionally interrupted to unwind the parked Task.
+    // ------------------------------------------------------------------
+    describe('cancelAwaitingInput', () => {
+      const rejectCallFor = (toolUseId: string) =>
+        mockContainerClientFetch.mock.calls.find((c) => c[0] === `/inputs/${toolUseId}/reject`)
+      const interruptCall = () =>
+        mockContainerClientFetch.mock.calls.find((c) => c[0] === `/sessions/${SESSION_ID}/interrupt`)
+
+      it('rejects a top-level AskUserQuestion without interrupting', async () => {
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+        simulateToolUse('AskUserQuestion', 'q-1', {
+          questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+        })
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        mockContainerClientFetch.mockClear()
+
+        await messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)
+
+        const reject = rejectCallFor('q-1')
+        expect(reject).toBeDefined()
+        expect(JSON.parse((reject![1] as { body: string }).body).reason).toBeTruthy()
+        // Top-level: reject only — the main loop unblocks without an interrupt.
+        expect(interruptCall()).toBeUndefined()
+      })
+
+      it('rejects AND interrupts for a subagent browser_input request', async () => {
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+        simulateToolUse('mcp__user-input__request_browser_input', 'bi-1', {
+          message: 'Please log in',
+          requirements: ['Enter credentials'],
+        })
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        mockContainerClientFetch.mockClear()
+
+        await messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)
+
+        expect(rejectCallFor('bi-1')).toBeDefined()
+        expect(interruptCall()).toBeDefined()
+        // The interrupt path marks the session interrupted (awaiting cleared).
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      })
+
+      it('sweeps pendingComputerUseRequests (the separate map) and interrupts', async () => {
+        vi.stubEnv('E2E_MOCK', 'true') // skip the host platform gate so the request goes pending
+        try {
+          messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+          simulateToolUse('mcp__computer-use__computer_click', 'cu-1', { ref: 'win:1' })
+          expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+          expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(1)
+          mockContainerClientFetch.mockClear()
+
+          await messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)
+
+          expect(rejectCallFor('cu-1')).toBeDefined()
+          expect(interruptCall()).toBeDefined()
+        } finally {
+          vi.unstubAllEnvs()
+        }
+      })
+
+      it('rejects every pending request when several are open', async () => {
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+        simulateToolUse('mcp__user-input__request_secret', 's-1', { secretName: 'KEY1' })
+        simulateToolUse('mcp__user-input__request_file', 'f-1', { description: 'CSV' })
+        mockContainerClientFetch.mockClear()
+
+        await messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)
+
+        expect(rejectCallFor('s-1')).toBeDefined()
+        expect(rejectCallFor('f-1')).toBeDefined()
+      })
+
+      it('is a no-op when the session is not awaiting input', async () => {
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+        mockContainerClientFetch.mockClear()
+
+        await messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)
+
+        expect(mockContainerClientFetch).not.toHaveBeenCalled()
+      })
+    })
   })
 
   // ============================================================================

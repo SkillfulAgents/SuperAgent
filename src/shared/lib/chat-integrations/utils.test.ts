@@ -42,4 +42,18 @@ describe('isUnsupportedInChat / describeUnsupportedRequest', () => {
     expect(isUnsupportedInChat(event)).toBe(true)
     expect(describeUnsupportedRequest(event)).toContain('Acme MCP')
   })
+
+  it('flags secret_request as unsupported (secrets are unsafe to type into chat) and names the secret', () => {
+    const event: UserRequestEvent = { type: 'secret_request', toolUseId: 't4', secretName: 'OPENAI_API_KEY' }
+    expect(isUnsupportedInChat(event)).toBe(true)
+    expect(describeUnsupportedRequest(event)).toContain('OPENAI_API_KEY')
+    expect(describeUnsupportedRequest(event)).toContain('desktop')
+  })
+
+  it('flags file_request as unsupported and mentions uploading', () => {
+    const event: UserRequestEvent = { type: 'file_request', toolUseId: 't5', description: 'a CSV export' }
+    expect(isUnsupportedInChat(event)).toBe(true)
+    expect(describeUnsupportedRequest(event)).toContain('upload')
+    expect(describeUnsupportedRequest(event)).toContain('desktop')
+  })
 })

@@ -130,6 +130,30 @@ export class TelegramConnector extends ChatClientConnector {
     answers: Record<string, string> // { questionText: selectedAnswer }
   }> = new Map()
 
+  // Track open multiSelect questions: the redraw state + the accumulating checked set,
+  // keyed by `${toolUseId} ${question}` (toolUseId has no spaces, so the join is unambiguous).
+  // In-memory only — never encoded into callback_data, which Telegram caps at 64 bytes.
+  private pendingMultiSelect: Map<string, {
+    chatId: string
+    messageId: string
+    questionText: string
+    options: Array<{ label: string; cbId: string }>
+    doneCbId: string
+    checked: Set<string>
+  }> = new Map()
+
+  // Track the open single-question AskUserQuestion card per chat, so a free-typed message can
+  // be resolved as the "Other" answer. Set only for single-question cards (multi-question falls
+  // through to cancel); cleared synchronously when the card is answered by any path.
+  private openQuestionCard: Map<string, {
+    toolUseId: string
+    question: string
+    questionText: string
+    messageId: string
+    multiSelect: boolean
+    cbIds: string[]
+  }> = new Map()
+
   // Animated DM draft streaming: per-chat non-zero draft id.
   private nextDraftId = 1
   private activeDrafts: Map<string, number> = new Map()
@@ -495,15 +519,42 @@ export class TelegramConnector extends ChatClientConnector {
         for (const q of event.questions) {
           const header = q.header ? `**${escapeMarkdown(q.header)}**\n` : ''
           const text = `${header}${escapeMarkdown(q.question)}`
+          const hasOptions = !!(q.options && q.options.length > 0)
+
+          const singleQuestionCard = event.questions.length === 1
+
+          if (hasOptions && q.multiSelect) {
+            // Multi-select: each tap toggles a ✅; a Done button resolves the checked set.
+            const options = q.options!.map((opt) => ({
+              label: opt.label,
+              cbId: this.registerCallback(event.toolUseId, { kind: 'multiToggle', question: q.question, label: opt.label }),
+            }))
+            const doneCbId = this.registerCallback(event.toolUseId, { kind: 'multiDone', question: q.question })
+            const keyboard = options.map((o) => [{ text: o.label, callback_data: o.cbId }])
+            keyboard.push([{ text: 'Done', callback_data: doneCbId }])
+            lastMessageId = await this.sendRichOrHtml(chatId, text, { reply_markup: { inline_keyboard: keyboard } })
+            this.pendingMultiSelect.set(this.multiSelectKey(event.toolUseId, q.question), {
+              chatId, messageId: lastMessageId, questionText: text, options, doneCbId, checked: new Set(),
+            })
+            if (singleQuestionCard) {
+              this.openQuestionCard.set(chatId, {
+                toolUseId: event.toolUseId, question: q.question, questionText: text,
+                messageId: lastMessageId, multiSelect: true, cbIds: [...options.map((o) => o.cbId), doneCbId],
+              })
+            }
+            continue
+          }
 
           const keyboard: Array<Array<{ text: string; callback_data: string }>> = []
-          if (q.options && q.options.length > 0) {
-            for (const opt of q.options) {
-              // Store the full answer payload: { question, answer }
+          const cbIds: string[] = []
+          if (hasOptions) {
+            for (const opt of q.options!) {
+              // Single-select: store the full answer payload { question, answer }; first tap resolves.
               const cbId = this.registerCallback(event.toolUseId, {
                 question: q.question,
                 answer: opt.label,
               })
+              cbIds.push(cbId)
               keyboard.push([{ text: opt.label, callback_data: cbId }])
             }
           }
@@ -513,20 +564,19 @@ export class TelegramConnector extends ChatClientConnector {
             text,
             keyboard.length > 0 ? { reply_markup: { inline_keyboard: keyboard } } : undefined,
           )
+          if (singleQuestionCard) {
+            this.openQuestionCard.set(chatId, {
+              toolUseId: event.toolUseId, question: q.question, questionText: text,
+              messageId: lastMessageId, multiSelect: false, cbIds,
+            })
+          }
         }
 
         return lastMessageId
       }
 
-      case 'secret_request': {
-        const text = `**Secret requested:** ${codeSpan(event.secretName)}\n${event.reason ? `\nReason: ${escapeMarkdown(event.reason)}` : ''}\n\nPlease reply with the secret value.`
-        return this.sendRichOrHtml(chatId, text)
-      }
-
-      case 'file_request': {
-        const text = `**File requested:**\n${escapeMarkdown(event.description)}${event.fileTypes ? `\n\nAccepted types: ${escapeMarkdown(event.fileTypes)}` : ''}\n\nPlease upload the file.`
-        return this.sendRichOrHtml(chatId, text)
-      }
+      // secret_request / file_request are handled by the isUnsupportedInChat early-return above
+      // (desktop-only fallback); they intentionally have no prompt case here.
 
       case 'file_delivery': {
         // File transfer from container to chat is not yet supported — show metadata only
@@ -544,46 +594,124 @@ export class TelegramConnector extends ChatClientConnector {
     }
   }
 
-  /** Handle an inline-keyboard button click: confirm the choice and emit the answer. */
-  private async handleCallbackQuery(ctx: GrammyContext): Promise<void> {
-    await ctx.answerCallbackQuery()
-    const data = ctx.callbackQuery?.data
-    if (!data) return
-    const mapping = this.callbackDataMap.get(data)
-    if (!mapping) return
-    const val = mapping.value as { question: string; answer: string }
+  private multiSelectKey(toolUseId: string, question: string): string {
+    return `${toolUseId} ${question}`
+  }
 
-    // Update the message to show the selected answer and remove the keyboard.
-    // Route through editRichOrHtml so the edit matches the connector's mode
-    // (a rich edit in rich mode, HTML otherwise) instead of always HTML.
+  /** Handle an inline-keyboard button click. Single-select resolves on tap; multi-select toggles
+   *  and only resolves on Done. The callback is answered inside each branch so the empty-Done
+   *  toast can fire (a callback can be answered exactly once). */
+  private async handleCallbackQuery(ctx: GrammyContext): Promise<void> {
+    const data = ctx.callbackQuery?.data
+    if (!data) { await ctx.answerCallbackQuery(); return }
+    const mapping = this.callbackDataMap.get(data)
+    if (!mapping) { await ctx.answerCallbackQuery(); return }
+    const val = mapping.value as { kind?: 'multiToggle' | 'multiDone'; question: string; answer?: string; label?: string }
+
+    if (val.kind === 'multiToggle') { await this.handleMultiSelectToggle(ctx, mapping.toolUseId, val.question, val.label ?? ''); return }
+    if (val.kind === 'multiDone') { await this.handleMultiSelectDone(ctx, mapping.toolUseId, val.question); return }
+
+    // Single-select: confirm the choice, strip the keyboard, and emit the answer.
+    await ctx.answerCallbackQuery()
     const originalText = ctx.callbackQuery?.message?.text || ''
     const chatId = String(ctx.chat?.id ?? '')
     const messageId = String(ctx.callbackQuery?.message?.message_id ?? '')
-    const confirmation = `${escapeMarkdown(originalText)}\n\n✅ **${escapeMarkdown(val.answer)}**`
+    const confirmation = `${escapeMarkdown(originalText)}\n\n✅ **${escapeMarkdown(val.answer ?? '')}**`
     try {
       await this.editRichOrHtml(chatId, messageId, confirmation)
     } catch {
       try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
     }
-
     this.callbackDataMap.delete(data)
+    this.openQuestionCard.delete(chatId)
+    this.emitAnswer(mapping.toolUseId, val.question, val.answer ?? '', chatId)
+  }
 
-    // Accumulate answer for multi-question requests
-    const pending = this.pendingQuestions.get(mapping.toolUseId)
+  /** Toggle a multiSelect option's ✅ and redraw the keyboard; does not resolve. */
+  private async handleMultiSelectToggle(ctx: GrammyContext, toolUseId: string, question: string, label: string): Promise<void> {
+    const state = this.pendingMultiSelect.get(this.multiSelectKey(toolUseId, question))
+    if (!state) { await ctx.answerCallbackQuery(); return }
+    if (state.checked.has(label)) state.checked.delete(label)
+    else state.checked.add(label)
+
+    const keyboard = state.options.map((o) => [{
+      text: state.checked.has(o.label) ? `✅ ${o.label}` : o.label,
+      callback_data: o.cbId,
+    }])
+    keyboard.push([{ text: 'Done', callback_data: state.doneCbId }])
+    try {
+      await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: keyboard } })
+    } catch (err) {
+      const m = err instanceof Error ? err.message : String(err)
+      if (!m.includes('message is not modified')) console.error('[TelegramConnector] multi-select redraw failed:', err)
+    }
+    await ctx.answerCallbackQuery()
+  }
+
+  /** Resolve a multiSelect question with the checked options, joined by ", ". */
+  private async handleMultiSelectDone(ctx: GrammyContext, toolUseId: string, question: string): Promise<void> {
+    const state = this.pendingMultiSelect.get(this.multiSelectKey(toolUseId, question))
+    if (!state) { await ctx.answerCallbackQuery(); return }
+    if (state.checked.size === 0) {
+      await ctx.answerCallbackQuery({ text: 'Select at least one option, then tap Done.' })
+      return
+    }
+    const answer = [...state.checked].join(', ')
+    await ctx.answerCallbackQuery()
+
+    // Build the confirmation from the stored question text — rich messages carry no `.text`.
+    const confirmation = `${state.questionText}\n\n✅ **${escapeMarkdown(answer)}**`
+    try {
+      await this.editRichOrHtml(state.chatId, state.messageId, confirmation)
+    } catch { /* ignore */ }
+    try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
+
+    for (const o of state.options) this.callbackDataMap.delete(o.cbId)
+    this.callbackDataMap.delete(state.doneCbId)
+    this.pendingMultiSelect.delete(this.multiSelectKey(toolUseId, question))
+    this.openQuestionCard.delete(state.chatId)
+    this.emitAnswer(toolUseId, question, answer, state.chatId)
+  }
+
+  /**
+   * Resolve an open single-question card with free-typed text as the "Other" answer (the text
+   * overrides any checked boxes, mirroring the app). Returns true only if a live card matching
+   * `toolUseId` is open for this chat — so the manager consumes the message only on a real resolve
+   * and otherwise sends it as a fresh turn.
+   */
+  async answerOpenQuestionWithText(chatId: string, toolUseId: string, text: string): Promise<boolean> {
+    const card = this.openQuestionCard.get(chatId)
+    if (!card || card.toolUseId !== toolUseId) return false
+
+    this.openQuestionCard.delete(chatId)
+    if (card.multiSelect) this.pendingMultiSelect.delete(this.multiSelectKey(card.toolUseId, card.question))
+    for (const cb of card.cbIds) this.callbackDataMap.delete(cb)
+
+    // Confirm + strip the keyboard. Build the confirmation from the stored question text, since
+    // rich messages carry no readable `.text`.
+    const confirmation = `${card.questionText}\n\n✅ **${escapeMarkdown(text)}**`
+    try {
+      await this.editRichOrHtml(chatId, card.messageId, confirmation)
+    } catch { /* best-effort */ }
+    try {
+      await this.bot?.api.editMessageReplyMarkup(Number(chatId), Number(card.messageId), { reply_markup: { inline_keyboard: [] } })
+    } catch { /* best-effort */ }
+
+    this.emitAnswer(card.toolUseId, card.question, text, chatId)
+    return true
+  }
+
+  /** Emit one question's answer, accumulating across a multi-question card before resolving. */
+  private emitAnswer(toolUseId: string, question: string, answer: string, chatId: string): void {
+    const pending = this.pendingQuestions.get(toolUseId)
     if (pending) {
-      pending.answers[val.question] = val.answer
+      pending.answers[question] = answer
       if (Object.keys(pending.answers).length >= pending.totalQuestions) {
-        // All questions answered — emit the combined response
-        this.emitInteractiveResponse(mapping.toolUseId, {
-          question: '_all',
-          answer: '_all',
-          answers: pending.answers,
-        }, chatId)
-        this.pendingQuestions.delete(mapping.toolUseId)
+        this.emitInteractiveResponse(toolUseId, { question: '_all', answer: '_all', answers: pending.answers }, chatId)
+        this.pendingQuestions.delete(toolUseId)
       }
     } else {
-      // Single question — emit immediately
-      this.emitInteractiveResponse(mapping.toolUseId, mapping.value, chatId)
+      this.emitInteractiveResponse(toolUseId, { question, answer }, chatId)
     }
   }
 

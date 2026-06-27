@@ -290,12 +290,11 @@ describe('TelegramConnector.sendUserRequestCard (rich)', () => {
 
   it('escapes interpolated values so they cannot break the markdown', async () => {
     await connector.sendUserRequestCard('123', {
-      type: 'secret_request', toolUseId: 't3', secretName: 'weird`name', reason: 'needs **admin** rights',
+      type: 'user_question_request', toolUseId: 't3',
+      questions: [{ question: 'needs **admin** rights', options: [{ label: 'A' }] }],
     } as any)
     const md: string = mockSendRich.mock.calls[0][0].rich_message.markdown
-    // secretName with a backtick is fenced so it can't close the code span.
-    expect(md).toContain('``weird`name``')
-    // reason's asterisks are escaped, not rendered as bold.
+    // The interpolated question's asterisks are escaped, not rendered as bold.
     expect(md).toContain('needs \\*\\*admin\\*\\* rights')
   })
 })

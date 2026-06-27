@@ -708,25 +708,8 @@ export class SlackConnector extends ChatClientConnector {
         return lastTs
       }
 
-      case 'secret_request': {
-        const result = await this.app.client.chat.postMessage({
-          channel,
-          text: `*Secret requested:* \`${event.secretName}\`${event.reason ? `\nReason: ${event.reason}` : ''}\n\nPlease reply with the secret value.`,
-          mrkdwn: true,
-          ...threadOpt,
-        })
-        return result.ts || ''
-      }
-
-      case 'file_request': {
-        const result = await this.app.client.chat.postMessage({
-          channel,
-          text: `*File requested:*\n${event.description}${event.fileTypes ? `\n\nAccepted types: ${event.fileTypes}` : ''}\n\nPlease upload the file.`,
-          mrkdwn: true,
-          ...threadOpt,
-        })
-        return result.ts || ''
-      }
+      // secret_request / file_request are handled by the isUnsupportedInChat early-return above
+      // (desktop-only fallback); they intentionally have no prompt case here.
 
       case 'file_delivery': {
         // File transfer from container to chat is not yet supported — show metadata only

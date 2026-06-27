@@ -69,6 +69,40 @@ function collectEmits(connector: TelegramConnector): IncomingMessage[] {
   return msgs
 }
 
+interface CapturedResponse { toolUseId: string; response: any; chatId?: string }
+
+function collectInteractiveResponses(connector: TelegramConnector): CapturedResponse[] {
+  const out: CapturedResponse[] = []
+  connector.onInteractiveResponse((toolUseId, response, chatId) => out.push({ toolUseId, response, chatId }))
+  return out
+}
+
+/** Attach a fake grammY bot that captures rich sends/edits, so sendUserRequestCard works. */
+function attachFakeBot(connector: TelegramConnector): { sent: any[] } {
+  const sent: any[] = []
+  ;(connector as any).bot = {
+    api: {
+      raw: {
+        sendRichMessage: vi.fn(async (args: any) => { sent.push(args); return { message_id: 1000 + sent.length } }),
+        editMessageText: vi.fn(async () => ({})),
+      },
+      sendMessage: vi.fn(async () => ({ message_id: 1 })),
+      editMessageText: vi.fn(async () => ({})),
+    },
+  }
+  return { sent }
+}
+
+/** A callback_query ctx. Rich messages carry no `.text`, so we omit it by default. */
+function makeCbCtx(data: string, opts: { messageId?: number; chatId?: number; text?: string } = {}): any {
+  return {
+    callbackQuery: { data, message: { message_id: opts.messageId ?? 1001, text: opts.text } },
+    chat: { id: opts.chatId ?? 123 },
+    answerCallbackQuery: vi.fn(async () => {}),
+    editMessageReplyMarkup: vi.fn(async () => {}),
+  }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('TelegramConnector — chatType propagation', () => {
@@ -270,5 +304,166 @@ describe('startWorking (dumb, no self-heartbeat)', () => {
     const { connector } = makeDmConnector()
     await connector.startWorking('999', 'working')
     await expect(connector.stopWorking('999')).resolves.toBeUndefined()
+  })
+})
+
+describe('TelegramConnector — AskUserQuestion multi-select', () => {
+  let connector: TelegramConnector
+  let sent: any[]
+  let responses: CapturedResponse[]
+
+  beforeEach(() => {
+    connector = makeConnector()
+    responses = collectInteractiveResponses(connector)
+    sent = attachFakeBot(connector).sent
+  })
+
+  function multiSelectEvent(): any {
+    return {
+      type: 'user_question_request',
+      toolUseId: 'tu-multi',
+      questions: [{
+        question: 'Pick your stack',
+        multiSelect: true,
+        options: [{ label: 'Redis' }, { label: 'S3' }, { label: 'Postgres' }],
+      }],
+    }
+  }
+
+  it('renders one option button per choice plus a Done button for a multiSelect question', async () => {
+    await (connector as any).sendUserRequestCard('123', multiSelectEvent())
+    const kb = sent[0].reply_markup.inline_keyboard
+    expect(kb).toHaveLength(4) // 3 options + Done
+    expect(kb.slice(0, 3).map((row: any) => row[0].text)).toEqual(['Redis', 'S3', 'Postgres'])
+    expect(kb[3][0].text).toBe('Done')
+  })
+
+  it('single-select question renders tap-to-resolve buttons with no Done (unchanged)', async () => {
+    await (connector as any).sendUserRequestCard('123', {
+      type: 'user_question_request',
+      toolUseId: 'tu-single',
+      questions: [{ question: 'Which one?', options: [{ label: 'A' }, { label: 'B' }] }],
+    })
+    const kb = sent[0].reply_markup.inline_keyboard
+    expect(kb.map((row: any) => row[0].text)).toEqual(['A', 'B'])
+  })
+
+  it('tapping a multiSelect option toggles a checkmark and does not resolve', async () => {
+    await (connector as any).sendUserRequestCard('123', multiSelectEvent())
+    const kb = sent[0].reply_markup.inline_keyboard
+    const ctx = makeCbCtx(kb[0][0].callback_data) // Redis
+    await (connector as any).handleCallbackQuery(ctx)
+    expect(ctx.editMessageReplyMarkup).toHaveBeenCalled()
+    const newKb = ctx.editMessageReplyMarkup.mock.calls[0][0].reply_markup.inline_keyboard
+    expect(newKb[0][0].text).toBe('✅ Redis')
+    expect(responses).toHaveLength(0)
+  })
+
+  it('Done resolves with the checked options joined by ", "', async () => {
+    await (connector as any).sendUserRequestCard('123', multiSelectEvent())
+    const kb = sent[0].reply_markup.inline_keyboard
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[0][0].callback_data)) // Redis
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[1][0].callback_data)) // S3
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[3][0].callback_data)) // Done
+    expect(responses).toHaveLength(1)
+    expect(responses[0].toolUseId).toBe('tu-multi')
+    expect(responses[0].response.answer).toBe('Redis, S3')
+  })
+
+  it('re-tapping a checked option unchecks it (callback is not consumed on tap)', async () => {
+    await (connector as any).sendUserRequestCard('123', multiSelectEvent())
+    const kb = sent[0].reply_markup.inline_keyboard
+    const redisCb = kb[0][0].callback_data
+    await (connector as any).handleCallbackQuery(makeCbCtx(redisCb)) // check
+    const ctx2 = makeCbCtx(redisCb)
+    await (connector as any).handleCallbackQuery(ctx2) // uncheck
+    const newKb = ctx2.editMessageReplyMarkup.mock.calls[0][0].reply_markup.inline_keyboard
+    expect(newKb[0][0].text).toBe('Redis') // ✅ removed
+    expect(responses).toHaveLength(0)
+  })
+
+  it('Done with nothing checked shows a toast and does not resolve', async () => {
+    await (connector as any).sendUserRequestCard('123', multiSelectEvent())
+    const kb = sent[0].reply_markup.inline_keyboard
+    const doneCtx = makeCbCtx(kb[3][0].callback_data)
+    await (connector as any).handleCallbackQuery(doneCtx)
+    expect(responses).toHaveLength(0)
+    expect(doneCtx.answerCallbackQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('at least one') }),
+    )
+  })
+
+  it('text overrides checked boxes on a multiSelect single-question card', async () => {
+    await (connector as any).sendUserRequestCard('123', multiSelectEvent())
+    const kb = sent[0].reply_markup.inline_keyboard
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[0][0].callback_data)) // check Redis
+    const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-multi', 'use whatever you think best')
+    expect(ok).toBe(true)
+    expect(responses).toHaveLength(1)
+    expect(responses[0].response.answer).toBe('use whatever you think best') // text wins, not 'Redis'
+  })
+})
+
+describe('TelegramConnector — typed message answers an open question (Other)', () => {
+  let connector: TelegramConnector
+  let sent: any[]
+  let responses: CapturedResponse[]
+
+  beforeEach(() => {
+    connector = makeConnector()
+    responses = collectInteractiveResponses(connector)
+    sent = attachFakeBot(connector).sent
+  })
+
+  function singleQuestionEvent(toolUseId = 'tu-q'): any {
+    return {
+      type: 'user_question_request',
+      toolUseId,
+      questions: [{ question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'MySQL' }] }],
+    }
+  }
+
+  it('resolves a single-question card with the typed text as the answer and returns true', async () => {
+    await (connector as any).sendUserRequestCard('123', singleQuestionEvent())
+    const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-q', 'actually use SQLite')
+    expect(ok).toBe(true)
+    expect(responses).toHaveLength(1)
+    expect(responses[0].toolUseId).toBe('tu-q')
+    expect(responses[0].response.answer).toBe('actually use SQLite')
+  })
+
+  it('returns false when no question card is open for the chat', async () => {
+    const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-q', 'hi')
+    expect(ok).toBe(false)
+    expect(responses).toHaveLength(0)
+  })
+
+  it('returns false when the toolUseId does not match the open card (race / stale)', async () => {
+    await (connector as any).sendUserRequestCard('123', singleQuestionEvent('tu-q'))
+    const ok = await (connector as any).answerOpenQuestionWithText('123', 'a-different-tooluse', 'hi')
+    expect(ok).toBe(false)
+    expect(responses).toHaveLength(0)
+  })
+
+  it('returns false for a multi-question card (v1 falls through to cancel)', async () => {
+    await (connector as any).sendUserRequestCard('123', {
+      type: 'user_question_request',
+      toolUseId: 'tu-mq',
+      questions: [
+        { question: 'Q1', options: [{ label: 'A' }] },
+        { question: 'Q2', options: [{ label: 'B' }] },
+      ],
+    })
+    const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-mq', 'hi')
+    expect(ok).toBe(false)
+    expect(responses).toHaveLength(0)
+  })
+
+  it('a tapped single-select answer clears the open card so a later text is not consumed', async () => {
+    await (connector as any).sendUserRequestCard('123', singleQuestionEvent('tu-q'))
+    const kb = sent[0].reply_markup.inline_keyboard
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[0][0].callback_data)) // tap Postgres
+    const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-q', 'too late')
+    expect(ok).toBe(false) // card already resolved by the tap
   })
 })
