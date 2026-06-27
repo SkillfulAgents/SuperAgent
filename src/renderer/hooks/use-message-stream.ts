@@ -267,7 +267,13 @@ function getOrCreateEventSource(
   agentSlug: string,
   queryClient: QueryClient
 ): EventSource {
-  const key = `${agentSlug}:${sessionId}`
+  // Key the singleton by sessionId alone: a session id is globally unique and
+  // belongs to exactly one agent, so subscribers that pass different slug forms
+  // for the same session (the sidebar uses the canonical id; the session view
+  // uses the URL display slug) must still share ONE EventSource — otherwise both
+  // streams write the same session state and the response renders doubled.
+  // agentSlug is only used to build the URL below (the host resolves any form).
+  const key = sessionId
   let es = eventSources.get(key)
   if (es && es.readyState !== EventSource.CLOSED) {
     // Increment ref count
@@ -1170,8 +1176,8 @@ function getOrCreateEventSource(
   return es
 }
 
-function releaseEventSource(sessionId: string, agentSlug: string): void {
-  const key = `${agentSlug}:${sessionId}`
+function releaseEventSource(sessionId: string): void {
+  const key = sessionId
   const count = (refCounts.get(key) || 1) - 1
   refCounts.set(key, count)
 
@@ -1416,7 +1422,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
       if (listeners?.size === 0) {
         streamListeners.delete(sessionId)
       }
-      releaseEventSource(sessionId, agentSlug)
+      releaseEventSource(sessionId)
     }
   }, [sessionId, agentSlug, updateState, queryClient])
 

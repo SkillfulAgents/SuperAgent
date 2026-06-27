@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import { getLlmPolyfillJs } from '../llm-polyfill'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, ResolveAgent, getAgentId } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -39,7 +39,7 @@ import {
   removeMessage,
   removeToolCall,
 } from '@shared/lib/services/session-service'
-import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
+import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
 import {
   listUserSecrets,
@@ -576,14 +576,10 @@ Respond with ONLY the agent name, nothing else. No quotes, no explanation.`,
   }
 })
 
-// Middleware: verify agent exists for all /:id/* routes
-agents.use('/:id/*', async (c, next) => {
-  const slug = c.req.param('id')
-  if (!(await agentExists(slug))) {
-    return c.json({ error: 'Agent not found' }, 404)
-  }
-  await next()
-})
+// Middleware: resolve the :id param (display slug / bare id / legacy compound)
+// to the canonical agent id for all /:id/* routes, stashing it for getAgentId(c).
+// 404s if it doesn't resolve — subsumes the old existence check.
+agents.use('/:id/*', ResolveAgent())
 
 // Create owner ACL entry when an agent is created in auth mode
 async function createOwnerAcl(c: Context, agentSlug: string) {
@@ -705,6 +701,12 @@ agents.get('/', async (c) => {
         rows.map((r) => agentLimit(() => getAgentWithStatus(r.agentSlug)))
       )
       agentList = agents.filter((a): a is ApiAgent => a !== null)
+      // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e.
+      // by agentSlug, which is now an opaque random id (it used to embed the name,
+      // so the scan was incidentally name-ish). Sort newest-first to match the
+      // non-auth listAgentsWithStatus() ordering, so a freshly created agent lands
+      // at the top of the sidebar (the client's applyAgentOrder floats new agents up).
+      agentList.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
     } else {
       agentList = await listAgentsWithStatus()
     }
@@ -742,9 +744,9 @@ agents.post('/', async (c) => {
 })
 
 // GET /api/agents/:id - Get a single agent
-agents.get('/:id', AgentRead(), async (c) => {
+agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const agent = await getAgentWithStatus(slug)
 
     if (!agent) {
@@ -760,9 +762,9 @@ agents.get('/:id', AgentRead(), async (c) => {
 })
 
 // PUT /api/agents/:id - Update an agent
-agents.put('/:id', AgentAdmin(), async (c) => {
+agents.put('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const body = await c.req.json()
     const { name, description, instructions } = body
 
@@ -786,9 +788,9 @@ agents.put('/:id', AgentAdmin(), async (c) => {
 })
 
 // DELETE /api/agents/:id - Delete an agent
-agents.delete('/:id', AgentAdmin(), async (c) => {
+agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
 
     // Existence check up front so we never start the destructive flow for a
     // missing agent. We rely on getAgent (not deleteAgent's return value)
@@ -852,7 +854,7 @@ agents.delete('/:id', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/preferences - Get agent preferences
 agents.get('/:id/preferences', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     if (!(await agentExists(slug))) {
       return c.json({ error: 'Agent not found' }, 404)
     }
@@ -867,7 +869,7 @@ agents.get('/:id/preferences', AgentRead(), async (c) => {
 // PUT /api/agents/:id/preferences - Update agent preferences
 agents.put('/:id/preferences', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     if (!(await agentExists(slug))) {
       return c.json({ error: 'Agent not found' }, 404)
     }
@@ -901,7 +903,7 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/access - List users with roles on this agent
 agents.get('/:id/access', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const rows = await db
       .select({
         userId: agentAcl.userId,
@@ -923,7 +925,7 @@ agents.get('/:id/access', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/access - Invite user (assign role)
 agents.post('/:id/access', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const { userId, role } = await c.req.json()
 
     if (!userId || !role) {
@@ -972,7 +974,7 @@ agents.post('/:id/access', AgentAdmin(), async (c) => {
 // PATCH /api/agents/:id/access/:userId - Change user's role
 agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const targetUserId = c.req.param('userId')
     const { role } = await c.req.json()
 
@@ -1025,7 +1027,7 @@ agents.patch('/:id/access/:userId', AgentAdmin(), async (c) => {
 // DELETE /api/agents/:id/access/:userId - Remove user's access
 agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const targetUserId = c.req.param('userId')
 
     // Transaction to prevent TOCTOU race on last-owner check
@@ -1072,7 +1074,7 @@ agents.delete('/:id/access/:userId', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/leave - Remove yourself from an agent's ACL
 agents.post('/:id/leave', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const userId = getCurrentUserId(c)
 
     const error = db.transaction((tx) => {
@@ -1121,7 +1123,7 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
       return c.json([])
     }
 
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
 
     // Get users who already have access
     const existingUserIds = await db
@@ -1150,7 +1152,7 @@ agents.get('/:id/access/search-users', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/start - Start an agent's container
 agents.post('/:id/start', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
 
 
     await containerManager.ensureRunning(slug)
@@ -1169,7 +1171,7 @@ agents.post('/:id/start', AgentUser(), async (c) => {
 // POST /api/agents/:id/stop - Stop an agent's container
 agents.post('/:id/stop', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const agent = await getAgent(slug)
 
     if (!agent) {
@@ -1182,6 +1184,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
     if (info.status === 'stopped') {
       return c.json({
         slug: agent.slug,
+        displaySlug: displaySlug(agent.frontmatter.name, agent.slug),
         name: agent.frontmatter.name,
         description: agent.frontmatter.description,
         createdAt: agent.frontmatter.createdAt,
@@ -1195,6 +1198,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
 
     return c.json({
       slug: agent.slug,
+      displaySlug: displaySlug(agent.frontmatter.name, agent.slug),
       name: agent.frontmatter.name,
       description: agent.frontmatter.description,
       createdAt: agent.frontmatter.createdAt,
@@ -1209,7 +1213,7 @@ agents.post('/:id/stop', AgentUser(), async (c) => {
 
 // POST /api/agents/:id/keep-alive - Prevent auto-sleep (e.g. dashboard is open)
 agents.post('/:id/keep-alive', AgentRead(), async (c) => {
-  const slug = c.req.param('id')
+  const slug = getAgentId(c)
   containerManager.keepAlive(slug)
   return c.json({ ok: true })
 })
@@ -1219,7 +1223,7 @@ const OpenDirectoryBody = z.object({ open: z.boolean().optional() })
 
 agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const workspaceDir = getAgentWorkspaceDir(slug)
 
     // Ensure directory exists
@@ -1250,7 +1254,7 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/sessions - List sessions for an agent
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
 
 
     const sessionList = await listSessions(slug, { excludeAutomated: true })
@@ -1276,7 +1280,7 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
 // POST /api/agents/:id/sessions - Create a new session with initial message
 agents.post('/:id/sessions', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const body = await c.req.json()
     const { message } = body
 
@@ -1381,7 +1385,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 // GET /api/agents/:id/sessions/:sessionId/messages - Get messages for a session
 agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
     // No JSONL transcript on disk — e.g. it was deleted by the CLI's retention
@@ -1442,7 +1446,7 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
 // DELETE /api/agents/:id/sessions/:sessionId/messages/:messageId - Remove a message from history
 agents.delete('/:id/sessions/:sessionId/messages/:messageId', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
     const messageId = c.req.param('messageId')
 
@@ -1462,7 +1466,7 @@ agents.delete('/:id/sessions/:sessionId/messages/:messageId', AgentUser(), async
 // DELETE /api/agents/:id/sessions/:sessionId/tool-calls/:toolCallId - Remove a tool call from history
 agents.delete('/:id/sessions/:sessionId/tool-calls/:toolCallId', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
     const toolCallId = c.req.param('toolCallId')
 
@@ -1482,7 +1486,7 @@ agents.delete('/:id/sessions/:sessionId/tool-calls/:toolCallId', AgentUser(), as
 // GET /api/agents/:id/sessions/:sessionId/subagent/:agentId/messages - Get subagent messages
 agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
     const subagentId = c.req.param('agentId')
 
@@ -1504,7 +1508,7 @@ agents.get('/:id/sessions/:sessionId/subagent/:agentId/messages', AgentRead(), a
 // GET /api/agents/:id/sessions/:sessionId/raw-log - Get raw JSONL log for a session
 agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
 
@@ -1525,7 +1529,7 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
 // POST /api/agents/:id/sessions/:sessionId/messages - Send a message
 agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
     const { content } = body
@@ -1621,7 +1625,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
 // picked up (or the session isn't live) — the message will materialize normally.
 agents.delete('/:id/sessions/:sessionId/queued-messages/:uuid', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
     const uuidParam = z.string().uuid().safeParse(c.req.param('uuid'))
     if (!uuidParam.success) {
@@ -1655,7 +1659,7 @@ agents.post('/:id/sessions/:sessionId/typing', AgentUser(), async (c) => {
 // GET /api/agents/:id/sessions/:sessionId - Get a single session
 agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
 
@@ -1693,7 +1697,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
 // PATCH /api/agents/:id/sessions/:sessionId - Update a session (e.g., rename)
 agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
     const { name } = body
@@ -1728,7 +1732,7 @@ agents.patch('/:id/sessions/:sessionId', AgentUser(), async (c) => {
 // DELETE /api/agents/:id/sessions/:sessionId - Delete a session
 agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
     messagePersister.unsubscribeFromSession(sessionId)
@@ -1783,7 +1787,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       })
 
       // Send initial connection message (include slash commands for late-joining clients)
-      const agentSlug = c.req.param('id')
+      const agentSlug = getAgentId(c)
       const isActive = messagePersister.isSessionActive(sessionId)
       let slashCommands = messagePersister.getSlashCommands(sessionId)
       // Fall back to persisted metadata (e.g. after container restart)
@@ -1829,7 +1833,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
       }
 
       // Replay current computer use grab state (with icon if cached)
-      const agentSlugForStream = c.req.param('id')
+      const agentSlugForStream = getAgentId(c)
       const grabbedApp = computerUsePermissionManager.getGrabbedApp(agentSlugForStream)
       if (grabbedApp) {
         const { getAppIconBase64 } = await import('@shared/lib/computer-use/app-icon')
@@ -1869,7 +1873,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
 // POST /api/agents/:id/sessions/:sessionId/interrupt - Interrupt an active session
 agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
 
@@ -1904,7 +1908,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     // Even on error, try to mark session as interrupted to fix UI state
     try {
       const sessionId = c.req.param('sessionId')
-      const agentSlugFallback = c.req.param('id')
+      const agentSlugFallback = getAgentId(c)
       await messagePersister.markSessionInterrupted(sessionId)
       reviewManager.denyAllForAgent(agentSlugFallback)
       return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
@@ -1917,7 +1921,7 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
 // POST /api/agents/:id/sessions/:sessionId/provide-secret - Provide or decline a secret request
 agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { toolUseId, secretName, value, decline, declineReason } = body
 
@@ -2025,7 +2029,7 @@ agents.post('/:id/sessions/:sessionId/provide-secret', AgentUser(), async (c) =>
 // POST /api/agents/:id/sessions/:sessionId/provide-connected-account - Provide or decline a connected account request
 agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { toolUseId, toolkit, accountIds, decline, declineReason } = body
 
@@ -2211,7 +2215,7 @@ agents.post('/:id/sessions/:sessionId/provide-connected-account', AgentUser(), a
 // POST /api/agents/:id/sessions/:sessionId/answer-question - Answer or decline a question request
 agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { toolUseId, answers, decline, declineReason } = body
 
@@ -2282,7 +2286,7 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
 // POST /api/agents/:id/sessions/:sessionId/complete-browser-input - Complete or cancel a browser input request
 agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { toolUseId, decline, declineReason } = body
 
@@ -2361,7 +2365,7 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
 // POST /api/agents/:id/sessions/:sessionId/run-script - Run or deny a script execution request
 agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { toolUseId, script, scriptType, decline, declineReason } = body
 
@@ -2492,7 +2496,7 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
 // POST /api/agents/:id/sessions/:sessionId/computer-use - Execute or deny a computer use request
 agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
     const body = await c.req.json()
     const { toolUseId, method, params, permissionLevel, appName, grantType, decline, declineReason } = body
@@ -2656,7 +2660,7 @@ agents.post('/:id/sessions/:sessionId/computer-use', AgentUser(), async (c) => {
 // POST /api/agents/:id/sessions/:sessionId/computer-use/revoke - Ungrab window and revoke permission for the app
 agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
     const session = await getSession(agentSlug, sessionId)
@@ -2690,7 +2694,7 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
 // GET /api/agents/:id/scheduled-tasks - List scheduled tasks for an agent
 agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const status = c.req.query('status') // Optional: filter by status (e.g., 'pending')
 
 
@@ -2713,7 +2717,7 @@ agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
 // GET /api/agents/:id/webhook-triggers - List webhook triggers for an agent
 agents.get('/:id/webhook-triggers', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const status = c.req.query('status')
 
     const triggers = status === 'active'
@@ -2731,7 +2735,7 @@ agents.get('/:id/webhook-triggers', AgentRead(), async (c) => {
 // GET /api/agents/:id/chat-integrations - List chat integrations for an agent
 agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const status = c.req.query('status')
 
     const integrations = listChatIntegrations(slug, status || undefined)
@@ -2745,7 +2749,7 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
 // GET /api/agents/:id/secrets - List secrets for an agent
 agents.get('/:id/secrets', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
 
     // Only user-managed secrets — reserved runtime vars (e.g. CONNECTED_ACCOUNTS)
     // that the container writes into the same .env are system-managed and must
@@ -2768,7 +2772,7 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
 // POST /api/agents/:id/secrets - Create or update a secret
 agents.post('/:id/secrets', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const body = await c.req.json()
     const { key, value } = body
 
@@ -2812,7 +2816,7 @@ agents.post('/:id/secrets', AgentUser(), async (c) => {
 // PUT /api/agents/:id/secrets/:secretId - Update a secret
 agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const envVar = c.req.param('secretId')
     const body = await c.req.json()
     const { key, value } = body
@@ -2856,7 +2860,7 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
 // DELETE /api/agents/:id/secrets/:secretId - Delete a secret
 agents.delete('/:id/secrets/:secretId', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const envVar = c.req.param('secretId')
 
 
@@ -2877,7 +2881,7 @@ agents.delete('/:id/secrets/:secretId', AgentUser(), async (c) => {
 // GET /api/agents/:id/connected-accounts - List agent's connected accounts
 agents.get('/:id/connected-accounts', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
 
 
     const mappings = await db
@@ -2909,7 +2913,7 @@ agents.get('/:id/connected-accounts', AgentRead(), async (c) => {
 // POST /api/agents/:id/connected-accounts - Map account(s) to agent
 agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const body = await c.req.json()
     const { accountIds } = body as { accountIds: string[] }
 
@@ -2986,7 +2990,7 @@ agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
 // DELETE /api/agents/:id/connected-accounts/:accountId - Remove account mapping from agent
 agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const accountId = c.req.param('accountId')
 
     const filtered = await db
@@ -3015,7 +3019,7 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
 // GET /api/agents/:id/remote-mcps - List remote MCP servers assigned to this agent
 agents.get('/:id/remote-mcps', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const mappings = await db
       .select({ mcp: remoteMcpServers, mapping: agentRemoteMcps })
       .from(agentRemoteMcps)
@@ -3047,7 +3051,7 @@ agents.get('/:id/remote-mcps', AgentRead(), async (c) => {
 // POST /api/agents/:id/remote-mcps - Assign remote MCP server(s) to agent
 agents.post('/:id/remote-mcps', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const body = await c.req.json<{ mcpIds: string[] }>()
 
     if (!Array.isArray(body.mcpIds) || body.mcpIds.length === 0) {
@@ -3104,7 +3108,7 @@ agents.post('/:id/remote-mcps', AgentUser(), async (c) => {
 // DELETE /api/agents/:id/remote-mcps/:mcpId - Remove remote MCP from agent
 agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const mcpId = c.req.param('mcpId')
 
     const [mapping] = await db
@@ -3134,7 +3138,7 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
 // POST /api/agents/:id/sessions/:sessionId/provide-remote-mcp - Handle user approval of runtime MCP request
 agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const body = await c.req.json<{
       toolUseId: string
       remoteMcpId?: string
@@ -3272,7 +3276,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
 // GET /api/agents/:id/mcp-audit-log - Get MCP audit log for an agent
 agents.get('/:id/mcp-audit-log', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100)
     const offset = parseInt(c.req.query('offset') || '0', 10)
 
@@ -3304,7 +3308,7 @@ agents.get('/:id/mcp-audit-log', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/skills - Get skills for an agent (with status info)
 agents.get('/:id/skills', AgentRead(), async (c) => {
   try {
-    const id = c.req.param('id')
+    const id = getAgentId(c)
     const skills = await getAgentSkillsWithStatus(id, getConfiguredSkillsets())
     return c.json({ skills })
   } catch (error) {
@@ -3316,7 +3320,7 @@ agents.get('/:id/skills', AgentRead(), async (c) => {
 // GET /api/agents/:id/discoverable-skills - Get available skills from skillsets
 agents.get('/:id/discoverable-skills', AgentRead(), async (c) => {
   try {
-    const id = c.req.param('id')
+    const id = getAgentId(c)
     const skills = await getDiscoverableSkills(id, getConfiguredSkillsets())
     return c.json({ skills })
   } catch (error) {
@@ -3328,7 +3332,7 @@ agents.get('/:id/discoverable-skills', AgentRead(), async (c) => {
 // POST /api/agents/:id/skills/install - Install a skill from a skillset
 agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const { skillsetId, skillPath, skillName, skillVersion } = await c.req.json()
 
     if (!skillsetId || !skillPath) {
@@ -3360,7 +3364,7 @@ agents.post('/:id/skills/install', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/skills/:dir/update - Update an installed skill
 agents.post('/:id/skills/:dir/update', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const skillDir = c.req.param('dir')
     const result = await updateSkillFromSkillset(agentSlug, skillDir)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${skillDir}`, action: 'updated' })
@@ -3375,7 +3379,7 @@ agents.post('/:id/skills/:dir/update', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/skills/:dir/pr-info - Get info for PR dialog
 agents.get('/:id/skills/:dir/pr-info', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const skillDir = c.req.param('dir')
     const info = await getSkillPRInfo(agentSlug, skillDir)
     return c.json(info)
@@ -3389,7 +3393,7 @@ agents.get('/:id/skills/:dir/pr-info', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/skills/:dir/create-pr - Create PR for local changes
 agents.post('/:id/skills/:dir/create-pr', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const skillDir = c.req.param('dir')
     const { title, body, newVersion } = await c.req.json()
 
@@ -3410,7 +3414,7 @@ agents.post('/:id/skills/:dir/create-pr', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/skills/:dir/publish-info - Get info for publishing a local skill
 agents.get('/:id/skills/:dir/publish-info', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const skillDir = c.req.param('dir')
     const skillsetId = c.req.query('skillsetId')
 
@@ -3435,7 +3439,7 @@ agents.get('/:id/skills/:dir/publish-info', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/skills/:dir/publish - Publish a local skill to a skillset
 agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const skillDir = c.req.param('dir')
     const { skillsetId, title, body, newVersion } = await c.req.json()
 
@@ -3467,7 +3471,7 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/export-template - Export agent as ZIP download
 agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const zipBuffer = await exportAgentTemplate(slug)
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
@@ -3489,7 +3493,7 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/export-full - Export full agent as ZIP download (includes .env, data, etc.)
 agents.post('/:id/export-full', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const zipBuffer = await exportAgentFull(slug)
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
@@ -3511,7 +3515,7 @@ agents.post('/:id/export-full', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/template-status - Get skillset status
 agents.get('/:id/template-status', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const status = await getAgentTemplateStatus(slug, getConfiguredSkillsets())
     return c.json(status)
   } catch (error) {
@@ -3523,7 +3527,7 @@ agents.get('/:id/template-status', AgentRead(), async (c) => {
 // POST /api/agents/:id/template-update - Update from skillset
 agents.post('/:id/template-update', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const result = await updateAgentFromSkillset(slug)
     return c.json(result)
   } catch (error) {
@@ -3536,7 +3540,7 @@ agents.post('/:id/template-update', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/template-pr-info - Get AI-suggested PR info
 agents.get('/:id/template-pr-info', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const info = await getAgentPRInfo(slug)
     return c.json(info)
   } catch (error) {
@@ -3549,7 +3553,7 @@ agents.get('/:id/template-pr-info', AgentRead(), async (c) => {
 // POST /api/agents/:id/template-create-pr - Create PR for modifications
 agents.post('/:id/template-create-pr', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const { title, body, newVersion } = await c.req.json()
 
     if (!title || !body) {
@@ -3568,7 +3572,7 @@ agents.post('/:id/template-create-pr', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/template-publish-info - Get publish info
 agents.get('/:id/template-publish-info', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const skillsetId = c.req.query('skillsetId')
 
     if (!skillsetId) {
@@ -3592,7 +3596,7 @@ agents.get('/:id/template-publish-info', AgentRead(), async (c) => {
 // POST /api/agents/:id/template-publish - Publish to skillset
 agents.post('/:id/template-publish', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const { skillsetId, title, body, newVersion } = await c.req.json()
 
     if (!skillsetId || !title || !body) {
@@ -3618,7 +3622,7 @@ agents.post('/:id/template-refresh', AgentUser(), async (c) => {
   try {
     const skillsets = getConfiguredSkillsets()
     await refreshAgentTemplates(skillsets)
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const status = await getAgentTemplateStatus(slug, skillsets)
     return c.json(status)
   } catch (error) {
@@ -3631,7 +3635,7 @@ agents.post('/:id/template-refresh', AgentUser(), async (c) => {
 // POST /api/agents/:id/skills/refresh - Refresh skillset caches and reconcile skill status
 agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const skillsets = getConfiguredSkillsets()
     await refreshAgentSkills(agentSlug, skillsets)
     const skills = await getAgentSkillsWithStatus(agentSlug, skillsets)
@@ -3646,7 +3650,7 @@ agents.post('/:id/skills/refresh', AgentUser(), async (c) => {
 // POST /api/agents/:id/skills/:dir/export - Export a skill as ZIP download
 agents.post('/:id/skills/:dir/export', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const dir = c.req.param('dir')
     const zipBuffer = await exportSkill(agentSlug, dir)
 
@@ -3669,7 +3673,7 @@ agents.post('/:id/skills/:dir/export', AgentAdmin(), async (c) => {
 // POST /api/agents/:id/skills/import-zip - Import a skill from uploaded ZIP
 agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const formData = await c.req.formData()
     const file = formData.get('file') as File | null
 
@@ -3697,7 +3701,7 @@ agents.post('/:id/skills/import-zip', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/skills/:dir/files - List all files in a skill directory
 agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const dir = c.req.param('dir')
 
     if (!dir || dir.includes('/') || dir.includes('\\') || dir.includes('..')) {
@@ -3741,7 +3745,7 @@ agents.get('/:id/skills/:dir/files', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/skills/:dir/files/content - Read a skill file
 agents.get('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const dir = c.req.param('dir')
     const filePath = c.req.query('path')
 
@@ -3773,7 +3777,7 @@ agents.get('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
 // PUT /api/agents/:id/skills/:dir/files/content - Write a skill file
 agents.put('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const dir = c.req.param('dir')
     const { path: filePath, content } = await c.req.json()
 
@@ -3802,7 +3806,7 @@ agents.put('/:id/skills/:dir/files/content', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/audit-log - Get combined proxy + MCP audit log for agent
 agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
 
     const offset = parseInt(c.req.query('offset') ?? '0', 10)
     const limit = Math.min(parseInt(c.req.query('limit') ?? '20', 10), 100)
@@ -3948,7 +3952,7 @@ async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: 
 // <100MB slices.
 async function respondUploadFile(c: Context) {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     if (!agentSlug) return c.json({ error: 'Missing agent id' }, 400)
     const formData = await c.req.formData()
 
@@ -3972,7 +3976,7 @@ async function respondUploadFile(c: Context) {
     return c.json(result)
   } catch (error) {
     console.error('Failed to upload file:', error)
-    captureException(error, { tags: { component: 'agents', operation: 'upload-file' }, extra: { agentSlug: c.req.param('id') } })
+    captureException(error, { tags: { component: 'agents', operation: 'upload-file' }, extra: { agentSlug: getAgentId(c) } })
     return c.json({ error: 'Failed to upload file' }, 500)
   }
 }
@@ -4011,7 +4015,7 @@ async function handleFolderUpload(agentSlug: string, sourcePath: string) {
 // POST /api/agents/:id/upload-folder - Copy a local folder to the agent workspace (Electron only)
 agents.post('/:id/upload-folder', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const { sourcePath } = await c.req.json<{ sourcePath: string }>()
     if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
     const result = await handleFolderUpload(agentSlug, sourcePath)
@@ -4019,7 +4023,7 @@ agents.post('/:id/upload-folder', AgentUser(), async (c) => {
     return c.json(result)
   } catch (error) {
     console.error('Failed to upload folder:', error)
-    captureException(error, { tags: { component: 'agents', operation: 'upload-folder' }, extra: { agentSlug: c.req.param('id') } })
+    captureException(error, { tags: { component: 'agents', operation: 'upload-folder' }, extra: { agentSlug: getAgentId(c) } })
     return c.json({ error: 'Failed to upload folder' }, 500)
   }
 })
@@ -4027,7 +4031,7 @@ agents.post('/:id/upload-folder', AgentUser(), async (c) => {
 // POST /api/agents/:id/sessions/:sessionId/upload-folder - Copy a local folder to the agent workspace (Electron only)
 agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const { sourcePath } = await c.req.json<{ sourcePath: string }>()
     if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
     const result = await handleFolderUpload(agentSlug, sourcePath)
@@ -4035,7 +4039,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
     return c.json(result)
   } catch (error) {
     console.error('Failed to upload folder:', error)
-    captureException(error, { tags: { component: 'agents', operation: 'upload-folder' }, extra: { agentSlug: c.req.param('id') } })
+    captureException(error, { tags: { component: 'agents', operation: 'upload-folder' }, extra: { agentSlug: getAgentId(c) } })
     return c.json({ error: 'Failed to upload folder' }, 500)
   }
 })
@@ -4045,7 +4049,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
 // GET /api/agents/:id/mounts - List mounts with health status
 agents.get('/:id/mounts', AgentRead(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const mounts = getMountsWithHealth(agentSlug)
     return c.json(mounts)
   } catch (error) {
@@ -4057,7 +4061,7 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
 // POST /api/agents/:id/mounts - Add a mount
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const { hostPath, restart } = await c.req.json<{ hostPath: string; restart?: boolean }>()
     if (!hostPath) return c.json({ error: 'hostPath is required' }, 400)
 
@@ -4086,7 +4090,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
 // DELETE /api/agents/:id/mounts/:mountId - Remove a mount
 agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const mountId = c.req.param('mountId')
     const restart = c.req.query('restart') === 'true'
 
@@ -4110,7 +4114,7 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
 // GET /api/agents/:id/files/* - Download a file from the agent workspace
 agents.get('/:id/files/*', AgentRead(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     // Extract file path from URL - wildcard param can be unreliable in sub-routers
     const urlPath = new URL(c.req.url).pathname
     const filesPrefix = `/api/agents/${agentSlug}/files/`
@@ -4185,7 +4189,7 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
 // POST /api/agents/:id/sessions/:sessionId/provide-file - Provide or decline a file request
 agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { toolUseId, filePath, decline, declineReason } = body
 
@@ -4260,7 +4264,7 @@ agents.post('/:id/sessions/:sessionId/provide-file', AgentUser(), async (c) => {
 // GET /api/agents/:id/artifacts - List dashboards for an agent
 agents.get('/:id/artifacts', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
 
 
     // Always read name/description from host filesystem (source of truth for metadata)
@@ -4308,7 +4312,7 @@ agents.get('/:id/artifacts', AgentRead(), async (c) => {
 // DELETE /api/agents/:id/artifacts/:artifactSlug - Delete a dashboard
 agents.delete('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const artifactSlug = c.req.param('artifactSlug')
 
     // Stop the dashboard process in the container (if running), then delete files
@@ -4333,7 +4337,7 @@ agents.delete('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
 // PATCH /api/agents/:id/artifacts/:artifactSlug - Rename a dashboard
 agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const artifactSlug = c.req.param('artifactSlug')
     const { name } = await c.req.json()
 
@@ -4354,7 +4358,7 @@ agents.patch('/:id/artifacts/:artifactSlug', AgentAdmin(), async (c) => {
 // regardless of whether the container is running. Must be registered before
 // the catch-all artifact proxy below.
 agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c) => {
-  const agentSlug = c.req.param('id')
+  const agentSlug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
 
   const workspaceDir = getAgentWorkspaceDir(agentSlug)
@@ -4390,7 +4394,7 @@ agents.get('/:id/artifacts/:artifactSlug/screenshot.png', AgentRead(), async (c)
 // GET /api/agents/:id/artifacts/:artifactSlug/view - Standalone dashboard wrapper
 // Serves a self-contained HTML page that handles agent lifecycle (auto-start, wait, then load dashboard)
 agents.get('/:id/artifacts/:artifactSlug/view', AgentRead(), async (c) => {
-  const agentSlug = c.req.param('id')
+  const agentSlug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
   const basePath = `/api/agents/${agentSlug}`
 
@@ -4504,7 +4508,7 @@ const skipProxyRequestHeaders = new Set([
 ])
 
 async function proxyArtifactRequest(c: any) {
-  const agentSlug = c.req.param('id')
+  const agentSlug = getAgentId(c)
   const artifactSlug = c.req.param('artifactSlug')
 
   const client = containerManager.getClient(agentSlug)
@@ -4587,7 +4591,7 @@ agents.all('/:id/artifacts/:artifactSlug', AgentRead(), async (c) => {
 // GET /api/agents/:id/browser/status - Check browser state
 agents.get('/:id/browser/status', AgentRead(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
 
 
     const client = containerManager.getClient(slug)
@@ -4609,7 +4613,7 @@ agents.get('/:id/browser/status', AgentRead(), async (c) => {
 // POST /api/agents/:id/browser/:action - Proxy browser tool actions
 agents.post('/:id/browser/:action', AgentUser(), async (c) => {
   try {
-    const slug = c.req.param('id')
+    const slug = getAgentId(c)
     const action = c.req.param('action')
 
 
@@ -4669,14 +4673,14 @@ setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
 
 // GET /api/agents/:id/proxy-reviews - List pending reviews for this agent
 agents.get('/:id/proxy-reviews', AgentRead(), async (c) => {
-  const slug = c.req.param('id')
+  const slug = getAgentId(c)
   const reviews = reviewManager.getPendingReviewsForAgent(slug)
   return c.json({ reviews })
 })
 
 // POST /api/agents/:id/proxy-review/:reviewId - Submit a review decision
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
-  const slug = c.req.param('id')
+  const slug = getAgentId(c)
   const reviewId = c.req.param('reviewId')
   const body = await c.req.json<{ decision: 'allow' | 'deny' }>()
 
@@ -4698,7 +4702,7 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
 // POST /api/agents/:id/proxy-review/:reviewId/always - Submit decision and save as policy
 agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   const reviewId = c.req.param('reviewId')
-  const slug = c.req.param('id')
+  const slug = getAgentId(c)
   const body = await c.req.json<{
     decision: 'allow' | 'deny'
     scope: string
@@ -4833,7 +4837,7 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 
 // GET /api/agents/:id/x-agent-policies - List policies where this agent is the caller
 agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
-  const slug = c.req.param('id')
+  const slug = getAgentId(c)
   const rows = listPoliciesForCaller(slug)
   // Enrich with target agent display name (best-effort; null target means "list" op)
   const targetSlugs = Array.from(
@@ -4875,7 +4879,7 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
 
 // PUT /api/agents/:id/x-agent-policies - Replace all policies for this caller (batch)
 agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
-  const slug = c.req.param('id')
+  const slug = getAgentId(c)
   // AgentAdmin checks role but not existence (and is a no-op in non-auth mode);
   // assert here so a typo'd slug doesn't write phantom rows that nothing references.
   const callerAgent = await getAgent(slug)
@@ -4900,7 +4904,7 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
 // GET /api/agents/:id/bookmarks - Read bookmarks from agent workspace
 agents.get('/:id/bookmarks', AgentRead(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
     const content = await fs.promises.readFile(bookmarksPath, 'utf-8').catch(() => null)
     if (!content) {
@@ -4919,7 +4923,7 @@ agents.get('/:id/bookmarks', AgentRead(), async (c) => {
 // PUT /api/agents/:id/bookmarks - Write bookmarks to agent workspace
 agents.put('/:id/bookmarks', AgentAdmin(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const bookmarks = await c.req.json()
     if (!Array.isArray(bookmarks)) {
       return c.json({ error: 'Bookmarks must be an array' }, 400)

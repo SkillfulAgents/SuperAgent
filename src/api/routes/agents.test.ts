@@ -53,6 +53,16 @@ vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  // Mirrors the real ResolveAgent: 404 on a missing agent (via the agentExists
+  // mock) and stash the resolved id, which getAgentId reads back. For test slugs
+  // (already canonical), resolution is the identity.
+  ResolveAgent: () => async (c: any, next: () => Promise<void>) => {
+    const slug = c.req.param('id')
+    if (!(await mockAgentExists(slug))) return c.json({ error: 'Agent not found' }, 404)
+    c.set('agentId', slug)
+    return next()
+  },
+  getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
 }))
 
 // Container manager
@@ -348,6 +358,11 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 
 const mockGetAgentWorkspaceDir = vi.fn((_slug?: string) => '/mock/workspace')
 vi.mock('@shared/lib/utils/file-storage', () => ({
+  // ResolveAgent() resolves the :id param via resolveAgentId. Delegate to the
+  // existing agentExists mock so the legacy 404-on-missing behavior is preserved:
+  // returns the slug verbatim when it "exists", else null.
+  resolveAgentId: async (slug: string) => ((await mockAgentExists(slug)) ? slug : null),
+  displaySlug: (_name: string, id: string) => id,
   getSessionJsonlPath: vi.fn(),
   readFileOrNull: vi.fn(),
   writeFile: vi.fn(),
@@ -2410,6 +2425,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   const baseAgent = {
     slug: 'agent-1',
+    displaySlug: 'agent-one-agent-1',
     name: 'Agent One',
     description: 'Test agent',
     createdAt: new Date('2026-01-01'),

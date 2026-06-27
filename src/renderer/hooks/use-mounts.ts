@@ -38,8 +38,11 @@ export function useAddMount() {
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add mount'))
       return res.json() as Promise<AgentMount>
     },
-    onSuccess: (_, { agentSlug }) => {
-      queryClient.invalidateQueries({ queryKey: ['mounts', agentSlug] })
+    onSuccess: () => {
+      // Bare prefix (not keyed on agentSlug): the agent-home Volumes card keys on the
+      // canonical id, but this mutation can fire from the session composer's
+      // display-slug route, so a targeted key would miss it.
+      queryClient.invalidateQueries({ queryKey: ['mounts'] })
     },
   })
 }
@@ -53,8 +56,9 @@ export function useRemoveMount() {
       const res = await apiFetch(url, { method: 'DELETE' })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to remove mount'))
     },
-    onSuccess: (_, { agentSlug }) => {
-      queryClient.invalidateQueries({ queryKey: ['mounts', agentSlug] })
+    onSuccess: () => {
+      // Bare prefix — see useAddMount: reaches the id-keyed home Volumes card too.
+      queryClient.invalidateQueries({ queryKey: ['mounts'] })
     },
   })
 }

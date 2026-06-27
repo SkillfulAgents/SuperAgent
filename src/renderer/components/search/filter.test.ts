@@ -10,6 +10,7 @@ function agent(
 ): ApiAgent {
   return {
     slug,
+    displaySlug: slug,
     name,
     createdAt: new Date(0),
     status: 'stopped',

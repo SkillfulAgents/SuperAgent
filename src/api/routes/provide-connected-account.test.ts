@@ -11,6 +11,8 @@ vi.mock('../middleware/auth', () => ({
   AgentRead: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentUser: () => async (_c: unknown, next: () => Promise<void>) => next(),
   AgentAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
+  ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
+  getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
 }))
 
 // Container manager

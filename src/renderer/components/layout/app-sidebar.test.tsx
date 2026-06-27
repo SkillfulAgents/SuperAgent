@@ -31,6 +31,14 @@ const mockUseAgents = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  // Resolve the route param to the canonical id the way the real hook does,
+  // using the mocked params + agents so active-state tests behave faithfully.
+  useRouteAgentId: () => {
+    const slug = mockRouteParams.slug
+    if (!slug) return undefined
+    const agents = mockUseAgents()?.data as Array<{ slug: string; displaySlug: string }> | undefined
+    return agents?.find((a) => a.slug === slug || a.displaySlug === slug)?.slug ?? slug
+  },
 }))
 
 const mockCreateUntitledAgent = vi.fn()
@@ -278,6 +286,7 @@ vi.mock('@dnd-kit/modifiers', () => ({
 function makeAgent(overrides: Record<string, any> = {}) {
   return {
     slug: 'test-agent',
+    displaySlug: 'test-agent',
     name: 'Test Agent',
     status: 'running',
     containerPort: 3000,

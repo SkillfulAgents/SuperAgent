@@ -179,8 +179,11 @@ export function useAssignAccountsToAgent() {
         throw new Error(error.error || 'Failed to assign accounts to agent')
       }
     },
-    onSuccess: (_, { agentSlug, accountIds }) => {
-      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
+    onSuccess: (_, { accountIds }) => {
+      // Bare prefix (not keyed on agentSlug): the agent-home Connections card keys
+      // on the canonical id, but this mutation fires from the display-slug route, so
+      // a targeted key would miss it. Matches the delete/rename mutations above.
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
       for (const id of accountIds) {
         queryClient.invalidateQueries({ queryKey: ['account-agents', id] })
@@ -203,8 +206,9 @@ export function useRemoveAgentConnectedAccount() {
       })
       if (!res.ok) throw new Error('Failed to remove account from agent')
     },
-    onSuccess: (_, { agentSlug, accountId }) => {
-      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts', agentSlug] })
+    onSuccess: (_, { accountId }) => {
+      // Bare prefix — see useAssignAccountsToAgent: reaches the id-keyed home card too.
+      queryClient.invalidateQueries({ queryKey: ['agent-connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['connected-accounts'] })
       queryClient.invalidateQueries({ queryKey: ['account-agents', accountId] })
     },

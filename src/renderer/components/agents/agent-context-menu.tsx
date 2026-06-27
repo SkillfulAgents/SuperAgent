@@ -18,8 +18,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useNavigate, useParams } from '@tanstack/react-router'
+import { useDeleteAgent, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from './agent-settings-dialog'
 import { apiFetch } from '@renderer/lib/api'
@@ -45,10 +45,10 @@ export function AgentContextMenu({
   const [isLeaving, setIsLeaving] = useState(false)
   const deleteAgent = useDeleteAgent()
   const navigate = useNavigate()
-  // strict:false → undefined when the menu is opened off the agent route (e.g.
-  // from the sidebar list), so the up-nav only fires when we're actually viewing
-  // the agent being deleted/left.
-  const params = useParams({ strict: false }) as { slug?: string }
+  // undefined when the menu is opened off the agent route (e.g. from the sidebar
+  // list), so the up-nav only fires when we're actually viewing the agent being
+  // deleted/left. Resolves the URL display slug to the canonical id to compare.
+  const routeAgentId = useRouteAgentId()
   const { canAdminAgent, isAuthMode } = useUser()
   const queryClient = useQueryClient()
   const isOwner = canAdminAgent(agent.slug)
@@ -75,7 +75,7 @@ export function AgentContextMenu({
     try {
       await deleteAgent.mutateAsync(agent.slug)
       setShowDeleteDialog(false)
-      if (params.slug === agent.slug) {
+      if (routeAgentId === agent.slug) {
         void navigate({ to: '/' })
       }
     } catch (error) {
@@ -96,7 +96,7 @@ export function AgentContextMenu({
         return
       }
       setShowLeaveDialog(false)
-      if (params.slug === agent.slug) {
+      if (routeAgentId === agent.slug) {
         void navigate({ to: '/' })
       }
       queryClient.invalidateQueries({ queryKey: ['agents'] })

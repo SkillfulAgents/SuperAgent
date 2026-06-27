@@ -38,7 +38,7 @@ import {
   RuntimePullingSidebarBanner,
   SidebarBannerStack,
 } from '@renderer/components/runtime/runtime-status-banners'
-import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings } from '@renderer/hooks/use-settings'
@@ -128,8 +128,9 @@ function SessionSubItem({
   // Active state is route-derived (URL is authoritative, read from useParams) so
   // the highlight + the stream subscription are correct on a cold reload, with no
   // in-memory selection state to wait on.
-  const { slug: routeSlug, sessionId: routeSessionId } = useParams({ strict: false }) as { slug?: string; sessionId?: string }
-  const isSelected = routeSlug === agentSlug && routeSessionId === session.id
+  const { sessionId: routeSessionId } = useParams({ strict: false }) as { sessionId?: string }
+  const routeAgentId = useRouteAgentId()
+  const isSelected = routeAgentId === agentSlug && routeSessionId === session.id
   const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
@@ -179,9 +180,10 @@ function ChatIntegrationSubItem({
 }) {
   const { data: sessions } = useChatIntegrationSessions(integration.id)
   // Route-derived active state (URL-authoritative; correct on cold reload).
-  const { slug: routeSlug, integrationId: routeIntegrationId } = useParams({ strict: false }) as { slug?: string; integrationId?: string }
+  const { integrationId: routeIntegrationId } = useParams({ strict: false }) as { integrationId?: string }
+  const routeAgentId = useRouteAgentId()
   const chatSearch = useRouteSearch({ strict: false }) as { session?: unknown }
-  const viewingThisIntegration = routeSlug === agentSlug && routeIntegrationId === integration.id
+  const viewingThisIntegration = routeAgentId === agentSlug && routeIntegrationId === integration.id
   const selectedChatSessionId = viewingThisIntegration && typeof chatSearch.session === 'string' ? chatSearch.session : null
   const isSelected = viewingThisIntegration && !selectedChatSessionId
   const hasSelectedSession = viewingThisIntegration && selectedChatSessionId != null
@@ -330,8 +332,9 @@ function DashboardSubItem({
   artifact: ArtifactInfo
   agentSlug: string
 }) {
-  const { slug: routeSlug, dashSlug: routeDashSlug } = useParams({ strict: false }) as { slug?: string; dashSlug?: string }
-  const isSelected = routeSlug === agentSlug && routeDashSlug === artifact.slug
+  const { dashSlug: routeDashSlug } = useParams({ strict: false }) as { dashSlug?: string }
+  const routeAgentId = useRouteAgentId()
+  const isSelected = routeAgentId === agentSlug && routeDashSlug === artifact.slug
   const [isRenaming, setIsRenaming] = useState(false)
 
   const handleDoubleClick = () => {
@@ -502,8 +505,8 @@ export const AgentMenuItem = React.forwardRef<
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
   // no slug). Drives the highlight AND the submenu auto-expand below.
-  const { slug: routeSlug } = useParams({ strict: false }) as { slug?: string }
-  const isSelected = agent.slug === routeSlug
+  const routeAgentId = useRouteAgentId()
+  const isSelected = agent.slug === routeAgentId
   // Auto-expand on selection only if the agent has content to show. Brand-new
   // agents (no sessions / dashboards / chat integrations yet) start collapsed
   // — the empty submenu would just be visual noise.
@@ -597,7 +600,7 @@ export const AgentMenuItem = React.forwardRef<
               className="justify-between pl-7"
               data-testid={`agent-item-${agent.slug}`}
             >
-              <AppLink to="/agents/$slug" params={{ slug: agent.slug }}>
+              <AppLink to="/agents/$slug" params={{ slug: agent.displaySlug }}>
                 <span className="flex items-center gap-1.5 min-w-0">
                   <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
                   {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
