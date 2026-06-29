@@ -128,6 +128,10 @@ export class TelegramConnector extends ChatClientConnector {
   private pendingQuestions: Map<string, {
     totalQuestions: number
     answers: Record<string, string> // { questionText: selectedAnswer }
+    chatId: string
+    // Single-select sub-cards of this multi-question card (multiSelect sub-cards live in
+    // pendingMultiSelect); tracked so dismissOpenCards can strip every keyboard on cancel.
+    cards: Array<{ messageId: string; cbIds: string[] }>
   }> = new Map()
 
   // Track open multiSelect questions: the redraw state + the accumulating checked set,
@@ -512,6 +516,8 @@ export class TelegramConnector extends ChatClientConnector {
           this.pendingQuestions.set(event.toolUseId, {
             totalQuestions: event.questions.length,
             answers: {},
+            chatId,
+            cards: [],
           })
         }
 
@@ -569,6 +575,10 @@ export class TelegramConnector extends ChatClientConnector {
               toolUseId: event.toolUseId, question: q.question, questionText: text,
               messageId: lastMessageId, multiSelect: false, cbIds,
             })
+          } else if (hasOptions) {
+            // Multi-question single-select sub-card: track its message + callbacks so a cancel can
+            // strip the keyboard (multiSelect sub-cards are tracked in pendingMultiSelect instead).
+            this.pendingQuestions.get(event.toolUseId)?.cards.push({ messageId: lastMessageId, cbIds })
           }
         }
 
@@ -611,19 +621,29 @@ export class TelegramConnector extends ChatClientConnector {
     if (val.kind === 'multiToggle') { await this.handleMultiSelectToggle(ctx, mapping.toolUseId, val.question, val.label ?? ''); return }
     if (val.kind === 'multiDone') { await this.handleMultiSelectDone(ctx, mapping.toolUseId, val.question); return }
 
-    // Single-select: confirm the choice, strip the keyboard, and emit the answer.
-    await ctx.answerCallbackQuery()
-    const originalText = ctx.callbackQuery?.message?.text || ''
+    // Single-select: confirm the choice, strip the keyboard, and emit the answer. Claim the card
+    // synchronously (before the first await) so a racing typed "Other" answer can't also resolve it.
+    // Delete the WHOLE card's callbacks, not just the tapped one, so a fast tap on a sibling option
+    // can't double-resolve (matching answerOpenQuestionWithText / handleMultiSelectDone).
     const chatId = String(ctx.chat?.id ?? '')
     const messageId = String(ctx.callbackQuery?.message?.message_id ?? '')
+    const card = this.openQuestionCard.get(chatId)
+    const cardCbIds =
+      card && card.toolUseId === mapping.toolUseId
+        ? card.cbIds
+        : this.pendingQuestions.get(mapping.toolUseId)?.cards.find((c) => c.messageId === messageId)?.cbIds
+    for (const cb of cardCbIds ?? [data]) this.callbackDataMap.delete(cb)
+    this.callbackDataMap.delete(data)
+    this.openQuestionCard.delete(chatId)
+
+    await ctx.answerCallbackQuery()
+    const originalText = ctx.callbackQuery?.message?.text || ''
     const confirmation = `${escapeMarkdown(originalText)}\n\n✅ **${escapeMarkdown(val.answer ?? '')}**`
     try {
       await this.editRichOrHtml(chatId, messageId, confirmation)
     } catch {
       try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
     }
-    this.callbackDataMap.delete(data)
-    this.openQuestionCard.delete(chatId)
     this.emitAnswer(mapping.toolUseId, val.question, val.answer ?? '', chatId)
   }
 
@@ -657,6 +677,14 @@ export class TelegramConnector extends ChatClientConnector {
       return
     }
     const answer = [...state.checked].join(', ')
+
+    // Claim the card synchronously (before any await) so a racing typed "Other" answer or a
+    // second Done tap can't also resolve it.
+    for (const o of state.options) this.callbackDataMap.delete(o.cbId)
+    this.callbackDataMap.delete(state.doneCbId)
+    this.pendingMultiSelect.delete(this.multiSelectKey(toolUseId, question))
+    this.openQuestionCard.delete(state.chatId)
+
     await ctx.answerCallbackQuery()
 
     // Build the confirmation from the stored question text — rich messages carry no `.text`.
@@ -666,10 +694,6 @@ export class TelegramConnector extends ChatClientConnector {
     } catch { /* ignore */ }
     try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
 
-    for (const o of state.options) this.callbackDataMap.delete(o.cbId)
-    this.callbackDataMap.delete(state.doneCbId)
-    this.pendingMultiSelect.delete(this.multiSelectKey(toolUseId, question))
-    this.openQuestionCard.delete(state.chatId)
     this.emitAnswer(toolUseId, question, answer, state.chatId)
   }
 
@@ -699,6 +723,46 @@ export class TelegramConnector extends ChatClientConnector {
 
     this.emitAnswer(card.toolUseId, card.question, text, chatId)
     return true
+  }
+
+  /**
+   * Strip and clear every open question card for this chat: remove its inline keyboard and forget
+   * its callbacks, so a card abandoned by a cancelling message doesn't keep showing live buttons
+   * (a later tap would otherwise resolve an already-rejected request). Best-effort: edit failures
+   * are swallowed (the card may already have been edited/answered).
+   */
+  async dismissOpenCards(chatId: string): Promise<void> {
+    const messageIds = new Set<string>()
+
+    const single = this.openQuestionCard.get(chatId)
+    if (single) {
+      messageIds.add(single.messageId)
+      for (const cb of single.cbIds) this.callbackDataMap.delete(cb)
+      this.openQuestionCard.delete(chatId)
+    }
+
+    for (const [key, state] of this.pendingMultiSelect) {
+      if (state.chatId !== chatId) continue
+      messageIds.add(state.messageId)
+      for (const o of state.options) this.callbackDataMap.delete(o.cbId)
+      this.callbackDataMap.delete(state.doneCbId)
+      this.pendingMultiSelect.delete(key)
+    }
+
+    for (const [toolUseId, pending] of this.pendingQuestions) {
+      if (pending.chatId !== chatId) continue
+      for (const card of pending.cards) {
+        messageIds.add(card.messageId)
+        for (const cb of card.cbIds) this.callbackDataMap.delete(cb)
+      }
+      this.pendingQuestions.delete(toolUseId)
+    }
+
+    for (const messageId of messageIds) {
+      try {
+        await this.bot?.api.editMessageReplyMarkup(Number(chatId), Number(messageId), { reply_markup: { inline_keyboard: [] } })
+      } catch { /* best-effort */ }
+    }
   }
 
   /** Emit one question's answer, accumulating across a multi-question card before resolving. */

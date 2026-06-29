@@ -109,6 +109,14 @@ export abstract class ChatClientConnector {
     return false
   }
 
+  /**
+   * Dismiss every open request card for this chat: strip its inline keyboard and forget its
+   * callbacks, so a card abandoned by a cancelling message doesn't keep showing live buttons.
+   * Called on the cancel path when a new message starts a fresh turn. Default no-op for
+   * connectors without interactive cards.
+   */
+  async dismissOpenCards(_chatId: string): Promise<void> {}
+
   /** Whether the connection is healthy right now. */
   abstract isConnected(): boolean
 

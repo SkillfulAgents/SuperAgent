@@ -88,6 +88,7 @@ function attachFakeBot(connector: TelegramConnector): { sent: any[] } {
       },
       sendMessage: vi.fn(async () => ({ message_id: 1 })),
       editMessageText: vi.fn(async () => ({})),
+      editMessageReplyMarkup: vi.fn(async () => ({})),
     },
   }
   return { sent }
@@ -465,5 +466,149 @@ describe('TelegramConnector — typed message answers an open question (Other)',
     await (connector as any).handleCallbackQuery(makeCbCtx(kb[0][0].callback_data)) // tap Postgres
     const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-q', 'too late')
     expect(ok).toBe(false) // card already resolved by the tap
+  })
+
+  it('a single-select tap claims the card synchronously so a racing typed answer is rejected', async () => {
+    await (connector as any).sendUserRequestCard('123', singleQuestionEvent('tu-q'))
+    const kb = sent[0].reply_markup.inline_keyboard
+    // Kick off the tap WITHOUT awaiting, then race a typed "Other" answer during its awaits.
+    const tap = (connector as any).handleCallbackQuery(makeCbCtx(kb[0][0].callback_data)) // Postgres
+    const racingText = await (connector as any).answerOpenQuestionWithText('123', 'tu-q', 'racing other')
+    await tap
+    expect(racingText).toBe(false) // the tap already owns the resolution
+    expect(responses).toHaveLength(1) // exactly one resolution, not two
+    expect(responses[0].response.answer).toBe('Postgres')
+  })
+
+  it('a fast tap on two different single-select options resolves only once (siblings invalidated)', async () => {
+    await (connector as any).sendUserRequestCard('123', singleQuestionEvent('tu-q')) // Postgres / MySQL
+    const kb = sent[0].reply_markup.inline_keyboard
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[0][0].callback_data)) // Postgres
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[1][0].callback_data)) // MySQL (stale sibling)
+    expect(responses).toHaveLength(1)
+    expect(responses[0].response.answer).toBe('Postgres')
+  })
+
+  it('a stale sibling tap on the last sub-question of a multi-question card does not double-emit', async () => {
+    await (connector as any).sendUserRequestCard('123', {
+      type: 'user_question_request',
+      toolUseId: 'tu-mq',
+      questions: [
+        { question: 'Q1', options: [{ label: 'A' }, { label: 'B' }] },
+        { question: 'Q2', options: [{ label: 'C' }, { label: 'D' }] },
+      ],
+    })
+    const q1 = sent[0].reply_markup.inline_keyboard
+    const q2 = sent[1].reply_markup.inline_keyboard
+    await (connector as any).handleCallbackQuery(makeCbCtx(q1[0][0].callback_data, { messageId: 1001 })) // Q1 = A
+    await (connector as any).handleCallbackQuery(makeCbCtx(q2[0][0].callback_data, { messageId: 1002 })) // Q2 = C → completes
+    await (connector as any).handleCallbackQuery(makeCbCtx(q2[1][0].callback_data, { messageId: 1002 })) // Q2 = D (stale)
+    expect(responses).toHaveLength(1) // only the combined _all emit
+  })
+})
+
+describe('TelegramConnector — dismissOpenCards (cancel strips abandoned cards)', () => {
+  let connector: TelegramConnector
+  let sent: any[]
+  let responses: CapturedResponse[]
+
+  beforeEach(() => {
+    connector = makeConnector()
+    responses = collectInteractiveResponses(connector)
+    sent = attachFakeBot(connector).sent
+  })
+
+  function singleQuestionEvent(toolUseId = 'tu-q'): any {
+    return {
+      type: 'user_question_request',
+      toolUseId,
+      questions: [{ question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'MySQL' }] }],
+    }
+  }
+  function multiSelectEvent(): any {
+    return {
+      type: 'user_question_request',
+      toolUseId: 'tu-multi',
+      questions: [{ question: 'Pick your stack', multiSelect: true, options: [{ label: 'Redis' }, { label: 'S3' }] }],
+    }
+  }
+
+  it('strips a single-question card and clears it so a later tap/text cannot resolve', async () => {
+    await (connector as any).sendUserRequestCard('123', singleQuestionEvent('tu-q'))
+    const kb = sent[0].reply_markup.inline_keyboard
+    await (connector as any).dismissOpenCards('123')
+    expect((connector as any).bot.api.editMessageReplyMarkup).toHaveBeenCalledWith(123, 1001, { reply_markup: { inline_keyboard: [] } })
+    expect(await (connector as any).answerOpenQuestionWithText('123', 'tu-q', 'late')).toBe(false)
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[0][0].callback_data)) // stale tap
+    expect(responses).toHaveLength(0)
+  })
+
+  it('strips a multiSelect single-question card and clears its toggle state', async () => {
+    await (connector as any).sendUserRequestCard('123', multiSelectEvent())
+    const kb = sent[0].reply_markup.inline_keyboard // [Redis, S3, Done]
+    await (connector as any).dismissOpenCards('123')
+    expect((connector as any).bot.api.editMessageReplyMarkup).toHaveBeenCalled()
+    // Toggle state + callbacks are gone: a stale toggle or Done tap resolves nothing.
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[0][0].callback_data)) // stale Redis toggle
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[2][0].callback_data)) // stale Done
+    expect(responses).toHaveLength(0)
+    expect(await (connector as any).answerOpenQuestionWithText('123', 'tu-multi', 'late')).toBe(false)
+  })
+
+  it('strips every sub-card of a multi-question card and invalidates their callbacks', async () => {
+    await (connector as any).sendUserRequestCard('123', {
+      type: 'user_question_request',
+      toolUseId: 'tu-mq',
+      questions: [
+        { question: 'Q1', options: [{ label: 'A' }, { label: 'B' }] },
+        { question: 'Q2', options: [{ label: 'C' }, { label: 'D' }] },
+      ],
+    })
+    const q1 = sent[0].reply_markup.inline_keyboard
+    await (connector as any).dismissOpenCards('123')
+    const strippedIds = (connector as any).bot.api.editMessageReplyMarkup.mock.calls.map((c: any) => c[1])
+    expect(strippedIds).toContain(1001)
+    expect(strippedIds).toContain(1002)
+    // Callbacks invalidated: a stale tap on a sub-card option resolves nothing (no deadlocked re-answer).
+    await (connector as any).handleCallbackQuery(makeCbCtx(q1[0][0].callback_data, { messageId: 1001 }))
+    expect(responses).toHaveLength(0)
+  })
+
+  it('is a no-op when no card is open for the chat', async () => {
+    await (connector as any).dismissOpenCards('123')
+    expect((connector as any).bot.api.editMessageReplyMarkup).not.toHaveBeenCalled()
+    expect(responses).toHaveLength(0)
+  })
+
+  it('only dismisses cards for the given chat, leaving other chats intact', async () => {
+    await (connector as any).sendUserRequestCard('123', singleQuestionEvent('tu-a'))
+    await (connector as any).sendUserRequestCard('999', singleQuestionEvent('tu-b'))
+    await (connector as any).dismissOpenCards('123')
+    expect(await (connector as any).answerOpenQuestionWithText('999', 'tu-b', 'ok')).toBe(true)
+  })
+})
+
+describe('TelegramConnector — secret/file requests route to the desktop-only fallback', () => {
+  let connector: TelegramConnector
+  let sent: any[]
+
+  beforeEach(() => {
+    connector = makeConnector()
+    sent = attachFakeBot(connector).sent
+  })
+
+  it('renders a secret_request as the desktop-only fallback, not a "reply with the secret" prompt', async () => {
+    await (connector as any).sendUserRequestCard('123', { type: 'secret_request', toolUseId: 'tu-s', secretName: 'OPENAI_API_KEY' })
+    const md = sent[0].rich_message.markdown as string
+    expect(md).toContain("isn't safe to provide in chat")
+    expect(md).not.toMatch(/reply with the secret value/i)
+    expect(sent[0].reply_markup).toBeUndefined() // no prompt keyboard — the secret can't be typed in
+  })
+
+  it('renders a file_request as the desktop-only fallback', async () => {
+    await (connector as any).sendUserRequestCard('123', { type: 'file_request', toolUseId: 'tu-f', description: 'a CSV export' })
+    const md = sent[0].rich_message.markdown as string
+    expect(md).toContain("isn't supported in chat")
+    expect(md).not.toMatch(/please (upload|send) the file/i)
   })
 })

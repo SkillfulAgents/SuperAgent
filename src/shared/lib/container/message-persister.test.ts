@@ -2492,6 +2492,29 @@ describe('MessagePersister', () => {
 
         expect(mockContainerClientFetch).not.toHaveBeenCalled()
       })
+
+      it('swallows reject/interrupt failures so a best-effort cancel never throws', async () => {
+        messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+        simulateToolUse('mcp__user-input__request_browser_input', 'bi-err', {
+          message: 'Please log in',
+          requirements: ['Enter credentials'],
+        })
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        mockContainerClientFetch.mockClear()
+        mockContainerClientFetch.mockRejectedValue(new Error('container unreachable'))
+        try {
+          // Must resolve, not reject — a failed cancel must never block the incoming message.
+          await expect(messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)).resolves.toBeUndefined()
+          // Both container calls were attempted (and rejected): reject + the subagent interrupt.
+          expect(rejectCallFor('bi-err')).toBeDefined()
+          expect(interruptCall()).toBeDefined()
+          // The interrupt fetch rejected, but markSessionInterrupted runs after the swallowed
+          // interrupt, so the subagent path still clears the awaiting state.
+          expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        } finally {
+          mockContainerClientFetch.mockImplementation(() => Promise.resolve({ ok: true }))
+        }
+      })
     })
   })
 

@@ -417,7 +417,11 @@ class MessagePersister {
   async cancelAwaitingInput(sessionId: string, agentSlug: string): Promise<void> {
     if (!this.isSessionAwaitingInput(sessionId)) return
 
-    // Requests in pendingInputRequests that belong to a running subagent (vs the main loop).
+    // Requests in pendingInputRequests that block a running subagent (vs the main loop).
+    // INVARIANT: any input type that blocks a subagent while the main loop is parked on the Task
+    // tool MUST be listed here, so the cancel path interrupts to unwind it. A type left out
+    // defaults to top-level (reject only), which deadlocks; a type wrongly added just triggers a
+    // harmless extra interrupt. computer_use is swept separately below (its own pending map).
     const SUBAGENT_INPUT_TYPES = new Set(['browser_input_request', 'script_run_request'])
     const topLevelReason =
       'The user sent a new message instead of answering. Do not respond to this — their next message contains how to proceed.'
@@ -2572,8 +2576,10 @@ ${continuation}`
   }
 
   /**
-   * Interrupt the running query in the container (abort + resume), mirroring the
-   * `/sessions/:id/interrupt` endpoint the explicit interrupt route uses.
+   * Interrupt the running query in the container (abort + resume) by POSTing the same
+   * `/sessions/:id/interrupt` endpoint the explicit interrupt route hits. Uses `client.fetch`
+   * (not the `client.interruptSession` helper that route calls) to stay on the proxy-routed path
+   * the rest of MessagePersister's container calls use, e.g. `rejectContainerInput`.
    */
   private async interruptContainerSession(agentSlug: string, sessionId: string): Promise<void> {
     const cm = await getContainerManager()
