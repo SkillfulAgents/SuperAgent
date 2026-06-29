@@ -7,6 +7,9 @@ import {
   validateScheduleExpression,
   formatScheduleDescription,
   ianaToOffsetMinutes,
+  getMinCronIntervalMs,
+  getFrequencyWarning,
+  MIN_RECURRING_INTERVAL_MS,
 } from './schedule-parser'
 
 // ============================================================================
@@ -217,6 +220,84 @@ describe('validateCronExpression', () => {
       expect(result.valid).toBe(false)
       expect(result.error).toBeDefined()
     }
+  })
+})
+
+// ============================================================================
+// getMinCronIntervalMs Tests
+// ============================================================================
+
+describe('getMinCronIntervalMs', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('computes a 1-minute interval for every-minute cron', () => {
+    expect(getMinCronIntervalMs('* * * * *')).toBe(60_000)
+  })
+
+  it('computes a 5-minute interval for */5', () => {
+    expect(getMinCronIntervalMs('*/5 * * * *')).toBe(5 * 60_000)
+  })
+
+  it('computes a 1-hour interval for hourly cron', () => {
+    expect(getMinCronIntervalMs('0 * * * *')).toBe(60 * 60_000)
+  })
+
+  it('returns null for an invalid cron expression', () => {
+    expect(getMinCronIntervalMs('not a cron')).toBeNull()
+  })
+
+  // Bursty schedule: "0,5 * * * *" fires at :00 and :05 each hour. The tightest
+  // gap (5 min) must be found regardless of the current time — comparing only the
+  // next two occurrences would report ~55 min near the top of the hour.
+  it('finds the tightest gap of a bursty schedule independent of current time', () => {
+    vi.useFakeTimers()
+
+    vi.setSystemTime(new Date('2024-06-15T00:02:00.000Z')) // next two are :05 then 01:00
+    expect(getMinCronIntervalMs('0,5 * * * *')).toBe(5 * 60_000)
+
+    vi.setSystemTime(new Date('2024-06-15T00:58:00.000Z')) // next two are 01:00 then 01:05
+    expect(getMinCronIntervalMs('0,5 * * * *')).toBe(5 * 60_000)
+  })
+})
+
+// ============================================================================
+// getFrequencyWarning Tests
+// ============================================================================
+
+describe('getFrequencyWarning', () => {
+  it('exposes a 15-minute threshold constant', () => {
+    expect(MIN_RECURRING_INTERVAL_MS).toBe(15 * 60 * 1000)
+  })
+
+  it('warns when the interval is below the threshold', () => {
+    const warning = getFrequencyWarning('cron', '*/5 * * * *')
+    expect(warning).toBeTruthy()
+    expect(warning).toContain('Frequent schedule warning')
+    expect(warning).toContain('skipped') // mentions overlap auto-skip
+    expect(warning).toContain('cost') // mentions cost
+  })
+
+  it('does not warn at exactly the threshold (15 minutes)', () => {
+    expect(getFrequencyWarning('cron', '*/15 * * * *')).toBeNull()
+  })
+
+  it('does not warn above the threshold', () => {
+    expect(getFrequencyWarning('cron', '0 9 * * 1-5')).toBeNull()
+  })
+
+  it('never warns for one-time (at) schedules', () => {
+    expect(getFrequencyWarning('at', 'at now + 1 minute')).toBeNull()
+  })
+
+  it('does not warn for an unparseable cron expression', () => {
+    expect(getFrequencyWarning('cron', 'not a cron')).toBeNull()
+  })
+
+  it('warns for a bursty schedule whose tightest gap is below the threshold', () => {
+    // ":00 and :05 every hour" — the 5-minute burst gap is under 15 min.
+    expect(getFrequencyWarning('cron', '0,5 * * * *')).toContain('Frequent schedule warning')
   })
 })
 

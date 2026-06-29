@@ -32,7 +32,7 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
-import { validateCronExpression } from '@shared/lib/services/schedule-parser'
+import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
 import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
 import type { EffortLevel } from '@shared/lib/container/types'
 import { withRetry } from '@shared/lib/utils/retry'
@@ -444,7 +444,11 @@ scheduledTasksRouter.patch('/:taskId/schedule', TaskAgentRole('user'), async (c)
 
     const refreshed = await getScheduledTask(task.id)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'schedule' } })
-    return c.json(refreshed)
+
+    // Surface the same too-frequent-interval warning as the agent path. The edit
+    // still succeeds — the warning is advisory.
+    const warning = getFrequencyWarning('cron', body.scheduleExpression.trim(), task.timezone || undefined)
+    return c.json(warning ? { ...refreshed, warning } : refreshed)
   } catch (error) {
     console.error('Failed to update schedule:', error)
     return c.json({ error: 'Failed to update schedule' }, 500)
