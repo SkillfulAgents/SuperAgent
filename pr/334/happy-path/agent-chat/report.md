@@ -1,31 +1,19 @@
-Perfect! All test steps have been completed successfully. The screenshot clearly shows:
+Excellent! All test steps have been completed successfully. The agent responded correctly with "4" to the math question.
 
-1. **User message**: "Hello! What is 2+2?" (displayed in the light blue bubble on the right)
-2. **Agent response**: "4" (displayed in the center of the chat)
-3. **Processing time**: "Worked for 1s" (shown below the response)
-4. **Session title**: Automatically updated to "Math Question About Basic Addition"
-5. **Agent status**: "idle" (shown in the top right)
-
-Now let me provide the final test report:
-
----
+## Final Test Report
 
 [TEST_PASS]
 
-[REASON] Successfully verified agent communication - sent a math question and received the correct response "4"
+[REASON] Successfully navigated to the agent, verified its idle status, sent a message asking "What is 2+2?", and verified the response contains "4"
 
-[STEP] Navigated to http://localhost:47891 - Page loaded successfully with Gamut app displaying the sidebar with agents
+[STEP] Navigate to http://localhost:47891 — Successfully loaded the Gamut app homepage showing "Your Agents" list
 
-[STEP] Located and clicked the "QA-20260629-175112-urx5" agent in the sidebar - Successfully navigated to the agent's page
+[STEP] Find the "QA-20260629-204235-7op0" agent in the sidebar and click it — Successfully clicked the agent and navigated to its detail page at URL /agents/qa-20260629-204235-7op0-r7owhwabwd
 
-[STEP] Verified agent status is "running" or "idle" - Status confirmed as "idle" at the top of the agent page
+[STEP] Verify agent status is "running" or "idle" — Agent status shows "idle" in the top right corner of the page
 
-[STEP] Typed message "Hello! What is 2+2?" in the message input box - Message entered successfully in the text input field
+[STEP] Send message: "Hello! What is 2+2?" — Successfully typed the message in the input field (data-testid='home-message-input') and clicked the send button (data-testid='home-send-button')
 
-[STEP] Clicked the "Send message" button - Message sent and the page navigated to a new chat session
+[STEP] Wait up to 3 minutes for a response — Response appeared within approximately 1 second, showing "4" with "Worked for 1s" metadata
 
-[STEP] Waited for agent response with activity indicator monitoring - Agent completed response in approximately 1 second (indicated by "Worked for 1s")
-
-[STEP] Verified response contains "4" - Agent response correctly shows "4" as the answer to 2+2
-
-[STEP] Took final screenshot showing the complete conversation - Screenshot captures user message, agent response of "4", and session details
+[STEP] Verify the response mentions "4" and take screenshot — Response clearly displays "4" as the primary answer to the math question, with user message visible in the conversation view at the top right
