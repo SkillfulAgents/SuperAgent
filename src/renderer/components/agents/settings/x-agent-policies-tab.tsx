@@ -261,7 +261,7 @@ export function XAgentPoliciesTab({ agentSlug }: XAgentPoliciesTabProps) {
                 >
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{agent.name}</div>
-                    <div className="truncate text-[10px] font-mono text-muted-foreground">{agent.slug}</div>
+                    <div className="truncate text-[10px] font-mono text-muted-foreground">{agent.displaySlug}</div>
                   </div>
                   <div className="w-[120px] flex justify-center">
                     <PolicyDecisionToggle

@@ -151,7 +151,7 @@ export function ConnectionAgentsList({ type, id, name, sectioned = false }: Conn
       >
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium truncate">{agent.name}</div>
-          <div className="text-[11px] text-muted-foreground truncate">{agent.slug}</div>
+          <div className="text-[11px] text-muted-foreground truncate">{agent.displaySlug}</div>
         </div>
         {pending ? (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />

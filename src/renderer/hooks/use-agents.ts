@@ -98,8 +98,13 @@ export function useCreateAgent() {
       // Seed the per-slug cache so consumers reading useAgent(slug) right
       // after navigation (e.g. AgentHome via MainContent) render synchronously
       // instead of flashing through an undefined state while the list query
-      // refetches.
+      // refetches. Create flows navigate to agent.displaySlug, so the loader /
+      // useAgent read keys on THAT form — seed it too, or the canonical-id seed
+      // is a dead entry and the loader does a cold blocking fetch.
       queryClient.setQueryData(['agents', agent.slug], agent)
+      if (agent.displaySlug !== agent.slug) {
+        queryClient.setQueryData(['agents', agent.displaySlug], agent)
+      }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
