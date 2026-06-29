@@ -169,8 +169,14 @@ export function BrowserTrayContent({
         )}
       </div>
 
-      {/* Browser controls pill */}
-      <div className="sticky bottom-2 z-20 flex justify-center pointer-events-none shrink-0 -mt-10">
+      {/* Browser controls pill. translateZ(0) forces this onto its own compositing
+          layer so it paints above the screencast <canvas> (which sets
+          will-change: transform). Without its own layer, Safari/WebKit composites
+          the canvas layer over the z-index'd pill and the controls disappear. */}
+      <div
+        className="sticky bottom-2 z-20 flex justify-center pointer-events-none shrink-0 -mt-10"
+        style={{ transform: 'translateZ(0)' }}
+      >
         <div className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background px-2 py-1 shadow-md pointer-events-auto">
           {(isPaused || (isActive && !stream.needsAttention)) && (
             <button
