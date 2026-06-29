@@ -25,8 +25,7 @@ import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import {
   resolveContainerModel,
-  getContainerModelPromptHints,
-  getContainerUnsupportedTools,
+  getContainerModelRuntimeConfig,
 } from './resolve-model'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
@@ -1002,8 +1001,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const resolvedModel = resolveContainerModel(options.model, 'agent')
     const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
-    const modelPromptHints = getContainerModelPromptHints(resolvedModel)
-    const unsupportedTools = getContainerUnsupportedTools(resolvedModel)
+    const modelRuntimeConfig = getContainerModelRuntimeConfig(resolvedModel, 'agent')
 
     try {
       const controller = new AbortController()
@@ -1015,8 +1013,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         body: JSON.stringify({
           metadata: options.metadata,
           systemPrompt: options.systemPrompt,
-          modelPromptHints: modelPromptHints.length > 0 ? modelPromptHints : undefined,
-          unsupportedTools: unsupportedTools.length > 0 ? unsupportedTools : undefined,
+          modelPromptHints: modelRuntimeConfig.modelPromptHints.length > 0 ? modelRuntimeConfig.modelPromptHints : undefined,
+          unsupportedTools: modelRuntimeConfig.unsupportedTools.length > 0 ? modelRuntimeConfig.unsupportedTools : undefined,
           availableEnvVars: options.availableEnvVars,
           initialMessage: options.initialMessage,
           initialMessageUuid: options.initialMessageUuid,

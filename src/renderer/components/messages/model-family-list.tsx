@@ -113,6 +113,18 @@ function Row({
   )
 }
 
+function PickerWarning({ testId, children }: { testId: string; children: ReactNode }) {
+  return (
+    <div
+      data-testid={testId}
+      className="mx-1 mb-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
+    >
+      <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+      <span>{children}</span>
+    </div>
+  )
+}
+
 /**
  * Grouped model picker shared by the saved-setting selector and the per-message
  * composer. Layer 1 lists each family (and any family-less models); picking a
@@ -165,31 +177,19 @@ export function ModelFamilyList({
   return (
     <div className="flex flex-col gap-0.5">
       {resolved?.supportsWebSearch === false && (
-        <div
-          data-testid="model-no-websearch-warning"
-          className="mx-1 mb-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
-        >
-          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
-          <span>Web search and fetch aren’t available on this model.</span>
-        </div>
+        <PickerWarning testId="model-no-websearch-warning">
+          Web search and fetch aren’t available on this model.
+        </PickerWarning>
       )}
       {resolved?.supportsImageInput === false && (
-        <div
-          data-testid="model-no-image-warning"
-          className="mx-1 mb-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
-        >
-          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
-          <span>This model can’t read images, so screenshots and other image results may not work.</span>
-        </div>
+        <PickerWarning testId="model-no-image-warning">
+          This model can’t read images, so screenshots and other image results may not work.
+        </PickerWarning>
       )}
       {resolved?.longContextPriceCliff && (
-        <div
-          data-testid="model-long-context-cliff-warning"
-          className="mx-1 mb-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
-        >
-          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
-          <span>{longContextWarningText(resolved.longContextPriceCliff, resolved.contextWindow)}</span>
-        </div>
+        <PickerWarning testId="model-long-context-cliff-warning">
+          {longContextWarningText(resolved.longContextPriceCliff, resolved.contextWindow)}
+        </PickerWarning>
       )}
       {families.map((group) => {
         const isOpen = openFamily === group.family

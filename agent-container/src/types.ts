@@ -58,7 +58,7 @@ export interface CreateSessionRequest {
   envVars?: Record<string, string>;
   systemPrompt?: string; // Custom system prompt to append to default
   modelPromptHints?: string[];
-  unsupportedTools?: string[]; // Host-resolved tools this model can't use (e.g. WebSearch/WebFetch when web search is unsupported); merged into disallowedTools
+  unsupportedTools?: string[]; // Host-resolved tools denied for the main model only
   availableEnvVars?: string[]; // List of env var names available to the agent
   initialMessage: string; // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: UUID; // Optional UUID for message author attribution

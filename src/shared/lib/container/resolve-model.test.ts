@@ -9,34 +9,32 @@ vi.mock('../config/settings', () => ({
 }))
 
 import {
-  getContainerModelPromptHints,
-  getContainerUnsupportedTools,
+  getContainerModelRuntimeConfig,
   WEB_SEARCH_TOOLS,
-  IMAGE_EMITTING_TOOLS,
 } from './resolve-model'
 
 beforeEach(() => {
   settingsMock.mockReturnValue({ llmProvider: 'platform' })
 })
 
-describe('getContainerModelPromptHints', () => {
+describe('getContainerModelRuntimeConfig modelPromptHints', () => {
   it('returns GPT tool-use hints for a resolved Platform GPT id', () => {
-    const hints = getContainerModelPromptHints('gpt-5.5')
+    const hints = getContainerModelRuntimeConfig('gpt-5.5').modelPromptHints
     expect(hints.some((h) => h.includes('ToolSearch'))).toBe(true)
     expect(hints.some((h) => h.includes('pages as an empty string'))).toBe(true)
   })
 
   it('returns no hints for a Claude model on the active provider', () => {
-    expect(getContainerModelPromptHints('claude-opus-4-8')).toEqual([])
+    expect(getContainerModelRuntimeConfig('claude-opus-4-8').modelPromptHints).toEqual([])
   })
 
   it('returns no hints for an undefined or unknown model', () => {
-    expect(getContainerModelPromptHints(undefined)).toEqual([])
-    expect(getContainerModelPromptHints('nope')).toEqual([])
+    expect(getContainerModelRuntimeConfig(undefined).modelPromptHints).toEqual([])
+    expect(getContainerModelRuntimeConfig('nope').modelPromptHints).toEqual([])
   })
 })
 
-describe('getContainerUnsupportedTools', () => {
+describe('getContainerModelRuntimeConfig unsupportedTools', () => {
   it('returns the web tools for a model that does not support web search', () => {
     // Inject a no-web-search model via catalog overrides for the active provider.
     settingsMock.mockReturnValue({
@@ -49,10 +47,10 @@ describe('getContainerUnsupportedTools', () => {
         },
       },
     })
-    expect(getContainerUnsupportedTools('no-web-1')).toEqual([...WEB_SEARCH_TOOLS])
+    expect(getContainerModelRuntimeConfig('no-web-1').unsupportedTools).toEqual([...WEB_SEARCH_TOOLS])
   })
 
-  it('returns the image-emitting tools for a model that does not support image input', () => {
+  it('does not globally ban image-emitting tools for a model that does not support image input', () => {
     settingsMock.mockReturnValue({
       llmProvider: 'platform',
       modelCatalog: {
@@ -63,10 +61,10 @@ describe('getContainerUnsupportedTools', () => {
         },
       },
     })
-    expect(getContainerUnsupportedTools('no-image-1')).toEqual([...IMAGE_EMITTING_TOOLS])
+    expect(getContainerModelRuntimeConfig('no-image-1').unsupportedTools).toEqual([])
   })
 
-  it('combines web and image bans when the model supports neither', () => {
+  it('bans only web tools when the model supports neither web search nor image input', () => {
     settingsMock.mockReturnValue({
       llmProvider: 'platform',
       modelCatalog: {
@@ -83,16 +81,19 @@ describe('getContainerUnsupportedTools', () => {
         },
       },
     })
-    expect(getContainerUnsupportedTools('no-web-no-image')).toEqual([
-      ...WEB_SEARCH_TOOLS,
-      ...IMAGE_EMITTING_TOOLS,
-    ])
+    expect(getContainerModelRuntimeConfig('no-web-no-image').unsupportedTools).toEqual([...WEB_SEARCH_TOOLS])
   })
 
-  it('returns nothing when the model supports both or capability is unknown', () => {
+  it('returns nothing when the model supports web tools or capability is unknown', () => {
     // Built-in Claude entry leaves both flags unset (assume supported).
-    expect(getContainerUnsupportedTools('claude-opus-4-8')).toEqual([])
-    expect(getContainerUnsupportedTools('nope')).toEqual([])
-    expect(getContainerUnsupportedTools(undefined)).toEqual([])
+    expect(getContainerModelRuntimeConfig('claude-opus-4-8').unsupportedTools).toEqual([])
+    expect(getContainerModelRuntimeConfig('nope').unsupportedTools).toEqual([])
+    expect(getContainerModelRuntimeConfig(undefined).unsupportedTools).toEqual([])
+  })
+
+  it('conservatively bans web tools for unknown non-Claude OpenRouter pins', () => {
+    settingsMock.mockReturnValue({ llmProvider: 'openrouter' })
+    expect(getContainerModelRuntimeConfig('openai/gpt-6.0-preview').unsupportedTools).toEqual([...WEB_SEARCH_TOOLS])
+    expect(getContainerModelRuntimeConfig('anthropic/claude-sonnet-4.6').unsupportedTools).toEqual([])
   })
 })

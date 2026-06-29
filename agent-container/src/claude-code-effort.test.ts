@@ -279,7 +279,7 @@ describe('ClaudeCodeProcess unsupported tools', () => {
     calls.length = 0
   })
 
-  it('merges host-resolved unsupportedTools into the SDK disallowedTools', async () => {
+  it('keeps host-resolved unsupportedTools out of global SDK disallowedTools', async () => {
     const process = new ClaudeCodeProcess({
       sessionId: 'test-unsupported-tools',
       workingDirectory: '/tmp',
@@ -289,29 +289,55 @@ describe('ClaudeCodeProcess unsupported tools', () => {
     await process.start()
     expect(calls).toHaveLength(1)
     const disallowed = calls[0].options.disallowedTools as string[]
-    expect(disallowed).toContain('WebSearch')
-    expect(disallowed).toContain('WebFetch')
+    expect(disallowed).not.toContain('WebSearch')
+    expect(disallowed).not.toContain('WebFetch')
     // Static bans remain alongside the model-specific ones.
     expect(disallowed).toContain('TaskOutput')
   })
 
-  it('merges host-resolved image-emitting tools into the SDK disallowedTools', async () => {
+  it('denies unsupported tools only on the main thread', async () => {
     const process = new ClaudeCodeProcess({
-      sessionId: 'test-unsupported-image-tools',
+      sessionId: 'test-main-only-unsupported-tools',
       workingDirectory: '/tmp',
-      unsupportedTools: [
-        'mcp__browser__browser_screenshot',
-        'mcp__computer-use__computer_screenshot',
-      ],
+      unsupportedTools: ['WebSearch'],
     })
 
     await process.start()
     expect(calls).toHaveLength(1)
-    const disallowed = calls[0].options.disallowedTools as string[]
-    expect(disallowed).toContain('mcp__browser__browser_screenshot')
-    expect(disallowed).toContain('mcp__computer-use__computer_screenshot')
-    // Static bans remain alongside the model-specific ones.
-    expect(disallowed).toContain('TaskOutput')
+
+    const hooks = calls[0].options.hooks as {
+      PreToolUse: Array<{
+        hooks: Array<(input: Record<string, unknown>, toolUseId?: string) => Promise<Record<string, unknown>>>
+      }>
+    }
+    const mainOnlyHook = hooks.PreToolUse[0].hooks[0]
+    const mainResult = await mainOnlyHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'WebSearch',
+      tool_input: {},
+      tool_use_id: 'main-tool',
+      session_id: 'test-main-only-unsupported-tools',
+      transcript_path: '/tmp/transcript.jsonl',
+      cwd: '/tmp',
+    })
+    expect(mainResult).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+      },
+    })
+
+    const subagentResult = await mainOnlyHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'WebSearch',
+      tool_input: {},
+      tool_use_id: 'subagent-tool',
+      session_id: 'test-main-only-unsupported-tools',
+      transcript_path: '/tmp/transcript.jsonl',
+      cwd: '/tmp',
+      agent_id: 'web-browser-1',
+    })
+    expect(subagentResult).toEqual({})
   })
 
   it('leaves the static disallowedTools untouched when no unsupportedTools are set', async () => {

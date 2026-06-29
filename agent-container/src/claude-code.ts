@@ -1,4 +1,4 @@
-import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, Query, SDKUserMessage, type HookInput } from '@anthropic-ai/claude-agent-sdk';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
@@ -40,6 +40,12 @@ function mcpToolNames(
     .filter(t => !excludeSet || !excludeSet.has(t.name))
     .map(t => `mcp__${serverName}__${t.name}`)
 }
+
+function shouldDenyMainModelTool(input: HookInput, unsupportedTools: string[]): boolean {
+  if (input.hook_event_name !== 'PreToolUse') return false;
+  return !input.agent_id && unsupportedTools.includes(input.tool_name);
+}
+
 import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 
@@ -455,9 +461,6 @@ export class ClaudeCodeProcess extends EventEmitter {
           'CronCreate', 'CronDelete', 'CronList',
           'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
           'EnterWorktree', 'ExitWorktree',
-          // Host-resolved tools the selected model can't use (e.g.
-          // WebSearch/WebFetch without web-search support). Applies query-wide.
-          ...this.unsupportedTools,
         ],
         // Request summarized thinking so reasoning text streams to the UI. Without an
         // explicit `display`, Opus 4.8/4.7 default to `omitted` — thinking_delta events
@@ -605,6 +608,23 @@ export class ClaudeCodeProcess extends EventEmitter {
         },
         hooks: {
           PreToolUse: [
+            {
+              matcher: '.*',
+              hooks: [
+                async (input) => {
+                  if (shouldDenyMainModelTool(input, this.unsupportedTools)) {
+                    return {
+                      hookSpecificOutput: {
+                        hookEventName: 'PreToolUse' as const,
+                        permissionDecision: 'deny' as const,
+                        permissionDecisionReason: 'The selected main model does not support this tool.',
+                      },
+                    };
+                  }
+                  return {};
+                },
+              ],
+            },
             {
               matcher: 'mcp__user-input__.*',
               hooks: [
