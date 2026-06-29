@@ -12,7 +12,7 @@ export const AUDIT_EVENT_MAP = {
   trigger:          ['created', 'updated', 'deleted', 'paused', 'resumed'],
   task:             ['created', 'updated', 'deleted', 'paused', 'resumed'],
   chat_integration: ['created', 'updated', 'deleted'],
-  skill:            ['created', 'updated', 'exported'],
+  skill:            ['created', 'updated', 'deleted', 'exported'],
   secret:           ['created', 'updated', 'deleted'],
   file:             ['uploaded'],
   mount:            ['created', 'deleted'],
@@ -117,4 +117,3 @@ export async function getDistinctAuditUsers(): Promise<Array<{ id: string; name:
     .from(user)
     .where(inArray(user.id, userIds))
 }
-

@@ -76,6 +76,7 @@ import {
   publishSkillToSkillset,
   refreshAgentSkills,
   exportSkill,
+  deleteSkill,
   importSkillFromZip,
   SKILL_MAX_COMPRESSED_SIZE,
 } from '@shared/lib/services/skillset-service'
@@ -3667,6 +3668,22 @@ agents.post('/:id/skills/:dir/export', AgentAdmin(), async (c) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export skill'
     console.error('Failed to export skill:', error)
+    return c.json({ error: message }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/skills/:dir - Delete an installed skill from an agent
+agents.delete('/:id/skills/:dir', AgentAdmin(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const dir = c.req.param('dir')
+    await deleteSkill(agentSlug, dir)
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${dir}`, action: 'deleted' })
+    return c.body(null, 204)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to delete skill'
+    console.error('Failed to delete skill:', error)
     return c.json({ error: message }, 500)
   }
 })

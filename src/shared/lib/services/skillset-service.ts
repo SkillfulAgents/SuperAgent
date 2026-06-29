@@ -23,6 +23,7 @@ import {
   readFileOrNull,
   ensureDirectory,
   directoryExists,
+  removeDirectory,
 } from '@shared/lib/utils/file-storage'
 import type {
   SkillsetIndex,
@@ -1737,6 +1738,20 @@ export async function exportSkill(agentSlug: string, skillDirName: string): Prom
 
   const { createZipBuffer } = await import('@shared/lib/utils/zip')
   return createZipBuffer(files)
+}
+
+/**
+ * Delete a skill from an agent's installed skills directory.
+ */
+export async function deleteSkill(agentSlug: string, skillDirName: string): Promise<void> {
+  sanitizeDirName(skillDirName)
+  const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
+
+  if (!(await directoryExists(skillDir))) {
+    throw new Error('Skill directory not found')
+  }
+
+  await removeDirectory(skillDir)
 }
 
 export interface SkillValidationResult {

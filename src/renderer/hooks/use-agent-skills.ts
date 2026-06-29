@@ -259,6 +259,28 @@ export function useExportSkill() {
   })
 }
 
+export function useDeleteSkill() {
+  const queryClient = useQueryClient()
+
+  return useMutation<void, Error, { agentSlug: string; skillDir: string }>({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ agentSlug, skillDir }) => {
+      const res = await apiFetch(
+        `/api/agents/${encodeURIComponent(agentSlug)}/skills/${encodeURIComponent(skillDir)}`,
+        { method: 'DELETE' },
+      )
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to delete skill')
+      }
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['agent-skills', vars.agentSlug] })
+      queryClient.invalidateQueries({ queryKey: ['discoverable-skills', vars.agentSlug] })
+    },
+  })
+}
+
 export function useImportSkillZip() {
   const queryClient = useQueryClient()
 
