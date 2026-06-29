@@ -361,8 +361,8 @@ class MessagePersister {
     return 'working'
   }
 
-  // Public snapshot of the activity — the chat manager reads it for the
-  // subscribe-time reconcile (cold-start), alongside the session_activity event.
+  // Public snapshot of the activity — the chat manager's per-session tick samples it
+  // each interval, and the subscribe-time reconcile reads it for a cold start.
   getSessionActivity(sessionId: string): SessionActivity {
     const state = this.streamingStates.get(sessionId)
     return state ? this.computeActivity(state) : 'idle'

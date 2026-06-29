@@ -224,10 +224,17 @@ describe('per-session indicator tick (pull)', () => {
 // ── 13-transition acceptance (the design's checklist) ──────────────────────────
 
 describe('13-transition acceptance', () => {
-  // #2 + headline: streaming → message_stop → idle never paints "Working…".
-  // The stream clears the indicator; message_stop takes no action; idle lands before
-  // the next tick (getSessionActivity reads 'idle'), so the tick never paints working.
-  it('streaming→stop→idle: the tick never paints "Working…" (headline fix)', async () => {
+  // #2 + headline: streaming → message_stop → idle. The stream clears the indicator and
+  // message_stop takes no action, but BETWEEN message_stop and idle the session still
+  // reads 'working' (isActive true, streaming cleared — computeActivity falls through to
+  // 'working'; the gap widens under stateEventsAuthority where idle arrives on a separate
+  // event). So the honest guarantee is NOT "never paints": it is "no flash when idle lands
+  // within a tick, and at most ONE self-healing 'Working…' if idle lags a full tick." This
+  // kills the OLD deterministic every-turn flash + the perpetual re-stamp; a bounded,
+  // self-healing ≤1-tick flash can still occur on a lagging settle. These two tests pin
+  // both arms of that — driving getSessionActivity through the REAL working→idle window,
+  // not mocking it to 'idle' up front.
+  it('streaming→stop→idle (idle within a tick): no end-of-turn flash', async () => {
     vi.useFakeTimers()
     try {
       const connector = new MockChatClientConnector()
@@ -235,12 +242,35 @@ describe('13-transition acceptance', () => {
       managed.indicatorShown = true
       await processSSEEvent(managed, { type: 'stream_delta', text: 'answer' }) // first token clears
       expect(connector.stoppedWorking).toContain('chat-h')
-      // idle has landed by the time the tick samples (message_stop→idle is sub-tick).
+      // idle has already landed by the time the tick samples (message_stop→idle sub-tick).
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
       startIndicatorTick(managed, 'sess-h')
       await processSSEEvent(managed, { type: 'session_idle' })
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 3)
-      expect(connector.workingActivities).toEqual([]) // no end-of-turn flash
+      expect(connector.workingActivities).toEqual([]) // no flash
+      stopIndicatorTick(managed)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('streaming→stop→idle (idle lags a tick): exactly one self-healing "Working…"', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-h')
+      managed.indicatorShown = true
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'answer' }) // first token clears
+      // The reply finished, but idle LAGS: the session still reads 'working' in the gap.
+      const spy = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      startIndicatorTick(managed, 'sess-h')
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS) // a tick fires in the gap → one honest paint
+      expect(connector.workingActivities).toEqual(['working']) // ≤1-tick flash, bounded
+      // idle finally lands; the next tick self-heals and there are no further paints.
+      spy.mockReturnValue('idle')
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 3)
+      expect(connector.workingActivities).toEqual(['working']) // still exactly one — self-healed
+      expect(managed.indicatorShown).toBe(false)
       stopIndicatorTick(managed)
     } finally {
       vi.useRealTimers()

@@ -454,7 +454,7 @@ export class TelegramConnector extends ChatClientConnector {
         // by the agent's current activity. Draft-only, so DM-only. Static glyph:
         // the animated AIActions custom emoji only render when the bot's owner has
         // Telegram Premium (otherwise Telegram strips the entity), so we use plain
-        // glyphs that render for everyone. The keep-alive timer re-sends it (drafts
+        // glyphs that render for everyone. The manager's tick re-sends it (drafts
         // expire ~30s) and it shares the streaming draft_id, so the response replaces it.
         const label = this.workingLabel(this.workingActivity.get(chatId))
         await this.bot.api.raw.sendRichMessageDraft({
@@ -466,7 +466,7 @@ export class TelegramConnector extends ChatClientConnector {
       }
       await this.bot.api.sendChatAction(chatId, 'typing')
     } catch {
-      // Non-critical; the keep-alive timer re-sends on the next tick.
+      // Non-critical; the manager's tick re-sends on the next tick.
     }
   }
 
