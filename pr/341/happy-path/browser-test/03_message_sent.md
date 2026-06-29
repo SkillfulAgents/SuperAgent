@@ -1,0 +1,130 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]:
+            - generic [ref=e10]: Gamut
+            - button "Search" [ref=e12] [cursor=pointer]:
+              - img [ref=e13]
+          - list [ref=e17]:
+            - listitem [ref=e18]:
+              - link "Home" [ref=e19] [cursor=pointer]:
+                - /url: /
+                - img [ref=e20]
+                - generic [ref=e25]: Home
+            - listitem [ref=e26]:
+              - link "Notifications" [ref=e27] [cursor=pointer]:
+                - /url: /notifications
+                - img [ref=e28]
+                - generic [ref=e31]: Notifications
+            - listitem [ref=e140]:
+              - button "Explore" [ref=e141] [cursor=pointer]:
+                - img [ref=e142]
+                - generic [ref=e145]: Explore
+            - listitem [ref=e32]:
+              - button "New Agent" [ref=e33] [cursor=pointer]:
+                - img [ref=e34]
+                - generic [ref=e35]: New Agent
+        - generic [ref=e36]:
+          - generic [ref=e37]: Your Agents
+          - list [ref=e39]:
+            - button "QA-20260629-214213-g7vj idle Collapse Browser Navigation and Page Title Check working" [ref=e316] [cursor=pointer]:
+              - generic [ref=e41]:
+                - link "QA-20260629-214213-g7vj idle" [ref=e42]:
+                  - /url: /agents/qa-20260629-214213-g7vj-759x6g0vu4
+                  - generic [ref=e44]: QA-20260629-214213-g7vj
+                  - img "idle" [ref=e45]:
+                    - img [ref=e46]
+                - button "Collapse" [expanded] [ref=e317]:
+                  - img [ref=e56]
+              - list [ref=e319]:
+                - listitem [ref=e320]:
+                  - link "Browser Navigation and Page Title Check working" [ref=e321]:
+                    - /url: /agents/759x6g0vu4/sessions/687a9bca-9350-4f9f-a69f-a5981778c8a5
+                    - generic [ref=e322]: Browser Navigation and Page Title Check
+                    - img "working" [ref=e324]
+            - button "QA-20260629-214212-jcyi idle Expand" [ref=e58] [cursor=pointer]:
+              - generic [ref=e59]:
+                - link "QA-20260629-214212-jcyi idle" [ref=e60]:
+                  - /url: /agents/qa-20260629-214212-jcyi-x1vablrb2t
+                  - generic [ref=e62]: QA-20260629-214212-jcyi
+                  - img "idle" [ref=e63]:
+                    - img [ref=e64]
+                - button "Expand" [ref=e73]:
+                  - img [ref=e74]
+            - status [ref=e76]
+      - generic [ref=e78]:
+        - button "Settings" [ref=e79] [cursor=pointer]:
+          - img [ref=e80]
+          - generic [ref=e83]: Settings
+        - button "v0.4.3-rc.1" [ref=e84] [cursor=pointer]:
+          - generic [ref=e85]: v0.4.3-rc.1
+      - button "Toggle Sidebar" [ref=e86]
+    - main [ref=e87]:
+      - generic [ref=e146]:
+        - generic [ref=e147]:
+          - button "Toggle Sidebar" [ref=e148] [cursor=pointer]:
+            - img
+            - generic [ref=e149]: Toggle Sidebar
+          - generic [ref=e150]:
+            - link "QA-20260629-214213-g7vj" [ref=e152] [cursor=pointer]:
+              - /url: /agents/qa-20260629-214213-g7vj-759x6g0vu4
+            - generic [ref=e328]:
+              - generic [ref=e329]: /
+              - generic [ref=e330]: Browser Navigation and Page Title Check
+          - generic [ref=e153]:
+            - generic [ref=e154]:
+              - img "working" [ref=e331]
+              - generic [ref=e164]: working
+            - button "Stop Agent" [ref=e166] [cursor=pointer]:
+              - img
+        - generic [ref=e337]:
+          - generic [ref=e340]:
+            - paragraph [ref=e345]:
+              - text: Open a browser and go to
+              - link "https://example.com" [ref=e346] [cursor=pointer]:
+                - /url: https://example.com
+              - text: . Tell me the page title.
+            - paragraph [ref=e381]: I'll open the browser and navigate to example.com.
+            - button "Expand ToolSearch tool call" [ref=e384] [cursor=pointer]:
+              - img [ref=e385]
+              - generic [ref=e388]: ToolSearch
+              - generic [ref=e389]:
+                - img [ref=e392]
+                - img [ref=e395]
+          - generic [ref=e353]:
+            - generic [ref=e356]:
+              - generic [ref=e360]: Working...
+              - generic [ref=e361]: 3s
+            - generic [ref=e363]:
+              - textbox "Type your next message..." [ref=e365]
+              - generic [ref=e366]:
+                - generic [ref=e367]:
+                  - button "Add files" [ref=e368] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 4.8 · Medium. Click to change." [disabled]':
+                    - img
+                    - generic:
+                      - text: Opus 4.8
+                      - generic: · Medium
+                    - img
+                - generic [ref=e369]:
+                  - button "Set up voice input" [ref=e370] [cursor=pointer]:
+                    - img
+                  - generic [ref=e372]:
+                    - button "Stop the agent" [ref=e373] [cursor=pointer]:
+                      - img
+                    - button "Queue message" [disabled]:
+                      - img
+            - generic [ref=e374]:
+              - generic [ref=e397]:
+                - generic [ref=e398]: Context Usage
+                - img [ref=e400]
+              - generic [ref=e375]:
+                - generic [ref=e376]: ↵
+                - generic [ref=e377]: Send
+                - generic [ref=e378]: ·
+                - generic [ref=e379]: ⇧↵
+                - generic [ref=e380]: New line
+  - region "Notifications alt+T"

@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Tested browser use feature by requesting agent to navigate to example.com and report page title; verified response contains \"Example Domain\"",
+  "steps": [
+    "Navigated to http://localhost:47891 using browser_navigate — Page loaded successfully showing Gamut interface with agent list",
+    "Clicked on QA-20260629-214213-g7vj agent in the sidebar (ref=e107) — Agent page opened and session was created with URL containing session ID",
+    "Typed message in input field: \"Open a browser and go to https://example.com. Tell me the page title.\" and sent with Cmd+Enter — Message delivered successfully and agent began processing",
+    "Waited up to 3 minutes for agent response using browser_run_code with 180000ms timeout for \"Working...\" indicator to disappear — Response completed in 12 seconds",
+    "Took final screenshot to verify response content — Confirmed response clearly states \"The page title is 'Example Domain'.\" and \"the page at https://example.com loaded with the heading/title 'Example Domain'. Browser closed.\""
+  ],
+  "bugs": [],
+  "durationMs": 66816,
+  "sessionId": "e2a6a5e3-5f06-4422-9c63-bf57c3f9736b",
+  "cost": {
+    "inputTokens": 342,
+    "outputTokens": 12597,
+    "cacheCreationTokens": 108167,
+    "cacheReadTokens": 980805,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.296616
+  }
+}
