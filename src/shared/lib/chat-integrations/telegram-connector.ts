@@ -32,10 +32,6 @@ export interface TelegramConfig {
 
 const FIRST_POLL_BATCH_DELAY_MS = 500
 const RICH_DRAFT_SENTINEL_PREFIX = 'draft:'
-// Telegram's "working" indicators are ephemeral — rich drafts expire ~30s, the
-// typing action ~5s — so startWorking re-sends on this heartbeat until the
-// response takes over. ~1s stays within Telegram's per-chat send cadence.
-const WORKING_REFRESH_MS = 1000
 
 // ── Markdown → Telegram HTML ─────────────────────────────────────────────
 
@@ -137,10 +133,8 @@ export class TelegramConnector extends ChatClientConnector {
   // Animated DM draft streaming: per-chat non-zero draft id.
   private nextDraftId = 1
   private activeDrafts: Map<string, number> = new Map()
-  // Keep-alive timers re-sending the "working" indicator, one per chat.
-  private workingTimers: Map<string, ReturnType<typeof setInterval>> = new Map()
-  // Latest activity per chat, so the keep-alive heartbeat re-sends the current
-  // label even when it changes mid-turn (working → thinking → compacting …).
+  // Latest activity per chat, so each render (driven by the manager's tick) shows
+  // the current label even when it changes mid-turn (working → thinking → …).
   private workingActivity: Map<string, SessionActivity> = new Map()
 
   constructor(private config: TelegramConfig) {
@@ -285,8 +279,6 @@ export class TelegramConnector extends ChatClientConnector {
     this.callbackDataMap.clear()
     this.pendingQuestions.clear()
     this.activeDrafts.clear()
-    for (const timer of this.workingTimers.values()) clearInterval(timer)
-    this.workingTimers.clear()
     this.workingActivity.clear()
 
     if (this.bot) {
@@ -430,32 +422,17 @@ export class TelegramConnector extends ChatClientConnector {
 
   async startWorking(chatId: string, activity: SessionActivity): Promise<void> {
     if (!this.bot) return
-    // Record the latest activity first, so both the immediate send below AND the
-    // keep-alive heartbeat render the current label (it can change mid-turn).
+    // Render the labeled draft once. The manager's per-session tick re-calls this
+    // for keep-alive (drafts expire ~30s), so the connector keeps no timer of its
+    // own. Record the activity first so the render below shows the current label.
     this.workingActivity.set(chatId, activity)
-    // Register the keep-alive heartbeat synchronously BEFORE the first awaited send.
-    // stopWorking() is fire-and-forget and can run while this initial send is still
-    // in flight; if the interval were registered only after the await, that
-    // stopWorking would find no timer and this call would install one *after*
-    // teardown, leaking the indicator forever. Registering first means a concurrent
-    // stopWorking always sees (and clears) the timer. Idempotent: one timer per chat.
-    if (!this.workingTimers.has(chatId)) {
-      this.workingTimers.set(chatId, setInterval(() => {
-        void this.sendWorkingIndicator(chatId)
-      }, WORKING_REFRESH_MS))
-    }
     await this.sendWorkingIndicator(chatId)
   }
 
   async stopWorking(chatId: string): Promise<void> {
-    const timer = this.workingTimers.get(chatId)
-    if (timer) {
-      clearInterval(timer)
-      this.workingTimers.delete(chatId)
-    }
     this.workingActivity.delete(chatId)
     // The streaming response shares the draft_id and replaces the draft in place,
-    // so there is nothing else to tear down.
+    // so the clear yields the surface — there is nothing else to tear down.
   }
 
   /** The native-draft label for a busy activity (`<tg-thinking>` inner HTML). */
