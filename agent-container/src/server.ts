@@ -608,6 +608,7 @@ import { resolveRunCommandArgs } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
 import { judgeSelectCommit, SELECT_COMMIT_SETTLE_MS } from './select-verify';
+import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, MAX_BROWSER_OUTPUT_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, formatIframePlaceholders, parseIframeInfo, IFRAME_ENUM_SCRIPT } from './snapshot-format';
 import {
@@ -706,6 +707,26 @@ async function observeUrlDigest(): Promise<UrlDigest | null> {
   const r = await execBrowser(['get', 'url'], browserState.cdpUrl || undefined);
   if (r.exitCode !== 0 || !r.stdout.trim()) return null;
   return observeUrl(r.stdout.trim());
+}
+
+/**
+ * Read back the committed value of a field after fill/type.
+ *
+ * `get value` reads `.value`, which contenteditable widgets (LinkedIn's message
+ * box, rich-text editors) do not expose — it returns "" for them even when text
+ * is present. The false-empty read-back made agents believe their keystrokes
+ * had not landed and re-type, duplicating text. When `get value` is empty we
+ * fall back to `get text`, which IS populated for contenteditables.
+ */
+async function readCommittedFieldValue(ref: string): Promise<string | null> {
+  const value = await execBrowser(['get', 'value', ref], browserState.cdpUrl || undefined);
+  const valueRead = { ok: value.exitCode === 0, text: value.stdout.trim() };
+  if (valueRead.ok && valueRead.text !== '') return valueRead.text;
+
+  // Empty/unreadable `.value`: read text content to catch contenteditables.
+  const text = await execBrowser(['get', 'text', ref], browserState.cdpUrl || undefined);
+  const textRead = { ok: text.exitCode === 0, text: text.stdout.trim() };
+  return resolveCommittedValue(valueRead, textRead);
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -1165,8 +1186,7 @@ app.post('/browser/fill', async (c) => {
     // of what the page kept (maxlength truncation, JS reformatting,
     // keystroke-only widgets — audit F6).
     await sleep(FILL_SETTLE_MS);
-    const read = await execBrowser(['get', 'value', body.ref], browserState.cdpUrl || undefined);
-    const committedValue = read.exitCode === 0 ? read.stdout.trim() : null;
+    const committedValue = await readCommittedFieldValue(body.ref);
 
     notifyBrowserAction();
     return c.json({ success: true, ...(committedValue !== null && { committedValue }) });
@@ -1482,8 +1502,7 @@ app.post('/browser/type', async (c) => {
     // target by definition (e.g. cross-origin payment iframes).
     let committedValue: string | null = null;
     if (body.ref) {
-      const read = await execBrowser(['get', 'value', body.ref], browserState.cdpUrl || undefined);
-      if (read.exitCode === 0) committedValue = read.stdout.trim();
+      committedValue = await readCommittedFieldValue(body.ref);
     }
 
     notifyBrowserAction();
