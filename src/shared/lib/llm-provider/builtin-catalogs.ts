@@ -263,6 +263,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     blurb: 'Moonshot coding model, served via Fireworks on Platform',
     family: 'kimi',
     isLatest: true,
+    icon: 'kimi',
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: false,
     supportsImageInput: true,

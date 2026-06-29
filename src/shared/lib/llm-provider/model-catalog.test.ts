@@ -111,6 +111,7 @@ describe('getProviderCatalog', () => {
     expect(kimi).toMatchObject({
       family: 'kimi',
       isLatest: true,
+      icon: 'kimi',
       supportsWebSearch: false,
       supportsImageInput: true,
       pricing: { inputPerMtok: 0.95, outputPerMtok: 4 },
