@@ -163,6 +163,12 @@
     "cacheCreation": 1.4,
     "cacheRead": 0.14
   },
+  "kimi-k2.6": {
+    "input": 0.95,
+    "output": 4,
+    "cacheCreation": 0.95,
+    "cacheRead": 0.16
+  },
   "kimi-k2.7-code": {
     "input": 0.95,
     "output": 4,

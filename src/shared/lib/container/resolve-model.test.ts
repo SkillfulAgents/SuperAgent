@@ -37,6 +37,7 @@ describe('getContainerModelRuntimeConfig modelPromptHints', () => {
 describe('getContainerModelRuntimeConfig unsupportedTools', () => {
   it('returns web tools for Fireworks-hosted Platform models', () => {
     expect(getContainerModelRuntimeConfig('glm-5.2').unsupportedTools).toEqual([...WEB_SEARCH_TOOLS])
+    expect(getContainerModelRuntimeConfig('kimi-k2.6').unsupportedTools).toEqual([...WEB_SEARCH_TOOLS])
     expect(getContainerModelRuntimeConfig('kimi-k2.7-code').unsupportedTools).toEqual([...WEB_SEARCH_TOOLS])
   })
 

@@ -90,7 +90,8 @@ describe('getProviderCatalog', () => {
     const catalog = getProviderCatalog('platform')
     const gpt = catalog.find((m) => m.id === 'gpt-5.5')!
     const glm = catalog.find((m) => m.id === 'glm-5.2')!
-    const kimi = catalog.find((m) => m.id === 'kimi-k2.7-code')!
+    const kimi = catalog.find((m) => m.id === 'kimi-k2.6')!
+    const kimiCode = catalog.find((m) => m.id === 'kimi-k2.7-code')!
     // gpt rides the OpenAI Responses wire, which maps native web_search.
     expect(gpt).toMatchObject({
       family: 'gpt',
@@ -117,6 +118,15 @@ describe('getProviderCatalog', () => {
       pricing: { inputPerMtok: 0.95, outputPerMtok: 4 },
       contextWindow: 262_144,
     })
+    expect(kimiCode).toMatchObject({
+      family: 'kimi',
+      icon: 'kimi',
+      supportsWebSearch: false,
+      supportsImageInput: true,
+      pricing: { inputPerMtok: 0.95, outputPerMtok: 4 },
+      contextWindow: 262_144,
+    })
+    expect(kimiCode.isLatest).toBeFalsy()
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
@@ -310,6 +320,7 @@ describe('getModelContextWindow', () => {
     expect(getModelContextWindow('gpt-5.5', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-5.4', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('glm-5.2', 'platform')).toBe(1_040_000)
+    expect(getModelContextWindow('kimi-k2.6', 'platform')).toBe(262_144)
     expect(getModelContextWindow('kimi-k2.7-code', 'platform')).toBe(262_144)
   })
 
@@ -396,7 +407,8 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.5')
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
     expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('glm-5.2')
-    expect(resolveModelForProvider('kimi', 'platform', 'agent')).toBe('kimi-k2.7-code')
+    expect(resolveModelForProvider('kimi', 'platform', 'agent')).toBe('kimi-k2.6')
+    expect(resolveModelForProvider('kimi-k2.7-code', 'platform', 'agent')).toBe('kimi-k2.7-code')
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {
