@@ -10,6 +10,7 @@ import type { Duplex } from 'stream'
 import type { ServerType } from '@hono/node-server'
 import { WebSocketServer, WebSocket } from 'ws'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { resolveAgentId } from '@shared/lib/utils/file-storage'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getSettings } from '@shared/lib/config/settings'
 import { isAuthMode } from '@shared/lib/auth/mode'
@@ -79,33 +80,44 @@ export function setupBrowserStreamProxy(server: ServerType): void {
       return
     }
 
-    const agentSlug = match[1]
-
-    // Authenticate before upgrading — viewer+ can watch, but input is filtered per-role below
-    authenticateWs(request, agentSlug, 'viewer').then((allowed) => {
-      if (!allowed) {
-        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+    // The URL carries the display slug ({name}-{id}); resolve to the canonical id
+    // before any ACL check or container lookup. This WS upgrade bypasses the Hono
+    // /:id/* ResolveAgent middleware, so it must resolve itself. Stash the resolved
+    // id for the connection handler below.
+    resolveAgentId(match[1]).then((agentSlug) => {
+      if (!agentSlug) {
+        socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
         socket.destroy()
         return
       }
+      ;(request as any)._agentId = agentSlug
 
-      // Check if user has 'user' role (can send input) — stash on the request object
-      authenticateWs(request, agentSlug, 'user').then((canInput) => {
-        ;(request as any)._canInput = canInput
-        browserWss.handleUpgrade(request, socket, head, (ws) => {
-          browserWss.emit('connection', ws, request)
+      // Authenticate before upgrading — viewer+ can watch, but input is filtered per-role below
+      authenticateWs(request, agentSlug, 'viewer').then((allowed) => {
+        if (!allowed) {
+          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
+          socket.destroy()
+          return
+        }
+
+        // Check if user has 'user' role (can send input) — stash on the request object
+        authenticateWs(request, agentSlug, 'user').then((canInput) => {
+          ;(request as any)._canInput = canInput
+          browserWss.handleUpgrade(request, socket, head, (ws) => {
+            browserWss.emit('connection', ws, request)
+          })
         })
       })
+    }).catch(() => {
+      socket.destroy()
     })
   })
 
   browserWss.on('connection', async (ws: WebSocket, request: IncomingMessage) => {
-    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
-    const url = new URL(request.url || '', `http://${request.headers.host}`)
-    const match = url.pathname.match(/^\/api\/agents\/([^/]+)\/browser\/stream$/)
-    if (!match) { ws.close(1011, 'Invalid path'); return }
-
-    const agentSlug = match[1]
+    // Canonical id resolved during the upgrade handshake above (the URL slug is the
+    // display slug; container lookups are keyed by the canonical id).
+    const agentSlug = (request as any)._agentId as string | undefined
+    if (!agentSlug) { ws.close(1011, 'Invalid path'); return }
     const canInput = (request as any)._canInput === true
 
     try {
