@@ -273,3 +273,58 @@ describe('ClaudeCodeProcess model prompt hints', () => {
     expect(calls[0].options.systemPrompt).toContain('- Do not send pages as an empty string.')
   })
 })
+
+describe('ClaudeCodeProcess unsupported tools', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('merges host-resolved unsupportedTools into the SDK disallowedTools', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-unsupported-tools',
+      workingDirectory: '/tmp',
+      unsupportedTools: ['WebSearch', 'WebFetch'],
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    const disallowed = calls[0].options.disallowedTools as string[]
+    expect(disallowed).toContain('WebSearch')
+    expect(disallowed).toContain('WebFetch')
+    // Static bans remain alongside the model-specific ones.
+    expect(disallowed).toContain('TaskOutput')
+  })
+
+  it('merges host-resolved image-emitting tools into the SDK disallowedTools', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-unsupported-image-tools',
+      workingDirectory: '/tmp',
+      unsupportedTools: [
+        'mcp__browser__browser_screenshot',
+        'mcp__computer-use__computer_screenshot',
+      ],
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    const disallowed = calls[0].options.disallowedTools as string[]
+    expect(disallowed).toContain('mcp__browser__browser_screenshot')
+    expect(disallowed).toContain('mcp__computer-use__computer_screenshot')
+    // Static bans remain alongside the model-specific ones.
+    expect(disallowed).toContain('TaskOutput')
+  })
+
+  it('leaves the static disallowedTools untouched when no unsupportedTools are set', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-no-unsupported-tools',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    const disallowed = calls[0].options.disallowedTools as string[]
+    expect(disallowed).not.toContain('WebSearch')
+    expect(disallowed).not.toContain('mcp__browser__browser_screenshot')
+    expect(disallowed).toContain('TaskOutput')
+  })
+})

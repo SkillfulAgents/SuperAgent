@@ -23,7 +23,11 @@ import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
-import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
+import {
+  resolveContainerModel,
+  getContainerModelPromptHints,
+  getContainerUnsupportedTools,
+} from './resolve-model'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 const execAsync = promisify(exec)
@@ -999,6 +1003,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
     const modelPromptHints = getContainerModelPromptHints(resolvedModel)
+    const unsupportedTools = getContainerUnsupportedTools(resolvedModel)
 
     try {
       const controller = new AbortController()
@@ -1011,6 +1016,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           metadata: options.metadata,
           systemPrompt: options.systemPrompt,
           modelPromptHints: modelPromptHints.length > 0 ? modelPromptHints : undefined,
+          unsupportedTools: unsupportedTools.length > 0 ? unsupportedTools : undefined,
           availableEnvVars: options.availableEnvVars,
           initialMessage: options.initialMessage,
           initialMessageUuid: options.initialMessageUuid,

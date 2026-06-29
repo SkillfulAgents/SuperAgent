@@ -299,6 +299,8 @@ export interface ClaudeCodeProcessOptions {
   claudeSessionId?: string;
   userSystemPrompt?: string;
   modelPromptHints?: string[];
+  /** Host-resolved tools this model can't use (e.g. WebSearch/WebFetch when web search is unsupported). */
+  unsupportedTools?: string[];
   availableEnvVars?: string[];
   model?: string;
   browserModel?: string;
@@ -322,6 +324,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private model: string | undefined;
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
+  private unsupportedTools: string[];
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -346,6 +349,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.model = options.model;
     this.browserModel = options.browserModel;
     this.dashboardBuilderModel = options.dashboardBuilderModel;
+    this.unsupportedTools = options.unsupportedTools ?? [];
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
@@ -451,6 +455,9 @@ export class ClaudeCodeProcess extends EventEmitter {
           'CronCreate', 'CronDelete', 'CronList',
           'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
           'EnterWorktree', 'ExitWorktree',
+          // Host-resolved tools the selected model can't use (e.g.
+          // WebSearch/WebFetch without web-search support). Applies query-wide.
+          ...this.unsupportedTools,
         ],
         // Request summarized thinking so reasoning text streams to the UI. Without an
         // explicit `display`, Opus 4.8/4.7 default to `omitted` — thinking_delta events

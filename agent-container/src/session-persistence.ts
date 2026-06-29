@@ -10,6 +10,7 @@ interface SessionMetadata {
   lastActivity: string;
   systemPrompt?: string;
   modelPromptHints?: string[];
+  unsupportedTools?: string[];
   availableEnvVars?: string[];
   model?: string;
   browserModel?: string;

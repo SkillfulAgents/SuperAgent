@@ -173,6 +173,15 @@ export function ModelFamilyList({
           <span>Web search and fetch aren’t available on this model.</span>
         </div>
       )}
+      {resolved?.supportsImageInput === false && (
+        <div
+          data-testid="model-no-image-warning"
+          className="mx-1 mb-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
+        >
+          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span>This model can’t read images, so screenshots and other image results may not work.</span>
+        </div>
+      )}
       {resolved?.longContextPriceCliff && (
         <div
           data-testid="model-long-context-cliff-warning"

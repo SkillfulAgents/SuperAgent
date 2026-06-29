@@ -139,6 +139,18 @@ describe('ModelFamilyList', () => {
     expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
   })
 
+  it('warns when the selected model cannot read images, and not otherwise', () => {
+    const catalog = [
+      { id: 'text-only-1', label: 'Text Only', family: 'textonly', isLatest: true, supportedEfforts: STD, supportsImageInput: false },
+      ...CATALOG,
+    ]
+    const { rerender } = render(<ModelFamilyList catalog={catalog} value="text-only-1" onPick={vi.fn()} />)
+    expect(screen.getByTestId('model-no-image-warning')).toBeInTheDocument()
+
+    rerender(<ModelFamilyList catalog={catalog} value="claude-opus-4-8" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-no-image-warning')).not.toBeInTheDocument()
+  })
+
   it('warns about the long-context price cliff for GPT, and not for flat-priced Claude', () => {
     const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)
     const warning = screen.getByTestId('model-long-context-cliff-warning')
