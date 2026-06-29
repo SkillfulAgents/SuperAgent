@@ -86,9 +86,11 @@ describe('getProviderCatalog', () => {
     expect(gptLatest.map((m) => m.id)).toEqual(['openai/gpt-5.5'])
   })
 
-  it('exposes the Platform GPT built-ins under BARE ids the proxy routes', () => {
+  it('exposes Platform built-ins under BARE ids the proxy routes', () => {
     const catalog = getProviderCatalog('platform')
     const gpt = catalog.find((m) => m.id === 'gpt-5.5')!
+    const glm = catalog.find((m) => m.id === 'glm-5.2')!
+    const kimi = catalog.find((m) => m.id === 'kimi-k2.7-code')!
     // gpt rides the OpenAI Responses wire, which maps native web_search.
     expect(gpt).toMatchObject({
       family: 'gpt',
@@ -97,10 +99,26 @@ describe('getProviderCatalog', () => {
       supportsWebSearch: true,
       pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     })
+    expect(glm).toMatchObject({
+      family: 'glm',
+      isLatest: true,
+      icon: 'zai',
+      supportsWebSearch: false,
+      supportsImageInput: false,
+      pricing: { inputPerMtok: 1.4, outputPerMtok: 4.4 },
+      contextWindow: 1_040_000,
+    })
+    expect(kimi).toMatchObject({
+      family: 'kimi',
+      isLatest: true,
+      supportsWebSearch: false,
+      supportsImageInput: true,
+      pricing: { inputPerMtok: 0.95, outputPerMtok: 4 },
+      contextWindow: 262_144,
+    })
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
-    expect(catalog.some((m) => m.id === 'glm-5.2')).toBe(false)
   })
 })
 
@@ -287,9 +305,11 @@ describe('getEffectiveCatalog', () => {
 })
 
 describe('getModelContextWindow', () => {
-  it('returns the catalog window for Platform GPT models', () => {
+  it('returns the catalog window for Platform non-Claude models', () => {
     expect(getModelContextWindow('gpt-5.5', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-5.4', 'platform')).toBe(1_050_000)
+    expect(getModelContextWindow('glm-5.2', 'platform')).toBe(1_040_000)
+    expect(getModelContextWindow('kimi-k2.7-code', 'platform')).toBe(262_144)
   })
 
   it('returns the catalog window for OpenRouter GPT models', () => {
@@ -371,10 +391,11 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('z-ai/glm-5.2', 'openrouter', 'agent')).toBe('z-ai/glm-5.2')
   })
 
-  it('resolves Platform GPT models to bare ids and falls back for unsupported glm', () => {
+  it('resolves Platform non-Claude models to bare ids', () => {
     expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.5')
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
-    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('claude-opus-4-8')
+    expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('glm-5.2')
+    expect(resolveModelForProvider('kimi', 'platform', 'agent')).toBe('kimi-k2.7-code')
   })
 
   it('resolves the SAME bare alias to each provider concrete id (cross-provider portability)', () => {

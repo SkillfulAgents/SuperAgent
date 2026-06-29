@@ -244,6 +244,31 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
+  {
+    id: 'glm-5.2',
+    label: 'GLM-5.2',
+    blurb: 'Z.AI GLM, served via Fireworks on Platform',
+    family: 'glm',
+    isLatest: true,
+    icon: 'zai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    supportsImageInput: false,
+    pricing: { inputPerMtok: 1.4, outputPerMtok: 4.4 },
+    contextWindow: 1_040_000,
+  },
+  {
+    id: 'kimi-k2.7-code',
+    label: 'Kimi K2.7 Code',
+    blurb: 'Moonshot coding model, served via Fireworks on Platform',
+    family: 'kimi',
+    isLatest: true,
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    supportsImageInput: true,
+    pricing: { inputPerMtok: 0.95, outputPerMtok: 4 },
+    contextWindow: 262_144,
+  },
 ]
 
 /** Platform — bare Claude models plus the GPT models the proxy serves. */
