@@ -20,8 +20,10 @@ export function useCreateUntitledAgent() {
       const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
       track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
 
+      // Morph tag keys on the canonical id (AgentHome compares against agent.slug);
+      // navigate with the pretty display slug so the URL reflects the name.
       setJustCreatedSlug(agent.slug)
-      void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
+      void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
 
       return agent
     } catch (error) {

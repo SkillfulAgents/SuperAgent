@@ -144,6 +144,35 @@ test.describe('Auth Flow', () => {
     expect(agentSlug).toBeTruthy()
   })
 
+  // Regression guard for the SUP-271 view-only bug: the URL carries the pretty
+  // display slug (`{name}-{id}`), which no longer equals the agent's canonical id,
+  // and `agent-shell` derives the header's view-only state from
+  // `canUseAgent(routeSlug)` while the role map is keyed by the id. Without
+  // resolving the route slug → id, an OWNER was wrongly forced view-only (no
+  // start/stop controls). This is the discriminating case the rest of the suite
+  // misses — the home composer keys on the canonical id and the `sendMessage`
+  // helper falls back to it, so neither exercises the route-slug path.
+  test('owner viewing via the display-slug route keeps agent controls', async ({ user2Page }) => {
+    const agentPage = new AgentPage(user2Page)
+
+    // Click the sidebar entry → navigates to the pretty display-slug URL.
+    await agentPage.selectAgent(agentName)
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
+
+    // Sanity-gate: assert the route really carries the display-slug form
+    // (`{name}-{id}`), not a bare id — otherwise this wouldn't exercise the
+    // slug→id resolution the fix added.
+    const routeSlug = new URL(user2Page.url()).pathname.split('/')[2] ?? ''
+    expect(routeSlug).toMatch(/-[a-z0-9]{10}$/)
+    expect(routeSlug).not.toMatch(/^[a-z0-9]{10}$/)
+
+    // The owner must NOT be view-only: header start/stop controls (gated on
+    // `canUseAgent(routeSlug)` in agent-shell) render, and the agent-home
+    // view-only banner stays absent.
+    await expect(user2Page.locator('[data-testid="agent-power-controls"]')).toBeVisible()
+    await expect(user2Page.locator('[data-testid="view-only-banner"]')).not.toBeVisible()
+  })
+
   test('user1 does NOT see user2 agent', async ({ user1Page }) => {
     const appPage = new AppPage(user1Page)
     const agentPage = new AgentPage(user1Page)

@@ -46,8 +46,6 @@ import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agen
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
 
-const INTRO_ANIMATION_MS = 2200
-
 interface AgentHomeProps {
   agent: ApiAgent
   onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string) => void
@@ -70,10 +68,13 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     const t = setTimeout(() => setIntroPlaying(true), 1000)
     return () => clearTimeout(t)
   }, [introStagger])
+  // One-shot: consume the morph tag immediately once introStagger has captured it
+  // at mount, so it can't replay if AgentHome unmounts mid-animation — e.g. the
+  // user sends the first message within ~2s, the index leaf unmounts, and a
+  // deferred clear would be cancelled, stranding the tag and re-animating on
+  // return. The animation runs off local introStagger/introPlaying state.
   useEffect(() => {
-    if (!introStagger) return
-    const t = setTimeout(() => setJustCreatedSlug(null), INTRO_ANIMATION_MS)
-    return () => clearTimeout(t)
+    if (introStagger) setJustCreatedSlug(null)
   }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
   const { canUseAgent, canAdminAgent } = useUser()

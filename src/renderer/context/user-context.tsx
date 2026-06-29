@@ -2,6 +2,7 @@ import { createContext, useContext, useCallback, useEffect, useMemo, useRef, typ
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSession, signOut as authSignOut } from '@renderer/lib/auth-client'
 import { apiFetch, clearRedirectStash } from '@renderer/lib/api'
+import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import type { AgentRole } from '@shared/lib/types/agent'
 
 interface AgentRoleInfo {
@@ -63,6 +64,25 @@ function useAuthSession() {
   return { data: null, isPending: false } as ReturnType<typeof useSession>
 }
 
+// The agents list is consulted only to resolve a display slug → canonical id for
+// the role lookups below, which short-circuit when auth is off — so only subscribe
+// in auth mode (same compile-time gate as useAuthSession). Outside auth mode this
+// avoids a wasted /api/agents fetch on every UserProvider mount.
+//
+// Project to just {slug, displaySlug} — all the resolver reads. React Query
+// structurally shares the `select` result, so this reference stays STABLE across the
+// frequent status-only `['agents']` refetches (every session state change invalidates
+// that query). Subscribing to the full list here would re-run the role callbacks and
+// re-render every `useUser()` consumer on each status tick.
+const selectAgentIndex = (agents: ApiAgent[]): Pick<ApiAgent, 'slug' | 'displaySlug'>[] =>
+  agents.map(({ slug, displaySlug }) => ({ slug, displaySlug }))
+
+function useResolverAgents(): { data: Pick<ApiAgent, 'slug' | 'displaySlug'>[] | undefined } {
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  if (__AUTH_MODE__) return useAgents({ select: selectAgentIndex })
+  return { data: undefined }
+}
+
 export function UserProvider({ children }: { children: ReactNode }) {
   // Better Auth session (only active in auth mode)
   const session = useAuthSession()
@@ -100,20 +120,27 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const { data: agentRoles, isFetched: rolesFetched } = useAgentRoles(isAuthenticated)
   const rolesReady = !isAuthMode || !isAuthenticated || rolesFetched
 
+  // `agentRoles` is keyed by the canonical agent id, but callers pass whatever
+  // slug they have on hand — frequently the URL **display slug** (`{name}-{id}`),
+  // which never matches an id-keyed entry. Resolve to the canonical id first so a
+  // route-derived slug doesn't silently read as "no role" (false view-only).
+  const { data: agents } = useResolverAgents()
   const agentRole = useCallback(
     (agentSlug: string): AgentRole | null => {
       if (!isAuthMode) return null
-      return agentRoles?.[agentSlug]?.role ?? null
+      const id = resolveRouteAgentId(agentSlug, agents) ?? agentSlug
+      return agentRoles?.[id]?.role ?? null
     },
-    [agentRoles],
+    [agentRoles, agents],
   )
 
   const agentMemberCount = useCallback(
     (agentSlug: string): number => {
       if (!isAuthMode) return 0
-      return agentRoles?.[agentSlug]?.memberCount ?? 0
+      const id = resolveRouteAgentId(agentSlug, agents) ?? agentSlug
+      return agentRoles?.[id]?.memberCount ?? 0
     },
-    [agentRoles],
+    [agentRoles, agents],
   )
 
   const canAccessAgent = useCallback(

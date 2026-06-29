@@ -40,6 +40,8 @@ vi.mock('../middleware/auth', () => {
       if (RANK[mockAuthRole.current] < RANK.user) return c.json({ error: 'Forbidden' }, 403)
       c.set('user', mockAuthUser); return next()
     },
+    ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
+    getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
     EntityAgentRole: (opts: any) => (minRole: string) => async (c: any, next: () => Promise<void>) => {
       const id = c.req.param(opts.paramName)
       const entity = await opts.lookupFn(id)

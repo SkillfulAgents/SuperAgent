@@ -13,6 +13,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import type { ZodType } from 'zod'
 import { getDataDir } from '@shared/lib/config/data-dir'
+import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 
 // ============================================================================
 // Slug Generation
@@ -34,7 +35,7 @@ function generateRandomSuffix(length: number = 6): string {
  * Convert a name to a URL-safe slug
  * "My Cool Agent" -> "my-cool-agent"
  */
-function nameToSlugBase(name: string): string {
+export function nameToSlugBase(name: string): string {
   return name
     .toLowerCase()
     .trim()
@@ -44,35 +45,86 @@ function nameToSlugBase(name: string): string {
 }
 
 /**
- * Generate a URL-safe slug with unique suffix
- * "My Cool Agent" -> "my-cool-agent-k7x9m2"
- *
- * Note: Display name always comes from CLAUDE.md frontmatter, not the slug.
- * The slug is only used for directory names and URLs.
+ * Length of a minted agent id. Deliberately distinct from the legacy 6-char
+ * name-suffix: that length gap is what lets resolveAgentId() tell a minted id
+ * apart from a legacy compound folder name (see resolveAgentId).
  */
-export function generateAgentSlug(name: string): string {
-  const base = nameToSlugBase(name)
-  const suffix = generateRandomSuffix()
-  return base ? `${base}-${suffix}` : suffix
+export const AGENT_ID_LENGTH = 10
+
+const MINTED_ID_RE = new RegExp(`^[a-z0-9]{${AGENT_ID_LENGTH}}$`)
+
+/**
+ * Path-safety gate for any externally-supplied agent identifier. nameToSlugBase
+ * only ever emits [a-z0-9-] and minted ids are [a-z0-9], so a legitimate display
+ * slug or folder name never contains anything else. Rejecting everything else
+ * also forbids '/', '.', and therefore '..' path traversal.
+ */
+const SAFE_AGENT_INPUT_RE = /^[a-z0-9-]+$/
+
+/**
+ * Whether an id is a freshly-minted opaque id (vs a legacy name-derived folder).
+ */
+export function isMintedAgentId(id: string): boolean {
+  return MINTED_ID_RE.test(id)
 }
 
 /**
- * Generate a unique agent slug, checking for collisions
- * Regenerates random suffix if directory already exists
+ * Mint an opaque agent id: a bare random [a-z0-9]{AGENT_ID_LENGTH} string.
+ *
+ * This is the agent's permanent identity — folder name, DB key, URL key, and
+ * x-agent target. It is NOT derived from the name, so renaming never moves it.
+ * Keeps the FS-collision loop (checked against ALL existing folders, legacy
+ * included); the timestamp fallback is still a bare [a-z0-9] id.
  */
-export async function generateUniqueAgentSlug(name: string): Promise<string> {
+export async function generateAgentId(): Promise<string> {
   const maxAttempts = 10
   for (let i = 0; i < maxAttempts; i++) {
-    const slug = generateAgentSlug(name)
-    const agentDir = getAgentDir(slug)
-    if (!await directoryExists(agentDir)) {
-      return slug
+    const id = generateRandomSuffix(AGENT_ID_LENGTH)
+    if (!await directoryExists(getAgentDir(id))) {
+      return id
     }
   }
-  // Fallback: use timestamp for uniqueness
+  // Fallback: timestamp + random, still a bare [a-z0-9] string.
+  return `${Date.now().toString(36)}${generateRandomSuffix(4)}`
+}
+
+/**
+ * Project the decorative display slug shown to models and placed in URLs:
+ *   {nameToSlugBase(name)}-{id}   (or bare {id} when the name slugifies to empty)
+ *
+ * Legacy folders (non-minted ids, e.g. "untitled-h45k3n") are returned VERBATIM:
+ * prettifying them would break resolution, since the folder still embeds the old
+ * name and there is no reverse lookup from a name-prefix back to the folder.
+ */
+export function displaySlug(name: string, id: string): string {
+  if (!isMintedAgentId(id)) return id
   const base = nameToSlugBase(name)
-  const timestamp = Date.now().toString(36)
-  return base ? `${base}-${timestamp}` : timestamp
+  return base ? `${base}-${id}` : id
+}
+
+/**
+ * Resolve any agent identifier — bare id, {name}-{id} display slug, wrong-prefix
+ * {anything}-{id}, or a legacy compound folder name — to the canonical folder
+ * id, or null if no such agent exists. The trailing minted id is the only
+ * authoritative part; the prefix is ignored.
+ *
+ * Path-safety: rejects anything outside [a-z0-9-] before any fs access.
+ */
+export async function resolveAgentId(input: string): Promise<string | null> {
+  if (!input || !SAFE_AGENT_INPUT_RE.test(input)) return null
+  // Defense-in-depth: the charset gate already forbids '/' and '.', so this can
+  // never escape, but assert before touching the filesystem regardless.
+  assertPathWithinDir(getAgentsDir(), getAgentDir(input))
+  // Exact match handles a bare minted id AND a legacy compound folder name.
+  if (await directoryExists(getAgentDir(input))) return input
+  // Otherwise the id is the final hyphen-delimited segment (ids have no hyphen).
+  const dash = input.lastIndexOf('-')
+  if (dash === -1) return null
+  const candidate = input.slice(dash + 1)
+  if (MINTED_ID_RE.test(candidate) && await directoryExists(getAgentDir(candidate))) {
+    return candidate
+  }
+  return null
 }
 
 // ============================================================================

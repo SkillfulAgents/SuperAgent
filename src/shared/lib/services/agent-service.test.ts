@@ -270,7 +270,9 @@ Instructions`
       const agent = await createAgent({ name: 'New Agent' })
 
       expect(agent.name).toBe('New Agent')
-      expect(agent.slug).toMatch(/^new-agent-[a-z0-9]{6}$/)
+      // Identity is now an opaque minted id; the name lives in the projected displaySlug.
+      expect(agent.slug).toMatch(/^[a-z0-9]{10}$/)
+      expect(agent.displaySlug).toMatch(/^new-agent-[a-z0-9]{10}$/)
       expect(agent.status).toBe('stopped')
       expect(agent.containerPort).toBeNull()
       expect(agent.instructions).toContain('You are a helpful AI assistant')

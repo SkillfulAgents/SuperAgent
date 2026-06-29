@@ -16,7 +16,10 @@ import type { SessionUsage } from '@shared/lib/types/agent'
  * Agent response from API - flattened format
  */
 export interface ApiAgent {
+  /** Canonical opaque id — folder name, DB key, URL resolution key. Never changes. */
   slug: string
+  /** Decorative `{slug(name)}-{id}` projection for URLs/links; recomputed from the current name. */
+  displaySlug: string
   name: string
   description?: string
   instructions?: string // Only included in single-agent response

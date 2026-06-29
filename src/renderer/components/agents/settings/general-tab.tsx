@@ -16,10 +16,10 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@renderer/components/ui/alert-dialog'
-import { useDeleteAgent } from '@renderer/hooks/use-agents'
+import { useDeleteAgent, useRouteAgentId } from '@renderer/hooks/use-agents'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useSettings } from '@renderer/hooks/use-settings'
-import { useNavigate, useParams } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import {
   useForceSyncAgentTemplate,
   useAgentTemplateStatus,
@@ -52,7 +52,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const updatePrefs = useUpdateAgentPreferences(agentSlug)
   const { data: settings } = useSettings()
   const navigate = useNavigate()
-  const routeSlug = useParams({ strict: false }).slug ?? null
+  const routeAgentId = useRouteAgentId()
   const { data: templateStatus } = useAgentTemplateStatus(agentSlug)
   const refreshTemplateStatus = useRefreshAgentTemplateStatus()
   const forceSyncTemplate = useForceSyncAgentTemplate()
@@ -69,7 +69,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
     try {
       await deleteAgent.mutateAsync(agentSlug)
       onDialogClose()
-      if (routeSlug === agentSlug) void navigate({ to: '/' })
+      if (routeAgentId === agentSlug) void navigate({ to: '/' })
     } catch (error) {
       console.error('Failed to delete agent:', error)
       toast.error(error instanceof Error ? error.message : 'Failed to delete agent')

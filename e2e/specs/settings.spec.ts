@@ -547,7 +547,7 @@ test.describe('Settings deep-link reset', () => {
     const createRes = await request.post('/api/agents', {
       data: { name: 'Voice Deep Link Test' },
     })
-    const agent = await createRes.json() as { slug: string }
+    const agent = await createRes.json() as { slug: string; displaySlug: string }
 
     const appPage = new AppPage(page)
     await appPage.goto()
@@ -583,13 +583,14 @@ test.describe('Settings ?from= close-target', () => {
   test('close pushes to the captured ?from origin', async ({ page, request }) => {
     await request.put('/api/user-settings', { data: { setupCompleted: true } })
     const createRes = await request.post('/api/agents', { data: { name: 'Settings From Origin' } })
-    const agent = await createRes.json() as { slug: string }
+    const agent = await createRes.json() as { slug: string; displaySlug: string }
 
     const appPage = new AppPage(page)
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
     await page.locator(`[data-testid="agent-item-${agent.slug}"]`).click()
-    await expect(page).toHaveURL(new RegExp(`/agents/${agent.slug}$`))
+    // The URL carries the display slug ({name}-{id}), not the bare canonical id.
+    await expect(page).toHaveURL(new RegExp(`/agents/${agent.displaySlug}$`))
     const origin = page.url()
 
     await page.locator('[data-testid="settings-button"]').click()
@@ -612,13 +613,14 @@ test.describe('Settings ?from= close-target', () => {
   test('settings survives a refresh and still closes to origin (?from= is durable)', async ({ page, request }) => {
     await request.put('/api/user-settings', { data: { setupCompleted: true } })
     const createRes = await request.post('/api/agents', { data: { name: 'Settings Refresh From' } })
-    const agent = await createRes.json() as { slug: string }
+    const agent = await createRes.json() as { slug: string; displaySlug: string }
 
     const appPage = new AppPage(page)
     await appPage.goto()
     await appPage.waitForAgentsLoaded()
     await page.locator(`[data-testid="agent-item-${agent.slug}"]`).click()
-    await expect(page).toHaveURL(new RegExp(`/agents/${agent.slug}$`))
+    // The URL carries the display slug ({name}-{id}), not the bare canonical id.
+    await expect(page).toHaveURL(new RegExp(`/agents/${agent.displaySlug}$`))
     const origin = page.url()
 
     await page.locator('[data-testid="settings-button"]').click()

@@ -10,6 +10,7 @@ import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 const testAgent: ApiAgent = {
   slug: 'test-agent',
+  displaySlug: 'test-agent',
   name: 'Test Agent',
   description: 'A test agent',
   createdAt: new Date('2025-01-01'),

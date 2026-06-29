@@ -363,7 +363,9 @@ export function RemoteMcpRequestItem({
       }
 
       setStatus('provided')
-      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps', agentSlug] })
+      // Bare prefix: agentSlug here is the session's display-slug route form, but the
+      // agent-home Connections card keys on the canonical id — a targeted key misses it.
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
       onComplete()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to provide MCP access')

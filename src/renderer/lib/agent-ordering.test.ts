@@ -5,6 +5,7 @@ import type { ApiAgent } from '@renderer/hooks/use-agents'
 function makeAgent(slug: string, createdAt: string): ApiAgent {
   return {
     slug,
+    displaySlug: slug,
     name: slug,
     createdAt: new Date(createdAt),
     status: 'stopped',

@@ -18,7 +18,8 @@ import {
   writeFileAtomic,
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
-  generateUniqueAgentSlug,
+  generateAgentId,
+  displaySlug,
 } from '@shared/lib/utils/file-storage'
 import {
   AgentFrontmatter,
@@ -48,6 +49,7 @@ function toApiAgent(
   const healthWarnings = containerManager.getHealthWarnings(agent.slug)
   return {
     slug: agent.slug,
+    displaySlug: displaySlug(agent.frontmatter.name, agent.slug),
     name: agent.frontmatter.name,
     description: agent.frontmatter.description,
     instructions: agent.instructions,
@@ -204,8 +206,9 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
   const { name: rawName, description, instructions } = input
   const name = String(rawName)
 
-  // Generate unique slug
-  const slug = await generateUniqueAgentSlug(name)
+  // Mint an opaque id — the name no longer feeds the folder, so the "Untitled"
+  // promptless-create flow can't poison it.
+  const slug = await generateAgentId()
 
   // Create directory structure
   const workspaceDir = getAgentWorkspaceDir(slug)
@@ -228,6 +231,7 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
   // Return in API format (new agents are always stopped)
   return {
     slug,
+    displaySlug: displaySlug(name, slug),
     name,
     description,
     instructions: body,
@@ -276,6 +280,7 @@ export async function updateAgent(
 
   return {
     slug,
+    displaySlug: displaySlug(newFrontmatter.name, slug),
     name: newFrontmatter.name,
     description: newFrontmatter.description,
     instructions: newInstructions,
@@ -347,7 +352,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
  */
 export async function createAgentFromExistingWorkspace(rawName: string): Promise<ApiAgent> {
   const name = String(rawName)
-  const slug = await generateUniqueAgentSlug(name)
+  const slug = await generateAgentId()
 
   const workspaceDir = getAgentWorkspaceDir(slug)
   await ensureDirectory(workspaceDir)
@@ -365,6 +370,7 @@ export async function createAgentFromExistingWorkspace(rawName: string): Promise
 
   return {
     slug,
+    displaySlug: displaySlug(name, slug),
     name,
     createdAt: new Date(frontmatter.createdAt),
     status: 'stopped',

@@ -29,6 +29,7 @@ import {
 } from '@renderer/hooks/use-chat-integrations'
 import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
 import { useNavigate } from '@tanstack/react-router'
+import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useUser } from '@renderer/context/user-context'
 import {
   Dialog,
@@ -272,16 +273,22 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
   // agent's shell (mismatched chrome and canManage gating, and the SessionThread
   // below fetches messages scoped to the URL slug → empty/404). Redirect to the
   // integration's true agent, preserving the `?session=` sub-session.
+  //
+  // Compare RESOLVED ids: the route param may be the display slug ({name}-{id})
+  // while integration.agentSlug is the canonical id, so a raw `!==` would fire on
+  // every correct-agent visit. Wait for the agents list, then redirect to the
+  // canonical id (the same form the app uses for chat routes).
+  const { data: agents } = useAgents()
   useEffect(() => {
-    if (integration && integration.agentSlug !== agentSlug) {
-      void navigate({
-        to: '/agents/$slug/chat/$integrationId',
-        params: { slug: integration.agentSlug, integrationId },
-        search: (prev) => prev,
-        replace: true,
-      })
-    }
-  }, [integration, agentSlug, integrationId, navigate])
+    if (!integration || !agents) return
+    if (integration.agentSlug === resolveRouteAgentId(agentSlug, agents)) return
+    void navigate({
+      to: '/agents/$slug/chat/$integrationId',
+      params: { slug: integration.agentSlug, integrationId },
+      search: (prev) => prev,
+      replace: true,
+    })
+  }, [integration, agents, agentSlug, integrationId, navigate])
 
   const [clearError, setClearError] = useState<string | null>(null)
   const [renameOpen, setRenameOpen] = useState(false)
@@ -317,7 +324,8 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId }:
 
   // Mismatched shell → the effect above is redirecting; don't render B's
   // integration (or its wrong-slug message fetches) under A's chrome meanwhile.
-  if (integration.agentSlug !== agentSlug) {
+  // Resolve first and only block once the agents list is loaded (see the effect).
+  if (agents && integration.agentSlug !== resolveRouteAgentId(agentSlug, agents)) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin mr-2" />

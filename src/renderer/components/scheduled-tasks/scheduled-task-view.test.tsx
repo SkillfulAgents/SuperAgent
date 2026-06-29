@@ -9,6 +9,8 @@ const mockUpdateScheduledTaskName = vi.fn()
 const mockCancelScheduledTask = vi.fn()
 let mockCanUseAgent = true
 let mockTask: ApiScheduledTask
+let mockAgents: Array<{ slug: string; displaySlug: string; name: string }>
+const mockNavigate = vi.fn()
 
 vi.mock('@renderer/context/selection-context', () => ({
   useSelection: () => ({
@@ -26,6 +28,17 @@ vi.mock('@renderer/context/user-context', () => ({
   }),
   UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
+
+vi.mock('@renderer/hooks/use-agents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/hooks/use-agents')>()
+  // Keep the real resolveRouteAgentId; only stub the agents list it reads.
+  return { ...actual, useAgents: () => ({ data: mockAgents }) }
+})
+
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return { ...actual, useNavigate: () => mockNavigate }
+})
 
 vi.mock('@renderer/hooks/use-humanized-cron', () => ({
   useHumanizedCron: () => 'Every day at 9:00 AM',
@@ -108,6 +121,7 @@ describe('ScheduledTaskView', () => {
     vi.clearAllMocks()
     mockTask = createTask()
     mockCanUseAgent = true
+    mockAgents = [{ slug: 'agent-one', displaySlug: 'agent-one', name: 'Agent One' }]
     mockUpdateScheduledTaskName.mockResolvedValue(createTask({ name: 'Weekly report' }))
   })
 
@@ -139,5 +153,37 @@ describe('ScheduledTaskView', () => {
 
     expect(screen.queryByText('Rename Cron')).not.toBeInTheDocument()
     expect(screen.getByText('Edit Schedule')).toBeInTheDocument()
+  })
+
+  it('does not redirect when viewing the task via the agent display slug', async () => {
+    // Regression: the route param is the display slug while task.agentSlug is the
+    // canonical id, so a raw `!==` would fire a spurious redirect on the correct
+    // agent (downgrading the pretty URL to a bare id).
+    mockTask = createTask({ agentSlug: 'abc1234567' })
+    mockAgents = [{ slug: 'abc1234567', displaySlug: 'daily-report-abc1234567', name: 'Daily Report' }]
+
+    renderWithProviders(<ScheduledTaskView taskId="task-1" agentSlug="daily-report-abc1234567" />)
+
+    await screen.findByTestId('scheduled-task-title')
+    expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  it("redirects to the task's true agent when the URL is for a different agent", async () => {
+    mockTask = createTask({ agentSlug: 'abc1234567' })
+    mockAgents = [
+      { slug: 'abc1234567', displaySlug: 'daily-report-abc1234567', name: 'Daily Report' },
+      { slug: 'zzz9999999', displaySlug: 'other-agent-zzz9999999', name: 'Other Agent' },
+    ]
+
+    renderWithProviders(<ScheduledTaskView taskId="task-1" agentSlug="other-agent-zzz9999999" />)
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug/tasks/$taskId',
+        // Redirects to the canonical id (same form agent-home uses to open tasks).
+        params: { slug: 'abc1234567', taskId: 'task-1' },
+        replace: true,
+      })
+    })
   })
 })

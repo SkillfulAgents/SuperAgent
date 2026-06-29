@@ -129,6 +129,8 @@ vi.mock('../middleware/auth', () => ({
   OwnsAccount: () => async (_c: unknown, next: () => Promise<void>) => next(),
   IsAdmin: () => async (_c: unknown, next: () => Promise<void>) => next(),
   Or: (..._mw: unknown[]) => async (_c: unknown, next: () => Promise<void>) => next(),
+  ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
+  getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
 }))
 
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))

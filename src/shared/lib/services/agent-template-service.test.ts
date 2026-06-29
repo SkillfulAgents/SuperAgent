@@ -2097,7 +2097,7 @@ describe('installAgentFromSkillset', () => {
     const installTime = new Date()
     const oldTemplateTime = '2020-01-01T00:00:00.000Z'
 
-    const agent = { slug, name: 'My Agent', createdAt: installTime, status: 'stopped' as const, containerPort: null }
+    const agent = { slug, displaySlug: slug, name: 'My Agent', createdAt: installTime, status: 'stopped' as const, containerPort: null }
     mockCreateAgent.mockResolvedValue(agent)
     mockGetAgentWithStatus.mockResolvedValue(agent)
 

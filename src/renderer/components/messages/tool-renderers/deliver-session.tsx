@@ -1,7 +1,7 @@
 import { ArrowDownToLine, ArrowRight, MessageSquare } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useNavigate } from '@tanstack/react-router'
-import { useAgents } from '@renderer/hooks/use-agents'
+import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useSession } from '@renderer/hooks/use-sessions'
 import type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, CollapsedContentProps } from './types'
 import { deliverSessionDef, shortSessionId, type DeliverSessionInput } from '@shared/lib/tool-definitions/deliver-session'
@@ -9,7 +9,11 @@ import { deliverSessionDef, shortSessionId, type DeliverSessionInput } from '@sh
 function useAgentName(slug: string | undefined): string | undefined {
   const { data: agents } = useAgents()
   if (!slug) return undefined
-  return agents?.find((a) => a.slug === slug)?.name ?? slug
+  // `slug` arrives as the x-agent display slug (model-facing) or the route slug —
+  // resolve to the canonical id before matching, else the name falls back to the
+  // raw slug string. `agent.slug` is the id, so compare against the resolved id.
+  const id = resolveRouteAgentId(slug, agents)
+  return agents?.find((a) => a.slug === id)?.name ?? slug
 }
 
 // Resolve session name via the same query the rest of the app uses.

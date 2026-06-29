@@ -107,6 +107,23 @@ describe('useMessageStream', () => {
     expect(MockEventSource.instances[0].url).toBe('/api/agents/agent-1/sessions/session-1/stream')
   })
 
+  it('shares ONE EventSource when the same session is subscribed with different agent-slug forms', async () => {
+    // The sidebar subscribes with the canonical agent id while the session view
+    // uses the URL display slug — both for the same session. Keying the singleton
+    // by sessionId keeps it to one connection; otherwise both streams write the
+    // same session state and the assistant response renders doubled.
+    const { useMessageStream } = await getHookModule()
+    renderHook(
+      () => {
+        useMessageStream('session-1', 'greeting-assistant-abcd123456') // session view: display slug
+        useMessageStream('session-1', 'abcd123456') // sidebar: canonical id
+      },
+      { wrapper: createWrapper() }
+    )
+
+    expect(MockEventSource.instances).toHaveLength(1)
+  })
+
   it('handles connected event', async () => {
     const { useMessageStream } = await getHookModule()
     const { result } = renderHook(
