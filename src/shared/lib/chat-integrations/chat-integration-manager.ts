@@ -931,6 +931,8 @@ class ChatIntegrationManager {
   private stopSession(session: ManagedConnector): void {
     session.sseUnsubscribe?.()
     stopIndicatorTick(session)
+    // Force-clear on teardown (unconditional, not the idempotent clearIndicator): the
+    // session is going away, so settle the connector even if indicatorShown drifted.
     session.connector.stopWorking(session.chatId).catch(() => {})
   }
 
