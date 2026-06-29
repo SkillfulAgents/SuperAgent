@@ -270,6 +270,7 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
   publishSkillToSkillset: vi.fn(),
   refreshAgentSkills: vi.fn(),
   exportSkill: vi.fn(),
+  deleteSkill: vi.fn(),
   importSkillFromZip: vi.fn(),
   SKILL_MAX_COMPRESSED_SIZE: 100 * 1024 * 1024,
 }))
@@ -400,6 +401,7 @@ import {
   hasOnboardingSkill,
 } from '@shared/lib/services/agent-template-service'
 import {
+  deleteSkill,
   exportSkill,
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
@@ -3154,6 +3156,38 @@ describe('POST /api/agents/:id/skills/:dir/export', () => {
 
     const res = await app.request('http://localhost/api/agents/my-agent/skills/bad-skill/export', {
       method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    const body = await res.json()
+    expect(body.error).toBe('Skill directory not found')
+  })
+})
+
+describe('DELETE /api/agents/:id/skills/:dir', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('deletes the skill and returns 204', async () => {
+    vi.mocked(deleteSkill).mockResolvedValue()
+
+    const res = await app.request('http://localhost/api/agents/my-agent/skills/my-skill', {
+      method: 'DELETE',
+    })
+
+    expect(res.status).toBe(204)
+    expect(deleteSkill).toHaveBeenCalledWith('my-agent', 'my-skill')
+  })
+
+  it('returns 500 when service throws', async () => {
+    vi.mocked(deleteSkill).mockRejectedValue(new Error('Skill directory not found'))
+
+    const res = await app.request('http://localhost/api/agents/my-agent/skills/bad-skill', {
+      method: 'DELETE',
     })
 
     expect(res.status).toBe(500)
