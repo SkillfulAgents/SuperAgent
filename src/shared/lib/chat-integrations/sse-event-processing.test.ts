@@ -55,10 +55,10 @@ async function processEvents(
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
-// NOTE: indicator arming/settling is no longer driven by stream_start / stream_delta —
-// session_activity is the sole driver. New-model coverage (a busy activity arms,
-// a non-busy one settles) lives in perpetual-thinking.repro.test.ts under
-// 'reconcileIndicator via session_activity'.
+// NOTE: the indicator is PAINTED only by the per-session tick (it reads
+// getSessionActivity) — covered in perpetual-thinking.repro.test.ts. Events only
+// ever CLEAR; the four immediate clears (card-show, first reply token, session_idle,
+// session_error) are covered in the 'immediate clears' suite at the bottom of this file.
 
 describe('processSSEEvent', () => {
   let managed: ManagedConnector
@@ -1109,5 +1109,80 @@ describe('deliver_file delivery', () => {
     expect(mock.sentFiles.length).toBe(0)
     expect(mock.sentMessages.length).toBe(1)
     expect(mock.sentMessages[0].message.text).toContain('not-on-host.txt')
+  })
+})
+
+// ── The four immediate clears ──────────────────────────────────────────────
+// Events never PAINT — they only ever CLEAR, the moment the session transitions
+// into a non-busy state, so the settle is instant instead of up to one tick late.
+// The tick backstops anything these miss. `indicatorShown` is set true to model an
+// indicator that the tick had already painted.
+
+describe('processSSEEvent: immediate clears', () => {
+  let managed: ManagedConnector
+
+  beforeEach(() => {
+    managed = createManagedConnector()
+  })
+
+  const cardTypes = [
+    'user_question_request',
+    'secret_request',
+    'file_request',
+    'connected_account_request',
+    'remote_mcp_request',
+    'browser_input_request',
+    'script_run_request',
+    'computer_use_request',
+  ]
+
+  for (const type of cardTypes) {
+    it(`clears the indicator the moment a ${type} card is shown`, async () => {
+      managed.indicatorShown = true
+      await processSSEEvent(managed, { type, requestId: 'r1' })
+      expect(getMock(managed).stoppedWorking).toContain('chat-123')
+      expect(managed.indicatorShown).toBe(false)
+    })
+  }
+
+  it('clears on the first reply stream_delta (the stream owns the surface)', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'Hello' })
+    expect(getMock(managed).stoppedWorking).toContain('chat-123')
+    expect(managed.indicatorShown).toBe(false)
+  })
+
+  it('clears on session_idle', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'session_idle' })
+    expect(getMock(managed).stoppedWorking).toContain('chat-123')
+  })
+
+  it('clears on session_error (no perpetual leak)', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'session_error', apiErrorCode: 'overloaded_error' })
+    expect(getMock(managed).stoppedWorking).toContain('chat-123')
+  })
+
+  it('a clear is idempotent: a second clearing event makes no extra connector call', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'session_idle' })
+    await processSSEEvent(managed, { type: 'session_idle' })
+    expect(getMock(managed).stoppedWorking).toEqual(['chat-123']) // exactly one
+  })
+
+  it('does NOT clear on stream_start or tool events (only the four clears settle)', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'stream_start' })
+    await processSSEEvent(managed, { type: 'tool_use_start' })
+    expect(getMock(managed).stoppedWorking).toEqual([])
+    expect(managed.indicatorShown).toBe(true)
+  })
+
+  it('an empty stream_delta does not clear (no real token yet)', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'stream_delta', text: '' })
+    expect(getMock(managed).stoppedWorking).toEqual([])
+    expect(managed.indicatorShown).toBe(true)
   })
 })

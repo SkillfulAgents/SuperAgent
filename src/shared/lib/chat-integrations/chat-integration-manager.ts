@@ -99,16 +99,6 @@ const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow t
 
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
-// Idle-silence watchdog: if a turn shows the working indicator and then goes
-// completely silent (no SSE events) for this long, assume it stalled and tear
-// the indicator down. The backstop for any missing-terminal-event path (SDK
-// stall, dropped stream, an event type nobody handles). Reset on any activity,
-// so a healthy long turn never trips it. Set generously: a single silent tool
-// call (a long build / install / search that streams nothing) is legitimate
-// work, so the threshold must clear that before it assumes a stall — and even
-// then the notice is softened (see onWorkingWatchdogFired) because it can be a
-// false positive on slow-but-alive work.
-const WORKING_WATCHDOG_MS = 5 * 60 * 1000
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024 // 50 MB
 
@@ -143,13 +133,14 @@ export interface ManagedConnector {
   }
   currentToolInput: string
   pendingToolMessages: Array<{ messageId: string; text: string }>
-  // Idle-silence watchdog timer (see WORKING_WATCHDOG_MS). Armed when the
-  // working indicator is shown, reset on every SSE event, cleared on teardown.
-  watchdogTimer?: ReturnType<typeof setTimeout> | null
-  // True once a terminal user-facing notice (the session_error message or the
-  // watchdog stall notice) has gone out for the current turn, so a turn can't
-  // emit repeated/duplicate notices. Reset once per turn at dispatch (not per
-  // segment), so a multi-stall turn still yields at most one notice.
+  // Pull-model indicator state. `indicatorShown` makes the clear idempotent so
+  // idle ticks make zero connector calls; `indicatorTickTimer` is the per-session
+  // sampling tick, alive for the SSE subscription (started on subscribe, cleared
+  // on teardown).
+  indicatorShown?: boolean
+  indicatorTickTimer?: ReturnType<typeof setInterval> | null
+  // True once the session_error notice has gone out for the current turn, so a
+  // turn can't emit duplicate notices.
   turnNotified?: boolean
 }
 
@@ -515,8 +506,9 @@ class ChatIntegrationManager {
     const session = this.getOrCreateChatSession(integrationId, chatId)
     if (!session) return
 
-    // Clean up any previous subscription
+    // Clean up any previous subscription + its indicator tick
     session.sseUnsubscribe?.()
+    stopIndicatorTick(session)
 
     const unsubscribe = messagePersister.addSSEClient(sessionId, (event: unknown) => {
       // Serialize SSE event processing per chat session to prevent race conditions
@@ -524,11 +516,12 @@ class ChatIntegrationManager {
       this.enqueueSSEEvent(integrationId, chatId, event)
     })
     session.sseUnsubscribe = unsubscribe
-    // Reconcile from the current state so a cold/late subscriber matches reality
-    // instead of waiting for the next session_activity event. The snapshot reads
-    // live state, and awaiting/idle are set synchronously with their broadcast,
-    // so a stale 'working' can't outlive the real state.
+    // Cold reconcile so a late subscriber matches reality NOW instead of waiting one
+    // tick; the tick then keeps it fresh and self-heals. The snapshot reads live
+    // state (awaiting/idle are set synchronously), so a stale 'working' can't outlive
+    // the real state. The tick is alive for the subscription, not the turn.
     reconcileIndicator(session, messagePersister.getSessionActivity(sessionId))
+    startIndicatorTick(session, sessionId)
   }
 
   private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown): void {
@@ -848,13 +841,13 @@ class ChatIntegrationManager {
       return
     }
 
-    // The working indicator now arms via session_activity (markSessionActive above), not here.
+    // The working indicator arms via the per-session tick (it reads getSessionActivity),
+    // not here — turn start only ARMS, the tick paints within at most one tick.
     const dispatched = this.chatSessions.get(this.getChatSessionKey(integrationId, chatId))
     if (dispatched) {
-      // New user turn: re-allow exactly one terminal notice (the watchdog stall
-      // notice OR the session_error message). Reset here, once per turn, rather
-      // than on every stream_start, so a single multi-stall turn can't emit
-      // repeated notices.
+      // New user turn: re-allow exactly one terminal notice (the session_error
+      // message). Reset here, once per turn, so a single multi-segment turn can't
+      // emit repeated notices.
       dispatched.turnNotified = false
     }
   }
@@ -934,11 +927,11 @@ class ChatIntegrationManager {
     return /session(\s+\S+)?\s+not\s+found/i.test(err.message)
   }
 
-  /** Stop a chat session's live streaming: drop the SSE subscription and the working indicator. */
+  /** Stop a chat session's live streaming: drop the SSE subscription, the tick, and the indicator. */
   private stopSession(session: ManagedConnector): void {
     session.sseUnsubscribe?.()
+    stopIndicatorTick(session)
     session.connector.stopWorking(session.chatId).catch(() => {})
-    clearWorkingWatchdog(session)
   }
 
   private teardownManagedSession(integrationId: string, chatId: string, opts?: { archive?: string }): void {
@@ -1435,13 +1428,12 @@ class ChatIntegrationManager {
   }
 }
 
-// ── Turn finalize + idle watchdog (watchdog force-settles the indicator) ──
+// ── Turn finalize ──────────────────────────────────────────────────────────
 
 /**
  * Commit a turn's streamed text + settle pending tool pills. Indicator-free: the
- * working indicator is reconcile-driven off session_activity (the persister emits
- * a non-busy activity immediately before a terminal event), so the terminal
- * cases no longer own indicator teardown — they only finalize. Idempotent.
+ * terminal cases (session_idle / session_error) settle the indicator via their own
+ * clearIndicator call before finalizing, so this only commits text. Idempotent.
  */
 async function finalizeTurn(managed: ManagedConnector): Promise<void> {
   try {
@@ -1450,75 +1442,6 @@ async function finalizeTurn(managed: ManagedConnector): Promise<void> {
   } catch (err) {
     console.error('[ChatIntegrationManager] Failed to finalize turn:', err)
     reportError(err, 'finalize-turn', { integrationId: managed.integration.id, chatId: managed.chatId })
-  }
-}
-
-/** Clear the idle watchdog timer (if armed). */
-function clearWorkingWatchdog(managed: ManagedConnector): void {
-  if (managed.watchdogTimer) {
-    clearTimeout(managed.watchdogTimer)
-    managed.watchdogTimer = null
-  }
-}
-
-/**
- * (Re)arm the idle watchdog. Called when the working indicator is shown (via
- * reconcileIndicator off session_activity) and reset on every subsequent SSE event,
- * so it fires only after a full WORKING_WATCHDOG_MS of total silence — a stalled
- * turn that never emits a terminal event.
- */
-function armWorkingWatchdog(managed: ManagedConnector): void {
-  clearWorkingWatchdog(managed)
-  const timer = setTimeout(() => {
-    // Ignore a stale fire. If the watchdog was cleared or re-armed after this
-    // timer was scheduled (clearTimeout can't un-queue an already-fired timer),
-    // managed.watchdogTimer no longer points at us — do nothing.
-    if (managed.watchdogTimer !== timer) return
-    managed.watchdogTimer = null
-    void onWorkingWatchdogFired(managed)
-  }, WORKING_WATCHDOG_MS)
-  managed.watchdogTimer = timer
-}
-
-/** Reset the watchdog only if it is currently armed — any SSE event proves liveness. */
-function resetWatchdogIfRunning(managed: ManagedConnector): void {
-  if (managed.watchdogTimer) armWorkingWatchdog(managed)
-}
-
-async function onWorkingWatchdogFired(managed: ManagedConnector): Promise<void> {
-  console.warn(
-    `[ChatIntegrationManager] Working-indicator watchdog fired after ${WORKING_WATCHDOG_MS}ms of silence (chat ${managed.chatId})`,
-  )
-  reportError(
-    new Error('working-indicator watchdog fired after SSE silence'),
-    'working-indicator-watchdog',
-    {
-      integrationId: managed.integration.id,
-      chatId: managed.chatId,
-      agentSlug: managed.integration.agentSlug,
-      silenceMs: WORKING_WATCHDOG_MS,
-    },
-    'warning',
-  )
-  // Force the indicator off: this is a stall, so session state may still say
-  // working and a plain reconcile would re-arm. Override directly, then finalize.
-  reconcileIndicator(managed, 'idle')
-  await finalizeTurn(managed)
-  // Notify at most once per turn: if a near-simultaneous session_error already
-  // surfaced its message, don't pile a second notice on top. Softened copy — the
-  // watchdog can be a false positive on a slow-but-alive turn, so it must not
-  // flatly assert the agent died.
-  if (!managed.turnNotified) {
-    managed.turnNotified = true
-    try {
-      await managed.connector.sendMessage(managed.chatId, {
-        text: "⚠️ This is taking longer than expected. If you don't see a reply soon, send your message again.",
-      })
-    } catch {
-      // Delivery failed — release the latch so a later terminal notice (e.g. a real
-      // session_error) can still reach the user instead of being suppressed.
-      managed.turnNotified = false
-    }
   }
 }
 
@@ -1548,19 +1471,56 @@ const BUSY_ACTIVITIES: ReadonlySet<SessionActivity> = new Set([
 ])
 
 /**
- * The ONE thing that drives the working indicator: project the agent's activity
- * onto the connector. Busy activities show a labeled placeholder; the rest tear
- * it down. Idempotent on both connector and watchdog, so the subscribe snapshot
- * and the event stream cannot conflict. The connector owns how each activity is
- * rendered (Telegram labels it, Slack reacts, the app draws its own indicator).
+ * The ONE thing that PAINTS the working indicator: project the agent's activity
+ * onto the connector. Busy activities show a labeled placeholder — re-painted on
+ * EVERY call, because on Telegram that re-render is the keep-alive. Non-busy tears
+ * it down idempotently. Driven by the per-session tick (the only paint) and the
+ * cold-subscribe snapshot. The connector owns how each activity renders (Telegram
+ * labels a draft, Slack reacts); the app draws its own indicator and is untouched.
  */
-function reconcileIndicator(managed: ManagedConnector, activity: SessionActivity): void {
+export function reconcileIndicator(managed: ManagedConnector, activity: SessionActivity): void {
   if (BUSY_ACTIVITIES.has(activity)) {
+    managed.indicatorShown = true
     managed.connector.startWorking(managed.chatId, activity).catch(() => {})
-    armWorkingWatchdog(managed)
   } else {
-    managed.connector.stopWorking(managed.chatId).catch(() => {})
-    clearWorkingWatchdog(managed)
+    clearIndicator(managed)
+  }
+}
+
+/**
+ * Idempotent clear: only call the connector when the indicator is currently shown,
+ * so repeated clears (idle ticks, several clear events in a row) make ZERO connector
+ * calls. Clearing is always EXPLICIT — stopping the tick never clears a persistent
+ * draft, so the four immediate clears and the non-busy tick all route through here.
+ */
+export function clearIndicator(managed: ManagedConnector): void {
+  if (!managed.indicatorShown) return
+  managed.indicatorShown = false
+  managed.connector.stopWorking(managed.chatId).catch(() => {})
+}
+
+/** Pull cadence for the indicator tick. At/under Telegram's draft expiry so drafts stay alive. */
+export const INDICATOR_TICK_MS = 1000
+
+/**
+ * Start the per-session indicator tick, alive for the SSE subscription (NOT a turn).
+ * Each tick re-reads the truth (getSessionActivity) and reconciles — the only PAINT,
+ * and the self-healing backstop: a stuck or wrong indicator is corrected within one
+ * tick because the tick re-reads reality every interval. Idempotent: replaces any
+ * prior tick for this session.
+ */
+export function startIndicatorTick(managed: ManagedConnector, sessionId: string): void {
+  stopIndicatorTick(managed)
+  managed.indicatorTickTimer = setInterval(() => {
+    reconcileIndicator(managed, messagePersister.getSessionActivity(sessionId))
+  }, INDICATOR_TICK_MS)
+}
+
+/** Stop the per-session indicator tick (resource cleanup at unsubscribe / teardown). */
+export function stopIndicatorTick(managed: ManagedConnector): void {
+  if (managed.indicatorTickTimer) {
+    clearInterval(managed.indicatorTickTimer)
+    managed.indicatorTickTimer = null
   }
 }
 
@@ -1578,14 +1538,13 @@ export async function processSSEEvent(
   const data = event as Record<string, unknown>
   const eventType = data.type as string
 
-  // Any agent activity proves the turn is alive: push the idle watchdog out.
-  // No-op when the indicator isn't currently armed.
-  resetWatchdogIfRunning(managed)
-
   switch (eventType) {
     case 'stream_delta': {
       const text = data.text as string
       if (!text) break
+      // First reply token → 'streaming' (non-busy): the streamed text owns the
+      // reply surface, so settle the indicator now. Idempotent; the tick backstops.
+      clearIndicator(managed)
       managed.streamingState.accumulatedText += text
 
       const now = Date.now()
@@ -1691,9 +1650,10 @@ export async function processSSEEvent(
     case 'browser_input_request':
     case 'script_run_request':
     case 'computer_use_request': {
-      // The agent is now waiting on the user. The persister flips isAwaitingInput
-      // and emits a non-busy session_activity, which settles the indicator + watchdog;
-      // here we only surface the request card.
+      // The agent is now waiting on the user → 'awaiting' (non-busy). Settle the
+      // indicator the moment the card is shown (the persister flips isAwaitingInput,
+      // so the tick would clear within a tick anyway — this just makes it instant).
+      clearIndicator(managed)
       try {
         await managed.connector.sendUserRequestCard(managed.chatId, data as UserRequestEvent)
       } catch (err) {
@@ -1703,22 +1663,19 @@ export async function processSSEEvent(
       break
     }
 
-    case 'session_activity': {
-      reconcileIndicator(managed, (data as { activity: SessionActivity }).activity)
-      break
-    }
-
     case 'session_idle': {
+      // Turn ended → settle the indicator instantly, then finalize the streamed text.
+      clearIndicator(managed)
       await finalizeTurn(managed)
       break
     }
 
     case 'session_error': {
       // An errored turn emits session_error (NOT session_idle), and the host
-      // suppresses the later authoritative idle. Without this case the working
-      // indicator's keep-alive heartbeat is never torn down and re-stamps
-      // "Thinking…" forever. Finalize the turn the same way session_idle does, then
-      // surface the error so the user isn't left staring at a frozen indicator.
+      // suppresses the later authoritative idle. Settle the indicator instantly so
+      // it never strands, finalize the turn the same way session_idle does, then
+      // surface a curated error so the user isn't left staring at a frozen reply.
+      clearIndicator(managed)
       await finalizeTurn(managed)
       if (!managed.turnNotified) {
         managed.turnNotified = true
@@ -1753,8 +1710,8 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
   const messageId = managed.streamingState.currentMessageId
 
   // Claim the buffer synchronously, before the first await, so a concurrent
-  // finalize (e.g. the idle watchdog tearing down while a late stream event is
-  // processed) reads an empty buffer and can't double-send the same text. The
+  // finalize (e.g. session_idle finalizing while a late stream_start also
+  // finalizes) reads an empty buffer and can't double-send the same text. The
   // reset previously ran only after the await, leaving that window open.
   managed.streamingState = {
     currentMessageId: null,
