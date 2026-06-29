@@ -369,18 +369,15 @@ describe('MessagePersister', () => {
       expect(compactStarts).toHaveLength(1)
     })
 
-    it('emits a non-compacting session_activity when compaction completes (no stale "Compacting…")', () => {
+    it('leaves "compacting" via getSessionActivity when compaction completes (no stale "Compacting…")', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
       mockClient._sendMessage({ type: 'system', subtype: 'status', status: 'compacting', session_id: SESSION_ID, uuid: 's1' })
       expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('compacting')
-      sseEvents.length = 0 // isolate the completion transition
 
       // The compact-summary user message clears isCompacting (state.isCompacting was true).
       mockClient._sendMessage({ type: 'user', session_id: SESSION_ID, uuid: 'summary-1' })
 
-      const activity = sseEvents.filter(e => e.type === 'session_activity')
-      expect(activity.length).toBeGreaterThan(0) // the clear must emit, or the chat stays stale "Compacting…"
-      expect(activity.at(-1).activity).not.toBe('compacting')
+      // The pull projection must immediately leave 'compacting' (the tick re-reads it).
       expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('working')
     })
   })
@@ -4245,22 +4242,14 @@ describe('MessagePersister', () => {
   // session_activity emission
   // ============================================================================
 
-  describe('session_activity emission', () => {
-    const BUSY = new Set(['working', 'thinking', 'compacting', 'retrying'])
-
-    it('emits session_activity on the per-session stream when the activity flips', () => {
-      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // isActive true → 'working'
-
-      const perSession = sseEvents.filter(e => e.type === 'session_activity')
-      expect(perSession.at(-1)).toMatchObject({ activity: 'working', sessionId: SESSION_ID })
-    })
-
-    it('does not re-emit session_activity when the activity is unchanged', () => {
+  describe('activity projection (pull)', () => {
+    // The persister no longer pushes session_activity (deleted with the push
+    // machinery in the pull-projection refactor); getSessionActivity is the sole
+    // source of truth and must never broadcast a session_activity SSE event.
+    it('does not broadcast session_activity on markSessionActive', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
-      const before = sseEvents.filter(e => e.type === 'session_activity').length
-      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // still 'working' → no change
-      const after = sseEvents.filter(e => e.type === 'session_activity').length
-      expect(after).toBe(before)
+      expect(sseEvents.filter((e) => e.type === 'session_activity')).toHaveLength(0)
+      expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('working')
     })
 
     // Iddo (review): message_start must NOT optimistically project 'streaming' before
@@ -4272,7 +4261,6 @@ describe('MessagePersister', () => {
     // first text token instead.
     it('keeps a tool-first message on "working" without flipping through "streaming"', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
-      sseEvents.length = 0 // isolate the assistant message
 
       mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
       mockClient._sendMessage({
@@ -4280,8 +4268,6 @@ describe('MessagePersister', () => {
         event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 't1', name: 'Bash' } },
       })
 
-      const activities = sseEvents.filter(e => e.type === 'session_activity').map(e => e.activity)
-      expect(activities).not.toContain('streaming')
       expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('working')
     })
 
@@ -4304,29 +4290,24 @@ describe('MessagePersister', () => {
     // emit reflecting the final state — an intermediate "isActive still true,
     // streaming just cleared" snapshot would briefly read 'working' and race
     // connectors (Slack's async reaction add/remove) into a stuck indicator.
-    it('emits no spurious busy session_activity on a mid-stream error result', () => {
+    it('broadcasts no session_activity and settles to idle on a mid-stream error result', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
       mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
       mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } } }) // → 'streaming'
-      sseEvents.length = 0 // isolate the terminal transition
 
       mockClient._sendMessage({ type: 'result', subtype: 'error', error: 'boom' })
 
-      const activity = sseEvents.filter(e => e.type === 'session_activity')
-      // Old code emitted a busy state (isActive still true) before settling.
-      expect(activity.filter(e => BUSY.has(e.activity))).toHaveLength(0)
-      // The session settles to idle.
+      expect(sseEvents.filter(e => e.type === 'session_activity')).toHaveLength(0)
       expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('idle')
     })
 
     // Same invariant for the connection-closed → markSessionInactive terminal
     // path: finalizeIdle's single non-busy emit covers the settle; clearing
     // streaming/awaiting must not emit a busy activity first.
-    it('emits no spurious busy session_activity when markSessionInactive finalizes a streaming session', async () => {
+    it('broadcasts no session_activity and settles to idle when markSessionInactive finalizes a streaming session', async () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG) // active → 'working'
       mockClient._sendMessage({ type: 'stream_event', event: { type: 'message_start' } })
       mockClient._sendMessage({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } } }) // → 'streaming'
-      sseEvents.length = 0 // isolate the terminal transition
 
       // Default mock getSession() resolves null → handleConnectionClosed marks inactive.
       mockClient._messageCallback!({
@@ -4338,8 +4319,7 @@ describe('MessagePersister', () => {
       // Let getSession().then(...) settle.
       await new Promise((r) => setTimeout(r, 0))
 
-      const activity = sseEvents.filter(e => e.type === 'session_activity')
-      expect(activity.filter(e => BUSY.has(e.activity))).toHaveLength(0)
+      expect(sseEvents.filter(e => e.type === 'session_activity')).toHaveLength(0)
       expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('idle')
     })
   })
