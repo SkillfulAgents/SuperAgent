@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature successfully opens a browser, navigates to example.com, retrieves the page title \"Example Domain\", and closes the browser without errors.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully displaying Gamut application with sidebar containing agents list",
+    "Clicked on \"QA-20260629-211212-yy1r\" agent in sidebar — Agent session page opened showing chat interface with message input field",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field — Message typed successfully and visible in the textbox",
+    "Clicked Send message button — Message sent successfully, agent status changed to \"working\", session created with title \"Browser Page Title Lookup\"",
+    "Waited for agent to complete processing (up to 3 minutes) — Agent completed processing in 13 seconds, status changed back to \"idle\"",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response clearly shows \"The page title is \\\"Example Domain\\\"\" and \"Done — the page at https://example.com has the title \\\"Example Domain\\\". Browser closed.\" Multiple tool calls visible (Open Browser, Browser Get State, Close Browser). Screenshot saved successfully."
+  ],
+  "bugs": [],
+  "durationMs": 72129,
+  "sessionId": "e3acf9b0-53d9-4f10-ac36-ad10701e59ad",
+  "cost": {
+    "inputTokens": 336,
+    "outputTokens": 11031,
+    "cacheCreationTokens": 63361,
+    "cacheReadTokens": 957549,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.230447
+  }
+}
