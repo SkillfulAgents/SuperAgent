@@ -31,6 +31,8 @@ const mockAuthUser = { id: 'attacker-user', name: 'Attacker', email: 'attacker@e
 vi.mock('../middleware/auth', () => ({
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
+  getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
   EntityAgentRole: (opts: any) => (_minRole: string) => async (c: any, next: () => Promise<void>) => {
     const id = c.req.param(opts.paramName)
     const entity = await opts.lookupFn(id)

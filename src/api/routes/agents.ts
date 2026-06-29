@@ -4115,9 +4115,13 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
 agents.get('/:id/files/*', AgentRead(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    // Extract file path from URL - wildcard param can be unreliable in sub-routers
+    // Extract file path from URL - wildcard param can be unreliable in sub-routers.
+    // The prefix must use the RAW :id route param (the display slug as it appears in
+    // the URL), NOT the resolved canonical agentSlug — otherwise startsWith() fails on
+    // a display-slug route and the path comes back empty (400). The resolved id is
+    // only for locating the workspace dir below.
     const urlPath = new URL(c.req.url).pathname
-    const filesPrefix = `/api/agents/${agentSlug}/files/`
+    const filesPrefix = `/api/agents/${c.req.param('id')}/files/`
     const filePath = urlPath.startsWith(filesPrefix)
       ? decodeURIComponent(urlPath.slice(filesPrefix.length))
       : ''
@@ -4519,10 +4523,15 @@ async function proxyArtifactRequest(c: any) {
     return c.json({ error: 'Agent is not running. Start the agent to view this dashboard.' }, 503)
   }
 
-  // Build the container path
+  // Build the container path. The prefix must use the RAW :id route param (the
+  // display slug as it appears in the URL), NOT the resolved canonical agentSlug:
+  // url.pathname still carries the display slug, so an id-based prefix would not be
+  // found (indexOf → -1) and corrupt subPath. The resolved id is only for the
+  // container lookup above.
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const url = new URL(c.req.url)
-  const prefix = `/api/agents/${agentSlug}/artifacts/${artifactSlug}`
+  const routeSlug = c.req.param('id')
+  const prefix = `/api/agents/${routeSlug}/artifacts/${artifactSlug}`
   const subPath = url.pathname.slice(url.pathname.indexOf(prefix) + prefix.length) || '/'
   const containerPath = `/artifacts/${artifactSlug}${subPath}${url.search}`
 

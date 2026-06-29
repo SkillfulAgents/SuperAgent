@@ -36,6 +36,7 @@ import {
 } from '@renderer/hooks/use-scheduled-tasks'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
+import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useRenderTracker } from '@renderer/lib/perf'
 import {
   AlertDialog,
@@ -79,19 +80,26 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   const navigate = useNavigate()
   const { canUseAgent } = useUser()
   const canCancel = canUseAgent(agentSlug)
+  const { data: agents } = useAgents()
 
   // Canonicalize: tasks are addressed globally by id, so /agents/<wrong>/tasks/<id>
   // would render this task under the wrong agent's shell (mismatched chrome,
   // back-links, and canUseAgent gating). Redirect to the task's true agent.
+  //
+  // Compare RESOLVED ids: the route param is the display slug (`{name}-{id}`) while
+  // task.agentSlug is the canonical id, so a raw `!==` would fire on every
+  // correct-agent visit. Wait for the agents list before deciding (an unresolved
+  // slug must not trigger a spurious redirect). Redirect to the canonical id — the
+  // same form agent-home uses to open a task (`params.slug = agent.slug`).
   useEffect(() => {
-    if (task && task.agentSlug !== agentSlug) {
-      void navigate({
-        to: '/agents/$slug/tasks/$taskId',
-        params: { slug: task.agentSlug, taskId },
-        replace: true,
-      })
-    }
-  }, [task, agentSlug, taskId, navigate])
+    if (!task || !agents) return
+    if (task.agentSlug === resolveRouteAgentId(agentSlug, agents)) return
+    void navigate({
+      to: '/agents/$slug/tasks/$taskId',
+      params: { slug: task.agentSlug, taskId },
+      replace: true,
+    })
+  }, [task, agents, agentSlug, taskId, navigate])
   const humanizedCron = useHumanizedCron(task?.isRecurring ? task.scheduleExpression : null)
   const isActive = task?.status === 'pending' || task?.status === 'paused'
   const isPaused = task?.status === 'paused'
@@ -229,8 +237,11 @@ export function ScheduledTaskView({ taskId, agentSlug }: ScheduledTaskViewProps)
   }
 
   // Mismatched shell → the effect above is redirecting; don't render B's task
-  // (or its wrong-slug nested fetches) under A's chrome in the meantime.
-  if (task.agentSlug !== agentSlug) {
+  // (or its wrong-slug nested fetches) under A's chrome in the meantime. Resolve
+  // the route slug first (it's the display slug; task.agentSlug is the id) and only
+  // block once the agents list is loaded — otherwise a correct display-slug visit
+  // would render "Loading…" forever (the effect can't redirect away from it).
+  if (agents && task.agentSlug !== resolveRouteAgentId(agentSlug, agents)) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
         Loading scheduled task...
