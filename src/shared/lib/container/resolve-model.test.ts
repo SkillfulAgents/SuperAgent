@@ -35,6 +35,12 @@ describe('getContainerModelRuntimeConfig modelPromptHints', () => {
 })
 
 describe('getContainerModelRuntimeConfig unsupportedTools', () => {
+  it('returns web tools for Fireworks-hosted Platform models', () => {
+    expect(getContainerModelRuntimeConfig('glm-5.2').unsupportedTools).toEqual([...WEB_SEARCH_TOOLS])
+    expect(getContainerModelRuntimeConfig('kimi-k2.6').unsupportedTools).toEqual([...WEB_SEARCH_TOOLS])
+    expect(getContainerModelRuntimeConfig('kimi-k2.7-code').unsupportedTools).toEqual([...WEB_SEARCH_TOOLS])
+  })
+
   it('returns the web tools for a model that does not support web search', () => {
     // Inject a no-web-search model via catalog overrides for the active provider.
     settingsMock.mockReturnValue({
