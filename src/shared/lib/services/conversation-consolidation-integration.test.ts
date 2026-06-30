@@ -133,20 +133,4 @@ describe('consolidateConversation durable-memory integration', () => {
     expect(prompt).toContain('Running the build now.')
     expect(prompt).toContain('[tool: bash]')
   })
-
-  it('overwrites the same named memory file on a second run (idempotent, not duplicated)', async () => {
-    await writeJsonl('agent-int', 'sess-int-1', [
-      { type: 'user', uuid: 'u1', parentUuid: null, sessionId: 'sess-int-1', timestamp: 't1', message: { role: 'user', content: 'hi' } },
-    ])
-
-    messagesCreate.mockResolvedValue(memoryResponse([{ name: 'pref', description: 'd1', type: 'user', body: 'v1' }], 'r1'))
-    await consolidateConversation(conversation())
-    messagesCreate.mockResolvedValue(memoryResponse([{ name: 'pref', description: 'd2', type: 'user', body: 'v2' }], 'r2'))
-    await consolidateConversation(conversation())
-
-    const memDir = getAgentMemoryDir('agent-int')
-    const files = fs.readdirSync(memDir).filter((f) => f.endsWith('.md') && f !== 'MEMORY.md')
-    expect(files).toEqual(['pref.md'])
-    expect(fs.readFileSync(path.join(memDir, 'pref.md'), 'utf8')).toContain('v2')
-  })
 })

@@ -12,7 +12,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({ containerManager: { 
 vi.mock('@shared/lib/proxy/review-manager', () => ({ reviewManager: { submitDecision: vi.fn() } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 
-import { buildRecapSystemContext, buildChatSystemPrompt } from './chat-integration-manager'
+import { buildChatSystemPrompt } from './chat-integration-manager'
 
 describe('buildChatSystemPrompt', () => {
   it('combines the iMessage prompt and the recap, dropping neither', () => {
@@ -27,33 +27,15 @@ describe('buildChatSystemPrompt', () => {
     expect(out).not.toContain('previous conversation')
   })
 
-  it('returns just the recap for a non-imessage provider', () => {
-    const out = buildChatSystemPrompt('telegram', 'a prior recap')
-    expect(out).toContain('a prior recap')
+  it('wraps a non-imessage recap in a labeled "previous conversation" block, trimmed', () => {
+    const out = buildChatSystemPrompt('telegram', '  a prior recap  ')
     expect(out).not.toContain('iMessage-based conversation')
+    expect(out!.startsWith('Context from the previous conversation')).toBe(true)
+    expect(out!.endsWith('a prior recap')).toBe(true) // surrounding whitespace trimmed
   })
 
   it('returns undefined when there is neither a base prompt nor a recap', () => {
     expect(buildChatSystemPrompt('telegram', null)).toBeUndefined()
-  })
-})
-
-describe('buildRecapSystemContext', () => {
-  it('returns an empty string for null, empty or whitespace-only recaps', () => {
-    expect(buildRecapSystemContext(null)).toBe('')
-    expect(buildRecapSystemContext('')).toBe('')
-    expect(buildRecapSystemContext('   ')).toBe('')
-  })
-
-  it('wraps a recap in a labeled "previous conversation" block', () => {
-    const out = buildRecapSystemContext('User prefers terse replies.')
-    expect(out).toContain('User prefers terse replies.')
-    expect(out.toLowerCase()).toContain('previous conversation')
-    expect(out.startsWith('Context from the previous conversation')).toBe(true)
-  })
-
-  it('trims surrounding whitespace from the recap', () => {
-    const out = buildRecapSystemContext('  hello  ')
-    expect(out.endsWith('hello')).toBe(true)
+    expect(buildChatSystemPrompt('telegram', '   ')).toBeUndefined()
   })
 })

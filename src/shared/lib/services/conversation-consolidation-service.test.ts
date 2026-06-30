@@ -158,17 +158,14 @@ describe('consolidateConversation', () => {
     expect(fs.existsSync(path.join(memoryDir, 'MEMORY.md'))).toBe(false)
   })
 
-  it('commits a fallback on refusal (no throw, no memory write)', async () => {
-    messagesCreate.mockResolvedValue({ stop_reason: 'refusal', content: [] })
+  it.each([
+    { label: 'refusal', resp: { stop_reason: 'refusal', content: [] } },
+    { label: 'max_tokens truncation', resp: { stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"memories":[' }] } },
+  ])('commits an empty fallback on $label (no throw, no memory write)', async ({ resp }) => {
+    messagesCreate.mockResolvedValue(resp)
     await expect(consolidateConversation(makeConversation())).resolves.toBeUndefined()
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
     expect(fs.existsSync(path.join(memoryDir, 'MEMORY.md'))).toBe(false)
-  })
-
-  it('commits a fallback on max_tokens truncation', async () => {
-    messagesCreate.mockResolvedValue({ stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"memories":[' }] })
-    await consolidateConversation(makeConversation())
-    expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
   })
 
   it('commits a fallback when the output is not valid JSON', async () => {
@@ -243,15 +240,12 @@ describe('consolidateConversation', () => {
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
   })
 
-  it('rethrows a transient error (e.g. 529 overloaded) so the sweep retries (no commit)', async () => {
-    messagesCreate.mockRejectedValue(Object.assign(new Error('overloaded'), { status: 529 }))
-    await expect(consolidateConversation(makeConversation())).rejects.toThrow('overloaded')
-    expect(markConsolidatedMock).not.toHaveBeenCalled()
-  })
-
-  it('rethrows a network error with no status so the sweep retries', async () => {
-    messagesCreate.mockRejectedValue(new Error('socket hang up'))
-    await expect(consolidateConversation(makeConversation())).rejects.toThrow('socket hang up')
+  it.each([
+    { label: 'a transient 529 (overloaded)', err: Object.assign(new Error('overloaded'), { status: 529 }), match: 'overloaded' },
+    { label: 'a network error with no status', err: new Error('socket hang up'), match: 'socket hang up' },
+  ])('rethrows $label so the sweep retries (no commit)', async ({ err, match }) => {
+    messagesCreate.mockRejectedValue(err)
+    await expect(consolidateConversation(makeConversation())).rejects.toThrow(match)
     expect(markConsolidatedMock).not.toHaveBeenCalled()
   })
 
@@ -274,12 +268,17 @@ describe('consolidateConversation', () => {
     expect(readIndex()).toContain('](user_role.md)')
   })
 
-  it('updates an existing snake_case pointer instead of appending a duplicate', async () => {
-    fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '- [User Role](user_role.md) - old hook\n')
+  it.each([
+    { label: 'hyphen', line: '- [User Role](user_role.md) - old hook' },
+    { label: 'asterisk (free-form markdown)', line: '* [User Role](user_role.md) — old hook' },
+    { label: 'numbered', line: '1. [User Role](user_role.md) - old hook' },
+  ])('updates an existing $label-bullet snake_case pointer in place instead of duplicating', async ({ line }) => {
+    fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), line + '\n')
     messagesCreate.mockResolvedValue(llmResult([{ name: 'user_role', description: 'new hook', type: 'user', body: 'b' }], 'r'))
     await consolidateConversation(makeConversation())
-    expect(readIndex().split('\n').filter((l) => l.includes('](user_role.md)'))).toHaveLength(1)
-    expect(readIndex()).toContain('new hook')
+    const index = readIndex()
+    expect(index.split('\n').filter((l) => /\(user_role\.md\)/.test(l))).toHaveLength(1)
+    expect(index).toContain('new hook') // the hook text is refreshed on upsert
   })
 
   it('does not overwrite a pointer just because another memory\'s description links to its file', async () => {
@@ -305,13 +304,6 @@ describe('consolidateConversation', () => {
     expect(index).not.toContain('how to handle memory') // body never written into the index itself
     expect(fs.existsSync(path.join(memoryDir, 'memory-note.md'))).toBe(true)
     expect(index).toContain('](memory-note.md)')
-  })
-
-  it('updates a pointer that uses a non-hyphen bullet (agent free-form markdown) instead of duplicating', async () => {
-    fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '* [User Role](user_role.md) — old\n')
-    messagesCreate.mockResolvedValue(llmResult([{ name: 'user_role', description: 'new', type: 'user', body: 'b' }], 'r'))
-    await consolidateConversation(makeConversation())
-    expect(readIndex().split('\n').filter((l) => /\(user_role\.md\)/.test(l))).toHaveLength(1)
   })
 
   it('truncates an over-cap transcript to the most-recent tail before the model call', async () => {

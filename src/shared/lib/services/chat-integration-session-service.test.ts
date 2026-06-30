@@ -159,7 +159,7 @@ describe('chat-integration-session-service', () => {
       expect(result!.sessionId).toBe('session-1')
     })
 
-    it('archives and returns null when session exceeds timeout', () => {
+    it('archives the timed-out session, tags the rotation, and returns null', () => {
       const sessionId = createChatIntegrationSession({
         integrationId,
         externalChatId: 'chat-1',
@@ -176,9 +176,11 @@ describe('chat-integration-session-service', () => {
       const result = resolveActiveSession(integrationId, 'chat-1', 1)
       expect(result).toBeNull()
 
-      // Verify the old session was archived
+      // The old session is archived AND tagged as a timeout rotation (rotatedAt
+      // set), so the consolidation sweep can tell it apart from a /clear.
       const archived = getChatIntegrationSessionById(sessionId)
       expect(archived!.archivedAt).not.toBeNull()
+      expect(archived!.rotatedAt).not.toBeNull()
     })
 
     it('calls onArchive callback when rotating', () => {
@@ -502,19 +504,4 @@ describe('chat-integration-session-service', () => {
     })
   })
 
-  describe('resolveActiveSession tags the timeout rotation', () => {
-    it('sets rotatedAt when a timed-out session is rotated (so the sweep can tell it from /clear)', () => {
-      const id = createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's' })
-      testDb.update(schema.chatIntegrationSessions)
-        .set({ updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000) })
-        .where(eq(schema.chatIntegrationSessions.id, id))
-        .run()
-
-      const result = resolveActiveSession(integrationId, 'c', 1)
-      expect(result).toBeNull()
-      const row = getChatIntegrationSessionById(id)!
-      expect(row.archivedAt).not.toBeNull()
-      expect(row.rotatedAt).not.toBeNull()
-    })
-  })
 })

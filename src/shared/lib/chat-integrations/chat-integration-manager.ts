@@ -2034,23 +2034,18 @@ const RECAP_HEADER =
   'Context from the previous conversation in this chat (the user has not seen this note):'
 
 /**
- * Wrap a prior conversation's recap as a labeled system-context block, or '' when
- * there is no recap. Combined into `createSession`'s systemPrompt (appended by the
- * agent's generateSystemPrompt), never prepended to the user's message.
- */
-export function buildRecapSystemContext(recap: string | null): string {
-  return recap?.trim() ? `${RECAP_HEADER}\n\n${recap.trim()}` : ''
-}
-
-/**
  * Compose a new conversation's systemPrompt from the provider's base prompt (the
- * iMessage rules, when applicable) and the prior-conversation recap. Either may
- * be empty; returns undefined when both are. Keeping this as one function means
- * the two can never be accidentally dropped at the createSession call site.
+ * iMessage rules, when applicable) and the prior-conversation recap, wrapped in a
+ * labeled system-context block. Either part may be empty; returns undefined when
+ * both are. Keeping this as one function means the two can never be accidentally
+ * dropped at the createSession call site. The recap is delivered as appended
+ * system context (by the agent's generateSystemPrompt), never prepended to the
+ * user's message.
  */
 export function buildChatSystemPrompt(provider: string, recap: string | null): string | undefined {
   const baseSystemPrompt = provider === 'imessage' ? IMESSAGE_SYSTEM_PROMPT : ''
-  return [baseSystemPrompt, buildRecapSystemContext(recap)].filter(Boolean).join('\n\n') || undefined
+  const recapBlock = recap?.trim() ? `${RECAP_HEADER}\n\n${recap.trim()}` : ''
+  return [baseSystemPrompt, recapBlock].filter(Boolean).join('\n\n') || undefined
 }
 
 /** Build the session name, appending a timestamp when session rotation is enabled. */
