@@ -1,33 +1,18 @@
 import { defineConfig, devices, chromium } from '@playwright/test'
 import path from 'path'
 
-// Use a separate data directory for E2E tests to avoid polluting production data.
-// CI can override these so suites can keep isolated state and artifacts.
-const defaultE2eDataDir = path.join(__dirname, '.e2e-data', 'web')
+// Wizard tests intentionally mutate onboarding state. Keep that state in a
+// server/data directory that is separate from the main web suite.
+const defaultE2eDataDir = path.join(__dirname, '.e2e-data', 'wizard')
 if (!process.env.SUPERAGENT_DATA_DIR) {
   process.env.SUPERAGENT_DATA_DIR = defaultE2eDataDir
 }
 const e2eDataDir = path.resolve(process.env.SUPERAGENT_DATA_DIR)
-const e2ePort = process.env.E2E_PORT ?? process.env.PORT ?? '3000'
+const e2ePort = process.env.E2E_PORT ?? process.env.PORT ?? '3002'
 const e2eBaseUrl = process.env.E2E_BASE_URL ?? `http://localhost:${e2ePort}`
-const playwrightOutputDir = process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results'
-const playwrightHtmlReportDir = process.env.PLAYWRIGHT_HTML_REPORT ?? 'playwright-report'
-const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
-  ? Number(process.env.PLAYWRIGHT_WORKERS)
-  : undefined
+const playwrightOutputDir = process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results/wizard'
+const playwrightHtmlReportDir = process.env.PLAYWRIGHT_HTML_REPORT ?? 'playwright-report/wizard'
 
-const webTestIgnore = [
-  '**/auth/**',
-  '**/getting-started-wizard.spec.ts',
-]
-
-if (process.env.E2E_INCLUDE_A11Y !== 'true') {
-  webTestIgnore.push('**/a11y-audit.spec.ts')
-}
-
-// Resolve Playwright's bundled Chromium path for the browser streaming E2E test.
-// This allows the mock container to launch a real headless browser without requiring
-// Chrome to be installed on the system (works in GHA).
 let chromiumPath: string | undefined
 try {
   chromiumPath = chromium.executablePath()
@@ -35,8 +20,6 @@ try {
   // Chromium not installed (e.g., `npx playwright install` hasn't been run yet)
 }
 
-// Build a cross-platform webServer command.
-// Unix uses inline `VAR=val cmd`, Windows needs `set VAR=val && cmd`.
 const isWindows = process.platform === 'win32'
 function buildWebServerCommand() {
   const env: Record<string, string> = {
@@ -51,18 +34,19 @@ function buildWebServerCommand() {
     const setVars = Object.entries(env).map(([k, v]) => `set "${k}=${v}"`).join(' && ')
     return `${setVars} && node e2e/setup-e2e-data.js && npm run dev:web`
   }
+
   const inlineVars = Object.entries(env).map(([k, v]) => `${k}="${v}"`).join(' ')
   return `${inlineVars} node e2e/setup-e2e-data.js && ${inlineVars} npm run dev:web`
 }
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/auth/**'],  // Auth tests use separate config (playwright.auth.config.ts)
+  testMatch: '**/getting-started-wizard.spec.ts',
   outputDir: playwrightOutputDir,
-  fullyParallel: true,
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: configuredWorkers && Number.isFinite(configuredWorkers) ? configuredWorkers : 2,
+  workers: 1,
   reporter: [['list'], ['html', { open: 'never', outputFolder: playwrightHtmlReportDir }]],
 
   use: {
@@ -73,16 +57,15 @@ export default defineConfig({
 
   projects: [
     {
-      name: 'web-chromium',
-      testIgnore: webTestIgnore,
+      name: 'wizard',
       use: { ...devices['Desktop Chrome'] },
     },
   ],
 
   webServer: {
     command: buildWebServerCommand(),
-    url: `${e2eBaseUrl}/api/settings`,  // Wait for API to be ready, not just Vite
-    reuseExistingServer: false,  // Always start fresh for E2E tests
+    url: `${e2eBaseUrl}/api/settings`,
+    reuseExistingServer: false,
     timeout: 120000,
     stdout: 'pipe',
   },

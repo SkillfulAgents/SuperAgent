@@ -2,12 +2,22 @@ import { test, expect } from '@playwright/test'
 import fs from 'fs'
 import path from 'path'
 import { AppPage } from '../pages/app.page'
-import { AgentPage } from '../pages/agent.page'
 import { WizardPage } from '../pages/wizard.page'
 
 test.describe.configure({ mode: 'serial' })
 
 const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
+
+function readSettingsJson(settingsJsonPath: string) {
+  try {
+    return JSON.parse(fs.readFileSync(settingsJsonPath, 'utf-8')) as {
+      app?: { hostBrowserProvider?: string }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Failed to read ${settingsJsonPath}: ${message}`)
+  }
+}
 
 /**
  * Manual wizard steps (0-indexed):
@@ -22,12 +32,10 @@ const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?
 test.describe('Getting Started Wizard', () => {
   let appPage: AppPage
   let wizardPage: WizardPage
-  let agentPage: AgentPage
 
   test.beforeEach(async ({ page, request }) => {
     appPage = new AppPage(page)
     wizardPage = new WizardPage(page)
-    agentPage = new AgentPage(page)
 
     // Set a mock API key so the LLM step's Next button is enabled
     await request.put('/api/settings', {
@@ -36,7 +44,7 @@ test.describe('Getting Started Wizard', () => {
   })
 
   test.afterEach(async ({ request }) => {
-    // Restore setupCompleted to true so subsequent test files don't see the wizard
+    // Restore setupCompleted to true so the next wizard test starts clean.
     await request.put('/api/user-settings', {
       data: { setupCompleted: true },
     })
@@ -46,7 +54,7 @@ test.describe('Getting Started Wizard', () => {
     })
   })
 
-  test('auto-opens when setupCompleted is false', async ({ page, request }) => {
+  test('auto-opens when setupCompleted is false', async ({ request }) => {
     // Reset setupCompleted via API so the wizard will auto-open on next load
     await request.put('/api/user-settings', {
       data: { setupCompleted: false },
@@ -78,7 +86,7 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
   })
 
-  test('does not auto-open when setupCompleted is true', async ({ page, request }) => {
+  test('does not auto-open when setupCompleted is true', async ({ request }) => {
     // Ensure setupCompleted is true
     await request.put('/api/user-settings', {
       data: { setupCompleted: true },
@@ -158,7 +166,7 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
   })
 
-  test('skip buttons work on optional steps', async ({ page, request }) => {
+  test('skip buttons work on optional steps', async ({ request }) => {
     await request.put('/api/user-settings', {
       data: { setupCompleted: false },
     })
@@ -193,7 +201,7 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
   })
 
-  test('sets setupCompleted after finishing', async ({ page, request }) => {
+  test('sets setupCompleted after finishing', async ({ request }) => {
     await request.put('/api/user-settings', {
       data: { setupCompleted: false },
     })
@@ -286,11 +294,11 @@ test.describe('Getting Started Wizard', () => {
 
     // Also validate on-disk settings.json to rule out an API-only illusion
     const settingsJsonPath = path.join(e2eDataDir, 'settings.json')
-    const onDisk = JSON.parse(fs.readFileSync(settingsJsonPath, 'utf-8'))
+    const onDisk = readSettingsJson(settingsJsonPath)
     expect(onDisk.app?.hostBrowserProvider).toBe('chrome')
   })
 
-  test('re-run wizard button opens wizard from settings', async ({ page, request }) => {
+  test('re-run wizard button opens wizard from settings', async ({ request }) => {
     // Ensure setup is completed so wizard doesn't auto-open
     await request.put('/api/user-settings', {
       data: { setupCompleted: true },

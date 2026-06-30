@@ -106,10 +106,22 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
+      - name: Run Wizard E2E suite
+        env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/wizard
+          PLAYWRIGHT_OUTPUT_DIR: test-results/wizard
+          PLAYWRIGHT_HTML_REPORT: playwright-report/wizard
+        run: npm run test:e2e:wizard
+
       - name: Run Playwright E2E suites
         env:
+          PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/web
           PLAYWRIGHT_WORKERS: '2'
-        run: PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data PLAYWRIGHT_WORKERS=$PLAYWRIGHT_WORKERS PLAYWRIGHT_OUTPUT_DIR=test-results/web PLAYWRIGHT_HTML_REPORT=playwright-report/web npm run test:e2e
+          PLAYWRIGHT_OUTPUT_DIR: test-results/web
+          PLAYWRIGHT_HTML_REPORT: playwright-report/web
+        run: npm run test:e2e
 
       - name: Upload Playwright artifacts
         if: always()
