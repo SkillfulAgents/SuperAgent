@@ -84,8 +84,8 @@ export class AppPage {
   async waitForAgentsLoaded() {
     // Wait for sidebar to be visible first
     await this.waitForAppLoaded()
-    // Dismiss wizard if it auto-opened (safety net for clean test state)
-    await this.dismissWizardIfVisible()
+    // Broad safety net: keep this short because the main suite seeds setup as complete.
+    await this.dismissWizardIfVisible(500)
     // Wait for the app to be interactive (create agent button visible).
     // If the wizard appeared after our check (race with parallel tests),
     // try dismissing it once more.
@@ -93,7 +93,7 @@ export class AppPage {
     try {
       await expect(createBtn).toBeVisible({ timeout: 3000 })
     } catch {
-      await this.dismissWizardIfVisible()
+      await this.dismissWizardIfVisible(500)
       await expect(createBtn).toBeVisible()
     }
   }
