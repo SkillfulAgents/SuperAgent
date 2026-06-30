@@ -109,9 +109,7 @@ jobs:
       - name: Run Playwright E2E suites
         env:
           PLAYWRIGHT_WORKERS: '2'
-        run: |
-          PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data PLAYWRIGHT_WORKERS=1 PLAYWRIGHT_OUTPUT_DIR=test-results/stateful PLAYWRIGHT_HTML_REPORT=playwright-report/stateful npm run test:e2e:stateful
-          PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data PLAYWRIGHT_WORKERS=$PLAYWRIGHT_WORKERS PLAYWRIGHT_OUTPUT_DIR=test-results/web PLAYWRIGHT_HTML_REPORT=playwright-report/web npm run test:e2e:web
+        run: PORT=3000 SUPERAGENT_DATA_DIR=.e2e-data PLAYWRIGHT_WORKERS=$PLAYWRIGHT_WORKERS PLAYWRIGHT_OUTPUT_DIR=test-results/web PLAYWRIGHT_HTML_REPORT=playwright-report/web npm run test:e2e
 
       - name: Upload Playwright artifacts
         if: always()
