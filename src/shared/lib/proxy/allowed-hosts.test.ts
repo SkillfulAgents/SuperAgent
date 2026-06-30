@@ -1,5 +1,35 @@
 import { describe, it, expect } from 'vitest'
-import { isHostAllowed, TOOLKIT_ALLOWED_HOSTS } from './allowed-hosts'
+import { isHostAllowed, matchesHostPatterns, TOOLKIT_ALLOWED_HOSTS } from './allowed-hosts'
+
+describe('matchesHostPatterns', () => {
+  it('matches an exact host', () => {
+    expect(matchesHostPatterns('api.github.com', ['api.github.com'])).toBe(true)
+  })
+
+  it('rejects a non-matching host', () => {
+    expect(matchesHostPatterns('evil.com', ['api.github.com'])).toBe(false)
+  })
+
+  it('matches a subdomain for a *. wildcard', () => {
+    expect(matchesHostPatterns('myorg.atlassian.net', ['*.atlassian.net'])).toBe(true)
+  })
+
+  it('rejects the bare domain for a *. wildcard', () => {
+    expect(matchesHostPatterns('atlassian.net', ['*.atlassian.net'])).toBe(false)
+  })
+
+  it('rejects a suffix-spoof that is not a real subdomain', () => {
+    expect(matchesHostPatterns('evil-atlassian.net', ['*.atlassian.net'])).toBe(false)
+  })
+
+  it('returns false for an empty pattern list', () => {
+    expect(matchesHostPatterns('anything.com', [])).toBe(false)
+  })
+
+  it('matches when any pattern in the list matches', () => {
+    expect(matchesHostPatterns('api.x.com', ['api.twitter.com', 'api.x.com'])).toBe(true)
+  })
+})
 
 describe('isHostAllowed', () => {
   it('allows known hosts for gmail toolkit', () => {

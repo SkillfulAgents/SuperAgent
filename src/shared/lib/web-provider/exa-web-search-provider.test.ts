@@ -4,6 +4,12 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: vi.fn(() => ({ apiKeys: { exaApiKey: 'test-key' } })),
 }))
 
+// Keep real retry logic but with zero backoff so retry behavior is exercised instantly.
+vi.mock('@shared/lib/utils/retry', async (orig) => {
+  const actual = await orig<typeof import('@shared/lib/utils/retry')>()
+  return { ...actual, withRetry: (fn: () => Promise<unknown>, max?: number) => actual.withRetry(fn, max, 0) }
+})
+
 import { getSettings } from '@shared/lib/config/settings'
 import { ExaWebSearchProvider, mapExaSearchResponse } from './exa-web-search-provider'
 
@@ -18,6 +24,20 @@ function mockFetch(json: unknown, { ok = true, status = 200 }: { ok?: boolean; s
     statusText: ok ? 'OK' : 'Error',
     json: async () => json,
   })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
+function mockFetchSequence(responses: Array<{ json?: unknown; ok?: boolean; status?: number }>) {
+  const fetchMock = vi.fn()
+  for (const r of responses) {
+    fetchMock.mockResolvedValueOnce({
+      ok: r.ok ?? true,
+      status: r.status ?? 200,
+      statusText: (r.ok ?? true) ? 'OK' : 'Error',
+      json: async () => r.json ?? {},
+    })
+  }
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }
@@ -131,9 +151,29 @@ describe('ExaWebSearchProvider.search', () => {
     await expect(new ExaWebSearchProvider().search('q', {})).rejects.toThrow(/key/i)
   })
 
-  it('throws when Exa returns a non-2xx response', async () => {
-    mockFetch({ error: 'rate limited' }, { ok: false, status: 429 })
-    await expect(new ExaWebSearchProvider().search('q', {})).rejects.toThrow(/429/)
+  it('retries once on a 429 then succeeds', async () => {
+    const fetchMock = mockFetchSequence([
+      { ok: false, status: 429 },
+      { ok: true, status: 200, json: { results: [{ url: 'https://r.com', title: 'R', highlights: ['hit'] }] } },
+    ])
+    const res = await new ExaWebSearchProvider().search('q', {})
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(res.hits[0].url).toBe('https://r.com')
+  })
+
+  it('throws after the retry is exhausted on persistent 5xx', async () => {
+    const fetchMock = mockFetchSequence([
+      { ok: false, status: 503 },
+      { ok: false, status: 503 },
+    ])
+    await expect(new ExaWebSearchProvider().search('q', {})).rejects.toThrow(/503/)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does NOT retry a 4xx config error (e.g. 401)', async () => {
+    const fetchMock = mockFetchSequence([{ ok: false, status: 401 }])
+    await expect(new ExaWebSearchProvider().search('q', {})).rejects.toThrow(/401/)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
 

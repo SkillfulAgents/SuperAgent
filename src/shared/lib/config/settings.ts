@@ -202,6 +202,8 @@ export interface AppSettings {
   apiKeys?: ApiKeySettings
   llmProvider?: LlmProviderId
   webSearchProvider?: WebSearchProviderId // default 'native' (no host vendor; Anthropic server-side tools)
+  webAllowedSites?: string[] // operator allow list; empty = allow all (host-side must-enforce, §8)
+  webBlockedSites?: string[] // operator deny list; wins over allow
   app?: AppPreferences
   models?: ModelSettings
   modelCatalog?: ModelCatalogSettings
@@ -417,6 +419,8 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     apiKeys: loaded.apiKeys,
     llmProvider: loaded.llmProvider,
     webSearchProvider: loaded.webSearchProvider,
+    webAllowedSites: loaded.webAllowedSites,
+    webBlockedSites: loaded.webBlockedSites,
     models: (() => {
       const merged = { ...DEFAULT_SETTINGS.models!, ...loaded.models }
       // One-time normalization of legacy concrete defaults → bare aliases.
