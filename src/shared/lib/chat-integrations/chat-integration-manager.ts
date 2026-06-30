@@ -960,9 +960,7 @@ class ChatIntegrationManager {
     // Seed the new conversation with the prior conversation's recap (timeout
     // rotations only; null otherwise). Delivered as appended system context, not
     // in the user's message, and combined with the iMessage prompt when present.
-    const recapContext = buildRecapSystemContext(getLatestTimeoutRecap(integration.id, chatId))
-    const baseSystemPrompt = integration.provider === 'imessage' ? IMESSAGE_SYSTEM_PROMPT : ''
-    const systemPrompt = [baseSystemPrompt, recapContext].filter(Boolean).join('\n\n') || undefined
+    const systemPrompt = buildChatSystemPrompt(integration.provider, getLatestTimeoutRecap(integration.id, chatId))
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
@@ -2042,6 +2040,17 @@ const RECAP_HEADER =
  */
 export function buildRecapSystemContext(recap: string | null): string {
   return recap?.trim() ? `${RECAP_HEADER}\n\n${recap.trim()}` : ''
+}
+
+/**
+ * Compose a new conversation's systemPrompt from the provider's base prompt (the
+ * iMessage rules, when applicable) and the prior-conversation recap. Either may
+ * be empty; returns undefined when both are. Keeping this as one function means
+ * the two can never be accidentally dropped at the createSession call site.
+ */
+export function buildChatSystemPrompt(provider: string, recap: string | null): string | undefined {
+  const baseSystemPrompt = provider === 'imessage' ? IMESSAGE_SYSTEM_PROMPT : ''
+  return [baseSystemPrompt, buildRecapSystemContext(recap)].filter(Boolean).join('\n\n') || undefined
 }
 
 /** Build the session name, appending a timestamp when session rotation is enabled. */
