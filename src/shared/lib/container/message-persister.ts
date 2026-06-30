@@ -113,9 +113,17 @@ interface StreamingState {
 // Lazy import to break circular dependency: container-manager -> message-persister
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _containerManagerModule: any = null
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _containerManagerImport: Promise<any> | null = null
 async function getContainerManager() {
   if (!_containerManagerModule) {
-    _containerManagerModule = await import('./container-manager')
+    // Cache the in-flight import promise, not just the resolved module: concurrent
+    // callers (e.g. a fire-and-forget tool handler resolving while cancelAwaitingInput
+    // rejects) would otherwise each see a null module and start their own
+    // import('./container-manager'), racing redundant dynamic imports of a module
+    // that sits on the container-manager <-> message-persister circular edge.
+    if (!_containerManagerImport) _containerManagerImport = import('./container-manager')
+    _containerManagerModule = await _containerManagerImport
   }
   return _containerManagerModule.containerManager
 }
