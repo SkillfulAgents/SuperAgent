@@ -29,6 +29,11 @@ import {
   archiveChatIntegrationSession,
   resolveActiveSession,
   getLastDisplayName,
+  isSessionTimedOut,
+  rotateChatIntegrationSession,
+  markConversationConsolidated,
+  listConsolidationCandidates,
+  getLatestTimeoutRecap,
 } from './chat-integration-session-service'
 import { createChatIntegration } from './chat-integration-service'
 
@@ -374,6 +379,142 @@ describe('chat-integration-session-service', () => {
       })
 
       expect(getLastDisplayName(integrationId, 'chat-1')).toBeUndefined()
+    })
+  })
+
+  describe('isSessionTimedOut (exported)', () => {
+    it('is false when no timeout is configured', () => {
+      const old = { updatedAt: new Date(Date.now() - 10 * 60 * 60 * 1000), createdAt: new Date() }
+      expect(isSessionTimedOut(old, null)).toBe(false)
+      expect(isSessionTimedOut(old, 0)).toBe(false)
+      expect(isSessionTimedOut(old, undefined)).toBe(false)
+    })
+
+    it('is true past the threshold and false within it', () => {
+      const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
+      expect(isSessionTimedOut({ updatedAt: threeHoursAgo, createdAt: threeHoursAgo }, 1)).toBe(true)
+      const recent = { updatedAt: new Date(Date.now() - 10 * 60 * 1000), createdAt: new Date() }
+      expect(isSessionTimedOut(recent, 1)).toBe(false)
+    })
+  })
+
+  describe('rotateChatIntegrationSession', () => {
+    it('sets archivedAt AND rotatedAt', () => {
+      const id = createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's' })
+      expect(rotateChatIntegrationSession(id)).toBe(true)
+      const row = getChatIntegrationSessionById(id)!
+      expect(row.archivedAt).not.toBeNull()
+      expect(row.rotatedAt).not.toBeNull()
+    })
+
+    it('returns false for a missing row', () => {
+      expect(rotateChatIntegrationSession('nope')).toBe(false)
+    })
+  })
+
+  describe('archiveChatIntegrationSession does not tag a rotation', () => {
+    it('leaves rotatedAt null (so /clear, self-heal and revoke are excluded)', () => {
+      const id = createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's' })
+      archiveChatIntegrationSession(id)
+      const row = getChatIntegrationSessionById(id)!
+      expect(row.archivedAt).not.toBeNull()
+      expect(row.rotatedAt).toBeNull()
+    })
+  })
+
+  describe('markConversationConsolidated', () => {
+    it('sets recap + consolidatedAt and is an atomic no-op the second time', () => {
+      const id = createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's' })
+      expect(markConversationConsolidated(id, 'recap one')).toBe(true)
+      const first = getChatIntegrationSessionById(id)!
+      expect(first.recap).toBe('recap one')
+      expect(first.consolidatedAt).not.toBeNull()
+
+      // The WHERE consolidated_at IS NULL guard makes a re-commit a no-op.
+      expect(markConversationConsolidated(id, 'recap two')).toBe(false)
+      const second = getChatIntegrationSessionById(id)!
+      expect(second.recap).toBe('recap one')
+    })
+
+    it('does not touch archivedAt or rotatedAt', () => {
+      const id = createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's' })
+      markConversationConsolidated(id, 'recap')
+      const row = getChatIntegrationSessionById(id)!
+      expect(row.archivedAt).toBeNull()
+      expect(row.rotatedAt).toBeNull()
+    })
+  })
+
+  describe('listConsolidationCandidates', () => {
+    it('returns only rows with consolidatedAt null for the integration', () => {
+      const a = createChatIntegrationSession({ integrationId, externalChatId: 'c1', sessionId: 's1' })
+      const b = createChatIntegrationSession({ integrationId, externalChatId: 'c2', sessionId: 's2' })
+      markConversationConsolidated(b, 'done')
+
+      const ids = listConsolidationCandidates(integrationId).map((r) => r.id)
+      expect(ids).toContain(a)
+      expect(ids).not.toContain(b)
+    })
+  })
+
+  describe('getLatestTimeoutRecap', () => {
+    it('returns null when there is no archived row', () => {
+      createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's' })
+      expect(getLatestTimeoutRecap(integrationId, 'c')).toBeNull()
+    })
+
+    it('returns the recap of the most-recent timeout-rotated row', () => {
+      const id = createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's' })
+      rotateChatIntegrationSession(id)
+      markConversationConsolidated(id, 'banked recap')
+      expect(getLatestTimeoutRecap(integrationId, 'c')).toBe('banked recap')
+    })
+
+    it('returns null when the rotated row is not yet consolidated (recap still null)', () => {
+      const id = createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's' })
+      rotateChatIntegrationSession(id)
+      expect(getLatestTimeoutRecap(integrationId, 'c')).toBeNull()
+    })
+
+    it('returns null when the most-recent archive is a /clear, without falling back to an older rotated recap', () => {
+      // Older conversation: timeout-rotated and consolidated, so it carries a recap.
+      const older = createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's-old' })
+      rotateChatIntegrationSession(older)
+      markConversationConsolidated(older, 'stale recap from two conversations ago')
+      testDb.update(schema.chatIntegrationSessions)
+        .set({ archivedAt: new Date(Date.now() - 60 * 60 * 1000) })
+        .where(eq(schema.chatIntegrationSessions.id, older))
+        .run()
+
+      // Newer conversation: a /clear archive — rotatedAt stays null.
+      const newer = createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's-new' })
+      archiveChatIntegrationSession(newer)
+
+      // Most-recent archive is the /clear, so no seed and no fallback to the older recap.
+      expect(getLatestTimeoutRecap(integrationId, 'c')).toBeNull()
+    })
+
+    it('ignores rotated recaps from other chats', () => {
+      const other = createChatIntegrationSession({ integrationId, externalChatId: 'other', sessionId: 's' })
+      rotateChatIntegrationSession(other)
+      markConversationConsolidated(other, 'other chat recap')
+      expect(getLatestTimeoutRecap(integrationId, 'c')).toBeNull()
+    })
+  })
+
+  describe('resolveActiveSession tags the timeout rotation', () => {
+    it('sets rotatedAt when a timed-out session is rotated (so the sweep can tell it from /clear)', () => {
+      const id = createChatIntegrationSession({ integrationId, externalChatId: 'c', sessionId: 's' })
+      testDb.update(schema.chatIntegrationSessions)
+        .set({ updatedAt: new Date(Date.now() - 3 * 60 * 60 * 1000) })
+        .where(eq(schema.chatIntegrationSessions.id, id))
+        .run()
+
+      const result = resolveActiveSession(integrationId, 'c', 1)
+      expect(result).toBeNull()
+      const row = getChatIntegrationSessionById(id)!
+      expect(row.archivedAt).not.toBeNull()
+      expect(row.rotatedAt).not.toBeNull()
     })
   })
 })

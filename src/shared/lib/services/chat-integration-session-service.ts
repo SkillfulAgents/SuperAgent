@@ -4,7 +4,7 @@
  * Each integration can have multiple chat sessions (e.g. multiple users DMing the same Slack bot).
  */
 
-import { eq, and, isNull, desc } from 'drizzle-orm'
+import { eq, and, isNull, isNotNull, desc } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegrationSession, NewChatIntegrationSession } from '@shared/lib/db/schema'
@@ -132,14 +132,17 @@ export function resolveActiveSession(
 
   if (isSessionTimedOut(session, timeoutHours)) {
     onArchive?.(session.id)
-    archiveChatIntegrationSession(session.id)
+    // Tag this as a timeout rotation (not a /clear, self-heal or revoke) so the
+    // consolidation sweep can target it. The lazy path stays archive-only — it
+    // never consolidates here, to avoid adding latency to the user's message.
+    rotateChatIntegrationSession(session.id)
     return null
   }
 
   return session
 }
 
-function isSessionTimedOut(
+export function isSessionTimedOut(
   session: { updatedAt: Date | null; createdAt: Date },
   timeoutHours: number | null | undefined,
 ): boolean {
@@ -169,6 +172,73 @@ export function archiveChatIntegrationSession(id: string): boolean {
     .where(eq(chatIntegrationSessions.id, id))
     .run()
   return result.changes > 0
+}
+
+/**
+ * Archive a session AND tag it as a sessionTimeout rotation (`rotatedAt`).
+ *
+ * Used ONLY by the timeout path in `resolveActiveSession`. The `rotatedAt`
+ * marker is what lets the consolidation sweep act on timeout rotations while
+ * ignoring `/clear`, self-heal and revocation archives (which leave it null).
+ */
+export function rotateChatIntegrationSession(id: string): boolean {
+  const now = new Date()
+  const result = db.update(chatIntegrationSessions)
+    .set({ archivedAt: now, rotatedAt: now, updatedAt: now })
+    .where(eq(chatIntegrationSessions.id, id))
+    .run()
+  return result.changes > 0
+}
+
+// ── Consolidation ────────────────────────────────────────────────────────
+
+/**
+ * Atomically commit a conversation's consolidation: stash its `recap` and set
+ * `consolidatedAt`. The `consolidated_at IS NULL` guard makes this idempotent —
+ * a crash-retry that re-writes durable memory then re-commits is a no-op, and
+ * there is no second writer to race. Returns true only on the committing call.
+ */
+export function markConversationConsolidated(id: string, recap: string): boolean {
+  const result = db.update(chatIntegrationSessions)
+    .set({ recap, consolidatedAt: new Date() })
+    .where(and(
+      eq(chatIntegrationSessions.id, id),
+      isNull(chatIntegrationSessions.consolidatedAt),
+    ))
+    .run()
+  return result.changes > 0
+}
+
+/** All not-yet-consolidated sessions for an integration (the sweep's input set). */
+export function listConsolidationCandidates(integrationId: string): ChatIntegrationSession[] {
+  return db.select().from(chatIntegrationSessions)
+    .where(and(
+      eq(chatIntegrationSessions.integrationId, integrationId),
+      isNull(chatIntegrationSessions.consolidatedAt),
+    ))
+    .all()
+}
+
+/**
+ * The recap that should seed the next conversation in this chat: the `recap` of
+ * the single most-recent archived row, but ONLY if that row is a timeout
+ * rotation. If the most-recent archive is a `/clear`, self-heal or revoke
+ * (rotatedAt null), return null — do NOT fall back to an older rotated recap,
+ * since a recap from two conversations ago is stale.
+ */
+export function getLatestTimeoutRecap(integrationId: string, externalChatId: string): string | null {
+  const rows = db.select().from(chatIntegrationSessions)
+    .where(and(
+      eq(chatIntegrationSessions.integrationId, integrationId),
+      eq(chatIntegrationSessions.externalChatId, externalChatId),
+      isNotNull(chatIntegrationSessions.archivedAt),
+    ))
+    .orderBy(desc(chatIntegrationSessions.archivedAt), desc(chatIntegrationSessions.createdAt))
+    .limit(1)
+    .all()
+  const latest = rows[0]
+  if (!latest || latest.rotatedAt == null) return null
+  return latest.recap ?? null
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────
