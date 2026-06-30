@@ -137,25 +137,33 @@ async function readMemoryIndex(memoryDir: string): Promise<string> {
 }
 
 /**
- * Sanitize a model-provided memory name into a safe kebab-case file slug.
- * Strips anything that could escape the memory dir (`/`, `.`, `..`). Returns ''
- * for a name that sanitizes to nothing, which the caller skips.
+ * Sanitize a model-provided memory name into a safe file slug. Preserves
+ * underscores so the agent's own snake_case filenames (e.g. `user_role.md`,
+ * per system-prompt.md) round-trip and dedupe by name rather than spawning a
+ * kebab duplicate. Strips anything that could escape the memory dir (`/`, `.`,
+ * `..`). Returns '' for a name that sanitizes to nothing, which the caller skips.
  */
 function slugifyMemoryName(name: string): string {
   return name
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/[^a-z0-9_]+/g, '-')
+    .replace(/^[-_]+|[-_]+$/g, '')
     .slice(0, 80)
 }
 
-/** Title-case a slug for the MEMORY.md link text. */
+/** Title-case a slug (kebab or snake) for the MEMORY.md link text. */
 function titleFromSlug(slug: string): string {
   return slug
-    .split('-')
+    .split(/[-_]/)
     .filter(Boolean)
     .map((w) => w[0].toUpperCase() + w.slice(1))
     .join(' ')
+}
+
+/** The file a MEMORY.md pointer line targets (its FIRST markdown link), or null. */
+function pointerTarget(line: string): string | null {
+  const match = line.match(/^\s*- \[[^\]]*\]\(([^)]+)\)/)
+  return match ? match[1] : null
 }
 
 /** Collapse a one-line field to a single line (frontmatter / index safety). */
@@ -175,13 +183,18 @@ ${memory.body.trim()}
 `
 }
 
-/** Upsert a one-line pointer for `file` into the MEMORY.md index. */
+/**
+ * Upsert a one-line pointer for `file` into the MEMORY.md index. Matches an
+ * existing pointer by its FIRST markdown link (the pointer target), NOT a naive
+ * substring, so a description that happens to contain `](other.md)` can't be
+ * mistaken for that other memory's pointer line.
+ */
 function upsertMemoryPointer(index: string, file: string, title: string, description: string): string {
   const line = `- [${title}](${file}) - ${oneLine(description)}`
   const lines = index.split('\n')
   // Drop trailing blank lines so the join below controls the final newline.
   while (lines.length && lines[lines.length - 1].trim() === '') lines.pop()
-  const existing = lines.findIndex((l) => l.includes(`](${file})`))
+  const existing = lines.findIndex((l) => pointerTarget(l) === file)
   if (existing >= 0) lines[existing] = line
   else lines.push(line)
   return lines.join('\n') + '\n'
@@ -193,17 +206,33 @@ function upsertMemoryPointer(index: string, file: string, title: string, descrip
  * Idempotent: re-running overwrites the same files and updates the same pointers.
  */
 async function writeConsolidatedMemories(agentSlug: string, memories: ConsolidationMemory[]): Promise<void> {
-  const written = memories
-    .map((m) => ({ m, slug: slugifyMemoryName(m.name) }))
-    .filter(({ slug }) => slug.length > 0)
+  // Dedupe within this batch: two names that slugify identically would otherwise
+  // clobber each other's file silently. First write wins.
+  const seen = new Set<string>()
+  const written: Array<{ m: ConsolidationMemory; slug: string }> = []
+  for (const m of memories) {
+    const slug = slugifyMemoryName(m.name)
+    if (!slug || seen.has(slug)) continue
+    seen.add(slug)
+    written.push({ m, slug })
+  }
   if (written.length === 0) return
 
   const dir = getAgentMemoryDir(agentSlug)
   await fs.mkdir(dir, { recursive: true })
 
-  let index = await readMemoryIndex(dir)
+  // Write the uniquely-named memory files first; they don't contend the index.
   for (const { m, slug } of written) {
     await fs.writeFile(path.join(dir, `${slug}.md`), buildMemoryFile(m, slug), 'utf8')
+  }
+  // Then update the shared MEMORY.md in the tightest possible window — read
+  // fresh, upsert in memory, write — so there is no awaited I/O between the read
+  // and the write. The host sweep is single-threaded; this narrows but cannot
+  // fully close the cross-process race with the in-container agent writing the
+  // same file. Accepted: consolidation only runs on hours-idle conversations, so
+  // a sibling conversation writing memory at that same instant is rare.
+  let index = await readMemoryIndex(dir)
+  for (const { m, slug } of written) {
     index = upsertMemoryPointer(index, `${slug}.md`, titleFromSlug(slug), m.description)
   }
   await fs.writeFile(path.join(dir, MEMORY_INDEX_FILE), index, 'utf8')

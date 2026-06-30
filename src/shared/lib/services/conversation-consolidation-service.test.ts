@@ -246,6 +246,44 @@ describe('consolidateConversation', () => {
     expect(markConsolidatedMock).not.toHaveBeenCalled()
   })
 
+  it('does not let two same-slug memories in one response clobber each other (keeps first, one pointer)', async () => {
+    messagesCreate.mockResolvedValue(llmResult([
+      { name: 'API keys', description: 'd1', type: 'reference', body: 'FIRST' },
+      { name: 'api-keys', description: 'd2', type: 'reference', body: 'SECOND' },
+    ], 'r'))
+    await consolidateConversation(makeConversation())
+    const files = fs.readdirSync(memoryDir).filter((f) => f.endsWith('.md') && f !== 'MEMORY.md')
+    expect(files).toEqual(['api-keys.md'])
+    expect(fs.readFileSync(memFile('api-keys'), 'utf8')).toContain('FIRST')
+    expect(readIndex().split('\n').filter((l) => l.includes('](api-keys.md)'))).toHaveLength(1)
+  })
+
+  it('preserves underscores in the slug (round-trips the agent\'s snake_case filenames)', async () => {
+    messagesCreate.mockResolvedValue(llmResult([{ name: 'user_role', description: 'd', type: 'user', body: 'b' }], 'r'))
+    await consolidateConversation(makeConversation())
+    expect(fs.existsSync(memFile('user_role'))).toBe(true)
+    expect(readIndex()).toContain('](user_role.md)')
+  })
+
+  it('updates an existing snake_case pointer instead of appending a duplicate', async () => {
+    fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '- [User Role](user_role.md) - old hook\n')
+    messagesCreate.mockResolvedValue(llmResult([{ name: 'user_role', description: 'new hook', type: 'user', body: 'b' }], 'r'))
+    await consolidateConversation(makeConversation())
+    expect(readIndex().split('\n').filter((l) => l.includes('](user_role.md)'))).toHaveLength(1)
+    expect(readIndex()).toContain('new hook')
+  })
+
+  it('does not overwrite a pointer just because another memory\'s description links to its file', async () => {
+    fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '- [Alpha](alpha.md) - see [the note](beta.md)\n')
+    messagesCreate.mockResolvedValue(llmResult([{ name: 'beta', description: 'beta hook', type: 'user', body: 'b' }], 'r'))
+    await consolidateConversation(makeConversation())
+    const index = readIndex()
+    // Alpha's line (whose description contains a beta.md link) must survive...
+    expect(index).toContain('- [Alpha](alpha.md) - see [the note](beta.md)')
+    // ...and beta is added as its own distinct pointer line.
+    expect(index.split('\n').filter((l) => /^- \[[^\]]*\]\(beta\.md\)/.test(l))).toHaveLength(1)
+  })
+
   it('truncates an over-cap transcript to the most-recent tail before the model call', async () => {
     const big = 'A'.repeat(500_000)
     getSessionMessagesMock.mockResolvedValue([userEntry(big), userEntry('RECENT_TAIL_MARKER')])
