@@ -9,6 +9,7 @@ import { BaseWebSearchProvider } from './base-web-search-provider'
 import type { WebSearchProviderId } from './types'
 import {
   clearWebSearchProviders,
+  findWebSearchProvider,
   getActiveWebSearchProvider,
   getWebSearchProvider,
   registerWebSearchProvider,
@@ -45,6 +46,18 @@ describe('web-search provider registry', () => {
 
   it('throws when getting an unregistered provider', () => {
     expect(() => getWebSearchProvider('exa')).toThrow()
+  })
+})
+
+describe('findWebSearchProvider', () => {
+  it('returns the registered provider for a known id string', () => {
+    const p = new FakeExa()
+    registerWebSearchProvider(p)
+    expect(findWebSearchProvider('exa')).toBe(p)
+  })
+
+  it('returns null for an unknown id string (no throw)', () => {
+    expect(findWebSearchProvider('bogus')).toBeNull()
   })
 })
 

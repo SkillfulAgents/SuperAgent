@@ -33,7 +33,13 @@ import {
 import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
-import { ExaWebSearchProvider } from '@shared/lib/web-provider'
+import {
+  ExaWebSearchProvider,
+  FirecrawlWebSearchProvider,
+  ParallelWebSearchProvider,
+  YouComWebSearchProvider,
+  findWebSearchProvider,
+} from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
@@ -203,6 +209,9 @@ const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
   'nangoSecretKey',
   'accountProviderUserId',
   'exaApiKey',
+  'parallelApiKey',
+  'youComApiKey',
+  'firecrawlApiKey',
 ]
 
 // GET /api/settings/llm-providers/:providerId/models/search - Provider-native model discovery
@@ -304,6 +313,9 @@ function buildSettingsResponse(
       deepgram: getSttProvider('deepgram').getApiKeyStatus(),
       openai: getSttProvider('openai').getApiKeyStatus(),
       exa: new ExaWebSearchProvider().getApiKeyStatus(),
+      parallel: new ParallelWebSearchProvider().getApiKeyStatus(),
+      youcom: new YouComWebSearchProvider().getApiKeyStatus(),
+      firecrawl: new FirecrawlWebSearchProvider().getApiKeyStatus(),
     },
     models: getEffectiveModels(),
     agentLimits: getEffectiveAgentLimits(),
@@ -822,14 +834,22 @@ settings.post('/validate-stt-key', async (c) => {
   }
 })
 
-// POST /api/settings/validate-exa-key - Validate an Exa web search API key
-settings.post('/validate-exa-key', async (c) => {
+// POST /api/settings/validate-web-search-key - Validate a web search vendor API key.
+// Dispatches by `provider` through the registry, so a new vendor needs zero changes here.
+settings.post('/validate-web-search-key', async (c) => {
   try {
-    const { apiKey } = await c.req.json()
+    const { provider, apiKey } = await c.req.json()
     if (!apiKey || typeof apiKey !== 'string') {
       return c.json({ valid: false, error: 'API key is required' }, 400)
     }
-    const result = await new ExaWebSearchProvider().validateKey(apiKey)
+    if (!provider || typeof provider !== 'string' || provider === 'native') {
+      return c.json({ valid: false, error: 'A web search vendor is required' }, 400)
+    }
+    const webProvider = findWebSearchProvider(provider)
+    if (!webProvider) {
+      return c.json({ valid: false, error: `Unknown web search provider: ${provider}` }, 400)
+    }
+    const result = await webProvider.validateKey(apiKey)
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Validation failed'

@@ -74,6 +74,9 @@ export interface UpdateSettingsParams {
     nangoSecretKey?: string
     accountProviderUserId?: string
     exaApiKey?: string
+    parallelApiKey?: string
+    youComApiKey?: string
+    firecrawlApiKey?: string
   }
   models?: Partial<ModelSettings>
   modelCatalog?: ModelCatalogSettings

@@ -5,7 +5,7 @@
 
 // 'native' is the default sentinel (Anthropic server-side tools, no host provider);
 // 'exa' is the v1 reference. Other vendors join the union as they are built.
-export type WebSearchProviderId = 'native' | 'exa'
+export type WebSearchProviderId = 'native' | 'exa' | 'parallel' | 'youcom' | 'firecrawl'
 
 export interface WebSearchOptions {
   numResults?: number // host applies a default + hard max (Exa bills per result)

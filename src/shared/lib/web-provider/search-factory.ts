@@ -17,6 +17,15 @@ export function getWebSearchProvider(id: WebSearchProviderId): BaseWebSearchProv
   return p
 }
 
+/**
+ * Look up a provider by an untrusted id string (e.g. a request body field), returning null for a
+ * miss. The Map-key coercion lives here — the registry owns the union — so callers narrow on the
+ * null check rather than casting an arbitrary string to WebSearchProviderId.
+ */
+export function findWebSearchProvider(id: string): BaseWebSearchProvider | null {
+  return providers.get(id as WebSearchProviderId) ?? null
+}
+
 /** Reset the registry. Used when re-running registration and in tests. */
 export function clearWebSearchProviders(): void {
   providers.clear()

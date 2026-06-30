@@ -49,6 +49,9 @@ export interface ApiKeySettings {
   nangoSecretKey?: string
   accountProviderUserId?: string
   exaApiKey?: string
+  parallelApiKey?: string
+  youComApiKey?: string
+  firecrawlApiKey?: string
 }
 
 export type SttProvider = 'deepgram' | 'openai' | 'platform'
@@ -273,6 +276,9 @@ export interface GlobalSettingsResponse {
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
     exa: ApiKeyStatus
+    parallel: ApiKeyStatus
+    youcom: ApiKeyStatus
+    firecrawl: ApiKeyStatus
   }
   composioUserId?: string
   accountProviderUserId?: string
