@@ -19,7 +19,10 @@ vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
   markConversationConsolidated: (...args: unknown[]) => markConsolidatedMock(...args),
 }))
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getDefaultModel: () => 'sonnet' }),
+  getActiveLlmProvider: () => ({
+    getDefaultModel: () => 'sonnet',
+    getApiKeyStatus: () => ({ isConfigured: true }),
+  }),
   resolveActiveProviderModel: () => 'claude-sonnet-4-6',
 }))
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
