@@ -1,27 +1,23 @@
-import { getAuthBaseUrl, test, expect } from '../fixtures/multi-user.fixture'
+import { test, expect } from '../fixtures/multi-user.fixture'
 import { AuthPage } from '../pages/auth.page'
 import { SettingsPage } from '../pages/settings.page'
 import { AppPage } from '../../pages/app.page'
 
-// All tests run serially — each test builds on state from previous tests.
-// This spec runs AFTER auth-flow.spec.ts (alphabetical order).
-// The DB already has user1 (alice@test.com, admin) from the prior spec.
+// All tests run serially; this spec owns its auth server and data directory.
 test.describe.configure({ mode: 'serial' })
 
-const admin = { email: 'alice@test.com', password: 'password123' }
+const admin = { name: 'Settings Admin', email: 'settings-admin@test.com', password: 'password123' }
 const newUser = { name: 'Dave Domain', email: 'dave@allowed.com', password: 'password123' }
 const blockedUser = { name: 'Eve External', email: 'eve@blocked.com', password: 'password123' }
 const approvalUser = { name: 'Frank Pending', email: 'frank@test.com', password: 'password123' }
-const authBaseUrl = getAuthBaseUrl()
 
 test.describe('Auth Settings Enforcement', () => {
   // ── Setup: admin signs in ───────────────────────────────────────────
 
-  test('admin signs in', async ({ user1Page, user2Page, user3Page }) => {
+  test('admin signs in', async ({ request, user1Page, user2Page, user3Page }) => {
     const authPage = new AuthPage(user1Page)
     const appPage = new AppPage(user1Page)
 
-    // Users may still be signed in from auth-flow.spec.ts (shared worker).
     // Clear all cookies and navigate to the base URL so every context starts fresh.
     await Promise.all([
       user1Page.context().clearCookies(),
@@ -29,13 +25,22 @@ test.describe('Auth Settings Enforcement', () => {
       user3Page.context().clearCookies(),
     ])
     await Promise.all([
-      user1Page.goto(authBaseUrl),
-      user2Page.goto(authBaseUrl),
-      user3Page.goto(authBaseUrl),
+      user1Page.goto('/'),
+      user2Page.goto('/'),
+      user3Page.goto('/'),
     ])
 
     await authPage.expectVisible()
-    await authPage.signIn(admin.email, admin.password)
+
+    const configRes = await request.get('/api/auth-config')
+    expect(configRes.ok()).toBe(true)
+    const config = await configRes.json() as { hasUsers: boolean }
+    if (config.hasUsers) {
+      await authPage.signIn(admin.email, admin.password)
+    } else {
+      await authPage.signUp(admin.name, admin.email, admin.password)
+    }
+
     await appPage.waitForAppLoaded()
     await appPage.dismissWizardIfVisible()
   })

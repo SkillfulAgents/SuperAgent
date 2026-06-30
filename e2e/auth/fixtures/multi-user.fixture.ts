@@ -1,6 +1,8 @@
 import { test as base, type BrowserContext, type Page } from '@playwright/test'
 
-export function getAuthBaseUrl() {
+export function getAuthBaseUrl(projectBaseURL?: unknown) {
+  if (typeof projectBaseURL === 'string') return projectBaseURL
+
   const port = process.env.E2E_PORT ?? process.env.PORT ?? '3001'
   return process.env.E2E_BASE_URL ?? `http://localhost:${port}`
 }
@@ -23,39 +25,45 @@ export const test = base.extend<
     user3Page: Page
   }
 >({
-  user1Context: [async ({ browser }, use) => {
-    const context = await browser.newContext()
+  user1Context: [async ({ browser }, use, workerInfo) => {
+    const context = await browser.newContext({
+      baseURL: getAuthBaseUrl(workerInfo.project.use.baseURL),
+    })
     await use(context)
     await context.close()
   }, { scope: 'worker' }],
 
   user1Page: [async ({ user1Context }, use) => {
     const page = await user1Context.newPage()
-    await page.goto(getAuthBaseUrl())
+    await page.goto('/')
     await use(page)
   }, { scope: 'worker' }],
 
-  user2Context: [async ({ browser }, use) => {
-    const context = await browser.newContext()
+  user2Context: [async ({ browser }, use, workerInfo) => {
+    const context = await browser.newContext({
+      baseURL: getAuthBaseUrl(workerInfo.project.use.baseURL),
+    })
     await use(context)
     await context.close()
   }, { scope: 'worker' }],
 
   user2Page: [async ({ user2Context }, use) => {
     const page = await user2Context.newPage()
-    await page.goto(getAuthBaseUrl())
+    await page.goto('/')
     await use(page)
   }, { scope: 'worker' }],
 
-  user3Context: [async ({ browser }, use) => {
-    const context = await browser.newContext()
+  user3Context: [async ({ browser }, use, workerInfo) => {
+    const context = await browser.newContext({
+      baseURL: getAuthBaseUrl(workerInfo.project.use.baseURL),
+    })
     await use(context)
     await context.close()
   }, { scope: 'worker' }],
 
   user3Page: [async ({ user3Context }, use) => {
     const page = await user3Context.newPage()
-    await page.goto(getAuthBaseUrl())
+    await page.goto('/')
     await use(page)
   }, { scope: 'worker' }],
 })
