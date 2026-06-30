@@ -183,6 +183,13 @@
       "when": 1782496663785,
       "tag": "0025_orange_secret_warriors",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1782849369635,
+      "tag": "0026_chunky_moon_knight",
+      "breakpoints": true
     }
   ]
 }
