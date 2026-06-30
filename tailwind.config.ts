@@ -1,4 +1,5 @@
 import type { Config } from 'tailwindcss'
+import plugin from 'tailwindcss/plugin'
 
 const config: Config = {
   darkMode: ['class'],
@@ -123,7 +124,19 @@ const config: Config = {
 		}
 	}
   },
-  plugins: [require("tailwindcss-animate"), require("@tailwindcss/typography")],
+  plugins: [
+    require("tailwindcss-animate"),
+    require("@tailwindcss/typography"),
+    plugin(({ addVariant }) => {
+      // `touch:` — touch devices with no hover-capable pointer (phones/tablets).
+      // Lets us reveal hover-only affordances and enlarge hit areas on touch
+      // WITHOUT affecting desktop, which reports `hover: hover` / `pointer: fine`
+      // and so never matches this query. (Tailwind v4 ships `pointer-coarse:`
+      // built-in; we're on 3.4, so register our own. The `touch` alias reads as
+      // intent at the call sites; the query is the standard no-hover/coarse pair.)
+      addVariant('touch', '@media (hover: none) and (pointer: coarse)')
+    }),
+  ],
 }
 
 export default config

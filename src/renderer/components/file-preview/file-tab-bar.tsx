@@ -48,7 +48,7 @@ export function FileTabBar({ files, activeIndex, onTabClick, onCloseTab }: FileT
                 onCloseTab(file.filePath)
               }
             }}
-            className="ml-auto p-0.5 rounded hover:bg-muted-foreground/20 opacity-0 group-hover:opacity-100 transition-opacity"
+            className="ml-auto p-0.5 rounded hover:bg-muted-foreground/20 opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity"
           >
             <X className="h-3 w-3" />
           </span>

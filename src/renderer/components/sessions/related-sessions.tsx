@@ -267,7 +267,7 @@ function SessionRow({ session, showIcon, formatDate, agentSlug: agentSlugProp, s
             </div>
           )}
         </div>
-        <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity">
           <Popover>
             <PopoverTrigger asChild>
               <Button

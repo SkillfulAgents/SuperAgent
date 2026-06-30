@@ -26,7 +26,7 @@ export function HomeRow({ onActivate, children, actions }: HomeRowProps) {
     >
       {children}
       {actions && (
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 touch:opacity-100 transition-opacity">
           {actions}
         </div>
       )}
