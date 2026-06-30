@@ -202,6 +202,47 @@ export function getFrequencyWarning(
 }
 
 /**
+ * Soft-cap thresholds for how many active schedules a single agent holds. These
+ * are purely informational — we never block creation, only warn so the agent (or
+ * a human reading the tool result) can spot a runaway loop or a self-replicating
+ * scheduled prompt (a cron whose prompt schedules another task). The per-task
+ * overlap guard can't catch this because each task has a distinct ID.
+ *
+ *   count > SCHEDULE_COUNT_WARN_THRESHOLD     → warning
+ *   count > SCHEDULE_COUNT_CRITICAL_THRESHOLD → critical warning
+ *
+ * The warn threshold is intentionally conservative; since nothing is prevented,
+ * the occasional false alarm is acceptable.
+ */
+export const SCHEDULE_COUNT_WARN_THRESHOLD = 4
+export const SCHEDULE_COUNT_CRITICAL_THRESHOLD = 6
+
+/**
+ * Build a soft-cap warning for an agent that holds many active schedules. Returns
+ * null at or below the warn threshold (no warning), a warning above it, and a
+ * critical warning above the critical threshold. Non-blocking by design — the
+ * caller still creates the schedule and returns the full active list so the agent
+ * can judge whether the count is legitimate.
+ */
+export function getScheduleCountWarning(activeCount: number): string | null {
+  if (activeCount > SCHEDULE_COUNT_CRITICAL_THRESHOLD) {
+    return (
+      `🚨 CRITICAL: this agent now has ${activeCount} active schedules. ` +
+      `This is unusually high and often means a runaway loop or a self-replicating scheduled prompt ` +
+      `(a recurring task whose prompt schedules yet another task). ` +
+      `Review the active schedules listed below and cancel any duplicates, overlaps, or tasks you did not intend to create.`
+    )
+  }
+  if (activeCount > SCHEDULE_COUNT_WARN_THRESHOLD) {
+    return (
+      `⚠️ Schedule count warning: this agent now has ${activeCount} active schedules. ` +
+      `If you did not mean to accumulate this many, review the list below for duplicates or overlapping schedules and cancel any that are unneeded.`
+    )
+  }
+  return null
+}
+
+/**
  * Validate a cron expression and return the next execution time.
  */
 export function validateCronExpression(cronExpression: string, timezone?: string): ParseResult {

@@ -10,6 +10,9 @@ import {
   getMinCronIntervalMs,
   getFrequencyWarning,
   MIN_RECURRING_INTERVAL_MS,
+  getScheduleCountWarning,
+  SCHEDULE_COUNT_WARN_THRESHOLD,
+  SCHEDULE_COUNT_CRITICAL_THRESHOLD,
 } from './schedule-parser'
 
 // ============================================================================
@@ -298,6 +301,46 @@ describe('getFrequencyWarning', () => {
   it('warns for a bursty schedule whose tightest gap is below the threshold', () => {
     // ":00 and :05 every hour" — the 5-minute burst gap is under 15 min.
     expect(getFrequencyWarning('cron', '0,5 * * * *')).toContain('Frequent schedule warning')
+  })
+})
+
+// ============================================================================
+// getScheduleCountWarning Tests
+// ============================================================================
+
+describe('getScheduleCountWarning', () => {
+  it('exposes conservative warn/critical threshold constants', () => {
+    expect(SCHEDULE_COUNT_WARN_THRESHOLD).toBe(4)
+    expect(SCHEDULE_COUNT_CRITICAL_THRESHOLD).toBe(6)
+  })
+
+  it('does not warn at or below the warn threshold', () => {
+    expect(getScheduleCountWarning(0)).toBeNull()
+    expect(getScheduleCountWarning(1)).toBeNull()
+    expect(getScheduleCountWarning(SCHEDULE_COUNT_WARN_THRESHOLD)).toBeNull() // exactly 4
+  })
+
+  it('warns just above the warn threshold (but not critical)', () => {
+    const warning = getScheduleCountWarning(5)
+    expect(warning).toBeTruthy()
+    expect(warning).toContain('Schedule count warning')
+    expect(warning).toContain('5 active schedules')
+    expect(warning).not.toContain('CRITICAL')
+  })
+
+  it('still only warns (not critical) at the critical threshold itself', () => {
+    const warning = getScheduleCountWarning(SCHEDULE_COUNT_CRITICAL_THRESHOLD) // exactly 6
+    expect(warning).toContain('Schedule count warning')
+    expect(warning).not.toContain('CRITICAL')
+  })
+
+  it('escalates to a critical warning above the critical threshold', () => {
+    const warning = getScheduleCountWarning(7)
+    expect(warning).toBeTruthy()
+    expect(warning).toContain('CRITICAL')
+    expect(warning).toContain('7 active schedules')
+    // The critical band mentions the runaway / self-replicating failure mode.
+    expect(warning).toContain('self-replicating')
   })
 })
 

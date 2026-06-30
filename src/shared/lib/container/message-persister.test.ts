@@ -3499,6 +3499,98 @@ describe('MessagePersister', () => {
         expect(mockCreateScheduledTask).toHaveBeenCalled()
         expect(findFetchCall('/inputs/tool-sched-deliver-fail/reject')).toBeUndefined()
       })
+
+      // Soft-cap (SUP-332): the result always carries the active-schedule count +
+      // list; a warning is appended above the warn band and a critical warning
+      // above the critical band. We never block creation.
+      function makeActiveTasks(n: number): unknown[] {
+        return Array.from({ length: n }, (_, i) => ({
+          id: `task_${i}`,
+          name: `Task ${i}`,
+          scheduleType: 'cron',
+          scheduleExpression: '0 9 * * 1-5',
+          status: 'pending',
+          nextExecutionAt: new Date('2026-06-04T09:00:00Z'),
+          timezone: 'America/New_York',
+          prompt: 'do a thing',
+        }))
+      }
+
+      it('always returns the active-schedule count and list with no warning at or below the warn band', async () => {
+        mockListPendingScheduledTasks.mockResolvedValue(makeActiveTasks(4))
+
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-band-ok', {
+          scheduleType: 'cron',
+          scheduleExpression: '0 9 * * 1-5',
+          prompt: 'Send the daily report',
+        })
+
+        await flushHandlers()
+
+        const resolveCall = findFetchCall('/inputs/tool-sched-band-ok/resolve')
+        expect(resolveCall).toBeDefined()
+        const value = JSON.parse(resolveCall![1].body).value
+        expect(value).toContain('Active schedules for this agent: 4')
+        expect(value).toContain('task_0') // full list is present
+        expect(value).toContain('task_3')
+        expect(value).not.toContain('Schedule count warning')
+        expect(value).not.toContain('CRITICAL')
+      })
+
+      it('appends a (non-critical) warning above the warn band', async () => {
+        mockListPendingScheduledTasks.mockResolvedValue(makeActiveTasks(5))
+
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-band-warn', {
+          scheduleType: 'cron',
+          scheduleExpression: '0 9 * * 1-5',
+          prompt: 'Send the daily report',
+        })
+
+        await flushHandlers()
+
+        const value = JSON.parse(findFetchCall('/inputs/tool-sched-band-warn/resolve')![1].body).value
+        expect(value).toContain('Active schedules for this agent: 5')
+        expect(value).toContain('Schedule count warning')
+        expect(value).not.toContain('CRITICAL')
+        expect(value).toContain('task_4') // full list still included
+      })
+
+      it('appends a critical warning above the critical band', async () => {
+        mockListPendingScheduledTasks.mockResolvedValue(makeActiveTasks(7))
+
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-band-crit', {
+          scheduleType: 'cron',
+          scheduleExpression: '0 9 * * 1-5',
+          prompt: 'Send the daily report',
+        })
+
+        await flushHandlers()
+
+        const value = JSON.parse(findFetchCall('/inputs/tool-sched-band-crit/resolve')![1].body).value
+        expect(value).toContain('Active schedules for this agent: 7')
+        expect(value).toContain('CRITICAL')
+      })
+
+      it('still resolves with the base success when the active-list lookup fails', async () => {
+        // Enrichment is best-effort: a failure reading the active list must not
+        // block resolving the already-persisted (blocking) tool.
+        mockListPendingScheduledTasks.mockRejectedValue(new Error('db unavailable'))
+
+        simulateToolUse('mcp__user-input__schedule_task', 'tool-sched-band-fail', {
+          scheduleType: 'cron',
+          scheduleExpression: '0 9 * * 1-5',
+          prompt: 'Send the daily report',
+        })
+
+        await flushHandlers()
+
+        const resolveCall = findFetchCall('/inputs/tool-sched-band-fail/resolve')
+        expect(resolveCall).toBeDefined()
+        const value = JSON.parse(resolveCall![1].body).value
+        expect(value).toContain('task_new_id') // base success preserved
+        expect(value).not.toContain('Active schedules for this agent') // enrichment skipped
+        expect(findFetchCall('/inputs/tool-sched-band-fail/reject')).toBeUndefined()
+      })
     })
 
     describe('list_scheduled_tasks', () => {

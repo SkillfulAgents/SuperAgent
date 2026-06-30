@@ -14,6 +14,7 @@ import {
   cancelScheduledTask,
   pauseScheduledTask,
   resumeScheduledTask,
+  type ScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
 import {
   createWebhookTrigger,
@@ -30,7 +31,7 @@ import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { getFrequencyWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
+import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -2254,12 +2255,22 @@ class MessagePersister {
           agentSlug,
         })
 
-        // Resolve the blocking tool with a success message (plus any frequency warning).
-        await this.resolveContainerInput(
-          agentSlug,
-          toolUseId,
-          this.formatScheduleTaskResult(input, taskId, timezone)
-        )
+        // Build the agent-facing result: base success + any frequency warning,
+        // then enrich with the agent's active-schedule count, a soft-cap warning,
+        // and the full active list so a runaway loop or duplicate schedules are
+        // visible. The enrichment is best-effort — if reading the active list
+        // throws we still resolve with the base success so the blocking tool never
+        // hangs.
+        let resultMessage = this.formatScheduleTaskResult(input, taskId, timezone)
+        try {
+          const activeTasks = await listPendingScheduledTasks(agentSlug)
+          resultMessage += this.formatActiveScheduleSummary(activeTasks)
+        } catch (summaryError) {
+          console.error('[MessagePersister] Failed to build active-schedule summary:', summaryError)
+        }
+
+        // Resolve the blocking tool with the (possibly enriched) success message.
+        await this.resolveContainerInput(agentSlug, toolUseId, resultMessage)
       } catch (deliveryError) {
         console.error('[MessagePersister] Schedule persisted but result delivery failed:', deliveryError)
       }
@@ -2302,6 +2313,37 @@ ${continuation}`
     }
 
     return result
+  }
+
+  /**
+   * Build the active-schedule summary appended to a schedule_task result: the
+   * agent's current count of active schedules (pending + paused), a soft-cap
+   * warning when the count is high, and the full list (id, name, schedule
+   * expression, next run) so the agent can spot duplicates/overlaps and
+   * self-correct. Always returns the count + list; the warning is conditional.
+   */
+  private formatActiveScheduleSummary(tasks: ScheduledTask[]): string {
+    const count = tasks.length
+    let summary = `\n\nActive schedules for this agent: ${count}`
+
+    const warning = getScheduleCountWarning(count)
+    if (warning) {
+      summary += `\n\n${warning}`
+    }
+
+    if (count > 0) {
+      const list = tasks
+        .map((t) => {
+          const kind = t.scheduleType === 'cron' ? 'recurring' : 'one-time'
+          const next = t.nextExecutionAt ? t.nextExecutionAt.toISOString() : 'unknown'
+          const status = t.status === 'paused' ? ' [PAUSED]' : ''
+          return `- **${t.name || 'Scheduled Task'}** (ID: ${t.id})${status} — ${kind} (${t.scheduleExpression}), next run ${next}${t.timezone ? ` (${t.timezone})` : ''}`
+        })
+        .join('\n')
+      summary += `\n\n${list}`
+    }
+
+    return summary
   }
 
   // Handle list_scheduled_tasks - blocking: read from SQLite and resolve
