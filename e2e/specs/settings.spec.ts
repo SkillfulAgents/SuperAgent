@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 
 test.describe.configure({ mode: 'serial' })
@@ -32,6 +32,18 @@ async function waitForSettingsSave(page: Page) {
   await page.waitForResponse(
     (res) => res.url().includes('/api/settings') && res.request().method() === 'PUT' && res.ok(),
   )
+}
+
+/** Wait for a PUT /api/user-settings request to complete. */
+async function waitForUserSettingsSave(page: Page) {
+  await page.waitForResponse(
+    (res) => res.url().includes('/api/user-settings') && res.request().method() === 'PUT' && res.ok(),
+  )
+}
+
+async function setDefaultApiPolicy(request: APIRequestContext, defaultApiPolicy: 'review' | 'allow') {
+  const res = await request.put('/api/user-settings', { data: { defaultApiPolicy } })
+  expect(res.ok()).toBe(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +340,47 @@ test.describe('Settings persistence', () => {
     const removePromise = waitForSettingsSave(page)
     await removeBtn.click()
     await removePromise
+  })
+
+  test('Connections tab: global default API policy toggle persists', async ({ page, request }) => {
+    await setDefaultApiPolicy(request, 'review')
+    await appPage.reload()
+
+    try {
+      await openSettings(page)
+      await goToTab(page, 'connections')
+
+      // The API default-policy row inside the "Default Policies" card.
+      const globalSection = page.locator('[data-testid="default-policy-api"]')
+      const reviewToggle = globalSection.locator('[data-testid="policy-toggle-review"]')
+      const allowToggle = globalSection.locator('[data-testid="policy-toggle-allow"]')
+
+      // Review is default, should be active.
+      await expect(reviewToggle).toHaveAttribute('data-active', 'true')
+      await expect(allowToggle).toHaveAttribute('data-active', 'false')
+
+      // Switch to allow and wait for the user-settings mutation.
+      const savePromise = waitForUserSettingsSave(page)
+      await allowToggle.click()
+      await savePromise
+      await expect(allowToggle).toHaveAttribute('data-active', 'true')
+      await expect(reviewToggle).toHaveAttribute('data-active', 'false')
+
+      // Close, reopen, verify the persisted setting is reflected by the UI.
+      await closeSettings(page)
+      await openSettings(page)
+      await goToTab(page, 'connections')
+      const reopenedSection = page.locator('[data-testid="default-policy-api"]')
+      await expect(reopenedSection.locator('[data-testid="policy-toggle-allow"]')).toHaveAttribute('data-active', 'true')
+      await expect(reopenedSection.locator('[data-testid="policy-toggle-review"]')).toHaveAttribute('data-active', 'false')
+
+      const settingsRes = await request.get('/api/user-settings')
+      expect(settingsRes.ok()).toBe(true)
+      const settings = await settingsRes.json()
+      expect(settings.defaultApiPolicy).toBe('allow')
+    } finally {
+      await setDefaultApiPolicy(request, 'review')
+    }
   })
 })
 
