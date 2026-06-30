@@ -1,26 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent successfully opened a browser, navigated to https://example.com, and retrieved the page title \"Example Domain\"",
+  "reason": "Browser Use feature successfully executed browser operations to navigate to example.com and retrieve the correct page title \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\" and displayed the agents list",
-    "Located agent \"QA-20260629-204236-vf0f\" in the sidebar under \"Your Agents\" — Agent was visible and clickable in the sidebar",
-    "Clicked on the agent \"QA-20260629-204236-vf0f\" — Successfully navigated to the agent's chat page with URL /agents/qa-20260629-204236-vf0f-h08jbw5bsk",
-    "Clicked on the chat input textbox — Input field became active and ready for text entry",
-    "Typed message: \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the text field",
-    "Clicked the \"Send message\" button — Message was sent and the session was created with title \"Browser Title Retrieval Task\"",
-    "Waited for agent to complete (agent status changed from \"working\" to \"idle\") — Agent completed in 14 seconds",
-    "Verified response contains \"Example Domain\" — Response explicitly states: \"The page title is \"Example Domain\"\" and \"The page at https://example.com has the title \"Example Domain\". Browser closed.\""
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut agent interface with sidebar containing the \"QA-20260630-020123-lkg2\" agent listed",
+    "Step 2: Clicked on the \"QA-20260630-020123-lkg2\" agent in the sidebar — Agent chat interface opened successfully, page title changed to \"QA-20260630-020123-lkg2 · Gamut\", and chat input field became active",
+    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed in the textbox and sent button was clicked; new session created with URL showing session ID",
+    "Step 4: Waited for agent response — Agent completed processing in 13 seconds; \"Working...\" status disappeared indicating completion",
+    "Step 5: Verified response mentions \"Example Domain\" and took screenshot — Response clearly displays \"The page title is \\\"Example Domain\\\".\" Multiple confirmations visible: tool call cards show \"Open Browser → https://example.com\", \"Browser MCP: Browser Get State\", and \"Close Browser\" with green checkmarks; final summary states \"Done. The page at https://example.com has the title \\\"Example Domain\\\". I've closed the browser.\" Screenshot captured showing the complete response with all browser tool calls visible"
   ],
   "bugs": [],
-  "durationMs": 77365,
-  "sessionId": "952376cb-ebce-41c3-80ae-642a9b87c81f",
+  "durationMs": 73760,
+  "sessionId": "645b5cc7-9904-4539-b342-ebf8208d1454",
   "cost": {
-    "inputTokens": 396,
-    "outputTokens": 11463,
-    "cacheCreationTokens": 73072,
-    "cacheReadTokens": 1172989,
+    "inputTokens": 288,
+    "outputTokens": 9447,
+    "cacheCreationTokens": 63908,
+    "cacheReadTokens": 839539,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.26635
+    "totalCostUsd": 0.211362
   }
 }
