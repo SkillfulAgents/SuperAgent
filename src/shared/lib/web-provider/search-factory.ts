@@ -1,43 +1,47 @@
 import { getSettings } from '../config/settings'
 import type { BaseWebSearchProvider } from './base-web-search-provider'
+import { ExaWebSearchProvider } from './exa-web-search-provider'
+import { FirecrawlWebSearchProvider } from './firecrawl-web-search-provider'
+import { ParallelWebSearchProvider } from './parallel-web-search-provider'
+import { YouComWebSearchProvider } from './youcom-web-search-provider'
 import type { WebSearchProviderId } from './types'
 
-// Lazy Map registry (mirrors account-providers/provider-factory.ts) so a vendor whose key
-// is absent is never constructed. 'native' is a sentinel with no host provider, so it never
-// lives in the Map. Adding a vendor = one register line in register.ts + one union entry.
-const providers = new Map<WebSearchProviderId, BaseWebSearchProvider>()
+// Every non-native vendor id maps to its provider. A Record (not a Map) so adding a vendor to the
+// union without wiring it here is a COMPILE error — the same compile-time exhaustiveness the
+// LlmProvider / SttProvider registries rely on. 'native' is the no-host-provider sentinel and is
+// intentionally absent. Constructors take no key (resolved per call), so eager construction is safe.
+type WebSearchVendorId = Exclude<WebSearchProviderId, 'native'>
 
-export function registerWebSearchProvider(provider: BaseWebSearchProvider): void {
-  providers.set(provider.id, provider)
+const WEB_SEARCH_PROVIDERS: Record<WebSearchVendorId, BaseWebSearchProvider> = {
+  exa: new ExaWebSearchProvider(),
+  parallel: new ParallelWebSearchProvider(),
+  youcom: new YouComWebSearchProvider(),
+  firecrawl: new FirecrawlWebSearchProvider(),
 }
 
-export function getWebSearchProvider(id: WebSearchProviderId): BaseWebSearchProvider {
-  const p = providers.get(id)
-  if (!p) throw new Error(`Web search provider "${id}" is not registered`)
-  return p
+/** Runtime narrow (not a cast) of an arbitrary id string to a registered vendor id. */
+function isVendorId(id: string): id is WebSearchVendorId {
+  return id !== 'native' && id in WEB_SEARCH_PROVIDERS
+}
+
+/** The provider for a known vendor id. */
+export function getWebSearchProvider(id: WebSearchVendorId): BaseWebSearchProvider {
+  return WEB_SEARCH_PROVIDERS[id]
 }
 
 /**
- * Look up a provider by an untrusted id string (e.g. a request body field), returning null for a
- * miss. The Map-key coercion lives here — the registry owns the union — so callers narrow on the
- * null check rather than casting an arbitrary string to WebSearchProviderId.
+ * Look up a provider by an untrusted id string (e.g. a request body field); null for a miss.
+ * Narrows on a runtime check rather than casting.
  */
 export function findWebSearchProvider(id: string): BaseWebSearchProvider | null {
-  return providers.get(id as WebSearchProviderId) ?? null
-}
-
-/** Reset the registry. Used when re-running registration and in tests. */
-export function clearWebSearchProviders(): void {
-  providers.clear()
+  return isVendorId(id) ? WEB_SEARCH_PROVIDERS[id] : null
 }
 
 /**
- * The active host-side search provider, or null when native is selected, nothing is
- * configured, or the configured vendor isn't registered — native (no host provider) is
- * the fallback in every one of those cases.
+ * The active host-side search provider, or null when native is selected, nothing is configured, or
+ * the configured id isn't a known vendor — native (no host provider) is the fallback in each case.
  */
 export function getActiveWebSearchProvider(): BaseWebSearchProvider | null {
   const id = getSettings().webSearchProvider ?? 'native'
-  if (id === 'native') return null
-  return providers.get(id) ?? null
+  return isVendorId(id) ? WEB_SEARCH_PROVIDERS[id] : null
 }

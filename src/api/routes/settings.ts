@@ -33,13 +33,7 @@ import {
 import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
-import {
-  ExaWebSearchProvider,
-  FirecrawlWebSearchProvider,
-  ParallelWebSearchProvider,
-  YouComWebSearchProvider,
-  findWebSearchProvider,
-} from '@shared/lib/web-provider'
+import { findWebSearchProvider, getWebSearchProvider } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
@@ -312,10 +306,10 @@ function buildSettingsResponse(
       nango: getNangoApiKeyStatus(),
       deepgram: getSttProvider('deepgram').getApiKeyStatus(),
       openai: getSttProvider('openai').getApiKeyStatus(),
-      exa: new ExaWebSearchProvider().getApiKeyStatus(),
-      parallel: new ParallelWebSearchProvider().getApiKeyStatus(),
-      youcom: new YouComWebSearchProvider().getApiKeyStatus(),
-      firecrawl: new FirecrawlWebSearchProvider().getApiKeyStatus(),
+      exa: getWebSearchProvider('exa').getApiKeyStatus(),
+      parallel: getWebSearchProvider('parallel').getApiKeyStatus(),
+      youcom: getWebSearchProvider('youcom').getApiKeyStatus(),
+      firecrawl: getWebSearchProvider('firecrawl').getApiKeyStatus(),
     },
     models: getEffectiveModels(),
     agentLimits: getEffectiveAgentLimits(),

@@ -8,7 +8,6 @@ import { chatIntegrationManager } from './chat-integrations/chat-integration-man
 import { captureException } from './error-reporting'
 import { isPlatformComposioActive } from './composio/client'
 import { registerAllAccountProviders } from './account-providers/register'
-import { registerAllWebProviders } from './web-provider/register'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { accountSyncService } from './scheduler/account-sync-service'
@@ -64,9 +63,6 @@ export async function initializeServices() {
 
   // Register account providers (Composio, Nango if configured)
   registerAllAccountProviders()
-
-  // Register host-side web providers (Exa search; native is the no-vendor default)
-  registerAllWebProviders()
 
   // Drop any skillset configs invalid for the current auth state (e.g. a
   // platform skillset left over from a previous org). Filesystem cleanup of
