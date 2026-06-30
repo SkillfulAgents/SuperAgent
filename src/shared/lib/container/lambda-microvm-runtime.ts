@@ -411,7 +411,21 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   }
 
   async start(options?: StartOptions): Promise<void> {
-    if ((await this.getInfoFromRuntime()).status === 'running') return
+    // TEMP debug (debug/microvm-bootstrap-env-logging). Remove before merge.
+    const startDebug = (event: string, extra?: Record<string, unknown>) => {
+      try {
+        console.log(
+          `[bootstrap-debug] ${JSON.stringify({ ts: new Date().toISOString(), event: `start.${event}`, agentSlug: this.config.agentId, pid: process.pid, ...extra })}`,
+        )
+      } catch {
+        // no-op
+      }
+    }
+    startDebug('enter')
+    if ((await this.getInfoFromRuntime()).status === 'running') {
+      startDebug('early-return-running')
+      return
+    }
 
     const config = getMicrovmRuntimeConfig()
     const client = getMicrovmClient(config.region)
@@ -443,6 +457,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       )
     }
 
+    startDebug('before-RunMicrovm', { hasEnv })
     const run = await client.send(
       new RunMicrovmCommand({
         imageIdentifier: config.imageArn,
@@ -478,8 +493,10 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const proxyPort = await proxy.start()
     // Stop any stale proxy before overwriting state (no leaked port/listener); stash
     // env after the cleanup (which clears stale stashes) so it isn't wiped.
+    startDebug('after-RunMicrovm', { microvmId: run.microvmId })
     this.cleanupLocal()
     if (hasEnv) setBootstrapEnv(this.config.agentId, env)
+    startDebug('stashed-bootstrap-env', { hasEnv })
     agentStates.set(this.config.agentId, { microvmId: run.microvmId, endpoint: run.endpoint, proxy, proxyPort })
 
     try {
