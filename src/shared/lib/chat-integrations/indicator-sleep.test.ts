@@ -20,6 +20,7 @@ import {
   stopIndicatorTick,
   scheduleIndicatorSleep,
   cancelIndicatorSleep,
+  armIndicatorIfBusy,
   INDICATOR_TICK_MS,
   INDICATOR_SLEEP_MS,
   type ManagedConnector,
@@ -265,5 +266,84 @@ describe('cancelIndicatorSleep', () => {
     // guard that reconcileIndicator stays importable/uncoupled from the sleep helpers.
     reconcileIndicator(managed, 'working')
     expect(managed.indicatorShown).toBe(true)
+  })
+})
+
+// ── armIndicatorIfBusy: the shared arm-if-busy seam ─────────────────────────────
+// This is the ONE primitive behind all three arm sites — subscribe, the per-event wake,
+// and the health-check backstop — so pinning it here pins the rule they all rely on:
+// the tick is armed iff the snapshot is busy, an idle snapshot holds zero timers, and a
+// stray non-busy event neither arms a tick nor disturbs a pending sleep.
+
+describe('armIndicatorIfBusy', () => {
+  it('arms the tick AND paints immediately on a cold arm when busy (no ≤1s blank)', () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-arm')
+    armIndicatorIfBusy(managed, 'sess-arm', 'working')
+    expect(managed.indicatorTickTimer).toBeTruthy()           // armed
+    expect(connector.workingActivities).toEqual(['working'])  // painted now, not a tick later
+    stopIndicatorTick(managed)
+  })
+
+  it('does NOT arm a tick when the snapshot is non-busy (no stray-event leak)', () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-arm')
+    armIndicatorIfBusy(managed, 'sess-arm', 'idle')
+    armIndicatorIfBusy(managed, 'sess-arm', 'streaming')
+    armIndicatorIfBusy(managed, 'sess-arm', 'awaiting')
+    expect(managed.indicatorTickTimer).toBeFalsy()
+    expect(connector.workingActivities).toEqual([])
+  })
+
+  it('a stray non-busy arm leaves a pending sleep intact (the tick still sleeps)', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-arm')
+      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      startIndicatorTick(managed, 'sess-arm')
+      scheduleIndicatorSleep(managed)
+      expect(managed.sleepTimer).toBeTruthy()
+
+      armIndicatorIfBusy(managed, 'sess-arm', 'idle') // a stray non-busy event
+      expect(managed.sleepTimer).toBeTruthy()         // sleep untouched → tick will still sleep
+
+      await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS)
+      expect(managed.indicatorTickTimer).toBeFalsy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not double-arm or repaint when a tick already runs', () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-arm')
+    armIndicatorIfBusy(managed, 'sess-arm', 'working')
+    const handle = managed.indicatorTickTimer
+    armIndicatorIfBusy(managed, 'sess-arm', 'thinking') // already running
+    expect(managed.indicatorTickTimer).toBe(handle)            // same timer, not replaced
+    expect(connector.workingActivities).toEqual(['working'])   // no second cold paint
+    stopIndicatorTick(managed)
+  })
+
+  it('a busy arm cancels a pending sleep (re-activation keeps the tick alive)', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-arm')
+      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      startIndicatorTick(managed, 'sess-arm')
+      scheduleIndicatorSleep(managed)
+      expect(managed.sleepTimer).toBeTruthy()
+
+      armIndicatorIfBusy(managed, 'sess-arm', 'working') // re-activation
+      expect(managed.sleepTimer).toBeFalsy()             // cancelled
+
+      await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS)
+      expect(managed.indicatorTickTimer).toBeTruthy()    // never slept
+      stopIndicatorTick(managed)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
