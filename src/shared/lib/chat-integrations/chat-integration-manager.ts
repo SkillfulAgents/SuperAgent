@@ -139,6 +139,13 @@ export interface ManagedConnector {
   // on teardown).
   indicatorShown?: boolean
   indicatorTickTimer?: ReturnType<typeof setInterval> | null
+  // The session the tick samples; set when the tick is armed (subscribe / wake) so the
+  // sleep guard and the health-check backstop can re-read getSessionActivity(sessionId).
+  sessionId?: string
+  // Pending idle-sleep debounce. Scheduled when the session settles non-busy; when it
+  // fires it re-reads activity and stops the tick only if STILL non-busy (so a stale or
+  // type-mismatched sleep can't strand a working session). Cleared wherever the tick is.
+  sleepTimer?: ReturnType<typeof setTimeout> | null
   // True once the session_error notice has gone out for the current turn, so a
   // turn can't emit duplicate notices.
   turnNotified?: boolean
@@ -511,17 +518,27 @@ class ChatIntegrationManager {
     stopIndicatorTick(session)
 
     const unsubscribe = messagePersister.addSSEClient(sessionId, (event: unknown) => {
+      // Wake the indicator on ANY event arrival: an event means the agent is doing
+      // something, so re-arm the tick if it has slept (create-if-absent) and cancel a
+      // pending sleep. Done synchronously, BEFORE the serialization queue, so a backed-up
+      // handler can never delay the wake. The tick — not this — paints.
+      startIndicatorTick(session, sessionId)
       // Serialize SSE event processing per chat session to prevent race conditions
       // (e.g. session_idle arriving while stream_delta's sendStreamingUpdate is still in-flight)
       this.enqueueSSEEvent(integrationId, chatId, event)
     })
     session.sseUnsubscribe = unsubscribe
-    // Cold reconcile so a late subscriber matches reality NOW instead of waiting one
-    // tick; the tick then keeps it fresh and self-heals. The snapshot reads live
-    // state (awaiting/idle are set synchronously), so a stale 'working' can't outlive
-    // the real state. The tick is alive for the subscription, not the turn.
-    reconcileIndicator(session, messagePersister.getSessionActivity(sessionId))
-    startIndicatorTick(session, sessionId)
+    // Arm-if-busy. Reconcile to the live snapshot NOW (clears a stale indicator even when
+    // idle, paints immediately when busy so a cold subscribe isn't blank), then spin up a
+    // tick ONLY when the session is actually busy — an idle subscription stays at zero
+    // timers. Crucially, if the busy-making events fired BEFORE this callback existed
+    // (reconnect mid-turn, or markSessionActive racing ahead of subscribe at session
+    // creation), this snapshot is what arms the tick; we never depend on a future event to
+    // start it. The tick is alive for the subscription, not the turn.
+    session.sessionId = sessionId
+    const coldActivity = messagePersister.getSessionActivity(sessionId)
+    reconcileIndicator(session, coldActivity)
+    if (BUSY_ACTIVITIES.has(coldActivity)) startIndicatorTick(session, sessionId)
   }
 
   private enqueueSSEEvent(integrationId: string, chatId: string, event: unknown): void {
@@ -541,6 +558,19 @@ class ChatIntegrationManager {
 
   private async runHealthChecks(): Promise<void> {
     const now = Date.now()
+
+    // Backstop: re-arm any subscribed session that reads busy but has no tick — an
+    // unforeseen missed wake (e.g. a process restart that re-subscribed mid-turn). Rides
+    // this existing timer, so it adds NO new timer, and leaves idle sessions asleep (zero
+    // per-session timers at rest). The immediate fixes are arm-if-busy at subscribe and
+    // wake-on-any-event; this only catches a miss those didn't.
+    for (const session of this.chatSessions.values()) {
+      const sessionId = session.sessionId
+      if (!sessionId || session.indicatorTickTimer) continue
+      if (BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(sessionId))) {
+        startIndicatorTick(session, sessionId)
+      }
+    }
 
     for (const [id, conn] of this.connections) {
       const connected = conn.connector.isConnected()
@@ -1505,25 +1535,72 @@ export function clearIndicator(managed: ManagedConnector): void {
 export const INDICATOR_TICK_MS = 1000
 
 /**
- * Start the per-session indicator tick, alive for the SSE subscription (NOT a turn).
- * Each tick re-reads the truth (getSessionActivity) and reconciles — the only PAINT,
- * and the self-healing backstop: a stuck or wrong indicator is corrected within one
- * tick because the tick re-reads reality every interval. Idempotent: replaces any
- * prior tick for this session.
+ * How long after the session settles non-busy the tick is allowed to stop. The sleep is
+ * a debounce: any event re-arms (cancels) it, so it only fires after a genuine lull. When
+ * it DOES fire it re-reads the live activity and only stops the tick if the session is
+ * still non-busy — the same "re-read reality" rule the tick itself follows — so a stale or
+ * type-mismatched sleep can never strand a working session.
+ */
+export const INDICATOR_SLEEP_MS = 10_000
+
+/**
+ * Ensure the per-session indicator tick is running, alive for the SSE subscription (NOT a
+ * turn). Each tick re-reads the truth (getSessionActivity) and reconciles — the only PAINT,
+ * and the self-healing backstop: a stuck or wrong indicator is corrected within one tick.
+ * CREATE-IF-ABSENT: a tick already running is left untouched — restarting it on every event
+ * would keep pushing the interval back and starve it during a fast event burst, so the
+ * Telegram draft would expire mid-turn. Records the sampled session and cancels any pending
+ * sleep (activity means we stay awake). Called on subscribe-if-busy, on every raw SSE event
+ * (the wake), and by the health-check backstop.
  */
 export function startIndicatorTick(managed: ManagedConnector, sessionId: string): void {
-  stopIndicatorTick(managed)
+  managed.sessionId = sessionId
+  cancelIndicatorSleep(managed)
+  if (managed.indicatorTickTimer) return
   managed.indicatorTickTimer = setInterval(() => {
     reconcileIndicator(managed, messagePersister.getSessionActivity(sessionId))
   }, INDICATOR_TICK_MS)
 }
 
-/** Stop the per-session indicator tick (resource cleanup at unsubscribe / teardown). */
+/**
+ * Stop the per-session tick AND any pending sleep (resource cleanup at unsubscribe /
+ * teardown). Clearing both here is what stops an orphaned sleep — scheduled before a
+ * re-subscribe — from firing later and killing a freshly re-armed tick.
+ */
 export function stopIndicatorTick(managed: ManagedConnector): void {
+  cancelIndicatorSleep(managed)
   if (managed.indicatorTickTimer) {
     clearInterval(managed.indicatorTickTimer)
     managed.indicatorTickTimer = null
   }
+}
+
+/** Cancel a pending idle-sleep, if any. */
+export function cancelIndicatorSleep(managed: ManagedConnector): void {
+  if (managed.sleepTimer) {
+    clearTimeout(managed.sleepTimer)
+    managed.sleepTimer = null
+  }
+}
+
+/**
+ * Schedule the tick to stop after INDICATOR_SLEEP_MS of confirmed non-busy. Called from the
+ * non-busy settle handlers (session_idle / session_error / request-card). No-op when no tick
+ * is running (nothing to sleep). When the timer fires it RE-READS the live activity and stops
+ * the tick only if the session is STILL non-busy — so an auto-approved script run (which shows
+ * a card but stays 'working'), or a fresh turn that started during the debounce, keeps its tick.
+ */
+export function scheduleIndicatorSleep(managed: ManagedConnector): void {
+  if (!managed.indicatorTickTimer) return
+  const sessionId = managed.sessionId
+  if (!sessionId) return
+  cancelIndicatorSleep(managed)
+  managed.sleepTimer = setTimeout(() => {
+    managed.sleepTimer = null
+    if (!BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(sessionId))) {
+      stopIndicatorTick(managed)
+    }
+  }, INDICATOR_SLEEP_MS)
 }
 
 // ── SSE event processing (exported for testing) ────────────────────────
@@ -1654,8 +1731,11 @@ export async function processSSEEvent(
     case 'computer_use_request': {
       // The agent is now waiting on the user → 'awaiting' (non-busy). Settle the
       // indicator the moment the card is shown (the persister flips isAwaitingInput,
-      // so the tick would clear within a tick anyway — this just makes it instant).
+      // so the tick would clear within a tick anyway — this just makes it instant), then
+      // let the tick sleep. The guard re-checks activity at fire time, so an auto-approved
+      // script run (card shown but the session stays 'working') keeps its tick.
       clearIndicator(managed)
+      scheduleIndicatorSleep(managed)
       try {
         await managed.connector.sendUserRequestCard(managed.chatId, data as UserRequestEvent)
       } catch (err) {
@@ -1666,8 +1746,10 @@ export async function processSSEEvent(
     }
 
     case 'session_idle': {
-      // Turn ended → settle the indicator instantly, then finalize the streamed text.
+      // Turn ended → settle the indicator instantly, let the tick sleep, then finalize
+      // the streamed text.
       clearIndicator(managed)
+      scheduleIndicatorSleep(managed)
       await finalizeTurn(managed)
       break
     }
@@ -1678,6 +1760,7 @@ export async function processSSEEvent(
       // it never strands, finalize the turn the same way session_idle does, then
       // surface a curated error so the user isn't left staring at a frozen reply.
       clearIndicator(managed)
+      scheduleIndicatorSleep(managed)
       await finalizeTurn(managed)
       if (!managed.turnNotified) {
         managed.turnNotified = true
