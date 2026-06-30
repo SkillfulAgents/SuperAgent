@@ -1,10 +1,15 @@
 /**
- * Indicator sleep/wake: the tick stops after a lull and re-arms on any event, so an
- * idle session holds ZERO per-session timers without ever stranding a busy one.
+ * Indicator sleep/wake: the TICK owns its own sleep — each tick a busy read keeps it
+ * awake and the first of a sustained non-busy run starts the debounce, so an idle
+ * session holds ZERO per-session timers without ever stranding a busy one. The settle
+ * handlers only clear the indicator; they no longer schedule the sleep.
  *
  * Invariants under test (each maps to an adversarial-review finding):
  *  - CREATE-IF-ABSENT: a wake never restarts a running tick (else a fast event burst
  *    would keep resetting the interval and starve it — the draft would expire mid-turn).
+ *  - ARM-ONCE: scheduleIndicatorSleep is idempotent, so the tick calling it every
+ *    non-busy second never pushes the debounce back — it fires ~10s after the FIRST
+ *    non-busy tick, and a busy tick in between cancels and restarts the window.
  *  - SLEEP GUARD: the sleep timer RE-READS activity when it fires and only stops the
  *    tick if still non-busy, so an auto-approved script run (card shown, session still
  *    'working') or a stale/late sleep can't kill a live tick.
@@ -127,8 +132,12 @@ describe('scheduleIndicatorSleep', () => {
       // The session is genuinely working (e.g. an auto-approved script run that showed a
       // card but never went 'awaiting'), so the debounce must NOT strand it.
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
-
-      startIndicatorTick(managed, 'sess-s')
+      managed.sessionId = 'sess-s'
+      // A non-firing tick handle so the sleep's fire-time guard is what's under test here,
+      // isolated from the tick's own busy-cancel (which the tick-owner suite covers). The
+      // guard defends the sub-tick window: the session goes busy after the last tick read
+      // but before the sleep fires.
+      managed.indicatorTickTimer = setInterval(() => {}, 1_000_000)
       scheduleIndicatorSleep(managed)
       await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS)
 
@@ -168,6 +177,139 @@ describe('scheduleIndicatorSleep', () => {
   })
 })
 
+// ── the tick owns its own sleep (single control loop) ───────────────────────────
+// The tick is the ONE place that arms/cancels the sleep: a busy read keeps it awake,
+// the first of a sustained non-busy run starts the debounce. This is what lets the
+// settle handlers stay dumb (clear only) while the confirmation stays self-reading.
+
+describe('the tick arms/cancels its own sleep', () => {
+  it('arms a sleep on the first non-busy tick, then stops after the debounce', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-t')
+      const activity = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+
+      startIndicatorTick(managed, 'sess-t')                  // armed mid-turn (busy)
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // a busy tick arms NO sleep
+      expect(managed.sleepTimer).toBeFalsy()
+
+      activity.mockReturnValue('idle')                       // turn ends
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // first non-busy tick arms the sleep
+      expect(managed.sleepTimer).toBeTruthy()
+
+      await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS)  // debounce elapses
+      expect(managed.indicatorTickTimer).toBeFalsy()         // slept
+      expect(managed.sleepTimer).toBeFalsy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a busy tick cancels a pending sleep — the window is CONTINUOUS, not cumulative', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-t')
+      const activity = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+
+      startIndicatorTick(managed, 'sess-t')
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // non-busy tick → arms the sleep
+      expect(managed.sleepTimer).toBeTruthy()
+      const firstSleep = managed.sleepTimer
+
+      activity.mockReturnValue('working')                    // work resumes mid-debounce
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // busy tick → cancels the sleep
+      expect(managed.sleepTimer).toBeFalsy()
+
+      activity.mockReturnValue('idle')                       // settles again
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // non-busy tick → arms a FRESH window
+      expect(managed.sleepTimer).toBeTruthy()
+      expect(managed.sleepTimer).not.toBe(firstSleep)        // a new timer, not the cancelled one
+
+      // The ORIGINAL deadline must pass WITHOUT sleeping — the window restarted from the blip,
+      // it is not cumulative. The tick sleeps only on the FRESH 10s window. (Session is 'idle'
+      // here, so the fire-time guard would NOT save it — only a true restart keeps it alive.)
+      await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS - INDICATOR_TICK_MS * 2)
+      expect(managed.indicatorTickTimer).toBeTruthy()        // original deadline ignored
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 2) // reach the fresh deadline
+      expect(managed.indicatorTickTimer).toBeFalsy()          // slept on the new window only
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sleeps during a long pure-text stream, then RE-WAKES when work resumes (load-bearing exit)', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-st')
+      const activity = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('streaming')
+
+      startIndicatorTick(managed, 'sess-st')                // armed; the session streams text (non-busy)
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)  // streaming tick → arms the sleep
+      expect(managed.sleepTimer).toBeTruthy()
+      await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS) // >10s of pure text, no tools → tick sleeps
+      expect(managed.indicatorTickTimer).toBeFalsy()        // slept mid-stream (indicator already clear)
+      expect(connector.workingActivities).toEqual([])       // nothing painted while streaming
+
+      // A tool/thinking block resumes → the wake re-arms the slept tick and paints on the cold arm.
+      activity.mockReturnValue('thinking')
+      armIndicatorIfBusy(managed, 'sess-st', 'thinking')
+      expect(managed.indicatorTickTimer).toBeTruthy()       // re-woken
+      expect(connector.workingActivities).toEqual(['thinking'])
+      stopIndicatorTick(managed)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('GUARD at the real t=N boundary: a busy resume in the last sub-tick keeps the tick (order-independent)', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-b')
+      const activity = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+
+      startIndicatorTick(managed, 'sess-b')
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // arms the sleep (~t=1000, deadline ~t=11000)
+      expect(managed.sleepTimer).toBeTruthy()
+
+      await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS - INDICATOR_TICK_MS) // → ~t=10000, still idle
+      activity.mockReturnValue('working')                    // work resumes just before the deadline
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // ~t=11000: the tick and the sleep fall due together
+      expect(managed.indicatorTickTimer).toBeTruthy()        // survived — whichever fires first, the tick lives
+      expect(connector.workingActivities).toContain('working')
+      stopIndicatorTick(managed)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ARM-ONCE: a steady non-busy stream never resets the debounce (same timer, fires on time)', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-t')
+      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+
+      startIndicatorTick(managed, 'sess-t')
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // arms the sleep (~t=1000)
+      const firstSleep = managed.sleepTimer
+      expect(firstSleep).toBeTruthy()
+
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS * 3) // three more non-busy ticks
+      expect(managed.sleepTimer).toBe(firstSleep)            // same handle — arm-once, never reset
+
+      // …and it still fires on the ORIGINAL schedule, not pushed back by the later ticks.
+      await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS - INDICATOR_TICK_MS * 3)
+      expect(managed.indicatorTickTimer).toBeFalsy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 // ── orphaned sleep cannot kill a re-armed tick ──────────────────────────────────
 
 describe('stopIndicatorTick clears the pending sleep', () => {
@@ -196,8 +338,8 @@ describe('stopIndicatorTick clears the pending sleep', () => {
 
 // ── end-to-end through the real settle handlers ─────────────────────────────────
 
-describe('processSSEEvent drives sleep through the settle handlers', () => {
-  it('session_idle schedules a sleep that stops the tick after the debounce', async () => {
+describe('settle handlers clear instantly but defer the sleep to the tick', () => {
+  it('session_idle clears now and schedules NO sleep itself — the tick arms it next tick', async () => {
     vi.useFakeTimers()
     try {
       const connector = new MockChatClientConnector()
@@ -205,18 +347,43 @@ describe('processSSEEvent drives sleep through the settle handlers', () => {
       managed.indicatorShown = true
       vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
 
-      startIndicatorTick(managed, 'sess-i')             // tick armed (mid-turn)
-      await processSSEEvent(managed, { type: 'session_idle' })  // settle → schedules sleep
-      expect(managed.sleepTimer).toBeTruthy()
+      startIndicatorTick(managed, 'sess-i')                     // tick armed (mid-turn)
+      await processSSEEvent(managed, { type: 'session_idle' })  // settle: clears, owns no sleep
+      expect(managed.indicatorShown).toBe(false)                // cleared instantly
+      expect(managed.sleepTimer).toBeFalsy()                    // handler scheduled nothing
 
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)      // the tick arms the sleep
+      expect(managed.sleepTimer).toBeTruthy()
       await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS)
-      expect(managed.indicatorTickTimer).toBeFalsy() // slept
+      expect(managed.indicatorTickTimer).toBeFalsy()            // slept
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('an auto-approved script_run card does NOT sleep the still-working session (BLOCKER)', async () => {
+  it('session_error clears now and schedules NO sleep itself — the tick arms it next tick', async () => {
+    vi.useFakeTimers()
+    try {
+      const connector = new MockChatClientConnector()
+      const managed = makeManaged(connector, 'chat-e')
+      managed.indicatorShown = true
+      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+
+      startIndicatorTick(managed, 'sess-e')
+      await processSSEEvent(managed, { type: 'session_error', apiErrorCode: null })
+      expect(managed.indicatorShown).toBe(false)            // cleared instantly
+      expect(managed.sleepTimer).toBeFalsy()                // handler scheduled nothing
+
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)  // the tick arms the sleep
+      expect(managed.sleepTimer).toBeTruthy()
+      await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS)
+      expect(managed.indicatorTickTimer).toBeFalsy()        // slept
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('an auto-approved script_run card never sleeps the still-working session (BLOCKER)', async () => {
     vi.useFakeTimers()
     try {
       const connector = new MockChatClientConnector()
@@ -227,16 +394,17 @@ describe('processSSEEvent drives sleep through the settle handlers', () => {
 
       startIndicatorTick(managed, 'sess-r')
       await processSSEEvent(managed, { type: 'script_run_request', toolUseId: 'tu-1', autoApproved: true, script: 'npm test' })
-      // The card handler cleared + scheduled a sleep, but the guard re-reads 'working'…
+      expect(managed.sleepTimer).toBeFalsy()           // handler schedules nothing…
+      // …and every tick re-reads 'working', so the tick never arms a sleep at all.
       await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS)
-      expect(managed.indicatorTickTimer).toBeTruthy() // …so the tick is never stranded
+      expect(managed.indicatorTickTimer).toBeTruthy()  // never stranded
       stopIndicatorTick(managed)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('a real awaiting card sleeps the tick (idle-on-the-user, nothing to show)', async () => {
+  it('a real awaiting card lets the tick sleep (parked on the user, nothing to show)', async () => {
     vi.useFakeTimers()
     try {
       const connector = new MockChatClientConnector()
@@ -245,8 +413,10 @@ describe('processSSEEvent drives sleep through the settle handlers', () => {
 
       startIndicatorTick(managed, 'sess-q')
       await processSSEEvent(managed, { type: 'user_question_request', toolUseId: 'tu-1', questions: [{ question: 'Which DB?' }] })
+      expect(managed.sleepTimer).toBeFalsy()               // handler schedules nothing
+      await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)  // tick arms the sleep (awaiting = non-busy)
       await vi.advanceTimersByTimeAsync(INDICATOR_SLEEP_MS)
-      expect(managed.indicatorTickTimer).toBeFalsy() // slept while parked on the user
+      expect(managed.indicatorTickTimer).toBeFalsy()        // slept while parked on the user
     } finally {
       vi.useRealTimers()
     }
