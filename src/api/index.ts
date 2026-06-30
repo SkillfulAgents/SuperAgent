@@ -31,6 +31,8 @@ import auditLogRouter from './routes/audit-log'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
 import agentBootstrap from './routes/agent-bootstrap'
+import { TelegramDashboardSession, shouldRunDashboardSession } from './middleware/telegram-dashboard'
+import telegramMiniapp from './routes/telegram-miniapp'
 import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { sql } from 'drizzle-orm'
@@ -164,6 +166,21 @@ app.get('/api/llm/anthropic-sdk.js', (c) => {
   })
 })
 
+// Telegram dashboard cookie: run before each sub-router's Authenticated() guard so
+// a valid tg_dash cookie populates c.get('user') ahead of the guard.
+// Mount is scoped to :artifactSlug/* — NOT the bare :artifactSlug path.
+// The bare path carries the AgentAdmin-guarded DELETE/PATCH management endpoints; a
+// dashboard cookie must not authorize those destructive operations.
+// Note: Hono 4's /* wildcard also matches the bare :artifactSlug path, so we guard via
+// shouldRunDashboardSession (encoding-safe bare-path exclusion; see the middleware module).
+const dashboardSession = TelegramDashboardSession()
+app.use('/api/agents/:id/artifacts/:artifactSlug/*', async (c, next) => {
+  if (!shouldRunDashboardSession(c)) return next()
+  return dashboardSession(c, next)
+})
+app.use('/api/llm/*', TelegramDashboardSession())
+app.use('/api/stt/*', TelegramDashboardSession())
+
 // Mount route handlers
 app.route('/api/agents', agents)
 app.route('/api/x-agent', xAgent)
@@ -193,6 +210,7 @@ app.route('/api/stt', sttRouter)
 app.route('/api/llm', llmRouter)
 app.route('/api/favicon', faviconRouter)
 app.route('/api/debug', debugRouter)
+app.route('/api/telegram-miniapp', telegramMiniapp)
 
 // Global error handler
 app.onError((err, c) => {

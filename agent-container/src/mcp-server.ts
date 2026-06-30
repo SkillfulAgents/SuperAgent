@@ -44,6 +44,7 @@ import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat
 import { listChatIntegrationsTool } from './tools/chat/list-chat-integrations'
 import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
 import { sendChatMessageTool } from './tools/chat/send-chat-message'
+import { shareDashboardTool } from './tools/chat/share-dashboard'
 
 // TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
 
@@ -126,15 +127,27 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
   })
 }
 
+/**
+ * The chat tool set. share_dashboard is registered only when the host signals,
+ * via SHARE_DASHBOARD_ENABLED, that the deployment can host a public Telegram
+ * Mini App (a public https base URL). Without one the tool could only ever
+ * degrade to a plain-text message naming the dashboard — redundant with the
+ * agent's own reply — so it is omitted rather than exposed.
+ */
+export function chatToolList() {
+  return [
+    listAvailableChatProvidersTool,
+    listChatIntegrationsTool,
+    addChatIntegrationTool,
+    sendChatMessageTool,
+    ...(process.env.SHARE_DASHBOARD_ENABLED === 'true' ? [shareDashboardTool] : []),
+  ]
+}
+
 export function createChatMcpServer() {
   return createSdkMcpServer({
     name: 'chat',
     version: '1.0.0',
-    tools: [
-      listAvailableChatProvidersTool,
-      listChatIntegrationsTool,
-      addChatIntegrationTool,
-      sendChatMessageTool,
-    ],
+    tools: chatToolList(),
   })
 }

@@ -17,6 +17,7 @@ import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { captureException } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
+import { getPlatformBaseUrl, httpsBaseUrlOrEmpty } from '@shared/lib/platform-auth/config'
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -44,6 +45,35 @@ function escapeHtml(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+}
+
+/** Icon shown before the dashboard name when the agent supplies no emoji. */
+const DASHBOARD_DEFAULT_EMOJI = '📊'
+
+/**
+ * Constant glyph on the "Open dashboard" button. Always the same regardless of the
+ * dashboard's topical emoji, so the button reads as a consistent, learnable affordance
+ * ("this is the tappable action") instead of echoing the title emoji.
+ */
+const DASHBOARD_BUTTON_EMOJI = '▶️'
+
+/**
+ * Render the dashboard share card body as markdown: a bold "<emoji> <name>"
+ * title with an optional italic blurb as a subtitle on its own line. Goes through
+ * the same rich-markdown send path as every other outbound message (rich, with an
+ * HTML fallback). The agent-supplied emoji/caption and the name are escapeMarkdown'd,
+ * which neutralizes markdown control characters so injected `*`/`_`/`[](...)` markup
+ * renders as literal text. Bare URLs in the caption still autolink under gfm; that is
+ * acceptable because the agent is the trust principal here and can already post links
+ * via send_chat_message. The blurb is separated by a blank line (paragraph break)
+ * because Telegram's rich markdown collapses a single newline into a space.
+ */
+export function renderDashboardCard(name: string, emoji?: string, caption?: string): string {
+  const icon = emoji?.trim() || DASHBOARD_DEFAULT_EMOJI
+  let md = `**${escapeMarkdown(icon)} ${escapeMarkdown(name)}**`
+  const blurb = caption?.trim()
+  if (blurb) md += `\n\n_${escapeMarkdown(blurb)}_`
+  return md
 }
 
 const telegramMarked = new Marked({ async: false, gfm: true })
@@ -110,6 +140,12 @@ export function markdownToTelegramHtml(md: string): string {
 }
 
 // ── Connector ───────────────────────────────────────────────────────────
+
+/**
+ * How a shared dashboard reached the chat: a photo preview carrying the button,
+ * an interactive web_app button on a text card, or the plain-text fallback.
+ */
+export type DashboardDelivery = 'photo' | 'button' | 'text'
 
 export class TelegramConnector extends ChatClientConnector {
   readonly provider = 'telegram' as const
@@ -608,6 +644,62 @@ export class TelegramConnector extends ChatClientConnector {
       // Single question — emit immediately
       this.emitInteractiveResponse(mapping.toolUseId, mapping.value, chatId)
     }
+  }
+
+  // ── Dashboard cards ─────────────────────────────────────────────────
+
+  async sendDashboardCard(
+    chatId: string,
+    opts: { integrationId: string; agentSlug: string; dashboardSlug: string; name: string; allowButton: boolean; emoji?: string; caption?: string; screenshotPath?: string },
+  ): Promise<DashboardDelivery> {
+    if (!this.bot) throw new Error('Bot not connected')
+    // Render once; send through the same rich-markdown path as every other
+    // outbound message (rich with an HTML fallback), so the card formats
+    // consistently whether or not it carries the button.
+    const card = renderDashboardCard(opts.name, opts.emoji, opts.caption)
+    // Same-process web-mode safety net. The host gate (miniAppBaseUrlOrEmpty in
+    // container-manager) is the authority for whether share_dashboard exists at
+    // all, and it excludes Electron; this path is only reached once that gate let
+    // the tool through (web/server mode), so a plain https check is sufficient here.
+    const httpsBase = httpsBaseUrlOrEmpty(getPlatformBaseUrl())
+    // A working button needs both a public https URL to point at (Telegram rejects
+    // anything else) and a caller that's cleared to mint a Mini App cookie
+    // (allowButton). Without either, send the formatted card as text rather than a
+    // button that would dead-end when tapped.
+    if (!httpsBase || !opts.allowButton) {
+      await this.sendRichOrHtml(chatId, card)
+      if (!httpsBase) {
+        console.warn('[telegram] dashboard sharing needs a public HTTPS base URL (web/server mode); sent plain text without the Open dashboard button')
+      } else {
+        console.warn('[telegram] dashboard integration has no owner to act as; sent plain text without the Open dashboard button')
+      }
+      return 'text'
+    }
+    const url = `${httpsBase.replace(/\/$/, '')}/api/telegram-miniapp?i=${encodeURIComponent(opts.integrationId)}&a=${encodeURIComponent(opts.agentSlug)}&d=${encodeURIComponent(opts.dashboardSlug)}`
+    // Constant button glyph (not the topical emoji): a consistent affordance that
+    // reads as "the tappable action" without echoing the title's emoji.
+    const buttonLabel = `${DASHBOARD_BUTTON_EMOJI} Open dashboard`
+    const replyMarkup = { inline_keyboard: [[{ text: buttonLabel, web_app: { url } }]] }
+    // Lead with the dashboard screenshot when one is on disk: a visual preview is a
+    // far stronger pull than a title. The card markdown rides as the photo caption
+    // (HTML, like the message path) and the same button sits beneath it. Any photo
+    // failure falls back to the text card carrying the button.
+    if (opts.screenshotPath) {
+      try {
+        const { InputFile } = await import('grammy')
+        await this.bot.api.sendPhoto(chatId, new InputFile(opts.screenshotPath), {
+          caption: this.markdownToHtml(card),
+          parse_mode: 'HTML',
+          reply_markup: replyMarkup,
+        })
+        return 'photo'
+      } catch (err) {
+        console.warn('[telegram] dashboard photo send failed; falling back to the text card with button', err)
+        captureException(err, { tags: { component: 'chat-integration', operation: 'dashboard-photo-fallback' }, extra: { provider: 'telegram', chatId } })
+      }
+    }
+    await this.sendRichOrHtml(chatId, card, { reply_markup: replyMarkup })
+    return 'button'
   }
 
   // ── First-poll batching ─────────────────────────────────────────────

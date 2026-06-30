@@ -31,6 +31,11 @@ export function Authenticated(): MiddlewareHandler {
       return runWithRequestUser('local', () => next())
     }
 
+    // Trusted upstream middleware (e.g. the tg_dash dashboard cookie) already
+    // authenticated this request; honor it instead of requiring a session.
+    const pre = c.get('user' as never) as { id: string } | undefined
+    if (pre) return runWithRequestUser(pre.id, () => next())
+
     const auth = await getAuthLazy()
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
     if (!session) return c.json({ error: 'Unauthorized' }, 401)

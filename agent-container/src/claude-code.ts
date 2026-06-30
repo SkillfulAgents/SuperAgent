@@ -115,7 +115,7 @@ function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string 
  * Generates the full system prompt from the SuperAgent prompt plus dynamic
  * sections (connected accounts, env vars, user instructions).
  */
-function generateSystemPrompt(
+export function generateSystemPrompt(
   availableEnvVars?: string[],
   userSystemPrompt?: string,
   modelPromptHints?: string[],
@@ -128,6 +128,16 @@ function generateSystemPrompt(
     sections.push(`## Model-Specific Instructions
 
 ${modelPromptHints.map(hint => `- ${hint}`).join('\n')}`);
+  }
+
+  // When the deployment can't host a public Telegram Mini App, the host omits the
+  // share_dashboard tool (see SHARE_DASHBOARD_ENABLED gating in mcp-server.ts). The
+  // agent has no tool to share a dashboard into chat, so tell it the honest thing
+  // to say if asked, rather than letting it flail or claim a button exists.
+  if (process.env.SHARE_DASHBOARD_ENABLED !== 'true') {
+    sections.push(`## Sharing dashboards to chat
+
+This deployment can't show a dashboard as a tappable card inside a chat. That needs a public web address (the hosted version, or a self-hosted server behind a public HTTPS URL). You do not have a \`share_dashboard\` tool here. If a user asks you to share, send, or open a dashboard in their chat, do not claim you did it or imply a button exists. Briefly explain it isn't available in this setup, and if they're using the SuperAgent app, point them to opening the dashboard there.`);
   }
 
   // Parse connected accounts metadata

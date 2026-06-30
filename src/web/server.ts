@@ -4,6 +4,7 @@ import { existsSync } from 'fs'
 import api from '../api'
 import { shutdownServices, setupServerHandlers } from '@shared/lib/startup'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
+import { dashboardSharingStatus } from '@shared/lib/platform-auth/config'
 const app = new Hono()
 
 // Mount API routes
@@ -61,6 +62,7 @@ async function start() {
   server = bound.server
   process.env.PORT = String(bound.port)
   console.log(`API server running on http://localhost:${bound.port}`)
+  console.log(dashboardSharingStatus())
 
   // Services are initialized by api/index.ts (which we import above).
   // No need to call initializeServices() here — it already ran at module load.

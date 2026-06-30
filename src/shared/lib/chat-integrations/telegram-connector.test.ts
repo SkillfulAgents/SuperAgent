@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { TelegramConnector } from './telegram-connector'
+import { TelegramConnector, renderDashboardCard } from './telegram-connector'
 import type { IncomingMessage } from './base-connector'
+import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 
 // ── grammY mock ────────────────────────────────────────────────────────────────
 // The photo/document handlers are inline closures registered inside connect(),
@@ -20,6 +21,14 @@ vi.mock('grammy', () => ({
     start(opts: { onStart?: () => void }): Promise<void> { opts?.onStart?.(); return Promise.resolve() }
     async stop(): Promise<void> {}
   },
+  // sendDashboardCard's photo path does `const { InputFile } = await import('grammy')`;
+  // the mock records the file arg so tests can assert the screenshot path was passed.
+  InputFile: class { constructor(public file: unknown, public filename?: string) {} },
+}))
+
+vi.mock('@shared/lib/platform-auth/config', async (orig) => ({
+  ...(await orig<typeof import('@shared/lib/platform-auth/config')>()),
+  getPlatformBaseUrl: vi.fn(),
 }))
 
 // ── Minimal ctx mock ──────────────────────────────────────────────────────────
@@ -238,4 +247,242 @@ describe('TelegramConnector — media handlers (photo/document)', () => {
       expect(emitted[0].files?.[0]?.name).toBe('report.pdf')
     })
   }
+})
+
+describe('TelegramConnector.sendDashboardCard', () => {
+  let connector: TelegramConnector
+  let sendMessage: ReturnType<typeof vi.fn>
+  let sendPhoto: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    // richMessages: false routes sendRichOrHtml straight to the mocked sendMessage
+    // (the HTML sink), so we assert the rendered card without stubbing the rich API.
+    connector = new TelegramConnector({ botToken: 'x', richMessages: false })
+    sendMessage = vi.fn().mockResolvedValue({ message_id: 1 })
+    sendPhoto = vi.fn().mockResolvedValue({ message_id: 2 })
+    ;(connector as any).bot = { api: { sendMessage, sendPhoto } }
+  })
+
+  it('sends a web_app button with the correct URL when base URL is set', async () => {
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: true,
+    })
+
+    expect(delivery).toBe('button')
+    expect(sendMessage).toHaveBeenCalledOnce()
+
+    const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]
+    expect(chatIdArg).toBe('chat1')
+    expect(textArg).toContain('Weekly')
+    expect(optsArg.parse_mode).toBe('HTML')
+
+    const button = optsArg.reply_markup.inline_keyboard[0][0]
+    expect(button.text).toBe('▶️ Open dashboard') // constant button glyph, not the topical icon
+    const webAppUrl: string = button.web_app.url
+    expect(webAppUrl).toContain('https://host.example/api/telegram-miniapp')
+    expect(webAppUrl).toContain('i=int1')
+    expect(webAppUrl).toContain('a=sales')
+    expect(webAppUrl).toContain('d=weekly-report')
+  })
+
+  it('sends plain text with no web_app button when base URL is unset', async () => {
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: true,
+    })
+
+    expect(delivery).toBe('text')
+    expect(sendMessage).toHaveBeenCalledOnce()
+
+    const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]
+    expect(chatIdArg).toBe('chat1')
+    expect(textArg).toContain('Weekly')
+    // No web_app button — reply_markup is absent on the text-fallback path
+    expect(optsArg?.reply_markup).toBeUndefined()
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('public HTTPS base URL'),
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  it('sends plain text with no web_app button when the base URL is not https', async () => {
+    // A web_app button requires an https URL; an http base would dead-end on tap,
+    // so treat it the same as no base URL and fall back to the plain-text card.
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('http://host.example')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: true,
+    })
+
+    expect(delivery).toBe('text')
+    expect(sendMessage).toHaveBeenCalledOnce()
+    const [, , optsArg] = sendMessage.mock.calls[0]
+    expect(optsArg?.reply_markup).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('public HTTPS base URL'),
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  it('sends plain text with no button when allowButton is false even if base URL is set', async () => {
+    // No integration owner to act as -> the button would dead-end on tap, so the
+    // connector must fall back to plain text despite a configured base URL.
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: false,
+    })
+
+    expect(delivery).toBe('text')
+    expect(sendMessage).toHaveBeenCalledOnce()
+    const [chatIdArg, textArg, optsArg] = sendMessage.mock.calls[0]
+    expect(chatIdArg).toBe('chat1')
+    expect(textArg).toContain('Weekly')
+    expect(optsArg?.reply_markup).toBeUndefined()
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no owner'))
+
+    warnSpy.mockRestore()
+  })
+
+  it('includes the agent-supplied emoji + caption in the card text', async () => {
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+
+    await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'World Cup 2026 Tracker',
+      allowButton: true,
+      emoji: '⚽',
+      caption: 'Live group standings + bracket',
+    })
+
+    const [, textArg, optsArg] = sendMessage.mock.calls[0]
+    expect(textArg).toContain('⚽')
+    expect(textArg).toContain('World Cup 2026 Tracker')
+    expect(textArg).toContain('Live group standings + bracket')
+    // The topical emoji rides the card title only; the button uses a constant glyph.
+    expect(optsArg.reply_markup.inline_keyboard[0][0].text).toBe('▶️ Open dashboard')
+  })
+
+  it('leads with a photo (caption + button) when a screenshot is on disk', async () => {
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: true,
+      screenshotPath: '/data/agents/sales/workspace/artifacts/weekly-report/screenshot.png',
+    })
+
+    expect(delivery).toBe('photo')
+    expect(sendPhoto).toHaveBeenCalledOnce()
+    expect(sendMessage).not.toHaveBeenCalled()
+
+    const [chatIdArg, photoArg, optsArg] = sendPhoto.mock.calls[0]
+    expect(chatIdArg).toBe('chat1')
+    // The screenshot path is uploaded as an InputFile.
+    expect((photoArg as { file: unknown }).file).toBe(
+      '/data/agents/sales/workspace/artifacts/weekly-report/screenshot.png',
+    )
+    expect(optsArg.parse_mode).toBe('HTML')
+    expect(optsArg.caption).toContain('Weekly')
+    // Same web_app button as the text-card button path.
+    const button = optsArg.reply_markup.inline_keyboard[0][0]
+    expect(button.text).toBe('▶️ Open dashboard')
+    expect(button.web_app.url).toContain('https://host.example/api/telegram-miniapp')
+  })
+
+  it('falls back to the text card with button when the photo send fails', async () => {
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+    sendPhoto.mockRejectedValueOnce(new Error('upload failed'))
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: true,
+      screenshotPath: '/data/agents/sales/workspace/artifacts/weekly-report/screenshot.png',
+    })
+
+    expect(delivery).toBe('button')
+    expect(sendPhoto).toHaveBeenCalledOnce()
+    // Recovered by sending the text card carrying the same button.
+    expect(sendMessage).toHaveBeenCalledOnce()
+    const [, , optsArg] = sendMessage.mock.calls[0]
+    expect(optsArg.reply_markup.inline_keyboard[0][0].web_app.url).toContain('https://host.example')
+
+    warnSpy.mockRestore()
+  })
+
+  it('does not send a photo on the text-fallback path even when a screenshot exists', async () => {
+    // No button (no owner) -> plain-text card; a screenshot must not promote it to a
+    // tappable-looking photo that dead-ends.
+    vi.mocked(getPlatformBaseUrl).mockReturnValue('https://host.example')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const delivery = await connector.sendDashboardCard('chat1', {
+      integrationId: 'int1',
+      agentSlug: 'sales',
+      dashboardSlug: 'weekly-report',
+      name: 'Weekly',
+      allowButton: false,
+      screenshotPath: '/data/agents/sales/workspace/artifacts/weekly-report/screenshot.png',
+    })
+
+    expect(delivery).toBe('text')
+    expect(sendPhoto).not.toHaveBeenCalled()
+    expect(sendMessage).toHaveBeenCalledOnce()
+
+    warnSpy.mockRestore()
+  })
+})
+
+describe('renderDashboardCard', () => {
+  it('renders a bold "<emoji> <name>" title with an italic caption on its own line (blank line so Telegram does not collapse it)', () => {
+    expect(renderDashboardCard('Weekly', '⚽', 'Live standings')).toBe('**⚽ Weekly**\n\n_Live standings_')
+  })
+
+  it('defaults to a chart emoji when none is supplied', () => {
+    expect(renderDashboardCard('Weekly')).toBe('**📊 Weekly**')
+  })
+
+  it('omits the blurb line when the caption is blank', () => {
+    expect(renderDashboardCard('Weekly', '⚽', '   ')).toBe('**⚽ Weekly**')
+  })
+
+  it('escapes markdown metacharacters in the agent-supplied name/caption', () => {
+    const out = renderDashboardCard('a*b', '📊', 'c_d')
+    expect(out).toContain('a\\*b')
+    expect(out).toContain('c\\_d')
+  })
 })

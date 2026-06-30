@@ -27,6 +27,7 @@ describe('reserved-env-vars', () => {
       'HOST_PLATFORM',
       'COMPOSIO_PLATFORM_MODE',
       'CLAUDE_CODE_ATTRIBUTION_HEADER',
+      'SHARE_DASHBOARD_ENABLED',
     ]) {
       expect(RESERVED_ENV_VAR_KEYS.has(key)).toBe(true)
       expect(isReservedEnvVar(key)).toBe(true)

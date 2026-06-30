@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { listArtifactsFromFilesystem } from './artifact-service'
+import { listArtifactsFromFilesystem, getArtifactScreenshotPath } from './artifact-service'
 
 describe('artifact-service', () => {
   let testDir: string
@@ -237,6 +237,15 @@ describe('artifact-service', () => {
       // Current implementation only checks access(R_OK), which succeeds for a
       // directory. Document that explicitly.
       expect(result[0].hasScreenshot).toBe(true)
+    })
+  })
+
+  describe('getArtifactScreenshotPath', () => {
+    it('returns the screenshot.png path under the agent workspace artifacts dir', () => {
+      const result = getArtifactScreenshotPath('test-agent', 'sales-dashboard')
+      expect(result).toBe(
+        path.join(testDir, 'agents', 'test-agent', 'workspace', 'artifacts', 'sales-dashboard', 'screenshot.png'),
+      )
     })
   })
 })

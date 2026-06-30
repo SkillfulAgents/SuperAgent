@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -15,6 +16,7 @@ import {
   listChatIntegrationSessions,
 } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
+import type { DashboardDelivery } from '@shared/lib/chat-integrations/telegram-connector'
 import {
   validateChatIntegrationConfig,
   CHAT_PROVIDERS,
@@ -25,6 +27,10 @@ import {
 import { getSessionJsonlPath } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
+import { listArtifactsFromFilesystem, getArtifactScreenshotPath } from '@shared/lib/services/artifact-service'
+import { getAgentOwnerIds } from '@shared/lib/services/agent-owners'
+import { isAuthMode } from '@shared/lib/auth/mode'
+import { shareDashboardRequestSchema } from './x-agent-chat-schema'
 
 type XAgentChatVariables = { callerSlug: string }
 
@@ -125,6 +131,13 @@ xAgentChat.post('/add', async (c) => {
       return c.json({ error: `Invalid config: ${message}` }, 400)
     }
 
+    // Attribute the integration to an owner so the dashboard button/photo path
+    // isn't blocked. In auth mode that's the caller agent's owner; in non-auth
+    // mode we leave it unset and the service applies the 'local' sentinel.
+    const createdByUserId = isAuthMode()
+      ? (await getAgentOwnerIds(callerSlug))[0]
+      : undefined
+
     let id: string
     try {
       id = createChatIntegration({
@@ -132,6 +145,7 @@ xAgentChat.post('/add', async (c) => {
         provider: provider as ChatProvider,
         name,
         config,
+        createdByUserId,
       })
     } catch (err) {
       if (err instanceof DuplicateBotTokenError) {
@@ -185,22 +199,21 @@ xAgentChat.post('/send', async (c) => {
     // Resolve chatId
     let resolvedChatId: string = chat_id
     if (!resolvedChatId) {
-      const sessions = listChatIntegrationSessions(integration_id)
-      const activeChats = sessions.filter((s) => !s.archivedAt)
-      if (activeChats.length === 0) {
+      const resolution = resolveSingleActiveChat(integration_id)
+      if (resolution.kind === 'none') {
         return c.json({
           error: 'No active chats found for this integration. Someone needs to message the bot first, or specify a chat_id directly.',
         }, 400)
       }
-      if (activeChats.length > 1) {
-        const chatList = activeChats.map((s) =>
+      if (resolution.kind === 'many') {
+        const chatList = resolution.chats.map((s) =>
           `  - chatId: ${s.externalChatId}${s.displayName ? ` (${s.displayName})` : ''}`,
         ).join('\n')
         return c.json({
           error: `Multiple active chats — specify chat_id. Available:\n${chatList}`,
         }, 400)
       }
-      resolvedChatId = activeChats[0].externalChatId
+      resolvedChatId = resolution.chatId
     }
 
     if (!isChatAllowed(integration_id, resolvedChatId)) {
@@ -253,7 +266,105 @@ xAgentChat.post('/send', async (c) => {
   }
 })
 
+// POST /share-dashboard — share a dashboard artifact to a Telegram chat
+xAgentChat.post('/share-dashboard', zValidator('json', shareDashboardRequestSchema), async (c) => {
+  try {
+    const callerSlug = getCallerSlug(c)
+    const { slug, integration_id, chat_id, emoji, caption } = c.req.valid('json')
+
+    // Resolve integration
+    let integration: Awaited<ReturnType<typeof getChatIntegration>>
+    if (integration_id) {
+      const found = getChatIntegration(integration_id)
+      if (!found) return c.json({ error: 'Chat integration not found' }, 404)
+      if (found.agentSlug !== callerSlug) return c.json({ error: 'Forbidden' }, 403)
+      if (found.provider !== 'telegram') return c.json({ error: 'Dashboards are only supported on Telegram' }, 400)
+      integration = found
+    } else {
+      const active = listChatIntegrations(callerSlug).filter(
+        (i) => i.provider === 'telegram' && i.status === 'active',
+      )
+      if (active.length === 0) return c.json({ error: 'No active Telegram integration for this agent' }, 400)
+      if (active.length > 1) return c.json({ error: 'Multiple Telegram integrations; specify integration_id' }, 400)
+      integration = active[0]
+    }
+
+    // Resolve chat
+    let resolvedChatId: string
+    if (chat_id) {
+      resolvedChatId = chat_id
+    } else {
+      const resolution = resolveSingleActiveChat(integration.id)
+      if (resolution.kind === 'none') return c.json({ error: 'No active chat for this integration' }, 400)
+      if (resolution.kind === 'many') return c.json({ error: 'Multiple active chats; specify chat_id' }, 400)
+      resolvedChatId = resolution.chatId
+    }
+
+    // Same access-control gate as /send: never deliver to a conversation that isn't approved.
+    if (!isChatAllowed(integration.id, resolvedChatId)) {
+      return c.json({ error: 'This conversation is not approved for this integration.' }, 403)
+    }
+
+    // Validate dashboard existence
+    const artifacts = await listArtifactsFromFilesystem(integration.agentSlug)
+    const dash = artifacts.find((a) => a.slug === slug)
+    if (!dash) return c.json({ error: 'Dashboard not found' }, 404)
+    const name = dash.name || slug
+
+    // A working "Open dashboard" button mints a Mini App cookie as the integration
+    // owner; without createdByUserId (e.g. integrations created before that field
+    // was captured) the button would 401 on tap, so fall back to plain text.
+    const allowButton = !!integration.createdByUserId
+
+    // When a screenshot is already on disk (captured on dashboard boot/start), lead
+    // the card with it. The connector only uses this on the button path.
+    const screenshotPath = dash.hasScreenshot
+      ? getArtifactScreenshotPath(integration.agentSlug, slug)
+      : undefined
+
+    let delivery: DashboardDelivery
+    try {
+      delivery = await chatIntegrationManager.shareDashboard(integration.id, resolvedChatId, {
+        agentSlug: integration.agentSlug,
+        dashboardSlug: slug,
+        name,
+        allowButton,
+        emoji,
+        caption,
+        screenshotPath,
+      })
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Integration not connected') {
+        return c.json({ error: 'Integration not connected' }, 503)
+      }
+      throw err
+    }
+
+    return c.json({ chatId: resolvedChatId, delivery })
+  } catch (error) {
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'share-dashboard' } })
+    return c.json({ error: 'Failed to share dashboard' }, 500)
+  }
+})
+
 // --- Helpers ---
+
+/**
+ * Resolve the single active (non-archived) chat for an integration when the caller
+ * didn't pass a chat_id. Returns a discriminated result so each route maps it to its
+ * own existing error response rather than sharing one error string.
+ */
+type ActiveChatResolution =
+  | { kind: 'one'; chatId: string }
+  | { kind: 'none' }
+  | { kind: 'many'; chats: ReturnType<typeof listChatIntegrationSessions> }
+
+function resolveSingleActiveChat(integrationId: string): ActiveChatResolution {
+  const active = listChatIntegrationSessions(integrationId).filter((s) => !s.archivedAt)
+  if (active.length === 0) return { kind: 'none' }
+  if (active.length > 1) return { kind: 'many', chats: active }
+  return { kind: 'one', chatId: active[0].externalChatId }
+}
 
 async function notifySessionOfOutboundMessage(
   integrationId: string,

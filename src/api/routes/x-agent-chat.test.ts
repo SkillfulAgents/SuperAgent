@@ -53,6 +53,7 @@ const mockAddIntegration = vi.fn()
 const mockGetConnector = vi.fn()
 const mockGetActiveIntegrationIds = vi.fn()
 const mockEnsureSession = vi.fn()
+const mockShareDashboard = vi.fn()
 
 vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
   chatIntegrationManager: {
@@ -60,6 +61,7 @@ vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
     getConnector: (...args: unknown[]) => mockGetConnector(...args),
     getActiveIntegrationIds: (...args: unknown[]) => mockGetActiveIntegrationIds(...args),
     ensureSession: (...args: unknown[]) => mockEnsureSession(...args),
+    shareDashboard: (...args: unknown[]) => mockShareDashboard(...args),
   },
 }))
 
@@ -84,6 +86,14 @@ const mockCaptureException = vi.fn()
 
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
+}))
+
+const mockListArtifactsFromFilesystem = vi.fn()
+const mockGetArtifactScreenshotPath = vi.fn()
+
+vi.mock('@shared/lib/services/artifact-service', () => ({
+  listArtifactsFromFilesystem: (...args: unknown[]) => mockListArtifactsFromFilesystem(...args),
+  getArtifactScreenshotPath: (...args: unknown[]) => mockGetArtifactScreenshotPath(...args),
 }))
 
 const mockExistsSync = vi.fn()
@@ -167,6 +177,10 @@ describe('x-agent chat route', () => {
     mockEnsureRunning.mockResolvedValue({ sendMessage: containerSendMessage })
     mockGetSessionJsonlPath.mockReturnValue('/tmp/superagent/agent-one/session-1.jsonl')
     mockExistsSync.mockReturnValue(false)
+    mockListArtifactsFromFilesystem.mockResolvedValue([
+      { slug: 'weekly-report', name: 'Weekly', description: '', status: 'stopped', port: 0 },
+    ])
+    mockShareDashboard.mockResolvedValue('button')
     vi.spyOn(Math, 'random').mockReturnValue(0)
   })
 
@@ -330,5 +344,305 @@ describe('x-agent chat route', () => {
 
     expect(res.status).toBe(200)
     expect(connector.sendMessage).toHaveBeenCalledWith('chat-1', { text: 'Hello' })
+  })
+
+  it('returns 400 with the no-active-chats message when none can be auto-resolved', async () => {
+    mockListChatIntegrationSessions.mockReturnValue([])
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ integration_id: 'integration-1', message: 'Hello' }),
+    })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('No active chats found')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 listing the chats when more than one is active and no chat_id is given', async () => {
+    mockListChatIntegrationSessions.mockReturnValue([
+      { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
+      { externalChatId: 'chat-2', displayName: 'Sales', archivedAt: null },
+    ])
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ integration_id: 'integration-1', message: 'Hello' }),
+    })
+
+    expect(res.status).toBe(400)
+    const error: string = (await res.json()).error
+    expect(error).toContain('Multiple active chats')
+    expect(error).toContain('chat-1 (General)')
+    expect(error).toContain('chat-2 (Sales)')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  describe('POST /add — owner attribution', () => {
+    afterEach(() => {
+      delete process.env.AUTH_MODE
+    })
+
+    beforeEach(() => {
+      mockValidateChatIntegrationConfig.mockReturnValue(undefined)
+      mockCreateChatIntegration.mockReturnValue('new-int-id')
+      mockAddIntegration.mockResolvedValue(undefined)
+      mockGetChatIntegration.mockReturnValue(createIntegration({ id: 'new-int-id', provider: 'telegram' }))
+    })
+
+    async function postAdd() {
+      return app.request('http://localhost/api/x-agent/chat/add', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'telegram', config: { botToken: 'tok' } }),
+      })
+    }
+
+    it('attributes the agent owner in auth mode', async () => {
+      process.env.AUTH_MODE = 'true'
+      // Seed the caller agent's owner ACL row in the real in-memory DB.
+      testSqlite
+        .prepare(`INSERT INTO agent_acl (id, user_id, agent_slug, role, created_at) VALUES (?,?,?,?,?)`)
+        .run('acl-1', 'owner-9', 'agent-one', 'owner', Date.now())
+
+      const res = await postAdd()
+
+      expect(res.status).toBe(201)
+      expect(mockCreateChatIntegration).toHaveBeenCalledWith(
+        expect.objectContaining({ agentSlug: 'agent-one', createdByUserId: 'owner-9' }),
+      )
+    })
+
+    it('passes no owner in non-auth mode (service applies the local default)', async () => {
+      delete process.env.AUTH_MODE
+
+      const res = await postAdd()
+
+      expect(res.status).toBe(201)
+      expect(mockCreateChatIntegration).toHaveBeenCalledWith(
+        expect.objectContaining({ agentSlug: 'agent-one', createdByUserId: undefined }),
+      )
+    })
+  })
+
+  describe('POST /share-dashboard', () => {
+    function createTelegramIntegration(overrides: Record<string, unknown> = {}) {
+      return createIntegration({ provider: 'telegram', status: 'active', createdByUserId: 'owner-1', ...overrides })
+    }
+
+    beforeEach(() => {
+      mockGetChatIntegration.mockReturnValue(createTelegramIntegration())
+      mockListChatIntegrations.mockReturnValue([createTelegramIntegration()])
+    })
+
+    it('shares a dashboard and returns 200 with chatId when auto-resolved', async () => {
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ chatId: 'chat-1', delivery: 'button' })
+      expect(mockShareDashboard).toHaveBeenCalledOnce()
+      expect(mockShareDashboard).toHaveBeenCalledWith(
+        'integration-1',
+        'chat-1',
+        { agentSlug: 'agent-one', dashboardSlug: 'weekly-report', name: 'Weekly', allowButton: true },
+      )
+    })
+
+    it('returns 400 when no chat can be auto-resolved', async () => {
+      mockListChatIntegrationSessions.mockReturnValue([])
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'No active chat for this integration' })
+      expect(mockShareDashboard).not.toHaveBeenCalled()
+    })
+
+    it('returns 400 when more than one chat is active and no chat_id is given', async () => {
+      mockListChatIntegrationSessions.mockReturnValue([
+        { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
+        { externalChatId: 'chat-2', displayName: 'Sales', archivedAt: null },
+      ])
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'Multiple active chats; specify chat_id' })
+      expect(mockShareDashboard).not.toHaveBeenCalled()
+    })
+
+    it('forwards emoji and caption from the request body to the connector', async () => {
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report', emoji: '⚽', caption: 'Live group standings + bracket' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockShareDashboard).toHaveBeenCalledWith(
+        'integration-1',
+        'chat-1',
+        expect.objectContaining({ emoji: '⚽', caption: 'Live group standings + bracket' }),
+      )
+    })
+
+    it('threads the screenshot path and surfaces delivery=photo when the dashboard has a screenshot', async () => {
+      mockListArtifactsFromFilesystem.mockResolvedValue([
+        { slug: 'weekly-report', name: 'Weekly', description: '', status: 'stopped', port: 0, hasScreenshot: true },
+      ])
+      mockGetArtifactScreenshotPath.mockReturnValue('/data/agent-one/weekly-report/screenshot.png')
+      mockShareDashboard.mockResolvedValue('photo')
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ chatId: 'chat-1', delivery: 'photo' })
+      expect(mockGetArtifactScreenshotPath).toHaveBeenCalledWith('agent-one', 'weekly-report')
+      expect(mockShareDashboard).toHaveBeenCalledWith(
+        'integration-1',
+        'chat-1',
+        expect.objectContaining({ screenshotPath: '/data/agent-one/weekly-report/screenshot.png' }),
+      )
+    })
+
+    it('does not resolve a screenshot path when the dashboard has none', async () => {
+      // Default mockListArtifactsFromFilesystem returns the dashboard without hasScreenshot.
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockGetArtifactScreenshotPath).not.toHaveBeenCalled()
+      expect(mockShareDashboard).toHaveBeenCalledWith(
+        'integration-1',
+        'chat-1',
+        expect.objectContaining({ screenshotPath: undefined }),
+      )
+    })
+
+    it('passes allowButton=false when the integration has no owner (createdByUserId null)', async () => {
+      // Integrations created before createdByUserId was captured would otherwise
+      // send a button that 401s on tap; the route must signal text-only delivery.
+      mockGetChatIntegration.mockReturnValue(createTelegramIntegration({ createdByUserId: null }))
+      mockListChatIntegrations.mockReturnValue([createTelegramIntegration({ createdByUserId: null })])
+      mockShareDashboard.mockResolvedValue('text')
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockShareDashboard).toHaveBeenCalledWith(
+        'integration-1',
+        'chat-1',
+        { agentSlug: 'agent-one', dashboardSlug: 'weekly-report', name: 'Weekly', allowButton: false },
+      )
+    })
+
+    it('returns 403 when the chat is not approved for the integration', async () => {
+      // Flip integration-1 to telegram + require_approval so isChatAllowed gates via real SQL.
+      // 'chat-blocked' has no access row, so isChatAllowed returns false.
+      testSqlite
+        .prepare(`UPDATE chat_integrations SET provider = 'telegram', require_approval = 1 WHERE id = 'integration-1'`)
+        .run()
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report', integration_id: 'integration-1', chat_id: 'chat-blocked' }),
+      })
+
+      expect(res.status).toBe(403)
+      expect(await res.json()).toEqual({ error: 'This conversation is not approved for this integration.' })
+      expect(mockShareDashboard).not.toHaveBeenCalled()
+    })
+
+    it('rejects requests without a valid proxy token', async () => {
+      mockValidateProxyToken.mockResolvedValue(null)
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer bad-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(401)
+      expect(mockShareDashboard).not.toHaveBeenCalled()
+    })
+
+    it('returns 403 when integration belongs to another agent', async () => {
+      mockGetChatIntegration.mockReturnValue(createTelegramIntegration({ agentSlug: 'other' }))
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report', integration_id: 'integration-1' }),
+      })
+
+      expect(res.status).toBe(403)
+      expect(mockShareDashboard).not.toHaveBeenCalled()
+    })
+
+    it('returns 404 when dashboard slug does not exist', async () => {
+      mockListArtifactsFromFilesystem.mockResolvedValue([])
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(404)
+      expect(mockShareDashboard).not.toHaveBeenCalled()
+    })
+
+    it('returns 400 when the resolved integration is not on Telegram', async () => {
+      mockGetChatIntegration.mockReturnValueOnce(createTelegramIntegration({ provider: 'slack' }))
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report', integration_id: 'integration-1' }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'Dashboards are only supported on Telegram' })
+      expect(mockShareDashboard).not.toHaveBeenCalled()
+    })
+
+    it('returns 503 when the integration is not connected', async () => {
+      mockShareDashboard.mockRejectedValueOnce(new Error('Integration not connected'))
+
+      const res = await app.request('http://localhost/api/x-agent/chat/share-dashboard', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: 'weekly-report' }),
+      })
+
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({ error: 'Integration not connected' })
+    })
   })
 })
