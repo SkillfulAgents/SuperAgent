@@ -32,7 +32,11 @@ export class AppPage {
    */
   async dismissWizardIfVisible() {
     const wizard = this.page.locator('[data-testid="wizard-container"]')
-    if (await wizard.isVisible({ timeout: 1000 }).catch(() => false)) {
+    const createAgentHeading = this.page.getByRole('heading', { name: /create your first agent/i })
+    const wizardVisible = await wizard.isVisible({ timeout: 1000 }).catch(() => false)
+    const createAgentVisible = await createAgentHeading.isVisible({ timeout: 500 }).catch(() => false)
+
+    if (wizardVisible) {
       const manualSetup = this.page.locator('[data-testid="wizard-manual-setup"]')
 
       if (await manualSetup.isVisible({ timeout: 500 }).catch(() => false)) {
@@ -69,6 +73,9 @@ export class AppPage {
       }
 
       await expect(wizard).not.toBeVisible()
+    } else if (createAgentVisible) {
+      await this.page.getByRole('button', { name: /^skip$/i }).click()
+      await expect(createAgentHeading).not.toBeVisible({ timeout: 15000 })
     }
   }
 
