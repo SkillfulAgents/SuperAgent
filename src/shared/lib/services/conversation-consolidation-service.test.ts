@@ -4,6 +4,7 @@ import * as path from 'path'
 import * as os from 'os'
 
 let memoryDir: string
+let apiKeyConfigured = true
 const messagesCreate = vi.fn()
 const getSessionMessagesMock = vi.fn()
 const getChatIntegrationMock = vi.fn()
@@ -19,7 +20,10 @@ vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
   markConversationConsolidated: (...args: unknown[]) => markConsolidatedMock(...args),
 }))
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getDefaultModel: () => 'sonnet' }),
+  getActiveLlmProvider: () => ({
+    getDefaultModel: () => 'sonnet',
+    getApiKeyStatus: () => ({ isConfigured: apiKeyConfigured }),
+  }),
   resolveActiveProviderModel: () => 'claude-sonnet-4-6',
 }))
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
@@ -78,6 +82,7 @@ function readIndex(): string {
 describe('consolidateConversation', () => {
   beforeEach(async () => {
     memoryDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'consolidation-test-'))
+    apiKeyConfigured = true
     vi.clearAllMocks()
     markConsolidatedMock.mockReturnValue(true)
     getChatIntegrationMock.mockReturnValue({ agentSlug: 'agent-a' })
@@ -213,6 +218,32 @@ describe('consolidateConversation', () => {
     // exactly one pointer line for pref.md
     const pointers = readIndex().split('\n').filter((l) => l.includes('](pref.md)'))
     expect(pointers).toHaveLength(1)
+  })
+
+  it('skips quietly when no LLM key is configured (no transcript read, no commit)', async () => {
+    apiKeyConfigured = false
+    await consolidateConversation(makeConversation())
+    expect(getSessionMessagesMock).not.toHaveBeenCalled()
+    expect(messagesCreate).not.toHaveBeenCalled()
+    expect(markConsolidatedMock).not.toHaveBeenCalled()
+  })
+
+  it('commits an empty fallback on a deterministic request error (e.g. 400 prompt-too-long / unsupported output_config)', async () => {
+    messagesCreate.mockRejectedValue(Object.assign(new Error('prompt is too long'), { status: 400 }))
+    await expect(consolidateConversation(makeConversation())).resolves.toBeUndefined()
+    expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
+  })
+
+  it('rethrows a transient error (e.g. 529 overloaded) so the sweep retries (no commit)', async () => {
+    messagesCreate.mockRejectedValue(Object.assign(new Error('overloaded'), { status: 529 }))
+    await expect(consolidateConversation(makeConversation())).rejects.toThrow('overloaded')
+    expect(markConsolidatedMock).not.toHaveBeenCalled()
+  })
+
+  it('rethrows a network error with no status so the sweep retries', async () => {
+    messagesCreate.mockRejectedValue(new Error('socket hang up'))
+    await expect(consolidateConversation(makeConversation())).rejects.toThrow('socket hang up')
+    expect(markConsolidatedMock).not.toHaveBeenCalled()
   })
 
   it('truncates an over-cap transcript to the most-recent tail before the model call', async () => {

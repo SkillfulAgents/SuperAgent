@@ -9,8 +9,10 @@
  * Robustness contract (see the design spec):
  * - The transcript is size-bounded before the call.
  * - Deterministic failures (empty transcript, refusal, truncation, unparseable
- *   output) COMMIT an empty-memory fallback so a bad conversation is not retried
- *   every sweep forever. Only transient errors throw and let the sweep retry.
+ *   output, and deterministic request errors like 400/413/422) COMMIT an
+ *   empty-memory fallback so a bad conversation is not retried every sweep
+ *   forever. Transient errors (auth/rate-limit/server/network) and a missing
+ *   key do NOT commit: they retry on a later tick.
  * - Memory writes are idempotent (keyed by the memory `name`, overwrite not
  *   append; MEMORY.md pointers upsert by file), and the commit is atomic (WHERE
  *   consolidated_at IS NULL), so an at-least-once run never duplicates or
@@ -215,6 +217,19 @@ function stripJsonFence(text: string): string {
 }
 
 /**
+ * A request error that will fail identically on every retry: bad request (e.g.
+ * a provider that rejects `output_config`), payload too large, or unprocessable
+ * (e.g. a transcript that exceeds the model's token window despite the char
+ * cap). These are terminal — commit an empty fallback rather than retry forever.
+ * Auth (401/403), rate limit (429) and server (5xx) errors are NOT here: they
+ * are recoverable, so they rethrow and the sweep retries on a later tick.
+ */
+function isDeterministicLlmError(err: unknown): boolean {
+  const status = (err as { status?: number } | null)?.status
+  return status === 400 || status === 413 || status === 422
+}
+
+/**
  * Consolidate one finished conversation into durable memories + a recap.
  *
  * Idempotent and safe to retry: an early `consolidatedAt` check and the atomic
@@ -227,6 +242,12 @@ export async function consolidateConversation(conversation: ChatIntegrationSessi
   if (!integration) return
   const agentSlug = integration.agentSlug
 
+  // Cheap config check before the expensive transcript read: with no usable LLM
+  // key we cannot consolidate, but it is recoverable — skip quietly and let a
+  // later tick retry (do NOT commit, do NOT read the transcript or spam errors).
+  const provider = getActiveLlmProvider()
+  if (!provider.getApiKeyStatus().isConfigured) return
+
   const entries = await getSessionMessages(agentSlug, conversation.sessionId)
   const transcript = boundTranscript(transcriptToText(entries))
   // Empty transcript is terminal: commit so the row stops being a candidate.
@@ -236,15 +257,27 @@ export async function consolidateConversation(conversation: ChatIntegrationSessi
   }
 
   const client = getConfiguredLlmClient()
-  const model = resolveActiveProviderModel(getActiveLlmProvider().getDefaultModel('consolidator'), 'consolidator')
+  const model = resolveActiveProviderModel(provider.getDefaultModel('consolidator'), 'consolidator')
   const existingIndex = await readMemoryIndex(getAgentMemoryDir(agentSlug))
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: CONSOLIDATION_MAX_TOKENS,
-    messages: [{ role: 'user', content: buildConsolidationPrompt(transcript, existingIndex) }],
-    output_config: { format: { type: 'json_schema' as const, schema: CONSOLIDATION_JSON_SCHEMA } },
-  })
+  let response
+  try {
+    response = await client.messages.create({
+      model,
+      max_tokens: CONSOLIDATION_MAX_TOKENS,
+      messages: [{ role: 'user', content: buildConsolidationPrompt(transcript, existingIndex) }],
+      output_config: { format: { type: 'json_schema' as const, schema: CONSOLIDATION_JSON_SCHEMA } },
+    })
+  } catch (err) {
+    // Deterministic request errors fail identically on every retry — commit an
+    // empty fallback so the row stops being a candidate (no retry-forever, no
+    // head-of-line stall). Transient errors rethrow so the sweep retries.
+    if (isDeterministicLlmError(err)) {
+      markConversationConsolidated(conversation.id, '')
+      return
+    }
+    throw err
+  }
 
   // Terminal failures: commit an empty fallback so a too-long / refused /
   // truncated conversation never retries every 5 minutes forever. (max_tokens =>
