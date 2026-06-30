@@ -591,6 +591,7 @@ class ChatIntegrationManager {
             listConsolidationCandidates(id),
             integration.sessionTimeout,
             (sid) => messagePersister.isSessionActive(sid),
+            (chatId) => isChatAllowed(id, chatId),
             CONSOLIDATION_PER_TICK_LIMIT,
           )
           for (const conversation of targets) {
@@ -2010,15 +2011,20 @@ export function shouldRotateSession(
  * only looks at `updatedAt`, so without the gate an old `/clear`, self-heal or
  * revoke row (rotatedAt null) would be mistaken for a timed-out conversation and
  * consolidated — exactly what the rotatedAt marker exists to prevent.
+ *
+ * `isAllowed` excludes chats that are no longer permitted (banned / revoked) so a
+ * timed-out-or-rotated conversation of a now-banned chat is never mined into the
+ * agent's shared memory — same access gate every other chat-processing path uses.
  */
 export function selectConsolidationTargets(
   rows: ChatIntegrationSession[],
   sessionTimeout: number | null | undefined,
   isActive: (sessionId: string) => boolean,
+  isAllowed: (externalChatId: string) => boolean,
   limit: number,
 ): ChatIntegrationSession[] {
   return rows
-    .filter((r) => !isActive(r.sessionId) && (
+    .filter((r) => !isActive(r.sessionId) && isAllowed(r.externalChatId) && (
       (r.archivedAt == null && isSessionTimedOut(r, sessionTimeout)) || // active AND timed out
       (r.archivedAt != null && r.rotatedAt != null)                     // archived BY TIMEOUT only
     ))
