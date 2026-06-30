@@ -6,6 +6,7 @@
  */
 
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
+import { webSearchTool } from './tools/web/web-search'
 import { requestSecretTool } from './tools/request-secret'
 import { requestConnectedAccountTool } from './tools/request-connected-account'
 import { searchConnectedAccountServicesTool } from './tools/search-connected-account-services'
@@ -136,5 +137,16 @@ export function createChatMcpServer() {
       addChatIntegrationTool,
       sendChatMessageTool,
     ],
+  })
+}
+
+// Registered only when a host-side web search vendor is active (server name 'web' →
+// tool id mcp__web__web_search). The tool RPCs to /api/x-agent/web/search; the host
+// holds the vendor key and applies allowed-sites policy.
+export function createWebMcpServer() {
+  return createSdkMcpServer({
+    name: 'web',
+    version: '1.0.0',
+    tools: [webSearchTool],
   })
 }
