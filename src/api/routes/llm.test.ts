@@ -65,7 +65,7 @@ describe('LLM proxy endpoint', () => {
       expect(res.status).toBe(200)
       const body = await res.json()
       expect(body.configured).toBe(true)
-      expect(body.defaultModel).toBe('claude-sonnet-4-6')
+      expect(body.defaultModel).toBe('claude-sonnet-5')
       expect(body.provider).toBe('anthropic')
     })
   })
@@ -90,7 +90,7 @@ describe('LLM proxy endpoint', () => {
       expect(body.content[0].text).toBe('Hello!')
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: 'claude-sonnet-4-6',
+          model: 'claude-sonnet-5',
           messages: [{ role: 'user', content: 'hi' }],
           max_tokens: 100,
         }),

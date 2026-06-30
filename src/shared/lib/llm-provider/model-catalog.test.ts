@@ -47,7 +47,7 @@ describe('getProviderCatalog', () => {
   it('gives Opus/Fable all five efforts and Sonnet/Haiku the lower three', () => {
     const catalog = getProviderCatalog('anthropic')
     const opus = catalog.find((m) => m.id === 'claude-opus-4-8')!
-    const sonnet = catalog.find((m) => m.id === 'claude-sonnet-4-6')!
+    const sonnet = catalog.find((m) => m.id === 'claude-sonnet-5')!
     expect(opus.supportedEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
     expect(sonnet.supportedEfforts).toEqual(['low', 'medium', 'high'])
   })
@@ -352,7 +352,7 @@ describe('resolveModelForProvider', () => {
 
   it('resolves a bare family alias to that family latest id', () => {
     expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-4-8')
-    expect(resolveModelForProvider('sonnet', 'anthropic', 'agent')).toBe('claude-sonnet-4-6')
+    expect(resolveModelForProvider('sonnet', 'anthropic', 'agent')).toBe('claude-sonnet-5')
   })
 
   it('passes an unknown but versioned id straight through (treated as a pin)', () => {
@@ -386,7 +386,7 @@ describe('resolveModelForProvider', () => {
     // An Anthropic pin that does not exist in Bedrock's catalog AND has no
     // version segment would hit the default; but a versioned unknown passes
     // through. Use a bare unknown alias to exercise the default path.
-    expect(resolveModelForProvider('unknown-alias', 'bedrock', 'agent')).toBe('us.anthropic.claude-sonnet-4-6')
+    expect(resolveModelForProvider('unknown-alias', 'bedrock', 'agent')).toBe('us.anthropic.claude-sonnet-5')
   })
 
   it('resolves custom model ids and custom latest aliases through the effective catalog', () => {

@@ -142,7 +142,7 @@ export function getModelPromptHints(
  *
  * Provider defaults are themselves bare family aliases (so they ride upgrades),
  * so step 4 alias-resolves the default too — e.g. Bedrock's 'sonnet' default
- * resolves to 'us.anthropic.claude-sonnet-4-6', never reaching the SDK bare.
+ * resolves to 'us.anthropic.claude-sonnet-5', never reaching the SDK bare.
  */
 export function resolveModelForProvider(
   selection: string,

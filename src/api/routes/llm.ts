@@ -7,7 +7,7 @@ const llm = new Hono()
 
 llm.use('*', Authenticated())
 
-const DEFAULT_MODEL = 'claude-sonnet-4-6'
+const DEFAULT_MODEL = 'claude-sonnet-5'
 
 // Simple rate limiter: 100 requests per minute
 const requestCounts = new Map<string, { count: number; resetAt: number }>()
