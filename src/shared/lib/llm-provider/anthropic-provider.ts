@@ -25,6 +25,7 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
       case 'agent': return 'opus'
       case 'browser': return 'sonnet'
       case 'dashboard': return 'opus'
+      case 'consolidator': return 'sonnet'
     }
   }
 

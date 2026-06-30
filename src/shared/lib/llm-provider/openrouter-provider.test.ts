@@ -206,5 +206,6 @@ describe('OpenRouterLlmProvider — capabilities and defaults', () => {
     expect(provider.getDefaultModel('agent')).toBe('sonnet')
     expect(provider.getDefaultModel('browser')).toBe('sonnet')
     expect(provider.getDefaultModel('dashboard')).toBe('opus')
+    expect(provider.getDefaultModel('consolidator')).toBe('sonnet')
   })
 })

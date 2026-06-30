@@ -50,6 +50,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
       case 'agent': return 'opus'
       case 'browser': return 'sonnet'
       case 'dashboard': return 'opus'
+      case 'consolidator': return 'sonnet'
     }
   }
 
