@@ -238,6 +238,18 @@ export function touchAndCapMap<V>(map: Map<string, V>, key: string, value: V, ma
   }
 }
 
+/**
+ * Every tracked thinking-reaction for a chat. Reaction keys are `${chatId}:${ts}`;
+ * the colon-delimited prefix avoids matching a chat whose id is a prefix of another.
+ * Used to sweep ALL reactions on clear so a mid-turn ts change can't orphan one.
+ */
+export function reactionsForChat(activeReactions: Set<string>, chatId: string): Array<{ key: string; ts: string }> {
+  const prefix = `${chatId}:`
+  return [...activeReactions]
+    .filter((k) => k.startsWith(prefix))
+    .map((k) => ({ key: k, ts: k.slice(prefix.length) }))
+}
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class SlackConnector extends ChatClientConnector {
@@ -806,13 +818,15 @@ export class SlackConnector extends ChatClientConnector {
   }
 
   private async clearThinkingReaction(chatId: string): Promise<void> {
-    const lastTs = this.lastUserMessageTs.get(chatId)
-    if (!lastTs) return
+    // Sweep EVERY tracked reaction for the chat, not just the current ts: if a second
+    // message landed mid-turn the ts changed and a second reaction was added, so
+    // clearing only the latest would orphan the first.
+    const entries = reactionsForChat(this.activeReactions, chatId)
+    if (entries.length === 0) return
 
-    const key = `${chatId}:${lastTs}`
-    if (this.activeReactions.has(key)) {
-      const { channel } = this.resolveChannel(chatId)
-      await this.removeThinkingReaction(channel, lastTs)
+    const { channel } = this.resolveChannel(chatId)
+    for (const { key, ts } of entries) {
+      await this.removeThinkingReaction(channel, ts)
       this.activeReactions.delete(key)
     }
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, type SlackMessageRoutingParams } from './slack-connector'
+import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, reactionsForChat, type SlackMessageRoutingParams } from './slack-connector'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -474,5 +474,30 @@ describe('touchAndCapMap', () => {
     touchAndCapMap(map, 'c', 3, 2) // evicts 'b', not 'a'
     expect(map.get('a')).toBe(99)
     expect([...map.keys()]).toEqual(['a', 'c'])
+  })
+})
+
+// ── reactionsForChat (thinking-reaction sweep on clear) ──────────────────
+// The working indicator is a :thinking_face: reaction keyed on the user's last
+// message ts. If a second message lands mid-turn the ts changes and a second
+// reaction is added; clearing must sweep EVERY reaction for the chat, not just
+// the latest ts, or the first one is orphaned until disconnect.
+
+describe('reactionsForChat', () => {
+  it('returns all tracked reactions for the chat, extracting the ts', () => {
+    const set = new Set(['C123:1000.1', 'C123:1000.2', 'C999:1000.3'])
+    expect(reactionsForChat(set, 'C123')).toEqual([
+      { key: 'C123:1000.1', ts: '1000.1' },
+      { key: 'C123:1000.2', ts: '1000.2' },
+    ])
+  })
+
+  it('does not match a chat whose id is a prefix of another (colon-delimited)', () => {
+    const set = new Set(['C12:1000.1', 'C123:1000.2'])
+    expect(reactionsForChat(set, 'C12').map((r) => r.ts)).toEqual(['1000.1'])
+  })
+
+  it('returns empty when nothing is tracked for the chat', () => {
+    expect(reactionsForChat(new Set(['C999:1000.1']), 'C123')).toEqual([])
   })
 })

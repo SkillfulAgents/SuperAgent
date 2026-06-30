@@ -867,6 +867,33 @@ describe('IMessageConnector', () => {
       expect(messages).toHaveLength(1)
       expect(messages[0].type).toBe('start_typing')
     })
+
+    // The manager's per-session tick calls startWorking every ~1s for keep-alive;
+    // iMessage's bubble self-expires, so we fire start_typing once per working
+    // segment instead of on every tick (avoids flooding the bridge).
+    it('does not re-send start_typing on repeated calls within a segment', async () => {
+      const connector = createConnector()
+      const ws = wireUp(connector)
+
+      await connector.startWorking('chat-1', 'working')
+      await connector.startWorking('chat-1', 'working') // tick keep-alive
+      await connector.startWorking('chat-1', 'thinking')
+
+      const typing = parseSent(ws).filter((m) => m.type === 'start_typing')
+      expect(typing).toHaveLength(1)
+    })
+
+    it('re-sends start_typing for a new segment after stopWorking', async () => {
+      const connector = createConnector()
+      const ws = wireUp(connector)
+
+      await connector.startWorking('chat-1', 'working')
+      await connector.stopWorking('chat-1')
+      await connector.startWorking('chat-1', 'working') // new segment
+
+      const typing = parseSent(ws).filter((m) => m.type === 'start_typing')
+      expect(typing).toHaveLength(2)
+    })
   })
 
   // ── 9. Connection state ───────────────────────────────────────────

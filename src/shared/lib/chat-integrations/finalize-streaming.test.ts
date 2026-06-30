@@ -417,10 +417,10 @@ describe('TelegramConnector.startWorking / stopWorking', () => {
     }))
     // A draft (native thinking block), not the group typing action.
     expect(sendChatAction).not.toHaveBeenCalled()
-    await connector.stopWorking('999') // clear the keep-alive timer
+    await connector.stopWorking('999')
   })
 
-  it('keeps the draft alive on a heartbeat and stops re-sending after stopWorking', async () => {
+  it('renders once per call with no self-heartbeat (the manager tick drives keep-alive)', async () => {
     vi.useFakeTimers()
     try {
       const connector = new TelegramConnector({ botToken: 'fake:token' })
@@ -430,17 +430,20 @@ describe('TelegramConnector.startWorking / stopWorking', () => {
       await connector.startWorking('999', 'working')
       expect(sendRichMessageDraft).toHaveBeenCalledTimes(1) // sent right away
 
-      await vi.advanceTimersByTimeAsync(1000)
-      expect(sendRichMessageDraft).toHaveBeenCalledTimes(2) // re-sent to keep alive
+      // No internal timer: nothing re-sends on its own. The manager's tick re-calls
+      // startWorking for keep-alive, so a second call renders again on the SAME draft id.
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(sendRichMessageDraft).toHaveBeenCalledTimes(1)
 
-      // Same draft id, so the streaming response (which reuses it) replaces the indicator.
+      await connector.startWorking('999', 'working') // tick-driven keep-alive re-render
+      expect(sendRichMessageDraft).toHaveBeenCalledTimes(2)
       const first = (sendRichMessageDraft.mock.calls[0][0] as any).draft_id
       const second = (sendRichMessageDraft.mock.calls[1][0] as any).draft_id
-      expect(second).toBe(first)
+      expect(second).toBe(first) // stable draft id, so the streaming response replaces it in place
 
       await connector.stopWorking('999')
       await vi.advanceTimersByTimeAsync(5000)
-      expect(sendRichMessageDraft).toHaveBeenCalledTimes(2) // no further sends after stop
+      expect(sendRichMessageDraft).toHaveBeenCalledTimes(2) // stop yields the draft; no further sends
     } finally {
       vi.useRealTimers()
     }
@@ -455,7 +458,7 @@ describe('TelegramConnector.startWorking / stopWorking', () => {
     await connector.startWorking('-1001', 'working')
     expect(sendChatAction).toHaveBeenCalledWith('-1001', 'typing')
     expect(sendRichMessageDraft).not.toHaveBeenCalled()
-    await connector.stopWorking('-1001') // clear the keep-alive timer
+    await connector.stopWorking('-1001')
   })
 })
 

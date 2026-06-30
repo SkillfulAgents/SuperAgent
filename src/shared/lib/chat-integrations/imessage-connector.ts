@@ -80,6 +80,10 @@ export class IMessageConnector extends ChatClientConnector {
 
   private lastReceivedMessageId: string | null = null
   private lastChatId: string | null = null
+  // Chats currently showing the typing bubble. The manager's tick calls startWorking
+  // every ~1s for keep-alive; iMessage's bubble self-expires, so we send start_typing
+  // once per working segment (on the not-shown→shown edge) instead of on every tick.
+  private typingShown: Set<string> = new Set()
   private pendingApprovals: Map<string, PendingApproval> = new Map()
   private pendingQuestions: Map<string, PendingQuestion> = new Map()
 
@@ -251,8 +255,18 @@ export class IMessageConnector extends ChatClientConnector {
 
   async startWorking(chatId: string, _activity: SessionActivity): Promise<void> {
     // iMessage shows only a typing indicator, so the activity label is unused.
-    const targetChatId = chatId || this.lastChatId || undefined
+    const targetChatId = chatId || this.lastChatId
+    if (!targetChatId) return
+    if (this.typingShown.has(targetChatId)) return // already shown — tick keep-alive no-ops
+    this.typingShown.add(targetChatId)
     this.send({ type: 'start_typing', data: { chatId: targetChatId } })
+  }
+
+  async stopWorking(chatId: string): Promise<void> {
+    // No stop_typing command exists; the OS bubble self-expires. Clear the shown flag
+    // so the next working segment re-arms start_typing.
+    const targetChatId = chatId || this.lastChatId
+    if (targetChatId) this.typingShown.delete(targetChatId)
   }
 
   async sendFile(chatId: string, fileData: Buffer, filename: string, caption?: string): Promise<string> {
