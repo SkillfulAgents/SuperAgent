@@ -9,11 +9,39 @@ const app = new Hono()
 // Mount API routes
 app.route('/', api)
 
+// Cache policy for the static web build. Vite emits content-hashed JS/CSS into
+// `/assets/*`, so the filename itself changes whenever the bytes change — those
+// can be cached permanently and a new deploy is picked up automatically (new
+// URLs, nothing to invalidate). `index.html` is the un-hashed entry that points
+// at the hashed bundles, so it must always be revalidated or clients pin to a
+// stale build. Stable-named `public/` assets (icons, manifest) have no hash to
+// bust them, so they revalidate too rather than caching forever.
+function staticCacheControl(filePath: string): string {
+  const p = filePath.replace(/\\/g, '/')
+  if (p.includes('/assets/')) return 'public, max-age=31536000, immutable'
+  if (p.endsWith('index.html')) return 'no-cache'
+  return 'public, max-age=3600, must-revalidate'
+}
+
 // Only serve static files in production (when dist/renderer exists)
 // In development, Vite dev server handles the frontend
 if (existsSync('./dist/renderer')) {
-  app.use('/*', serveStatic({ root: './dist/renderer' }))
-  app.get('*', serveStatic({ path: './dist/renderer/index.html' }))
+  app.use(
+    '/*',
+    serveStatic({
+      root: './dist/renderer',
+      onFound: (filePath, c) => c.header('Cache-Control', staticCacheControl(filePath)),
+    }),
+  )
+  // SPA fallback: any unmatched route serves the HTML entry, which must never be
+  // cached so a reload always discovers the latest hashed bundles.
+  app.get(
+    '*',
+    serveStatic({
+      path: './dist/renderer/index.html',
+      onFound: (_filePath, c) => c.header('Cache-Control', 'no-cache'),
+    }),
+  )
 }
 
 let server: BoundServer['server']
