@@ -49,7 +49,7 @@ test.describe('Auth Settings Enforcement', () => {
     if (config.hasUsers) {
       await authPage.signIn(admin.email, admin.password)
     } else {
-      await authPage.signUp(admin.name, admin.email, admin.password)
+      await authPage.signUpOrSignIn(admin.name, admin.email, admin.password)
     }
 
     await appPage.waitForAppLoaded()
@@ -134,7 +134,7 @@ test.describe('Auth Settings Enforcement', () => {
 
     await user3Page.reload()
     await authPage.expectVisible()
-    await authPage.signUp(user.name, user.email, user.password)
+    await authPage.signUpOrSignIn(user.name, user.email, user.password)
     await appPage.waitForAppLoaded()
     await appPage.dismissWizardIfVisible()
   })

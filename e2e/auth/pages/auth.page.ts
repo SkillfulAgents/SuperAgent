@@ -6,6 +6,26 @@ import { Page, expect } from '@playwright/test'
 export class AuthPage {
   constructor(private page: Page) {}
 
+  private async waitForAuthPost(path: string, action: () => Promise<unknown>) {
+    const responsePromise = this.page.waitForResponse((response) =>
+      response.url().includes(path) &&
+      response.request().method() === 'POST'
+    )
+    await action()
+    return responsePromise
+  }
+
+  async resetToAuthPage() {
+    await this.page.context().clearCookies()
+    await this.page.goto('/')
+    await this.page.evaluate(() => {
+      localStorage.clear()
+      sessionStorage.clear()
+    })
+    await this.page.reload()
+    await this.expectVisible()
+  }
+
   /** Sign up a new user */
   async signUp(name: string, email: string, password: string) {
     // Switch to sign-up tab
@@ -18,7 +38,26 @@ export class AuthPage {
     await this.page.locator('#signup-confirm').fill(password)
 
     // Submit
-    await this.page.locator('[data-testid="signup-submit"]').click()
+    await this.waitForAuthPost('/api/auth/sign-up/email', () =>
+      this.page.locator('[data-testid="signup-submit"]').click()
+    )
+  }
+
+  /** Sign up, falling back to sign-in if the user already exists or no session was attached. */
+  async signUpOrSignIn(name: string, email: string, password: string) {
+    await this.signUp(name, email, password)
+
+    const appReady = this.page.locator('[data-testid="app-sidebar"], [data-testid="wizard-container"]').first()
+    try {
+      await appReady.waitFor({ state: 'visible', timeout: 5000 })
+      return
+    } catch {
+      // Stay on the auth page when signup hit an existing user or did not attach a session.
+    }
+
+    if (await this.page.locator('[data-testid="auth-page"]').isVisible().catch(() => false)) {
+      await this.signIn(email, password)
+    }
   }
 
   /** Sign in an existing user */
@@ -34,7 +73,9 @@ export class AuthPage {
     await this.page.locator('#signin-password').fill(password)
 
     // Submit
-    await this.page.locator('[data-testid="signin-submit"]').click()
+    await this.waitForAuthPost('/api/auth/sign-in/email', () =>
+      this.page.locator('[data-testid="signin-submit"]').click()
+    )
   }
 
   /** Assert the auth page is visible */

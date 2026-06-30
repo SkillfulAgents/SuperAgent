@@ -37,7 +37,8 @@ test.describe('Auth Flow', () => {
     const settingsPage = new SettingsPage(user1Page)
 
     // Sign up User1 (first user becomes admin)
-    await authPage.signUp(user1.name, user1.email, user1.password)
+    await authPage.resetToAuthPage()
+    await authPage.signUpOrSignIn(user1.name, user1.email, user1.password)
 
     // App should load after signup
     await appPage.waitForAppLoaded()
@@ -62,7 +63,8 @@ test.describe('Auth Flow', () => {
     const settingsPage = new SettingsPage(user2Page)
 
     // Sign up User2 (second user is regular user)
-    await authPage.signUp(user2.name, user2.email, user2.password)
+    await authPage.resetToAuthPage()
+    await authPage.signUpOrSignIn(user2.name, user2.email, user2.password)
 
     // App should load
     await appPage.waitForAppLoaded()
@@ -192,7 +194,8 @@ test.describe('Auth Flow', () => {
     const appPage = new AppPage(user3Page)
     const userBar = new UserBarPage(user3Page)
 
-    await authPage.signUp(user3.name, user3.email, user3.password)
+    await authPage.resetToAuthPage()
+    await authPage.signUpOrSignIn(user3.name, user3.email, user3.password)
     await appPage.waitForAppLoaded()
     await appPage.dismissWizardIfVisible()
     await userBar.expectUserName(user3.name)
