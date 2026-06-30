@@ -25,6 +25,7 @@ vi.mock('@shared/lib/llm-provider', () => ({
   }),
   resolveActiveProviderModel: () => 'claude-sonnet-4-6',
 }))
+vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
   getConfiguredLlmClient: () => ({ messages: { create: messagesCreate } }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
