@@ -48,6 +48,7 @@ export interface ApiKeySettings {
   openaiApiKey?: string
   nangoSecretKey?: string
   accountProviderUserId?: string
+  exaApiKey?: string
 }
 
 export type SttProvider = 'deepgram' | 'openai' | 'platform'
@@ -177,6 +178,8 @@ export interface AnalyticsTarget {
 
 export type { LlmProviderId } from '../llm-provider/base-llm-provider'
 import type { LlmProviderId } from '../llm-provider/base-llm-provider'
+export type { WebSearchProviderId } from '../web-provider/types'
+import type { WebSearchProviderId } from '../web-provider/types'
 
 export interface PlatformAuthSettings {
   token: string
@@ -198,6 +201,7 @@ export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
   llmProvider?: LlmProviderId
+  webSearchProvider?: WebSearchProviderId // default 'native' (no host vendor; Anthropic server-side tools)
   app?: AppPreferences
   models?: ModelSettings
   modelCatalog?: ModelCatalogSettings
@@ -412,6 +416,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     },
     apiKeys: loaded.apiKeys,
     llmProvider: loaded.llmProvider,
+    webSearchProvider: loaded.webSearchProvider,
     models: (() => {
       const merged = { ...DEFAULT_SETTINGS.models!, ...loaded.models }
       // One-time normalization of legacy concrete defaults → bare aliases.
