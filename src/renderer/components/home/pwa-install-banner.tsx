@@ -5,11 +5,16 @@ import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { usePwaInstall } from '@renderer/hooks/use-pwa-install'
 import { isElectron } from '@renderer/lib/env'
 
-const DISMISS_KEY = 'pwa-install-banner-dismissed'
+const DISMISS_KEY = 'pwa-install-banner-dismissed-at'
+// A dismissal means "not now", not "never" — re-surface the nudge a week later
+// rather than hiding it forever.
+const REPROMPT_AFTER_MS = 7 * 24 * 60 * 60 * 1000
 
-function wasDismissed(): boolean {
+function dismissedRecently(): boolean {
   try {
-    return localStorage.getItem(DISMISS_KEY) === '1'
+    const at = Number(localStorage.getItem(DISMISS_KEY))
+    // Missing/garbage parses to 0/NaN — both fail `> 0`, so the banner shows.
+    return at > 0 && Date.now() - at < REPROMPT_AFTER_MS
   } catch {
     return false
   }
@@ -25,14 +30,14 @@ function wasDismissed(): boolean {
 export function PwaInstallBanner() {
   const isMobile = useIsMobile()
   const { isStandalone, canPrompt, promptInstall, method } = usePwaInstall()
-  const [dismissed, setDismissed] = useState(wasDismissed)
+  const [dismissed, setDismissed] = useState(dismissedRecently)
 
   // Mobile web only, and only when there's actually something to install.
   if (isElectron() || isStandalone || dismissed || !isMobile) return null
 
   const dismiss = () => {
     try {
-      localStorage.setItem(DISMISS_KEY, '1')
+      localStorage.setItem(DISMISS_KEY, String(Date.now()))
     } catch {
       // Private mode / storage disabled — just hide for this session.
     }

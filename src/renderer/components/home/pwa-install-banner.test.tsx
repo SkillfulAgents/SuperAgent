@@ -59,16 +59,26 @@ describe('PwaInstallBanner', () => {
     expect(promptInstall).toHaveBeenCalledOnce()
   })
 
-  it('dismiss hides the banner and persists the choice', () => {
+  it('dismiss hides the banner and records the time', () => {
     const { container } = render(<PwaInstallBanner />)
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     expect(container).toBeEmptyDOMElement()
-    expect(localStorage.getItem('pwa-install-banner-dismissed')).toBe('1')
+    const at = Number(localStorage.getItem('pwa-install-banner-dismissed-at'))
+    expect(at).toBeGreaterThan(0)
+    expect(Date.now() - at).toBeLessThan(5_000)
   })
 
-  it('stays hidden if previously dismissed', () => {
-    localStorage.setItem('pwa-install-banner-dismissed', '1')
+  it('stays hidden if dismissed within the last week', () => {
+    const twoDaysAgo = Date.now() - 2 * 24 * 60 * 60 * 1000
+    localStorage.setItem('pwa-install-banner-dismissed-at', String(twoDaysAgo))
     const { container } = render(<PwaInstallBanner />)
     expect(container).toBeEmptyDOMElement()
+  })
+
+  it('re-appears once the dismissal is over a week old', () => {
+    const eightDaysAgo = Date.now() - 8 * 24 * 60 * 60 * 1000
+    localStorage.setItem('pwa-install-banner-dismissed-at', String(eightDaysAgo))
+    render(<PwaInstallBanner />)
+    expect(screen.getByText('Install Gamut')).toBeInTheDocument()
   })
 })
