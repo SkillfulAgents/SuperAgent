@@ -16,6 +16,7 @@ import { Button } from '@renderer/components/ui/button'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { DashboardCard } from './dashboard-card'
+import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer, Search } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
@@ -319,6 +320,9 @@ export function HomePage() {
 
       <div className="flex-1 overflow-y-auto px-4 py-6 md:p-6">
         <div className="max-w-4xl mx-auto space-y-8">
+          {/* Mobile web/PWA only — "Install Gamut" prompt; renders nothing on desktop/Electron. */}
+          <PwaInstallBanner />
+
           {/* Agents Section */}
           <section>
             <div className="flex items-center justify-between mb-4">
