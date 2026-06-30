@@ -17,12 +17,14 @@ const authProjects = [
     testMatch: '**/auth-flow.spec.ts',
     port: e2ePort,
     dataDir: path.join(e2eDataDir, 'flow'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'flow'),
   },
   {
     name: 'auth-settings',
     testMatch: '**/auth-settings.spec.ts',
     port: e2ePort + 1,
     dataDir: path.join(e2eDataDir, 'settings'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'settings'),
   },
 ].map((project, index) => ({
   ...project,
@@ -31,8 +33,8 @@ const authProjects = [
     : `http://localhost:${project.port}`,
 }))
 
-function buildAuthServerCommand(dataDir: string, port: number) {
-  return `SUPERAGENT_DATA_DIR="${dataDir}" AUTH_MODE=true node e2e/setup-e2e-data.js && SUPERAGENT_DATA_DIR="${dataDir}" E2E_MOCK=true AUTH_MODE=true ANTHROPIC_API_KEY=sk-ant-e2e-mock PORT=${port} npm run dev:web`
+function buildAuthServerCommand(dataDir: string, port: number, viteCacheDir: string) {
+  return `SUPERAGENT_DATA_DIR="${dataDir}" AUTH_MODE=true node e2e/setup-e2e-data.js && SUPERAGENT_DATA_DIR="${dataDir}" VITE_CACHE_DIR="${viteCacheDir}" E2E_MOCK=true AUTH_MODE=true ANTHROPIC_API_KEY=sk-ant-e2e-mock PORT=${port} npm run dev:web`
 }
 
 export default defineConfig({
@@ -56,7 +58,7 @@ export default defineConfig({
   })),
 
   webServer: authProjects.map((project) => ({
-    command: buildAuthServerCommand(project.dataDir, project.port),
+    command: buildAuthServerCommand(project.dataDir, project.port, project.viteCacheDir),
     url: `${project.baseURL}/api/settings`,
     reuseExistingServer: false,
     timeout: 120000,

@@ -6,8 +6,10 @@ import { readFileSync } from 'fs'
 
 const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'))
 const analyticsConfig = JSON.parse(readFileSync(path.resolve(__dirname, 'src/shared/lib/analytics/config.json'), 'utf-8'))
+const viteCacheDir = process.env.VITE_CACHE_DIR ? path.resolve(__dirname, process.env.VITE_CACHE_DIR) : undefined
 
 export default defineConfig({
+  cacheDir: viteCacheDir,
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __AUTH_MODE__: JSON.stringify(process.env.AUTH_MODE === 'true'),

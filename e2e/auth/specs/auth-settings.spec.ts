@@ -10,6 +10,17 @@ const admin = { name: 'Settings Admin', email: 'settings-admin@test.com', passwo
 const newUser = { name: 'Dave Domain', email: 'dave@allowed.com', password: 'password123' }
 const blockedUser = { name: 'Eve External', email: 'eve@blocked.com', password: 'password123' }
 const approvalUser = { name: 'Frank Pending', email: 'frank@test.com', password: 'password123' }
+const authSettingsRunId = (process.env.GITHUB_RUN_ID ?? `${Date.now()}-${process.pid}`)
+  .replace(/[^a-zA-Z0-9]/g, '')
+  .slice(-12)
+
+function retryScopedUser(user: typeof newUser) {
+  const [localPart, domain] = user.email.split('@')
+  return {
+    ...user,
+    email: `${localPart}+${authSettingsRunId}-r${test.info().retry}@${domain}`,
+  }
+}
 
 test.describe('Auth Settings Enforcement', () => {
   // ── Setup: admin signs in ───────────────────────────────────────────
@@ -109,8 +120,9 @@ test.describe('Auth Settings Enforcement', () => {
 
   test('signup from wrong domain shows error', async ({ user2Page }) => {
     const authPage = new AuthPage(user2Page)
+    const user = retryScopedUser(blockedUser)
 
-    await authPage.signUp(blockedUser.name, blockedUser.email, blockedUser.password)
+    await authPage.signUp(user.name, user.email, user.password)
     await authPage.expectSignupError()
     await authPage.expectVisible()
   })
@@ -118,10 +130,11 @@ test.describe('Auth Settings Enforcement', () => {
   test('signup from allowed domain succeeds', async ({ user3Page }) => {
     const authPage = new AuthPage(user3Page)
     const appPage = new AppPage(user3Page)
+    const user = retryScopedUser(newUser)
 
     await user3Page.reload()
     await authPage.expectVisible()
-    await authPage.signUp(newUser.name, newUser.email, newUser.password)
+    await authPage.signUp(user.name, user.email, user.password)
     await appPage.waitForAppLoaded()
     await appPage.dismissWizardIfVisible()
   })
@@ -138,26 +151,28 @@ test.describe('Auth Settings Enforcement', () => {
 
   test('new user signs up and sees pending approval', async ({ user2Page }) => {
     const authPage = new AuthPage(user2Page)
+    const user = retryScopedUser(approvalUser)
 
     await user2Page.reload()
     await authPage.expectVisible()
-    await authPage.signUp(approvalUser.name, approvalUser.email, approvalUser.password)
+    await authPage.signUp(user.name, user.email, user.password)
     await authPage.expectPendingApproval()
   })
 
   test('admin unbans the pending user', async ({ user1Page }) => {
     const settingsPage = new SettingsPage(user1Page)
+    const user = retryScopedUser(approvalUser)
 
     await settingsPage.open()
     await settingsPage.navigateToTab('users')
 
     // The approval user should appear as pending approval
-    const userRow = user1Page.locator(`[data-testid="user-row-${approvalUser.email}"]`)
+    const userRow = user1Page.locator(`[data-testid="user-row-${user.email}"]`)
     await expect(userRow).toBeVisible()
     await expect(userRow.getByText('pending approval')).toBeVisible()
 
     // Click approve
-    await user1Page.locator(`[data-testid="user-approve-${approvalUser.email}"]`).click()
+    await user1Page.locator(`[data-testid="user-approve-${user.email}"]`).click()
 
     // The "pending approval" label should disappear
     await expect(userRow.getByText('pending approval')).not.toBeVisible()
@@ -168,10 +183,11 @@ test.describe('Auth Settings Enforcement', () => {
   test('approved user can now sign in', async ({ user2Page }) => {
     const authPage = new AuthPage(user2Page)
     const appPage = new AppPage(user2Page)
+    const user = retryScopedUser(approvalUser)
 
     await user2Page.reload()
     await authPage.expectVisible()
-    await authPage.signIn(approvalUser.email, approvalUser.password)
+    await authPage.signIn(user.email, user.password)
     await appPage.waitForAppLoaded()
     await appPage.dismissWizardIfVisible()
   })

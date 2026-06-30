@@ -1,6 +1,6 @@
 import { test as base, type BrowserContext, type Page } from '@playwright/test'
 
-export function getAuthBaseUrl(projectBaseURL?: unknown) {
+function getAuthBaseUrl(projectBaseURL?: unknown) {
   if (typeof projectBaseURL === 'string') return projectBaseURL
 
   const port = process.env.E2E_PORT ?? process.env.PORT ?? '3001'
