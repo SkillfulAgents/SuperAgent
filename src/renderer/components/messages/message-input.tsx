@@ -17,6 +17,7 @@ import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
 import { useRenderTracker } from '@renderer/lib/perf'
+import type { ComposerSnapshot } from '@renderer/lib/composer-carryover'
 import type { EffortLevel } from '@shared/lib/container/types'
 
 interface MessageInputProps {
@@ -32,9 +33,13 @@ interface MessageInputProps {
   initialEffort?: EffortLevel
   /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
   initialModel?: string
+  /** Register a getter for the live composer state (text + attachments + model + effort).
+   *  Lets a sibling (the stale-session "Start fresh" action) snapshot the composer to
+   *  carry it into a new chat. Called with null on unmount to deregister. */
+  registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialModel }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialModel, registerSnapshot }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -101,6 +106,22 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
     draftKey: `session:${sessionId}`,
   })
+
+  // Mirror the live composer state into a ref so the registered getter always reads
+  // the latest (text + attachments + model + effort) without re-registering on every
+  // keystroke. "Start fresh" calls the getter to carry the composer into a new chat.
+  const snapshotRef = useRef<ComposerSnapshot>({ text: '', attachments: [], model: undefined, effort: composerOptions.effort })
+  snapshotRef.current = {
+    text: composer.message,
+    attachments: composer.attachments,
+    model: composerOptions.model,
+    effort: composerOptions.effort,
+  }
+  useEffect(() => {
+    if (!registerSnapshot) return
+    registerSnapshot(() => snapshotRef.current)
+    return () => registerSnapshot(null)
+  }, [registerSnapshot])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {

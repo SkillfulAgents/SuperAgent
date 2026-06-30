@@ -25,6 +25,7 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { useNewChatCarryover, carryoverToComposerInit } from '@renderer/lib/composer-carryover'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
@@ -86,7 +87,11 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
-  const composerOptions = useComposerOptions()
+  // A pending "Start fresh" carry-over pre-fills this composer exactly once: text
+  // arrives via the agent draft key, attachments + model + effort come from here.
+  const carryover = useNewChatCarryover(agent.slug)
+  const { initialAttachments, initialModel, initialEffort } = carryoverToComposerInit(carryover)
+  const composerOptions = useComposerOptions({ initialModel, initialEffort })
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   const isMobile = useIsMobile()
@@ -177,6 +182,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
+    initialAttachments,
   })
 
   // Reset the manual-collapse flag once the message clears.
