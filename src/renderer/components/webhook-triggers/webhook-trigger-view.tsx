@@ -20,6 +20,7 @@ import {
   useUpdateWebhookTriggerRuntimeOptions,
 } from '@renderer/hooks/use-webhook-triggers'
 import { useNavigate } from '@tanstack/react-router'
+import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useUser } from '@renderer/context/user-context'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
@@ -59,19 +60,25 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const { data: settings } = useSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
   const canCancel = canUseAgent(agentSlug)
+  const { data: agents } = useAgents()
 
   // Canonicalize: triggers are addressed globally by id, so /agents/<wrong>/webhooks/<id>
   // would render this trigger under the wrong agent's shell (mismatched chrome,
   // back-links, and canUseAgent gating). Redirect to the trigger's true agent.
+  //
+  // Compare RESOLVED ids: the route param may be the display slug ({name}-{id})
+  // while trigger.agentSlug is the canonical id, so a raw `!==` would fire on every
+  // correct-agent visit. Wait for the agents list, then redirect to the canonical
+  // id (the same form agent-home uses to open a webhook).
   useEffect(() => {
-    if (trigger && trigger.agentSlug !== agentSlug) {
-      void navigate({
-        to: '/agents/$slug/webhooks/$webhookId',
-        params: { slug: trigger.agentSlug, webhookId: triggerId },
-        replace: true,
-      })
-    }
-  }, [trigger, agentSlug, triggerId, navigate])
+    if (!trigger || !agents) return
+    if (trigger.agentSlug === resolveRouteAgentId(agentSlug, agents)) return
+    void navigate({
+      to: '/agents/$slug/webhooks/$webhookId',
+      params: { slug: trigger.agentSlug, webhookId: triggerId },
+      replace: true,
+    })
+  }, [trigger, agents, agentSlug, triggerId, navigate])
 
   const isActive = trigger?.status === 'active' || trigger?.status === 'paused'
   const isPaused = trigger?.status === 'paused'
@@ -136,8 +143,9 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   }
 
   // Mismatched shell → the effect above is redirecting; don't render B's trigger
-  // (or its wrong-slug nested fetches) under A's chrome in the meantime.
-  if (trigger.agentSlug !== agentSlug) {
+  // (or its wrong-slug nested fetches) under A's chrome in the meantime. Resolve
+  // first and only block once the agents list is loaded (see the effect).
+  if (agents && trigger.agentSlug !== resolveRouteAgentId(agentSlug, agents)) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted-foreground">
         Loading webhook trigger...

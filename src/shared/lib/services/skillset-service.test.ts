@@ -104,6 +104,7 @@ import {
   getSkillsetRepoDir,
   isCacheReady,
   isGitAvailable,
+  deleteSkill,
   exportSkill,
   validateSkillZip,
   importSkillFromZip,
@@ -2318,6 +2319,28 @@ metadata:
 
     it('rejects path traversal in skillDirName', async () => {
       await expect(exportSkill('test-agent', '../etc')).rejects.toThrow('Invalid directory name')
+    })
+  })
+
+  describe('deleteSkill', () => {
+    it('removes a skill directory recursively', async () => {
+      const agentSlug = 'test-agent'
+      const skillDir = makeSkillDir(agentSlug, 'delete-me')
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), MINIMAL_SKILL_MD)
+      fs.mkdirSync(path.join(skillDir, 'lib'))
+      fs.writeFileSync(path.join(skillDir, 'lib', 'helper.py'), 'print("hello")')
+
+      await deleteSkill(agentSlug, 'delete-me')
+
+      expect(fs.existsSync(skillDir)).toBe(false)
+    })
+
+    it('throws when skill directory does not exist', async () => {
+      await expect(deleteSkill('test-agent', 'missing-skill')).rejects.toThrow('Skill directory not found')
+    })
+
+    it('rejects path traversal in skillDirName', async () => {
+      await expect(deleteSkill('test-agent', '../etc')).rejects.toThrow('Invalid directory name')
     })
   })
 

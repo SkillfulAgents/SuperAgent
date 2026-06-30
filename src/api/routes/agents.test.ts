@@ -48,11 +48,25 @@ vi.mock('stream', () => ({
 
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+// Display-slug -> canonical-id resolution applied by the ResolveAgent mock. Defaults
+// to identity (test slugs are already canonical); a test can override it to exercise
+// routes where the URL display slug differs from the resolved id.
+let mockResolveSlug: (slug: string) => string = (slug) => slug
 vi.mock('../middleware/auth', () => ({
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
   AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  // Mirrors the real ResolveAgent: 404 on a missing agent (via the agentExists
+  // mock) and stash the resolved id, which getAgentId reads back. For test slugs
+  // (already canonical), resolution is the identity.
+  ResolveAgent: () => async (c: any, next: () => Promise<void>) => {
+    const slug = c.req.param('id')
+    if (!(await mockAgentExists(slug))) return c.json({ error: 'Agent not found' }, 404)
+    c.set('agentId', mockResolveSlug(slug))
+    return next()
+  },
+  getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
 }))
 
 // Container manager
@@ -256,6 +270,7 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
   publishSkillToSkillset: vi.fn(),
   refreshAgentSkills: vi.fn(),
   exportSkill: vi.fn(),
+  deleteSkill: vi.fn(),
   importSkillFromZip: vi.fn(),
   SKILL_MAX_COMPRESSED_SIZE: 100 * 1024 * 1024,
 }))
@@ -348,6 +363,11 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 
 const mockGetAgentWorkspaceDir = vi.fn((_slug?: string) => '/mock/workspace')
 vi.mock('@shared/lib/utils/file-storage', () => ({
+  // ResolveAgent() resolves the :id param via resolveAgentId. Delegate to the
+  // existing agentExists mock so the legacy 404-on-missing behavior is preserved:
+  // returns the slug verbatim when it "exists", else null.
+  resolveAgentId: async (slug: string) => ((await mockAgentExists(slug)) ? slug : null),
+  displaySlug: (_name: string, id: string) => id,
   getSessionJsonlPath: vi.fn(),
   readFileOrNull: vi.fn(),
   writeFile: vi.fn(),
@@ -381,6 +401,7 @@ import {
   hasOnboardingSkill,
 } from '@shared/lib/services/agent-template-service'
 import {
+  deleteSkill,
   exportSkill,
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
@@ -2435,6 +2456,7 @@ describe('GET /api/agents (enriched summary)', () => {
 
   const baseAgent = {
     slug: 'agent-1',
+    displaySlug: 'agent-one-agent-1',
     name: 'Agent One',
     description: 'Test agent',
     createdAt: new Date('2026-01-01'),
@@ -2659,6 +2681,38 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0]).toHaveProperty('dashboardCount')
   })
 
+  it('sorts the auth-mode list newest-first', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    // The ACL query has no ORDER BY, so rows arrive in index-scan order — i.e. by
+    // the opaque agent slug, NOT by createdAt. Feed them slug-sorted (a, m, z) with
+    // a different creation order so the response order can only be right if the
+    // route sorts: without the sort this returns the slug order and the test fails.
+    mockDbSelectFrom.mockReturnValue({
+      where: vi.fn().mockResolvedValue([
+        { agentSlug: 'aaaaaaaaaa' },
+        { agentSlug: 'mmmmmmmmmm' },
+        { agentSlug: 'zzzzzzzzzz' },
+      ]),
+    })
+    const bySlug: Record<string, typeof baseAgent> = {
+      aaaaaaaaaa: { ...baseAgent, slug: 'aaaaaaaaaa', createdAt: new Date('2026-01-01') }, // oldest
+      mmmmmmmmmm: { ...baseAgent, slug: 'mmmmmmmmmm', createdAt: new Date('2026-01-03') }, // newest
+      zzzzzzzzzz: { ...baseAgent, slug: 'zzzzzzzzzz', createdAt: new Date('2026-01-02') },
+    }
+    const { getAgentWithStatus } = await import('@shared/lib/services/agent-service')
+    vi.mocked(getAgentWithStatus).mockImplementation(async (slug: string) => bySlug[slug])
+
+    const res = await getReq(app, '/api/agents')
+    expect(res.status).toBe(200)
+
+    const body = await res.json()
+    expect(body.map((a: { slug: string }) => a.slug)).toEqual([
+      'mmmmmmmmmm', // 2026-01-03 newest
+      'zzzzzzzzzz', // 2026-01-02
+      'aaaaaaaaaa', // 2026-01-01 oldest
+    ])
+  })
+
   it('returns lastActivityAt as null when agent has no sessions', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
 
@@ -2683,6 +2737,42 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(getSessionSummary).toHaveBeenCalledTimes(2)
     expect(getSessionSummary).toHaveBeenCalledWith('agent-1')
     expect(getSessionSummary).toHaveBeenCalledWith('agent-2')
+  })
+})
+
+// ============================================================================
+// Artifact proxy — container subPath construction
+// ============================================================================
+
+describe('artifact proxy — subPath uses the raw display-slug URL', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    mockAgentExists.mockResolvedValue(true)
+    // Resolution maps the display slug to a DIFFERENT canonical id (trailing
+    // segment), so the proxy must slice subPath against the URL (display slug),
+    // not the resolved id.
+    mockResolveSlug = (slug: string) => slug.slice(slug.lastIndexOf('-') + 1)
+  })
+
+  afterEach(() => {
+    mockResolveSlug = (slug: string) => slug // restore identity for other suites
+  })
+
+  it('proxies a nested asset to the correct container path on a display-slug route', async () => {
+    mockContainerFetch.mockResolvedValue(
+      new Response('ok', { headers: { 'content-type': 'application/javascript' } }),
+    )
+
+    const res = await getReq(app, '/api/agents/my-dash-abc1234567/artifacts/dash/static/app.js')
+
+    expect(res.status).toBe(200)
+    expect(mockContainerFetch).toHaveBeenCalledTimes(1)
+    // Bug repro: an id-based prefix yields indexOf(prefix) === -1, corrupting this path.
+    expect(mockContainerFetch.mock.calls[0]?.[0]).toBe('/artifacts/dash/static/app.js')
   })
 })
 
@@ -3066,6 +3156,38 @@ describe('POST /api/agents/:id/skills/:dir/export', () => {
 
     const res = await app.request('http://localhost/api/agents/my-agent/skills/bad-skill/export', {
       method: 'POST',
+    })
+
+    expect(res.status).toBe(500)
+    const body = await res.json()
+    expect(body.error).toBe('Skill directory not found')
+  })
+})
+
+describe('DELETE /api/agents/:id/skills/:dir', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('deletes the skill and returns 204', async () => {
+    vi.mocked(deleteSkill).mockResolvedValue()
+
+    const res = await app.request('http://localhost/api/agents/my-agent/skills/my-skill', {
+      method: 'DELETE',
+    })
+
+    expect(res.status).toBe(204)
+    expect(deleteSkill).toHaveBeenCalledWith('my-agent', 'my-skill')
+  })
+
+  it('returns 500 when service throws', async () => {
+    vi.mocked(deleteSkill).mockRejectedValue(new Error('Skill directory not found'))
+
+    const res = await app.request('http://localhost/api/agents/my-agent/skills/bad-skill', {
+      method: 'DELETE',
     })
 
     expect(res.status).toBe(500)

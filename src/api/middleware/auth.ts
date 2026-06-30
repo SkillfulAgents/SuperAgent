@@ -5,6 +5,7 @@ import { runWithRequestUser } from '@shared/lib/platform-attribution'
 import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { resolveAgentId } from '@shared/lib/utils/file-storage'
 
 // Lazy import to avoid pulling in better-auth ESM at import time
 let _getAuth: (() => ReturnType<typeof import('@shared/lib/auth/index').getAuth>) | null = null
@@ -62,6 +63,42 @@ function isAdmin(user: { role?: string }): boolean {
   return user.role === 'admin'
 }
 
+/**
+ * ResolveAgent — resolve the `:id` route param (which may be a decorative
+ * display slug, a bare id, or a legacy compound folder name) to the canonical
+ * agent id, stash it on the context as `agentId`, and 404 if no such agent
+ * exists.
+ *
+ * Runs in BOTH auth and non-auth modes (the URL form is independent of auth)
+ * and MUST run before any AgentRead/AgentUser/AgentAdmin check, since the ACL
+ * tables are keyed on the canonical id. Subsumes the old agent-existence guard.
+ */
+export function ResolveAgent(): MiddlewareHandler {
+  return async (c: Context, next: Next) => {
+    const id = await resolveAgentId(c.req.param('id') ?? '')
+    if (!id) return c.json({ error: 'Agent not found' }, 404)
+    c.set('agentId' as never, id as never)
+    return next()
+  }
+}
+
+/**
+ * Read the canonical agent id resolved by {@link ResolveAgent}. Route handlers
+ * under a `:id` path should use this instead of `c.req.param('id')`, which may
+ * be a decorative display slug. Throws if ResolveAgent() did not run.
+ */
+export function getAgentId(c: Context): string {
+  const id = c.get('agentId' as never) as string | undefined
+  if (!id) throw new Error('agentId not resolved — ResolveAgent() middleware missing?')
+  return id
+}
+
+// Resolved id if ResolveAgent() ran, else the raw param (preserves behavior for
+// any ACL middleware mounted without ResolveAgent in front).
+function resolvedAgentSlug(c: Context): string {
+  return (c.get('agentId' as never) as string | undefined) ?? c.req.param('id')!
+}
+
 
 /**
  * AgentRead — user has any role on the agent (viewer+).
@@ -73,7 +110,7 @@ export function AgentRead(): MiddlewareHandler {
 
     const user = getUser(c)
     if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')!
+    const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
     if (!hasMinRole(role, 'viewer')) {
       return c.json({ error: 'Forbidden' }, 403)
@@ -92,7 +129,7 @@ export function AgentUser(): MiddlewareHandler {
 
     const user = getUser(c)
     if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')!
+    const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
     if (!hasMinRole(role, 'user')) {
       return c.json({ error: 'Forbidden' }, 403)
@@ -111,7 +148,7 @@ export function AgentAdmin(): MiddlewareHandler {
 
     const user = getUser(c)
     if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')!
+    const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
     if (!hasMinRole(role, 'owner')) {
       return c.json({ error: 'Forbidden' }, 403)

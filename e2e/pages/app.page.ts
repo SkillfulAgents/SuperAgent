@@ -16,10 +16,13 @@ export class AppPage {
   /**
    * Wait for the app to be loaded (sidebar visible or wizard visible)
    */
-  async waitForAppLoaded() {
+  async waitForAppLoaded(timeout = 15000) {
     await expect(
-      this.page.locator('[data-testid="app-sidebar"], [data-testid="wizard-container"]').first()
-    ).toBeVisible()
+      this.page
+        .locator('[data-testid="app-sidebar"], [data-testid="wizard-container"]')
+        .or(this.page.getByRole('heading', { name: /create your first agent/i }))
+        .first()
+    ).toBeVisible({ timeout })
   }
 
   /**

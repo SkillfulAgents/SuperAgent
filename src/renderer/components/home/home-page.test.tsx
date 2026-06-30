@@ -93,6 +93,7 @@ import { HomePage } from './home-page'
 function makeAgent(overrides = {}) {
   return {
     slug: 'test-agent',
+    displaySlug: 'test-agent',
     name: 'Test Agent',
     description: 'A test description',
     createdAt: new Date('2026-01-01'),

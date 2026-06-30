@@ -31,6 +31,7 @@ vi.hoisted(() => {
 let testDir: string
 let testDb: ReturnType<typeof drizzle>
 let testSqlite: InstanceType<typeof Database>
+let prevDataDir: string | undefined
 
 vi.mock('@shared/lib/db', async () => ({
   get db() {
@@ -169,6 +170,13 @@ function authedFetch(path: string, body: unknown, token = CALLER_TOKEN) {
 
 beforeEach(async () => {
   testDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xagent-test-'))
+  // Point the data dir at testDir so the REAL resolveAgentId (not mocked) finds
+  // agent folders on disk. Caller/target are seeded as bare folders matching the
+  // legacy-style test slugs (resolveAgentId returns them via exact-folder match).
+  prevDataDir = process.env.SUPERAGENT_DATA_DIR
+  process.env.SUPERAGENT_DATA_DIR = testDir
+  await fs.promises.mkdir(path.join(testDir, 'agents', CALLER_SLUG), { recursive: true })
+  await fs.promises.mkdir(path.join(testDir, 'agents', TARGET_SLUG), { recursive: true })
   testSqlite = new Database(':memory:')
   testDb = drizzle(testSqlite, { schema })
   const migrationsFolder = path.join(process.cwd(), 'src/shared/lib/db/migrations')
@@ -216,6 +224,8 @@ beforeEach(async () => {
 afterEach(async () => {
   testSqlite?.close()
   await fs.promises.rm(testDir, { recursive: true, force: true })
+  if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+  else process.env.SUPERAGENT_DATA_DIR = prevDataDir
 })
 
 // ============================================================================
@@ -317,7 +327,7 @@ describe('/create', () => {
 
   it('creates and returns slug on allow', async () => {
     reviewDecisions.push('allow')
-    mockCreateAgent.mockResolvedValue({ slug: 'new-helper', name: 'New Helper' })
+    mockCreateAgent.mockResolvedValue({ slug: 'new-helper', displaySlug: 'new-helper', name: 'New Helper' })
     const res = await authedFetch('/x-agent/create', { name: 'New Helper' })
     expect(res.status).toBe(200)
     const body = await res.json()
@@ -334,7 +344,7 @@ describe('/create', () => {
   it('inherits owner ACL from caller in auth mode', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')
-    mockCreateAgent.mockResolvedValue({ slug: 'new-helper', name: 'New' })
+    mockCreateAgent.mockResolvedValue({ slug: 'new-helper', displaySlug: 'new-helper', name: 'New' })
     const res = await authedFetch('/x-agent/create', { name: 'New' })
     expect(res.status).toBe(200)
     const aclRows = testDb
@@ -789,6 +799,71 @@ describe('/get-transcript', () => {
     expect(mockWaitForIdle).toHaveBeenCalledWith('sess-1')
     const body = await res.json()
     expect(body.status).toBe('idle')
+  })
+})
+
+// ============================================================================
+// Display-slug resolution: model-facing slugs resolve to the canonical id,
+// and every ACL / policy / runtime call below keys on the id (not the prefix).
+// ============================================================================
+
+describe('display-slug resolution', () => {
+  const TARGET_ID = 't1234567ab' // 10-char minted id
+  const DISPLAY_SLUG = `pretty-target-${TARGET_ID}`
+
+  beforeEach(async () => {
+    await fs.promises.mkdir(path.join(testDir, 'agents', TARGET_ID), { recursive: true })
+    mockGetAgent.mockResolvedValue({
+      slug: TARGET_ID,
+      frontmatter: { name: 'Pretty Target', createdAt: '2024-01-01' },
+      instructions: '',
+    })
+    mockCreateSession.mockResolvedValue({ id: 'sess-id' })
+  })
+
+  it('/list projects {slug(name)}-{id} for a minted agent', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'list', null, 'allow')
+    mockListAgents.mockResolvedValue([{ slug: TARGET_ID, frontmatter: { name: 'Pretty Target' } }])
+    const res = await authedFetch('/x-agent/list', {})
+    const body = await res.json()
+    expect(body.agents).toEqual([{ slug: DISPLAY_SLUG, name: 'Pretty Target' }])
+  })
+
+  it('/invoke accepts the display slug and keys runtime calls on the id', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'invoke', TARGET_ID, 'allow')
+    const res = await authedFetch('/x-agent/invoke', { slug: DISPLAY_SLUG, prompt: 'hello' })
+    expect(res.status).toBe(200)
+    expect(mockRegisterSession).toHaveBeenCalledWith(TARGET_ID, expect.any(String), expect.any(String))
+  })
+
+  it('/invoke accepts a wrong-prefix slug (the prefix is decorative)', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'invoke', TARGET_ID, 'allow')
+    const res = await authedFetch('/x-agent/invoke', { slug: `anything-${TARGET_ID}`, prompt: 'hi' })
+    expect(res.status).toBe(200)
+  })
+
+  it('policy is keyed on the resolved id — a block on the id blocks a display-slug invoke', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'invoke', TARGET_ID, 'block')
+    const res = await authedFetch('/x-agent/invoke', { slug: DISPLAY_SLUG, prompt: 'hi' })
+    expect(res.status).toBe(403)
+  })
+
+  it('/get-sessions accepts the display slug and lists by id', async () => {
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    await setPolicy(CALLER_SLUG, 'read', TARGET_ID, 'allow')
+    mockListSessions.mockResolvedValue([])
+    const res = await authedFetch('/x-agent/get-sessions', { slug: DISPLAY_SLUG })
+    expect(res.status).toBe(200)
+    expect(mockListSessions).toHaveBeenCalledWith(TARGET_ID)
+  })
+
+  it('returns 404 for a well-formed display slug whose id does not exist', async () => {
+    const res = await authedFetch('/x-agent/invoke', { slug: 'ghost-zzzzzzzzzz', prompt: 'hi' })
+    expect(res.status).toBe(404)
   })
 })
 

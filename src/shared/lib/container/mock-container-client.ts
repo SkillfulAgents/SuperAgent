@@ -435,9 +435,11 @@ export class ToolUseScenario implements MockScenario {
  * request user input (secrets, questions, etc.). The session stays active until
  * all inputs are resolved/rejected via fetch().
  */
+type UserInputToolInput = Record<string, unknown> | ((userMessage: string) => Record<string, unknown>)
+
 export interface UserInputTool {
   name: string
-  input: Record<string, unknown>
+  input: UserInputToolInput
 }
 
 export class UserInputRequestScenario implements MockScenario {
@@ -445,16 +447,20 @@ export class UserInputRequestScenario implements MockScenario {
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     let delay = 10
+    const tools = this.tools.map((tool) => ({
+      name: tool.name,
+      input: typeof tool.input === 'function' ? tool.input(userMessage) : tool.input,
+    }))
     const toolIds: string[] = []
 
     // Pre-generate tool IDs so we can register pending inputs immediately
-    for (let i = 0; i < this.tools.length; i++) {
+    for (let i = 0; i < tools.length; i++) {
       toolIds.push(`tool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`)
     }
 
     // Register pending inputs BEFORE emitting any events, so that
     // resolve/reject calls from the API can find and decrement the count.
-    client.registerPendingInputs(sessionId, this.tools.length)
+    client.registerPendingInputs(sessionId, tools.length)
 
     // Write the user message entry immediately so the JSONL file exists on disk.
     // The backend's getSession() checks fileExists(jsonlPath) and returns 404 if
@@ -475,8 +481,8 @@ export class UserInputRequestScenario implements MockScenario {
     delay += 10
 
     // Emit each tool use block
-    for (let toolIndex = 0; toolIndex < this.tools.length; toolIndex++) {
-      const tool = this.tools[toolIndex]
+    for (let toolIndex = 0; toolIndex < tools.length; toolIndex++) {
+      const tool = tools[toolIndex]
       const capturedToolId = toolIds[toolIndex]
       const capturedTool = tool
       setTimeout(() => {
@@ -537,7 +543,7 @@ export class UserInputRequestScenario implements MockScenario {
     // Write assistant JSONL entry after streaming completes (user message was
     // already written synchronously above so the file exists on disk).
     const capturedToolIds = [...toolIds]
-    const capturedTools = [...this.tools]
+    const capturedTools = [...tools]
     const finalDelay = delay
     setTimeout(() => {
       const assistantContent = capturedTools.map((tool, i) => ({
@@ -562,6 +568,37 @@ export class UserInputRequestScenario implements MockScenario {
         content: { type: 'assistant', message: { content: assistantContent } },
       })
     }, finalDelay)
+  }
+}
+
+function getMessageParam(userMessage: string, key: string): string | undefined {
+  const prefix = `${key}=`
+  const rawValue = userMessage
+    .split(/\s+/)
+    .find((part) => part.startsWith(prefix))
+    ?.slice(prefix.length)
+
+  if (!rawValue) return undefined
+
+  try {
+    return decodeURIComponent(rawValue)
+  } catch {
+    return rawValue
+  }
+}
+
+function connectedAccountRequestInput(userMessage: string): Record<string, unknown> {
+  return {
+    toolkit: getMessageParam(userMessage, 'account_toolkit') ?? 'github',
+    reason: getMessageParam(userMessage, 'account_reason') ?? 'Need access to your GitHub repositories',
+  }
+}
+
+function remoteMcpRequestInput(userMessage: string): Record<string, unknown> {
+  return {
+    url: getMessageParam(userMessage, 'mcp_url') ?? 'http://localhost:9876/mcp',
+    name: getMessageParam(userMessage, 'mcp_name') ?? 'Test MCP',
+    reason: getMessageParam(userMessage, 'mcp_reason') ?? 'Need access to test tools',
   }
 }
 
@@ -1196,14 +1233,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['ask account', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_connected_account',
-        input: { toolkit: 'github', reason: 'Need access to your GitHub repositories' },
+        input: connectedAccountRequestInput,
       },
     ])],
-    // Remote MCP request scenario - URL will be overridden by test via registerScenario
+    // Remote MCP request scenario - tests can override inputs with mcp_url/name/reason message params.
     ['request mcp', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_remote_mcp',
-        input: { url: 'http://localhost:9876/mcp', name: 'Test MCP', reason: 'Need access to test tools' },
+        input: remoteMcpRequestInput,
       },
     ])],
     // File delivery scenario for E2E tests

@@ -153,7 +153,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
       <AgentContextMenu agent={agent}>
         <AppLink
           to="/agents/$slug"
-          params={{ slug: agent.slug }}
+          params={{ slug: agent.displaySlug }}
           className="relative text-left p-4 rounded-lg border bg-card hover:border-accent-foreground/20 transition-colors flex flex-col gap-3 z-10 h-24 overflow-hidden"
         >
           {/* Spark chart background */}
@@ -263,7 +263,7 @@ function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyU
         >
           <AppLink
             to="/agents/$slug"
-            params={{ slug: agent.slug }}
+            params={{ slug: agent.displaySlug }}
             className="w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800"
           >
             <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />

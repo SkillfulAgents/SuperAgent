@@ -58,7 +58,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   const finishCreatedAgent = useCallback(
     async (agent: ApiAgent, source: 'new' | 'import' | 'skillset', hasOnboarding?: boolean) => {
       track('agent_created', { source, num_skills_added_at_creation: 0 })
-      void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
+      void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
       if (hasOnboarding) {
         await startOnboardingSession(agent.slug)
       }
@@ -87,7 +87,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
           model: 'opus',
         })
         track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
-        void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.slug, sessionId: session.id } })
+        void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })
         await onAgentCreated?.()
       } catch (error) {
         console.error('Failed to create agent:', error)

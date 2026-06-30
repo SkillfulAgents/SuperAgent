@@ -129,7 +129,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
             </div>
           )
         })()}
-        {sessionId && session?.agentSlug === slug && (
+        {sessionId && session?.agentSlug === agent?.slug && (
           <div className="flex items-center gap-1.5 min-w-0">
             <span aria-hidden="true" className="text-sm font-light text-muted-foreground shrink-0 hidden md:block">/</span>
             <SessionContextMenu
@@ -164,7 +164,7 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
         {!isViewOnly && (
           <>
             <Separator orientation="vertical" className="h-5 hidden md:block ml-2" />
-            <div className="hidden md:flex items-center gap-2">
+            <div className="hidden md:flex items-center gap-2" data-testid="agent-power-controls">
               {agent?.status === 'running' ? (
                 <TooltipProvider delayDuration={0}>
                   <Tooltip>

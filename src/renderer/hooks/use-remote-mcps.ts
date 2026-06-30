@@ -152,8 +152,11 @@ export function useAssignMcpToAgent() {
         throw new Error(error.error || 'Failed to assign MCP to agent')
       }
     },
-    onSuccess: (_, { agentSlug, mcpIds }) => {
-      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps', agentSlug] })
+    onSuccess: (_, { mcpIds }) => {
+      // Bare prefix (not keyed on agentSlug): the agent-home Connections card keys
+      // on the canonical id, but this mutation fires from the display-slug route, so
+      // a targeted key would miss it. Matches the rename/delete mutations above.
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
       for (const id of mcpIds) {
         queryClient.invalidateQueries({ queryKey: ['mcp-agents', id] })
       }
@@ -178,8 +181,9 @@ export function useRemoveMcpFromAgent() {
         throw new Error(error.error || 'Failed to remove MCP from agent')
       }
     },
-    onSuccess: (_, { agentSlug, mcpId }) => {
-      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps', agentSlug] })
+    onSuccess: (_, { mcpId }) => {
+      // Bare prefix — see useAssignMcpToAgent: reaches the id-keyed home card too.
+      queryClient.invalidateQueries({ queryKey: ['agent-remote-mcps'] })
       queryClient.invalidateQueries({ queryKey: ['mcp-agents', mcpId] })
     },
   })

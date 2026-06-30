@@ -1,9 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import {
-  generateAgentSlug,
+  nameToSlugBase,
+  generateAgentId,
+  displaySlug,
+  resolveAgentId,
+  isMintedAgentId,
+  AGENT_ID_LENGTH,
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
   listDirectories,
@@ -47,71 +52,133 @@ afterEach(async () => {
 // Slug Generation Tests
 // ============================================================================
 
-describe('generateAgentSlug', () => {
-  it('converts name to lowercase slug with random suffix', () => {
-    const slug = generateAgentSlug('My Cool Agent')
-    expect(slug).toMatch(/^my-cool-agent-[a-z0-9]{6}$/)
+describe('nameToSlugBase', () => {
+  it('lowercases and hyphenates a name', () => {
+    expect(nameToSlugBase('My Cool Agent')).toBe('my-cool-agent')
   })
 
-  it('replaces special characters with hyphens', () => {
-    const slug = generateAgentSlug('Test @#$ Agent!!!')
-    expect(slug).toMatch(/^test-agent-[a-z0-9]{6}$/)
+  it('collapses runs of special characters to single hyphens and trims edges', () => {
+    expect(nameToSlugBase('Test @#$ Agent!!!')).toBe('test-agent')
+    expect(nameToSlugBase('---Test---')).toBe('test')
+    expect(nameToSlugBase('Tëst Àgènt')).toBe('t-st-g-nt')
   })
 
-  it('removes leading and trailing hyphens', () => {
-    const slug = generateAgentSlug('---Test---')
-    expect(slug).toMatch(/^test-[a-z0-9]{6}$/)
+  it('keeps digits and only ever emits [a-z0-9-]', () => {
+    expect(nameToSlugBase('GPT 4 Bot')).toBe('gpt-4-bot')
+    expect(nameToSlugBase('Agent 007')).toBe('agent-007')
   })
 
-  it('handles empty name', () => {
-    const slug = generateAgentSlug('')
-    expect(slug).toMatch(/^[a-z0-9]{6}$/)
+  it('returns an empty string when nothing alphanumeric survives', () => {
+    expect(nameToSlugBase('')).toBe('')
+    expect(nameToSlugBase('@#$%^&*()')).toBe('')
   })
 
-  it('handles name with only special characters', () => {
-    const slug = generateAgentSlug('@#$%^&*()')
-    expect(slug).toMatch(/^[a-z0-9]{6}$/)
-  })
-
-  it('truncates long names to 50 characters', () => {
-    const longName = 'a'.repeat(100)
-    const slug = generateAgentSlug(longName)
-    // Base should be truncated to 50, plus hyphen and 6-char suffix
-    expect(slug.length).toBeLessThanOrEqual(50 + 1 + 6)
-  })
-
-  it('generates different slugs for same name (random suffix)', () => {
-    const slug1 = generateAgentSlug('Test')
-    const slug2 = generateAgentSlug('Test')
-    // Very unlikely to be the same due to random suffix
-    expect(slug1).not.toBe(slug2)
-  })
-
-  it('handles unicode characters', () => {
-    const slug = generateAgentSlug('Tëst Àgènt')
-    expect(slug).toMatch(/^t-st-g-nt-[a-z0-9]{6}$/)
-  })
-
-  it('handles numbers in name', () => {
-    const slug = generateAgentSlug('Agent 007')
-    expect(slug).toMatch(/^agent-007-[a-z0-9]{6}$/)
+  it('truncates the base to 50 characters', () => {
+    expect(nameToSlugBase('a'.repeat(100))).toHaveLength(50)
   })
 })
 
-describe('generateUniqueAgentSlug', () => {
-  it('generates a unique slug when no collision', async () => {
-    // Mock getDataDir to use our test directory
-    vi.mock('@/lib/config/data-dir', () => ({
-      getDataDir: () => testDir,
-    }))
-
-    // Dynamically re-import to pick up the mock
-    const { generateUniqueAgentSlug: genSlug } = await import('./file-storage')
-    const slug = await genSlug('Test Agent')
-    expect(slug).toMatch(/^test-agent-[a-z0-9]{6}$/)
-
-    vi.resetModules()
+describe('isMintedAgentId', () => {
+  it('accepts a bare 10-char [a-z0-9] id', () => {
+    expect(isMintedAgentId('k7x9m2ab3c')).toBe(true)
   })
+
+  it('rejects legacy / wrong-length / out-of-charset strings', () => {
+    expect(isMintedAgentId('abc123')).toBe(false) // 6-char legacy suffix
+    expect(isMintedAgentId('untitled-h45k3n')).toBe(false) // legacy compound
+    expect(isMintedAgentId('k7x9m2ab3')).toBe(false) // 9 chars
+    expect(isMintedAgentId('K7X9M2AB3C')).toBe(false) // uppercase
+    expect(isMintedAgentId('')).toBe(false)
+  })
+})
+
+describe('displaySlug', () => {
+  const id = 'k7x9m2ab3c' // 10-char minted id
+
+  it('projects {base}-{id} for a named, minted agent', () => {
+    expect(displaySlug('GPT 4 Bot', id)).toBe(`gpt-4-bot-${id}`)
+  })
+
+  it('returns the bare id when the name slugifies to empty', () => {
+    expect(displaySlug('', id)).toBe(id)
+    expect(displaySlug('🙂', id)).toBe(id)
+  })
+
+  it('returns legacy folder ids verbatim — never re-prettified (would break resolution)', () => {
+    expect(displaySlug('Renamed Agent', 'untitled-h45k3n')).toBe('untitled-h45k3n')
+    expect(displaySlug('Renamed Agent', 'abc123')).toBe('abc123')
+  })
+})
+
+describe('generateAgentId + resolveAgentId (filesystem-backed)', () => {
+  // Point the data dir at the per-test temp dir so getAgentDir() lands there.
+  let prevDataDir: string | undefined
+
+  beforeEach(async () => {
+    prevDataDir = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = testDir
+    await ensureDirectory(getAgentsDir())
+  })
+
+  afterEach(() => {
+    if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = prevDataDir
+  })
+
+  const makeAgentFolder = (id: string) => ensureDirectory(getAgentDir(id))
+
+  it('mints a bare [a-z0-9]{10} id, not derived from any name', async () => {
+    const id = await generateAgentId()
+    expect(id).toMatch(new RegExp(`^[a-z0-9]{${AGENT_ID_LENGTH}}$`))
+  })
+
+  it('mints distinct ids across calls', async () => {
+    expect(await generateAgentId()).not.toBe(await generateAgentId())
+  })
+
+  it('resolves a bare minted id (exact folder match)', async () => {
+    const id = await generateAgentId()
+    await makeAgentFolder(id)
+    expect(await resolveAgentId(id)).toBe(id)
+  })
+
+  it('resolves a {name}-{id} display slug to the id', async () => {
+    const id = await generateAgentId()
+    await makeAgentFolder(id)
+    expect(await resolveAgentId(`gpt-4-bot-${id}`)).toBe(id)
+  })
+
+  it('resolves a wrong-prefix {anything}-{id} to the same id (prefix is decorative)', async () => {
+    const id = await generateAgentId()
+    await makeAgentFolder(id)
+    expect(await resolveAgentId(`literally-anything-${id}`)).toBe(id)
+    expect(await resolveAgentId(`beta-${id}`)).toBe(id)
+  })
+
+  it('resolves a legacy compound folder id to itself', async () => {
+    await makeAgentFolder('untitled-h45k3n')
+    expect(await resolveAgentId('untitled-h45k3n')).toBe('untitled-h45k3n')
+  })
+
+  it('resolves a bare legacy id to itself', async () => {
+    await makeAgentFolder('abc123')
+    expect(await resolveAgentId('abc123')).toBe('abc123')
+  })
+
+  it('returns null for an unknown slug', async () => {
+    expect(await resolveAgentId('does-not-exist')).toBeNull()
+  })
+
+  it('returns null for a well-formed but non-existent minted id', async () => {
+    expect(await resolveAgentId('zzzzzzzzzz')).toBeNull()
+  })
+
+  it.each(['../foo', 'a/b', 'a_b', '..', '.', 'foo/../bar', 'UPPER', ''])(
+    'rejects unsafe / out-of-charset input %j with no filesystem access',
+    async (bad) => {
+      expect(await resolveAgentId(bad)).toBeNull()
+    },
+  )
 })
 
 // ============================================================================

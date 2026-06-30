@@ -1,150 +1,242 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
-
-test.describe.configure({ mode: 'serial' })
 
 const API = ''
 
+type AccountStatus = 'active' | 'revoked' | 'expired'
+type ToolkitSlug = 'slack' | 'github' | 'gmail'
+
+interface ConnectedAccount {
+  id: string
+  providerConnectionId: string
+  toolkitSlug: ToolkitSlug
+  displayName: string
+  status: AccountStatus
+}
+
+function uniqueSuffix(testInfo: TestInfo) {
+  return [
+    testInfo.workerIndex,
+    testInfo.repeatEachIndex,
+    testInfo.retry,
+    Date.now(),
+    Math.random().toString(36).slice(2, 8),
+  ].join('-')
+}
+
+async function createConnectedAccount(
+  request: APIRequestContext,
+  testInfo: TestInfo,
+  options: {
+    displayNamePrefix: string
+    toolkitSlug: ToolkitSlug
+    status: AccountStatus
+  },
+): Promise<ConnectedAccount> {
+  const suffix = uniqueSuffix(testInfo)
+  const providerConnectionId = `e2e-${options.toolkitSlug}-${options.status}-${suffix}`
+  const displayName = `${options.displayNamePrefix} ${suffix}`
+
+  const response = await request.post(`${API}/api/connected-accounts`, {
+    data: {
+      providerConnectionId,
+      toolkitSlug: options.toolkitSlug,
+      displayName,
+      status: options.status,
+    },
+  })
+
+  expect(response.ok()).toBeTruthy()
+  const { account } = await response.json() as { account: ConnectedAccount }
+  expect(account.id).toBeTruthy()
+  expect(account.providerConnectionId).toBe(providerConnectionId)
+  expect(account.toolkitSlug).toBe(options.toolkitSlug)
+  expect(account.displayName).toBe(displayName)
+  expect(account.status).toBe(options.status)
+
+  return account
+}
+
+async function deleteConnectedAccounts(
+  request: APIRequestContext,
+  accounts: Array<Pick<ConnectedAccount, 'id'>>,
+) {
+  await Promise.all(accounts.map((account) => (
+    request.delete(`${API}/api/connected-accounts/${account.id}`).catch(() => {})
+  )))
+}
+
+async function listConnectedAccounts(request: APIRequestContext): Promise<ConnectedAccount[]> {
+  const response = await request.get(`${API}/api/connected-accounts`)
+  expect(response.ok()).toBeTruthy()
+
+  const { accounts } = await response.json() as { accounts: ConnectedAccount[] }
+  return accounts
+}
+
+function findAccount(accounts: ConnectedAccount[], accountId: string): ConnectedAccount {
+  const account = accounts.find((candidate) => candidate.id === accountId)
+  expect(account, `account ${accountId} missing from /api/connected-accounts`).toBeDefined()
+  return account!
+}
+
+function connectionRow(page: Page, account: Pick<ConnectedAccount, 'displayName'>) {
+  return page.getByRole('button', {
+    name: `Open ${account.displayName} connection details`,
+    exact: true,
+  })
+}
+
+async function openConnectionsSettings(page: Page) {
+  const appPage = new AppPage(page)
+  await appPage.goto()
+  await appPage.waitForAgentsLoaded()
+
+  await page.locator('[data-testid="settings-button"]').click()
+  await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
+  await page.locator('[data-testid="settings-nav-connections"]').click()
+}
+
 test.describe('Account Status & Reconnect', () => {
-  let appPage: AppPage
-  let activeAccountId: string
-  let revokedAccountId: string
-  let expiredAccountId: string
+  test('connections settings tab shows status badges for non-active accounts', async ({ page, request }, testInfo) => {
+    const seededAccounts: ConnectedAccount[] = []
 
-  test.beforeAll(async ({ request }) => {
-    // Seed an active account
-    const activeRes = await request.post(`${API}/api/connected-accounts`, {
-      data: {
-        providerConnectionId: `e2e-active-${Date.now()}`,
+    try {
+      const active = await createConnectedAccount(request, testInfo, {
+        displayNamePrefix: 'E2E Active Slack',
         toolkitSlug: 'slack',
-        displayName: 'Active Slack',
         status: 'active',
-      },
-    })
-    expect(activeRes.ok()).toBeTruthy()
-    activeAccountId = (await activeRes.json()).account.id
+      })
+      seededAccounts.push(active)
 
-    // Seed a revoked account
-    const revokedRes = await request.post(`${API}/api/connected-accounts`, {
-      data: {
-        providerConnectionId: `e2e-revoked-${Date.now()}`,
+      const revoked = await createConnectedAccount(request, testInfo, {
+        displayNamePrefix: 'E2E Revoked GitHub',
         toolkitSlug: 'github',
-        displayName: 'Revoked GitHub',
         status: 'revoked',
-      },
-    })
-    expect(revokedRes.ok()).toBeTruthy()
-    revokedAccountId = (await revokedRes.json()).account.id
+      })
+      seededAccounts.push(revoked)
 
-    // Seed an expired account
-    const expiredRes = await request.post(`${API}/api/connected-accounts`, {
-      data: {
-        providerConnectionId: `e2e-expired-${Date.now()}`,
+      const expired = await createConnectedAccount(request, testInfo, {
+        displayNamePrefix: 'E2E Expired Gmail',
         toolkitSlug: 'gmail',
-        displayName: 'Expired Gmail',
         status: 'expired',
-      },
-    })
-    expect(expiredRes.ok()).toBeTruthy()
-    expiredAccountId = (await expiredRes.json()).account.id
-  })
+      })
+      seededAccounts.push(expired)
 
-  test.afterAll(async ({ request }) => {
-    // Clean up seeded accounts so they don't pollute other tests
-    for (const id of [activeAccountId, revokedAccountId, expiredAccountId]) {
-      if (id) await request.delete(`${API}/api/connected-accounts/${id}`).catch(() => {})
+      await openConnectionsSettings(page)
+
+      const activeRow = connectionRow(page, active)
+      const revokedRow = connectionRow(page, revoked)
+      const expiredRow = connectionRow(page, expired)
+
+      await expect(activeRow).toBeVisible()
+      await expect(activeRow).toContainText(active.displayName)
+      await expect(activeRow).toContainText('API')
+      await expect(activeRow).toContainText('Slack')
+      await expect(activeRow).not.toContainText(/Revoked|Expired/)
+
+      await expect(revokedRow).toBeVisible()
+      await expect(revokedRow).toContainText(revoked.displayName)
+      await expect(revokedRow).toContainText('GitHub')
+      await expect(revokedRow).toContainText('Revoked')
+
+      await expect(expiredRow).toBeVisible()
+      await expect(expiredRow).toContainText(expired.displayName)
+      await expect(expiredRow).toContainText('Gmail')
+      await expect(expiredRow).toContainText('Expired')
+
+      const accounts = await listConnectedAccounts(request)
+      expect(findAccount(accounts, active.id).status).toBe('active')
+      expect(findAccount(accounts, revoked.id).status).toBe('revoked')
+      expect(findAccount(accounts, expired.id).status).toBe('expired')
+    } finally {
+      await deleteConnectedAccounts(request, seededAccounts)
     }
   })
 
-  test('connections settings tab shows status badges for non-active accounts', async ({ page }) => {
-    appPage = new AppPage(page)
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
+  test('reconnect completion preserves the target account when the mock provider cannot complete', async ({ request, page }, testInfo) => {
+    const seededAccounts: ConnectedAccount[] = []
 
-    // Open settings → Connections tab
-    await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-connections"]').click()
+    try {
+      const revoked = await createConnectedAccount(request, testInfo, {
+        displayNamePrefix: 'E2E Reconnect GitHub',
+        toolkitSlug: 'github',
+        status: 'revoked',
+      })
+      seededAccounts.push(revoked)
 
-    // All three accounts should be visible
-    await expect(page.getByText('Active Slack')).toBeVisible()
-    await expect(page.getByText('Revoked GitHub')).toBeVisible()
-    await expect(page.getByText('Expired Gmail')).toBeVisible()
+      const newConnectionId = `e2e-reconnected-${uniqueSuffix(testInfo)}`
+      const completeRes = await request.post(`${API}/api/connected-accounts/complete`, {
+        data: {
+          connectionId: newConnectionId,
+          toolkit: 'github',
+          providerName: 'composio',
+          reconnectAccountId: revoked.id,
+        },
+      })
 
-    // Revoked and Expired badges should be visible on the page
-    await expect(page.getByText('Revoked', { exact: true })).toBeVisible()
-    await expect(page.getByText('Expired', { exact: true })).toBeVisible()
-  })
+      const accounts = await listConnectedAccounts(request)
+      const updated = findAccount(accounts, revoked.id)
 
-  test('reconnect via API restores account to active', async ({ request, page }) => {
-    // Simulate a reconnect: call /complete with reconnectAccountId
-    // This mimics what happens after the OAuth popup completes
-    const newConnectionId = `e2e-reconnected-${Date.now()}`
+      if (completeRes.ok()) {
+        const { account } = await completeRes.json() as { account: ConnectedAccount }
+        expect(account.id).toBe(revoked.id)
+        expect(updated.status).toBe('active')
+        expect(updated.providerConnectionId).toBe(newConnectionId)
 
-    const completeRes = await request.post(`${API}/api/connected-accounts/complete`, {
-      data: {
-        connectionId: newConnectionId,
-        toolkit: 'github',
-        providerName: 'composio',
-        reconnectAccountId: revokedAccountId,
-      },
-    })
+        await openConnectionsSettings(page)
+        const updatedRow = connectionRow(page, updated)
+        await expect(updatedRow).toBeVisible()
+        await expect(updatedRow).not.toContainText('Revoked')
+      } else {
+        const failure = await completeRes.json().catch(() => ({})) as { error?: string }
+        expect(failure.error).toBeTruthy()
+        expect(updated.status).toBe('revoked')
+        expect(updated.providerConnectionId).toBe(revoked.providerConnectionId)
+        expect(updated.displayName).toBe(revoked.displayName)
 
-    // This will fail because MockContainerClient can't actually verify the
-    // connection with Composio. But we can verify the account status via GET.
-    // If the complete call fails, fall back to verifying the API directly.
-    if (!completeRes.ok()) {
-      // The mock provider can't verify connections, so let's verify the
-      // status change would work by checking the GET endpoint still returns
-      // the account (even if still revoked).
-      const listRes = await request.get(`${API}/api/connected-accounts`)
-      expect(listRes.ok()).toBeTruthy()
-      const { accounts } = await listRes.json()
-      const revokedAccount = accounts.find((a: { id: string }) => a.id === revokedAccountId)
-      expect(revokedAccount).toBeDefined()
-      expect(revokedAccount.displayName).toBe('Revoked GitHub')
-      return
+        await openConnectionsSettings(page)
+        const revokedRow = connectionRow(page, revoked)
+        await expect(revokedRow).toBeVisible()
+        await expect(revokedRow).toContainText('Revoked')
+      }
+    } finally {
+      await deleteConnectedAccounts(request, seededAccounts)
     }
-
-    // If the complete call succeeded, verify the account is now active
-    const listRes = await request.get(`${API}/api/connected-accounts`)
-    expect(listRes.ok()).toBeTruthy()
-    const { accounts } = await listRes.json()
-    const reconnectedAccount = accounts.find((a: { id: string }) => a.id === revokedAccountId)
-    expect(reconnectedAccount).toBeDefined()
-    expect(reconnectedAccount.status).toBe('active')
-
-    // Verify in UI — refresh the connections tab
-    appPage = new AppPage(page)
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
-
-    await page.locator('[data-testid="settings-button"]').click()
-    await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
-    await page.locator('[data-testid="settings-nav-connections"]').click()
-
-    // The previously-revoked GitHub account should no longer show "Revoked" badge
-    const githubRow = page.getByText('Revoked GitHub').or(page.getByText('My GitHub'))
-    await expect(githubRow.first()).toBeVisible()
   })
 
-  test('connections list shows all seeded accounts', async ({ request }) => {
-    const listRes = await request.get(`${API}/api/connected-accounts`)
-    expect(listRes.ok()).toBeTruthy()
-    const { accounts } = await listRes.json()
+  test('connections list returns each seeded account by id with exact status', async ({ request }, testInfo) => {
+    const seededAccounts: ConnectedAccount[] = []
 
-    const active = accounts.find((a: { id: string }) => a.id === activeAccountId)
-    const revoked = accounts.find((a: { id: string }) => a.id === revokedAccountId)
-    const expired = accounts.find((a: { id: string }) => a.id === expiredAccountId)
+    try {
+      seededAccounts.push(await createConnectedAccount(request, testInfo, {
+        displayNamePrefix: 'E2E API Active Slack',
+        toolkitSlug: 'slack',
+        status: 'active',
+      }))
+      seededAccounts.push(await createConnectedAccount(request, testInfo, {
+        displayNamePrefix: 'E2E API Revoked GitHub',
+        toolkitSlug: 'github',
+        status: 'revoked',
+      }))
+      seededAccounts.push(await createConnectedAccount(request, testInfo, {
+        displayNamePrefix: 'E2E API Expired Gmail',
+        toolkitSlug: 'gmail',
+        status: 'expired',
+      }))
 
-    expect(active).toBeDefined()
-    expect(active.status).toBe('active')
-
-    expect(revoked).toBeDefined()
-    // May be 'revoked' or 'active' depending on whether the reconnect test succeeded
-    expect(['active', 'revoked']).toContain(revoked.status)
-
-    expect(expired).toBeDefined()
-    expect(expired.status).toBe('expired')
+      const accounts = await listConnectedAccounts(request)
+      for (const seeded of seededAccounts) {
+        expect(findAccount(accounts, seeded.id)).toMatchObject({
+          id: seeded.id,
+          providerConnectionId: seeded.providerConnectionId,
+          toolkitSlug: seeded.toolkitSlug,
+          displayName: seeded.displayName,
+          status: seeded.status,
+        })
+      }
+    } finally {
+      await deleteConnectedAccounts(request, seededAccounts)
+    }
   })
 })

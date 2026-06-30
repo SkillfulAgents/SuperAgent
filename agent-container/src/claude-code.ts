@@ -457,7 +457,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         settingSources: ['user', 'project'],
         allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
         disallowedTools: [
-          'TaskOutput', 'Monitor',
+          'TaskOutput', 'Monitor', 'DesignSync',
           'CronCreate', 'CronDelete', 'CronList',
           'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
           'EnterWorktree', 'ExitWorktree',

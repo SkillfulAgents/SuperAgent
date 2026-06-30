@@ -1,241 +1,399 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { createAgent, openAgentHome, type TestAgent } from '../helpers/agents'
+import {
+  createRemoteMcp,
+  expectAgentHasRemoteMcp,
+  expectRemoteMcpByUrl,
+  findRemoteMcpByUrl,
+  type TestRemoteMcp,
+} from '../helpers/connections'
 import { startMockMcpServer, type MockMcpServer } from '../helpers/mock-mcp-server'
 
-test.describe.configure({ mode: 'serial' })
+const CONNECTED_ACCOUNT_REASON = 'Need access to your GitHub repositories'
+const MCP_REASON = 'Need access to test tools'
+
+interface TestConnectedAccount {
+  id: string
+  providerConnectionId: string
+  providerName: string
+  toolkitSlug: string
+  displayName: string
+  status: 'active' | 'revoked' | 'expired'
+}
+
+function uniqueSuffix(testInfo: TestInfo) {
+  return [
+    testInfo.workerIndex,
+    testInfo.repeatEachIndex,
+    testInfo.retry,
+    Date.now(),
+    Math.random().toString(36).slice(2, 8),
+  ].join('-')
+}
+
+function uniqueName(testInfo: TestInfo, label: string) {
+  return `${label} ${uniqueSuffix(testInfo)}`
+}
+
+function uniqueSlug(testInfo: TestInfo, label: string) {
+  return `${label}-${uniqueSuffix(testInfo)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+}
+
+function messageParam(value: string) {
+  return encodeURIComponent(value)
+}
+
+function connectedAccountRequestMessage(toolkit: string, reason = CONNECTED_ACCOUNT_REASON) {
+  return [
+    'ask account for access',
+    `account_toolkit=${messageParam(toolkit)}`,
+    `account_reason=${messageParam(reason)}`,
+  ].join(' ')
+}
+
+function remoteMcpRequestMessage(mcpUrl: string, name: string, reason = MCP_REASON) {
+  return [
+    'request mcp server access',
+    `mcp_url=${messageParam(mcpUrl)}`,
+    `mcp_name=${messageParam(name)}`,
+    `mcp_reason=${messageParam(reason)}`,
+  ].join(' ')
+}
+
+async function withMockMcp<T>(run: (mockMcp: MockMcpServer) => Promise<T>): Promise<T> {
+  const mockMcp = await startMockMcpServer(0)
+  try {
+    return await run(mockMcp)
+  } finally {
+    await mockMcp.close()
+  }
+}
+
+async function createAndOpenAgent(
+  page: Page,
+  request: APIRequestContext,
+  testInfo: TestInfo,
+  label: string,
+): Promise<TestAgent> {
+  const agent = await createAgent(request, uniqueName(testInfo, label))
+  const appPage = new AppPage(page)
+  await appPage.goto()
+  await appPage.waitForAgentsLoaded()
+  await openAgentHome(page, agent)
+  return agent
+}
+
+async function openConnectedAccountRequest(
+  page: Page,
+  request: APIRequestContext,
+  testInfo: TestInfo,
+  options: { label: string; toolkit: string; reason?: string },
+) {
+  const agent = await createAndOpenAgent(page, request, testInfo, options.label)
+  const sessionPage = new SessionPage(page)
+
+  await sessionPage.sendMessage(connectedAccountRequestMessage(options.toolkit, options.reason))
+
+  const requestCard = page.locator('[data-testid="connected-account-request"]')
+  await expect(requestCard).toBeVisible({ timeout: 15000 })
+
+  return {
+    agent,
+    requestCard,
+    sessionPage,
+    agentPage: new AgentPage(page),
+  }
+}
+
+async function openRemoteMcpRequest(
+  page: Page,
+  request: APIRequestContext,
+  testInfo: TestInfo,
+  options: { label: string; mcpUrl: string; mcpName: string; reason?: string },
+) {
+  const agent = await createAndOpenAgent(page, request, testInfo, options.label)
+  const sessionPage = new SessionPage(page)
+
+  await sessionPage.sendMessage(remoteMcpRequestMessage(options.mcpUrl, options.mcpName, options.reason))
+
+  const requestCard = page.locator('[data-testid="remote-mcp-request"]')
+  await expect(requestCard).toBeVisible({ timeout: 15000 })
+
+  return {
+    agent,
+    requestCard,
+    sessionPage,
+    agentPage: new AgentPage(page),
+  }
+}
+
+async function createConnectedAccount(
+  request: APIRequestContext,
+  data: { toolkitSlug: string; displayName: string },
+): Promise<TestConnectedAccount> {
+  const response = await request.post('/api/connected-accounts', {
+    data: {
+      providerConnectionId: `e2e-${data.toolkitSlug}`,
+      providerName: 'e2e',
+      toolkitSlug: data.toolkitSlug,
+      displayName: data.displayName,
+      status: 'active',
+    },
+  })
+
+  expect(response.ok()).toBeTruthy()
+  const body = await response.json() as { account: TestConnectedAccount }
+  expect(body.account.id).toBeTruthy()
+  expect(body.account.toolkitSlug).toBe(data.toolkitSlug)
+  expect(body.account.displayName).toBe(data.displayName)
+  expect(body.account.status).toBe('active')
+
+  return body.account
+}
+
+async function deleteConnectedAccount(request: APIRequestContext, accountId: string) {
+  await request.delete(`/api/connected-accounts/${accountId}`).catch(() => {})
+}
+
+async function deleteRemoteMcp(request: APIRequestContext, mcpId: string) {
+  await request.delete(`/api/remote-mcps/${mcpId}`).catch(() => {})
+}
+
+async function getAgentConnectedAccountIds(request: APIRequestContext, agentSlug: string): Promise<string[]> {
+  const response = await request.get(`/api/agents/${agentSlug}/connected-accounts`)
+  expect(response.ok()).toBeTruthy()
+
+  const body = await response.json() as { accounts: Array<{ id: string }> }
+  return body.accounts.map((account) => account.id)
+}
+
+async function expectAgentHasConnectedAccount(
+  request: APIRequestContext,
+  agentSlug: string,
+  accountId: string,
+) {
+  await expect.poll(
+    async () => getAgentConnectedAccountIds(request, agentSlug),
+    { timeout: 10000, message: `agent ${agentSlug} never received account ${accountId}` },
+  ).toContain(accountId)
+}
+
+async function expectAgentHasNoConnectedAccounts(request: APIRequestContext, agentSlug: string) {
+  await expect.poll(
+    async () => getAgentConnectedAccountIds(request, agentSlug),
+    { timeout: 10000, message: `agent ${agentSlug} unexpectedly has connected accounts` },
+  ).toEqual([])
+}
 
 test.describe('Connected Accounts - Agent Request Flow', () => {
-  let appPage: AppPage
-  let agentPage: AgentPage
-  let sessionPage: SessionPage
+  test('agent request shows connected account UI with service label and reason', async ({ page, request }, testInfo) => {
+    const toolkit = uniqueSlug(testInfo, 'e2e-account-service')
+    const { requestCard } = await openConnectedAccountRequest(page, request, testInfo, {
+      label: 'Account Agent',
+      toolkit,
+    })
 
-  test.beforeEach(async ({ page }) => {
-    appPage = new AppPage(page)
-    agentPage = new AgentPage(page)
-    sessionPage = new SessionPage(page)
-
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
+    await expect(requestCard).toContainText(CONNECTED_ACCOUNT_REASON)
+    await expect(requestCard).toContainText(new RegExp(toolkit, 'i'))
+    await expect(requestCard.getByRole('button', { name: /Deny/i })).toBeVisible()
   })
 
-  test('agent request shows connected account UI with service name and reason', async ({ page }) => {
-    const agentName = `Account Agent ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('connected account request shows Connect button when no matching accounts exist', async ({ page, request }, testInfo) => {
+    const toolkit = uniqueSlug(testInfo, 'e2e-account-empty')
+    const { requestCard } = await openConnectedAccountRequest(page, request, testInfo, {
+      label: 'Account Connect',
+      toolkit,
+    })
 
-    // Trigger the "ask account" scenario
-    await sessionPage.sendMessage('ask account for GitHub access')
-
-    // Wait for the connected account request UI to appear
-    const requestCard = page.locator('[data-testid="connected-account-request"]')
-    await expect(requestCard).toBeVisible({ timeout: 15000 })
-
-    // Should show the service name
-    await expect(requestCard).toContainText('GitHub')
-
-    // Should show the reason
-    await expect(requestCard).toContainText('Need access to your GitHub repositories')
+    await expect(requestCard.getByRole('button', { name: /^Connect$/i })).toBeVisible()
+    await expect(requestCard.getByRole('button', { name: /Allow Access/i })).toHaveCount(0)
+    await expect(requestCard.getByRole('button', { name: /Deny/i })).toBeVisible()
   })
 
-  test('connected account request shows Connect button when no accounts exist', async ({ page }) => {
-    const agentName = `Account Connect ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('connected account request grants an existing account and maps it to the agent', async ({ page, request }, testInfo) => {
+    const toolkit = uniqueSlug(testInfo, 'e2e-account-grant')
+    const displayName = uniqueName(testInfo, 'Grant Account')
+    const account = await createConnectedAccount(request, { toolkitSlug: toolkit, displayName })
 
-    await sessionPage.sendMessage('ask account for GitHub access')
+    try {
+      const { agent, requestCard, sessionPage, agentPage } = await openConnectedAccountRequest(page, request, testInfo, {
+        label: 'Account Grant',
+        toolkit,
+      })
 
-    // Wait for the request UI
-    const requestCard = page.locator('[data-testid="connected-account-request"]')
-    await expect(requestCard).toBeVisible({ timeout: 15000 })
+      const accountOption = requestCard.getByRole('button', { name: new RegExp(displayName) })
+      await expect(accountOption).toBeVisible({ timeout: 10000 })
+      await expect(accountOption.locator('input[type="checkbox"]')).toBeChecked()
 
-    // With no accounts, should show inline Connect button
-    await expect(
-      requestCard.getByRole('button', { name: /Connect/i })
-    ).toBeVisible()
+      const grantBtn = requestCard.getByRole('button', { name: /Allow Access/i })
+      await expect(grantBtn).toBeEnabled()
+      await grantBtn.click()
+
+      await sessionPage.waitForInputEnabled(15000)
+      await agentPage.waitForStatus('idle', 10000)
+      await expectAgentHasConnectedAccount(request, agent.slug, account.id)
+    } finally {
+      await deleteConnectedAccount(request, account.id)
+    }
   })
 
-  test('connected account request shows no accounts message', async ({ page }) => {
-    const agentName = `Account NoAccounts ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('declining connected account request completes the session without mapping accounts', async ({ page, request }, testInfo) => {
+    const toolkit = uniqueSlug(testInfo, 'e2e-account-decline')
+    const { agent, requestCard, sessionPage, agentPage } = await openConnectedAccountRequest(page, request, testInfo, {
+      label: 'Account Decline',
+      toolkit,
+    })
 
-    await sessionPage.sendMessage('ask account for GitHub access')
-
-    // Wait for the request UI
-    const requestCard = page.locator('[data-testid="connected-account-request"]')
-    await expect(requestCard).toBeVisible({ timeout: 15000 })
-
-    // Should show "No connected accounts found" since we have none in E2E
-    // With no accounts, should show inline Connect button
-    await expect(requestCard.getByRole('button', { name: /Connect/i })).toBeVisible()
-  })
-
-  test('declining connected account request completes the session', async ({ page }) => {
-    const agentName = `Account Decline ${Date.now()}`
-    await agentPage.createAgent(agentName)
-
-    await sessionPage.sendMessage('ask account for GitHub access')
-
-    // Wait for the request UI
-    const requestCard = page.locator('[data-testid="connected-account-request"]')
-    await expect(requestCard).toBeVisible({ timeout: 15000 })
-
-    // Click the decline button
     const declineBtn = requestCard.getByRole('button', { name: /Deny/i })
     await expect(declineBtn).toBeVisible()
     await declineBtn.click()
 
-    // After declining, the session should complete and agent goes back to idle
     await sessionPage.waitForInputEnabled(15000)
+    await agentPage.waitForStatus('idle', 10000)
+    await expectAgentHasNoConnectedAccounts(request, agent.slug)
+  })
 
-    // Agent should return to idle status
+  test('agent shows awaiting_input status during connected account request', async ({ page, request }, testInfo) => {
+    const toolkit = uniqueSlug(testInfo, 'e2e-account-status')
+    const { requestCard, sessionPage, agentPage } = await openConnectedAccountRequest(page, request, testInfo, {
+      label: 'Account Status',
+      toolkit,
+    })
+
+    await agentPage.waitForStatus('awaiting_input', 10000)
+
+    await requestCard.getByRole('button', { name: /Deny/i }).click()
+    await sessionPage.waitForInputEnabled(15000)
     await agentPage.waitForStatus('idle', 10000)
   })
 
-  test('agent shows awaiting_input status during connected account request', async ({ page }) => {
-    const agentName = `Account Status ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('tool call for request_connected_account renders with service info', async ({ page, request }, testInfo) => {
+    const toolkit = uniqueSlug(testInfo, 'e2e-account-tool')
+    const { requestCard, sessionPage } = await openConnectedAccountRequest(page, request, testInfo, {
+      label: 'Account Tool',
+      toolkit,
+    })
 
-    await sessionPage.sendMessage('ask account for GitHub access')
-
-    // Wait for the request UI
-    const requestCard = page.locator('[data-testid="connected-account-request"]')
-    await expect(requestCard).toBeVisible({ timeout: 15000 })
-
-    // Agent should show awaiting_input status
-    await agentPage.waitForStatus('awaiting_input', 10000)
-  })
-
-  test('tool call for request_connected_account renders with service info', async ({ page }) => {
-    const agentName = `Account Tool ${Date.now()}`
-    await agentPage.createAgent(agentName)
-
-    await sessionPage.sendMessage('ask account for GitHub access')
-
-    // Wait for the tool call to render
     await sessionPage.expectToolCall('mcp__user-input__request_connected_account', 15000)
 
     const toolCall = sessionPage.getToolCall('mcp__user-input__request_connected_account')
     await expect(toolCall).toBeVisible()
-
-    // Should show the pending user-input indicator
     await expect(toolCall).toContainText('Waiting for input')
+    await expect(requestCard).toContainText(new RegExp(toolkit, 'i'))
   })
 })
 
 test.describe('Remote MCP - Full Connection Flow', () => {
-  let appPage: AppPage
-  let agentPage: AgentPage
-  let sessionPage: SessionPage
-  let mockMcp: MockMcpServer
+  test('agent MCP request shows request card with server details', async ({ page, request }, testInfo) => {
+    await withMockMcp(async (mockMcp) => {
+      const mcpName = uniqueName(testInfo, 'Request MCP')
+      const mcpUrl = mockMcp.url
+      const { requestCard } = await openRemoteMcpRequest(page, request, testInfo, {
+        label: 'MCP Agent',
+        mcpUrl,
+        mcpName,
+      })
 
-  test.beforeAll(async () => {
-    mockMcp = await startMockMcpServer(9876)
+      await expect(requestCard).toContainText(mcpName)
+      await expect(requestCard).toContainText(mcpUrl)
+      await expect(requestCard).toContainText(MCP_REASON)
+      await expect(requestCard.getByRole('button', { name: /^Connect$/i })).toBeVisible()
+
+      const persisted = await findRemoteMcpByUrl(request, mcpUrl, mcpName)
+      expect(persisted, 'viewing a request should not register the MCP server').toBeUndefined()
+    })
   })
 
-  test.afterAll(async () => {
-    await mockMcp.close()
+  test('register MCP server and grant access - full flow', async ({ page, request }, testInfo) => {
+    await withMockMcp(async (mockMcp) => {
+      const mcpName = uniqueName(testInfo, 'Full Flow MCP')
+      const mcpUrl = mockMcp.url
+      let created: TestRemoteMcp | undefined
+
+      try {
+        const { agent, requestCard, sessionPage, agentPage } = await openRemoteMcpRequest(page, request, testInfo, {
+          label: 'MCP Full',
+          mcpUrl,
+          mcpName,
+        })
+
+        const connectBtn = requestCard.getByRole('button', { name: /^Connect$/i })
+        await expect(connectBtn).toBeVisible()
+        await connectBtn.click()
+
+        created = await expectRemoteMcpByUrl(request, mcpUrl, mcpName)
+        expect(created.status).toBe('active')
+        expect(created.authType).toBe('none')
+        expect(created.tools.map((tool) => tool.name).sort()).toEqual(['get_weather', 'hello_world'])
+
+        await expect(requestCard.getByText(mcpName)).toBeVisible({ timeout: 10000 })
+
+        const grantBtn = requestCard.getByRole('button', { name: /Allow Access/i })
+        await expect(grantBtn).toBeEnabled()
+        await grantBtn.click()
+
+        await sessionPage.waitForInputEnabled(15000)
+        await agentPage.waitForStatus('idle', 10000)
+        await expectAgentHasRemoteMcp(request, agent.slug, created.id)
+      } finally {
+        if (created) await deleteRemoteMcp(request, created.id)
+      }
+    })
   })
 
-  test.beforeEach(async ({ page }) => {
-    appPage = new AppPage(page)
-    agentPage = new AgentPage(page)
-    sessionPage = new SessionPage(page)
+  test('decline MCP request completes the session without registering a server', async ({ page, request }, testInfo) => {
+    await withMockMcp(async (mockMcp) => {
+      const mcpName = uniqueName(testInfo, 'Decline MCP')
+      const mcpUrl = mockMcp.url
+      const { requestCard, sessionPage, agentPage } = await openRemoteMcpRequest(page, request, testInfo, {
+        label: 'MCP Decline',
+        mcpUrl,
+        mcpName,
+      })
 
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
+      const declineBtn = requestCard.getByRole('button', { name: /Deny/i })
+      await expect(declineBtn).toBeVisible()
+      await declineBtn.click()
+
+      await sessionPage.waitForInputEnabled(15000)
+      await agentPage.waitForStatus('idle', 10000)
+
+      const persisted = await findRemoteMcpByUrl(request, mcpUrl, mcpName)
+      expect(persisted, 'declining should not register the MCP server').toBeUndefined()
+    })
   })
 
-  test('agent MCP request shows purple request card with server details', async ({ page }) => {
-    const agentName = `MCP Agent ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('previously registered MCP server appears in selection list', async ({ page, request }, testInfo) => {
+    await withMockMcp(async (mockMcp) => {
+      const mcpName = uniqueName(testInfo, 'Existing MCP')
+      const mcpUrl = mockMcp.url
+      const mcp = await createRemoteMcp(request, { name: mcpName, url: mcpUrl })
 
-    await sessionPage.sendMessage('request mcp server access')
+      try {
+        const { agent, requestCard, sessionPage, agentPage } = await openRemoteMcpRequest(page, request, testInfo, {
+          label: 'MCP Existing',
+          mcpUrl,
+          mcpName,
+        })
 
-    // Wait for the MCP request UI (purple-themed card)
-    const requestCard = page.locator('[data-testid="remote-mcp-request"]')
-    await expect(requestCard).toBeVisible({ timeout: 15000 })
+        await expect(requestCard.getByText(mcpName)).toBeVisible({ timeout: 10000 })
+        await expect(requestCard).toContainText(mcpUrl)
 
-    // Should show server name and URL
-    await expect(requestCard).toContainText('Test MCP')
-    await expect(requestCard).toContainText('localhost:9876')
+        const grantBtn = requestCard.getByRole('button', { name: /Allow Access/i })
+        await expect(grantBtn).toBeEnabled()
+        await grantBtn.click()
 
-    // Should show reason
-    await expect(requestCard).toContainText('Need access to test tools')
-  })
-
-  test('register MCP server and grant access - full flow', async ({ page }) => {
-    const agentName = `MCP Full ${Date.now()}`
-    await agentPage.createAgent(agentName)
-
-    await sessionPage.sendMessage('request mcp server access')
-
-    // Wait for the MCP request card
-    const requestCard = page.locator('[data-testid="remote-mcp-request"]')
-    await expect(requestCard).toBeVisible({ timeout: 15000 })
-
-    // Should show Connect button since this MCP is not yet registered
-    const connectBtn = requestCard.getByRole('button', { name: /Connect/i })
-    await expect(connectBtn).toBeVisible()
-    await connectBtn.click()
-
-    // After registration succeeds, the server card should appear
-    // Wait for the server name to show up
-    await expect(requestCard.getByText('Test MCP')).toBeVisible({ timeout: 10000 })
-
-    // Allow Access button should now be enabled (server auto-selected)
-    const grantBtn = requestCard.getByRole('button', { name: /Allow Access/i })
-    await expect(grantBtn).toBeEnabled()
-    await grantBtn.click()
-
-    // Session should complete — the mock resolves the input and emits completion.
-    // The "Access Granted" state may flash briefly before the request card is removed,
-    // so we verify completion by checking agent returns to idle.
-    await sessionPage.waitForInputEnabled(15000)
-    await agentPage.waitForStatus('idle', 10000)
-  })
-
-  test('decline MCP request completes the session', async ({ page }) => {
-    const agentName = `MCP Decline ${Date.now()}`
-    await agentPage.createAgent(agentName)
-
-    await sessionPage.sendMessage('request mcp server access')
-
-    // Wait for the MCP request card
-    const requestCard = page.locator('[data-testid="remote-mcp-request"]')
-    await expect(requestCard).toBeVisible({ timeout: 15000 })
-
-    // Click decline
-    const declineBtn = requestCard.getByRole('button', { name: /Deny/i })
-    await expect(declineBtn).toBeVisible()
-    await declineBtn.click()
-
-    // Session should complete
-    await sessionPage.waitForInputEnabled(15000)
-    await agentPage.waitForStatus('idle', 10000)
-  })
-
-  test('previously registered MCP server appears in selection list', async ({ page }) => {
-    // The MCP server was registered in a previous test (serial mode)
-    // It should now appear in the selection list for a new agent
-    const agentName = `MCP Existing ${Date.now()}`
-    await agentPage.createAgent(agentName)
-
-    await sessionPage.sendMessage('request mcp server access')
-
-    // Wait for the MCP request card
-    const requestCard = page.locator('[data-testid="remote-mcp-request"]')
-    await expect(requestCard).toBeVisible({ timeout: 15000 })
-
-    // The previously registered server should appear as a server card
-    await expect(requestCard.getByText('Test MCP')).toBeVisible({ timeout: 10000 })
-
-    // Allow Access should be enabled (server auto-selected)
-    const grantBtn = requestCard.getByRole('button', { name: /Allow Access/i })
-    await expect(grantBtn).toBeEnabled()
-    await grantBtn.click()
-
-    // Should complete successfully — agent returns to idle
-    await sessionPage.waitForInputEnabled(15000)
-    await agentPage.waitForStatus('idle', 10000)
+        await sessionPage.waitForInputEnabled(15000)
+        await agentPage.waitForStatus('idle', 10000)
+        await expectAgentHasRemoteMcp(request, agent.slug, mcp.id)
+      } finally {
+        await deleteRemoteMcp(request, mcp.id)
+      }
+    })
   })
 })

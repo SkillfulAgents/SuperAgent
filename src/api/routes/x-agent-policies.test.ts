@@ -52,6 +52,8 @@ vi.mock('../middleware/auth', () => {
     AgentRead: passthrough,
     AgentUser: passthrough,
     AgentAdmin: passthrough,
+    ResolveAgent: () => async (c: any, next: () => Promise<void>) => { c.set('agentId', c.req.param('id')); return next() },
+    getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
     EntityAgentRole: () => () => passthrough(),
     OwnsAccount: passthrough,
     OwnsAccountByParam: () => passthrough(),

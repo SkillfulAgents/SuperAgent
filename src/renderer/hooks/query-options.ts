@@ -10,6 +10,11 @@ import { apiJson } from '@renderer/lib/api'
  *   - agent:   `['agents', slug]`            (use-agents.ts `useAgent`)
  *   - session: `['session', id, agentSlug]`  (use-sessions.ts `useSession`)
  *
+ * NOTE: `useSession` resolves `agentSlug` to the canonical agent id before keying
+ * (a display slug and the bare id must share one entry). `sessionQuery` below is
+ * currently unused by any loader; a future session loader must resolve the slug
+ * the same way (via the cached agents list) to land on `useSession`'s entry.
+ *
  * The loader uses `apiJson` (throws `HttpError`) rather than the hooks' own
  * `apiFetch` queryFn so a 403/404 surfaces as a throw the loader can map to
  * `notFound()`. Both queryFns hit the same endpoint and shape, so they coexist

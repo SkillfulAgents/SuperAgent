@@ -28,7 +28,7 @@ import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integ
 import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { Authenticated, AgentUser, EntityAgentRole } from '../middleware/auth'
+import { Authenticated, AgentUser, EntityAgentRole, ResolveAgent, getAgentId } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
 
 const SENTRY_TAGS = { component: 'chat-integration' } as const
@@ -122,10 +122,13 @@ chatIntegrationsRouter.post('/test-credentials', Authenticated(), async (c) => {
 })
 
 // POST /api/chat-integrations - Create a new integration
-// AgentUser validates the user has 'user' role on the agent identified by :id param
-chatIntegrationsRouter.post('/:id', AgentUser(), async (c) => {
+// ResolveAgent maps the :id route param (which may be a display slug) to the
+// canonical id BEFORE AgentUser checks the ACL — otherwise auth mode denies valid
+// owners (ACL is id-keyed) and non-auth mode persists the display slug, splitting
+// the row from the canonical id. AgentUser then validates the 'user' role.
+chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
   try {
-    const agentSlug = c.req.param('id')
+    const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { provider, name, config, showToolCalls, sessionTimeout, model, effort } = body
     // requireApproval is intentionally NOT accepted here: making a bot public is

@@ -27,7 +27,20 @@ export function getMcpServiceKey(serverUrl: string) {
   if (commonServer?.slug) return commonServer.slug
 
   try {
-    return new URL(serverUrl).hostname
+    const parsed = new URL(serverUrl)
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '')
+
+    if (
+      hostname === 'localhost' ||
+      hostname.endsWith('.localhost') ||
+      hostname === '0.0.0.0' ||
+      hostname === '::1' ||
+      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)
+    ) {
+      return parsed.origin
+    }
+
+    return parsed.hostname
   } catch {
     return serverUrl
   }

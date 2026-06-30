@@ -426,7 +426,9 @@ test.describe('Navigation — discriminated AgentView', () => {
 
     await appPage.reload()
     await expect(page).toHaveURL(/\/agents\/[^/]+$/)
-    await expect(page.locator(`[data-testid="agent-item-${slug}"]`)).toHaveAttribute('data-active', 'true')
+    // The sidebar row testid keys on the agent's stable id, while the URL carries
+    // the display slug — match by the (unique, timestamped) name instead.
+    await expect(page.locator('[data-testid^="agent-item-"]', { hasText: agentName })).toHaveAttribute('data-active', 'true')
     await expect(page.locator('[data-testid="home-button"]')).toHaveAttribute('data-active', 'false')
 
     // Cleanup
@@ -436,13 +438,12 @@ test.describe('Navigation — discriminated AgentView', () => {
   test('Notifications route lights up only the Notifications nav item', async ({ page }) => {
     const agentName = `Nav Notif Active ${Date.now()}`
     await agentPage.createAgent(agentName)
-    const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
 
     await page.locator('[data-testid="notifications-button"]').click()
     await expect(page).toHaveURL(/\/notifications$/)
     await expect(page.locator('[data-testid="notifications-button"]')).toHaveAttribute('data-active', 'true')
     await expect(page.locator('[data-testid="home-button"]')).toHaveAttribute('data-active', 'false')
-    await expect(page.locator(`[data-testid="agent-item-${slug}"]`)).toHaveAttribute('data-active', 'false')
+    await expect(page.locator('[data-testid^="agent-item-"]', { hasText: agentName })).toHaveAttribute('data-active', 'false')
 
     // Cleanup
     await agentPage.selectAgent(agentName)

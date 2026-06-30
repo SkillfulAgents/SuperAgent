@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useCallback } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2, Plus, Play, Upload, Download, FileArchive } from 'lucide-react'
+import { MoreVertical, FileCode, CloudUpload, GitPullRequest, Send, RefreshCw, Loader2, Plus, Play, Upload, Download, FileArchive, Trash2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -15,6 +15,7 @@ import { StatusBadge } from '../status-badge'
 import { SkillFilesDialog } from '../skill-files-dialog'
 import { SkillPublishDialog } from '../skill-publish-dialog'
 import { SkillPRDialog } from '../skill-pr-dialog'
+import { SkillDeleteDialog } from '../skill-delete-dialog'
 import { HomeCollapsible } from './home-collapsible'
 import { HomeSkillsBrowseDialog } from './home-skills-browse-dialog'
 import { useAgentSkills, useDiscoverableSkills, useUpdateSkill, useExportSkill, useImportSkillZip } from '@renderer/hooks/use-agent-skills'
@@ -101,11 +102,14 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
   const [filesOpen, setFilesOpen] = useState(false)
   const [publishOpen, setPublishOpen] = useState(false)
   const [reviewOpen, setReviewOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [actionsOpen, setActionsOpen] = useState(false)
   const updateSkill = useUpdateSkill()
   const exportSkill = useExportSkill()
   const publishMode = useSkillsetPublishMode(skill.status.skillsetId)
   const ReviewIcon = isPullRequestPublishMode(publishMode) ? GitPullRequest : Send
   const actionLabel = getReviewActionLabel(publishMode)
+  const skillName = skill.name ?? skill.path
 
   return (
     <>
@@ -130,7 +134,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
               <Play className="h-3 w-3" />
             </Button>
           )}
-          <Popover>
+          <Popover open={actionsOpen} onOpenChange={setActionsOpen}>
             <PopoverTrigger asChild>
               <Button
                 type="button"
@@ -146,7 +150,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
             <PopoverContent align="end" className="w-36 p-1" onClick={(e) => e.stopPropagation()}>
               <button
                 className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                onClick={(e) => { e.stopPropagation(); setFilesOpen(true) }}
+                onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setFilesOpen(true) }}
               >
                 <FileCode className="h-3.5 w-3.5" />
                 View Files
@@ -156,8 +160,9 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
                 disabled={exportSkill.isPending}
                 onClick={(e) => {
                   e.stopPropagation()
+                  setActionsOpen(false)
                   exportSkill.mutate(
-                    { agentSlug, skillDir: skill.path, skillName: skill.name ?? skill.path },
+                    { agentSlug, skillDir: skill.path, skillName },
                     { onError: (err) => toast.error('Export failed', { description: err.message }) },
                   )
                 }}
@@ -172,7 +177,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
               {skill.status.type === 'local' && skill.status.publishable !== false && publishMode !== 'none' && (
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                  onClick={(e) => { e.stopPropagation(); setPublishOpen(true) }}
+                  onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setPublishOpen(true) }}
                 >
                   <CloudUpload className="h-3.5 w-3.5" />
                   Publish Skill
@@ -182,7 +187,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
                   disabled={updateSkill.isPending}
-                  onClick={(e) => { e.stopPropagation(); updateSkill.mutate({ agentSlug, skillDir: skill.path }) }}
+                  onClick={(e) => { e.stopPropagation(); setActionsOpen(false); updateSkill.mutate({ agentSlug, skillDir: skill.path }) }}
                 >
                   {updateSkill.isPending ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -195,12 +200,19 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
               {skill.status.type === 'locally_modified' && publishMode !== 'none' && (
                 <button
                   className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-muted transition-colors"
-                  onClick={(e) => { e.stopPropagation(); setReviewOpen(true) }}
+                  onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setReviewOpen(true) }}
                 >
                   <ReviewIcon className="h-3.5 w-3.5" />
                   {actionLabel}
                 </button>
               )}
+              <button
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10 transition-colors"
+                onClick={(e) => { e.stopPropagation(); setActionsOpen(false); setDeleteOpen(true) }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete Skill
+              </button>
             </PopoverContent>
           </Popover>
         </div>
@@ -227,6 +239,13 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
         agentSlug={agentSlug}
         skillDir={skill.path}
         publishMode={publishMode}
+      />
+      <SkillDeleteDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        agentSlug={agentSlug}
+        skillDir={skill.path}
+        skillName={skillName}
       />
     </>
   )

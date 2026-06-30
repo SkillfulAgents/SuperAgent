@@ -354,3 +354,21 @@ describe('ClaudeCodeProcess unsupported tools', () => {
     expect(disallowed).toContain('TaskOutput')
   })
 })
+
+describe('ClaudeCodeProcess static tool bans', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('blocks DesignSync globally', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-designsync-disabled',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    const disallowed = calls[0].options.disallowedTools as string[]
+    expect(disallowed).toContain('DesignSync')
+  })
+})

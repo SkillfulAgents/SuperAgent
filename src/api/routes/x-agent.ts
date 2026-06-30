@@ -26,6 +26,7 @@ import {
   listAgents,
   getAgent,
 } from '@shared/lib/services/agent-service'
+import { resolveAgentId, displaySlug } from '@shared/lib/utils/file-storage'
 import {
   listSessions,
   getSessionMessagesWithCompact,
@@ -196,7 +197,9 @@ xAgent.post('/list', async (c) => {
     .filter((a) => a.slug !== callerSlug)
     .filter((a) => (visible ? visible.has(a.slug) : true))
     .map((a) => ({
-      slug: a.slug,
+      // Project the decorative display slug for the model; resolveAgentId tolerates
+      // it (and the bare id / legacy form) on the way back in via invoke/get-*.
+      slug: displaySlug(a.frontmatter.name, a.slug),
       name: a.frontmatter.name,
       description: a.frontmatter.description,
     }))
@@ -240,7 +243,7 @@ xAgent.post('/create', zValidator('json', createBodySchema), async (c) => {
       })
     }
   }
-  return c.json({ slug: agent.slug, name: agent.name })
+  return c.json({ slug: agent.displaySlug, name: agent.name })
 })
 
 // ----------------------------------------------------------------------------
@@ -255,7 +258,12 @@ const getSessionsBodySchema = z.object({
 
 xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
-  const { slug: targetSlug, limit = 50, offset = 0 } = c.req.valid('json')
+  const { slug: rawTargetSlug, limit = 50, offset = 0 } = c.req.valid('json')
+
+  // Resolve the model-supplied display slug to the canonical id and rebind, so
+  // every downstream ACL / policy / fs use below keys on the id, not the prefix.
+  const targetSlug = await resolveAgentId(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
   const target = await getAgent(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
@@ -399,7 +407,11 @@ async function readLastAssistantMessage(
 
 xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
-  const { slug: targetSlug, sessionId, sync } = c.req.valid('json')
+  const { slug: rawTargetSlug, sessionId, sync } = c.req.valid('json')
+
+  // Resolve the model-supplied display slug to the canonical id and rebind.
+  const targetSlug = await resolveAgentId(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
   const target = await getAgent(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
@@ -456,7 +468,12 @@ const invokeBodySchema = z.object({
 
 xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
-  const { slug: targetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
+  const { slug: rawTargetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
+
+  // Resolve the model-supplied display slug to the canonical id and rebind, so
+  // the self-invoke guard and every ACL / policy / runtime call below use ids.
+  const targetSlug = await resolveAgentId(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
   if (targetSlug === callerSlug) {
     return c.json({ error: 'Agent cannot invoke itself' }, 400)

@@ -174,6 +174,10 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     expect(integrations.length).toBeGreaterThan(0)
     const integrationId = integrations[0].id
     expect(integrationId).toBeTruthy()
+    // The integration is stored under the canonical agent id; the canonicalize
+    // redirect lands there (the same id form the app uses for chat routes). The
+    // captured `aSlug` from the URL is a stale display slug (deferred URL rewrite).
+    const trueAgentSlug = integrations[0].agentSlug
 
     // Create agent B and deep-link A's integration under ITS slug, with a sub-session.
     const otherName = `Chat Canon Other ${Date.now()}`
@@ -185,7 +189,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await page.goto(`/agents/${bSlug}/chat/${integrationId}?session=sample`)
 
     // Canonicalizes to A (the integration's true agent), preserving ?session=sample.
-    await expect(page).toHaveURL(new RegExp(`/agents/${aSlug}/chat/${integrationId}\\?session=sample$`))
+    await expect(page).toHaveURL(new RegExp(`/agents/${trueAgentSlug}/chat/${integrationId}\\?session=sample$`))
 
     // The owner's shell renders: agent breadcrumb + the integration header name.
     // Scope the name to main-content — the sidebar also lists integration.name,
