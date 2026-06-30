@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can successfully execute browser operations through the browser-use feature, navigating to a URL and retrieving the page title",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing agent list",
-    "Clicked on \"QA-20260630-194326-38hw\" agent in the sidebar — Successfully opened the agent's chat page with message input field",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field — Message was successfully entered in the textbox",
-    "Clicked \"Send message\" button — Message was sent and agent transitioned to \"working\" status with new session \"Browser Page Title Lookup\" created",
-    "Waited for response mentioning \"Example Domain\" with 3-minute timeout — Agent successfully completed within 10 seconds and returned response: \"The page title is 'Example Domain'.\"",
-    "Verified response appears on screen with tool call cards showing Open Browser, Browser Get State, and Close Browser actions with green checkmarks indicating success — Screenshot confirms all browser tools executed successfully and the response contains the expected \"Example Domain\" text"
+    "Step 1 - Navigated to http://localhost:47891 — Page loaded successfully showing Gamut homepage with agent list including \"QA-20260630-225232-3i8u\"",
+    "Step 2 - Clicked on agent \"QA-20260630-225232-3i8u\" in sidebar — Successfully navigated to agent chat page with message input interface ready",
+    "Step 3 - Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" and clicked Send — Message was successfully submitted and agent started working",
+    "Step 4 - Waited up to 3 minutes for response — Agent completed the task in 11 seconds, executing the following tools:",
+    "Step 5 - Verified response mentions \"Example Domain\" — SUCCESS! Response clearly states \"The page title is \"Example Domain\". I've closed the browser.\" The browser preview panel also displayed the Example Domain page during execution."
   ],
   "bugs": [],
-  "durationMs": 82931,
-  "sessionId": "21ddc277-f7a3-4a99-aba8-d66624e67409",
+  "durationMs": 95835,
+  "sessionId": "1b458c5b-4f57-40fe-acf1-e213052851f3",
   "cost": {
-    "inputTokens": 425,
-    "outputTokens": 13953,
-    "cacheCreationTokens": 83612,
-    "cacheReadTokens": 1496094,
+    "inputTokens": 369,
+    "outputTokens": 11425,
+    "cacheCreationTokens": 71228,
+    "cacheReadTokens": 1162194,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.324314
+    "totalCostUsd": 0.262748
   }
 }

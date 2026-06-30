@@ -1,19 +1,38 @@
-Perfect! All test steps have been completed successfully. Let me provide the final report:
+Perfect! The response has arrived! I can see:
+- User message: "Hello! What is 2+2?" (shown in the blue bubble on the right)
+- Agent response: "4" (shown in the center with "Worked for 1s" below it)
+
+**Step 5: Wait up to 3 minutes for a response**
+✓ Response received in approximately 1 second
+
+**Step 6: Verify the response mentions "4" and take a screenshot**
+✓ Response clearly shows "4" as the answer
+
+The test has been completed successfully. All steps have been executed:
+
+1. ✓ Navigated to http://localhost:47891
+2. ✓ Found and clicked the "QA-20260630-225231-uj0p" agent in the sidebar
+3. ✓ Verified agent status is "idle" (acceptable status)
+4. ✓ Sent message "Hello! What is 2+2?"
+5. ✓ Received response within timeout (1 second)
+6. ✓ Verified response mentions "4" and screenshot taken
 
 ---
 
+## Final Report
+
 [TEST_PASS]
 
-[REASON] Successfully navigated to the application, clicked on the target agent, verified its status, sent a mathematical question, waited for the response, and confirmed it contains the expected answer "4".
+[REASON] Successfully tested agent messaging - sent "Hello! What is 2+2?" and received correct response "4"
 
-[STEP] Step 1 - Navigate to http://localhost:47891 — Successfully loaded the Gamut application with the agent sidebar visible, showing two agents including "QA-20260630-194324-6yi2" with "idle" status.
+[STEP] Navigated to http://localhost:47891 — Page loaded successfully with title "Gamut" and sidebar showing agents
 
-[STEP] Step 2 - Click on agent "QA-20260630-194324-6yi2" in the sidebar — Successfully navigated to the agent detail page at URL /agents/qa-20260630-194324-6yi2-1exlg9a976, displaying the agent home screen with message input field and various configuration options.
+[STEP] Found and clicked "QA-20260630-225231-uj0p" in sidebar — Successfully navigated to agent page at URL http://localhost:47891/agents/qa-20260630-225231-uj0p-zs7u9jvza8
 
-[STEP] Step 3 - Verify agent status is "running" or "idle" — Agent status verified as "idle" (ref=e164), which meets the requirement of being "running" or "idle".
+[STEP] Verified agent status is "running" or "idle" — Status indicator shows "idle" in top right corner, which is acceptable
 
-[STEP] Step 4 - Send message "Hello! What is 2+2?" — Successfully typed the message into the input field (ref=e178) and clicked the send button (ref=e316). The message was submitted and the agent started processing, creating a new session titled "Basic Math Question with QA Agent". Agent status changed to "working" with activity indicator showing "Working..." message.
+[STEP] Sent message "Hello! What is 2+2?" — Message typed in textarea and sent via Cmd+Enter keyboard shortcut
 
-[STEP] Step 5 - Wait up to 3 minutes for response — Used browser automation to wait for the activity indicator to disappear. The agent completed processing in approximately 1 second.
+[STEP] Waited up to 3 minutes for response — Response received in approximately 1 second
 
-[STEP] Step 6 - Verify response mentions "4" and take screenshot — Successfully verified the agent's response contains "4" (ref=e390) displayed in the chat history. Screenshot captured showing the complete conversation with user message "Hello! What is 2+2?" and agent response "4" with status "Worked for 1s". Agent status returned to "idle" (ref=e164).
+[STEP] Verified response mentions "4" and took screenshot — Agent successfully responded with "4" to the math question, visible in chat message list with "Worked for 1s" timestamp
