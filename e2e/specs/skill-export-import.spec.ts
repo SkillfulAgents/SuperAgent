@@ -11,6 +11,10 @@ test.describe('Skill Export & Import', () => {
   let agentPage: AgentPage
   let tmpDir: string
 
+  async function createSkillTestAgent(name: string) {
+    await agentPage.createAgent(name, { waitForSidebarName: false })
+  }
+
   test.beforeEach(async ({ page }) => {
     appPage = new AppPage(page)
     agentPage = new AgentPage(page)
@@ -34,7 +38,7 @@ test.describe('Skill Export & Import', () => {
       { name: skillName },
     )
 
-    await agentPage.createAgent(`Skill Imp ${Date.now()}`)
+    await createSkillTestAgent(`Skill Imp ${Date.now()}`)
 
     const importButton = page.locator('[data-testid="import-skill-button"]')
     await expect(importButton).toBeVisible({ timeout: 10000 })
@@ -63,7 +67,7 @@ test.describe('Skill Export & Import', () => {
     const { writeZipFile } = await import('../../src/shared/lib/utils/zip')
     await writeZipFile(badZipPath, { 'README.md': '# Not a skill' })
 
-    await agentPage.createAgent(`Bad Imp ${Date.now()}`)
+    await createSkillTestAgent(`Bad Imp ${Date.now()}`)
 
     const importButton = page.locator('[data-testid="import-skill-button"]')
     await expect(importButton).toBeVisible({ timeout: 10000 })
@@ -79,7 +83,7 @@ test.describe('Skill Export & Import', () => {
   })
 
   test('export a skill via three-dot menu', async ({ page }) => {
-    await agentPage.createAgent(`Skill Exp ${Date.now()}`)
+    await createSkillTestAgent(`Skill Exp ${Date.now()}`)
 
     const addSkillButton = page.locator('[data-testid="add-skill-button"]')
     await expect(addSkillButton).toBeVisible({ timeout: 10000 })
@@ -112,7 +116,7 @@ test.describe('Skill Export & Import', () => {
   })
 
   test('round-trip: export from one agent, import into another', async ({ page }) => {
-    await agentPage.createAgent(`RT Exp ${Date.now()}`)
+    await createSkillTestAgent(`RT Exp ${Date.now()}`)
 
     const addSkillButton = page.locator('[data-testid="add-skill-button"]')
     await expect(addSkillButton).toBeVisible({ timeout: 10000 })
