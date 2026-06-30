@@ -86,13 +86,25 @@ export class YouComWebSearchProvider extends BaseWebSearchProvider {
       RETRY_ATTEMPTS,
       RETRY_BASE_DELAY_MS,
     )
-    return mapYouSearchResponse(json)
+    const response = mapYouSearchResponse(json)
+    const warnings: string[] = []
+    if (opts.includeDomains?.length && opts.excludeDomains?.length) {
+      warnings.push('You.com cannot combine include and exclude domains; excludeDomains was ignored.')
+    }
+    if (Boolean(opts.startPublishedDate) !== Boolean(opts.endPublishedDate)) {
+      warnings.push('You.com date filtering needs both a start and end date; the date filter was not applied.')
+    }
+    return warnings.length ? { ...response, warnings } : response
   }
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
       const params = new URLSearchParams({ query: 'test', count: '1' })
-      const res = await fetch(`${YOU_SEARCH_URL}?${params.toString()}`, { method: 'GET', headers: { 'X-API-Key': apiKey } })
+      const res = await fetch(`${YOU_SEARCH_URL}?${params.toString()}`, {
+        method: 'GET',
+        headers: { 'X-API-Key': apiKey },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      })
       if (res.ok) return { valid: true }
       if (res.status === 401 || res.status === 403) return { valid: false, error: 'Invalid API key' }
       return { valid: false, error: `You.com API error: ${res.status}` }

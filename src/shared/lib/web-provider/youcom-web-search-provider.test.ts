@@ -146,6 +146,30 @@ describe('YouComWebSearchProvider.search', () => {
   })
 })
 
+describe('YouComWebSearchProvider degrade warnings', () => {
+  it('warns when include and exclude domains are both set (exclude dropped)', async () => {
+    mockFetch({ results: { web: [] } })
+    const res = await new YouComWebSearchProvider().search('q', { includeDomains: ['a.com'], excludeDomains: ['b.com'] })
+    expect(res.warnings?.some((w) => /exclude/i.test(w))).toBe(true)
+  })
+
+  it('warns when only one date bound is set (date filter dropped)', async () => {
+    mockFetch({ results: { web: [] } })
+    const res = await new YouComWebSearchProvider().search('q', { startPublishedDate: '2026-01-01' })
+    expect(res.warnings?.some((w) => /date/i.test(w))).toBe(true)
+  })
+
+  it('does not warn when both date bounds and a single domain list are set', async () => {
+    mockFetch({ results: { web: [] } })
+    const res = await new YouComWebSearchProvider().search('q', {
+      includeDomains: ['a.com'],
+      startPublishedDate: '2026-01-01',
+      endPublishedDate: '2026-06-30',
+    })
+    expect(res.warnings).toBeUndefined()
+  })
+})
+
 describe('YouComWebSearchProvider.validateKey', () => {
   it('returns valid for an authenticated key', async () => {
     mockFetch({ results: { web: [] } })

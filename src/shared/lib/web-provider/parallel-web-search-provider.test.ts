@@ -143,6 +143,23 @@ describe('ParallelWebSearchProvider.search', () => {
   })
 })
 
+describe('ParallelWebSearchProvider degrade warnings', () => {
+  it('warns when endPublishedDate is dropped (Parallel has no end-date filter)', async () => {
+    mockFetch({ results: [] })
+    const res = await new ParallelWebSearchProvider().search('q', {
+      startPublishedDate: '2026-01-01',
+      endPublishedDate: '2026-06-30',
+    })
+    expect(res.warnings?.[0]).toMatch(/end-date/i)
+  })
+
+  it('does not warn when only startPublishedDate is set', async () => {
+    mockFetch({ results: [] })
+    const res = await new ParallelWebSearchProvider().search('q', { startPublishedDate: '2026-01-01' })
+    expect(res.warnings).toBeUndefined()
+  })
+})
+
 describe('ParallelWebSearchProvider.validateKey', () => {
   it('returns valid for an authenticated key', async () => {
     mockFetch({ results: [] })

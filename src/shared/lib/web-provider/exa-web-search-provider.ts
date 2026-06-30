@@ -92,6 +92,7 @@ export class ExaWebSearchProvider extends BaseWebSearchProvider {
         method: 'POST',
         headers: { 'x-api-key': apiKey, 'content-type': 'application/json' },
         body: JSON.stringify({ query: 'test', numResults: 1 }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       if (res.ok) return { valid: true }
       if (res.status === 401 || res.status === 403) return { valid: false, error: 'Invalid API key' }

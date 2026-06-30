@@ -97,4 +97,20 @@ describe('POST /api/x-agent/web/search', () => {
     const res = await search({ query: 'q' })
     expect(res.status).toBe(502)
   })
+
+  it('400 when the query exceeds the max length', async () => {
+    mockGetActiveWebSearchProvider.mockReturnValue({ search: vi.fn() })
+    const res = await search({ query: 'x'.repeat(2001) })
+    expect(res.status).toBe(400)
+  })
+
+  it('caps the hit count and truncates oversized snippets host-side', async () => {
+    const hits = Array.from({ length: 60 }, (_, i) => ({ url: `https://a.com/${i}`, title: 'A', snippet: 'x'.repeat(3000) }))
+    mockGetActiveWebSearchProvider.mockReturnValue({ search: vi.fn().mockResolvedValue({ hits }) })
+    const res = await search({ query: 'q' })
+    const json = await res.json()
+    expect(json.hits.length).toBe(50)
+    expect(json.hits[0].snippet.length).toBe(2000)
+    expect(json.warnings.some((w: string) => /first 50 of 60/.test(w))).toBe(true)
+  })
 })

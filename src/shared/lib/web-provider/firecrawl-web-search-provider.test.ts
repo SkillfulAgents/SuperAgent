@@ -137,6 +137,14 @@ describe('FirecrawlWebSearchProvider.search', () => {
   })
 })
 
+describe('FirecrawlWebSearchProvider degrade warnings', () => {
+  it('warns when include and exclude domains are both set (exclude dropped)', async () => {
+    mockFetch({ data: { web: [] } })
+    const res = await new FirecrawlWebSearchProvider().search('q', { includeDomains: ['a.com'], excludeDomains: ['b.com'] })
+    expect(res.warnings?.some((w) => /exclude/i.test(w))).toBe(true)
+  })
+})
+
 describe('FirecrawlWebSearchProvider.validateKey', () => {
   it('returns valid for an authenticated key', async () => {
     mockFetch({ data: { web: [] } })

@@ -6,6 +6,12 @@ import { WebSearchRequestSchema } from '@shared/lib/web-provider/web-search-requ
 import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 
+// Host-side defense-in-depth bounds: adapters already clamp numResults to <=25, but a misbehaving
+// vendor could ignore that or return oversized snippets, so the host re-caps before results reach
+// the agent's context window.
+const HARD_MAX_HITS = 50
+const MAX_SNIPPET_CHARS = 2000
+
 type XAgentWebVariables = { callerSlug: string }
 
 const xAgentWeb = new Hono<{ Variables: XAgentWebVariables }>()
@@ -53,8 +59,17 @@ xAgentWeb.post('/search', async (c) => {
     if (removed > 0) {
       warnings.push(`${removed} result${removed === 1 ? '' : 's'} removed by your allowed-sites policy`)
     }
-    console.log(`[web-search] ${provider.id} returned ${hits.length} hits${removed > 0 ? ` (${removed} removed by policy)` : ''} for "${query}"`)
-    return c.json({ hits, ...(warnings.length > 0 ? { warnings } : {}) })
+    const cappedHits = hits.slice(0, HARD_MAX_HITS).map((h) =>
+      h.snippet.length > MAX_SNIPPET_CHARS ? { ...h, snippet: h.snippet.slice(0, MAX_SNIPPET_CHARS) } : h,
+    )
+    if (hits.length > HARD_MAX_HITS) {
+      warnings.push(`Showing the first ${HARD_MAX_HITS} of ${hits.length} results.`)
+    }
+    // Sanitize the agent-supplied query before logging: collapse whitespace (kills log forging via
+    // newlines) and truncate (avoids dumping long/sensitive queries to host logs).
+    const safeQuery = query.replace(/\s+/g, ' ').slice(0, 200)
+    console.log(`[web-search] ${provider.id} returned ${cappedHits.length} hits${removed > 0 ? ` (${removed} removed by policy)` : ''} for "${safeQuery}"`)
+    return c.json({ hits: cappedHits, ...(warnings.length > 0 ? { warnings } : {}) })
   } catch (err) {
     captureException(err, { tags: { component: 'web-search', operation: 'search' } })
     return c.json({ error: err instanceof Error ? err.message : 'Web search failed' }, 502)

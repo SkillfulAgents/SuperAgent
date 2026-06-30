@@ -92,7 +92,11 @@ export class FirecrawlWebSearchProvider extends BaseWebSearchProvider {
       RETRY_ATTEMPTS,
       RETRY_BASE_DELAY_MS,
     )
-    return mapFirecrawlSearchResponse(json)
+    const response = mapFirecrawlSearchResponse(json)
+    const warnings = opts.includeDomains?.length && opts.excludeDomains?.length
+      ? ['Firecrawl cannot combine include and exclude domains; excludeDomains was ignored.']
+      : []
+    return warnings.length ? { ...response, warnings } : response
   }
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
@@ -101,6 +105,7 @@ export class FirecrawlWebSearchProvider extends BaseWebSearchProvider {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify({ query: 'test', limit: 1 }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
       if (res.ok) return { valid: true }
       if (res.status === 401 || res.status === 403) return { valid: false, error: 'Invalid API key' }
