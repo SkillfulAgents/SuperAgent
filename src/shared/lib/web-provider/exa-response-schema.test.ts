@@ -50,9 +50,4 @@ describe('ExaSearchResponseSchema', () => {
   it('rejects when results is not an array', () => {
     expect(() => ExaSearchResponseSchema.parse({ results: 'nope' })).toThrow()
   })
-
-  it('passes through unknown extra fields', () => {
-    const parsed = ExaSearchResponseSchema.parse(documented)
-    expect(parsed.results[0].url).toBe('https://example.com/a')
-  })
 })

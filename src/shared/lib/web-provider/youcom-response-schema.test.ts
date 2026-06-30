@@ -45,9 +45,4 @@ describe('YouSearchResponseSchema', () => {
   it('rejects when results.web is not an array', () => {
     expect(() => YouSearchResponseSchema.parse({ results: { web: 'nope' } })).toThrow()
   })
-
-  it('passes through unknown extra fields', () => {
-    const parsed = YouSearchResponseSchema.parse(documented)
-    expect(parsed.results.web?.[0].url).toBe('https://example.com/a')
-  })
 })

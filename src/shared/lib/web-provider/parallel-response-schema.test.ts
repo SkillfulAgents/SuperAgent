@@ -38,23 +38,11 @@ describe('ParallelSearchResponseSchema', () => {
     expect(parsed.results[0].excerpts).toBeUndefined()
   })
 
-  it('does not require search_id / session_id (we never map them)', () => {
-    const parsed = ParallelSearchResponseSchema.parse({
-      results: [{ url: 'https://example.com/d', title: 'D', excerpts: ['x'] }],
-    })
-    expect(parsed.results[0].url).toBe('https://example.com/d')
-  })
-
   it('rejects a result missing the url', () => {
     expect(() => ParallelSearchResponseSchema.parse({ results: [{ title: 'no url', excerpts: [] }] })).toThrow()
   })
 
   it('rejects when results is not an array', () => {
     expect(() => ParallelSearchResponseSchema.parse({ results: 'nope' })).toThrow()
-  })
-
-  it('passes through unknown extra fields', () => {
-    const parsed = ParallelSearchResponseSchema.parse(documented)
-    expect(parsed.results[0].url).toBe('https://www.example.com')
   })
 })

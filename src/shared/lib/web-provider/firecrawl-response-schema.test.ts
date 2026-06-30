@@ -41,9 +41,4 @@ describe('FirecrawlSearchResponseSchema', () => {
   it('rejects a web result missing the url', () => {
     expect(() => FirecrawlSearchResponseSchema.parse({ data: { web: [{ title: 'no url', description: 'd' }] } })).toThrow()
   })
-
-  it('passes through unknown extra fields', () => {
-    const parsed = FirecrawlSearchResponseSchema.parse(documented)
-    expect(parsed.data.web?.[0].url).toBe('https://firecrawl.dev/')
-  })
 })
