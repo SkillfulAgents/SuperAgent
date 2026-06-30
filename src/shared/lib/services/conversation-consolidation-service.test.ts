@@ -110,6 +110,15 @@ describe('consolidateConversation', () => {
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', 'we did X')
   })
 
+  it('frames the transcript as untrusted data (injection hygiene)', async () => {
+    messagesCreate.mockResolvedValue(llmResult([], 'r'))
+    await consolidateConversation(makeConversation())
+    const prompt = messagesCreate.mock.calls[0][0].messages[0].content as string
+    expect(prompt).toContain('UNTRUSTED DATA')
+    expect(prompt).toContain('<<<TRANSCRIPT')
+    expect(prompt).toContain('TRANSCRIPT>>>')
+  })
+
   it('feeds the existing MEMORY.md index to the model and preserves unrelated pointers on upsert', async () => {
     fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '- [Other Memory](other-memory.md) - unrelated\n')
     messagesCreate.mockResolvedValue(llmResult(
