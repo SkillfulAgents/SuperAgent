@@ -727,10 +727,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         {visiblePeerMessages.filter((p) => !p.queued).map(renderPeerGhost)}
         {pendingUserMessages?.filter((p) => !p.queued).map(renderPendingGhost)}
 
-        {/* Typing indicator - shown when another user is typing (gated on the
-            sender-filtered peer list — our own echo must not suppress it) */}
-        {typingUser && visiblePeerMessages.length === 0 && (
-          <div className="flex gap-3 flex-row-reverse">
+        {/* Typing indicator - shown when ANOTHER user is typing. The server echoes
+            user_typing back to the sender too, so exclude our own id (mirrors the
+            peer-message self-filter); the peer-list gate keeps our own echoed
+            message from suppressing a real peer's indicator. */}
+        {typingUser && typingUser.id !== user?.id && visiblePeerMessages.length === 0 && (
+          <div data-testid="typing-indicator" className="flex gap-3 flex-row-reverse">
             <div className="h-8 w-8 rounded-full items-center justify-center shrink-0 hidden md:flex bg-primary text-primary-foreground">
               <span className="text-xs font-medium">
                 {typingUser.name?.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) || '?'}
