@@ -93,7 +93,13 @@ vi.mock('./telegram-connector', () => ({
 
 import { chatIntegrationManager } from './chat-integration-manager'
 import { createChatIntegration, getChatIntegration } from '@shared/lib/services/chat-integration-service'
-import { listChatIntegrationSessions } from '@shared/lib/services/chat-integration-session-service'
+import {
+  listChatIntegrationSessions,
+  createChatIntegrationSession,
+  rotateChatIntegrationSession,
+  markConversationConsolidated,
+  archiveChatIntegrationSession,
+} from '@shared/lib/services/chat-integration-session-service'
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
@@ -538,6 +544,78 @@ describe('Chat integration E2E', () => {
       await chatIntegrationManager.removeIntegration(integrationId)
 
       expect(mockConnector.stoppedWorking).toContain('chat-1')
+    })
+  })
+
+  describe('recap seeding', () => {
+    const RECAP = 'The user is building a CLI named gizmo and prefers terse replies.'
+
+    it('seeds a new conversation with the prior timeout-rotated recap as system context', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      // A prior conversation for this chat timed out, was rotated, and consolidated.
+      const prior = createChatIntegrationSession({ integrationId, externalChatId: 'chat-1', sessionId: 'prior-sess', displayName: 'Old' })
+      rotateChatIntegrationSession(prior)
+      markConversationConsolidated(prior, RECAP)
+
+      mockConnector.simulateIncomingMessage('back again', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+
+      const systemPrompt = MockContainerClient.createSessionCalls.at(-1)!.systemPrompt
+      expect(systemPrompt).toContain(RECAP)
+      expect(systemPrompt?.toLowerCase()).toContain('previous conversation')
+      // The recap rides systemPrompt, never the user's first message.
+      expect(MockContainerClient.createSessionCalls.at(-1)!.initialMessage).toBe('back again')
+    })
+
+    it('does not seed when the most-recent prior conversation was a /clear (not a timeout rotation)', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      // Older: timeout-rotated + consolidated (carries a recap), backdated so it is clearly older.
+      const older = createChatIntegrationSession({ integrationId, externalChatId: 'chat-1', sessionId: 'older-sess' })
+      rotateChatIntegrationSession(older)
+      markConversationConsolidated(older, RECAP)
+      testSqlite.prepare('UPDATE chat_integration_sessions SET archived_at = ? WHERE id = ?').run(Date.now() - 60 * 60 * 1000, older)
+      // Newer: a /clear (archived, rotatedAt stays null).
+      const cleared = createChatIntegrationSession({ integrationId, externalChatId: 'chat-1', sessionId: 'cleared-sess' })
+      archiveChatIntegrationSession(cleared)
+
+      mockConnector.simulateIncomingMessage('fresh start', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
+
+      expect(MockContainerClient.createSessionCalls.at(-1)!.systemPrompt).toBeUndefined()
+    })
+
+    it('does not re-seed the recap after a self-heal (the evicted session is the most-recent archive)', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      // A prior timeout-rotated + consolidated conversation supplies a recap.
+      const prior = createChatIntegrationSession({ integrationId, externalChatId: 'chat-1', sessionId: 'prior-sess' })
+      rotateChatIntegrationSession(prior)
+      markConversationConsolidated(prior, RECAP)
+
+      // First live message creates a fresh conversation — correctly seeded from the recap.
+      mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length === 1)
+      expect(MockContainerClient.createSessionCalls[0].systemPrompt).toContain(RECAP)
+      await waitForCondition(
+        () => mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0,
+        3000,
+      )
+
+      // The container evicts the live session, so the next send self-heals.
+      const deadSessionId = [...(mockContainerClient as any).sessions.keys()][0] as string
+      await mockContainerClient.deleteSession(deadSessionId)
+
+      mockConnector.simulateIncomingMessage('Still there?', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length === 2)
+
+      // The self-healed conversation must NOT re-inject the stale recap: the just-
+      // archived evicted session is the most-recent archive and was not rotated.
+      expect(MockContainerClient.createSessionCalls[1].systemPrompt).toBeUndefined()
     })
   })
 })

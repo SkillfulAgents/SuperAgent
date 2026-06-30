@@ -35,6 +35,7 @@ import {
   getLastDisplayName,
   isSessionTimedOut,
   listConsolidationCandidates,
+  getLatestTimeoutRecap,
 } from '@shared/lib/services/chat-integration-session-service'
 import { consolidateConversation } from '@shared/lib/services/conversation-consolidation-service'
 import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
@@ -955,6 +956,13 @@ class ChatIntegrationManager {
     const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
     const models = getEffectiveModels()
 
+    // Seed the new conversation with the prior conversation's recap (timeout
+    // rotations only; null otherwise). Delivered as appended system context, not
+    // in the user's message, and combined with the iMessage prompt when present.
+    const recapContext = buildRecapSystemContext(getLatestTimeoutRecap(integration.id, chatId))
+    const baseSystemPrompt = integration.provider === 'imessage' ? IMESSAGE_SYSTEM_PROMPT : ''
+    const systemPrompt = [baseSystemPrompt, recapContext].filter(Boolean).join('\n\n') || undefined
+
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: messageText,
@@ -962,7 +970,7 @@ class ChatIntegrationManager {
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       ...(integration.effort ? { effort: integration.effort as EffortLevel } : {}),
-      ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
+      ...(systemPrompt ? { systemPrompt } : {}),
     })
 
     const sessionId = containerSession.id
@@ -2016,6 +2024,18 @@ export function selectConsolidationTargets(
     ))
     .sort((a, b) => (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0))
     .slice(0, limit)
+}
+
+const RECAP_HEADER =
+  'Context from the previous conversation in this chat (the user has not seen this note):'
+
+/**
+ * Wrap a prior conversation's recap as a labeled system-context block, or '' when
+ * there is no recap. Combined into `createSession`'s systemPrompt (appended by the
+ * agent's generateSystemPrompt), never prepended to the user's message.
+ */
+export function buildRecapSystemContext(recap: string | null): string {
+  return recap?.trim() ? `${RECAP_HEADER}\n\n${recap.trim()}` : ''
 }
 
 /** Build the session name, appending a timestamp when session rotation is enabled. */

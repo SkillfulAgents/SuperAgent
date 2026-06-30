@@ -1322,6 +1322,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     effort?: string
     model?: string
     initialMessage?: string
+    systemPrompt?: string
   }> = []
 
   static resetCallRecords(): void {
@@ -1686,6 +1687,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       effort: options.effort,
       model,
       initialMessage: options.initialMessage,
+      systemPrompt: options.systemPrompt,
     })
     this.writeMockRecord({
       type: 'createSession',
