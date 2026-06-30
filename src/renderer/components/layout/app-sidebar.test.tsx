@@ -239,6 +239,7 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
       : <div data-active={isActive ? 'true' : 'false'} {...props}>{children}</div>,
   SidebarMenuSubItem: ({ children }: any) => <li>{children}</li>,
   SidebarRail: () => null,
+  useSidebar: () => ({ setOpenMobile: vi.fn() }),
 }))
 
 vi.mock('@renderer/components/ui/collapsible', () => ({

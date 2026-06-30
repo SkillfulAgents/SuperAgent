@@ -2,6 +2,22 @@ import '@testing-library/jest-dom/vitest'
 import { vi } from 'vitest'
 import { createElement } from 'react'
 
+// jsdom has no matchMedia; components read it via useIsMobile() and
+// prefers-reduced-motion. Default to "no match" (desktop, motion allowed) with
+// no-op listeners. Node-env (non-renderer) tests have no window — guard for it.
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  window.matchMedia = (query: string): MediaQueryList => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }) as unknown as MediaQueryList
+}
+
 const signIn = {
   email: vi.fn(),
   oauth2: vi.fn(),

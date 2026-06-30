@@ -264,9 +264,10 @@ describe('AgentHome', () => {
   // --- New-agent intro morph ---
 
   it('plays the new-agent intro morph once when justCreatedSlug matches, then clears the tag', () => {
-    // jsdom lacks matchMedia; the morph reads prefers-reduced-motion.
+    // jsdom lacks matchMedia; the morph reads prefers-reduced-motion and
+    // useIsMobile() subscribes via addEventListener, so include the listeners.
     const originalMatchMedia = window.matchMedia
-    window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as unknown as typeof window.matchMedia
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as typeof window.matchMedia
     vi.useFakeTimers()
     try {
       mockJustCreatedSlug = testAgent.slug
