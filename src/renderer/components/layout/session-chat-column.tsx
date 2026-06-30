@@ -4,13 +4,16 @@ import { PendingRequestStack } from '@renderer/components/messages/pending-reque
 import { renderPendingRequest, type RenderContext } from '@renderer/components/messages/pending-request-renderer'
 import { PendingRequestErrorBoundary } from '@renderer/components/messages/pending-request-error-boundary'
 import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
+import { StaleSessionToast } from '@renderer/components/messages/stale-session-notice'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useScreenWakeLock } from '@renderer/hooks/use-screen-wake-lock'
 import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watcher'
+import { useStaleSession } from '@renderer/hooks/use-stale-session'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
 import type { EffortLevel } from '@shared/lib/container/types'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
+import type { SessionUsage } from '@shared/lib/types/agent'
 
 interface SessionChatColumnProps {
   sessionId: string
@@ -24,6 +27,8 @@ interface SessionChatColumnProps {
   onMessageSent: (content: string, localId: string, queued: boolean) => void
   onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
   onMessageFailed: (localId: string) => void
+  lastActivityAt?: Date | null
+  contextUsage?: SessionUsage | null
 }
 
 export function SessionChatColumn({
@@ -38,8 +43,20 @@ export function SessionChatColumn({
   onMessageSent,
   onMessageUuidAssigned,
   onMessageFailed,
+  lastActivityAt,
+  contextUsage,
 }: SessionChatColumnProps) {
-  const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
+  const {
+    isActive,
+    browserActive,
+    isWaitingBackground,
+    pendingSecretRequests,
+    pendingConnectedAccountRequests,
+    pendingQuestionRequests,
+    pendingFileRequests,
+    pendingRemoteMcpRequests,
+    pendingBrowserInputRequests,
+  } = useMessageStream(sessionId, agentSlug)
   // Keep the phone awake (PWA only) while this session is actively working.
   useScreenWakeLock(isActive || isWaitingBackground)
   useFileDeliveryWatcher(sessionId, agentSlug)
@@ -51,6 +68,28 @@ export function SessionChatColumn({
 
   const renderCtx: RenderContext = { sessionId, agentSlug, readOnly: isViewOnly }
 
+  const isAwaitingInput = isActive && (
+    pendingSecretRequests.length > 0 ||
+    pendingConnectedAccountRequests.length > 0 ||
+    pendingQuestionRequests.length > 0 ||
+    pendingFileRequests.length > 0 ||
+    pendingRemoteMcpRequests.length > 0 ||
+    pendingBrowserInputRequests.length > 0
+  )
+
+  // Continuous stale-session detection + "Start fresh" handoff, off the send path
+  // (so sending is never interrupted). See useStaleSession.
+  const stale = useStaleSession({
+    sessionId,
+    agentSlug,
+    isActive,
+    isWaitingBackground,
+    isAwaitingInput,
+    isViewOnly,
+    lastActivityAt,
+    contextUsage,
+  })
+
   return (
     <SessionThread
       sessionId={sessionId}
@@ -59,6 +98,7 @@ export function SessionChatColumn({
       pendingUserMessages={pendingUserMessages}
       pendingRequestCount={pendingRequestCount}
       onPendingMessageAppeared={onPendingMessageAppeared}
+      suppressScrollToBottom={stale.menuOpen}
       footerClassName="bg-background max-w-[740px] mx-auto w-full"
       footer={
         pendingRequestCount > 0 ? (
@@ -80,6 +120,13 @@ export function SessionChatColumn({
           </div>
         ) : (
           <>
+            {stale.showToast && (
+              <StaleSessionToast
+                onIgnore={stale.ignore}
+                onStartFresh={stale.startFresh}
+                onMenuOpenChange={stale.setMenuOpen}
+              />
+            )}
             <MessageInput
               key={sessionId}
               sessionId={sessionId}
@@ -89,6 +136,7 @@ export function SessionChatColumn({
               onMessageFailed={onMessageFailed}
               initialEffort={effort}
               initialModel={model}
+              registerSnapshot={stale.registerSnapshot}
             />
             <div className="flex justify-between items-center gap-1.5 px-6 py-3">
               {contextPercent != null ? (

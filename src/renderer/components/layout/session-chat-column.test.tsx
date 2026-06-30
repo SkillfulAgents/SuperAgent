@@ -139,3 +139,42 @@ describe('SessionChatColumn composer swap', () => {
     expect(screen.queryByText('New line')).not.toBeInTheDocument()
   })
 })
+
+// Detection logic lives in useStaleSession (unit-tested there). This just verifies
+// SessionChatColumn wires showToast → the toast in the at-rest footer.
+describe('SessionChatColumn stale toast', () => {
+  const staleProps = {
+    ...baseProps,
+    lastActivityAt: new Date(Date.now() - 7 * 60 * 60 * 1000),
+    contextUsage: {
+      inputTokens: 5000,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 130_000,
+      contextWindow: 200_000,
+    },
+  }
+
+  beforeEach(() => {
+    mockPendingResult.items = []
+    mockPendingResult.count = 0
+  })
+
+  it('renders the stale toast when the conversation is idle + large, at rest', () => {
+    renderWithProviders(<SessionChatColumn {...staleProps} />)
+    expect(screen.getByTestId('stale-toast')).toBeInTheDocument()
+    expect(screen.getByTestId('stale-new-chat')).toBeInTheDocument()
+  })
+
+  it('does not render the stale toast for a fresh conversation', () => {
+    renderWithProviders(<SessionChatColumn {...baseProps} />)
+    expect(screen.queryByTestId('stale-toast')).not.toBeInTheDocument()
+  })
+
+  it('does not render the stale toast while a request is pending', () => {
+    mockPendingResult.items = [secretDescriptor]
+    mockPendingResult.count = 1
+    renderWithProviders(<SessionChatColumn {...staleProps} />)
+    expect(screen.queryByTestId('stale-toast')).not.toBeInTheDocument()
+  })
+})
