@@ -1,9 +1,20 @@
 import {
   getActiveLlmProvider,
-  getModelPromptHints,
+  getEffectiveCatalog,
+  hasVersionSegment,
   resolveActiveProviderModel,
+  type LlmProviderId,
+  type ModelDefinition,
   type ModelPurpose,
 } from '@shared/lib/llm-provider'
+
+// Anthropic-native web tools the main agent invokes directly.
+export const WEB_SEARCH_TOOLS: readonly string[] = ['WebSearch', 'WebFetch']
+
+export interface ContainerModelRuntimeConfig {
+  modelPromptHints: string[]
+  unsupportedTools: string[]
+}
 
 /**
  * Resolve a stored model selection (bare family alias or concrete id) to the
@@ -28,18 +39,49 @@ export function resolveContainerModel(
   }
 }
 
-/**
- * Catalog prompt hints for an already-resolved wire model id (the value
- * resolveContainerModel produced), looked up in the active provider's catalog.
- * Empty for Claude/unknown models.
- */
-export function getContainerModelPromptHints(resolvedModel: string | undefined): string[] {
-  if (!resolvedModel) return []
+function findCatalogModel(catalog: ModelDefinition[], selection: string): ModelDefinition | undefined {
+  return (
+    catalog.find(model => model.id === selection) ??
+    catalog.find(model => model.family === selection && model.isLatest)
+  )
+}
+
+function isLikelyClaudeModel(model: string): boolean {
+  const normalized = model.toLowerCase()
+  return normalized.includes('claude') || normalized.includes('anthropic')
+}
+
+function shouldDisableWebTools(
+  providerId: LlmProviderId,
+  resolvedModel: string,
+  modelDefinition: ModelDefinition | undefined,
+): boolean {
+  if (modelDefinition?.supportsWebSearch === false) return true
+  if (modelDefinition?.supportsWebSearch === true) return false
+  if (modelDefinition) return false
+  return providerId !== 'anthropic' && hasVersionSegment(resolvedModel) && !isLikelyClaudeModel(resolvedModel)
+}
+
+export function getContainerModelRuntimeConfig(
+  resolvedModel: string | undefined,
+  purpose: ModelPurpose = 'agent',
+): ContainerModelRuntimeConfig {
   try {
-    return getModelPromptHints(resolvedModel, getActiveLlmProvider().id)
+    const provider = getActiveLlmProvider()
+    const catalog = getEffectiveCatalog(provider.id)
+    const fallback = provider.getDefaultModel(purpose)
+    const selectedModel = resolvedModel ?? fallback
+    const modelDefinition = findCatalogModel(catalog, selectedModel)
+    const effectiveModel = modelDefinition?.id ?? selectedModel
+    const unsupportedTools = shouldDisableWebTools(provider.id, effectiveModel, modelDefinition)
+      ? [...WEB_SEARCH_TOOLS]
+      : []
+
+    return {
+      modelPromptHints: modelDefinition?.promptHints ?? [],
+      unsupportedTools,
+    }
   } catch {
-    // Same test-context fallback as resolveContainerModel: settings/provider
-    // registry may be unmocked, in which case there are no hints to apply.
-    return []
+    return { modelPromptHints: [], unsupportedTools: [] }
   }
 }

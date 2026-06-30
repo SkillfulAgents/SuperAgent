@@ -1,4 +1,4 @@
-import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, Query, SDKUserMessage, type HookInput } from '@anthropic-ai/claude-agent-sdk';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
@@ -40,6 +40,12 @@ function mcpToolNames(
     .filter(t => !excludeSet || !excludeSet.has(t.name))
     .map(t => `mcp__${serverName}__${t.name}`)
 }
+
+function shouldDenyMainModelTool(input: HookInput, unsupportedTools: string[]): boolean {
+  if (input.hook_event_name !== 'PreToolUse') return false;
+  return !input.agent_id && unsupportedTools.includes(input.tool_name);
+}
+
 import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 
@@ -299,6 +305,8 @@ export interface ClaudeCodeProcessOptions {
   claudeSessionId?: string;
   userSystemPrompt?: string;
   modelPromptHints?: string[];
+  /** Host-resolved tools this model can't use (e.g. WebSearch/WebFetch when web search is unsupported). */
+  unsupportedTools?: string[];
   availableEnvVars?: string[];
   model?: string;
   browserModel?: string;
@@ -322,6 +330,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private model: string | undefined;
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
+  private unsupportedTools: string[];
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -346,6 +355,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.model = options.model;
     this.browserModel = options.browserModel;
     this.dashboardBuilderModel = options.dashboardBuilderModel;
+    this.unsupportedTools = options.unsupportedTools ?? [];
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
@@ -598,6 +608,23 @@ export class ClaudeCodeProcess extends EventEmitter {
         },
         hooks: {
           PreToolUse: [
+            {
+              matcher: '.*',
+              hooks: [
+                async (input) => {
+                  if (shouldDenyMainModelTool(input, this.unsupportedTools)) {
+                    return {
+                      hookSpecificOutput: {
+                        hookEventName: 'PreToolUse' as const,
+                        permissionDecision: 'deny' as const,
+                        permissionDecisionReason: 'The selected main model does not support this tool.',
+                      },
+                    };
+                  }
+                  return {};
+                },
+              ],
+            },
             {
               matcher: 'mcp__user-input__.*',
               hooks: [

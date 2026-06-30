@@ -106,6 +106,7 @@ export class SessionManager extends EventEmitter {
       workingDirectory,
       userSystemPrompt: request.systemPrompt,
       modelPromptHints: request.modelPromptHints,
+      unsupportedTools: request.unsupportedTools,
       availableEnvVars: request.availableEnvVars,
       model: request.model,
       browserModel: request.browserModel,
@@ -164,6 +165,7 @@ export class SessionManager extends EventEmitter {
       envVars: request.envVars,
       systemPrompt: request.systemPrompt,
       modelPromptHints: request.modelPromptHints,
+      unsupportedTools: request.unsupportedTools,
       availableEnvVars: request.availableEnvVars,
       slashCommands: process.slashCommands,
     };
@@ -197,6 +199,7 @@ export class SessionManager extends EventEmitter {
       lastActivity: session.lastActivity.toISOString(),
       systemPrompt: request.systemPrompt,
       modelPromptHints: request.modelPromptHints,
+      unsupportedTools: request.unsupportedTools,
       availableEnvVars: request.availableEnvVars,
       model: request.model,
       browserModel: request.browserModel,
@@ -232,6 +235,7 @@ export class SessionManager extends EventEmitter {
         claudeSessionId: persisted.claudeSessionId,
         userSystemPrompt: persisted.systemPrompt,
         modelPromptHints: persisted.modelPromptHints,
+        unsupportedTools: persisted.unsupportedTools,
         availableEnvVars: persisted.availableEnvVars,
         model: persisted.model,
         browserModel: persisted.browserModel,
@@ -251,6 +255,7 @@ export class SessionManager extends EventEmitter {
         workingDirectory: persisted.workingDirectory,
         systemPrompt: persisted.systemPrompt,
         modelPromptHints: persisted.modelPromptHints,
+        unsupportedTools: persisted.unsupportedTools,
         availableEnvVars: persisted.availableEnvVars,
       };
 
