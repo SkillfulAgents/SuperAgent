@@ -164,10 +164,23 @@ function titleFromSlug(slug: string): string {
     .join(' ')
 }
 
-/** The file a MEMORY.md pointer line targets (its FIRST markdown link), or null. */
+/**
+ * The file a MEMORY.md pointer line targets (its FIRST markdown link), or null.
+ * Accepts any list bullet (`-`, `*`, or `N.`) because the in-container agent owns
+ * MEMORY.md and writes it as free-form markdown, not always with a `-` bullet.
+ */
 function pointerTarget(line: string): string | null {
-  const match = line.match(/^\s*- \[[^\]]*\]\(([^)]+)\)/)
+  const match = line.match(/^\s*(?:[-*]|\d+\.)\s+\[[^\]]*\]\(([^)]+)\)/)
   return match ? match[1] : null
+}
+
+/**
+ * Keep a memory's slug from colliding with the reserved index filename. On a
+ * case-insensitive filesystem (macOS/APFS — the desktop target) `memory.md` IS
+ * `MEMORY.md`, so a memory named "Memory" would otherwise overwrite the index.
+ */
+function disambiguateReservedSlug(slug: string): string {
+  return `${slug}.md`.toLowerCase() === MEMORY_INDEX_FILE.toLowerCase() ? `${slug}-note` : slug
 }
 
 /** Collapse a one-line field to a single line (frontmatter / index safety). */
@@ -215,8 +228,10 @@ async function writeConsolidatedMemories(agentSlug: string, memories: Consolidat
   const seen = new Set<string>()
   const written: Array<{ m: ConsolidationMemory; slug: string }> = []
   for (const m of memories) {
-    const slug = slugifyMemoryName(m.name)
-    if (!slug || seen.has(slug)) continue
+    const base = slugifyMemoryName(m.name)
+    if (!base) continue
+    const slug = disambiguateReservedSlug(base)
+    if (seen.has(slug)) continue
     seen.add(slug)
     written.push({ m, slug })
   }

@@ -293,6 +293,27 @@ describe('consolidateConversation', () => {
     expect(index.split('\n').filter((l) => /^- \[[^\]]*\]\(beta\.md\)/.test(l))).toHaveLength(1)
   })
 
+  it('does not let a memory named "Memory" overwrite the MEMORY.md index (case-insensitive FS)', async () => {
+    fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '- [Existing](existing.md) - keep me\n')
+    messagesCreate.mockResolvedValue(llmResult([
+      { name: 'Memory', description: 'meta note', type: 'feedback', body: 'how to handle memory' },
+    ], 'r'))
+    await consolidateConversation(makeConversation())
+    const index = readIndex()
+    // The pre-existing index survives, and the reserved name is disambiguated.
+    expect(index).toContain('](existing.md)')
+    expect(index).not.toContain('how to handle memory') // body never written into the index itself
+    expect(fs.existsSync(path.join(memoryDir, 'memory-note.md'))).toBe(true)
+    expect(index).toContain('](memory-note.md)')
+  })
+
+  it('updates a pointer that uses a non-hyphen bullet (agent free-form markdown) instead of duplicating', async () => {
+    fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '* [User Role](user_role.md) — old\n')
+    messagesCreate.mockResolvedValue(llmResult([{ name: 'user_role', description: 'new', type: 'user', body: 'b' }], 'r'))
+    await consolidateConversation(makeConversation())
+    expect(readIndex().split('\n').filter((l) => /\(user_role\.md\)/.test(l))).toHaveLength(1)
+  })
+
   it('truncates an over-cap transcript to the most-recent tail before the model call', async () => {
     const big = 'A'.repeat(500_000)
     getSessionMessagesMock.mockResolvedValue([userEntry(big), userEntry('RECENT_TAIL_MARKER')])
