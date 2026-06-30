@@ -12,14 +12,9 @@ const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
   ? Number(process.env.PLAYWRIGHT_WORKERS)
   : undefined
 
-const statefulTestMatch = [
-  '**/settings.spec.ts',
-]
-
 const webTestIgnore = [
   '**/auth/**',
   '**/getting-started-wizard.spec.ts',
-  ...statefulTestMatch,
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {
@@ -81,19 +76,10 @@ export default defineConfig({
       fullyParallel: false,
     },
     {
-      // Settings tests modify global settings but don't toggle setupCompleted.
-      // Safe to run after wizard tests complete.
-      name: 'global-state',
-      testMatch: statefulTestMatch,
-      use: { ...devices['Desktop Chrome'] },
-      fullyParallel: false,
-      dependencies: ['wizard'],
-    },
-    {
       name: 'web-chromium',
       testIgnore: webTestIgnore,
       use: { ...devices['Desktop Chrome'] },
-      dependencies: ['global-state'],
+      dependencies: ['wizard'],
     },
   ],
 
