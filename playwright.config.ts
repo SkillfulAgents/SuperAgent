@@ -14,7 +14,6 @@ const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
 
 const statefulTestMatch = [
   '**/settings.spec.ts',
-  '**/policy-settings.spec.ts',
 ]
 
 const webTestIgnore = [
@@ -82,7 +81,7 @@ export default defineConfig({
       fullyParallel: false,
     },
     {
-      // Settings/policy tests modify global settings but don't toggle setupCompleted.
+      // Settings tests modify global settings but don't toggle setupCompleted.
       // Safe to run after wizard tests complete.
       name: 'global-state',
       testMatch: statefulTestMatch,
