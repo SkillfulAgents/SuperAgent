@@ -841,6 +841,19 @@ describe('settings route', () => {
     })
   })
 
+  describe('POST /validate-exa-key', () => {
+    it('returns 400 when apiKey is missing', async () => {
+      const res = await app.request('http://localhost/api/settings/validate-exa-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('API key is required')
+    })
+  })
+
   // =========================================================================
   // GET settings includes per-provider STT key status
   // =========================================================================

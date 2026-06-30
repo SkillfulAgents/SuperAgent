@@ -33,6 +33,7 @@ import {
 import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
+import { ExaWebSearchProvider } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
@@ -201,6 +202,7 @@ const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
   'openaiApiKey',
   'nangoSecretKey',
   'accountProviderUserId',
+  'exaApiKey',
 ]
 
 // GET /api/settings/llm-providers/:providerId/models/search - Provider-native model discovery
@@ -290,6 +292,7 @@ function buildSettingsResponse(
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
+    webSearchProvider: appSettings.webSearchProvider ?? 'native',
     apiKeyStatus: {
       anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
@@ -300,6 +303,7 @@ function buildSettingsResponse(
       nango: getNangoApiKeyStatus(),
       deepgram: getSttProvider('deepgram').getApiKeyStatus(),
       openai: getSttProvider('openai').getApiKeyStatus(),
+      exa: new ExaWebSearchProvider().getApiKeyStatus(),
     },
     models: getEffectiveModels(),
     agentLimits: getEffectiveAgentLimits(),
@@ -811,6 +815,21 @@ settings.post('/validate-stt-key', async (c) => {
     }
 
     const result = await getSttProvider(provider).validateKey(apiKey)
+    return c.json(result)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+// POST /api/settings/validate-exa-key - Validate an Exa web search API key
+settings.post('/validate-exa-key', async (c) => {
+  try {
+    const { apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+    const result = await new ExaWebSearchProvider().validateKey(apiKey)
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Validation failed'

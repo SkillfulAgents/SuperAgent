@@ -261,6 +261,7 @@ export interface GlobalSettingsResponse {
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
+  webSearchProvider: WebSearchProviderId
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus
@@ -271,6 +272,7 @@ export interface GlobalSettingsResponse {
     browserbase: ApiKeyStatus
     deepgram: ApiKeyStatus
     openai: ApiKeyStatus
+    exa: ApiKeyStatus
   }
   composioUserId?: string
   accountProviderUserId?: string
