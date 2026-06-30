@@ -23,6 +23,7 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
+import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
@@ -88,6 +89,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const composerOptions = useComposerOptions()
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const isMobile = useIsMobile()
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
   const userCollapsedRef = useRef(false)
@@ -245,7 +247,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     <>
     <div
       className={cn(
-        'flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background',
+        'flex-1 flex flex-col overflow-y-auto overscroll-contain px-4 py-6 md:px-10 md:py-10 bg-background',
         introStagger && 'agent-home-intro relative',
         introPlaying && 'intro-play'
       )}
@@ -333,7 +335,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   placeholder={composerPlaceholder}
                   disabled={isDisabled}
                   rows={2}
-                  autoFocus
+                  autoFocus={!isMobile}
                   dataTestId="home-message-input"
                   textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
                   leftActions={(

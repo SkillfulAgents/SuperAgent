@@ -100,8 +100,8 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b bg-muted/30">
-        <SquareMousePointer className="h-4 w-4 text-muted-foreground" />
+      <div className="shrink-0 flex items-center gap-2 pl-4 pr-2 py-2 border-b bg-muted/30">
+        <SquareMousePointer className="h-4 w-4 text-muted-foreground shrink-0" />
         <span className="text-sm font-medium">{dashboard?.name || dashboardSlug}</span>
         {dashboard?.description && (
           <span className="text-xs text-muted-foreground truncate">

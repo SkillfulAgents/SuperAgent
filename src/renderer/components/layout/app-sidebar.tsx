@@ -29,6 +29,7 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarRail,
+  useSidebar,
 } from '@renderer/components/ui/sidebar'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import {
@@ -61,6 +62,7 @@ import { useChatIntegrations, useChatIntegrationSessions, type ChatIntegration }
 import { formatProviderName } from '@shared/lib/chat-integrations/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useUser } from '@renderer/context/user-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
@@ -831,6 +833,15 @@ export function AppSidebar() {
   // "+" button below.
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const { openSearch } = useSearch()
+  const isMobile = useIsMobile()
+  const { setOpenMobile } = useSidebar()
+  // On mobile the sidebar is an off-canvas Sheet that doesn't auto-close on
+  // navigation. Collapse it whenever the location changes (pathname OR search,
+  // so selecting a session also closes it) — desktop is unaffected.
+  const locationHref = useRouterState({ select: (s) => s.location.href })
+  useEffect(() => {
+    if (isMobile) setOpenMobile(false)
+  }, [locationHref, isMobile, setOpenMobile])
   const { data: agents, isLoading, error } = useAgents()
   const { data: discoverableAgents } = useDiscoverableAgents()
   const hasMarketplace = !!(discoverableAgents && discoverableAgents.length > 0)
@@ -961,10 +972,14 @@ export function AppSidebar() {
                         <Search className="h-4 w-4 -translate-y-[1px]" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="bottom" className="flex items-center gap-2">
-                      <span>Search</span>
-                      <span className="opacity-70">{getPlatform() === 'darwin' ? '⌘K' : 'Ctrl+K'}</span>
-                    </TooltipContent>
+                    {/* No keyboard on touch, and the Sheet's focus-trap would auto-open
+                        this tooltip with no way to dismiss it — so suppress it on mobile. */}
+                    {!isMobile && (
+                      <TooltipContent side="bottom" className="flex items-center gap-2">
+                        <span>Search</span>
+                        <span className="opacity-70">{getPlatform() === 'darwin' ? '⌘K' : 'Ctrl+K'}</span>
+                      </TooltipContent>
+                    )}
                   </Tooltip>
                 </TooltipProvider>
               </div>
@@ -1081,7 +1096,7 @@ export function AppSidebar() {
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t p-0 px-2 pt-1">
+      <SidebarFooter className="border-t p-0 px-2 pt-1 pb-[env(safe-area-inset-bottom)]">
         <UserMenu />
         <div className="flex items-center justify-between gap-2">
           <SidebarMenuButton

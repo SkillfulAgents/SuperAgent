@@ -216,7 +216,7 @@ export function SettingsDialog({
               ))}
             </SidebarContent>
           </Sidebar>
-          <main className="flex h-full md:h-[480px] min-h-0 flex-1 flex-col overflow-hidden">
+          <main className="flex h-full md:h-[480px] min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {isMobile && mobileShowNav ? (
               <div className="flex flex-1 flex-col overflow-y-auto">
                 <div className="px-4 py-3 border-b">

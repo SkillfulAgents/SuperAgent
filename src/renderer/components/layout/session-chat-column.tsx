@@ -5,6 +5,7 @@ import { renderPendingRequest, type RenderContext } from '@renderer/components/m
 import { PendingRequestErrorBoundary } from '@renderer/components/messages/pending-request-error-boundary'
 import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useScreenWakeLock } from '@renderer/hooks/use-screen-wake-lock'
 import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watcher'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
@@ -38,7 +39,9 @@ export function SessionChatColumn({
   onMessageUuidAssigned,
   onMessageFailed,
 }: SessionChatColumnProps) {
-  const { isActive, browserActive } = useMessageStream(sessionId, agentSlug)
+  const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
+  // Keep the phone awake (PWA only) while this session is actively working.
+  useScreenWakeLock(isActive || isWaitingBackground)
   useFileDeliveryWatcher(sessionId, agentSlug)
   const { items: pendingRequestItems, count: pendingRequestCount } = usePendingRequests({
     sessionId,

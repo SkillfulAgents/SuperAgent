@@ -165,7 +165,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
       {/* Export / Publish */}
       <div className="space-y-2">
         <h3 className="text-sm font-medium">Template</h3>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
             variant="outline"

@@ -5,6 +5,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@renderer
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useSearch } from '@renderer/context/search-context'
+import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useNavigate } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import type { ApiSession } from '@shared/lib/types/api'
@@ -30,6 +31,7 @@ export function SearchDialog() {
   const [expandedSlugs, setExpandedSlugs] = useState<Set<string>>(new Set())
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const isMobile = useIsMobile()
   const { data: agents } = useAgents()
 
   const sessionQueries = useQueries({
@@ -54,6 +56,28 @@ export function SearchDialog() {
       requestAnimationFrame(() => inputRef.current?.focus())
     }
   }, [open])
+
+  // On mobile, dismissing the soft keyboard (the keyboard's "down" button, or a
+  // tap outside the field) is a natural "done searching" gesture — close the
+  // overlay. iOS has no keyboard event, but the VisualViewport shrinks while the
+  // keyboard is up and returns to full height once it's dismissed; we close on
+  // that shown→hidden transition. Tapping a result keeps the keyboard up (it
+  // doesn't blur the input), so this won't pre-empt selection.
+  useEffect(() => {
+    const vv = window.visualViewport
+    if (!open || !isMobile || !vv) return
+    let keyboardWasShown = false
+    const onResize = () => {
+      const occluded = window.innerHeight - vv.height
+      if (occluded > 120) {
+        keyboardWasShown = true
+      } else if (keyboardWasShown) {
+        closeSearch()
+      }
+    }
+    vv.addEventListener('resize', onResize)
+    return () => vv.removeEventListener('resize', onResize)
+  }, [open, isMobile, closeSearch])
 
   const sessionsByAgent = useMemo(() => {
     if (!agents) return {}
@@ -165,7 +189,7 @@ export function SearchDialog() {
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) closeSearch() }}>
       <DialogContent
-        className="max-w-xl p-0 gap-0 overflow-hidden [&>button]:top-3 [&>button]:right-3"
+        className="search-anim max-w-xl p-0 gap-0 overflow-hidden top-4 translate-y-0 md:top-[50%] md:-translate-y-1/2 [&>button]:top-3 [&>button]:right-3"
         onKeyDown={handleKeyDown}
         aria-label="Search agents, dashboards, and sessions"
       >

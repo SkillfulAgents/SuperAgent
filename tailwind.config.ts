@@ -8,6 +8,19 @@ const config: Config = {
   ],
   theme: {
 	extend: {
+		// Resolve full-height utilities to the dynamic viewport so the layout
+		// shrinks to account for iOS Safari's dynamic toolbar (otherwise the
+		// bottom composer/footer renders behind it). `100dvh` === `100vh` on
+		// desktop/Electron, so this is a no-op everywhere except mobile browsers.
+		height: {
+			screen: '100dvh',
+		},
+		minHeight: {
+			screen: '100dvh',
+		},
+		maxHeight: {
+			screen: '100dvh',
+		},
 		colors: {
 			border: 'hsl(var(--border))',
 			input: 'hsl(var(--input))',

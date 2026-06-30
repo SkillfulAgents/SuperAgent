@@ -82,6 +82,15 @@
   html, body {
     @apply bg-background text-foreground h-screen;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    /* The app is a fixed full-height shell — scrolling lives in inner regions,
+       never the document. Lock it so iOS Safari can't rubber-band or scroll-chain
+       the whole page when an inner scroller reaches its boundary. */
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  #root {
+    height: 100%;
+    overflow: hidden;
   }
   /* Disable text selection globally, re-enable on content areas */
   * {
@@ -95,7 +104,6 @@
     -webkit-user-select: text;
   }
 }
-
 /* Force visible scrollbar on code blocks so users know content is scrollable */
 .code-scrollbar {
   overflow-x: auto !important;
@@ -385,5 +393,41 @@
   .agent-home-intro .intro-step {
     animation: none;
   }
+}
+
+/*
+  Search palette enter/exit: fade + a small upward glide that replaces the
+  default dialog zoom/slide so dismissing it (keyboard, the X, or Esc — all flip
+  Radix to data-state=closed) feels native. We animate the standalone `translate`
+  property in pixels, NOT the `transform` keyframe, because:
+   - `transform` already holds the dialog's centering (-50%,-50% on desktop) /
+     top-anchor offset, and
+   - WebKit/Safari won't reliably interpolate a transform keyframe that mixes a
+     percentage with calc()/var(), which silently collapses it to a bare fade.
+  The standalone `translate` composes on top of `transform`, animates in clean
+  pixels everywhere, and so covers both the mobile (top-anchored) and desktop
+  (centered) cases with no media query.
+*/
+@keyframes search-fade-up-in {
+  from { opacity: 0; translate: 0 1rem; }
+  to   { opacity: 1; translate: 0 0; }
+}
+@keyframes search-fade-up-out {
+  from { opacity: 1; translate: 0 0; }
+  to   { opacity: 0; translate: 0 -1.5rem; }
+}
+/* !important: tailwindcss-animate's `data-[state=closed]:animate-out` utility is
+   emitted AFTER this file's custom CSS, so at equal specificity it would win and
+   replace this animation. The base utility has no !important, so this overrides it. */
+.search-anim[data-state="open"] {
+  animation: search-fade-up-in 200ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+.search-anim[data-state="closed"] {
+  animation: search-fade-up-out 180ms ease-in forwards !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Keep the fade, drop the glide for users who prefer reduced motion. */
+  @keyframes search-fade-up-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes search-fade-up-out { from { opacity: 1; } to { opacity: 0; } }
 }
 
