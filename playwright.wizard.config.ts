@@ -8,7 +8,7 @@ if (!process.env.SUPERAGENT_DATA_DIR) {
   process.env.SUPERAGENT_DATA_DIR = defaultE2eDataDir
 }
 const e2eDataDir = path.resolve(process.env.SUPERAGENT_DATA_DIR)
-const e2ePort = process.env.E2E_PORT ?? process.env.PORT ?? '3002'
+const e2ePort = process.env.E2E_PORT ?? process.env.PORT ?? '3003'
 const e2eBaseUrl = process.env.E2E_BASE_URL ?? `http://localhost:${e2ePort}`
 const playwrightOutputDir = process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results/wizard'
 const playwrightHtmlReportDir = process.env.PLAYWRIGHT_HTML_REPORT ?? 'playwright-report/wizard'

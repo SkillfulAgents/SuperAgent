@@ -107,6 +107,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run Wizard E2E suite
+        id: wizard_e2e
         env:
           PORT: '3000'
           SUPERAGENT_DATA_DIR: .e2e-data/wizard
@@ -115,6 +116,7 @@ jobs:
         run: npm run test:e2e:wizard
 
       - name: Run Playwright E2E suites
+        if: ${{ success() || steps.wizard_e2e.outcome == 'failure' }}
         env:
           PORT: '3000'
           SUPERAGENT_DATA_DIR: .e2e-data/web
