@@ -12,9 +12,7 @@ import { captureException } from '@shared/lib/error-reporting'
 const HARD_MAX_HITS = 50
 const MAX_SNIPPET_CHARS = 2000
 
-type XAgentWebVariables = { callerSlug: string }
-
-const xAgentWeb = new Hono<{ Variables: XAgentWebVariables }>()
+const xAgentWeb = new Hono()
 
 // Own proxy-token gate. The /api/x-agent/ local-mode-auth bypass only skips the IP check; it
 // does NOT authenticate, and nothing is inherited from sibling routers — so this router must
@@ -22,9 +20,7 @@ const xAgentWeb = new Hono<{ Variables: XAgentWebVariables }>()
 xAgentWeb.use('*', async (c, next) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
   if (!token) return c.json({ error: 'Unauthorized' }, 401)
-  const callerSlug = await validateProxyToken(token)
-  if (!callerSlug) return c.json({ error: 'Unauthorized' }, 401)
-  c.set('callerSlug', callerSlug)
+  if (!(await validateProxyToken(token))) return c.json({ error: 'Unauthorized' }, 401)
   await next()
 })
 
