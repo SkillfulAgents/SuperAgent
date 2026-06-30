@@ -33,11 +33,14 @@ import {
   listActiveChatIntegrationSessions,
   resolveActiveSession,
   getLastDisplayName,
+  isSessionTimedOut,
+  listConsolidationCandidates,
 } from '@shared/lib/services/chat-integration-session-service'
+import { consolidateConversation } from '@shared/lib/services/conversation-consolidation-service'
 import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
 import type { EffortLevel, ContainerClient } from '@shared/lib/container/types'
-import type { ChatIntegration } from '@shared/lib/db/schema'
+import type { ChatIntegration, ChatIntegrationSession } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -99,6 +102,9 @@ const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow t
 
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
+// Cap conversations consolidated per sweep tick so a large backlog drains over
+// several ticks instead of stalling one tick (each is one Sonnet call).
+const CONSOLIDATION_PER_TICK_LIMIT = 10
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024 // 50 MB
 
@@ -160,6 +166,7 @@ class ChatIntegrationManager {
   private chatSessions: Map<string, ManagedConnector> = new Map() // key: `${integrationId}:${chatId}`
   private isRunning = false
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
+  private consolidationProcessing = false
   private globalNotificationUnsubscribe: (() => void) | null = null
   private disconnectedSince: Map<string, number> = new Map()
   private consecutiveFailures: Map<string, number> = new Map()
@@ -194,6 +201,12 @@ class ChatIntegrationManager {
       this.runHealthChecks().catch((err) => {
         console.error('[ChatIntegrationManager] Health check error:', err)
         reportError(err, 'health-check')
+      })
+      // Independent of the health work (its own guard + catch) so neither blocks
+      // the other.
+      this.runConsolidationSweep().catch((err) => {
+        console.error('[ChatIntegrationManager] Consolidation sweep error:', err)
+        reportError(err, 'consolidation-sweep')
       })
     }, HEALTH_CHECK_INTERVAL_MS)
 
@@ -552,6 +565,47 @@ class ChatIntegrationManager {
     )
     this.messageQueues.set(queueKey, next)
     this.scheduleQueueEviction(queueKey, next)
+  }
+
+  // ── Consolidation sweep ─────────────────────────────────────────────
+
+  /**
+   * Consolidate finished conversations into durable memory + recaps. Runs off
+   * the health-check interval with its own `isProcessing` guard so a slow batch
+   * never overlaps the next tick, and per-entity try/catch so one bad
+   * conversation or integration can't sink the rest.
+   */
+  private async runConsolidationSweep(): Promise<void> {
+    if (this.consolidationProcessing) return
+    this.consolidationProcessing = true
+    try {
+      for (const [id] of this.connections) {
+        try {
+          const integration = getChatIntegration(id)
+          if (!integration) continue
+          // Do NOT skip on sessionTimeout <= 0: isSessionTimedOut(., <=0) already
+          // excludes active rows, but already-rotated archived rows must still
+          // drain even if the timeout was later disabled.
+          const targets = selectConsolidationTargets(
+            listConsolidationCandidates(id),
+            integration.sessionTimeout,
+            (sid) => messagePersister.isSessionActive(sid),
+            CONSOLIDATION_PER_TICK_LIMIT,
+          )
+          for (const conversation of targets) {
+            try {
+              await consolidateConversation(conversation)
+            } catch (err) {
+              reportError(err, 'consolidate-conversation', { integrationId: id, conversationId: conversation.id })
+            }
+          }
+        } catch (err) {
+          reportError(err, 'consolidation-sweep-integration', { integrationId: id })
+        }
+      }
+    } finally {
+      this.consolidationProcessing = false
+    }
   }
 
   // ── Health monitoring ───────────────────────────────────────────────
@@ -1937,6 +1991,31 @@ export function shouldRotateSession(
   const lastActivity = session.updatedAt?.getTime?.() ?? session.createdAt.getTime()
   const timeoutMs = timeoutHours * 60 * 60 * 1000
   return now.getTime() - lastActivity > timeoutMs
+}
+
+/**
+ * Pick the conversations a sweep tick should consolidate: not mid-turn, and
+ * either an active conversation past its timeout OR an already-archived row that
+ * was archived BY TIMEOUT ROTATION (rotatedAt set). Oldest-first, capped.
+ *
+ * The timeout clause MUST be gated on `archivedAt == null`: `isSessionTimedOut`
+ * only looks at `updatedAt`, so without the gate an old `/clear`, self-heal or
+ * revoke row (rotatedAt null) would be mistaken for a timed-out conversation and
+ * consolidated — exactly what the rotatedAt marker exists to prevent.
+ */
+export function selectConsolidationTargets(
+  rows: ChatIntegrationSession[],
+  sessionTimeout: number | null | undefined,
+  isActive: (sessionId: string) => boolean,
+  limit: number,
+): ChatIntegrationSession[] {
+  return rows
+    .filter((r) => !isActive(r.sessionId) && (
+      (r.archivedAt == null && isSessionTimedOut(r, sessionTimeout)) || // active AND timed out
+      (r.archivedAt != null && r.rotatedAt != null)                     // archived BY TIMEOUT only
+    ))
+    .sort((a, b) => (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0))
+    .slice(0, limit)
 }
 
 /** Build the session name, appending a timestamp when session rotation is enabled. */
