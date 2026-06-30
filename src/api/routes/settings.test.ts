@@ -1191,6 +1191,17 @@ describe('settings route', () => {
       expect(saved.llmProvider).toBe('bedrock')
     })
 
+    it('preserves webSearchProvider when not provided (PUT must not strip it)', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        webSearchProvider: 'exa',
+      })
+      const res = await putSettings({ app: { showMenuBarIcon: false } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.webSearchProvider).toBe('exa')
+    })
+
     it('allows setting llmProvider to undefined explicitly', async () => {
       mockGetSettings.mockReturnValue({
         ...defaultSettings(),

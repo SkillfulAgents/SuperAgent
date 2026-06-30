@@ -462,6 +462,9 @@ settings.put('/', async (c) => {
       },
       apiKeys: currentSettings.apiKeys,
       llmProvider: body.llmProvider !== undefined ? body.llmProvider : currentSettings.llmProvider,
+      webSearchProvider: body.webSearchProvider !== undefined ? body.webSearchProvider : currentSettings.webSearchProvider,
+      webAllowedSites: body.webAllowedSites !== undefined ? body.webAllowedSites : currentSettings.webAllowedSites,
+      webBlockedSites: body.webBlockedSites !== undefined ? body.webBlockedSites : currentSettings.webBlockedSites,
       models: body.models
         ? { ...currentSettings.models, ...body.models }
         : providerDefaultModels

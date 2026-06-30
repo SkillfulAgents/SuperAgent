@@ -53,6 +53,7 @@ xAgentWeb.post('/search', async (c) => {
     if (removed > 0) {
       warnings.push(`${removed} result${removed === 1 ? '' : 's'} removed by your allowed-sites policy`)
     }
+    console.log(`[web-search] ${provider.id} returned ${hits.length} hits${removed > 0 ? ` (${removed} removed by policy)` : ''} for "${query}"`)
     return c.json({ hits, ...(warnings.length > 0 ? { warnings } : {}) })
   } catch (err) {
     captureException(err, { tags: { component: 'web-search', operation: 'search' } })
