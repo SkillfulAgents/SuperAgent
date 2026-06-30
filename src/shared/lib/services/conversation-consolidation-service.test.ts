@@ -63,11 +63,16 @@ function userEntry(text: string): JsonlMessageEntry {
 function assistantEntry(text: string): JsonlMessageEntry {
   return { uuid: 'a', parentUuid: null, type: 'assistant', sessionId: 'sess-1', timestamp: '', message: { role: 'assistant', content: text } }
 }
-function llmJson(obj: unknown, stop_reason = 'end_turn') {
-  return { stop_reason, content: [{ type: 'text', text: JSON.stringify(obj) }] }
+interface MemoryEntry { name: string; description: string; type: string; body: string }
+function llmResult(memories: MemoryEntry[], recap: string, stop_reason = 'end_turn', raw?: string) {
+  const text = raw ?? JSON.stringify({ memories, recap })
+  return { stop_reason, content: [{ type: 'text', text }] }
 }
-function memoryFile(id = 'conv-1'): string {
-  return path.join(memoryDir, `consolidated-${id}.md`)
+function memFile(slug: string): string {
+  return path.join(memoryDir, `${slug}.md`)
+}
+function readIndex(): string {
+  try { return fs.readFileSync(path.join(memoryDir, 'MEMORY.md'), 'utf8') } catch { return '' }
 }
 
 describe('consolidateConversation', () => {
@@ -83,19 +88,42 @@ describe('consolidateConversation', () => {
     await fs.promises.rm(memoryDir, { recursive: true, force: true })
   })
 
-  it('parses, writes durable memory to the keyed path, and commits the recap', async () => {
-    messagesCreate.mockResolvedValue(llmJson({ durableMemory: 'remember X', recap: 'we did X' }))
+  it('writes each memory as a frontmatter file + MEMORY.md pointer, and commits the recap', async () => {
+    messagesCreate.mockResolvedValue(llmResult(
+      [{ name: 'testing-preferences', description: 'wants long silent tasks finished fully', type: 'feedback', body: 'Jeremy prefers terse replies.' }],
+      'we did X',
+    ))
 
     await consolidateConversation(makeConversation())
 
-    expect(messagesCreate).toHaveBeenCalledTimes(1)
-    expect(fs.readFileSync(memoryFile(), 'utf8')).toBe('remember X')
+    const file = fs.readFileSync(memFile('testing-preferences'), 'utf8')
+    expect(file).toContain('name: testing-preferences')
+    expect(file).toContain('type: feedback')
+    expect(file).toContain('Jeremy prefers terse replies.')
+
+    expect(readIndex()).toContain('](testing-preferences.md)')
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', 'we did X')
+  })
+
+  it('feeds the existing MEMORY.md index to the model and preserves unrelated pointers on upsert', async () => {
+    fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '- [Other Memory](other-memory.md) - unrelated\n')
+    messagesCreate.mockResolvedValue(llmResult(
+      [{ name: 'new-fact', description: 'a new fact', type: 'user', body: 'body' }],
+      'r',
+    ))
+
+    await consolidateConversation(makeConversation())
+
+    const prompt = messagesCreate.mock.calls[0][0].messages[0].content as string
+    expect(prompt).toContain('- [Other Memory](other-memory.md) - unrelated')
+
+    const index = readIndex()
+    expect(index).toContain('](other-memory.md)') // preserved
+    expect(index).toContain('](new-fact.md)') // added
   })
 
   it('skips entirely when already consolidated (no LLM call, no commit)', async () => {
     await consolidateConversation(makeConversation({ consolidatedAt: new Date() }))
-
     expect(getSessionMessagesMock).not.toHaveBeenCalled()
     expect(messagesCreate).not.toHaveBeenCalled()
     expect(markConsolidatedMock).not.toHaveBeenCalled()
@@ -103,103 +131,98 @@ describe('consolidateConversation', () => {
 
   it('returns without committing when the integration is gone', async () => {
     getChatIntegrationMock.mockReturnValue(null)
-
     await consolidateConversation(makeConversation())
-
     expect(messagesCreate).not.toHaveBeenCalled()
     expect(markConsolidatedMock).not.toHaveBeenCalled()
   })
 
   it('commits an empty fallback for an empty transcript without calling the model', async () => {
     getSessionMessagesMock.mockResolvedValue([])
-
     await consolidateConversation(makeConversation())
-
     expect(messagesCreate).not.toHaveBeenCalled()
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
-    expect(fs.existsSync(memoryFile())).toBe(false)
+    expect(fs.existsSync(path.join(memoryDir, 'MEMORY.md'))).toBe(false)
   })
 
   it('commits a fallback on refusal (no throw, no memory write)', async () => {
     messagesCreate.mockResolvedValue({ stop_reason: 'refusal', content: [] })
-
     await expect(consolidateConversation(makeConversation())).resolves.toBeUndefined()
-
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
-    expect(fs.existsSync(memoryFile())).toBe(false)
+    expect(fs.existsSync(path.join(memoryDir, 'MEMORY.md'))).toBe(false)
   })
 
-  it('commits a fallback on max_tokens truncation rather than persisting partial JSON', async () => {
-    messagesCreate.mockResolvedValue({ stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"durableMemory":"par' }] })
-
+  it('commits a fallback on max_tokens truncation', async () => {
+    messagesCreate.mockResolvedValue({ stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"memories":[' }] })
     await consolidateConversation(makeConversation())
-
-    expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
-    expect(fs.existsSync(memoryFile())).toBe(false)
-  })
-
-  it('commits a fallback when the model returns no text', async () => {
-    messagesCreate.mockResolvedValue({ stop_reason: 'end_turn', content: [] })
-
-    await consolidateConversation(makeConversation())
-
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
   })
 
   it('commits a fallback when the output is not valid JSON', async () => {
-    messagesCreate.mockResolvedValue({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'not json at all' }] })
-
+    messagesCreate.mockResolvedValue(llmResult([], '', 'end_turn', 'not json at all'))
     await consolidateConversation(makeConversation())
-
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
   })
 
-  it('commits a fallback when JSON is missing a required field', async () => {
-    messagesCreate.mockResolvedValue(llmJson({ recap: 'only a recap, no durableMemory' }))
-
+  it('tolerates a ```json fenced response (does not fall back)', async () => {
+    const fenced = '```json\n' + JSON.stringify({ memories: [{ name: 'fact', description: 'd', type: 'user', body: 'b' }], recap: 'r' }) + '\n```'
+    messagesCreate.mockResolvedValue(llmResult([], '', 'end_turn', fenced))
     await consolidateConversation(makeConversation())
-
-    expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
+    expect(fs.existsSync(memFile('fact'))).toBe(true)
+    expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', 'r')
   })
 
-  it('rethrows a transient model error so the sweep retries (does not commit)', async () => {
-    messagesCreate.mockRejectedValue(new Error('network blip'))
+  it('sanitizes a malicious memory name into a safe slug (no path escape)', async () => {
+    messagesCreate.mockResolvedValue(llmResult(
+      [{ name: '../../etc/passwd', description: 'd', type: 'user', body: 'b' }],
+      'r',
+    ))
+    await consolidateConversation(makeConversation())
+    // Slug collapses to a safe in-dir filename; nothing escapes memoryDir.
+    expect(fs.existsSync(memFile('etc-passwd'))).toBe(true)
+    expect(fs.readdirSync(memoryDir).every((f) => !f.includes('..') && !f.includes('/'))).toBe(true)
+  })
 
-    await expect(consolidateConversation(makeConversation())).rejects.toThrow('network blip')
-    expect(markConsolidatedMock).not.toHaveBeenCalled()
+  it('skips a memory whose name sanitizes to nothing', async () => {
+    messagesCreate.mockResolvedValue(llmResult(
+      [{ name: '!!!', description: 'd', type: 'user', body: 'b' }],
+      'r',
+    ))
+    await consolidateConversation(makeConversation())
+    expect(fs.readdirSync(memoryDir).filter((f) => f !== 'MEMORY.md')).toEqual([])
+    expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', 'r')
+  })
+
+  it('writes no files for an empty memories array but still commits the recap', async () => {
+    messagesCreate.mockResolvedValue(llmResult([], 'just a recap'))
+    await consolidateConversation(makeConversation())
+    expect(fs.existsSync(path.join(memoryDir, 'MEMORY.md'))).toBe(false)
+    expect(fs.readdirSync(memoryDir)).toEqual([])
+    expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', 'just a recap')
+  })
+
+  it('dedupes by name across runs (same slug overwrites, one pointer)', async () => {
+    messagesCreate.mockResolvedValue(llmResult([{ name: 'pref', description: 'd1', type: 'user', body: 'v1' }], 'r1'))
+    await consolidateConversation(makeConversation())
+
+    messagesCreate.mockResolvedValue(llmResult([{ name: 'pref', description: 'd2', type: 'user', body: 'v2' }], 'r2'))
+    await consolidateConversation(makeConversation())
+
+    const files = fs.readdirSync(memoryDir).filter((f) => f.endsWith('.md') && f !== 'MEMORY.md')
+    expect(files).toEqual(['pref.md'])
+    expect(fs.readFileSync(memFile('pref'), 'utf8')).toContain('v2')
+    // exactly one pointer line for pref.md
+    const pointers = readIndex().split('\n').filter((l) => l.includes('](pref.md)'))
+    expect(pointers).toHaveLength(1)
   })
 
   it('truncates an over-cap transcript to the most-recent tail before the model call', async () => {
     const big = 'A'.repeat(500_000)
     getSessionMessagesMock.mockResolvedValue([userEntry(big), userEntry('RECENT_TAIL_MARKER')])
-    messagesCreate.mockResolvedValue(llmJson({ durableMemory: '', recap: 'ok' }))
-
+    messagesCreate.mockResolvedValue(llmResult([], 'ok'))
     await consolidateConversation(makeConversation())
-
     const prompt = messagesCreate.mock.calls[0][0].messages[0].content as string
     expect(prompt).toContain('RECENT_TAIL_MARKER')
     expect(prompt).toContain('[earlier turns omitted]')
     expect(prompt.length).toBeLessThan(450_000)
-  })
-
-  it('does not write a memory file when durableMemory is empty, but still commits the recap', async () => {
-    messagesCreate.mockResolvedValue(llmJson({ durableMemory: '   ', recap: 'just a recap' }))
-
-    await consolidateConversation(makeConversation())
-
-    expect(fs.existsSync(memoryFile())).toBe(false)
-    expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', 'just a recap')
-  })
-
-  it('overwrites the same keyed file on a second run (idempotent, not duplicated)', async () => {
-    messagesCreate.mockResolvedValue(llmJson({ durableMemory: 'v1', recap: 'r1' }))
-    await consolidateConversation(makeConversation())
-
-    messagesCreate.mockResolvedValue(llmJson({ durableMemory: 'v2', recap: 'r2' }))
-    await consolidateConversation(makeConversation())
-
-    const files = fs.readdirSync(memoryDir).filter((f) => f.startsWith('consolidated-'))
-    expect(files).toEqual(['consolidated-conv-1.md'])
-    expect(fs.readFileSync(memoryFile(), 'utf8')).toBe('v2')
   })
 })

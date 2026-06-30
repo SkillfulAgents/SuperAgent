@@ -2,18 +2,19 @@
  * Conversation Consolidation Service
  *
  * Turns a finished chat conversation into two artifacts in one structured-output
- * call: durable, cross-conversation memory written to the agent's persistent
- * memory directory, and a short recap that seeds the next conversation. The
- * sweep (chat-integration-manager) is the only caller.
+ * call: durable, typed memories written into the agent's persistent memory store
+ * (discoverable via its MEMORY.md index), and a short recap that seeds the next
+ * conversation. The sweep (chat-integration-manager) is the only caller.
  *
  * Robustness contract (see the design spec):
  * - The transcript is size-bounded before the call.
  * - Deterministic failures (empty transcript, refusal, truncation, unparseable
  *   output) COMMIT an empty-memory fallback so a bad conversation is not retried
  *   every sweep forever. Only transient errors throw and let the sweep retry.
- * - The durable-memory write is idempotent (one file keyed by conversation id),
- *   and the commit is atomic (WHERE consolidated_at IS NULL), so an at-least-once
- *   run never duplicates memory or double-commits.
+ * - Memory writes are idempotent (keyed by the memory `name`, overwrite not
+ *   append; MEMORY.md pointers upsert by file), and the commit is atomic (WHERE
+ *   consolidated_at IS NULL), so an at-least-once run never duplicates or
+ *   double-commits.
  */
 
 import { promises as fs } from 'fs'
@@ -24,7 +25,12 @@ import { markConversationConsolidated } from '@shared/lib/services/chat-integrat
 import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel, getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { getAgentMemoryDir } from '@shared/lib/utils/file-storage'
-import { ConsolidationResultSchema, type ConsolidationResult } from './conversation-consolidation-schema'
+import {
+  ConsolidationResultSchema,
+  MEMORY_TYPES,
+  type ConsolidationResult,
+  type ConsolidationMemory,
+} from './conversation-consolidation-schema'
 import type { ChatIntegrationSession } from '@shared/lib/db/schema'
 import type { JsonlMessageEntry } from '@shared/lib/types/agent'
 
@@ -32,22 +38,32 @@ import type { JsonlMessageEntry } from '@shared/lib/types/agent'
 const TRANSCRIPT_INPUT_CHAR_CAP = 400_000
 const TRUNCATION_MARKER = '[earlier turns omitted]\n\n'
 const CONSOLIDATION_MAX_TOKENS = 4000
+const MEMORY_INDEX_FILE = 'MEMORY.md'
 
 const CONSOLIDATION_JSON_SCHEMA = {
   type: 'object',
   properties: {
-    durableMemory: {
-      type: 'string',
-      description:
-        'Lasting, cross-conversation facts and lessons worth remembering for all future conversations with this user. Markdown. Empty string if nothing is worth keeping.',
+    memories: {
+      type: 'array',
+      description: 'Durable, typed memory entries. Empty array if nothing is worth keeping long-term.',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Short kebab-case slug; reuse an existing index name to update that memory.' },
+          description: { type: 'string', description: 'One-line hook for the memory index.' },
+          type: { type: 'string', enum: [...MEMORY_TYPES] },
+          body: { type: 'string', description: 'The memory itself, in markdown.' },
+        },
+        required: ['name', 'description', 'type', 'body'],
+        additionalProperties: false,
+      },
     },
     recap: {
       type: 'string',
-      description:
-        'A short summary that seeds the next conversation in this chat for continuity. Empty string if nothing is worth carrying forward.',
+      description: 'A short summary that seeds the next conversation in this chat. Empty string if nothing is worth carrying forward.',
     },
   },
-  required: ['durableMemory', 'recap'],
+  required: ['memories', 'recap'],
   additionalProperties: false,
 } as const
 
@@ -84,26 +100,122 @@ function boundTranscript(text: string): string {
   return TRUNCATION_MARKER + text.slice(text.length - TRANSCRIPT_INPUT_CHAR_CAP)
 }
 
-function buildConsolidationPrompt(transcript: string): string {
-  return `A chat conversation between a user and an AI agent has ended (it crossed its "new conversation" idle threshold). Consolidate it before its context is lost.
+function buildConsolidationPrompt(transcript: string, existingIndex: string): string {
+  return `A chat conversation between the user and you (an AI agent) has ended — it crossed the idle threshold for starting a fresh conversation. Before its context is lost, do two things. Respond as a JSON object with "memories" and "recap".
 
-Return two things:
-1. durableMemory: the lasting, cross-conversation facts and lessons about this user or their work that future conversations should know. Be specific and durable. Return an empty string if there is genuinely nothing worth remembering.
-2. recap: a short, plain summary that seeds the next conversation in this chat so the agent can pick up where it left off. Return an empty string if there is nothing worth carrying forward.
+1. DURABLE MEMORIES — things that should outlive this conversation.
+Extract only lasting facts worth remembering for ALL future conversations with this person: who they are, how they like to work, decisions and the context behind their work. Do NOT save ephemeral task details, one-off specifics, or anything already in the index below.
+Each entry has:
+  - name: a short kebab-case slug (reuse an existing name from the index to UPDATE that memory instead of creating a duplicate)
+  - description: a one-line hook
+  - type: one of
+      user      — who they are: role, goals, expertise, preferences
+      feedback  — how they want you to work (corrections / confirmed approaches); include the why
+      project   — ongoing work, goals, or constraints not derivable from the repo
+      reference — pointers to external resources (URLs, dashboards, tickets)
+  - body: the memory itself, in markdown
+Return an empty array if nothing here genuinely belongs in long-term memory.
+
+Existing memory index (MEMORY.md) — reuse these names to update; do not duplicate them:
+${existingIndex.trim() || '(none yet)'}
+
+2. CONTINUITY RECAP — a short, plain summary of THIS conversation to hand to the next conversation in this chat, so you can pick up where you left off. Return an empty string if there is nothing worth carrying forward.
 
 Conversation transcript:
 ${transcript}`
 }
 
-/** Write/overwrite the conversation's single keyed memory file (idempotent). */
-async function writeDurableMemory(agentSlug: string, conversation: ChatIntegrationSession, memory: string): Promise<void> {
-  const dir = getAgentMemoryDir(agentSlug)
-  await fs.mkdir(dir, { recursive: true })
-  await fs.writeFile(path.join(dir, `consolidated-${conversation.id}.md`), memory, 'utf8')
+/** Read the agent's MEMORY.md index, or '' if it does not exist yet. */
+async function readMemoryIndex(memoryDir: string): Promise<string> {
+  try {
+    return await fs.readFile(path.join(memoryDir, MEMORY_INDEX_FILE), 'utf8')
+  } catch {
+    return ''
+  }
 }
 
 /**
- * Consolidate one finished conversation into durable memory + a recap.
+ * Sanitize a model-provided memory name into a safe kebab-case file slug.
+ * Strips anything that could escape the memory dir (`/`, `.`, `..`). Returns ''
+ * for a name that sanitizes to nothing, which the caller skips.
+ */
+function slugifyMemoryName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+}
+
+/** Title-case a slug for the MEMORY.md link text. */
+function titleFromSlug(slug: string): string {
+  return slug
+    .split('-')
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
+/** Collapse a one-line field to a single line (frontmatter / index safety). */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function buildMemoryFile(memory: ConsolidationMemory, slug: string): string {
+  return `---
+name: ${slug}
+description: ${oneLine(memory.description)}
+metadata:
+  type: ${memory.type}
+---
+
+${memory.body.trim()}
+`
+}
+
+/** Upsert a one-line pointer for `file` into the MEMORY.md index. */
+function upsertMemoryPointer(index: string, file: string, title: string, description: string): string {
+  const line = `- [${title}](${file}) - ${oneLine(description)}`
+  const lines = index.split('\n')
+  // Drop trailing blank lines so the join below controls the final newline.
+  while (lines.length && lines[lines.length - 1].trim() === '') lines.pop()
+  const existing = lines.findIndex((l) => l.includes(`](${file})`))
+  if (existing >= 0) lines[existing] = line
+  else lines.push(line)
+  return lines.join('\n') + '\n'
+}
+
+/**
+ * Write each durable memory as a frontmatter'd file keyed by its slug and upsert
+ * its MEMORY.md pointer, so the agent actually discovers it on its next run.
+ * Idempotent: re-running overwrites the same files and updates the same pointers.
+ */
+async function writeConsolidatedMemories(agentSlug: string, memories: ConsolidationMemory[]): Promise<void> {
+  const written = memories
+    .map((m) => ({ m, slug: slugifyMemoryName(m.name) }))
+    .filter(({ slug }) => slug.length > 0)
+  if (written.length === 0) return
+
+  const dir = getAgentMemoryDir(agentSlug)
+  await fs.mkdir(dir, { recursive: true })
+
+  let index = await readMemoryIndex(dir)
+  for (const { m, slug } of written) {
+    await fs.writeFile(path.join(dir, `${slug}.md`), buildMemoryFile(m, slug), 'utf8')
+    index = upsertMemoryPointer(index, `${slug}.md`, titleFromSlug(slug), m.description)
+  }
+  await fs.writeFile(path.join(dir, MEMORY_INDEX_FILE), index, 'utf8')
+}
+
+/** Strip a leading ```json fence if the model wrapped its output in one. */
+function stripJsonFence(text: string): string {
+  const trimmed = text.trim()
+  const fenced = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/)
+  return fenced ? fenced[1].trim() : trimmed
+}
+
+/**
+ * Consolidate one finished conversation into durable memories + a recap.
  *
  * Idempotent and safe to retry: an early `consolidatedAt` check and the atomic
  * commit mean a re-run is a no-op or a harmless memory overwrite.
@@ -125,11 +237,12 @@ export async function consolidateConversation(conversation: ChatIntegrationSessi
 
   const client = getConfiguredLlmClient()
   const model = resolveActiveProviderModel(getActiveLlmProvider().getDefaultModel('consolidator'), 'consolidator')
+  const existingIndex = await readMemoryIndex(getAgentMemoryDir(agentSlug))
 
   const response = await client.messages.create({
     model,
     max_tokens: CONSOLIDATION_MAX_TOKENS,
-    messages: [{ role: 'user', content: buildConsolidationPrompt(transcript) }],
+    messages: [{ role: 'user', content: buildConsolidationPrompt(transcript, existingIndex) }],
     output_config: { format: { type: 'json_schema' as const, schema: CONSOLIDATION_JSON_SCHEMA } },
   })
 
@@ -148,15 +261,13 @@ export async function consolidateConversation(conversation: ChatIntegrationSessi
 
   let result: ConsolidationResult
   try {
-    result = ConsolidationResultSchema.parse(JSON.parse(text))
+    result = ConsolidationResultSchema.parse(JSON.parse(stripJsonFence(text)))
   } catch {
     // Bad/truncated output is terminal, not an infinite retry.
     markConversationConsolidated(conversation.id, '')
     return
   }
 
-  if (result.durableMemory.trim()) {
-    await writeDurableMemory(agentSlug, conversation, result.durableMemory)
-  }
+  await writeConsolidatedMemories(agentSlug, result.memories)
   markConversationConsolidated(conversation.id, result.recap)
 }

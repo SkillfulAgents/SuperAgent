@@ -60,8 +60,9 @@ async function writeJsonl(slug: string, sessionId: string, entries: object[]): P
   await fs.promises.writeFile(file, entries.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8')
 }
 
-function memoryResponse(durableMemory: string, recap: string) {
-  return { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ durableMemory, recap }) }] }
+interface Mem { name: string; description: string; type: string; body: string }
+function memoryResponse(memories: Mem[], recap: string) {
+  return { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ memories, recap }) }] }
 }
 
 describe('consolidateConversation durable-memory integration', () => {
@@ -70,7 +71,10 @@ describe('consolidateConversation durable-memory integration', () => {
     process.env.SUPERAGENT_DATA_DIR = dataDir
     vi.clearAllMocks()
     markConsolidatedMock.mockReturnValue(true)
-    messagesCreate.mockResolvedValue(memoryResponse('User ships on Fridays.', 'We planned the Friday release.'))
+    messagesCreate.mockResolvedValue(memoryResponse(
+      [{ name: 'ships-on-fridays', description: 'ships on Fridays', type: 'user', body: 'User ships on Fridays.' }],
+      'We planned the Friday release.',
+    ))
   })
 
   afterEach(async () => {
@@ -78,7 +82,7 @@ describe('consolidateConversation durable-memory integration', () => {
     await fs.promises.rm(dataDir, { recursive: true, force: true })
   })
 
-  it('writes durable memory to the real persistent memory path from a real JSONL transcript', async () => {
+  it('writes a discoverable memory (file + MEMORY.md pointer) at the real persistent path from a real JSONL transcript', async () => {
     await writeJsonl('agent-int', 'sess-int-1', [
       { type: 'user', uuid: 'u1', parentUuid: null, sessionId: 'sess-int-1', timestamp: 't1', message: { role: 'user', content: 'We should ship on Friday.' } },
       { type: 'assistant', uuid: 'a1', parentUuid: 'u1', sessionId: 'sess-int-1', timestamp: 't2', message: { role: 'assistant', content: 'Agreed, Friday it is.' } },
@@ -86,11 +90,15 @@ describe('consolidateConversation durable-memory integration', () => {
 
     await consolidateConversation(conversation())
 
-    const memFile = path.join(getAgentMemoryDir('agent-int'), 'consolidated-conv-int-1.md')
+    const memDir = getAgentMemoryDir('agent-int')
+    const memFile = path.join(memDir, 'ships-on-fridays.md')
     expect(fs.existsSync(memFile)).toBe(true)
-    expect(fs.readFileSync(memFile, 'utf8')).toBe('User ships on Fridays.')
-    // The file lands at the persistent path the agent reads (memory_recall).
-    expect(memFile).toContain(path.join('workspace', '.claude', 'projects', '-workspace', 'memory'))
+    const content = fs.readFileSync(memFile, 'utf8')
+    expect(content).toContain('name: ships-on-fridays')
+    expect(content).toContain('User ships on Fridays.')
+    // Discoverable via the index, at the persistent path the agent reads (memory_recall).
+    expect(fs.readFileSync(path.join(memDir, 'MEMORY.md'), 'utf8')).toContain('](ships-on-fridays.md)')
+    expect(memDir).toContain(path.join('workspace', '.claude', 'projects', '-workspace', 'memory'))
 
     // The real transcript was serialized into the prompt as Role: text turns.
     const prompt = messagesCreate.mock.calls[0][0].messages[0].content as string
@@ -100,18 +108,42 @@ describe('consolidateConversation durable-memory integration', () => {
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-int-1', 'We planned the Friday release.')
   })
 
-  it('overwrites the same keyed file on a second run (idempotent, not duplicated)', async () => {
+  it('serializes ContentBlock[] turns (text + tool_use + tool_result) that real sessions actually produce', async () => {
+    await writeJsonl('agent-int', 'sess-int-1', [
+      { type: 'user', uuid: 'u1', parentUuid: null, sessionId: 'sess-int-1', timestamp: 't1', message: { role: 'user', content: 'Run the build' } },
+      { type: 'assistant', uuid: 'a1', parentUuid: 'u1', sessionId: 'sess-int-1', timestamp: 't2', message: { role: 'assistant', content: [
+        { type: 'text', text: 'Running the build now.' },
+        { type: 'tool_use', id: 'tu1', name: 'bash', input: { command: 'npm run build' } },
+      ] } },
+      { type: 'user', uuid: 'u2', parentUuid: 'a1', sessionId: 'sess-int-1', timestamp: 't3', message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tu1', content: 'build ok' },
+      ] } },
+    ])
+    messagesCreate.mockResolvedValue(memoryResponse([], 'recap'))
+
+    await consolidateConversation(conversation())
+
+    // The block-array branch must produce a non-empty transcript (model IS called,
+    // not the empty-transcript terminal fallback).
+    expect(messagesCreate).toHaveBeenCalledTimes(1)
+    const prompt = messagesCreate.mock.calls[0][0].messages[0].content as string
+    expect(prompt).toContain('Running the build now.')
+    expect(prompt).toContain('[tool: bash]')
+  })
+
+  it('overwrites the same named memory file on a second run (idempotent, not duplicated)', async () => {
     await writeJsonl('agent-int', 'sess-int-1', [
       { type: 'user', uuid: 'u1', parentUuid: null, sessionId: 'sess-int-1', timestamp: 't1', message: { role: 'user', content: 'hi' } },
     ])
 
+    messagesCreate.mockResolvedValue(memoryResponse([{ name: 'pref', description: 'd1', type: 'user', body: 'v1' }], 'r1'))
     await consolidateConversation(conversation())
-    messagesCreate.mockResolvedValue(memoryResponse('v2 memory', 'r2'))
+    messagesCreate.mockResolvedValue(memoryResponse([{ name: 'pref', description: 'd2', type: 'user', body: 'v2' }], 'r2'))
     await consolidateConversation(conversation())
 
     const memDir = getAgentMemoryDir('agent-int')
-    const files = fs.readdirSync(memDir).filter((f) => f.startsWith('consolidated-'))
-    expect(files).toEqual(['consolidated-conv-int-1.md'])
-    expect(fs.readFileSync(path.join(memDir, 'consolidated-conv-int-1.md'), 'utf8')).toBe('v2 memory')
+    const files = fs.readdirSync(memDir).filter((f) => f.endsWith('.md') && f !== 'MEMORY.md')
+    expect(files).toEqual(['pref.md'])
+    expect(fs.readFileSync(path.join(memDir, 'pref.md'), 'utf8')).toContain('v2')
   })
 })
