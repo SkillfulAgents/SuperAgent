@@ -1,16 +1,10 @@
 import type { ApiKeySettings } from '../config/settings'
-import { NonRetryableError, withRetry } from '../utils/retry'
 import { BaseWebSearchProvider } from './base-web-search-provider'
 import { FirecrawlSearchResponseSchema } from './firecrawl-response-schema'
 import type { WebSearchOptions, WebSearchProviderId, WebSearchResponse } from './types'
 
 const FIRECRAWL_SEARCH_URL = 'https://api.firecrawl.dev/v2/search'
-const DEFAULT_NUM_RESULTS = 10
-const MAX_NUM_RESULTS = 25 // host hard cap (Firecrawl bills credits per result; OpenAPI allows ≤100)
 const MAX_QUERY_LENGTH = 500 // Firecrawl rejects queries longer than this with a 400
-const REQUEST_TIMEOUT_MS = 15_000
-const RETRY_ATTEMPTS = 2 // 1 retry; native gives resilience implicitly, a vendor swap removes it (§13)
-const RETRY_BASE_DELAY_MS = 500
 
 /**
  * Map a raw Firecrawl POST /v2/search response into the normalized WebSearchResponse.
@@ -27,11 +21,6 @@ export function mapFirecrawlSearchResponse(raw: unknown): WebSearchResponse {
       snippet: r.description ?? '',
     })),
   }
-}
-
-function clampNumResults(n?: number): number {
-  if (n == null) return DEFAULT_NUM_RESULTS
-  return Math.max(1, Math.min(n, MAX_NUM_RESULTS))
 }
 
 /** Convert an ISO `YYYY-MM-DD` (or datetime) to Firecrawl's US `M/D/YYYY` tbs form (non-padded). */
@@ -67,31 +56,18 @@ export class FirecrawlWebSearchProvider extends BaseWebSearchProvider {
     // and exclude domains are mutually exclusive, so include wins and excludes degrade host-side.
     const body: Record<string, unknown> = {
       query: query.slice(0, MAX_QUERY_LENGTH),
-      limit: clampNumResults(opts.numResults),
+      limit: this.clampNumResults(opts.numResults),
     }
     if (opts.includeDomains?.length) body.includeDomains = opts.includeDomains
     else if (opts.excludeDomains?.length) body.excludeDomains = opts.excludeDomains
     const tbs = buildTbs(opts)
     if (tbs) body.tbs = tbs
 
-    const json = await withRetry(
-      async () => {
-        const res = await fetch(FIRECRAWL_SEARCH_URL, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        })
-        if (!res.ok) {
-          const message = `Firecrawl search failed: ${res.status}`
-          if (res.status === 429 || res.status >= 500) throw new Error(message)
-          throw new NonRetryableError(message)
-        }
-        return res.json()
-      },
-      RETRY_ATTEMPTS,
-      RETRY_BASE_DELAY_MS,
-    )
+    const json = await this.fetchSearchJson(FIRECRAWL_SEARCH_URL, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
     const response = mapFirecrawlSearchResponse(json)
     const warnings = opts.includeDomains?.length && opts.excludeDomains?.length
       ? ['Firecrawl cannot combine include and exclude domains; excludeDomains was ignored.']
@@ -100,19 +76,13 @@ export class FirecrawlWebSearchProvider extends BaseWebSearchProvider {
   }
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
-    try {
-      const res = await fetch(FIRECRAWL_SEARCH_URL, {
+    return this.runValidation((signal) =>
+      fetch(FIRECRAWL_SEARCH_URL, {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify({ query: 'test', limit: 1 }),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      })
-      if (res.ok) return { valid: true }
-      if (res.status === 401 || res.status === 403) return { valid: false, error: 'Invalid API key' }
-      return { valid: false, error: `Firecrawl API error: ${res.status}` }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error'
-      return { valid: false, error: `Network error: ${message}` }
-    }
+        signal,
+      }),
+    )
   }
 }
