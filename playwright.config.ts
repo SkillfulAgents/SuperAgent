@@ -62,7 +62,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: configuredWorkers && Number.isFinite(configuredWorkers) ? configuredWorkers : 2,
+  workers: configuredWorkers && Number.isFinite(configuredWorkers) ? configuredWorkers : 4,
   reporter: [['list'], ['html', { open: 'never', outputFolder: playwrightHtmlReportDir }]],
 
   use: {

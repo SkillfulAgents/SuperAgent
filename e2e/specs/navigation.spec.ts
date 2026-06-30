@@ -14,6 +14,7 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { createAgent as createAgentViaApi } from '../helpers/agents'
 
 // Serial: each test creates and deletes one agent — overlapping creates
 // in mock mode share state on the server side and can flake.
@@ -524,7 +525,7 @@ test.describe('Navigation — discriminated AgentView', () => {
     await agentPage.deleteAgent()
   })
 
-  test('Connections detail overlay is deep-linkable and reload-durable; source=list back returns to the list', async ({ page }) => {
+  test('Connections detail overlay is deep-linkable and reload-durable; source=list back returns to the list', async ({ page, request }) => {
     // The detail overlay travels in the URL search (`?detail&source`,
     // ConnectionsRoute decodes it). A cold deep-link must restore the overlay
     // (connection-detail-back), hide the bare list back-button, and survive a
@@ -532,73 +533,69 @@ test.describe('Navigation — discriminated AgentView', () => {
     const errors: string[] = []
     page.on('pageerror', (e) => errors.push(e.message))
 
-    const agentName = `Nav Conn Detail ${Date.now()}`
-    await agentPage.createAgent(agentName)
-    const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
-    expect(slug).toBeTruthy()
+    const agent = await createAgentViaApi(request, `Nav Conn Detail ${Date.now()}`)
+    const slug = agent.slug
 
-    // Cold deep-link straight to the open overlay.
-    await page.goto(`/agents/${slug}/connections?detail=account-${accountId}&source=list`)
+    try {
+      // Cold deep-link straight to the open overlay.
+      await page.goto(`/agents/${slug}/connections?detail=account-${accountId}&source=list`)
 
-    // The URL keeps both search params (param order isn't guaranteed, so assert
-    // each independently).
-    await expect(page).toHaveURL(new RegExp(`/agents/${slug}/connections\\?`))
-    await expect(page).toHaveURL(new RegExp(`detail=account-${accountId}`))
-    await expect(page).toHaveURL(/source=list/)
+      // The URL keeps both search params (param order isn't guaranteed, so assert
+      // each independently).
+      await expect(page).toHaveURL(new RegExp(`/agents/${slug}/connections\\?`))
+      await expect(page).toHaveURL(new RegExp(`detail=account-${accountId}`))
+      await expect(page).toHaveURL(/source=list/)
 
-    // Overlay renders; the bare connections-list back-button is NOT present
-    // (PageTitle is suppressed while a detail is open).
-    await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible({ timeout: 15000 })
-    await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
+      // Overlay renders; the bare connections-list back-button is NOT present
+      // (PageTitle is suppressed while a detail is open).
+      await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible({ timeout: 15000 })
+      await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
 
-    // Reload — the overlay is restored straight from the URL, no Selection.
-    await appPage.reload()
-    await expect(page).toHaveURL(new RegExp(`detail=account-${accountId}`))
-    await expect(page).toHaveURL(/source=list/)
-    await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible({ timeout: 15000 })
-    await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
+      // Reload — the overlay is restored straight from the URL, no Selection.
+      await appPage.reload()
+      await expect(page).toHaveURL(new RegExp(`detail=account-${accountId}`))
+      await expect(page).toHaveURL(/source=list/)
+      await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible({ timeout: 15000 })
+      await expect(page.locator('[data-testid="connections-back-button"]')).not.toBeVisible()
 
-    // source=list → Back returns to the connections list (the bare list
-    // back-button reappears, overlay gone).
-    await page.locator('[data-testid="connection-detail-back"]').click()
-    await expect(page).toHaveURL(/\/connections$/)
-    await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
-    await expect(page.locator('[data-testid="connection-detail-back"]')).not.toBeVisible()
+      // source=list → Back returns to the connections list (the bare list
+      // back-button reappears, overlay gone).
+      await page.locator('[data-testid="connection-detail-back"]').click()
+      await expect(page).toHaveURL(/\/connections$/)
+      await expect(page.locator('[data-testid="connections-back-button"]')).toBeVisible()
+      await expect(page.locator('[data-testid="connection-detail-back"]')).not.toBeVisible()
 
-    expect(errors).toEqual([])
-
-    // Cleanup
-    await agentPage.selectAgent(agentName)
-    await agentPage.deleteAgent()
+      expect(errors).toEqual([])
+    } finally {
+      await request.delete(`/api/agents/${slug}`).catch(() => {})
+    }
   })
 
-  test('Connections detail overlay with source=home: Back returns to agent home', async ({ page }) => {
+  test('Connections detail overlay with source=home: Back returns to agent home', async ({ page, request }) => {
     // The agent-scoped overlay's `source` decides the back-target: source=home
     // routes Back to agent home, not to the connections list — an invariant that
     // can silently regress.
     const errors: string[] = []
     page.on('pageerror', (e) => errors.push(e.message))
 
-    const agentName = `Nav Conn Detail Home ${Date.now()}`
-    await agentPage.createAgent(agentName)
-    const slug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
-    expect(slug).toBeTruthy()
+    const agent = await createAgentViaApi(request, `Nav Conn Detail Home ${Date.now()}`)
+    const slug = agent.slug
 
-    await page.goto(`/agents/${slug}/connections?detail=account-${accountId}&source=home`)
-    await expect(page).toHaveURL(new RegExp(`detail=account-${accountId}`))
-    await expect(page).toHaveURL(/source=home/)
-    await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible({ timeout: 15000 })
+    try {
+      await page.goto(`/agents/${slug}/connections?detail=account-${accountId}&source=home`)
+      await expect(page).toHaveURL(new RegExp(`detail=account-${accountId}`))
+      await expect(page).toHaveURL(/source=home/)
+      await expect(page.locator('[data-testid="connection-detail-back"]')).toBeVisible({ timeout: 15000 })
 
-    // source=home → Back returns to agent home (large composer visible).
-    await page.locator('[data-testid="connection-detail-back"]').click()
-    await expect(page).toHaveURL(/\/agents\/[^/]+$/)
-    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
-    await expect(page.locator('[data-testid="connection-detail-back"]')).not.toBeVisible()
+      // source=home → Back returns to agent home (large composer visible).
+      await page.locator('[data-testid="connection-detail-back"]').click()
+      await expect(page).toHaveURL(/\/agents\/[^/]+$/)
+      await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+      await expect(page.locator('[data-testid="connection-detail-back"]')).not.toBeVisible()
 
-    expect(errors).toEqual([])
-
-    // Cleanup
-    await agentPage.selectAgent(agentName)
-    await agentPage.deleteAgent()
+      expect(errors).toEqual([])
+    } finally {
+      await request.delete(`/api/agents/${slug}`).catch(() => {})
+    }
   })
 })

@@ -114,6 +114,28 @@ export async function openAgentHome(page: Page, agent: Pick<TestAgent, 'slug' | 
     : new Error(`Could not open agent "${agent.name}" (${agent.slug})`)
 }
 
+export async function gotoAgentHome(page: Page, agent: Pick<TestAgent, 'slug' | 'name'>) {
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await page.goto(`/agents/${agent.slug}`)
+      await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name, { timeout: 15000 })
+      await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
+      return
+    } catch (error) {
+      lastError = error
+      if (attempt === 1) break
+
+      await page.reload()
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`Could not load agent "${agent.name}" (${agent.slug})`)
+}
+
 export async function openAgentSession(
   page: Page,
   agent: Pick<TestAgent, 'slug' | 'name'>,
