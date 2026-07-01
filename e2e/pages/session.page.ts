@@ -275,8 +275,8 @@ export class SessionPage {
     }
   }
 
-  private async waitForVisibleRequestCard(testId: string, timeout = 15000) {
-    const card = this.page.locator(`[data-testid="${testId}"]`).first()
+  private async waitForVisibleRequestCard(testId: string, timeout = 15000, card?: Locator) {
+    card ??= this.page.locator(`[data-testid="${testId}"]`).first()
     await expect(card).toBeAttached({ timeout })
 
     await expect.poll(async () => {
@@ -464,19 +464,27 @@ export class SessionPage {
     await this.waitForVisibleRequestCard('proxy-review-request', timeout)
   }
 
-  getProxyReviewRequests() {
-    return this.page.locator('[data-testid="proxy-review-request"]')
+  async waitForProxyReviewRequestById(reviewId: string, timeout = 15000) {
+    await this.waitForVisibleRequestCard('proxy-review-request', timeout, this.getProxyReviewRequests(reviewId))
   }
 
-  async allowProxyReview() {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+  getProxyReviewRequests(reviewId?: string) {
+    return reviewId
+      ? this.page.locator(`[data-testid="proxy-review-request"][data-review-id="${reviewId}"]`)
+      : this.page.locator('[data-testid="proxy-review-request"]')
+  }
+
+  async allowProxyReview(reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
     // The Allow button is now a popover — click it to open, then click "Allow Once"
     await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
     await this.page.locator('[data-testid="proxy-review-allow-once-menu-btn"]').click()
   }
 
-  async denyProxyReview() {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+  async denyProxyReview(reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
     await container.locator('[data-testid="proxy-review-deny-btn"]').click()
   }
 
@@ -486,28 +494,32 @@ export class SessionPage {
     ).toBeVisible({ timeout })
   }
 
-  async alwaysAllowScope(scope: string) {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+  async alwaysAllowScope(scope: string, reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
     // Open the Allow popover, expand the per-scope disclosure, then click "Always allow <scope>"
     await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
     await this.page.locator('[data-testid="proxy-review-specific-scope-toggle"]').click()
     await this.page.locator(`[data-testid="proxy-review-always-allow-${scope}"]`).click()
   }
 
-  async alwaysAllowLabelGroup(label: 'read' | 'write' | 'destructive') {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+  async alwaysAllowLabelGroup(label: 'read' | 'write' | 'destructive', reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
     // Open the Allow popover, then click the minimal risk-group "Allow all <label>" option
     await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
     await this.page.locator(`[data-testid="proxy-review-allow-label-${label}"]`).click()
   }
 
-  async alwaysDenyScope(scope: string) {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+  async alwaysDenyScope(scope: string, reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
     await container.locator(`[data-testid="proxy-review-always-deny-${scope}"]`).click()
   }
 
-  async alwaysAllowAll() {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+  async alwaysAllowAll(reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
     await container.locator('[data-testid="proxy-review-always-allow-all"]').click()
   }
 
@@ -517,21 +529,35 @@ export class SessionPage {
     await this.waitForVisibleRequestCard('xagent-review-request', timeout)
   }
 
-  getXAgentReviewRequests() {
-    return this.page.locator('[data-testid="xagent-review-request"]')
+  async waitForXAgentReviewRequestById(reviewId: string, timeout = 15000) {
+    await this.waitForVisibleRequestCard('xagent-review-request', timeout, this.getXAgentReviewRequests(reviewId))
   }
 
-  async allowXAgentReview() {
-    const container = this.page.locator('[data-testid="xagent-review-request"]').first()
+  getXAgentReviewRequests(reviewId?: string) {
+    return reviewId
+      ? this.page.locator(`[data-testid="xagent-review-request"][data-review-id="${reviewId}"]`)
+      : this.page.locator('[data-testid="xagent-review-request"]')
+  }
+
+  async allowXAgentReview(reviewId?: string) {
+    const container = this.getXAgentReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
     await container.locator('[data-testid="xagent-review-allow-once-btn"]').click()
   }
 
-  async denyXAgentReview() {
-    const container = this.page.locator('[data-testid="xagent-review-request"]').first()
+  async denyXAgentReview(reviewId?: string) {
+    const container = this.getXAgentReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
     await container.locator('[data-testid="xagent-review-deny-btn"]').click()
   }
 
-  async stopSessionFromRequest() {
+  async stopSessionFromRequest(container?: Locator) {
+    if (container) {
+      await this.paginateToCard(container)
+      await container.locator('[data-testid="request-stop-session"]').click()
+      return
+    }
+
     await this.page.locator('[data-testid="request-stop-session"]').first().click()
   }
 

@@ -1113,6 +1113,76 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(true)
   })
 
+  it('invalidates status queries when a blocking user-input tool becomes ready', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+    renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    spy.mockClear()
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'tool_use_start',
+        toolId: 'tc-1',
+        toolName: 'mcp__user-input__request_secret',
+        partialInput: '{"secretName":"OPENAI_API_KEY"}',
+      })
+    })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'tool_use_ready',
+        toolId: 'tc-1',
+        toolName: 'mcp__user-input__request_secret',
+      })
+    })
+
+    expect(spy).toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(spy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+  })
+
+  it('does not invalidate status queries when a script-run tool becomes ready', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    const spy = vi.spyOn(wrapper.queryClient, 'invalidateQueries')
+    renderHook(
+      () => useMessageStream('session-1', 'agent-1'),
+      { wrapper }
+    )
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({ type: 'connected', isActive: true })
+    })
+    spy.mockClear()
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'tool_use_start',
+        toolId: 'tc-1',
+        toolName: 'mcp__user-input__request_script_run',
+        partialInput: '{"script":"echo ok"}',
+      })
+    })
+
+    act(() => {
+      MockEventSource.instances[0].simulateMessage({
+        type: 'tool_use_ready',
+        toolId: 'tc-1',
+        toolName: 'mcp__user-input__request_script_run',
+      })
+    })
+
+    expect(spy).not.toHaveBeenCalledWith({ queryKey: ['sessions'] })
+    expect(spy).not.toHaveBeenCalledWith({ queryKey: ['agents'] })
+  })
+
   // ---- Subagent lifecycle ----
 
   it('handles subagent_completed — keeps streaming data and marks as completed', async () => {

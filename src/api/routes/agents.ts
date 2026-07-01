@@ -249,6 +249,28 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   )
 }
 
+function isBlockingInputToolCall(toolName: string): boolean {
+  return toolName === 'AskUserQuestion' ||
+    (toolName.startsWith('mcp__user-input__request_') &&
+      toolName !== 'mcp__user-input__request_script_run')
+}
+
+function hasUnresolvedBlockingInputRequest(items: TransformedItem[]): boolean {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i]
+    if (item.type === 'user' && !item.queued) return false
+    if (item.type !== 'assistant') continue
+
+    for (const toolCall of item.toolCalls) {
+      if (toolCall.result === undefined && isBlockingInputToolCall(toolCall.name)) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
 /**
  * For interrupted Task tool calls (no result), discover the subagent ID
  * by scanning the subagents directory so the UI can still show subagent messages.
@@ -1327,6 +1349,12 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     })
     const sessionId = containerSession.id
 
+    // Attach lifecycle state and the stream before slower metadata/DB work. The
+    // first turn can start emitting shortly after createSession returns, and a
+    // blocking input emitted during that window must not be missed or reset.
+    messagePersister.markSessionActive(sessionId, slug)
+    await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
+
     // Record author for initial message after we know the sessionId
     if (isAuthMode()) {
       const userId = getCurrentUserId(c)
@@ -1350,13 +1378,11 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     if (Object.keys(initialMetadata).length > 0) {
       updateSessionMetadata(slug, sessionId, initialMetadata).catch(console.error)
     }
-    await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
     // Store slash commands from container's init event (captured during session creation)
     if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
       messagePersister.setSlashCommands(sessionId, containerSession.slashCommands)
       updateSessionMetadata(slug, sessionId, { slashCommands: containerSession.slashCommands }).catch(console.error)
     }
-    messagePersister.markSessionActive(sessionId, slug)
 
     generateAndUpdateSessionNameAsync(
       slug,
@@ -1403,6 +1429,13 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
 
     // Discover subagent IDs for interrupted Task tool calls that have no result
     await resolveInterruptedSubagents(transformed, agentSlug, sessionId)
+
+    if (
+      messagePersister.isSessionActive(sessionId) &&
+      hasUnresolvedBlockingInputRequest(transformed)
+    ) {
+      messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug)
+    }
 
     // In auth mode, annotate user messages with sender info
     if (isAuthMode()) {

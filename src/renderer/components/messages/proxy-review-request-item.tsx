@@ -186,6 +186,7 @@ export function ProxyReviewRequestItem({
       waitingText="Waiting for approval"
       error={error}
       data-testid={isCompleted ? 'proxy-review-completed' : 'proxy-review-request'}
+      data-review-id={reviewId}
       data-status={isCompleted ? status : undefined}
     >
       {/* Code block showing method/path + toolkit */}

@@ -2227,6 +2227,44 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
     })
 
+    it('preserves initial-turn active and awaiting flags across stream subscription', async () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      simulateToolUse('mcp__user-input__request_secret', 'tool-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+
+      await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.hasSessionsAwaitingInputForAgent(AGENT_SLUG)).toBe(true)
+    })
+
+    it('recovers awaiting input for an active session from persisted request fallback', () => {
+      const { events: globalEvents, cleanup: globalCleanup } = collectGlobalEvents()
+
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG)
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(messagePersister.hasSessionsAwaitingInputForAgent(AGENT_SLUG)).toBe(true)
+
+      const awaitingEvents = globalEvents.filter(e => e.type === 'session_awaiting_input')
+      expect(awaitingEvents).toHaveLength(1)
+      expect(awaitingEvents[0].sessionId).toBe(SESSION_ID)
+      expect(awaitingEvents[0].agentSlug).toBe(AGENT_SLUG)
+
+      globalCleanup()
+    })
+
+    it('does not recover awaiting input for an inactive session', () => {
+      messagePersister.recoverSessionAwaitingInput(SESSION_ID, AGENT_SLUG)
+
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(messagePersister.hasSessionsAwaitingInputForAgent(AGENT_SLUG)).toBe(false)
+    })
+
     it('sets isAwaitingInput after AskUserQuestion tool fires', () => {
       simulateToolUse('AskUserQuestion', 'tool-1', {
         questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],

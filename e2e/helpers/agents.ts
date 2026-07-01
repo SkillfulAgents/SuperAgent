@@ -15,6 +15,24 @@ export interface TestMessage {
   content?: unknown
 }
 
+export interface TestPendingProxyReview {
+  id: string
+  agentSlug: string
+  accountId: string
+  toolkit: string
+  method: string
+  targetPath: string
+  matchedScopes: string[]
+  scopeDescriptions: Record<string, string>
+  displayText?: string
+  xAgent?: {
+    targetAgentSlug: string
+    targetAgentName: string
+    operation: 'list' | 'read' | 'invoke' | 'create'
+    preview?: string
+  }
+}
+
 export function uniqueSuffix(
   testInfo: Pick<TestInfo, 'workerIndex' | 'repeatEachIndex' | 'retry'>,
 ) {
@@ -34,11 +52,22 @@ export function uniqueName(
   return `${label} ${uniqueSuffix(testInfo)}`
 }
 
+async function retryablePollRead<T>(
+  read: () => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  try {
+    return await read()
+  } catch {
+    return fallback
+  }
+}
+
 async function expectAgentInApi(
   request: APIRequestContext,
   agent: Pick<TestAgent, 'slug' | 'name'>,
 ) {
-  await expect.poll(async () => {
+  await expect.poll(() => retryablePollRead(async () => {
     const response = await request.get('/api/agents')
     if (!response.ok()) return false
 
@@ -46,7 +75,7 @@ async function expectAgentInApi(
     return agents.some((candidate) => (
       candidate.slug === agent.slug && candidate.name === agent.name
     ))
-  }, { timeout: 15000 }).toBe(true)
+  }, false), { timeout: 15000 }).toBe(true)
 }
 
 export function getAgentItem(page: Page, agent: Pick<TestAgent, 'slug' | 'name'>) {
@@ -76,16 +105,32 @@ export async function findAgentByName(
 ): Promise<TestAgent> {
   let found: TestAgent | undefined
 
-  await expect.poll(async () => {
+  await expect.poll(() => retryablePollRead(async () => {
     const response = await request.get('/api/agents')
     if (!response.ok()) return false
 
     const agents = await response.json() as TestAgent[]
     found = agents.find((agent) => agent.name === name)
     return Boolean(found)
-  }, { timeout: 15000 }).toBe(true)
+  }, false), { timeout: 15000 }).toBe(true)
 
   return found!
+}
+
+export async function waitForCurrentSessionId(page: Page): Promise<Pick<TestSession, 'id'>> {
+  let sessionId: string | undefined
+
+  await expect.poll(() => {
+    try {
+      const match = new URL(page.url()).pathname.match(/\/sessions\/([^/]+)/)
+      sessionId = match?.[1]
+    } catch {
+      sessionId = undefined
+    }
+    return Boolean(sessionId)
+  }, { timeout: 15000 }).toBe(true)
+
+  return { id: sessionId! }
 }
 
 export async function expectAgentNamed(
@@ -95,16 +140,61 @@ export async function expectAgentNamed(
 ): Promise<TestAgent> {
   let found: TestAgent | undefined
 
-  await expect.poll(async () => {
+  await expect.poll(() => retryablePollRead(async () => {
     const response = await request.get('/api/agents')
     if (!response.ok()) return undefined
 
     const agents = await response.json() as TestAgent[]
     found = agents.find((candidate) => candidate.slug === agent.slug)
     return found?.name
-  }, { timeout: 15000 }).toBe(name)
+  }, undefined as string | undefined), { timeout: 15000 }).toBe(name)
 
   return found!
+}
+
+export async function waitForPendingProxyReview(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+  options: {
+    xAgent?: boolean
+    toolkit?: string
+    targetPath?: string
+    matchedScope?: string
+  } = {},
+): Promise<TestPendingProxyReview> {
+  let found: TestPendingProxyReview | undefined
+
+  await expect.poll(() => retryablePollRead(async () => {
+    const response = await request.get(`/api/agents/${agent.slug}/proxy-reviews`)
+    if (!response.ok()) return false
+
+    const body = await response.json() as { reviews?: TestPendingProxyReview[] }
+    found = (body.reviews ?? []).find((review) => {
+      if (options.xAgent !== undefined && Boolean(review.xAgent) !== options.xAgent) return false
+      if (options.toolkit && review.toolkit !== options.toolkit) return false
+      if (options.targetPath && review.targetPath !== options.targetPath) return false
+      if (options.matchedScope && !review.matchedScopes.includes(options.matchedScope)) return false
+      return true
+    })
+
+    return Boolean(found)
+  }, false), { timeout: 15000 }).toBe(true)
+
+  return found!
+}
+
+export async function expectPendingProxyReviewResolved(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+  review: Pick<TestPendingProxyReview, 'id'>,
+) {
+  await expect.poll(() => retryablePollRead(async () => {
+    const response = await request.get(`/api/agents/${agent.slug}/proxy-reviews`)
+    if (!response.ok()) return false
+
+    const body = await response.json() as { reviews?: TestPendingProxyReview[] }
+    return !(body.reviews ?? []).some((candidate) => candidate.id === review.id)
+  }, false), { timeout: 15000 }).toBe(true)
 }
 
 export async function deleteAgentViaApi(
@@ -119,13 +209,13 @@ export async function expectAgentDeleted(
   request: APIRequestContext,
   agent: Pick<TestAgent, 'slug'>,
 ) {
-  await expect.poll(async () => {
+  await expect.poll(() => retryablePollRead(async () => {
     const response = await request.get('/api/agents')
     if (!response.ok()) return false
 
     const agents = await response.json() as TestAgent[]
     return !agents.some((candidate) => candidate.slug === agent.slug)
-  }, { timeout: 15000 }).toBe(true)
+  }, false), { timeout: 15000 }).toBe(true)
 }
 
 export async function createSession(
@@ -142,13 +232,13 @@ export async function createSession(
   expect(session.id).toBeTruthy()
   expect(session.name).toBeTruthy()
 
-  await expect.poll(async () => {
+  await expect.poll(() => retryablePollRead(async () => {
     const sessionsResponse = await request.get(`/api/agents/${agent.slug}/sessions`)
     if (!sessionsResponse.ok()) return false
 
     const sessions = await sessionsResponse.json() as TestSession[]
     return sessions.some((candidate) => candidate.id === session.id)
-  }, { timeout: 15000 }).toBe(true)
+  }, false), { timeout: 15000 }).toBe(true)
 
   return session
 }
@@ -171,14 +261,14 @@ export async function expectSessionNamed(
 ): Promise<TestSession> {
   let found: TestSession | undefined
 
-  await expect.poll(async () => {
+  await expect.poll(() => retryablePollRead(async () => {
     const response = await request.get(`/api/agents/${agent.slug}/sessions`)
     if (!response.ok()) return undefined
 
     const sessions = await response.json() as TestSession[]
     found = sessions.find((candidate) => candidate.id === session.id)
     return found?.name
-  }, { timeout: 15000 }).toBe(name)
+  }, undefined as string | undefined), { timeout: 15000 }).toBe(name)
 
   return found!
 }
@@ -214,7 +304,7 @@ export async function findSessionWithUserMessage(
 ): Promise<TestSession> {
   let found: TestSession | undefined
 
-  await expect.poll(async () => {
+  await expect.poll(() => retryablePollRead(async () => {
     const sessionsResponse = await request.get(`/api/agents/${agent.slug}/sessions`)
     if (!sessionsResponse.ok()) return false
 
@@ -231,7 +321,7 @@ export async function findSessionWithUserMessage(
     }
 
     return false
-  }, { timeout: 15000 }).toBe(true)
+  }, false), { timeout: 15000 }).toBe(true)
 
   return found!
 }
@@ -241,14 +331,14 @@ export async function waitForSessionIdle(
   agent: Pick<TestAgent, 'slug'>,
   session: Pick<TestSession, 'id'>,
 ) {
-  await expect.poll(async () => {
+  await expect.poll(() => retryablePollRead(async () => {
     const response = await request.get(`/api/agents/${agent.slug}/sessions`)
     if (!response.ok()) return false
 
     const sessions = await response.json() as Array<TestSession & { isActive?: boolean }>
     const current = sessions.find((candidate) => candidate.id === session.id)
     return current ? current.isActive === false : false
-  }, { timeout: 15000 }).toBe(true)
+  }, false), { timeout: 15000 }).toBe(true)
 }
 
 export async function openAgentHome(page: Page, agent: Pick<TestAgent, 'slug' | 'name'>) {

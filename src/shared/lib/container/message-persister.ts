@@ -653,6 +653,17 @@ class MessagePersister {
     }
   }
 
+  // Recover awaiting-input state from persisted messages when the one-shot
+  // request stream event was missed but the unresolved tool call is visible.
+  recoverSessionAwaitingInput(sessionId: string, agentSlug?: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state?.isActive) return
+    if (agentSlug && !state.agentSlug) {
+      state.agentSlug = agentSlug
+    }
+    this.markSessionAwaitingInput(sessionId)
+  }
+
   // Promote an automated session (cron/webhook/chat) to a regular session so it
   // appears in the sidebar and receives completion notifications.
   private async promoteAutomatedSession(sessionId: string, agentSlug: string): Promise<void> {

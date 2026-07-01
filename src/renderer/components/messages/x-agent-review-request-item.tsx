@@ -219,6 +219,7 @@ export function XAgentReviewRequestItem({
       waitingText="Waiting for approval"
       error={error}
       data-testid={isCompleted ? 'xagent-review-completed' : 'xagent-review-request'}
+      data-review-id={reviewId}
       data-status={isCompleted ? status : undefined}
     >
       {/* Prompt preview for invoke */}
