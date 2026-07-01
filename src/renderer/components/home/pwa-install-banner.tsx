@@ -4,6 +4,7 @@ import { Button } from '@renderer/components/ui/button'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { usePwaInstall } from '@renderer/hooks/use-pwa-install'
 import { isElectron } from '@renderer/lib/env'
+import './pwa-install-banner.css'
 
 const DISMISS_KEY = 'pwa-install-banner-dismissed-at'
 // A dismissal means "not now", not "never" — re-surface the nudge a week later
@@ -45,7 +46,33 @@ export function PwaInstallBanner() {
   }
 
   return (
-    <div className="relative flex items-center gap-3 rounded-lg border bg-card p-3 shadow-sm">
+    <div className="pwa-banner">
+      {/* Two raw HDR-video layers: a blurred halo that bleeds out, and a sharp
+          fill for the box surface. Rendering the HDR video DIRECTLY is the only
+          thing that reaches EDR on-device — a backdrop-filter/overlay clamps it.
+          The card below sits over the box video with NO z-index, so it never
+          creates a stacking context that would flatten the HDR beneath it. */}
+      <video
+        className="pwa-banner__halo"
+        src="/hdr-glow.mp4"
+        autoPlay
+        muted
+        loop
+        playsInline
+        aria-hidden="true"
+        tabIndex={-1}
+      />
+      <video
+        className="pwa-banner__box"
+        src="/hdr-glow.mp4"
+        autoPlay
+        muted
+        loop
+        playsInline
+        aria-hidden="true"
+        tabIndex={-1}
+      />
+      <div className="pwa-banner__card relative flex items-center gap-3 p-3 shadow-sm">
       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
         <Download className="h-5 w-5" />
       </div>
@@ -96,6 +123,15 @@ export function PwaInstallBanner() {
       >
         <X className="h-4 w-4" />
       </button>
+      </div>
+      {/* Colored HDR gradient clipped to the rounded border ring — on EDR it makes
+          the outline glow in HDR too (the SDR gradient border looks dull next to
+          the ultrawhite box). The video fills the wrapper; the wrapper's
+          content-box mask carves a rounded ring. Painted last → on top; the SDR
+          ::after border is the non-HDR fallback. */}
+      <div className="pwa-banner__outline" aria-hidden="true">
+        <video src="/hdr-outline.mp4" autoPlay muted loop playsInline tabIndex={-1} />
+      </div>
     </div>
   )
 }
