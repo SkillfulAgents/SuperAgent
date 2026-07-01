@@ -1,141 +1,160 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page, type TestInfo } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import {
+  createAgent as createAgentViaApi,
+  deleteAgentViaApi,
+  expectAgentDeleted,
+  findAgentByName,
+  findSessionWithUserMessage,
+  gotoAgentHome,
+  gotoAgentSession,
+  listSessionMessages,
+  waitForSessionIdle,
+  type TestAgent,
+  type TestMessage,
+  type TestSession,
+} from '../helpers/agents'
 
-// Serial: tests reload the page and verify DB state, sensitive to concurrent DB writes
-test.describe.configure({ mode: 'serial' })
+function uniqueSuffix(testInfo: TestInfo) {
+  return [
+    testInfo.workerIndex,
+    testInfo.repeatEachIndex,
+    testInfo.retry,
+    Date.now(),
+    Math.random().toString(36).slice(2, 8),
+  ].join('-')
+}
 
+function uniqueName(testInfo: TestInfo, label: string) {
+  return `${label} ${uniqueSuffix(testInfo)}`
+}
+
+function agentRow(page: Page, agent: Pick<TestAgent, 'slug' | 'name'>) {
+  return page
+    .locator(`[data-testid="agent-item-${agent.slug}"]`)
+    .or(page.locator('[data-testid^="agent-item-"]', { hasText: agent.name }))
+    .first()
+}
+
+function messageText(message: TestMessage) {
+  if (typeof message.content === 'string') return message.content
+  if (!message.content || typeof message.content !== 'object') return ''
+
+  const content = message.content as Record<string, unknown>
+  return typeof content.text === 'string' ? content.text : ''
+}
+
+function expectMessagesIncludeUserText(messages: TestMessage[], text: string) {
+  expect(
+    messages.some((message) => message.type === 'user' && messageText(message).includes(text)),
+  ).toBe(true)
+}
+
+async function openApp(page: Page) {
+  const appPage = new AppPage(page)
+  await appPage.goto()
+  await appPage.waitForAgentsLoaded()
+  return appPage
+}
+
+// Aside from the deletion case itself, these tests leave their uniquely named
+// agents in the per-run data dir and let setup-e2e-data reset them before the
+// next run. Deleting agents while sibling workers list /api/agents can race
+// session-summary file reads under load.
 test.describe('Persistence', () => {
-  let appPage: AppPage
-  let agentPage: AgentPage
-  let sessionPage: SessionPage
+  test('UI-created agent persists after page reload', async ({ page, request }, testInfo) => {
+    const appPage = await openApp(page)
+    const agentPage = new AgentPage(page)
+    const agentName = uniqueName(testInfo, 'Persist Agent')
 
-  test.beforeEach(async ({ page }) => {
-    appPage = new AppPage(page)
-    agentPage = new AgentPage(page)
-    sessionPage = new SessionPage(page)
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
-  })
-
-  test('agent persists after page reload', async ({ page }) => {
-    const agentName = `Persist Agent ${Date.now()}`
-
-    // Create agent
     await agentPage.createAgent(agentName)
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
+    const agent = await findAgentByName(request, agentName)
 
-    // Reload page
+    await expect(agentRow(page, agent)).toBeVisible()
+
     await appPage.reload()
 
-    // Verify agent still exists
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
+    await expect(agentRow(page, agent)).toBeVisible()
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name, { timeout: 15000 })
 
-    // Clean up
-    await agentPage.selectAgent(agentName)
-    await agentPage.deleteAgent()
+    const session = await findSessionWithUserMessage(request, agent, agentName)
+    await waitForSessionIdle(request, agent, session).catch(() => {})
   })
 
-  test('messages persist after page reload', async ({ page, request }) => {
-    const agentName = `Message Persist Agent ${Date.now()}`
-    await agentPage.createAgent(agentName)
+  test('UI-sent messages persist after page reload', async ({ page, request }, testInfo) => {
+    const agent = await createAgentViaApi(request, uniqueName(testInfo, 'Message Persist Agent'))
+    const sessionPage = new SessionPage(page)
+    const message = `Persistent message ${uniqueSuffix(testInfo)}`
+    let session: TestSession | undefined
 
-    // Send a message and wait for response
-    await sessionPage.sendMessage('Persistent message')
-    await sessionPage.waitForResponse()
-    await sessionPage.waitForInputEnabled()
-    await sessionPage.expectUserMessage('Persistent message')
+    await gotoAgentHome(page, agent)
 
-    // Verify assistant response is visible
+    await sessionPage.sendMessage(message)
+    await sessionPage.waitForResponse(15000)
+    await sessionPage.waitForInputEnabled(15000)
+    await sessionPage.expectUserMessage(message)
     await expect(sessionPage.getAssistantMessages().first()).toBeVisible()
 
-    // Get the agent slug from the agents list API
-    const agentsResponse = await request.get('/api/agents')
-    expect(agentsResponse.ok()).toBeTruthy()
-    const agents = await agentsResponse.json()
-    const agent = agents.find((a: { name: string }) => a.name === agentName)
-    expect(agent).toBeDefined()
-    const agentSlug = agent.slug
-
-    // Get sessions for this agent via API
-    const sessionsResponse = await request.get(`/api/agents/${agentSlug}/sessions`)
-    expect(sessionsResponse.ok()).toBeTruthy()
-    const sessions = await sessionsResponse.json()
-    expect(sessions.length).toBeGreaterThan(0)
-
-    const sessionId = sessions[0].id
-
-    // Get messages for the session via API
-    const messagesResponse = await request.get(
-      `/api/agents/${agentSlug}/sessions/${sessionId}/messages`
+    session = await findSessionWithUserMessage(request, agent, message)
+    expectMessagesIncludeUserText(
+      await listSessionMessages(request, agent, session),
+      message,
     )
-    expect(messagesResponse.ok()).toBeTruthy()
-    const messages = await messagesResponse.json()
 
-    // Verify messages are persisted
-    expect(messages.length).toBeGreaterThan(0)
-    const userMessage = messages.find((m: { type: string }) => m.type === 'user')
-    expect(userMessage).toBeDefined()
-    // content is { text: string } not a plain string
-    expect(userMessage.content.text).toContain('Persistent message')
-
-    // Reload page to verify data survives reload
+    const appPage = new AppPage(page)
     await appPage.reload()
 
-    // Verify via API that messages still exist after reload
-    const messagesAfterReload = await request.get(
-      `/api/agents/${agentSlug}/sessions/${sessionId}/messages`
+    await gotoAgentSession(page, agent, session)
+    await expect(sessionPage.getUserMessages().filter({ hasText: message }).first()).toBeVisible({ timeout: 10000 })
+    expectMessagesIncludeUserText(
+      await listSessionMessages(request, agent, session),
+      message,
     )
-    expect(messagesAfterReload.ok()).toBeTruthy()
-    const messagesAfter = await messagesAfterReload.json()
-    expect(messagesAfter.length).toBeGreaterThan(0)
-
-    // Clean up
-    await agentPage.selectAgent(agentName)
-    await agentPage.deleteAgent()
+    if (session) await waitForSessionIdle(request, agent, session).catch(() => {})
   })
 
-  test('deleted agent stays deleted after reload', async ({ page }) => {
-    const agentName = `Deletable Agent ${Date.now()}`
+  test('UI-deleted agent stays deleted after reload', async ({ page, request }, testInfo) => {
+    const appPage = await openApp(page)
+    const agentPage = new AgentPage(page)
+    const agent = await createAgentViaApi(request, uniqueName(testInfo, 'Deletable Agent'))
+    let deleted = false
 
-    // Create agent
-    await agentPage.createAgent(agentName)
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
+    try {
+      await gotoAgentHome(page, agent)
+      await expect(agentRow(page, agent)).toBeVisible()
 
-    // Delete agent
-    await agentPage.deleteAgent()
-    await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
-
-    // Reload page
-    await appPage.reload()
-
-    // Verify agent is still gone
-    await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
-  })
-
-  test('multiple agents persist', async ({ page }) => {
-    const timestamp = Date.now()
-    const agents = [`Agent One ${timestamp}`, `Agent Two ${timestamp}`, `Agent Three ${timestamp}`]
-
-    // Create multiple agents
-    for (const name of agents) {
-      await agentPage.createAgent(name)
-      await expect(agentPage.getAgentItem(name)).toBeVisible()
-    }
-
-    // Reload page
-    await appPage.reload()
-
-    // Verify all agents still exist
-    for (const name of agents) {
-      await expect(agentPage.getAgentItem(name)).toBeVisible()
-    }
-
-    // Clean up - delete all agents
-    for (const name of agents) {
-      await agentPage.selectAgent(name)
       await agentPage.deleteAgent()
+      deleted = true
+      await expectAgentDeleted(request, agent)
+      await expect(agentRow(page, agent)).not.toBeVisible()
+
+      await appPage.reload()
+
+      await expect(agentRow(page, agent)).not.toBeVisible()
+    } finally {
+      if (!deleted) await deleteAgentViaApi(request, agent)
+    }
+  })
+
+  test('multiple API-created agents persist after reload', async ({ page, request }, testInfo) => {
+    const agents: TestAgent[] = []
+
+    for (const label of ['Agent One', 'Agent Two', 'Agent Three']) {
+      agents.push(await createAgentViaApi(request, uniqueName(testInfo, label)))
+    }
+
+    const appPage = await openApp(page)
+
+    for (const agent of agents) {
+      await expect(agentRow(page, agent)).toBeVisible()
+    }
+
+    await appPage.reload()
+
+    for (const agent of agents) {
+      await expect(agentRow(page, agent)).toBeVisible()
     }
   })
 })

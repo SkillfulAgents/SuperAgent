@@ -10,6 +10,11 @@ export interface TestSession {
   name: string
 }
 
+export interface TestMessage {
+  type: string
+  content?: unknown
+}
+
 async function expectAgentInApi(
   request: APIRequestContext,
   agent: Pick<TestAgent, 'slug' | 'name'>,
@@ -46,6 +51,45 @@ export async function createAgent(request: APIRequestContext, name: string): Pro
   return agent
 }
 
+export async function findAgentByName(
+  request: APIRequestContext,
+  name: string,
+): Promise<TestAgent> {
+  let found: TestAgent | undefined
+
+  await expect.poll(async () => {
+    const response = await request.get('/api/agents')
+    if (!response.ok()) return false
+
+    const agents = await response.json() as TestAgent[]
+    found = agents.find((agent) => agent.name === name)
+    return Boolean(found)
+  }, { timeout: 15000 }).toBe(true)
+
+  return found!
+}
+
+export async function deleteAgentViaApi(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+) {
+  const response = await request.delete(`/api/agents/${agent.slug}`)
+  expect([204, 404]).toContain(response.status())
+}
+
+export async function expectAgentDeleted(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+) {
+  await expect.poll(async () => {
+    const response = await request.get('/api/agents')
+    if (!response.ok()) return false
+
+    const agents = await response.json() as TestAgent[]
+    return !agents.some((candidate) => candidate.slug === agent.slug)
+  }, { timeout: 15000 }).toBe(true)
+}
+
 export async function createSession(
   request: APIRequestContext,
   agent: Pick<TestAgent, 'slug'>,
@@ -69,6 +113,63 @@ export async function createSession(
   }, { timeout: 15000 }).toBe(true)
 
   return session
+}
+
+export async function listSessions(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+): Promise<TestSession[]> {
+  const response = await request.get(`/api/agents/${agent.slug}/sessions`)
+  expect(response.ok()).toBeTruthy()
+
+  return await response.json() as TestSession[]
+}
+
+export async function listSessionMessages(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+  session: Pick<TestSession, 'id'>,
+): Promise<TestMessage[]> {
+  const response = await request.get(`/api/agents/${agent.slug}/sessions/${session.id}/messages`)
+  expect(response.ok()).toBeTruthy()
+
+  return await response.json() as TestMessage[]
+}
+
+function messageContentIncludes(message: TestMessage, text: string) {
+  if (typeof message.content === 'string') {
+    return message.content.includes(text)
+  }
+
+  if (!message.content || typeof message.content !== 'object') {
+    return false
+  }
+
+  const content = message.content as Record<string, unknown>
+  return typeof content.text === 'string' && content.text.includes(text)
+}
+
+export async function findSessionWithUserMessage(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+  text: string,
+): Promise<TestSession> {
+  let found: TestSession | undefined
+
+  await expect.poll(async () => {
+    const sessions = await listSessions(request, agent)
+    for (const session of sessions) {
+      const messages = await listSessionMessages(request, agent, session)
+      if (messages.some((message) => message.type === 'user' && messageContentIncludes(message, text))) {
+        found = session
+        return true
+      }
+    }
+
+    return false
+  }, { timeout: 15000 }).toBe(true)
+
+  return found!
 }
 
 export async function waitForSessionIdle(
@@ -134,6 +235,33 @@ export async function gotoAgentHome(page: Page, agent: Pick<TestAgent, 'slug' | 
   throw lastError instanceof Error
     ? lastError
     : new Error(`Could not load agent "${agent.name}" (${agent.slug})`)
+}
+
+export async function gotoAgentSession(
+  page: Page,
+  agent: Pick<TestAgent, 'slug' | 'name'>,
+  session: Pick<TestSession, 'id'>,
+) {
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await page.goto(`/agents/${agent.slug}/sessions/${session.id}`)
+      await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name, { timeout: 15000 })
+      await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
+      await expect(page.locator('[data-testid="message-input"]')).toBeVisible({ timeout: 15000 })
+      return
+    } catch (error) {
+      lastError = error
+      if (attempt === 1) break
+
+      await page.reload()
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`Could not load session "${session.id}" for agent "${agent.name}" (${agent.slug})`)
 }
 
 export async function openAgentSession(
