@@ -460,6 +460,42 @@ describe('TelegramConnector — typed message answers an open question (Other)',
     expect(md).toContain('Postgres')
   })
 
+  it('multi-question sub-card tap rebuilds its confirmation from the stored sub-card question text', async () => {
+    await (connector as any).sendUserRequestCard('123', {
+      type: 'user_question_request',
+      toolUseId: 'tu-mq2',
+      questions: [
+        { question: 'Q1 pick', options: [{ label: 'A' }, { label: 'B' }] },
+        { question: 'Q2 pick', options: [{ label: 'C' }, { label: 'D' }] },
+      ],
+    })
+    const q1 = sent[0].reply_markup.inline_keyboard
+    const editSpy = vi.spyOn(connector as any, 'editRichOrHtml')
+    await (connector as any).handleCallbackQuery(makeCbCtx(q1[0][0].callback_data, { messageId: 1001 })) // Q1 = A
+    expect(editSpy).toHaveBeenCalled()
+    const md = editSpy.mock.calls[0][2] as string
+    expect(md).toContain('Q1 pick') // the sub-card's own question, not blank
+    expect(md).toContain('A')
+  })
+
+  it('resolving a multi-question sub-card does not wipe a concurrent single-question card', async () => {
+    // Card A: single-question (lives in openQuestionCard). Card B: multi-question (pendingQuestions).
+    await (connector as any).sendUserRequestCard('123', singleQuestionEvent('tu-a')) // sent[0], msg 1001
+    await (connector as any).sendUserRequestCard('123', {
+      type: 'user_question_request',
+      toolUseId: 'tu-b',
+      questions: [
+        { question: 'B1', options: [{ label: 'X' }] }, // sent[1], msg 1002
+        { question: 'B2', options: [{ label: 'Y' }] }, // sent[2], msg 1003
+      ],
+    })
+    const bKb = sent[1].reply_markup.inline_keyboard
+    await (connector as any).handleCallbackQuery(makeCbCtx(bKb[0][0].callback_data, { messageId: 1002 })) // tap B1
+    // Card A must still be answerable via typed "Other" — resolving B must not clear A's tracking.
+    const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-a', 'other for A')
+    expect(ok).toBe(true)
+  })
+
   it('returns false when no question card is open for the chat', async () => {
     const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-q', 'hi')
     expect(ok).toBe(false)

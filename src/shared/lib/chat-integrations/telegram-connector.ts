@@ -629,23 +629,26 @@ export class TelegramConnector extends ChatClientConnector {
     // can't double-resolve (matching answerOpenQuestionWithText / handleMultiSelectDone).
     const chatId = String(ctx.chat?.id ?? '')
     const messageId = String(ctx.callbackQuery?.message?.message_id ?? '')
-    const card = this.openQuestionCard.get(chatId)
-    const cardCbIds =
-      card && card.toolUseId === mapping.toolUseId
-        ? card.cbIds
-        : this.pendingQuestions.get(mapping.toolUseId)?.cards.find((c) => c.messageId === messageId)?.cbIds
+    // Resolve the source card ONCE: the single-question card in openQuestionCard if this tap is its,
+    // else the multi-question sub-card in pendingQuestions matching this message.
+    const openCard = this.openQuestionCard.get(chatId)
+    const currentCard = openCard && openCard.toolUseId === mapping.toolUseId ? openCard : undefined
+    const subCard = currentCard
+      ? undefined
+      : this.pendingQuestions.get(mapping.toolUseId)?.cards.find((c) => c.messageId === messageId)
+    const cardCbIds = currentCard ? currentCard.cbIds : subCard?.cbIds
     for (const cb of cardCbIds ?? [data]) this.callbackDataMap.delete(cb)
-    this.openQuestionCard.delete(chatId)
+    // Only clear the per-chat openQuestionCard when THIS tap resolved it — a tap on a concurrent
+    // multi-question sub-card must not wipe a different single-question card's tracking.
+    if (currentCard) this.openQuestionCard.delete(chatId)
 
     await ctx.answerCallbackQuery()
     // Rebuild the confirmation from the STORED question text: on the default rich-message path
     // ctx.callbackQuery.message.text is empty, so reading it would drop the question (only the
     // richMessages=false HTML fallback carries readable text).
-    const questionText =
-      card && card.toolUseId === mapping.toolUseId
-        ? card.questionText
-        : this.pendingQuestions.get(mapping.toolUseId)?.cards.find((c) => c.messageId === messageId)?.questionText
-          ?? escapeMarkdown(ctx.callbackQuery?.message?.text || '')
+    const questionText = currentCard
+      ? currentCard.questionText
+      : subCard?.questionText ?? escapeMarkdown(ctx.callbackQuery?.message?.text || '')
     await this.confirmAndEmit(chatId, messageId, questionText, mapping.toolUseId, val.question, val.answer ?? '')
   }
 
@@ -685,7 +688,11 @@ export class TelegramConnector extends ChatClientConnector {
     for (const o of state.options) this.callbackDataMap.delete(o.cbId)
     this.callbackDataMap.delete(state.doneCbId)
     this.pendingMultiSelect.delete(this.multiSelectKey(toolUseId, question))
-    this.openQuestionCard.delete(state.chatId)
+    // Only clear the per-chat card when THIS multiSelect card owns it (a single-question multiSelect
+    // card populates openQuestionCard; a multi-question sub-card does not) — don't wipe a concurrent
+    // card's tracking.
+    const openCard = this.openQuestionCard.get(state.chatId)
+    if (openCard && openCard.toolUseId === toolUseId) this.openQuestionCard.delete(state.chatId)
 
     await ctx.answerCallbackQuery()
 
