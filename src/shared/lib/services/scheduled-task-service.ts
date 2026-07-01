@@ -291,6 +291,29 @@ export async function updateNextExecution(
       lastExecutedAt: new Date(),
       lastSessionId: sessionId,
       executionCount: task.executionCount + 1,
+      // A fire (successful or failed-then-rescheduled) breaks any hold streak.
+      consecutiveSkips: 0,
+      lastSkippedAt: null,
+    })
+    .where(eq(scheduledTasks.id, taskId))
+}
+
+/**
+ * Record that a recurring task's fire was held this cycle because its previous
+ * run is still actively progressing (overlap guard). Increments consecutiveSkips
+ * and stamps lastSkippedAt WITHOUT advancing nextExecutionAt, so the task stays
+ * due and re-fires on the first poll after the slot frees. Both fields are reset
+ * on the next successful fire (see updateNextExecution).
+ */
+export async function recordTaskSkip(taskId: string): Promise<void> {
+  const task = await getScheduledTask(taskId)
+  if (!task) return
+
+  await db
+    .update(scheduledTasks)
+    .set({
+      consecutiveSkips: task.consecutiveSkips + 1,
+      lastSkippedAt: new Date(),
     })
     .where(eq(scheduledTasks.id, taskId))
 }

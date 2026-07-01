@@ -14,6 +14,7 @@ import {
   getDueTasks,
   markTaskExecuted,
   markTaskFailed,
+  recordTaskSkip,
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
@@ -180,6 +181,34 @@ class TaskScheduler {
       )
       await this.recordTaskExecution(task, existingSession.id)
       return
+    }
+
+    // Per-task overlap guard (recurring crons only): if the previous run of THIS
+    // task is still actively progressing, hold this fire instead of spawning a
+    // second concurrent session. "Actively progressing" means busy AND not parked
+    // on user input — a parked run has nobody to answer an offline scheduled
+    // question, so it must not wedge the task forever, whereas a run with a
+    // backgrounded task still executing stays isActive=true / isAwaitingInput=false
+    // and correctly counts as occupied.
+    //
+    // Hold semantics: we do NOT advance nextExecutionAt, leaving the task due so
+    // the next poll re-checks and fires the freshest run the moment the slot frees
+    // (re-anchoring forward via getNextCronTime(now) in recordTaskExecution).
+    // Because nextExecutionAt is a single scalar, at most one pending fire exists
+    // per task — coalesce-to-latest is automatic. Each held cycle bumps
+    // consecutiveSkips / lastSkippedAt for skip observability.
+    if (task.isRecurring && task.lastSessionId) {
+      const lastSessionId = task.lastSessionId
+      const occupied =
+        messagePersister.isSessionActive(lastSessionId) &&
+        !messagePersister.isSessionAwaitingInput(lastSessionId)
+      if (occupied) {
+        console.log(
+          `[TaskScheduler] Task ${task.id} held: previous run ${lastSessionId} still active; leaving task due`
+        )
+        await recordTaskSkip(task.id)
+        return
+      }
     }
 
     // Verify agent still exists
