@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully verified browser-use feature: agent opened browser, navigated to example.com, retrieved page title \"Example Domain\", and closed the browser session.",
+  "steps": [
+    "Navigated to http://localhost:47891 — page loaded successfully showing agent list with \"Gamut\" application.",
+    "Found and clicked \"QA-20260701-215347-hjfg\" agent in sidebar — agent chat page opened with URL http://localhost:47891/agents/qa-20260701-215347-hjfg-du4ugyompg",
+    "Typed message in input field — message \"Open a browser and go to https://example.com. Tell me the page title.\" entered in textarea.",
+    "Sent message via Ctrl+Enter — message submitted successfully, URL updated to include session ID.",
+    "Waited for agent response — agent completed task in 13 seconds, displaying all browser tool executions with green checkmarks.",
+    "Verified response mentions \"Example Domain\" — response clearly states \"The page title is 'Example Domain'\" and final summary confirms \"the page at https://example.com has the title 'Example Domain'\".",
+    "Took final screenshot — screenshot shows complete agent response with all browser tool calls (ToolSearch, Open Browser, Browser Get State, Close Browser) all marked as completed, and the page title result properly displayed."
+  ],
+  "bugs": [],
+  "durationMs": 99269,
+  "sessionId": "df0f5058-6fdc-46c8-a359-497c38fedf6f",
+  "cost": {
+    "inputTokens": 330,
+    "outputTokens": 10466,
+    "cacheCreationTokens": 49615,
+    "cacheReadTokens": 922493,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.206928
+  }
+}
