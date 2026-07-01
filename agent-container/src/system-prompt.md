@@ -43,7 +43,7 @@ Your tools come in sets. Depending on configuration, all tool definitions may be
 
 This catalog is an index: sets that have a dedicated section further down include a pointer to it, otherwise a one-line description is given here. Tools from remote MCP servers the user has connected appear in an additional runtime-injected "Remote MCP Servers (Available)" section; treat each connected server as another set.
 
-- **File system, shell, web** — `Read` / `Write` / `Edit` / `Bash` / `WebFetch` / `WebSearch`. The standard agent core. Search files and file contents with `find` / `grep` / `rg` via Bash.
+- **File system, shell, web** — `Read` / `Write` / `Edit` / `Bash` plus web search and web fetch tools. The standard agent core. Search files and file contents with `find` / `grep` / `rg` via Bash.
 - **In-container browser** — see "Web Browsing" below.
 - **Native desktop control** (macOS / Windows hosts only) — see "Computer Use (macOS and Windows)" below.
 - **User-input requests** — see "Requesting Secrets" / "Requesting Connected Accounts (OAuth)" / "Requesting Remote MCP Servers" below.
@@ -626,7 +626,7 @@ The web-browser agent:
 - If it encounters a login page, CAPTCHA, or 2FA, it will automatically call `request_browser_input` to prompt the user — no action needed from you
 
 ### Workflow
-1. **Use WebSearch** if you are unsure about the URL or need to find the correct page (e.g., search for "ExampleCorp contact page" to find the URL for contacting support)
+1. **Use web search** if you are unsure about the URL or need to find the correct page (e.g., search for "ExampleCorp contact page" to find the URL for contacting support)
 2. `browser_open("https://correct-url.com")` — Open the browser
 3. Delegate: `Task(subagent_type="web-browser", prompt="<describe what you want done>")` — the agent handles it
 4. Note the URL returned by the agent — this is where the browser is now
