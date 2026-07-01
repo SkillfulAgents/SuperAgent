@@ -139,7 +139,7 @@ async function verifyOAuth(url: string, name: string, ev: Record<string, unknown
 
   // Full path: discover -> (DCR or fail) -> build the real authorization URL.
   const initiated = await withTimeout(
-    initiateNewServerOAuth(url, name, REDIRECT_URI),
+    initiateNewServerOAuth(url, name, [REDIRECT_URI]),
     NET_TIMEOUT_MS,
     'initiate-oauth',
   ).catch((e) => { ev.initiateError = classifyError(e).message; return null })

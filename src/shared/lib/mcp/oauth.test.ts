@@ -93,7 +93,8 @@ describe('oauth', () => {
       const result = await initiateNewServerOAuth(
         'https://mcp.example.com/mcp',
         'Test Server',
-        'http://localhost:3000/callback',
+        ['http://localhost:3000/callback'],
+        false,
         'user-1'
       )
 
@@ -458,7 +459,7 @@ describe('oauth', () => {
       const result = await initiateOAuthFlow(
         'mcp-1',
         'https://mcp.example.com/mcp',
-        'http://localhost:3000/callback'
+        ['http://localhost:3000/callback']
       )
 
       expect(result).not.toBeNull()
@@ -499,7 +500,7 @@ describe('oauth', () => {
       const initiated = await initiateOAuthFlow(
         'mcp-1',
         'https://mcp.example.com/mcp',
-        'http://localhost:3000/callback'
+        ['http://localhost:3000/callback']
       )
       expect(initiated).not.toBeNull()
 
@@ -519,7 +520,7 @@ describe('oauth', () => {
         'https://auth.example.com'
       )
 
-      expect(result).toEqual({ success: true, mcpId: 'mcp-1' })
+      expect(result).toMatchObject({ success: true, mcpId: 'mcp-1' })
     })
 
     it('sends scopes_supported from the resource metadata when DCR returns no scope (Robinhood case)', async () => {
@@ -572,7 +573,7 @@ describe('oauth', () => {
       const result = await initiateOAuthFlow(
         'mcp-1',
         'https://mcp.example.com/mcp',
-        'http://localhost:3000/callback'
+        ['http://localhost:3000/callback']
       )
 
       expect(result).not.toBeNull()
@@ -624,7 +625,7 @@ describe('oauth', () => {
       const result = await initiateOAuthFlow(
         'mcp-1',
         'https://mcp.example.com/mcp',
-        'http://localhost:3000/callback'
+        ['http://localhost:3000/callback']
       )
 
       expect(result).not.toBeNull()
@@ -642,7 +643,7 @@ describe('oauth', () => {
       const result = await initiateOAuthFlow(
         'mcp-1',
         'https://mcp.example.com/mcp',
-        'http://localhost:3000/callback'
+        ['http://localhost:3000/callback']
       )
       expect(result).toBeNull()
     })
@@ -663,7 +664,8 @@ describe('oauth', () => {
       const result = await initiateOAuthFlow(
         'mcp-1',
         'https://mcp.example.com/mcp',
-        'http://localhost:3000/callback',
+        ['http://localhost:3000/callback'],
+        false,
         undefined,
         'override-client-id',
         'override-client-secret'
@@ -712,7 +714,7 @@ describe('oauth', () => {
       const result = await initiateOAuthFlow(
         'mcp-1',
         'https://mcp.example.com/mcp',
-        'http://localhost:3000/callback'
+        ['http://localhost:3000/callback']
       )
       expect(result).toBeNull()
     })
@@ -731,7 +733,7 @@ describe('oauth', () => {
       const result = await initiateOAuthFlow(
         'mcp-1',
         'https://mcp.example.com/mcp',
-        'http://localhost:3000/callback'
+        ['http://localhost:3000/callback']
       )
       expect(result).toBeNull()
     })
@@ -782,7 +784,8 @@ describe('oauth', () => {
       const result = await initiateNewServerOAuth(
         'https://mcp.example.com/mcp',
         'New MCP',
-        'http://localhost/callback',
+        ['http://localhost/callback'],
+        false,
         'user-1'
       )
 
@@ -797,6 +800,108 @@ describe('oauth', () => {
       expect(url.searchParams.get('scope')).toBe('mcp:read mcp:write')
       expect(result!.state).toBeTruthy()
       expect(result!.state).toHaveLength(32) // 16 bytes hex
+    })
+
+    // Discovery mocks (probe → resource metadata → auth-server metadata with a
+    // registration endpoint) shared by the redirect-candidate fallback tests.
+    function setupNewServerDcrDiscovery() {
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer resource_metadata="https://mcp.example.com/.well-known/res"',
+          },
+        })
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            resource: 'https://mcp.example.com',
+            authorization_servers: ['https://auth.example.com'],
+          }),
+          { status: 200 }
+        )
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+            registration_endpoint: 'https://auth.example.com/register',
+          }),
+          { status: 200 }
+        )
+      )
+    }
+
+    it('falls back to the http loopback redirect when DCR rejects the custom app scheme (cal.com case)', async () => {
+      setupNewServerDcrDiscovery()
+      // DCR #1: custom scheme rejected — cal.com allows only http(s) redirects.
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: 'invalid_request',
+            error_description: 'Invalid redirect_uri: invalid scheme: superagent:',
+          }),
+          { status: 400 }
+        )
+      )
+      // DCR #2: http loopback redirect accepted.
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ client_id: 'dyn-loopback' }), { status: 201 })
+      )
+
+      const loopback = 'http://localhost:47891/api/remote-mcps/oauth-callback'
+      const result = await initiateNewServerOAuth(
+        'https://mcp.example.com/mcp',
+        'Cal.com',
+        ['superagent://mcp-oauth-callback', loopback],
+        true,
+        'user-1'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      // The authorization request must use the redirect the AS actually accepted.
+      expect(url.searchParams.get('redirect_uri')).toBe(loopback)
+      expect(url.searchParams.get('client_id')).toBe('dyn-loopback')
+
+      // Registration was attempted with the custom scheme first, then the loopback.
+      const registerCalls = mockFetch.mock.calls.filter(
+        ([reqUrl]) => reqUrl === 'https://auth.example.com/register'
+      )
+      expect(registerCalls).toHaveLength(2)
+      expect(JSON.parse(registerCalls[0][1].body).redirect_uris).toEqual([
+        'superagent://mcp-oauth-callback',
+      ])
+      expect(JSON.parse(registerCalls[1][1].body).redirect_uris).toEqual([loopback])
+    })
+
+    it('uses the preferred (custom scheme) redirect when DCR accepts it', async () => {
+      setupNewServerDcrDiscovery()
+      // DCR #1: custom scheme accepted — no fallback needed.
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ client_id: 'dyn-scheme' }), { status: 201 })
+      )
+
+      const result = await initiateNewServerOAuth(
+        'https://mcp.example.com/mcp',
+        'Scheme OK',
+        ['superagent://mcp-oauth-callback', 'http://localhost:47891/api/remote-mcps/oauth-callback'],
+        true,
+        'user-1'
+      )
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('redirect_uri')).toBe('superagent://mcp-oauth-callback')
+      expect(url.searchParams.get('client_id')).toBe('dyn-scheme')
+      // Only one registration attempt was made (the loopback was never tried).
+      const registerCalls = mockFetch.mock.calls.filter(
+        ([reqUrl]) => reqUrl === 'https://auth.example.com/register'
+      )
+      expect(registerCalls).toHaveLength(1)
     })
 
     it('uses provided clientId/clientSecret without dynamic registration', async () => {
@@ -821,7 +926,8 @@ describe('oauth', () => {
       const result = await initiateNewServerOAuth(
         'https://mcp.example.com/mcp',
         'New MCP',
-        'http://localhost/callback',
+        ['http://localhost/callback'],
+        false,
         'user-1',
         undefined,
         'byo-client-id',
@@ -856,7 +962,8 @@ describe('oauth', () => {
       const result = await initiateNewServerOAuth(
         'https://mcp.example.com/mcp',
         'New MCP',
-        'http://localhost/callback',
+        ['http://localhost/callback'],
+        false,
         'user-1',
         undefined,
         'manual-client-id'
@@ -889,7 +996,7 @@ describe('oauth', () => {
       const result = await initiateNewServerOAuth(
         'https://mcp.example.com/mcp',
         'New MCP',
-        'http://localhost/callback'
+        ['http://localhost/callback']
       )
       expect(result).toBeNull()
     })
@@ -949,7 +1056,8 @@ describe('oauth', () => {
       const result = await initiateNewServerOAuth(
         'https://mcp.example.com/mcp',
         'Test Server',
-        'http://localhost/callback',
+        ['http://localhost/callback'],
+        false,
         'user-1'
       )
       return result!.state
@@ -990,6 +1098,125 @@ describe('oauth', () => {
       expect(body.get('grant_type')).toBe('authorization_code')
       expect(body.get('code')).toBe('auth-code-xyz')
       expect(body.get('redirect_uri')).toBe('http://localhost/callback')
+    })
+
+    it('reports electron + custom-scheme delivery flags so the callback can hand back to the app', async () => {
+      // Electron flow whose DCR accepts the custom app scheme on the first try.
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer resource_metadata="https://mcp.example.com/.well-known/res"',
+          },
+        })
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            resource: 'https://mcp.example.com',
+            authorization_servers: ['https://auth.example.com'],
+          }),
+          { status: 200 }
+        )
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+            registration_endpoint: 'https://auth.example.com/register',
+          }),
+          { status: 200 }
+        )
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ client_id: 'dyn-scheme' }), { status: 201 })
+      )
+
+      const initiated = await initiateNewServerOAuth(
+        'https://mcp.example.com/mcp',
+        'Scheme Electron',
+        ['superagent://mcp-oauth-callback', 'http://localhost:47891/api/remote-mcps/oauth-callback'],
+        true,
+        'user-1'
+      )
+      expect(initiated).not.toBeNull()
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ access_token: 'access-tok', token_type: 'Bearer' }),
+          { status: 200 }
+        )
+      )
+      mockInsertValues.mockResolvedValue(undefined)
+
+      const result = await completeOAuthFlow(initiated!.state, 'auth-code')
+
+      expect(result.success).toBe(true)
+      expect(result.electron).toBe(true)
+      // The custom app scheme won registration, so the callback route keeps the
+      // main-process-parsed HTML rather than the external-browser hand-off.
+      expect(result.redirectWasScheme).toBe(true)
+    })
+
+    it('reports a non-scheme (loopback) redirect so the callback hands back via the external browser', async () => {
+      // Electron flow whose DCR rejects the scheme and falls back to loopback.
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer resource_metadata="https://mcp.example.com/.well-known/res"',
+          },
+        })
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            resource: 'https://mcp.example.com',
+            authorization_servers: ['https://auth.example.com'],
+          }),
+          { status: 200 }
+        )
+      )
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+            registration_endpoint: 'https://auth.example.com/register',
+          }),
+          { status: 200 }
+        )
+      )
+      mockFetch.mockResolvedValueOnce(new Response('{}', { status: 400 }))
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify({ client_id: 'dyn-loopback' }), { status: 201 })
+      )
+
+      const initiated = await initiateNewServerOAuth(
+        'https://mcp.example.com/mcp',
+        'Loopback Electron',
+        ['superagent://mcp-oauth-callback', 'http://localhost:47891/api/remote-mcps/oauth-callback'],
+        true,
+        'user-1'
+      )
+      expect(initiated).not.toBeNull()
+
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ access_token: 'access-tok', token_type: 'Bearer' }),
+          { status: 200 }
+        )
+      )
+      mockInsertValues.mockResolvedValue(undefined)
+
+      const result = await completeOAuthFlow(initiated!.state, 'auth-code')
+
+      expect(result.success).toBe(true)
+      expect(result.electron).toBe(true)
+      expect(result.redirectWasScheme).toBe(false)
     })
 
     it('stores issuer metadata and accepts a matching iss when advertised as supported', async () => {

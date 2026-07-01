@@ -993,34 +993,50 @@ function handleDeepLinkUrl(url: string, fromQueue = false) {
     }
   }
 
-  // MCP OAuth callback — forward to the local API server to complete token exchange
+  // MCP OAuth callback
   if (url.startsWith(`${PROTOCOL_SCHEME}://mcp-oauth-callback`)) {
     try {
       const callbackUrl = new URL(url)
-      const queryString = callbackUrl.search
-      const apiUrl = `http://localhost:${actualApiPort}/api/remote-mcps/oauth-callback${queryString}`
-      fetch(apiUrl)
-        .then(async (res) => {
-          const text = await res.text()
-          const success = text.includes('OAuth successful')
-          const mcpIdMatch = text.match(/mcpId:\s*'([^']+)'/)
-          mainWindow?.webContents.send('mcp-oauth-callback', {
-            success,
-            mcpId: mcpIdMatch?.[1] || null,
-            error: success ? null : 'OAuth failed',
-          })
+      const params = callbackUrl.searchParams
+
+      if (params.has('success')) {
+        // http-loopback path: the local API server already completed the token
+        // exchange (and any error/issuer validation) in the external browser and
+        // bounced the result back here — the hand-off page always carries
+        // `success`. Notify the renderer directly; no second exchange needed.
+        const success = params.get('success') === 'true'
+        mainWindow?.webContents.send('mcp-oauth-callback', {
+          success,
+          mcpId: params.get('mcpId') || null,
+          error: success ? null : (params.get('error') || 'OAuth failed'),
         })
-        .catch((err) => {
-          console.error('Failed to complete MCP OAuth callback:', err)
-          mainWindow?.webContents.send('mcp-oauth-callback', {
-            success: false,
-            error: err.message || 'Failed to complete OAuth',
+      } else {
+        // Custom-scheme path: the app received the raw code/state, so forward to
+        // the local API server to complete the token exchange.
+        const apiUrl = `http://localhost:${actualApiPort}/api/remote-mcps/oauth-callback${callbackUrl.search}`
+        fetch(apiUrl)
+          .then(async (res) => {
+            const text = await res.text()
+            const success = text.includes('OAuth successful')
+            const mcpIdMatch = text.match(/mcpId:\s*'([^']+)'/)
+            mainWindow?.webContents.send('mcp-oauth-callback', {
+              success,
+              mcpId: mcpIdMatch?.[1] || null,
+              error: success ? null : 'OAuth failed',
+            })
           })
-        })
-      mainWindow.focus()
+          .catch((err) => {
+            console.error('Failed to complete MCP OAuth callback:', err)
+            mainWindow?.webContents.send('mcp-oauth-callback', {
+              success: false,
+              error: err.message || 'Failed to complete OAuth',
+            })
+          })
+      }
+      mainWindow?.focus()
     } catch (error) {
       console.error('Failed to parse MCP OAuth callback URL:', error)
-      mainWindow.webContents.send('mcp-oauth-callback', {
+      mainWindow?.webContents.send('mcp-oauth-callback', {
         success: false,
         error: 'Invalid callback URL',
       })

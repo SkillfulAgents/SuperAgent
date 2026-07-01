@@ -962,6 +962,49 @@ describe('SSRF protection', () => {
     })
   })
 
+  describe('POST /initiate-oauth — redirect candidates', () => {
+    it('offers the custom app scheme then an http loopback for Electron (so strict AS like cal.com can fall back)', async () => {
+      mockInitiateNewServerOAuth.mockResolvedValue({
+        authorizationUrl: 'https://auth.example.com/auth',
+        state: 'state-xyz',
+      })
+
+      const res = await app.request('http://localhost/api/remote-mcps/initiate-oauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Cal.com', url: 'https://mcp.cal.com/mcp', electron: true }),
+      })
+
+      expect(res.status).toBe(200)
+      const [url, name, candidates, electron] = mockInitiateNewServerOAuth.mock.calls[0]
+      expect(url).toBe('https://mcp.cal.com/mcp')
+      expect(name).toBe('Cal.com')
+      expect(electron).toBe(true)
+      // Custom scheme is preferred; the loopback comes from the request origin.
+      expect(candidates).toEqual([
+        'superagent://mcp-oauth-callback',
+        'http://localhost/api/remote-mcps/oauth-callback',
+      ])
+    })
+
+    it('offers only the http redirect for the web app', async () => {
+      mockInitiateNewServerOAuth.mockResolvedValue({
+        authorizationUrl: 'https://auth.example.com/auth',
+        state: 'state-xyz',
+      })
+
+      await app.request('http://localhost/api/remote-mcps/initiate-oauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Cal.com', url: 'https://mcp.cal.com/mcp' }),
+      })
+
+      const [, , candidates, electron] = mockInitiateNewServerOAuth.mock.calls[0]
+      expect(electron).toBe(false)
+      expect(candidates).toEqual(['http://localhost:3000/api/remote-mcps/oauth-callback'])
+    })
+  })
+
   describe('PATCH /:id — rejects unsafe URL updates', () => {
     it('rejects private host URL in update', async () => {
       mockDbFrom.mockReturnValue({ where: mockWhere })
@@ -1213,5 +1256,47 @@ describe('OAuth callback — postMessage origin', () => {
     expect(html).toContain('setTimeout(() => window.close(), 0)')
     expect(html).toContain('"success":true')
     expect(html).toContain('"mcpId":"mcp-new"')
+  })
+
+  it('hands the result back to the app via the custom scheme for the Electron http-loopback flow', async () => {
+    // Electron flow whose redirect was the http loopback (redirectWasScheme:false):
+    // this callback loads in the external browser, so it must bounce into the app.
+    mockCompleteOAuthFlow.mockResolvedValue({
+      success: true,
+      mcpId: 'mcp-new',
+      electron: true,
+      redirectWasScheme: false,
+    })
+    mockDbFrom.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ limit: mockLimit })
+    mockLimit.mockResolvedValue([
+      { id: 'mcp-new', url: 'https://mcp.example.com', accessToken: 'tok' },
+    ])
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ jsonrpc: '2.0', result: {}, id: 1 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }))
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ jsonrpc: '2.0', result: { tools: [] }, id: 2 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    )
+    mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
+    const res = await app.request(
+      'http://localhost/api/remote-mcps/oauth-callback?code=abc&state=xyz'
+    )
+
+    expect(res.status).toBe(200)
+    const html = await res.text()
+    expect(html).toContain('window.location.replace')
+    expect(html).toContain('superagent://mcp-oauth-callback?success=true')
+    expect(html).toContain('mcpId=mcp-new')
+    // NOT the web postMessage/BroadcastChannel bridge.
+    expect(html).not.toContain("new BroadcastChannel('mcp-oauth-callback')")
   })
 })

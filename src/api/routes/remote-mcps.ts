@@ -91,6 +91,52 @@ function renderMcpOAuthCallbackHtml(payload: McpOAuthCallbackPayload, message: s
   `
 }
 
+/**
+ * Callback page for the Electron http-loopback OAuth path. Unlike the custom
+ * scheme path (where the Electron main process fetches this route directly), this
+ * page is loaded in the user's external browser after the token exchange has
+ * already completed server-side. It hands the result back into the app via the
+ * custom scheme so the main process can notify the renderer over IPC.
+ */
+function renderMcpOAuthHandoffHtml(payload: McpOAuthCallbackPayload): string {
+  const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
+  const params = new URLSearchParams()
+  params.set('success', payload.success ? 'true' : 'false')
+  if (payload.mcpId) params.set('mcpId', payload.mcpId)
+  if (payload.error) params.set('error', payload.error)
+  const deepLink = `${protocol}://mcp-oauth-callback?${params.toString()}`
+
+  const message = payload.success
+    ? 'Authentication successful! Returning to the app…'
+    : `Authentication failed${payload.error ? `: ${payload.error}` : ''}. Returning to the app…`
+
+  return `
+    <html><body><script>
+      window.location.replace(${safeScriptJson(deepLink)});
+    </script>
+    <p>${escapeHtml(message)}</p>
+    <p><a href="${escapeHtml(deepLink)}">Click here if you are not returned automatically.</a></p>
+    </body></html>
+  `
+}
+
+/**
+ * Pick the right callback response. The Electron http-loopback path (loaded in
+ * the external browser) hands back via the custom scheme; every other case (web,
+ * or the Electron custom-scheme path fetched by the main process) uses the
+ * postMessage/BroadcastChannel/localStorage bridge.
+ */
+function mcpOAuthCallbackBody(
+  payload: McpOAuthCallbackPayload,
+  message: string,
+  delivery: { electron?: boolean; redirectWasScheme?: boolean },
+): string {
+  if (delivery.electron && delivery.redirectWasScheme === false) {
+    return renderMcpOAuthHandoffHtml(payload)
+  }
+  return renderMcpOAuthCallbackHtml(payload, message)
+}
+
 // Entry-path SSRF guard for the user-supplied MCP server URL. Delegates to the
 // shared policy so it cannot drift from the OAuth-discovery checks, which must
 // reject the same private/loopback hosts on every server-supplied metadata URL.
@@ -225,10 +271,24 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       ? body.clientSecret.trim()
       : undefined
 
+  // Ordered redirect candidates. In Electron we prefer the custom app scheme
+  // (port-independent, no external-browser hand-off needed) but fall back to an
+  // http loopback URL for authorization servers that reject non-http(s) redirects
+  // during dynamic client registration (e.g. cal.com). Web only has the http URL.
+  //
+  // The loopback base must come from the request URL's origin (http://localhost:<apiPort>),
+  // not getAppBaseUrlFromRequest: the packaged renderer is served from file://, so its
+  // fetches carry `Origin: null`. The AS redirects the external browser here to complete
+  // the flow, so the URL must be one the local API server actually answers on.
   const protocol = process.env.SUPERAGENT_PROTOCOL || 'superagent'
-  const redirectUri = body.electron
-    ? `${protocol}://mcp-oauth-callback`
+  // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
+  const loopbackRedirect = `${new URL(c.req.url).origin}/api/remote-mcps/oauth-callback`
+  const httpRedirect = body.electron
+    ? loopbackRedirect
     : `${getAppBaseUrlFromRequest(c)}/api/remote-mcps/oauth-callback`
+  const redirectCandidates = body.electron
+    ? [`${protocol}://mcp-oauth-callback`, httpRedirect]
+    : [httpRedirect]
 
   if (body.mcpId) {
     // Existing server re-auth
@@ -246,7 +306,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       return c.json({ error: 'MCP server not found' }, 404)
     }
 
-    const result = await initiateOAuthFlow(body.mcpId, server.url, redirectUri, clientNameOverride, clientIdOverride, clientSecretOverride)
+    const result = await initiateOAuthFlow(body.mcpId, server.url, redirectCandidates, !!body.electron, clientNameOverride, clientIdOverride, clientSecretOverride)
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(server.url)
@@ -265,7 +325,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     }
 
     // New server: OAuth-first flow (no DB insert yet)
-    const result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectUri, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
+    const result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(body.url.trim())
@@ -291,15 +351,17 @@ remoteMcps.get('/oauth-callback', async (c) => {
   if (error) {
     const issuerValidation = validateAndConsumeOAuthErrorResponse(state, iss)
     if (!issuerValidation.valid) {
-      return c.html(renderMcpOAuthCallbackHtml(
+      return c.html(mcpOAuthCallbackBody(
         { type: 'mcp-oauth-callback', success: false, error: 'OAuth callback validation failed' },
         'OAuth callback validation failed. You can close this window.',
+        issuerValidation,
       ))
     }
 
-    return c.html(renderMcpOAuthCallbackHtml(
+    return c.html(mcpOAuthCallbackBody(
       { type: 'mcp-oauth-callback', success: false, error },
       `OAuth error: ${error}. You can close this window.`,
+      issuerValidation,
     ))
   }
 
@@ -308,11 +370,13 @@ remoteMcps.get('/oauth-callback', async (c) => {
   }
 
   const result = await completeOAuthFlow(state, code, iss)
+  const delivery = { electron: result.electron, redirectWasScheme: result.redirectWasScheme }
 
   if (!result.success || !result.mcpId) {
-    return c.html(renderMcpOAuthCallbackHtml(
+    return c.html(mcpOAuthCallbackBody(
       { type: 'mcp-oauth-callback', success: false, error: 'Token exchange failed' },
       'OAuth failed. You can close this window.',
+      delivery,
     ))
   }
 
@@ -341,20 +405,22 @@ remoteMcps.get('/oauth-callback', async (c) => {
     // Tool discovery failed — delete the server so we don't leave a broken entry
     await db.delete(remoteMcpServers).where(eq(remoteMcpServers.id, result.mcpId))
     const errorMsg = err.message || 'Tool discovery failed'
-    return c.html(renderMcpOAuthCallbackHtml(
+    return c.html(mcpOAuthCallbackBody(
       {
         type: 'mcp-oauth-callback',
         success: false,
         error: `Connected but failed to discover tools: ${errorMsg}`,
       },
       'OAuth succeeded but tool discovery failed. You can close this window.',
+      delivery,
     ))
   }
 
   trackServerEvent('mcp_oauth_succeeded', { url: serverUrl, mcpId: result.mcpId })
-  return c.html(renderMcpOAuthCallbackHtml(
+  return c.html(mcpOAuthCallbackBody(
     { type: 'mcp-oauth-callback', success: true, mcpId: result.mcpId },
     'OAuth successful! You can close this window.',
+    delivery,
   ))
 })
 

@@ -205,6 +205,30 @@ export async function registerDynamicClient(
   }
 }
 
+/**
+ * Register a dynamic client, trying each candidate redirect URI in order until
+ * one is accepted. Returns the winning redirect URI alongside the credentials.
+ *
+ * Strict authorization servers (e.g. cal.com) reject any non-http(s) redirect
+ * during registration ("only http and https are allowed"), so the caller passes
+ * the custom app scheme first and an http loopback URL as the fallback. Whatever
+ * the AS accepts is what we must then use on the authorization and token
+ * requests — so it is returned here rather than assumed by the caller.
+ */
+async function registerDynamicClientWithFallback(
+  registrationEndpoint: string,
+  redirectCandidates: string[],
+  clientName: string,
+): Promise<{ clientId: string; clientSecret?: string; scope?: string; redirectUri: string } | null> {
+  for (const redirectUri of redirectCandidates) {
+    const registration = await registerDynamicClient(registrationEndpoint, redirectUri, clientName)
+    if (registration) {
+      return { ...registration, redirectUri }
+    }
+  }
+  return null
+}
+
 type PendingOAuthFlow = {
   codeVerifier: string
   redirectUri: string
@@ -217,6 +241,10 @@ type PendingOAuthFlow = {
   mcpId?: string
   newServer?: { name: string; url: string }
   userId?: string
+  // True when the flow was initiated by the Electron app. Combined with whether
+  // the winning redirect is the custom app scheme, this tells the callback route
+  // how to hand the result back (see completeOAuthFlow's return).
+  electron?: boolean
 }
 
 type OAuthIssuerValidationResult =
@@ -225,6 +253,23 @@ type OAuthIssuerValidationResult =
 
 // In-memory store for pending OAuth flows
 const pendingOAuthFlows = new Map<string, PendingOAuthFlow>()
+
+/**
+ * How the callback route should deliver the result to the client, derived from
+ * the pending flow. `redirectWasScheme` is true for the custom app scheme (any
+ * non-http(s) redirect) — that path is fetched+parsed by the Electron main
+ * process — and false for an http loopback redirect loaded in the external
+ * browser, which must be handed back to the app.
+ */
+function flowDeliveryFlags(flow: PendingOAuthFlow): {
+  electron: boolean
+  redirectWasScheme: boolean
+} {
+  return {
+    electron: flow.electron === true,
+    redirectWasScheme: !/^https?:/i.test(flow.redirectUri),
+  }
+}
 
 function validateAuthorizationResponseIssuer(
   flow: PendingOAuthFlow,
@@ -263,7 +308,7 @@ function validateAuthorizationResponseIssuer(
 export function validateAndConsumeOAuthErrorResponse(
   state: string | null | undefined,
   iss: string | null | undefined,
-): OAuthIssuerValidationResult {
+): OAuthIssuerValidationResult & { electron?: boolean; redirectWasScheme?: boolean } {
   if (!state) {
     return {
       valid: false,
@@ -279,14 +324,16 @@ export function validateAndConsumeOAuthErrorResponse(
     }
   }
 
+  const delivery = flowDeliveryFlags(flow)
+
   const validation = validateAuthorizationResponseIssuer(flow, iss)
   if (!validation.valid) {
     console.error('[mcp/oauth] Authorization error issuer validation failed:', validation.error)
-    return validation
+    return { ...validation, ...delivery }
   }
 
   pendingOAuthFlows.delete(state)
-  return { valid: true }
+  return { valid: true, ...delivery }
 }
 
 /**
@@ -296,7 +343,8 @@ export function validateAndConsumeOAuthErrorResponse(
 export async function initiateOAuthFlow(
   mcpId: string,
   mcpUrl: string,
-  redirectUri: string,
+  redirectCandidates: string[],
+  electron = false,
   clientNameOverride?: string,
   clientIdOverride?: string,
   clientSecretOverride?: string,
@@ -317,10 +365,14 @@ export async function initiateOAuthFlow(
     return null
   }
 
-  // Resolve client credentials: explicit override > stored > dynamic registration.
+  // Resolve client credentials: explicit override > dynamic registration > stored.
   let clientId: string | undefined
   let clientSecret: string | undefined
   let registeredScope: string | undefined
+  // Redirect actually used on the authorization + token requests. Defaults to the
+  // preferred candidate; dynamic registration may switch it to a fallback the AS
+  // accepts (e.g. an http loopback URL when the custom app scheme is rejected).
+  let redirectUri = redirectCandidates[0]
 
   // Check if we already have client credentials stored
   const [existing] = await db
@@ -332,20 +384,29 @@ export async function initiateOAuthFlow(
   if (clientIdOverride) {
     clientId = clientIdOverride
     clientSecret = clientSecretOverride || undefined
-  } else if (existing?.oauthClientId) {
-    clientId = existing.oauthClientId
-    clientSecret = existing.oauthClientSecret || undefined
   } else if (metadata.registration_endpoint) {
-    const registration = await registerDynamicClient(
+    // Prefer a fresh dynamic registration over a stored client_id on re-auth: it
+    // self-heals which redirect the AS accepts (custom scheme vs http loopback)
+    // and re-binds to the current loopback port, so a client first registered
+    // against a rejected scheme or a stale port doesn't break reconnection.
+    const registration = await registerDynamicClientWithFallback(
       metadata.registration_endpoint,
-      redirectUri,
+      redirectCandidates,
       clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
     )
     if (registration) {
       clientId = registration.clientId
       clientSecret = registration.clientSecret
       registeredScope = registration.scope
+      redirectUri = registration.redirectUri
+    } else if (existing?.oauthClientId) {
+      // Registration failed unexpectedly — fall back to the stored client.
+      clientId = existing.oauthClientId
+      clientSecret = existing.oauthClientSecret || undefined
     }
+  } else if (existing?.oauthClientId) {
+    clientId = existing.oauthClientId
+    clientSecret = existing.oauthClientSecret || undefined
   }
 
   if (!clientId) {
@@ -381,6 +442,7 @@ export async function initiateOAuthFlow(
     clientId,
     clientSecret,
     mcpId,
+    electron,
   })
 
   // Build authorization URL
@@ -426,7 +488,8 @@ export async function initiateOAuthFlow(
 export async function initiateNewServerOAuth(
   mcpUrl: string,
   name: string,
-  redirectUri: string,
+  redirectCandidates: string[],
+  electron = false,
   userId?: string,
   clientNameOverride?: string,
   clientIdOverride?: string,
@@ -449,20 +512,25 @@ export async function initiateNewServerOAuth(
   let clientId: string | undefined
   let clientSecret: string | undefined
   let registeredScope: string | undefined
+  // Redirect actually used on the authorization + token requests. Defaults to the
+  // preferred candidate; dynamic registration may switch it to a fallback the AS
+  // accepts (e.g. an http loopback URL when the custom app scheme is rejected).
+  let redirectUri = redirectCandidates[0]
 
   if (clientIdOverride) {
     clientId = clientIdOverride
     clientSecret = clientSecretOverride || undefined
   } else if (metadata.registration_endpoint) {
-    const registration = await registerDynamicClient(
+    const registration = await registerDynamicClientWithFallback(
       metadata.registration_endpoint,
-      redirectUri,
+      redirectCandidates,
       clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
     )
     if (registration) {
       clientId = registration.clientId
       clientSecret = registration.clientSecret
       registeredScope = registration.scope
+      redirectUri = registration.redirectUri
     }
   }
 
@@ -486,6 +554,7 @@ export async function initiateNewServerOAuth(
     clientSecret,
     newServer: { name, url: mcpUrl },
     userId,
+    electron,
   })
 
   let authUrl: URL
@@ -528,17 +597,23 @@ export async function completeOAuthFlow(
   state: string,
   code: string,
   iss?: string | null,
-): Promise<{ success: boolean; mcpId?: string }> {
+): Promise<{ success: boolean; mcpId?: string; electron?: boolean; redirectWasScheme?: boolean }> {
   const flow = pendingOAuthFlows.get(state)
   if (!flow) {
     console.error('[mcp/oauth] No pending flow for state:', state)
     return { success: false }
   }
 
+  // How the callback route should hand the result back: the custom app scheme
+  // path is fetched+parsed by the Electron main process (parseable HTML), while
+  // the http loopback path is loaded in the external browser (needs a hand-off
+  // back to the app).
+  const { electron, redirectWasScheme } = flowDeliveryFlags(flow)
+
   const issuerValidation = validateAuthorizationResponseIssuer(flow, iss)
   if (!issuerValidation.valid) {
     console.error('[mcp/oauth] Authorization response issuer validation failed:', issuerValidation.error)
-    return { success: false }
+    return { success: false, electron, redirectWasScheme }
   }
 
   pendingOAuthFlows.delete(state)
@@ -565,7 +640,7 @@ export async function completeOAuthFlow(
     if (!res.ok) {
       const errorBody = await res.text()
       console.error('[mcp/oauth] Token exchange failed:', res.status, errorBody)
-      return { success: false }
+      return { success: false, electron, redirectWasScheme }
     }
 
     const tokens: OAuthTokenResponse = await res.json()
@@ -594,7 +669,7 @@ export async function completeOAuthFlow(
         createdAt: now,
         updatedAt: now,
       })
-      return { success: true, mcpId: id }
+      return { success: true, mcpId: id, electron, redirectWasScheme }
     } else if (flow.mcpId) {
       // Existing server: UPDATE with tokens
       await db
@@ -608,13 +683,13 @@ export async function completeOAuthFlow(
           updatedAt: now,
         })
         .where(eq(remoteMcpServers.id, flow.mcpId))
-      return { success: true, mcpId: flow.mcpId }
+      return { success: true, mcpId: flow.mcpId, electron, redirectWasScheme }
     }
 
-    return { success: false }
+    return { success: false, electron, redirectWasScheme }
   } catch (error) {
     console.error('[mcp/oauth] Token exchange error:', error)
-    return { success: false }
+    return { success: false, electron, redirectWasScheme }
   }
 }
 
