@@ -1,24 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can successfully open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report it back in the chat interface using browser MCP tools.",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the expected response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut home page showing agents list",
-    "Clicked on agent \"QA-20260701-215924-w0mt\" — Successfully opened the agent chat interface",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully sent and agent began processing",
-    "Waited for agent to complete processing (waited for \"Working...\" status to disappear) — Agent completed all browser operations in 12 seconds",
-    "Verified response mentions \"Example Domain\" — Response clearly shows: \"The page title is \\\"Example Domain\\\".\" and \"I opened the browser at https://example.com — the page title is \\\"Example Domain\\\". Browser closed.\"",
-    "Captured final screenshot showing complete response with all browser tool calls (Open Browser, Browser Get State, Close Browser) executed successfully — Screenshot 04-final-response-with-example-domain.png confirms all requirements met"
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage with sidebar showing agents.",
+    "Clicked on \"QA-20260701-221525-t4nm\" agent in the sidebar — Successfully navigated to the agent page with message input box.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered into the textbox.",
+    "Clicked Send message button — Message successfully sent, and agent session created with URL showing the new session ID.",
+    "Waited for agent response (up to 3 minutes) — Agent completed work in approximately 10 seconds with status indicator showing task completion.",
+    "Verified response content — Response clearly states \"The page title is \\\"Example Domain\\\"\" and confirms \"Done — the page at https://example.com has the title \\\"Example Domain\\\". Browser closed.\"",
+    "Took screenshot — Screenshot captured showing the complete conversation flow with agent's response visible, including all tool calls (Open Browser → Browser Get State → Close Browser) with checkmarks indicating success."
   ],
   "bugs": [],
-  "durationMs": 72999,
-  "sessionId": "9e9002d0-4937-4311-a1a1-b0acbc441fc5",
+  "durationMs": 86312,
+  "sessionId": "e32ffdaa-255e-48bd-bed6-b15f1de97b00",
   "cost": {
-    "inputTokens": 390,
-    "outputTokens": 11832,
-    "cacheCreationTokens": 69070,
-    "cacheReadTokens": 1221870,
+    "inputTokens": 323,
+    "outputTokens": 10641,
+    "cacheCreationTokens": 65346,
+    "cacheReadTokens": 975636,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.268075
+    "totalCostUsd": 0.232774
   }
 }
