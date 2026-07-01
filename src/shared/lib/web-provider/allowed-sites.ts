@@ -41,3 +41,21 @@ export function applyAllowedSites(
 
   return { hits: kept, removed: hits.length - kept.length }
 }
+
+/**
+ * Single-URL variant of the same policy, for the fetch path: is this target URL's host allowed?
+ * Same rules as applyAllowedSites — a block beats an allow, an unparseable host can't be proven
+ * safe (rejected whenever a policy is active), and no policy (both empty) allows everything. The
+ * fetch route calls this on the target host BEFORE dispatching to the vendor.
+ */
+export function isUrlAllowed(url: string, policy: AllowedSitesPolicy): boolean {
+  const allowed = policy.allowedSites ?? []
+  const blocked = policy.blockedSites ?? []
+  if (allowed.length === 0 && blocked.length === 0) return true
+
+  const host = hostOf(url)
+  if (host === null) return false
+  if (blocked.length > 0 && matchesHostPatterns(host, blocked)) return false
+  if (allowed.length > 0 && !matchesHostPatterns(host, allowed)) return false
+  return true
+}

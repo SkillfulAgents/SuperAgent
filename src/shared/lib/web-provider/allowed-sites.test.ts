@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyAllowedSites } from './allowed-sites'
+import { applyAllowedSites, isUrlAllowed } from './allowed-sites'
 import type { WebSearchHit } from './types'
 
 function hit(url: string): WebSearchHit {
@@ -42,5 +42,35 @@ describe('applyAllowedSites', () => {
     const out = applyAllowedSites([hit('not a url')], { allowedSites: ['nytimes.com'] })
     expect(out.hits).toEqual([])
     expect(out.removed).toBe(1)
+  })
+})
+
+describe('isUrlAllowed (single-URL fetch target check)', () => {
+  it('allows any url when no policy is set', () => {
+    expect(isUrlAllowed('https://anything.com/x', {})).toBe(true)
+  })
+
+  it('rejects a url whose host matches a blocked pattern', () => {
+    expect(isUrlAllowed('https://evil.com/x', { blockedSites: ['evil.com'] })).toBe(false)
+  })
+
+  it('allows a url whose host is on the allow list', () => {
+    expect(isUrlAllowed('https://nytimes.com/x', { allowedSites: ['nytimes.com'] })).toBe(true)
+  })
+
+  it('rejects a url whose host is not on a non-empty allow list', () => {
+    expect(isUrlAllowed('https://other.com/x', { allowedSites: ['nytimes.com'] })).toBe(false)
+  })
+
+  it('honors *. wildcard subdomains in the allow list', () => {
+    expect(isUrlAllowed('https://blog.nytimes.com/x', { allowedSites: ['*.nytimes.com'] })).toBe(true)
+  })
+
+  it('lets a block override an allow for the same host', () => {
+    expect(isUrlAllowed('https://nytimes.com/x', { allowedSites: ['nytimes.com'], blockedSites: ['nytimes.com'] })).toBe(false)
+  })
+
+  it('rejects an unparseable url when a policy is active', () => {
+    expect(isUrlAllowed('not a url', { allowedSites: ['nytimes.com'] })).toBe(false)
   })
 })
