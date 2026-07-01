@@ -10,6 +10,7 @@ import type {
   VoiceSettings,
   AnalyticsTarget,
   LlmProviderId,
+  WebSearchProviderId,
 } from '@shared/lib/config/settings'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
@@ -56,6 +57,7 @@ export interface UpdateSettingsParams {
   container?: Partial<ContainerSettings>
   app?: Omit<Partial<AppPreferences>, 'faviconDataUrl'> & { faviconDataUrl?: string | null }
   llmProvider?: LlmProviderId
+  webSearchProvider?: WebSearchProviderId
   apiKeys?: {
     anthropicApiKey?: string
     openrouterApiKey?: string
@@ -71,6 +73,7 @@ export interface UpdateSettingsParams {
     openaiApiKey?: string
     nangoSecretKey?: string
     accountProviderUserId?: string
+    exaApiKey?: string
   }
   models?: Partial<ModelSettings>
   modelCatalog?: ModelCatalogSettings
