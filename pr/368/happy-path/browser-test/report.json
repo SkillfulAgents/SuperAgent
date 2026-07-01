@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the agent can successfully open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report it back in the chat interface using browser MCP tools.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut home page showing agents list",
+    "Clicked on agent \"QA-20260701-215924-w0mt\" — Successfully opened the agent chat interface",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully sent and agent began processing",
+    "Waited for agent to complete processing (waited for \"Working...\" status to disappear) — Agent completed all browser operations in 12 seconds",
+    "Verified response mentions \"Example Domain\" — Response clearly shows: \"The page title is \\\"Example Domain\\\".\" and \"I opened the browser at https://example.com — the page title is \\\"Example Domain\\\". Browser closed.\"",
+    "Captured final screenshot showing complete response with all browser tool calls (Open Browser, Browser Get State, Close Browser) executed successfully — Screenshot 04-final-response-with-example-domain.png confirms all requirements met"
+  ],
+  "bugs": [],
+  "durationMs": 72999,
+  "sessionId": "9e9002d0-4937-4311-a1a1-b0acbc441fc5",
+  "cost": {
+    "inputTokens": 390,
+    "outputTokens": 11832,
+    "cacheCreationTokens": 69070,
+    "cacheReadTokens": 1221870,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.268075
+  }
+}
