@@ -221,9 +221,9 @@ export class SessionPage {
   /**
    * Assert that the assistant message contains expected text
    */
-  async expectAssistantMessage(text: string, index = 0) {
+  async expectAssistantMessage(text: string, index = 0, timeout = 10000) {
     const messages = this.getAssistantMessages()
-    await expect(messages.nth(index)).toContainText(text)
+    await expect(messages.nth(index)).toContainText(text, { timeout })
   }
 
   /**
@@ -273,6 +273,18 @@ export class SessionPage {
     if (!(await target.isVisible())) {
       throw new Error('paginateToCard: target never became visible in the stack')
     }
+  }
+
+  private async waitForVisibleRequestCard(testId: string, timeout = 15000) {
+    const card = this.page.locator(`[data-testid="${testId}"]`).first()
+    await expect(card).toBeAttached({ timeout })
+
+    await expect.poll(async () => {
+      if (await card.isVisible().catch(() => false)) return 'visible'
+
+      await this.paginateToCard(card, 1000).catch(() => undefined)
+      return await card.isVisible().catch(() => false) ? 'visible' : 'hidden'
+    }, { timeout }).toBe('visible')
   }
 
   /**
@@ -429,7 +441,7 @@ export class SessionPage {
   // --- Script Run Request Helpers ---
 
   async waitForScriptRunRequest(timeout = 15000) {
-    await expect(this.page.locator('[data-testid="script-run-request"]').first()).toBeVisible({ timeout })
+    await this.waitForVisibleRequestCard('script-run-request', timeout)
   }
 
   getScriptRunRequests() {
@@ -449,7 +461,7 @@ export class SessionPage {
   // --- Proxy Review Request Helpers ---
 
   async waitForProxyReviewRequest(timeout = 15000) {
-    await expect(this.page.locator('[data-testid="proxy-review-request"]').first()).toBeVisible({ timeout })
+    await this.waitForVisibleRequestCard('proxy-review-request', timeout)
   }
 
   getProxyReviewRequests() {
@@ -502,7 +514,7 @@ export class SessionPage {
   // --- X-Agent Review Request Helpers ---
 
   async waitForXAgentReviewRequest(timeout = 15000) {
-    await expect(this.page.locator('[data-testid="xagent-review-request"]').first()).toBeVisible({ timeout })
+    await this.waitForVisibleRequestCard('xagent-review-request', timeout)
   }
 
   getXAgentReviewRequests() {
@@ -526,7 +538,7 @@ export class SessionPage {
   // --- Computer Use Request Helpers ---
 
   async waitForComputerUseRequest(timeout = 15000) {
-    await expect(this.page.locator('[data-testid="computer-use-request"]').first()).toBeVisible({ timeout })
+    await this.waitForVisibleRequestCard('computer-use-request', timeout)
   }
 
   getComputerUseRequests() {

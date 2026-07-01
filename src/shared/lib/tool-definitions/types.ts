@@ -110,6 +110,7 @@ export type UserRequestEvent =
       permissionLevel: string
       appName?: string
       agentSlug?: string
+      autoApproved?: boolean
     }
   | {
       type: 'tool_status'

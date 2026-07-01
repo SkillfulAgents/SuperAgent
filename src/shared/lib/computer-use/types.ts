@@ -44,6 +44,7 @@ export interface ComputerUseRequestEvent {
   permissionLevel: ComputerUsePermissionLevel
   appName?: string
   agentSlug?: string
+  autoApproved?: boolean
 }
 
 /** Read-only AC methods that only need list_apps_windows permission */
@@ -57,6 +58,37 @@ export const READ_ONLY_METHODS = new Set([
 export function getRequiredPermissionLevel(method: string): ComputerUsePermissionLevel {
   if (READ_ONLY_METHODS.has(method)) return 'list_apps_windows'
   return 'use_application'
+}
+
+const COMPUTER_USE_METHODS: Record<string, string> = {
+  apps: 'apps',
+  windows: 'windows',
+  snapshot: 'snapshot',
+  find: 'find',
+  screenshot: 'screenshot',
+  read: 'read',
+  status: 'status',
+  displays: 'displays',
+  permissions: 'permissions',
+  click: 'click',
+  type: 'type',
+  fill: 'fill',
+  key: 'key',
+  scroll: 'scroll',
+  select: 'select',
+  hover: 'hover',
+  launch: 'launch',
+  quit: 'quit',
+  grab: 'grab',
+  ungrab: 'ungrab',
+  menu: 'menuClick',
+  dialog: 'dialog',
+  run: 'run',
+}
+
+export function computerUseMethodFromToolName(toolName: string): string {
+  const suffix = toolName.replace('mcp__computer-use__computer_', '')
+  return COMPUTER_USE_METHODS[suffix] ?? suffix
 }
 
 /** Duration of "timed" permission grants in milliseconds (15 minutes) */

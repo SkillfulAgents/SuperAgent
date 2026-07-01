@@ -240,6 +240,12 @@ const EMPTY_AUTO_APPROVED_SET: ReadonlySet<string> = new Set()
 // StreamState to avoid threading a new field through ~15 state-rebuild sites.
 const sessionAutoApprovedScriptRunIds = new Map<string, Set<string>>()
 
+// Same suppression set for computer-use requests. Unlike most user-input tools,
+// computer-use can be auto-executed when the agent already has a matching grant.
+// The server still broadcasts autoApproved:true so streaming/history recovery
+// can tell "in flight but granted" apart from "actually waiting for approval".
+const sessionAutoApprovedComputerUseIds = new Map<string, Set<string>>()
+
 
 // Singleton EventSource connections per session (prevents duplicates from StrictMode/re-renders)
 const eventSources = new Map<string, EventSource>()
@@ -985,8 +991,18 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'computer_use_request') {
-        // Agent is requesting computer use on the host
-        if (current && !current.pendingComputerUseRequests.some(r => r.toolUseId === data.toolUseId)) {
+        // Agent is requesting computer use on the host. When autoApproved is
+        // true the backend is already executing it; record the id so fallback
+        // recovery does not surface a stale Allow/Deny card.
+        if (data.autoApproved) {
+          let approved = sessionAutoApprovedComputerUseIds.get(sessionId)
+          if (!approved) {
+            approved = new Set()
+            sessionAutoApprovedComputerUseIds.set(sessionId, approved)
+          }
+          approved.add(data.toolUseId)
+          streamListeners.get(sessionId)?.forEach((l) => l())
+        } else if (current && !current.pendingComputerUseRequests.some(r => r.toolUseId === data.toolUseId)) {
           const newRequest: ComputerUseRequest = {
             toolUseId: data.toolUseId,
             method: data.method,
@@ -1467,6 +1483,7 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
   const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
   const [thinking, setThinking] = useState<ThinkingState>(EMPTY_THINKING)
   const [autoApprovedScriptRunIds, setAutoApprovedScriptRunIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
+  const [autoApprovedComputerUseIds, setAutoApprovedComputerUseIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
   const [workflows, setWorkflows] = useState<WorkflowRunLive[]>(EMPTY_WORKFLOWS)
   const queryClient = useQueryClient()
 
@@ -1501,6 +1518,20 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         }
         return new Set(approved)
       })
+      const approvedComputerUse = sessionAutoApprovedComputerUseIds.get(sessionId)
+      setAutoApprovedComputerUseIds((prev) => {
+        if (!approvedComputerUse || approvedComputerUse.size === 0) {
+          return prev.size === 0 ? prev : EMPTY_AUTO_APPROVED_SET
+        }
+        if (prev.size === approvedComputerUse.size) {
+          let identical = true
+          for (const id of approvedComputerUse) {
+            if (!prev.has(id)) { identical = false; break }
+          }
+          if (identical) return prev
+        }
+        return new Set(approvedComputerUse)
+      })
       // Workflows are stored as immutable arrays (a new ref only on workflow events),
       // so a plain ref-equal set bails out of re-render on every other event.
       setWorkflows(sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS)
@@ -1515,6 +1546,8 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
       setState(EMPTY_STREAM_STATE)
       setSlashCommands([])
       setThinking(EMPTY_THINKING)
+      setAutoApprovedScriptRunIds(EMPTY_AUTO_APPROVED_SET)
+      setAutoApprovedComputerUseIds(EMPTY_AUTO_APPROVED_SET)
       setWorkflows(EMPTY_WORKFLOWS)
       return
     }
@@ -1545,5 +1578,5 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     }
   }, [sessionId, agentSlug, updateState, queryClient])
 
-  return { ...state, slashCommands, autoApprovedScriptRunIds, workflows, isThinking: thinking.isThinking, thinkingText: thinking.text }
+  return { ...state, slashCommands, autoApprovedScriptRunIds, autoApprovedComputerUseIds, workflows, isThinking: thinking.isThinking, thinkingText: thinking.text }
 }

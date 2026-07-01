@@ -69,7 +69,15 @@ vi.mock('@shared/lib/computer-use/permission-manager', () => ({
 }))
 
 vi.mock('@shared/lib/computer-use/types', () => ({
-  getRequiredPermissionLevel: vi.fn(() => 'use_application'),
+  computerUseMethodFromToolName: vi.fn((toolName: string) => {
+    const suffix = toolName.replace('mcp__computer-use__computer_', '')
+    return suffix === 'menu' ? 'menuClick' : suffix
+  }),
+  getRequiredPermissionLevel: vi.fn((method: string) => (
+    ['apps', 'windows', 'status', 'displays', 'permissions'].includes(method)
+      ? 'list_apps_windows'
+      : 'use_application'
+  )),
   resolveTargetApp: vi.fn(() => undefined),
   READ_ONLY_METHODS: new Set(['apps', 'windows', 'status', 'displays', 'permissions']),
   TIMED_GRANT_DURATION_MS: 15 * 60 * 1000,
@@ -2766,6 +2774,86 @@ describe('MessagePersister', () => {
       // what drives the orange agent-status indicator.
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
       vi.unstubAllGlobals()
+    })
+  })
+
+  // ============================================================================
+  // Computer use request detection
+  // ============================================================================
+
+  describe('Computer use request detection', () => {
+    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: toolName },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    it('auto-executes AND broadcasts with autoApproved:true when computer-use permission is granted', async () => {
+      const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
+      const originalE2eMock = process.env.E2E_MOCK
+      process.env.E2E_MOCK = 'true'
+      mockCheckPermission.mockReturnValue('granted')
+      sseEvents.length = 0
+      const fetchMock = vi.fn(() => Promise.resolve({ ok: true } as Response))
+      vi.stubGlobal('fetch', fetchMock)
+      const triggerSpy = vi.mocked(notificationManager.triggerSessionWaitingInput)
+      triggerSpy.mockClear()
+
+      try {
+        simulateToolUse('mcp__computer-use__computer_apps', 'tool-cu-granted', {
+          includeHidden: false,
+        })
+
+        await vi.waitFor(() => {
+          expect(fetchMock).toHaveBeenCalledTimes(1)
+        })
+
+        const computerUseEvents = sseEvents.filter(e => e.type === 'computer_use_request')
+        expect(computerUseEvents).toHaveLength(1)
+        expect(computerUseEvents[0]).toMatchObject({
+          type: 'computer_use_request',
+          toolUseId: 'tool-cu-granted',
+          method: 'apps',
+          params: { includeHidden: false },
+          permissionLevel: 'list_apps_windows',
+          agentSlug: AGENT_SLUG,
+          autoApproved: true,
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
+        expect(triggerSpy).not.toHaveBeenCalled()
+
+        const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+        expect(url).toContain(`/api/agents/${AGENT_SLUG}/sessions/_auto/computer-use`)
+        expect(init.method).toBe('POST')
+        const body = JSON.parse(init.body as string)
+        expect(body).toEqual({
+          toolUseId: 'tool-cu-granted',
+          method: 'apps',
+          params: { includeHidden: false },
+          permissionLevel: 'list_apps_windows',
+        })
+      } finally {
+        if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+        else process.env.E2E_MOCK = originalE2eMock
+        vi.unstubAllGlobals()
+      }
     })
   })
 
