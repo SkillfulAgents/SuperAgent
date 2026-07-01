@@ -76,6 +76,14 @@ describe('POST /api/web-fetch/fetch', () => {
     expect(res.status).toBe(400)
   })
 
+  it('400 (and never dispatches) for a non-http(s) scheme', async () => {
+    const fetchFn = vi.fn()
+    mockGetActiveWebFetchProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
+    const res = await fetchReq({ url: 'file:///etc/passwd' })
+    expect(res.status).toBe(400)
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
   it('returns the document on success and forwards options to the provider', async () => {
     const fetchFn = vi.fn().mockResolvedValue(doc())
     mockGetActiveWebFetchProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })

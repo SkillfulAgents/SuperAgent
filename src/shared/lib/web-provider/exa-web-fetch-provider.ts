@@ -43,9 +43,6 @@ export class ExaWebFetchProvider extends BaseWebFetchProvider {
       // ALWAYS false: Exa defaults this to true, which silently DROPS a failed/empty URL from
       // results[] and breaks one-doc-per-URL mapping (§15). false keeps it so we map empty content.
       filterEmptyResults: false,
-      // Freshness intent when set; omit otherwise so Exa may serve from cache (§15). The deferred
-      // section/verbosity knobs would force maxAgeHours:0 + a cache-bypass warning — none in v1.
-      ...(opts.maxAgeHours != null ? { maxAgeHours: opts.maxAgeHours } : {}),
     })
 
     const json = await this.fetchJson(EXA_CONTENTS_URL, {

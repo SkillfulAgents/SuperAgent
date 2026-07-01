@@ -127,16 +127,6 @@ describe('ExaWebFetchProvider.fetch', () => {
     expect(body.text.maxCharacters).toBeLessThanOrEqual(100_000)
   })
 
-  it('sends maxAgeHours only when set (cache freshness intent)', async () => {
-    const fetchMock = mockFetch({ results: [{ url: 'https://r.com', title: 'R', text: 'c' }] })
-    await new ExaWebFetchProvider().fetch('https://r.com', {})
-    expect('maxAgeHours' in JSON.parse(fetchMock.mock.calls[0][1].body)).toBe(false)
-
-    const fetchMock2 = mockFetch({ results: [{ url: 'https://r.com', title: 'R', text: 'c' }] })
-    await new ExaWebFetchProvider().fetch('https://r.com', { maxAgeHours: 24 })
-    expect(JSON.parse(fetchMock2.mock.calls[0][1].body).maxAgeHours).toBe(24)
-  })
-
   it('throws a clear error when no api key is configured', async () => {
     mockSettings({})
     mockFetch({ results: [] })

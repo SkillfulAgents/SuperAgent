@@ -35,10 +35,10 @@ export interface WebSearchResponse {
 export type WebFetchProviderId = 'native' | 'exa'
 
 export interface WebFetchOptions {
-  maxChars?: number // -> Exa text.maxCharacters (content-length bound)
-  maxAgeHours?: number // -> Exa contents freshness intent (cache staleness bound)
-  // ---- Slice-2 deferred (re-add at fetch vendor #2) ----
-  // format?, verbosity?, includeSections?, excludeSections?, highlights?, objective?
+  maxChars?: number // -> Exa text.maxCharacters (content-length bound); the only option wired end-to-end in v1
+  // ---- Slice-2 deferred (re-add per field, wired end-to-end, when a consumer needs it) ----
+  // maxAgeHours? (Exa cache-freshness intent), format?, verbosity?, includeSections?,
+  // excludeSections?, highlights?, objective?
 }
 
 export interface WebFetchResult {

@@ -73,4 +73,21 @@ describe('isUrlAllowed (single-URL fetch target check)', () => {
   it('rejects an unparseable url when a policy is active', () => {
     expect(isUrlAllowed('not a url', { allowedSites: ['nytimes.com'] })).toBe(false)
   })
+
+  it('normalizes a trailing-dot FQDN so it cannot slip past the blocklist', () => {
+    expect(isUrlAllowed('https://evil.com./x', { blockedSites: ['evil.com'] })).toBe(false)
+  })
+
+  it('treats an empty-authority url (host "") as unparseable when a policy is active', () => {
+    expect(isUrlAllowed('file:///etc/passwd', { blockedSites: ['evil.com'] })).toBe(false)
+  })
+
+  it('normalizes a trailing-dot PATTERN so it still blocks the bare host (symmetric)', () => {
+    expect(isUrlAllowed('https://evil.com/x', { blockedSites: ['evil.com.'] })).toBe(false)
+  })
+
+  it('matches patterns case-insensitively', () => {
+    expect(isUrlAllowed('https://evil.com/x', { blockedSites: ['EVIL.COM'] })).toBe(false)
+    expect(isUrlAllowed('https://sub.NyTimes.com/x', { allowedSites: ['*.nytimes.com'] })).toBe(true)
+  })
 })
