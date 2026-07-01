@@ -43,6 +43,7 @@ function mcpToolNames(
 import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 import { resolveWebSearchToolInPrompt } from './web-search-prompt';
+import { resolveWebFetchToolInPrompt } from './web-fetch-prompt';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -121,10 +122,17 @@ function generateSystemPrompt(
   userSystemPrompt?: string,
   modelPromptHints?: string[],
   webSearchProvider?: string,
+  webFetchProvider?: string,
 ): string {
   const sections: string[] = [];
 
-  sections.push(resolveWebSearchToolInPrompt(SYSTEM_PROMPT, webSearchProvider));
+  // Relabel each native web tool the model no longer has to the vendor MCP tool that replaced it.
+  sections.push(
+    resolveWebFetchToolInPrompt(
+      resolveWebSearchToolInPrompt(SYSTEM_PROMPT, webSearchProvider),
+      webFetchProvider,
+    ),
+  );
 
   if (modelPromptHints?.length) {
     sections.push(`## Model-Specific Instructions
@@ -306,6 +314,7 @@ export interface ClaudeCodeProcessOptions {
   browserModel?: string;
   dashboardBuilderModel?: string;
   webSearchProvider?: string;
+  webFetchProvider?: string;
   maxOutputTokens?: number;
   maxThinkingTokens?: number;
   maxTurns?: number;
@@ -326,6 +335,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
   private webSearchProvider: string | undefined;
+  private webFetchProvider: string | undefined;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -351,6 +361,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.browserModel = options.browserModel;
     this.dashboardBuilderModel = options.dashboardBuilderModel;
     this.webSearchProvider = options.webSearchProvider;
+    this.webFetchProvider = options.webFetchProvider;
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
@@ -361,7 +372,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.availableEnvVars,
       options.userSystemPrompt,
       options.modelPromptHints,
-      options.webSearchProvider
+      options.webSearchProvider,
+      options.webFetchProvider
     );
     // Set module-level reference for tools that need access to the process
     currentProcess = this;
@@ -459,6 +471,8 @@ export class ClaudeCodeProcess extends EventEmitter {
           'EnterWorktree', 'ExitWorktree',
           // Suppress native WebSearch only when a host vendor is active; it's replaced by mcp__web__web_search.
           ...(this.webSearchProvider ? ['WebSearch'] : []),
+          // Same for native WebFetch → mcp__web__web_fetch when a host fetch vendor is active.
+          ...(this.webFetchProvider ? ['WebFetch'] : []),
         ],
         // Request summarized thinking so reasoning text streams to the UI. Without an
         // explicit `display`, Opus 4.8/4.7 default to `omitted` — thinking_delta events
@@ -491,7 +505,9 @@ export class ClaudeCodeProcess extends EventEmitter {
           'dashboards': createDashboardsMcpServer(),
           'agents': createAgentsMcpServer(() => this.sessionId),
           'chat': createChatMcpServer(),
-          ...(this.webSearchProvider ? { 'web': createWebMcpServer() } : {}),
+          ...((this.webSearchProvider || this.webFetchProvider)
+            ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
+            : {}),
           ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? { 'computer-use': createComputerUseMcpServer() } : {}),
           ...remoteMcpConfigs,
         },

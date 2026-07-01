@@ -24,7 +24,7 @@ import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
-import { getActiveWebSearchProvider } from '../web-provider'
+import { getActiveWebFetchProvider, getActiveWebSearchProvider } from '../web-provider'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 const execAsync = promisify(exec)
@@ -1007,6 +1007,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // resolveContainerModel). Resolved once here from global settings so every session-creation
     // caller inherits it; undefined means native (no host vendor, the container keeps WebSearch).
     const webSearchProvider = getActiveWebSearchProvider()?.id
+    // Same resolution for the active web fetch vendor id (non-secret); undefined means native (no
+    // host vendor, the container keeps WebFetch).
+    const webFetchProvider = getActiveWebFetchProvider()?.id
 
     try {
       const controller = new AbortController()
@@ -1026,6 +1029,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           browserModel: resolvedBrowserModel,
           dashboardBuilderModel: resolvedDashboardBuilderModel,
           webSearchProvider,
+          webFetchProvider,
           maxOutputTokens: options.maxOutputTokens,
           maxThinkingTokens: options.maxThinkingTokens,
           maxTurns: options.maxTurns,

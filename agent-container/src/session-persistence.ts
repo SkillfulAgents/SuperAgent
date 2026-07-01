@@ -15,6 +15,7 @@ interface SessionMetadata {
   browserModel?: string;
   dashboardBuilderModel?: string;
   webSearchProvider?: string;
+  webFetchProvider?: string;
   maxOutputTokens?: number;
   maxThinkingTokens?: number;
   maxTurns?: number;

@@ -39,3 +39,33 @@ export function formatWebSearchResults(data: WebSearchHostResult): string {
 
   return lines.join('\n')
 }
+
+export interface WebFetchHostDoc {
+  url: string
+  title: string | null
+  content: string
+  publishedDate?: string
+  fetchedAt: string
+}
+
+export interface WebFetchHostResult {
+  result: WebFetchHostDoc
+  warnings?: string[]
+}
+
+/**
+ * Format the host /web-fetch/fetch response into the text block the agent reads: a title/url header
+ * (plus publish date when present) followed by the page's full content. Pure (no SDK / network).
+ */
+export function formatWebFetchResult(data: WebFetchHostResult): string {
+  const { result } = data
+  const lines: string[] = [result.title ?? result.url, result.url]
+  if (result.publishedDate) lines.push(`Published: ${result.publishedDate}`)
+  lines.push('', result.content || '(no content returned)')
+
+  if (data.warnings && data.warnings.length > 0) {
+    lines.push('', `Note: ${data.warnings.join('; ')}`)
+  }
+
+  return lines.join('\n')
+}

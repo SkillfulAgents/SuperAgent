@@ -82,8 +82,9 @@ const definitions: Record<string, ToolDefinition> = {
   // Web tools
   WebSearch: webSearchDef,
   WebFetch: webFetchDef,
-  // Vendor-backed web tool (when a host search provider is active); reuses the native definition.
+  // Vendor-backed web tools (when a host provider is active); reuse the native definitions.
   'mcp__web__web_search': webSearchDef,
+  'mcp__web__web_fetch': webFetchDef,
 
   // Task management
   TodoWrite: todoWriteDef,
