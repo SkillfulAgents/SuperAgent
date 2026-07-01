@@ -47,16 +47,8 @@ export function applyAllowedSites(
     return { hits, removed: 0 }
   }
 
-  const blockedPatterns = normalizePatterns(blocked)
-  const allowedPatterns = normalizePatterns(allowed)
-  const kept = hits.filter((h) => {
-    const host = hostOf(h.url)
-    if (host === null) return false
-    if (blockedPatterns.length > 0 && matchesHostPatterns(host, blockedPatterns)) return false
-    if (allowedPatterns.length > 0 && !matchesHostPatterns(host, allowedPatterns)) return false
-    return true
-  })
-
+  // Reuse the single-URL predicate so the search filter and the fetch gate are provably one rule.
+  const kept = hits.filter((h) => isUrlAllowed(h.url, policy))
   return { hits: kept, removed: hits.length - kept.length }
 }
 

@@ -73,6 +73,14 @@ describe('mapExaContentsResponse', () => {
     expect(res.content).toBe('')
   })
 
+  it('maps a title-less failed stub gracefully (title→null, content→"") instead of throwing', () => {
+    // filterEmptyResults:false keeps an unextractable-URL stub that can omit `title` entirely.
+    const res = mapExaContentsResponse({ results: [{ url: 'https://example.com/a', text: '' }] }, AT)
+    expect(res.title).toBeNull()
+    expect(res.content).toBe('')
+    expect(res.url).toBe('https://example.com/a')
+  })
+
   it('keeps a null title as null', () => {
     const res = mapExaContentsResponse({ results: [{ url: 'https://example.com/a', title: null, text: 'x' }] }, AT)
     expect(res.title).toBeNull()

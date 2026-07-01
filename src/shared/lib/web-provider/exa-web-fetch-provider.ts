@@ -18,7 +18,7 @@ export function mapExaContentsResponse(raw: unknown, fetchedAt: string): WebFetc
   if (!first) throw new Error('Exa returned no content for the requested URL')
   return {
     url: first.url,
-    title: first.title,
+    title: first.title ?? null, // failed/empty stubs (filterEmptyResults:false) may omit title
     content: first.text ?? '',
     ...(first.publishedDate ? { publishedDate: first.publishedDate } : {}),
     fetchedAt,

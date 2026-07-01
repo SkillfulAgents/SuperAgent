@@ -1360,6 +1360,17 @@ describe('settings route', () => {
       expect(saved.webSearchProvider).toBe('exa')
     })
 
+    it('preserves webFetchProvider when not provided (PUT must not strip it)', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        webFetchProvider: 'exa',
+      })
+      const res = await putSettings({ app: { showMenuBarIcon: false } })
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.webFetchProvider).toBe('exa')
+    })
+
     it('allows setting llmProvider to undefined explicitly', async () => {
       mockGetSettings.mockReturnValue({
         ...defaultSettings(),

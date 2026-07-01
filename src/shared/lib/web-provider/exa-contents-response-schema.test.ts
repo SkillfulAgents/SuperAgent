@@ -40,6 +40,13 @@ describe('ExaContentsResponseSchema', () => {
     expect(parsed.results[0].publishedDate).toBeUndefined()
   })
 
+  it('accepts a failed stub that OMITS title (contents relaxes title vs the shared search schema)', () => {
+    const parsed = ExaContentsResponseSchema.parse({
+      results: [{ url: 'https://example.com/d', text: '' }],
+    })
+    expect(parsed.results[0].title).toBeUndefined()
+  })
+
   it('rejects a result missing the url', () => {
     expect(() =>
       ExaContentsResponseSchema.parse({ results: [{ title: 'no url', text: 'x' }] })
