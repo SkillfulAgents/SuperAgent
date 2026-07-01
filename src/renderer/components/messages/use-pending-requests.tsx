@@ -13,7 +13,7 @@ import {
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingProxyReviews, type PendingReview } from '@renderer/hooks/use-proxy-reviews'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
-import { getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
+import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '@shared/lib/tool-definitions/ask-user-question'
 
 interface UsePendingRequestsArgs {
@@ -44,37 +44,6 @@ type RequestToolCall = {
   id: string
   name: string
   input: unknown
-}
-
-const COMPUTER_USE_METHODS: Record<string, string> = {
-  apps: 'apps',
-  windows: 'windows',
-  snapshot: 'snapshot',
-  find: 'find',
-  screenshot: 'screenshot',
-  read: 'read',
-  status: 'status',
-  displays: 'displays',
-  permissions: 'permissions',
-  click: 'click',
-  type: 'type',
-  fill: 'fill',
-  key: 'key',
-  scroll: 'scroll',
-  select: 'select',
-  hover: 'hover',
-  launch: 'launch',
-  quit: 'quit',
-  grab: 'grab',
-  ungrab: 'ungrab',
-  menu: 'menuClick',
-  dialog: 'dialog',
-  run: 'run',
-}
-
-function computerUseMethodFromToolName(toolName: string): string {
-  const suffix = toolName.replace('mcp__computer-use__computer_', '')
-  return COMPUTER_USE_METHODS[suffix] ?? suffix
 }
 
 function recordFromInput(input: unknown): Record<string, unknown> {
@@ -237,6 +206,7 @@ export function usePendingRequests({
     pendingComputerUseRequests: sseComputerUseRequests,
     streamingToolUses,
     autoApprovedScriptRunIds,
+    autoApprovedComputerUseIds,
   } = useMessageStream(sessionId, agentSlug)
 
   const { data: proxyReviewsData, refetch: refetchProxyReviews } = usePendingProxyReviews(agentSlug)
@@ -414,13 +384,14 @@ export function usePendingRequests({
     const messageBased = isActive ? messagesBasedPendingRequests.computerUseRequests : []
     const streamingBased = isActive ? streamingBasedPendingRequests.computerUseRequests : []
     for (const req of [...sseComputerUseRequests, ...streamingBased, ...messageBased]) {
+      if (autoApprovedComputerUseIds.has(req.toolUseId)) continue
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseComputerUseRequests, streamingBasedPendingRequests.computerUseRequests, messagesBasedPendingRequests.computerUseRequests, isActive])
+  }, [sseComputerUseRequests, streamingBasedPendingRequests.computerUseRequests, messagesBasedPendingRequests.computerUseRequests, isActive, autoApprovedComputerUseIds])
 
   // Track arrival order so the stack is chronological. Each id gets a
   // monotonically increasing sequence number the first time it appears.

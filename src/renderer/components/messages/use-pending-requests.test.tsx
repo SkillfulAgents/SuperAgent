@@ -28,6 +28,7 @@ const mockStreamState = {
   pendingComputerUseRequests: [] as Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }>,
   streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string; ready?: boolean }>,
   autoApprovedScriptRunIds: new Set<string>(),
+  autoApprovedComputerUseIds: new Set<string>(),
 }
 
 const mockRemovers = {
@@ -107,6 +108,7 @@ describe('usePendingRequests', () => {
       pendingComputerUseRequests: [],
       streamingToolUses: [],
       autoApprovedScriptRunIds: new Set<string>(),
+      autoApprovedComputerUseIds: new Set<string>(),
     })
   })
 
@@ -426,7 +428,7 @@ describe('usePendingRequests', () => {
     expect(matches[0].url).toBe('https://mcp.example.com')
   })
 
-  it('derives computer-use pending request from message history when active', () => {
+  it('derives computer-use pending request from message history when active and not auto-approved', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [
       createAssistantMessage({
@@ -454,6 +456,28 @@ describe('usePendingRequests', () => {
     })
   })
 
+  it('suppresses computer-use message-history fallback when the backend auto-approved it', () => {
+    mockStreamState.isActive = true
+    mockStreamState.autoApprovedComputerUseIds = new Set(['tc-cu-auto'])
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-cu-auto',
+            name: 'mcp__computer-use__computer_apps',
+            input: { includeHidden: false },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
+  })
+
   it('derives computer-use pending request from ready streaming tool use', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = []
@@ -477,6 +501,24 @@ describe('usePendingRequests', () => {
       permissionLevel: 'use_application',
       appName: 'Safari',
     })
+  })
+
+  it('suppresses computer-use streaming fallback when the backend auto-approved it', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockStreamState.autoApprovedComputerUseIds = new Set(['stream-cu-auto'])
+    mockStreamState.streamingToolUses = [
+      {
+        id: 'stream-cu-auto',
+        name: 'mcp__computer-use__computer_click',
+        partialInput: JSON.stringify({ app: 'Safari', x: 10, y: 20 }),
+        ready: true,
+      },
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'computer_use')).toHaveLength(0)
   })
 
   it('coerces a non-array requirements to [] (model emitted a bare string)', () => {

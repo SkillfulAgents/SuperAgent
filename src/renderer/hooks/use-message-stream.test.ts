@@ -1963,6 +1963,54 @@ describe('useMessageStream', () => {
       expect(result.current.autoApprovedScriptRunIds.size).toBe(0)
     })
 
+    it('autoApproved:true computer-use request populates suppress-set and skips pendingComputerUseRequests', async () => {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+
+      const { result } = renderHook(
+        () => mod.useMessageStream('session-auto-cu-1', 'agent-1'),
+        { wrapper }
+      )
+
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+
+      act(() => {
+        es.simulateMessage({
+          type: 'computer_use_request',
+          toolUseId: 'tool-cu-auto',
+          method: 'apps',
+          params: {},
+          permissionLevel: 'list_apps_windows',
+          autoApproved: true,
+        })
+      })
+
+      await vi.waitFor(() => {
+        expect(result.current.autoApprovedComputerUseIds.has('tool-cu-auto')).toBe(true)
+      })
+
+      expect(result.current.pendingComputerUseRequests).toHaveLength(0)
+    })
+
+    it('default autoApprovedComputerUseIds is empty for a fresh session', async () => {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+
+      const { result } = renderHook(
+        () => mod.useMessageStream('session-auto-cu-empty', 'agent-1'),
+        { wrapper }
+      )
+
+      expect(result.current.autoApprovedComputerUseIds.size).toBe(0)
+    })
+
     it('mixes autoApproved and prompt requests independently', async () => {
       const mod = await getHookModule()
       const wrapper = createWrapper()
@@ -2293,8 +2341,6 @@ describe('useMessageStream', () => {
           partialInput: '',
         })
       })
-
-      const toolUsesBefore = result.current.streamingToolUses
 
       // Send tool_use_ready for a non-existent tool
       act(() => {

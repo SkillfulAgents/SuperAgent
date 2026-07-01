@@ -39,7 +39,7 @@ import { VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
-import { getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
+import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp, type ComputerUsePermissionLevel } from '@shared/lib/computer-use/types'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
@@ -3063,19 +3063,8 @@ ${continuation}`
     agentSlug?: string,
   ): Promise<void> {
     try {
-      // Extract AC method from tool name: mcp__computer-use__computer_launch → launch
-      // Tool names follow the pattern: mcp__computer-use__computer_{method}
-      const toolSuffix = toolName.replace('mcp__computer-use__computer_', '')
-      // Map tool suffixes to AC method names
-      const methodMap: Record<string, string> = {
-        apps: 'apps', windows: 'windows', snapshot: 'snapshot', find: 'find',
-        screenshot: 'screenshot', read: 'read', status: 'status', displays: 'displays',
-        permissions: 'permissions', click: 'click', type: 'type', fill: 'fill',
-        key: 'key', scroll: 'scroll', select: 'select', hover: 'hover',
-        launch: 'launch', quit: 'quit', grab: 'grab', ungrab: 'ungrab',
-        menu: 'menuClick', dialog: 'dialog', run: 'run',
-      }
-      const method = methodMap[toolSuffix] || toolSuffix
+      // Extract AC method from tool name: mcp__computer-use__computer_launch -> launch.
+      const method = computerUseMethodFromToolName(toolName)
 
       // The toolInput is the raw MCP tool input (e.g., { name: "Calculator" } for computer_launch)
       // Empty input is valid for tools like screenshot, apps, ungrab that take no required params
@@ -3114,7 +3103,19 @@ ${continuation}`
         const permissionResult = computerUsePermissionManager.checkPermission(agentSlug, permissionLevel, appName)
 
         if (permissionResult === 'granted') {
-          // Auto-execute: permission already granted
+          // Auto-execute: permission already granted. Broadcast with autoApproved
+          // so clients can suppress streaming/message-history fallback prompts
+          // during the window before the tool result is persisted.
+          this.broadcastToSSE(sessionId, {
+            type: 'computer_use_request',
+            toolUseId,
+            method,
+            params,
+            permissionLevel,
+            appName,
+            agentSlug,
+            autoApproved: true,
+          })
           this.autoExecuteComputerUseCommand(sessionId, agentSlug, toolUseId, method, params, permissionLevel, appName)
           return
         }
@@ -3138,6 +3139,7 @@ ${continuation}`
         permissionLevel,
         appName,
         agentSlug,
+        autoApproved: false,
       })
 
       // Renderer-side gate handles suppression; see session_complete trigger.
