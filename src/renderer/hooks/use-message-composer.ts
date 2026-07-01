@@ -209,6 +209,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     isDragOver,
     addFiles,
     removeAttachment,
+    clearAttachments,
     handleFileSelect,
     handleFolderSelect,
     dragHandlers,

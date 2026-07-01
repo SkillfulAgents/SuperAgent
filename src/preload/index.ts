@@ -334,6 +334,81 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeUpdateStatus: () => {
     ipcRenderer.removeAllListeners('update-status')
   },
+
+  // --- Quick-dispatch launcher ---
+
+  // Fired by the launcher renderer after an agent is dispatched: hide the panel
+  // and raise the main window on the new session.
+  quickDispatchDispatched: (payload: { agentSlug: string; sessionId: string }) => {
+    ipcRenderer.send('quick-dispatch:dispatched', payload)
+  },
+  // Dismiss the launcher (Esc / blur from the renderer).
+  quickDispatchClose: () => {
+    ipcRenderer.send('quick-dispatch:close')
+  },
+  // Report measured content height so the frameless panel hugs its contents.
+  quickDispatchResize: (height: number) => {
+    ipcRenderer.send('quick-dispatch:resize', height)
+  },
+  // Suppress blur-to-hide while a native picker is open (true), then restore (false).
+  quickDispatchSetModal: (open: boolean) => {
+    ipcRenderer.send('quick-dispatch:set-modal', open)
+  },
+  // "Set up voice input" → open the main window's settings.
+  quickDispatchOpenSettings: () => {
+    ipcRenderer.send('quick-dispatch:open-settings')
+  },
+  // JS window-drag: the panel can't use a CSS drag region (inert to file drops),
+  // so the renderer drives the move — start, then stream cursor deltas, then end.
+  quickDispatchDragStart: () => {
+    ipcRenderer.send('quick-dispatch:drag-start')
+  },
+  quickDispatchDragMove: (delta: { dx: number; dy: number }) => {
+    ipcRenderer.send('quick-dispatch:drag-move', delta)
+  },
+  quickDispatchDragEnd: () => {
+    ipcRenderer.send('quick-dispatch:drag-end')
+  },
+  // Main → launcher: the panel was just shown (focus input, re-measure).
+  onQuickDispatchShown: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:shown', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:shown', handler)
+    }
+  },
+  // Main → launcher: a second shortcut press while open → toggle dictation.
+  onQuickDispatchToggleDictation: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:toggle-dictation', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:toggle-dictation', handler)
+    }
+  },
+  // Pull the queued dock-drop / "Open With" file paths (race-free: the renderer
+  // drains on mount and on the `attach-pending` ping below).
+  quickDispatchDrainAttach: (): Promise<string[]> => ipcRenderer.invoke('quick-dispatch:drain-attach'),
+  // Main → launcher: files are queued for attach — drain them now.
+  onQuickDispatchAttachPending: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:attach-pending', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:attach-pending', handler)
+    }
+  },
+  // Main → launcher: the panel was hidden — reset transient state (attachments).
+  onQuickDispatchReset: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:reset', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:reset', handler)
+    }
+  },
+  // Re-bind the global launcher shortcut (from Settings). Resolves to the
+  // registration result so the UI can surface conflicts.
+  setGlobalDispatchShortcut: (accelerator: string): Promise<{ success: boolean; error?: string }> => {
+    return ipcRenderer.invoke('set-global-dispatch-shortcut', accelerator)
+  },
 })
 
 // OAuth callback params from main process
@@ -417,6 +492,20 @@ declare global {
       getUpdateStatus: () => Promise<any>
       onUpdateStatus: (callback: (status: any) => void) => () => void
       removeUpdateStatus: () => void
+      quickDispatchDispatched: (payload: { agentSlug: string; sessionId: string }) => void
+      quickDispatchClose: () => void
+      quickDispatchResize: (height: number) => void
+      quickDispatchSetModal: (open: boolean) => void
+      quickDispatchOpenSettings: () => void
+      quickDispatchDragStart: () => void
+      quickDispatchDragMove: (delta: { dx: number; dy: number }) => void
+      quickDispatchDragEnd: () => void
+      onQuickDispatchShown: (callback: () => void) => () => void
+      onQuickDispatchToggleDictation: (callback: () => void) => () => void
+      quickDispatchDrainAttach: () => Promise<string[]>
+      onQuickDispatchAttachPending: (callback: () => void) => () => void
+      onQuickDispatchReset: (callback: () => void) => () => void
+      setGlobalDispatchShortcut: (accelerator: string) => Promise<{ success: boolean; error?: string }>
     }
   }
 }

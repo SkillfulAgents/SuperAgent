@@ -2,7 +2,7 @@ import { createContext, useContext, useCallback } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { settingsSearchSchema } from '@renderer/router/search-schemas'
 
-interface DialogContextType {
+export interface DialogContextType {
   /** Open global settings (optionally to a tab); captures the current location as `?from=`. */
   openSettings: (tab?: string) => void
   /** Close settings → push back to the captured `?from=` origin (or home on a cold deep-link). */
@@ -10,7 +10,10 @@ interface DialogContextType {
   openWizard: () => void
 }
 
-const DialogContext = createContext<DialogContextType | null>(null)
+// Exported so router-free surfaces (e.g. the standalone quick-dispatch window)
+// can supply their own value — VoiceInputButton reads useDialogs().openSettings,
+// but the real DialogProvider needs the router, which those surfaces don't mount.
+export const DialogContext = createContext<DialogContextType | null>(null)
 
 /**
  * Global settings lives at a URL (`/settings`, `/settings/$tab`); DialogContext is

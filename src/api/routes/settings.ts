@@ -31,6 +31,7 @@ import {
   type GlobalSettingsResponse,
 } from '@shared/lib/config/settings'
 import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
+import { isValidAccelerator } from '@shared/lib/config/shortcuts'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
 import { containerManager } from '@shared/lib/container/container-manager'
@@ -376,6 +377,19 @@ settings.put('/', async (c) => {
     // Validate agentEffort if provided
     if (body.models?.agentEffort !== undefined && !EFFORT_LEVELS.includes(body.models.agentEffort)) {
       return c.json({ error: `agentEffort must be one of: ${EFFORT_LEVELS.join(', ')}` }, 400)
+    }
+
+    // Validate the quick-dispatch global shortcut accelerator. Empty string is
+    // allowed and means "disabled"; any other value must be a plausible
+    // accelerator (main's globalShortcut.register is the authoritative gate).
+    if (body.app?.globalDispatchShortcut !== undefined) {
+      const acc = body.app.globalDispatchShortcut
+      if (typeof acc !== 'string' || (acc !== '' && !isValidAccelerator(acc))) {
+        return c.json(
+          { error: 'globalDispatchShortcut must be an accelerator like "CommandOrControl+Shift+Space" (or "" to disable)' },
+          400,
+        )
+      }
     }
 
     // Validate runtimeSettings if provided
