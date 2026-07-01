@@ -41,6 +41,13 @@ describe('isContainerFacingPath', () => {
     expect(isContainerFacingPath('/api/x-agent/chat/send')).toBe(true)
   })
 
+  // Regression: the web-search route is container-facing (the in-container tool
+  // RPCs to it via the proxy bearer token), so it must bypass the localhost check
+  // like the other container→host routes.
+  it('bypasses the web-search route', () => {
+    expect(isContainerFacingPath('/api/web-search/search')).toBe(true)
+  })
+
   it('does NOT bypass browser-facing API routes', () => {
     expect(isContainerFacingPath('/api/agents')).toBe(false)
     expect(isContainerFacingPath('/api/agents/foo/x-agent-policies')).toBe(false)

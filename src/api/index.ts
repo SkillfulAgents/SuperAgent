@@ -3,6 +3,7 @@ import { cors } from 'hono/cors'
 import agents from './routes/agents'
 import xAgent from './routes/x-agent'
 import xAgentChat from './routes/x-agent-chat'
+import webSearch from './routes/web-search'
 import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
@@ -168,6 +169,7 @@ app.get('/api/llm/anthropic-sdk.js', (c) => {
 app.route('/api/agents', agents)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
+app.route('/api/web-search', webSearch)
 app.route('/api/connected-accounts', connectedAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)

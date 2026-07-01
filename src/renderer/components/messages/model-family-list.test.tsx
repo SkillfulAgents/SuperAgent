@@ -8,6 +8,7 @@ import {
   familyDisplayName,
   formatTokenThreshold,
   longContextWarningText,
+  webToolsWarning,
 } from './model-family-list'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -55,6 +56,30 @@ describe('longContextWarningText', () => {
     expect(longContextWarningText(cliff)).toBe(
       'Note: beyond ~272K tokens of context, input pricing rises 2× and output 1.5×.',
     )
+  })
+})
+
+describe('webToolsWarning', () => {
+  it('warns about both and points to Web Search when neither is available', () => {
+    const w = webToolsWarning(true, true)!
+    expect(w).toMatch(/Web search and fetch aren.t available on this model/)
+    expect(w).toMatch(/Set a provider under Settings . Web Search to use search on any model/)
+  })
+
+  it('names web fetch only (Claude-only, no vendor yet) when just fetch is unavailable', () => {
+    const w = webToolsWarning(false, true)!
+    expect(w).toMatch(/Web fetch isn.t available on this model/)
+    expect(w).toMatch(/Native web fetch works only on Claude models/)
+  })
+
+  it('names web search only when just search is unavailable', () => {
+    const w = webToolsWarning(true, false)!
+    expect(w).toMatch(/Web search isn.t available on this model/)
+    expect(w).toMatch(/Set a provider under Settings . Web Search/)
+  })
+
+  it('returns null (no banner) when both are available', () => {
+    expect(webToolsWarning(false, false)).toBeNull()
   })
 })
 
@@ -131,12 +156,26 @@ describe('ModelFamilyList', () => {
     expect(screen.getByTestId('model-family-gpt')).toHaveTextContent('GPT')
   })
 
-  it('warns when the selected model lacks web search, and not otherwise', () => {
+  it('warns about both when a non-Claude model has no search vendor, and not for Claude', () => {
     const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)
-    expect(screen.getByTestId('model-no-websearch-warning')).toBeInTheDocument()
+    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/search and fetch/)
 
     rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
     expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+  })
+
+  it('narrows to a fetch-only warning when a search vendor is configured', () => {
+    render(
+      <ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} webSearchProvider="exa" />,
+    )
+    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/Web fetch isn.t available/)
+  })
+
+  it('treats a "native" provider id as no vendor (still warns about both)', () => {
+    render(
+      <ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} webSearchProvider="native" />,
+    )
+    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/search and fetch/)
   })
 
   it('warns about the long-context price cliff for GPT, and not for flat-priced Claude', () => {

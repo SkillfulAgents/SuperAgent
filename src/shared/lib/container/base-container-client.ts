@@ -24,6 +24,7 @@ import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
+import { getActiveWebSearchProvider } from '../web-provider'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 const execAsync = promisify(exec)
@@ -999,6 +1000,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
     const modelPromptHints = getContainerModelPromptHints(resolvedModel)
+    // The active web search vendor id is a non-secret signal (NOT a model, so no
+    // resolveContainerModel). Resolved once here from global settings so every session-creation
+    // caller inherits it; undefined means native (no host vendor, the container keeps WebSearch).
+    const webSearchProvider = getActiveWebSearchProvider()?.id
 
     try {
       const controller = new AbortController()
@@ -1017,6 +1022,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           model: resolvedModel,
           browserModel: resolvedBrowserModel,
           dashboardBuilderModel: resolvedDashboardBuilderModel,
+          webSearchProvider,
           maxOutputTokens: options.maxOutputTokens,
           maxThinkingTokens: options.maxThinkingTokens,
           maxTurns: options.maxTurns,

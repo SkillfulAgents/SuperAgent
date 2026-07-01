@@ -4,7 +4,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { EffortLevel } from './types';
-import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer, createChatMcpServer } from './mcp-server';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
@@ -42,6 +42,7 @@ function mcpToolNames(
 }
 import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
+import { resolveWebSearchToolInPrompt } from './web-search-prompt';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -119,10 +120,11 @@ function generateSystemPrompt(
   availableEnvVars?: string[],
   userSystemPrompt?: string,
   modelPromptHints?: string[],
+  webSearchProvider?: string,
 ): string {
   const sections: string[] = [];
 
-  sections.push(SYSTEM_PROMPT);
+  sections.push(resolveWebSearchToolInPrompt(SYSTEM_PROMPT, webSearchProvider));
 
   if (modelPromptHints?.length) {
     sections.push(`## Model-Specific Instructions
@@ -303,6 +305,7 @@ export interface ClaudeCodeProcessOptions {
   model?: string;
   browserModel?: string;
   dashboardBuilderModel?: string;
+  webSearchProvider?: string;
   maxOutputTokens?: number;
   maxThinkingTokens?: number;
   maxTurns?: number;
@@ -322,6 +325,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private model: string | undefined;
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
+  private webSearchProvider: string | undefined;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -346,6 +350,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.model = options.model;
     this.browserModel = options.browserModel;
     this.dashboardBuilderModel = options.dashboardBuilderModel;
+    this.webSearchProvider = options.webSearchProvider;
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
@@ -355,7 +360,8 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.systemPrompt = generateSystemPrompt(
       options.availableEnvVars,
       options.userSystemPrompt,
-      options.modelPromptHints
+      options.modelPromptHints,
+      options.webSearchProvider
     );
     // Set module-level reference for tools that need access to the process
     currentProcess = this;
@@ -451,6 +457,8 @@ export class ClaudeCodeProcess extends EventEmitter {
           'CronCreate', 'CronDelete', 'CronList',
           'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
           'EnterWorktree', 'ExitWorktree',
+          // Suppress native WebSearch only when a host vendor is active; it's replaced by mcp__web__web_search.
+          ...(this.webSearchProvider ? ['WebSearch'] : []),
         ],
         // Request summarized thinking so reasoning text streams to the UI. Without an
         // explicit `display`, Opus 4.8/4.7 default to `omitted` — thinking_delta events
@@ -483,6 +491,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           'dashboards': createDashboardsMcpServer(),
           'agents': createAgentsMcpServer(() => this.sessionId),
           'chat': createChatMcpServer(),
+          ...(this.webSearchProvider ? { 'web': createWebMcpServer() } : {}),
           ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? { 'computer-use': createComputerUseMcpServer() } : {}),
           ...remoteMcpConfigs,
         },
@@ -496,7 +505,9 @@ export class ClaudeCodeProcess extends EventEmitter {
             model: this.browserModel || this.model,
             tools: [
               ...mcpToolNames('browser', browserMcpTools),
-              'WebSearch',
+              // The subagent hard-codes its tools, so swap native WebSearch for the vendor tool
+              // when one is active (native is Anthropic-server-side, absent on non-Claude models).
+              ...(this.webSearchProvider ? ['mcp__web__web_search'] : ['WebSearch']),
               'Read',
               'mcp__user-input__request_file',
               'mcp__user-input__request_browser_input',

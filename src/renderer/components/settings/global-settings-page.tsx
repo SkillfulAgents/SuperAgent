@@ -1,4 +1,4 @@
-import { Settings, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic, Activity, Terminal, BadgeCheck, ClipboardList } from 'lucide-react'
+import { Settings, Container, Bell, Globe, Library, BarChart3, Plug, Brain, Users, Shield, ShieldEllipsis, User, Mic, Activity, Terminal, BadgeCheck, ClipboardList, Search } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { type LinkProps } from '@tanstack/react-router'
 import { ProfileTab } from './profile-tab'
@@ -16,6 +16,7 @@ import { UsersTab } from './users-tab'
 import { AuthTab } from './auth-tab'
 import { AdminTab } from './admin-tab'
 import { VoiceTab } from './voice-tab'
+import { WebSearchTab } from './web-search-tab'
 import { AnalyticsTab } from './analytics-tab'
 import { PlatformTab } from './platform-tab'
 import { ComputerUseTab } from './computer-use-tab'
@@ -50,6 +51,7 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
     { id: 'llm', label: 'LLM Provider', icon: <Brain className="h-4 w-4" />, render: () => <LlmTab /> },
     { id: 'runtime', label: 'Runtime', icon: <Container className="h-4 w-4" />, render: () => <RuntimeTab /> },
     { id: 'browser', label: 'Browser Use', icon: <Globe className="h-4 w-4" />, render: () => <BrowserTab /> },
+    { id: 'web-search', label: 'Web Search', icon: <Search className="h-4 w-4" />, render: () => <WebSearchTab /> },
     ...(isElectron() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Terminal className="h-4 w-4" />, render: () => <ComputerUseTab /> }] : []),
     { id: 'account-provider', label: 'Account Provider', icon: <ShieldEllipsis className="h-4 w-4" />, render: () => <AccountProviderTab /> },
     { id: 'voice', label: 'Voice', icon: <Mic className="h-4 w-4" />, render: () => <VoiceTab /> },

@@ -72,6 +72,7 @@ describe('lenient wrapper', () => {
 describe('settingsTabSchema', () => {
   it('accepts a known tab', () => {
     expect(settingsTabSchema.safeParse('general').success).toBe(true)
+    expect(settingsTabSchema.safeParse('web-search').success).toBe(true)
   })
   it('rejects an unknown tab', () => {
     expect(settingsTabSchema.safeParse('garbage').success).toBe(false)
@@ -80,8 +81,8 @@ describe('settingsTabSchema', () => {
     expect(settingsTabSchema.safeParse('system-prompt').success).toBe(false)
     expect(settingsTabSchema.safeParse('secrets').success).toBe(false)
   })
-  it('has 18 tabs', () => {
-    expect(SETTINGS_TABS).toHaveLength(18)
+  it('has 19 tabs', () => {
+    expect(SETTINGS_TABS).toHaveLength(19)
   })
 })
 

@@ -267,6 +267,23 @@ describe('loadSettings', () => {
       expect(result.models?.agentEffort).toBe('high')
     })
 
+    it('preserves the web search provider selection', () => {
+      mockSettingsFile(JSON.stringify({ webSearchProvider: 'exa' }))
+
+      const result = loadSettings()
+
+      expect(result.webSearchProvider).toBe('exa')
+    })
+
+    it('preserves the web allow/deny site lists', () => {
+      mockSettingsFile(JSON.stringify({ webAllowedSites: ['nytimes.com'], webBlockedSites: ['evil.com'] }))
+
+      const result = loadSettings()
+
+      expect(result.webAllowedSites).toEqual(['nytimes.com'])
+      expect(result.webBlockedSites).toEqual(['evil.com'])
+    })
+
     it('merges auth settings with defaults', () => {
       mockSettingsFile(
         JSON.stringify({

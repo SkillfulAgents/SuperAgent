@@ -132,7 +132,13 @@ function SettingsModelSelectImpl({
         <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Model
         </div>
-        <ModelFamilyList catalog={catalog} value={model} onPick={pick} offerLatest />
+        <ModelFamilyList
+          catalog={catalog}
+          value={model}
+          onPick={pick}
+          offerLatest
+          webSearchProvider={settings?.webSearchProvider}
+        />
         {includeEffort && (
           <>
             <Separator className="my-2" />

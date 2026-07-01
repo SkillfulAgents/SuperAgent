@@ -28,6 +28,9 @@ export interface ComposerOptionsState {
   setModel: (m: string) => void
   /** The active provider's flat catalog of concrete model ids. */
   catalog: ModelDefinition[]
+  /** Active host web-search provider id (settings-derived), so the model picker's availability
+   *  warning knows a configured vendor makes search work on any model. Undefined = native. */
+  webSearchProvider?: string
   /** Pluck the runtime-options bag for an API payload. Drops `model` when undefined. */
   toRuntimeOptions(): { effort: EffortLevel; model?: string }
 }
@@ -133,8 +136,16 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   )
 
   return useMemo(
-    () => ({ effort, setEffort, model, setModel, catalog, toRuntimeOptions }),
-    [effort, setEffort, model, setModel, catalog, toRuntimeOptions],
+    () => ({
+      effort,
+      setEffort,
+      model,
+      setModel,
+      catalog,
+      webSearchProvider: settings?.webSearchProvider,
+      toRuntimeOptions,
+    }),
+    [effort, setEffort, model, setModel, catalog, settings, toRuntimeOptions],
   )
 }
 

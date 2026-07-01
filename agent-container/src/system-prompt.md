@@ -626,7 +626,7 @@ The web-browser agent:
 - If it encounters a login page, CAPTCHA, or 2FA, it will automatically call `request_browser_input` to prompt the user — no action needed from you
 
 ### Workflow
-1. **Use WebSearch** if you are unsure about the URL or need to find the correct page (e.g., search for "ExampleCorp contact page" to find the URL for contacting support)
+1. **Use web search** if you are unsure about the URL or need to find the correct page (e.g., search for "ExampleCorp contact page" to find the URL for contacting support)
 2. `browser_open("https://correct-url.com")` — Open the browser
 3. Delegate: `Task(subagent_type="web-browser", prompt="<describe what you want done>")` — the agent handles it
 4. Note the URL returned by the agent — this is where the browser is now
