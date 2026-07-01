@@ -16,16 +16,16 @@ vi.mock('@shared/lib/config/settings', () => ({
 }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
-import xAgentWeb from './x-agent-web'
+import webSearch from './web-search'
 
 function makeApp() {
   const app = new Hono()
-  app.route('/api/x-agent/web', xAgentWeb)
+  app.route('/api/web-search', webSearch)
   return app
 }
 
 function search(body: unknown, headers: Record<string, string> = { Authorization: 'Bearer good' }) {
-  return makeApp().request('http://localhost/api/x-agent/web/search', {
+  return makeApp().request('http://localhost/api/web-search/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
@@ -38,9 +38,9 @@ beforeEach(() => {
   mockGetSettings.mockReturnValue({})
 })
 
-describe('POST /api/x-agent/web/search', () => {
+describe('POST /api/web-search/search', () => {
   it('401 without an Authorization header', async () => {
-    const res = await makeApp().request('http://localhost/api/x-agent/web/search', {
+    const res = await makeApp().request('http://localhost/api/web-search/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{"query":"q"}',

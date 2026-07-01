@@ -141,7 +141,7 @@ export function createChatMcpServer() {
 }
 
 // Registered only when a host-side web search vendor is active (server name 'web' →
-// tool id mcp__web__web_search). The tool RPCs to /api/x-agent/web/search; the host
+// tool id mcp__web__web_search). The tool RPCs to /api/web-search/search; the host
 // holds the vendor key and applies allowed-sites policy.
 export function createWebMcpServer() {
   return createSdkMcpServer({

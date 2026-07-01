@@ -1,6 +1,6 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import { callHost, textResult, XAgentError } from '../agents/host-client'
+import { callWebHost, textResult, XAgentError } from './host-client'
 import { formatWebSearchResults, type WebSearchHostResult } from './format-results'
 
 export const webSearchTool = tool(
@@ -18,7 +18,7 @@ Use this to look up recent or external information you do not already know. Read
   },
   async (args) => {
     try {
-      const data = await callHost<WebSearchHostResult>('web/search', args)
+      const data = await callWebHost<WebSearchHostResult>('search', args)
       return textResult(formatWebSearchResults(data))
     } catch (error) {
       const msg = error instanceof XAgentError ? error.message : String(error)

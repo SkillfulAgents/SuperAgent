@@ -12,12 +12,12 @@ import { captureException } from '@shared/lib/error-reporting'
 const HARD_MAX_HITS = 50
 const MAX_SNIPPET_CHARS = 2000
 
-const xAgentWeb = new Hono()
+const webSearch = new Hono()
 
-// Own proxy-token gate. The /api/x-agent/ local-mode-auth bypass only skips the IP check; it
-// does NOT authenticate, and nothing is inherited from sibling routers — so this router must
-// declare its own gate or it ships open (design §4 auth must-do).
-xAgentWeb.use('*', async (c, next) => {
+// Own proxy-token gate. The local-mode-auth bypass for this container-facing route only skips the
+// IP check; it does NOT authenticate, and nothing is inherited from sibling routers — so this
+// router must declare its own gate or it ships open (design §4 auth must-do).
+webSearch.use('*', async (c, next) => {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
   if (!token) return c.json({ error: 'Unauthorized' }, 401)
   if (!(await validateProxyToken(token))) return c.json({ error: 'Unauthorized' }, 401)
@@ -25,7 +25,7 @@ xAgentWeb.use('*', async (c, next) => {
 })
 
 // POST /search — run the active vendor's search, enforce the operator allow/deny policy host-side.
-xAgentWeb.post('/search', async (c) => {
+webSearch.post('/search', async (c) => {
   let raw: unknown
   try {
     raw = await c.req.json()
@@ -72,4 +72,4 @@ xAgentWeb.post('/search', async (c) => {
   }
 })
 
-export default xAgentWeb
+export default webSearch

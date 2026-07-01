@@ -1,5 +1,5 @@
 /**
- * Format the host /x-agent/web/search response into the text block the agent reads.
+ * Format the host /web-search/search response into the text block the agent reads.
  * Pure (no SDK / network) so it is unit-testable. The leading `Links: [...]` line is the
  * renderer contract (tool-renderers/web-search.tsx parses it); the numbered list below it
  * is what the model reasons over.

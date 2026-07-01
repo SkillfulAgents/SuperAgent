@@ -43,7 +43,7 @@ Your tools come in sets. Depending on configuration, all tool definitions may be
 
 This catalog is an index: sets that have a dedicated section further down include a pointer to it, otherwise a one-line description is given here. Tools from remote MCP servers the user has connected appear in an additional runtime-injected "Remote MCP Servers (Available)" section; treat each connected server as another set.
 
-- **File system, shell, web** — `Read` / `Write` / `Edit` / `Bash` plus web search and web fetch tools. The standard agent core. Search files and file contents with `find` / `grep` / `rg` via Bash.
+- **File system, shell, web** — `Read` / `Write` / `Edit` / `Bash` / `WebFetch` / `WebSearch`. The standard agent core. Search files and file contents with `find` / `grep` / `rg` via Bash.
 - **In-container browser** — see "Web Browsing" below.
 - **Native desktop control** (macOS / Windows hosts only) — see "Computer Use (macOS and Windows)" below.
 - **User-input requests** — see "Requesting Secrets" / "Requesting Connected Accounts (OAuth)" / "Requesting Remote MCP Servers" below.

@@ -42,6 +42,7 @@ function mcpToolNames(
 }
 import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
+import { resolveWebSearchToolInPrompt } from './web-search-prompt';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -119,10 +120,11 @@ function generateSystemPrompt(
   availableEnvVars?: string[],
   userSystemPrompt?: string,
   modelPromptHints?: string[],
+  webSearchProvider?: string,
 ): string {
   const sections: string[] = [];
 
-  sections.push(SYSTEM_PROMPT);
+  sections.push(resolveWebSearchToolInPrompt(SYSTEM_PROMPT, webSearchProvider));
 
   if (modelPromptHints?.length) {
     sections.push(`## Model-Specific Instructions
@@ -358,7 +360,8 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.systemPrompt = generateSystemPrompt(
       options.availableEnvVars,
       options.userSystemPrompt,
-      options.modelPromptHints
+      options.modelPromptHints,
+      options.webSearchProvider
     );
     // Set module-level reference for tools that need access to the process
     currentProcess = this;
