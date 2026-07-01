@@ -1,4 +1,4 @@
-import { test, expect, type Page, type TestInfo } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
@@ -8,47 +8,24 @@ import {
   expectAgentDeleted,
   findAgentByName,
   findSessionWithUserMessage,
+  getAgentItem,
   gotoAgentHome,
   gotoAgentSession,
   listSessionMessages,
+  messageContentIncludes,
+  uniqueName,
+  uniqueSuffix,
   waitForSessionIdle,
   type TestAgent,
-  type TestMessage,
   type TestSession,
 } from '../helpers/agents'
 
-function uniqueSuffix(testInfo: TestInfo) {
-  return [
-    testInfo.workerIndex,
-    testInfo.repeatEachIndex,
-    testInfo.retry,
-    Date.now(),
-    Math.random().toString(36).slice(2, 8),
-  ].join('-')
-}
-
-function uniqueName(testInfo: TestInfo, label: string) {
-  return `${label} ${uniqueSuffix(testInfo)}`
-}
-
-function agentRow(page: Page, agent: Pick<TestAgent, 'slug' | 'name'>) {
-  return page
-    .locator(`[data-testid="agent-item-${agent.slug}"]`)
-    .or(page.locator('[data-testid^="agent-item-"]', { hasText: agent.name }))
-    .first()
-}
-
-function messageText(message: TestMessage) {
-  if (typeof message.content === 'string') return message.content
-  if (!message.content || typeof message.content !== 'object') return ''
-
-  const content = message.content as Record<string, unknown>
-  return typeof content.text === 'string' ? content.text : ''
-}
-
-function expectMessagesIncludeUserText(messages: TestMessage[], text: string) {
+function expectMessagesIncludeUserText(
+  messages: Awaited<ReturnType<typeof listSessionMessages>>,
+  text: string,
+) {
   expect(
-    messages.some((message) => message.type === 'user' && messageText(message).includes(text)),
+    messages.some((message) => message.type === 'user' && messageContentIncludes(message, text)),
   ).toBe(true)
 }
 
@@ -72,11 +49,11 @@ test.describe('Persistence', () => {
     await agentPage.createAgent(agentName)
     const agent = await findAgentByName(request, agentName)
 
-    await expect(agentRow(page, agent)).toBeVisible()
+    await expect(getAgentItem(page, agent)).toBeVisible()
 
     await appPage.reload()
 
-    await expect(agentRow(page, agent)).toBeVisible()
+    await expect(getAgentItem(page, agent)).toBeVisible()
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name, { timeout: 15000 })
 
     const session = await findSessionWithUserMessage(request, agent, agentName)
@@ -93,7 +70,6 @@ test.describe('Persistence', () => {
 
     await sessionPage.sendMessage(message)
     await sessionPage.waitForResponse(15000)
-    await sessionPage.waitForInputEnabled(15000)
     await sessionPage.expectUserMessage(message)
     await expect(sessionPage.getAssistantMessages().first()).toBeVisible()
 
@@ -123,16 +99,16 @@ test.describe('Persistence', () => {
 
     try {
       await gotoAgentHome(page, agent)
-      await expect(agentRow(page, agent)).toBeVisible()
+      await expect(getAgentItem(page, agent)).toBeVisible()
 
       await agentPage.deleteAgent()
       deleted = true
       await expectAgentDeleted(request, agent)
-      await expect(agentRow(page, agent)).not.toBeVisible()
+      await expect(getAgentItem(page, agent)).not.toBeVisible()
 
       await appPage.reload()
 
-      await expect(agentRow(page, agent)).not.toBeVisible()
+      await expect(getAgentItem(page, agent)).not.toBeVisible()
     } finally {
       if (!deleted) await deleteAgentViaApi(request, agent)
     }
@@ -148,13 +124,13 @@ test.describe('Persistence', () => {
     const appPage = await openApp(page)
 
     for (const agent of agents) {
-      await expect(agentRow(page, agent)).toBeVisible()
+      await expect(getAgentItem(page, agent)).toBeVisible()
     }
 
     await appPage.reload()
 
     for (const agent of agents) {
-      await expect(agentRow(page, agent)).toBeVisible()
+      await expect(getAgentItem(page, agent)).toBeVisible()
     }
   })
 })

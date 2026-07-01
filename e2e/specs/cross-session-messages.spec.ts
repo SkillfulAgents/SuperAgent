@@ -1,27 +1,16 @@
-import { test, expect, type Page, type TestInfo } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { SessionPage } from '../pages/session.page'
 import {
   createAgent as createAgentViaApi,
+  getAgentItem,
   gotoAgentHome,
   gotoAgentSession,
+  uniqueName,
+  uniqueSuffix,
   waitForSessionIdle,
   type TestAgent,
   type TestSession,
 } from '../helpers/agents'
-
-function uniqueSuffix(testInfo: TestInfo) {
-  return [
-    testInfo.workerIndex,
-    testInfo.repeatEachIndex,
-    testInfo.retry,
-    Date.now(),
-    Math.random().toString(36).slice(2, 8),
-  ].join('-')
-}
-
-function uniqueName(testInfo: TestInfo, label: string) {
-  return `${label} ${uniqueSuffix(testInfo)}`
-}
 
 function userMessage(sessionPage: SessionPage, text: string) {
   // `.first()` is deliberate: during reconciliation the optimistic
@@ -34,12 +23,17 @@ function userMessage(sessionPage: SessionPage, text: string) {
 }
 
 async function currentSession(page: Page, agent: Pick<TestAgent, 'slug'>): Promise<TestSession> {
-  await expect(page).toHaveURL(new RegExp(`/agents/${agent.slug}/sessions/[^/?#]+$`), { timeout: 15000 })
+  let sessionId = ''
 
-  const match = page.url().match(new RegExp(`/agents/${agent.slug}/sessions/([^/?#]+)`))
-  expect(match, `expected current URL to include a session id for ${agent.slug}`).not.toBeNull()
+  await expect.poll(async () => {
+    const match = page.url().match(/\/agents\/([^/?#]+)\/sessions\/([^/?#]+)(?:[?#].*)?$/)
+    if (!match || !match[1].endsWith(agent.slug)) return ''
 
-  return { id: match![1], name: '' }
+    sessionId = match[2]
+    return sessionId
+  }, { timeout: 15000 }).not.toBe('')
+
+  return { id: sessionId, name: '' }
 }
 
 async function waitForSessionsToSettle(
@@ -49,6 +43,16 @@ async function waitForSessionsToSettle(
   for (const { agent, session } of sessions) {
     if (session) await waitForSessionIdle(request, agent, session).catch(() => {})
   }
+}
+
+async function switchAgentViaSidebar(page: Page, agent: TestAgent) {
+  const agentItem = getAgentItem(page, agent)
+
+  await expect(agentItem).toBeVisible({ timeout: 15000 })
+  await agentItem.scrollIntoViewIfNeeded({ timeout: 10000 })
+  await agentItem.click()
+  await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name, { timeout: 15000 })
+  await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
 }
 
 // These tests leave their uniquely named agents in the per-run data dir and let
@@ -72,7 +76,9 @@ test.describe('Cross-Session Message Isolation', () => {
       await expect(userMessage(sessionPage, messageA)).toBeVisible({ timeout: 10000 })
       await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 5000 })
 
-      await gotoAgentHome(page, agentB)
+      await switchAgentViaSidebar(page, agentB)
+      await expect(page.locator('[data-testid="main-content"]')).not.toContainText(messageA)
+
       await sessionPage.sendMessage(messageB)
       sessionB = await currentSession(page, agentB)
 

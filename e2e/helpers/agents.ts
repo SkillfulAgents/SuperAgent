@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Page } from '@playwright/test'
+import { expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 
 export interface TestAgent {
   slug: string
@@ -13,6 +13,25 @@ export interface TestSession {
 export interface TestMessage {
   type: string
   content?: unknown
+}
+
+export function uniqueSuffix(
+  testInfo: Pick<TestInfo, 'workerIndex' | 'repeatEachIndex' | 'retry'>,
+) {
+  return [
+    testInfo.workerIndex,
+    testInfo.repeatEachIndex,
+    testInfo.retry,
+    Date.now(),
+    Math.random().toString(36).slice(2, 8),
+  ].join('-')
+}
+
+export function uniqueName(
+  testInfo: Pick<TestInfo, 'workerIndex' | 'repeatEachIndex' | 'retry'>,
+  label: string,
+) {
+  return `${label} ${uniqueSuffix(testInfo)}`
 }
 
 async function expectAgentInApi(
@@ -30,7 +49,7 @@ async function expectAgentInApi(
   }, { timeout: 15000 }).toBe(true)
 }
 
-function getAgentItem(page: Page, agent: Pick<TestAgent, 'slug' | 'name'>) {
+export function getAgentItem(page: Page, agent: Pick<TestAgent, 'slug' | 'name'>) {
   return page
     .locator(`[data-testid="agent-item-${agent.slug}"]`)
     .or(page.locator('[data-testid^="agent-item-"]', { hasText: agent.name }))
@@ -136,7 +155,7 @@ export async function listSessionMessages(
   return await response.json() as TestMessage[]
 }
 
-function messageContentIncludes(message: TestMessage, text: string) {
+export function messageContentIncludes(message: TestMessage, text: string) {
   if (typeof message.content === 'string') {
     return message.content.includes(text)
   }
@@ -157,9 +176,15 @@ export async function findSessionWithUserMessage(
   let found: TestSession | undefined
 
   await expect.poll(async () => {
-    const sessions = await listSessions(request, agent)
+    const sessionsResponse = await request.get(`/api/agents/${agent.slug}/sessions`)
+    if (!sessionsResponse.ok()) return false
+
+    const sessions = await sessionsResponse.json() as TestSession[]
     for (const session of sessions) {
-      const messages = await listSessionMessages(request, agent, session)
+      const messagesResponse = await request.get(`/api/agents/${agent.slug}/sessions/${session.id}/messages`)
+      if (!messagesResponse.ok()) continue
+
+      const messages = await messagesResponse.json() as TestMessage[]
       if (messages.some((message) => message.type === 'user' && messageContentIncludes(message, text))) {
         found = session
         return true
