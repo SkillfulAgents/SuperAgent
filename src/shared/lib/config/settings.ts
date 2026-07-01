@@ -272,6 +272,7 @@ export interface GlobalSettingsResponse {
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
   webSearchProvider: WebSearchProviderId
+  webFetchProvider: WebFetchProviderId
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus

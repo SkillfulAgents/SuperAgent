@@ -34,7 +34,7 @@ import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
 import { isValidAccelerator } from '@shared/lib/config/shortcuts'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
-import { findWebSearchProvider, getWebSearchProvider } from '@shared/lib/web-provider'
+import { findWebFetchProvider, findWebSearchProvider, getWebSearchProvider } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
@@ -294,6 +294,7 @@ function buildSettingsResponse(
     llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
     webSearchProvider: appSettings.webSearchProvider ?? 'native',
+    webFetchProvider: appSettings.webFetchProvider ?? 'native',
     apiKeyStatus: {
       anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
@@ -498,6 +499,7 @@ settings.put('/', async (c) => {
       apiKeys: currentSettings.apiKeys,
       llmProvider: body.llmProvider !== undefined ? body.llmProvider : currentSettings.llmProvider,
       webSearchProvider: body.webSearchProvider !== undefined ? body.webSearchProvider : currentSettings.webSearchProvider,
+      webFetchProvider: body.webFetchProvider !== undefined ? body.webFetchProvider : currentSettings.webFetchProvider,
       webAllowedSites: body.webAllowedSites !== undefined ? body.webAllowedSites : currentSettings.webAllowedSites,
       webBlockedSites: body.webBlockedSites !== undefined ? body.webBlockedSites : currentSettings.webBlockedSites,
       models: body.models
@@ -867,6 +869,29 @@ settings.post('/validate-web-search-key', async (c) => {
     const webProvider = findWebSearchProvider(provider)
     if (!webProvider) {
       return c.json({ valid: false, error: `Unknown web search provider: ${provider}` }, 400)
+    }
+    const result = await webProvider.validateKey(apiKey)
+    return c.json(result)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Validation failed'
+    return c.json({ valid: false, error: message })
+  }
+})
+
+// POST /api/settings/validate-web-fetch-key - Validate a web fetch vendor API key.
+// Dispatches by `provider` through the registry, so a new vendor needs zero changes here.
+settings.post('/validate-web-fetch-key', async (c) => {
+  try {
+    const { provider, apiKey } = await c.req.json()
+    if (!apiKey || typeof apiKey !== 'string') {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+    if (!provider || typeof provider !== 'string' || provider === 'native') {
+      return c.json({ valid: false, error: 'A web fetch vendor is required' }, 400)
+    }
+    const webProvider = findWebFetchProvider(provider)
+    if (!webProvider) {
+      return c.json({ valid: false, error: `Unknown web fetch provider: ${provider}` }, 400)
     }
     const result = await webProvider.validateKey(apiKey)
     return c.json(result)

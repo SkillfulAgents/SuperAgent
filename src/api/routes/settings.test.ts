@@ -971,6 +971,34 @@ describe('settings route', () => {
     })
   })
 
+  describe('POST /validate-web-fetch-key', () => {
+    async function validate(body: unknown) {
+      return app.request('http://localhost/api/settings/validate-web-fetch-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    }
+
+    it('returns 400 when apiKey is missing', async () => {
+      const res = await validate({ provider: 'exa' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('API key is required')
+    })
+
+    it('returns 400 when the provider is missing or native', async () => {
+      const res = await validate({ apiKey: 'k', provider: 'native' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('vendor is required')
+    })
+
+    it('returns 400 for an unknown provider', async () => {
+      const res = await validate({ apiKey: 'k', provider: 'bogus' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('Unknown web fetch provider')
+    })
+  })
+
   // =========================================================================
   // GET settings includes per-provider STT key status
   // =========================================================================

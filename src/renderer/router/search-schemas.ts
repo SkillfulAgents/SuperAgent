@@ -76,7 +76,7 @@ export const SETTINGS_TABS = [
   'llm',
   'runtime',
   'browser',
-  'web-search',
+  'web',
   'computer-use',
   'account-provider',
   'voice',
