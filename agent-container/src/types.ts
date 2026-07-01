@@ -63,6 +63,7 @@ export interface CreateSessionRequest {
   model?: string; // Claude model to use for this session
   browserModel?: string; // Model for browser subagent
   dashboardBuilderModel?: string; // Model for the dashboard-builder subagent
+  webSearchProvider?: string; // Active host-side web search vendor id (non-secret); activates mcp__web__search + disables native WebSearch
   maxOutputTokens?: number; // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
   maxThinkingTokens?: number; // Max tokens for extended thinking
   maxTurns?: number; // Max conversation turns
