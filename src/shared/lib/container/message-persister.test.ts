@@ -2410,9 +2410,10 @@ describe('MessagePersister', () => {
     // ------------------------------------------------------------------
     // cancelAwaitingInput: when a new message arrives while the session is
     // awaiting input, cancel the pending request(s) so the message isn't
-    // queued behind a blocked tool (the deadlock). Top-level requests are
-    // rejected (the main loop unblocks directly); subagent requests are
-    // additionally interrupted to unwind the parked Task.
+    // queued behind a blocked tool (the deadlock). EVERY cancel interrupts
+    // first — aborting the parked query so it can't resume into a filler
+    // reply — then cleanup-rejects each pending id (the reason is never read
+    // by the model, since the turn was already aborted).
     // ------------------------------------------------------------------
     describe('cancelAwaitingInput', () => {
       const rejectCallFor = (toolUseId: string) =>
@@ -2420,7 +2421,7 @@ describe('MessagePersister', () => {
       const interruptCall = () =>
         mockContainerClientFetch.mock.calls.find((c) => c[0] === `/sessions/${SESSION_ID}/interrupt`)
 
-      it('rejects a top-level AskUserQuestion without interrupting', async () => {
+      it('interrupts a top-level AskUserQuestion BEFORE cleanup-rejecting it (aborted turn cannot resume into a filler reply)', async () => {
         messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
         simulateToolUse('AskUserQuestion', 'q-1', {
           questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
@@ -2430,11 +2431,16 @@ describe('MessagePersister', () => {
 
         await messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)
 
-        const reject = rejectCallFor('q-1')
-        expect(reject).toBeDefined()
-        expect(JSON.parse((reject![1] as { body: string }).body).reason).toBeTruthy()
-        // Top-level: reject only — the main loop unblocks without an interrupt.
-        expect(interruptCall()).toBeUndefined()
+        const calls = mockContainerClientFetch.mock.calls
+        const interruptIdx = calls.findIndex((c) => c[0] === `/sessions/${SESSION_ID}/interrupt`)
+        const rejectIdx = calls.findIndex((c) => c[0] === `/inputs/q-1/reject`)
+        // Top-level now interrupts too, and the interrupt must land BEFORE the reject:
+        // rejecting first would resume the parked turn and let the model emit a filler
+        // ("Go ahead") that the next message then anchors to.
+        expect(interruptIdx).toBeGreaterThanOrEqual(0)
+        expect(rejectIdx).toBeGreaterThan(interruptIdx)
+        // markSessionInterrupted ran, clearing the awaiting state.
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
       })
 
       it('rejects AND interrupts for a subagent browser_input request', async () => {
@@ -2505,11 +2511,11 @@ describe('MessagePersister', () => {
         try {
           // Must resolve, not reject — a failed cancel must never block the incoming message.
           await expect(messagePersister.cancelAwaitingInput(SESSION_ID, AGENT_SLUG)).resolves.toBeUndefined()
-          // Both container calls were attempted (and rejected): reject + the subagent interrupt.
+          // Both container calls were attempted (and rejected): the interrupt + the cleanup reject.
           expect(rejectCallFor('bi-err')).toBeDefined()
           expect(interruptCall()).toBeDefined()
-          // The interrupt fetch rejected, but markSessionInterrupted runs after the swallowed
-          // interrupt, so the subagent path still clears the awaiting state.
+          // The interrupt fetch rejected, but markSessionInterrupted runs right after the swallowed
+          // interrupt, so the cancel still clears the awaiting state.
           expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
         } finally {
           mockContainerClientFetch.mockImplementation(() => Promise.resolve({ ok: true }))
