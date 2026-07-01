@@ -51,7 +51,7 @@ export class ExaWebSearchProvider extends BaseWebSearchProvider {
       contents: { highlights: true, text: { maxCharacters: 800 } },
     })
 
-    const json = await this.fetchSearchJson(EXA_SEARCH_URL, {
+    const json = await this.fetchJson(EXA_SEARCH_URL, {
       method: 'POST',
       headers: { 'x-api-key': apiKey, 'content-type': 'application/json' },
       body,

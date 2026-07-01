@@ -5,7 +5,18 @@ export {
   getActiveWebSearchProvider,
   getWebSearchProvider,
 } from './search-factory'
+export { BaseWebFetchProvider } from './base-web-fetch-provider'
+export { ExaWebFetchProvider } from './exa-web-fetch-provider'
+export {
+  findWebFetchProvider,
+  getActiveWebFetchProvider,
+  getWebFetchProvider,
+} from './fetch-factory'
 export type {
+  WebFetchOptions,
+  WebFetchProviderId,
+  WebFetchResponse,
+  WebFetchResult,
   WebSearchHit,
   WebSearchOptions,
   WebSearchProviderId,
