@@ -1,7 +1,15 @@
 import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
-
+import {
+  createAgent,
+  expectAgentDeleted,
+  expectAgentNamed,
+  findAgentByName,
+  getAgentItem,
+  gotoAgentHome,
+  uniqueName,
+} from '../helpers/agents'
 
 test.describe('Agent Lifecycle', () => {
   let appPage: AppPage
@@ -14,66 +22,50 @@ test.describe('Agent Lifecycle', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('create a new agent', async ({ page }) => {
-    const agentName = `Test Agent ${Date.now()}`
-
-    // Create agent
+  test('creates a new agent through the UI', async ({ page, request }, testInfo) => {
+    const agentName = uniqueName(testInfo, 'Lifecycle Create')
     await agentPage.createAgent(agentName)
 
-    // Verify agent appears in sidebar
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
-
-    // Verify main content is visible
+    const agent = await findAgentByName(request, agentName)
+    await expect(getAgentItem(page, agent)).toBeVisible()
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName)
     await expect(appPage.getMainContent()).toBeVisible()
-
-    // Clean up
-    await agentPage.deleteAgent()
+    await expectAgentNamed(request, agent, agentName)
   })
 
-  test('select an agent', async ({ page }) => {
-    const agentName = `Selectable Agent ${Date.now()}`
+  test('selects an existing agent from the sidebar', async ({ page, request }, testInfo) => {
+    const agent = await createAgent(request, uniqueName(testInfo, 'Lifecycle Select'))
 
-    // Create agent first
-    await agentPage.createAgent(agentName)
-
-    // Click somewhere else (the sidebar header), then select the agent again
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
     await page.locator('[data-testid="home-button"]').click()
-    await agentPage.selectAgent(agentName)
+    await getAgentItem(page, agent).click()
 
-    // Verify main content shows the agent
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name)
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
     await expect(appPage.getMainContent()).toBeVisible()
-
-    // Clean up
-    await agentPage.deleteAgent()
   })
 
-  test('delete an agent', async ({ page }) => {
-    const agentName = `Deletable Agent ${Date.now()}`
+  test('deletes an existing agent from settings', async ({ page, request }, testInfo) => {
+    const agent = await createAgent(request, uniqueName(testInfo, 'Lifecycle Delete'))
 
-    // Create agent first
-    await agentPage.createAgent(agentName)
-
-    // Verify it exists
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
-
-    // Delete via settings
+    await gotoAgentHome(page, agent)
+    await expect(getAgentItem(page, agent)).toBeVisible()
     await agentPage.deleteAgent()
 
-    // Verify agent is removed from sidebar
-    await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
+    await expectAgentDeleted(request, agent)
+    await expect(getAgentItem(page, agent)).not.toBeVisible()
   })
 
-  test('create and delete agent end-to-end', async ({ page }) => {
-    const agentName = `E2E Test Agent ${Date.now()}`
-
-    // Create agent
+  test('creates and deletes an agent end-to-end through the UI', async ({ page, request }, testInfo) => {
+    const agentName = uniqueName(testInfo, 'Lifecycle E2E')
     await agentPage.createAgent(agentName)
-    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
 
-    // Delete via settings
+    const agent = await findAgentByName(request, agentName)
+    await expect(getAgentItem(page, agent)).toBeVisible()
     await agentPage.deleteAgent()
 
-    // Verify agent is gone
-    await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
+    await expectAgentDeleted(request, agent)
+    await expect(getAgentItem(page, agent)).not.toBeVisible()
   })
 })

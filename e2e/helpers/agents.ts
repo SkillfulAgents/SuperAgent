@@ -88,6 +88,25 @@ export async function findAgentByName(
   return found!
 }
 
+export async function expectAgentNamed(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+  name: string,
+): Promise<TestAgent> {
+  let found: TestAgent | undefined
+
+  await expect.poll(async () => {
+    const response = await request.get('/api/agents')
+    if (!response.ok()) return undefined
+
+    const agents = await response.json() as TestAgent[]
+    found = agents.find((candidate) => candidate.slug === agent.slug)
+    return found?.name
+  }, { timeout: 15000 }).toBe(name)
+
+  return found!
+}
+
 export async function deleteAgentViaApi(
   request: APIRequestContext,
   agent: Pick<TestAgent, 'slug'>,
@@ -142,6 +161,26 @@ export async function listSessions(
   expect(response.ok()).toBeTruthy()
 
   return await response.json() as TestSession[]
+}
+
+export async function expectSessionNamed(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+  session: Pick<TestSession, 'id'>,
+  name: string,
+): Promise<TestSession> {
+  let found: TestSession | undefined
+
+  await expect.poll(async () => {
+    const response = await request.get(`/api/agents/${agent.slug}/sessions`)
+    if (!response.ok()) return undefined
+
+    const sessions = await response.json() as TestSession[]
+    found = sessions.find((candidate) => candidate.id === session.id)
+    return found?.name
+  }, { timeout: 15000 }).toBe(name)
+
+  return found!
 }
 
 export async function listSessionMessages(
