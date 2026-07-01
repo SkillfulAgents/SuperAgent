@@ -25,17 +25,18 @@ export function formatTokenThreshold(tokens: number): string {
 
 /**
  * Warning copy for a model that can't do web search and/or fetch, or null when both work (no banner).
- * Native web tools are Claude-only; a configured host vendor exposes the search tool to ANY model, so
- * search is "unavailable" only when the model lacks native support AND no vendor is set - the caller
- * passes those two booleans. Native web fetch has no vendor yet (search seam), so it stays Claude-only.
+ * Native web tools are Claude-only; a configured host vendor exposes the `mcp__web__*` tool to ANY
+ * model, so a capability is "unavailable" only when the model lacks native support AND its vendor is
+ * unset - the caller passes those two booleans. The hint names the exact provider to set.
  */
 export function webToolsWarning(searchUnavailable: boolean, fetchUnavailable: boolean): string | null {
   if (!searchUnavailable && !fetchUnavailable) return null
   if (searchUnavailable && fetchUnavailable) {
-    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web Search to use search on any model.'
+    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web to use them on any model.'
   }
-  if (fetchUnavailable) return 'Web fetch isn’t available on this model. Native web fetch works only on Claude models.'
-  return 'Web search isn’t available on this model. Set a provider under Settings → Web Search to use it on any model.'
+  const kind = searchUnavailable ? 'search' : 'fetch'
+  const provider = searchUnavailable ? 'Search' : 'Fetch'
+  return `Web ${kind} isn’t available on this model. Set a ${provider} provider under Settings → Web to use it on any model.`
 }
 
 type LongContextCliff = NonNullable<ModelDefinition['longContextPriceCliff']>
@@ -92,11 +93,12 @@ interface ModelFamilyListProps {
    */
   onSelectFamilyLatest?: (value: string) => void
   /**
-   * Active host web-search provider id from global settings. Native web search is Claude-only
-   * (supportsWebSearch); a configured vendor exposes `mcp__web__web_search` to ANY model, so the
-   * "not available" warning clears for search once a vendor is set. Undefined = native.
+   * Active host web-provider ids from global settings. Native web search/fetch are Claude-only
+   * (supportsWebSearch); a configured vendor exposes the `mcp__web__*` tool to ANY model, so the
+   * "not available" warning clears for a capability once its vendor is set. Undefined = native.
    */
   webSearchProvider?: string
+  webFetchProvider?: string
 }
 
 function Row({
@@ -149,6 +151,7 @@ export function ModelFamilyList({
   offerLatest = false,
   onSelectFamilyLatest,
   webSearchProvider,
+  webFetchProvider,
 }: ModelFamilyListProps) {
   const { families, standalone } = useMemo(() => {
     const order: string[] = []
@@ -184,12 +187,16 @@ export function ModelFamilyList({
   const [expanded, setExpanded] = useState<string | null | undefined>(undefined)
   const openFamily = expanded === undefined ? selectedFamily : expanded
 
-  // Native web tools are Claude-only; a configured search vendor makes search work on ANY model, so
-  // search is unavailable only when the model lacks native support AND no vendor is set. Native web
-  // fetch has no vendor in the search seam, so it stays Claude-only. `native`/undefined = no vendor.
+  // Native web tools are Claude-only; a configured host vendor makes that capability work on ANY
+  // model, so a capability is unavailable only when the model lacks native support AND its vendor
+  // is unset. `native`/undefined means no host vendor.
   const nativeWebUnavailable = resolved?.supportsWebSearch === false
   const searchVendorSet = !!webSearchProvider && webSearchProvider !== 'native'
-  const webWarning = webToolsWarning(nativeWebUnavailable && !searchVendorSet, nativeWebUnavailable)
+  const fetchVendorSet = !!webFetchProvider && webFetchProvider !== 'native'
+  const webWarning = webToolsWarning(
+    nativeWebUnavailable && !searchVendorSet,
+    nativeWebUnavailable && !fetchVendorSet,
+  )
 
   return (
     <div className="flex flex-col gap-0.5">
