@@ -424,18 +424,18 @@ class MessagePersister {
   // (browser_input / script_run / computer_use) — takes this one path. After the abort the
   // reject is pure cleanup: its reason is never read by the model.
   //
-  // No-op when the session is not awaiting input (also makes rapid double-messages idempotent).
+  // No-op when the session is not awaiting input. (This guard also makes rapid double-messages
+  // idempotent when sends are serialized — the chat path serializes per chat via messageQueues;
+  // the app send route does not, so two truly concurrent sends there can both pass it.)
   // Interrupt/reject failures are swallowed: a best-effort cancel must never block the message.
   async cancelAwaitingInput(sessionId: string, agentSlug: string): Promise<void> {
     if (!this.isSessionAwaitingInput(sessionId)) return
 
-    // Snapshot the pending tool ids from BOTH maps before interrupting (pendingInputRequests
-    // holds the broadcast types; computer_use lives in its own pendingComputerUseRequests map):
-    // the reject below is only cleanup, and the interrupt/markSessionInterrupted clears state.
-    const pendingToolUseIds = [
-      ...this.getPendingInputRequests(sessionId).map((r) => r.toolUseId),
-      ...this.getPendingComputerUseRequests(sessionId).map((r) => r.toolUseId),
-    ]
+    // Snapshot the pending tool ids from BOTH maps before interrupting. pendingInputRequests holds
+    // the broadcast types (cleared by markSessionInterrupted's session_idle); computer_use lives in
+    // its own pendingComputerUseRequests map, which that broadcast does NOT clear.
+    const inputRequestIds = this.getPendingInputRequests(sessionId).map((r) => r.toolUseId)
+    const computerUseIds = this.getPendingComputerUseRequests(sessionId).map((r) => r.toolUseId)
 
     // Interrupt FIRST: abort the parked query so it can never resume into a filler reply.
     await this.interruptContainerSession(agentSlug, sessionId).catch(
@@ -443,10 +443,15 @@ class MessagePersister {
     )
     await this.markSessionInterrupted(sessionId)
 
-    // Cleanup-reject each pending request: the query is already aborted, so the reason is never
-    // read by the model — this just clears the container-side pending entry (and its host
-    // bookkeeping) so a late resolve/tap can't land on an abandoned request.
-    for (const toolUseId of pendingToolUseIds) {
+    // Clear the host-side computer_use bookkeeping explicitly — session_idle only clears
+    // pendingInputRequests, so a leftover entry would replay a phantom approval card on reconnect.
+    const state = this.streamingStates.get(sessionId)
+    for (const id of computerUseIds) state?.pendingComputerUseRequests.delete(id)
+
+    // Cleanup-reject each pending request on the CONTAINER: the query is already aborted, so the
+    // reason is never read by the model — this just clears the container-side pending entry so a
+    // late resolve/tap can't land on an abandoned request.
+    for (const toolUseId of [...inputRequestIds, ...computerUseIds]) {
       await this.rejectContainerInput(agentSlug, toolUseId, 'Superseded: the user sent a new message.').catch(
         (e) => console.error(`[MessagePersister] cancelAwaitingInput reject failed for ${toolUseId}:`, e),
       )

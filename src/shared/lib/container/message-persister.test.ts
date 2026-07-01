@@ -2473,6 +2473,9 @@ describe('MessagePersister', () => {
 
           expect(rejectCallFor('cu-1')).toBeDefined()
           expect(interruptCall()).toBeDefined()
+          // Host-side computer_use bookkeeping is cleared too (session_idle only clears
+          // pendingInputRequests), so a reconnect can't replay a phantom approval card.
+          expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(0)
         } finally {
           vi.unstubAllEnvs()
         }

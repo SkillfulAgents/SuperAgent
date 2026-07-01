@@ -42,6 +42,26 @@ describe('consumeOrCancelAwaitingInput', () => {
     expect(rec.answerArgs).toEqual({ chatId: 'c1', toolUseId: 't1', text: 'my answer' })
   })
 
+  it('resolves with the raw answerText, not the group-prefixed messageText, when both are given', async () => {
+    const { rec, persister, connector } = makeDeps({
+      awaiting: true,
+      pending: [{ type: 'user_question_request', toolUseId: 't1' }],
+      answerResult: true,
+    })
+    // messageText carries the `\[Alice]: ` sender prefix (for the fresh-turn forward); the answer
+    // sent to the model must be the raw text only.
+    const consumed = await consumeOrCancelAwaitingInput({
+      ...base,
+      messageText: '\\[Alice]: option nobody listed',
+      answerText: 'option nobody listed',
+      hasFiles: false,
+      persister,
+      connector,
+    })
+    expect(consumed).toBe(true)
+    expect(rec.answerArgs?.text).toBe('option nobody listed')
+  })
+
   it('cancels and dismisses when the open question declines the typed text', async () => {
     const { rec, persister, connector } = makeDeps({
       awaiting: true,

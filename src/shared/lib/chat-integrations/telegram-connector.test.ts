@@ -433,6 +433,33 @@ describe('TelegramConnector — typed message answers an open question (Other)',
     expect(responses[0].response.answer).toBe('actually use SQLite')
   })
 
+  it('resolves an options-less (free-form) single question typed as the Other answer', async () => {
+    // No options -> no keyboard, but openQuestionCard is still set (cbIds:[]) so a typed message
+    // is the only way to answer. This is the core "honest Other" path.
+    await (connector as any).sendUserRequestCard('123', {
+      type: 'user_question_request',
+      toolUseId: 'tu-open',
+      questions: [{ question: 'What should I name the file?' }],
+    })
+    const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-open', 'report.csv')
+    expect(ok).toBe(true)
+    expect(responses).toHaveLength(1)
+    expect(responses[0].response.answer).toBe('report.csv')
+  })
+
+  it('single-select tap rebuilds the confirmation from the stored question text (rich path has no message.text)', async () => {
+    await (connector as any).sendUserRequestCard('123', singleQuestionEvent('tu-q'))
+    const kb = sent[0].reply_markup.inline_keyboard
+    const editSpy = vi.spyOn(connector as any, 'editRichOrHtml')
+    // makeCbCtx omits .text (rich messages carry none) — the confirmation must come from storage,
+    // not ctx.callbackQuery.message.text, or the question is dropped.
+    await (connector as any).handleCallbackQuery(makeCbCtx(kb[0][0].callback_data)) // tap Postgres
+    expect(editSpy).toHaveBeenCalled()
+    const md = editSpy.mock.calls[0][2] as string
+    expect(md).toContain('Which database?')
+    expect(md).toContain('Postgres')
+  })
+
   it('returns false when no question card is open for the chat', async () => {
     const ok = await (connector as any).answerOpenQuestionWithText('123', 'tu-q', 'hi')
     expect(ok).toBe(false)

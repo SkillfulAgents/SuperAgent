@@ -834,6 +834,9 @@ class ChatIntegrationManager {
         agentSlug: integration.agentSlug,
         chatId,
         messageText,
+        // Resolve an open question with the RAW user text (no group sender-name prefix): the
+        // prefixed messageText is only for the fresh-turn forward below.
+        answerText: message.text ?? '',
         hasFiles: !!(message.files && message.files.length > 0),
         persister: messagePersister,
         connector: conn.connector,

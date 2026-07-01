@@ -28,11 +28,16 @@ export async function consumeOrCancelAwaitingInput(opts: {
   agentSlug: string
   chatId: string
   messageText: string
+  // The raw user text to resolve an open question with as the "Other" answer. Distinct from
+  // messageText, which may carry a group sender-name prefix (e.g. `\[Alice]: `) meant only for the
+  // fresh-turn forward path — that prefix must not leak into the answer sent to the model. Falls
+  // back to messageText when not supplied.
+  answerText?: string
   hasFiles: boolean
   persister: AwaitingInputPersister
   connector: DismissibleConnector
 }): Promise<boolean> {
-  const { sessionId, agentSlug, chatId, messageText, hasFiles, persister, connector } = opts
+  const { sessionId, agentSlug, chatId, messageText, answerText, hasFiles, persister, connector } = opts
 
   // A plain-text message during an open single-question card is the free-form "Other" answer:
   // resolve that question so the same turn continues. isSessionAwaitingInput is the source of
@@ -45,7 +50,7 @@ export async function consumeOrCancelAwaitingInput(opts: {
       .getPendingInputRequests(sessionId)
       .find((r) => r.type === 'user_question_request')
     if (pendingQuestion) {
-      const answered = await connector.answerOpenQuestionWithText(chatId, pendingQuestion.toolUseId, messageText)
+      const answered = await connector.answerOpenQuestionWithText(chatId, pendingQuestion.toolUseId, answerText ?? messageText)
       if (answered) return true
     }
   }

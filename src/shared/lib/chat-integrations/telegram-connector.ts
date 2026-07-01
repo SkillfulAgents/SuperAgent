@@ -130,8 +130,9 @@ export class TelegramConnector extends ChatClientConnector {
     answers: Record<string, string> // { questionText: selectedAnswer }
     chatId: string
     // Single-select sub-cards of this multi-question card (multiSelect sub-cards live in
-    // pendingMultiSelect); tracked so dismissOpenCards can strip every keyboard on cancel.
-    cards: Array<{ messageId: string; cbIds: string[] }>
+    // pendingMultiSelect); tracked so dismissOpenCards can strip every keyboard on cancel and so
+    // a tap can rebuild its confirmation from the stored question text (rich messages carry none).
+    cards: Array<{ messageId: string; cbIds: string[]; questionText: string }>
   }> = new Map()
 
   // Track open multiSelect questions: the redraw state + the accumulating checked set,
@@ -577,8 +578,9 @@ export class TelegramConnector extends ChatClientConnector {
             })
           } else if (hasOptions) {
             // Multi-question single-select sub-card: track its message + callbacks so a cancel can
-            // strip the keyboard (multiSelect sub-cards are tracked in pendingMultiSelect instead).
-            this.pendingQuestions.get(event.toolUseId)?.cards.push({ messageId: lastMessageId, cbIds })
+            // strip the keyboard (multiSelect sub-cards are tracked in pendingMultiSelect instead),
+            // and its question text so a tap can rebuild the confirmation on the rich-message path.
+            this.pendingQuestions.get(event.toolUseId)?.cards.push({ messageId: lastMessageId, cbIds, questionText: text })
           }
         }
 
@@ -633,18 +635,18 @@ export class TelegramConnector extends ChatClientConnector {
         ? card.cbIds
         : this.pendingQuestions.get(mapping.toolUseId)?.cards.find((c) => c.messageId === messageId)?.cbIds
     for (const cb of cardCbIds ?? [data]) this.callbackDataMap.delete(cb)
-    this.callbackDataMap.delete(data)
     this.openQuestionCard.delete(chatId)
 
     await ctx.answerCallbackQuery()
-    const originalText = ctx.callbackQuery?.message?.text || ''
-    const confirmation = `${escapeMarkdown(originalText)}\n\n✅ **${escapeMarkdown(val.answer ?? '')}**`
-    try {
-      await this.editRichOrHtml(chatId, messageId, confirmation)
-    } catch {
-      try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
-    }
-    this.emitAnswer(mapping.toolUseId, val.question, val.answer ?? '', chatId)
+    // Rebuild the confirmation from the STORED question text: on the default rich-message path
+    // ctx.callbackQuery.message.text is empty, so reading it would drop the question (only the
+    // richMessages=false HTML fallback carries readable text).
+    const questionText =
+      card && card.toolUseId === mapping.toolUseId
+        ? card.questionText
+        : this.pendingQuestions.get(mapping.toolUseId)?.cards.find((c) => c.messageId === messageId)?.questionText
+          ?? escapeMarkdown(ctx.callbackQuery?.message?.text || '')
+    await this.confirmAndEmit(chatId, messageId, questionText, mapping.toolUseId, val.question, val.answer ?? '')
   }
 
   /** Toggle a multiSelect option's ✅ and redraw the keyboard; does not resolve. */
@@ -687,14 +689,7 @@ export class TelegramConnector extends ChatClientConnector {
 
     await ctx.answerCallbackQuery()
 
-    // Build the confirmation from the stored question text — rich messages carry no `.text`.
-    const confirmation = `${state.questionText}\n\n✅ **${escapeMarkdown(answer)}**`
-    try {
-      await this.editRichOrHtml(state.chatId, state.messageId, confirmation)
-    } catch { /* ignore */ }
-    try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
-
-    this.emitAnswer(toolUseId, question, answer, state.chatId)
+    await this.confirmAndEmit(state.chatId, state.messageId, state.questionText, toolUseId, question, answer)
   }
 
   /**
@@ -711,18 +706,32 @@ export class TelegramConnector extends ChatClientConnector {
     if (card.multiSelect) this.pendingMultiSelect.delete(this.multiSelectKey(card.toolUseId, card.question))
     for (const cb of card.cbIds) this.callbackDataMap.delete(cb)
 
-    // Confirm + strip the keyboard. Build the confirmation from the stored question text, since
-    // rich messages carry no readable `.text`.
-    const confirmation = `${card.questionText}\n\n✅ **${escapeMarkdown(text)}**`
-    try {
-      await this.editRichOrHtml(chatId, card.messageId, confirmation)
-    } catch { /* best-effort */ }
-    try {
-      await this.bot?.api.editMessageReplyMarkup(Number(chatId), Number(card.messageId), { reply_markup: { inline_keyboard: [] } })
-    } catch { /* best-effort */ }
-
-    this.emitAnswer(card.toolUseId, card.question, text, chatId)
+    await this.confirmAndEmit(chatId, card.messageId, card.questionText, card.toolUseId, card.question, text)
     return true
+  }
+
+  /**
+   * Confirm a resolved question card and emit its answer. Rebuilds the confirmation from the STORED
+   * question text (rich messages carry no readable `.text`), best-effort edits the card + strips its
+   * inline keyboard, then emits. Shared by every resolve path (single-select tap, multiSelect Done,
+   * typed "Other") so the confirmation stays consistent and can't drift.
+   */
+  private async confirmAndEmit(
+    chatId: string,
+    messageId: string,
+    questionText: string,
+    toolUseId: string,
+    question: string,
+    answer: string,
+  ): Promise<void> {
+    const confirmation = `${questionText}\n\n✅ **${escapeMarkdown(answer)}**`
+    try {
+      await this.editRichOrHtml(chatId, messageId, confirmation)
+    } catch { /* best-effort */ }
+    try {
+      await this.bot?.api.editMessageReplyMarkup(Number(chatId), Number(messageId), { reply_markup: { inline_keyboard: [] } })
+    } catch { /* best-effort */ }
+    this.emitAnswer(toolUseId, question, answer, chatId)
   }
 
   /**
