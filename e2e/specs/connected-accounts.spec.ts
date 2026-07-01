@@ -1,8 +1,7 @@
 import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
-import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
-import { createAgent, openAgentHome, type TestAgent } from '../helpers/agents'
+import { createAgent, gotoAgentHome, type TestAgent } from '../helpers/agents'
 import {
   createRemoteMcp,
   expectAgentHasRemoteMcp,
@@ -81,10 +80,7 @@ async function createAndOpenAgent(
   label: string,
 ): Promise<TestAgent> {
   const agent = await createAgent(request, uniqueName(testInfo, label))
-  const appPage = new AppPage(page)
-  await appPage.goto()
-  await appPage.waitForAgentsLoaded()
-  await openAgentHome(page, agent)
+  await gotoAgentHome(page, agent)
   return agent
 }
 

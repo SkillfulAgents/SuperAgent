@@ -14,6 +14,7 @@ import {
   cancelScheduledTask,
   pauseScheduledTask,
   resumeScheduledTask,
+  type ScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
 import {
   createWebhookTrigger,
@@ -30,7 +31,7 @@ import { db } from '@shared/lib/db'
 import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { getFrequencyWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
+import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -107,7 +108,6 @@ interface StreamingState {
   // idle arrives via session_state_changed (resume-exits pause, not finish).
   lastResultSubtype: string | null
   isRetrying: boolean // True while an API retry is in progress, cleared when the next message starts
-  lastEmittedActivity?: SessionActivity // Deduplication guard — undefined = not yet emitted
 }
 
 // Lazy import to break circular dependency: container-manager -> message-persister
@@ -244,7 +244,6 @@ class MessagePersister {
   // session_state_changed handler (authoritative idle), and markSessionInactive.
   private finalizeIdle(sessionId: string, state: StreamingState): void {
     state.isActive = false
-    this.emitActivityState(sessionId)
     this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
     this.broadcastGlobal({
       type: 'session_idle',
@@ -363,23 +362,11 @@ class MessagePersister {
     return 'working'
   }
 
-  // Public snapshot of the activity — the chat manager reads it for the
-  // subscribe-time reconcile (cold-start), alongside the session_activity event.
+  // Public snapshot of the activity — the chat manager's per-session tick samples it
+  // each interval, and the subscribe-time reconcile reads it for a cold start.
   getSessionActivity(sessionId: string): SessionActivity {
     const state = this.streamingStates.get(sessionId)
     return state ? this.computeActivity(state) : 'idle'
-  }
-
-  /** Recompute the activity and broadcast session_activity iff it changed. */
-  private emitActivityState(sessionId: string): void {
-    const state = this.streamingStates.get(sessionId)
-    if (!state) return
-    const activity = this.computeActivity(state)
-    if (activity === state.lastEmittedActivity) return
-    state.lastEmittedActivity = activity
-    // Per-session only: the chat manager subscribes per session and is the sole
-    // consumer. (No global broadcast — nothing listens for session_activity there.)
-    this.broadcastToSSE(sessionId, { type: 'session_activity', sessionId, activity, agentSlug: state.agentSlug })
   }
 
   // Get pending computer use requests for a session (for SSE replay on reconnect)
@@ -538,7 +525,6 @@ class MessagePersister {
       state.isStreaming = false
       state.isActive = false
       state.isAwaitingInput = false
-      this.emitActivityState(sessionId)
       state.currentText = ''
       state.currentToolUse = null
       state.currentToolInput = ''
@@ -628,7 +614,6 @@ class MessagePersister {
     // event) must not wedge the next turn's label. State is reused across turns.
     state.isCompacting = false
     state.currentThinking = false
-    this.emitActivityState(sessionId)
     state.lastApiErrorCode = null // Clear previous API error on new message
     // Clear the previous turn's result subtype so a late idle from an
     // already-finished (or interrupted) run can't fire a stale "success"
@@ -655,7 +640,6 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     if (state && !state.isAwaitingInput) {
       state.isAwaitingInput = true
-      this.emitActivityState(sessionId)
       this.broadcastGlobal({
         type: 'session_awaiting_input',
         sessionId,
@@ -902,7 +886,6 @@ class MessagePersister {
         // may not always carry the isCompactSummary metadata flag.
         if (state.isCompacting || content.isCompactSummary) {
           state.isCompacting = false
-          this.emitActivityState(sessionId) // re-project: the indicator must leave 'compacting' now, not at the next token
           // Compaction complete — broadcast so frontend transitions from spinner to boundary
           this.broadcastToSSE(sessionId, { type: 'compact_complete' })
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
@@ -911,7 +894,6 @@ class MessagePersister {
         // Clear awaiting input when tool results arrive (user provided input)
         if (state.isAwaitingInput) {
           state.isAwaitingInput = false
-          this.emitActivityState(sessionId)
           this.broadcastGlobal({
             type: 'session_input_provided',
             sessionId,
@@ -945,7 +927,6 @@ class MessagePersister {
           if (content.status === 'compacting' && !state.isCompacting) {
             state.isCompacting = true
             this.broadcastToSSE(sessionId, { type: 'compact_start' })
-            this.emitActivityState(sessionId)
           }
           if (content.status === 'requesting') {
             // The CLI is composing the next model request — the moment it
@@ -960,7 +941,6 @@ class MessagePersister {
           if (!state.isCompacting) {
             state.isCompacting = true
             this.broadcastToSSE(sessionId, { type: 'compact_start' })
-            this.emitActivityState(sessionId)
           }
         } else if (content.subtype === 'api_retry') {
           // API retry in progress — broadcast details so the UI can show retry state
@@ -972,7 +952,6 @@ class MessagePersister {
             delayMs: content.delay_ms,
             errorStatus: content.error_status,
           })
-          this.emitActivityState(sessionId)
         } else if (content.subtype === 'task_started') {
           // Subagent started — set agentId deterministically from task_id (SDK 0.3.142+
           // guarantees task_id === subagent session ID === JSONL filename).
@@ -1154,7 +1133,6 @@ class MessagePersister {
             // The runtime started a turn we didn't initiate via POST (e.g. a
             // queued message picked up after an out-of-order idle) — self-heal.
             state.isActive = true
-            this.emitActivityState(sessionId)
             this.broadcastToSSE(sessionId, { type: 'session_active', isActive: true })
             this.broadcastGlobal({
               type: 'session_active',
@@ -1183,7 +1161,6 @@ class MessagePersister {
         // intermediate "isActive still true, streaming just cleared" snapshot
         // would read working=true and race connectors into a stuck indicator.
         if (isError) state.isActive = false
-        this.emitActivityState(sessionId)
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
 
@@ -1754,11 +1731,8 @@ class MessagePersister {
         state.currentToolUse = null
         state.currentThinking = false
         state.isRetrying = false // the response is flowing now, so any retry resolved
-        // Emit after the resets. Activity reads 'working' (active, nothing surfaced
-        // yet) — 'streaming' is deferred to the first text token (content_block_delta)
-        // so a message that opens with a tool call doesn't flip streaming→working and
-        // churn connectors (Slack reaction remove+re-add, iMessage typing-bubble blink).
-        this.emitActivityState(sessionId)
+        // 'streaming' is deferred to the first text token (set above) so a message that
+        // opens with a tool call stays 'working' instead of flipping streaming→working.
         this.broadcastToSSE(sessionId, { type: 'stream_start' })
         break
 
@@ -1783,9 +1757,6 @@ class MessagePersister {
           state.currentThinking = true
           this.broadcastToSSE(sessionId, { type: 'thinking_start' })
         }
-        // A tool block projects 'working', a thinking block 'thinking'. A text block
-        // keeps 'working' (deduped) until its first token sets 'streaming' below.
-        this.emitActivityState(sessionId)
         break
 
       case 'content_block_delta':
@@ -1795,11 +1766,9 @@ class MessagePersister {
             type: 'stream_delta',
             text: event.delta.text,
           })
-          // The streamed reply now owns the surface → project 'streaming' (deferred
-          // from message_start so a tool-first message never churns connectors).
-          // Idempotent + deduped, so the per-token cost is one cheap compare.
+          // The streamed reply now owns the surface → 'streaming' (deferred from
+          // message_start so a tool-first message never flips streaming→working).
           state.isStreaming = true
-          this.emitActivityState(sessionId)
         } else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
           // Stream summarized reasoning text so the UI can accumulate it for "View thinking"
           this.broadcastToSSE(sessionId, {
@@ -1824,8 +1793,6 @@ class MessagePersister {
         if (state.currentThinking) {
           state.currentThinking = false
           this.broadcastToSSE(sessionId, { type: 'thinking_stop' })
-          // Thinking ended → re-project ('thinking' → 'streaming'/'working').
-          this.emitActivityState(sessionId)
         }
         // Tool use block finished streaming
         if (state.currentToolUse) {
@@ -2060,7 +2027,6 @@ class MessagePersister {
       case 'message_stop':
         // Don't save here - JSONL is the source of truth
         state.isStreaming = false
-        this.emitActivityState(sessionId)
         state.currentToolUse = null
         state.currentToolInput = ''
         // Defensive: ensure thinking state is cleared if a stop was missed
@@ -2254,12 +2220,22 @@ class MessagePersister {
           agentSlug,
         })
 
-        // Resolve the blocking tool with a success message (plus any frequency warning).
-        await this.resolveContainerInput(
-          agentSlug,
-          toolUseId,
-          this.formatScheduleTaskResult(input, taskId, timezone)
-        )
+        // Build the agent-facing result: base success + any frequency warning,
+        // then enrich with the agent's active-schedule count, a soft-cap warning,
+        // and the full active list so a runaway loop or duplicate schedules are
+        // visible. The enrichment is best-effort — if reading the active list
+        // throws we still resolve with the base success so the blocking tool never
+        // hangs.
+        let resultMessage = this.formatScheduleTaskResult(input, taskId, timezone)
+        try {
+          const activeTasks = await listPendingScheduledTasks(agentSlug)
+          resultMessage += this.formatActiveScheduleSummary(activeTasks)
+        } catch (summaryError) {
+          console.error('[MessagePersister] Failed to build active-schedule summary:', summaryError)
+        }
+
+        // Resolve the blocking tool with the (possibly enriched) success message.
+        await this.resolveContainerInput(agentSlug, toolUseId, resultMessage)
       } catch (deliveryError) {
         console.error('[MessagePersister] Schedule persisted but result delivery failed:', deliveryError)
       }
@@ -2302,6 +2278,37 @@ ${continuation}`
     }
 
     return result
+  }
+
+  /**
+   * Build the active-schedule summary appended to a schedule_task result: the
+   * agent's current count of active schedules (pending + paused), a soft-cap
+   * warning when the count is high, and the full list (id, name, schedule
+   * expression, next run) so the agent can spot duplicates/overlaps and
+   * self-correct. Always returns the count + list; the warning is conditional.
+   */
+  private formatActiveScheduleSummary(tasks: ScheduledTask[]): string {
+    const count = tasks.length
+    let summary = `\n\nActive schedules for this agent: ${count}`
+
+    const warning = getScheduleCountWarning(count)
+    if (warning) {
+      summary += `\n\n${warning}`
+    }
+
+    if (count > 0) {
+      const list = tasks
+        .map((t) => {
+          const kind = t.scheduleType === 'cron' ? 'recurring' : 'one-time'
+          const next = t.nextExecutionAt ? t.nextExecutionAt.toISOString() : 'unknown'
+          const status = t.status === 'paused' ? ' [PAUSED]' : ''
+          return `- **${t.name || 'Scheduled Task'}** (ID: ${t.id})${status} — ${kind} (${t.scheduleExpression}), next run ${next}${t.timezone ? ` (${t.timezone})` : ''}`
+        })
+        .join('\n')
+      summary += `\n\n${list}`
+    }
+
+    return summary
   }
 
   // Handle list_scheduled_tasks - blocking: read from SQLite and resolve

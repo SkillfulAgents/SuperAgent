@@ -73,14 +73,18 @@ export class SessionPage {
     return enabledInput ?? this.page.locator('[data-testid="message-input"]').first()
   }
 
-  private async getVisibleSendButton(timeout = 10000) {
-    let visibleButton: Locator | undefined
+  private async clickEnabledSendButton(timeout = 10000) {
     await expect.poll(async () => {
-      visibleButton = await this.findMatchingLocator(this.getSendButtonLocators())
-      return visibleButton ? 'found' : 'none'
-    }, { timeout }).not.toBe('none')
+      const button = await this.findMatchingLocator(this.getSendButtonLocators(), { enabled: true })
+      if (!button) return 'waiting'
 
-    return visibleButton ?? this.page.locator('[data-testid="send-button"]').first()
+      try {
+        await button.click({ timeout: 1000 })
+        return 'clicked'
+      } catch {
+        return 'retry'
+      }
+    }, { timeout }).toBe('clicked')
   }
 
   /**
@@ -132,9 +136,7 @@ export class SessionPage {
    */
   async sendMessage(content: string) {
     await this.typeMessage(content)
-    const sendButton = await this.getVisibleSendButton()
-    await expect(sendButton).toBeEnabled({ timeout: 10000 })
-    await sendButton.click()
+    await this.clickEnabledSendButton()
   }
 
   /**

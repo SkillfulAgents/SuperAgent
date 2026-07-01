@@ -20,7 +20,6 @@ export class AppPage {
     await expect(
       this.page
         .locator('[data-testid="app-sidebar"], [data-testid="wizard-container"]')
-        .or(this.page.getByRole('heading', { name: /create your first agent/i }))
         .first()
     ).toBeVisible({ timeout })
   }
@@ -30,46 +29,53 @@ export class AppPage {
    * Navigates through all steps using Next/Skip to close it.
    * Requires E2E mock mode (mock API key configured, runtime available).
    */
-  async dismissWizardIfVisible() {
+  async dismissWizardIfVisible(timeout = 2000) {
     const wizard = this.page.locator('[data-testid="wizard-container"]')
-    if (await wizard.isVisible({ timeout: 1000 }).catch(() => false)) {
-      const manualSetup = this.page.locator('[data-testid="wizard-manual-setup"]')
 
-      if (await manualSetup.isVisible({ timeout: 500 }).catch(() => false)) {
-        // Full wizard — walk through all steps
-        const stepContent = this.page.locator('[data-testid="wizard-step-content"]')
-        await manualSetup.click()
-        await expect(stepContent).toHaveAttribute('data-step', '0')
-
-        // LLM -> Browser
-        await this.page.locator('[data-testid="wizard-next"]').click()
-        await expect(stepContent).toHaveAttribute('data-step', '1')
-
-        // Browser -> Composio
-        await this.page.locator('[data-testid="wizard-next"]').click()
-        await expect(stepContent).toHaveAttribute('data-step', '2')
-
-        // Composio -> Runtime
-        await this.page.locator('[data-testid="wizard-skip"]').click()
-        await expect(stepContent).toHaveAttribute('data-step', '3')
-
-        // Runtime -> Privacy
-        await this.page.locator('[data-testid="wizard-next"]').click()
-        await expect(stepContent).toHaveAttribute('data-step', '4')
-
-        // Privacy -> Agent
-        await this.page.locator('[data-testid="wizard-next"]').click()
-        await expect(stepContent).toHaveAttribute('data-step', '5')
-
-        // Skip on Agent step finishes the wizard
-        await this.page.locator('[data-testid="wizard-skip"]').click()
-      } else {
-        // Agent-only wizard — just skip
-        await this.page.locator('[data-testid="wizard-skip"]').click()
-      }
-
-      await expect(wizard).not.toBeVisible()
+    try {
+      await wizard.waitFor({ state: 'visible', timeout })
+    } catch {
+      return
     }
+
+    const manualSetup = this.page.locator('[data-testid="wizard-manual-setup"]')
+    const agentOnlyHeading = wizard.getByRole('heading', { name: /create your first agent/i })
+    await expect(manualSetup.or(agentOnlyHeading).first()).toBeVisible({ timeout: 5000 })
+
+    if (await manualSetup.isVisible()) {
+      // Full wizard — walk through all steps
+      const stepContent = this.page.locator('[data-testid="wizard-step-content"]')
+      await manualSetup.click()
+      await expect(stepContent).toHaveAttribute('data-step', '0')
+
+      // LLM -> Browser
+      await this.page.locator('[data-testid="wizard-next"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '1')
+
+      // Browser -> Composio
+      await this.page.locator('[data-testid="wizard-next"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '2')
+
+      // Composio -> Runtime
+      await this.page.locator('[data-testid="wizard-skip"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '3')
+
+      // Runtime -> Privacy
+      await this.page.locator('[data-testid="wizard-next"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '4')
+
+      // Privacy -> Agent
+      await this.page.locator('[data-testid="wizard-next"]').click()
+      await expect(stepContent).toHaveAttribute('data-step', '5')
+
+      // Skip on Agent step finishes the wizard
+      await this.page.locator('[data-testid="wizard-skip"]').click()
+    } else {
+      // Agent-only wizard — just skip
+      await this.page.locator('[data-testid="wizard-skip"]').click()
+    }
+
+    await expect(wizard).not.toBeVisible({ timeout: 15000 })
   }
 
   /**
@@ -78,8 +84,8 @@ export class AppPage {
   async waitForAgentsLoaded() {
     // Wait for sidebar to be visible first
     await this.waitForAppLoaded()
-    // Dismiss wizard if it auto-opened (safety net for clean test state)
-    await this.dismissWizardIfVisible()
+    // Broad safety net: keep this short because the main suite seeds setup as complete.
+    await this.dismissWizardIfVisible(500)
     // Wait for the app to be interactive (create agent button visible).
     // If the wizard appeared after our check (race with parallel tests),
     // try dismissing it once more.
@@ -87,7 +93,7 @@ export class AppPage {
     try {
       await expect(createBtn).toBeVisible({ timeout: 3000 })
     } catch {
-      await this.dismissWizardIfVisible()
+      await this.dismissWizardIfVisible(500)
       await expect(createBtn).toBeVisible()
     }
   }

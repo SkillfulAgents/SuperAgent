@@ -56,6 +56,8 @@ const GIT_ENV = {
   LANG: 'C',
 }
 
+const activeSkillsetRefreshes = new Map<string, Promise<SkillsetIndex>>()
+
 // ============================================================================
 // Path Helpers
 // ============================================================================
@@ -669,6 +671,25 @@ export async function refreshSkillset(ref: SkillsetRef): Promise<SkillsetIndex> 
   const hostingProvider = getSkillsetProvider(ref.provider)
   const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
+  const inFlight = activeSkillsetRefreshes.get(repoDir)
+  if (inFlight) return inFlight
+
+  const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir)
+  activeSkillsetRefreshes.set(repoDir, refresh)
+  try {
+    return await refresh
+  } finally {
+    if (activeSkillsetRefreshes.get(repoDir) === refresh) {
+      activeSkillsetRefreshes.delete(repoDir)
+    }
+  }
+}
+
+async function refreshSkillsetCache(
+  ref: SkillsetRef,
+  hostingProvider: ReturnType<typeof getSkillsetProvider>,
+  repoDir: string,
+): Promise<SkillsetIndex> {
   if (!hostingProvider.usesGitCache) {
     await hostingProvider.refreshCache(repoDir, ref)
     return readIndexJson(repoDir)

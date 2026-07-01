@@ -15,7 +15,8 @@ import type {
 
 const { mockExecFile, mockAnthropicCreate, mockGetApiKey, mockGetModels } = vi.hoisted(() => {
   const mockExecFile = vi.fn<
-    (cmd: string, args: string[], opts?: unknown) => { stdout: string; stderr: string }
+    (cmd: string, args: string[], opts?: unknown) =>
+      { stdout: string; stderr: string } | Promise<{ stdout: string; stderr: string }>
   >()
   const mockAnthropicCreate = vi.fn()
   const mockGetApiKey = vi.fn((): string | undefined => undefined)
@@ -37,19 +38,21 @@ vi.mock('child_process', () => {
       stderr?: string,
     ) => void
     const callArgs = args.slice(0, -1) as [string, string[], unknown?]
-    try {
-      const result = mockExecFile(...callArgs)
-      callback(null, result?.stdout ?? '', result?.stderr ?? '')
-    } catch (err) {
-      callback(err as Error)
-    }
+    Promise.resolve()
+      .then(() => mockExecFile(...callArgs))
+      .then((result) => {
+        callback(null, result?.stdout ?? '', result?.stderr ?? '')
+      })
+      .catch((err) => {
+        callback(err as Error)
+      })
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(execFileFn as any)[Symbol.for('nodejs.util.promisify.custom')] = async (
     ...args: unknown[]
   ) => {
     const callArgs = args as [string, string[], unknown?]
-    const result = mockExecFile(...callArgs)
+    const result = await mockExecFile(...callArgs)
     return { stdout: result?.stdout ?? '', stderr: result?.stderr ?? '' }
   }
   return { execFile: execFileFn }
@@ -94,6 +97,7 @@ import {
   parseSkillFrontmatter,
   urlToSkillsetId,
   getAgentSkillsWithStatus,
+  refreshSkillset,
   refreshAgentSkills,
   publishSkillToSkillset,
   getSkillPublishInfo,
@@ -766,6 +770,52 @@ Instructions here`
       // No brittle hardcoded master fallback and no full-history reset by name.
       expect(cmdline).not.toContain('git checkout master')
       expect(cmdline.some((c) => c.startsWith('git reset --hard origin/'))).toBe(false)
+    })
+
+    it('coalesces concurrent refreshes for the same cache directory', async () => {
+      const config = buildSkillsetConfig()
+      const index = buildIndex()
+      await createSkillsetCache(config.id, index)
+
+      const ref = {
+        skillsetId: config.id,
+        skillsetUrl: config.url,
+        provider: config.provider,
+        providerData: config.providerData,
+      }
+
+      let setUrlCalls = 0
+      let releaseSetUrl!: () => void
+      let notifySetUrlStarted!: () => void
+      const setUrlStarted = new Promise<void>((resolve) => {
+        notifySetUrlStarted = resolve
+      })
+      const setUrlCanFinish = new Promise<void>((resolve) => {
+        releaseSetUrl = resolve
+      })
+
+      mockExecFile.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'remote' && args[1] === 'set-url') {
+          setUrlCalls += 1
+          notifySetUrlStarted()
+          return setUrlCanFinish.then(() => ({ stdout: '', stderr: '' }))
+        }
+        if (cmd === 'git' && args[0] === 'symbolic-ref') {
+          return { stdout: 'refs/remotes/origin/main\n', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      })
+
+      const firstRefresh = refreshSkillset(ref)
+      await setUrlStarted
+      const secondRefresh = refreshSkillset(ref)
+      releaseSetUrl()
+
+      await expect(Promise.all([firstRefresh, secondRefresh])).resolves.toEqual([index, index])
+      expect(setUrlCalls).toBe(1)
+
+      await expect(refreshSkillset(ref)).resolves.toEqual(index)
+      expect(setUrlCalls).toBe(2)
     })
 
     it('gitPull swallows expected drift errors from fetch+reset without throwing', async () => {

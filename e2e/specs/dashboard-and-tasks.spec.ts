@@ -1,7 +1,43 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+
+async function openAgentHome(page: Page, agentPage: AgentPage, agentName: string) {
+  await agentPage.selectAgent(agentName)
+  await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 10000 })
+  await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName, { timeout: 10000 })
+}
+
+function getDailyIssueSummaryTaskRow(appPage: AppPage) {
+  return appPage
+    .getMainContent()
+    .getByRole('button')
+    .filter({ hasText: 'Daily Issue Summary' })
+    .filter({ hasText: /cron/i })
+    .first()
+}
+
+function getCurrentAgentSlug(page: Page) {
+  const match = page.url().match(/\/agents\/([^/?#]+)/)
+  expect(match).toBeTruthy()
+  return match![1]
+}
+
+async function waitForDailyIssueSummaryTask(request: APIRequestContext, agentSlug: string) {
+  let task: { id: string; name?: string } | undefined
+
+  await expect.poll(async () => {
+    const response = await request.get(`/api/agents/${agentSlug}/scheduled-tasks`)
+    if (!response.ok()) return false
+
+    const tasks = await response.json() as Array<{ id: string; name?: string }>
+    task = tasks.find((candidate) => candidate.name === 'Daily Issue Summary')
+    return Boolean(task)
+  }, { timeout: 20000 }).toBe(true)
+
+  return task!
+}
 
 test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
   let appPage: AppPage
@@ -17,7 +53,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('schedule task tool renders with cron and task details', async ({ page }) => {
+  test('schedule task tool renders with cron and task details', async () => {
     const agentName = `Schedule Agent ${Date.now()}`
     await agentPage.createAgent(agentName)
 
@@ -34,7 +70,7 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await expect(toolCall).toContainText('Daily Issue Summary')
   })
 
-  test('schedule task tool call can be expanded', async ({ page }) => {
+  test('schedule task tool call can be expanded', async () => {
     const agentName = `Schedule Expand ${Date.now()}`
     await agentPage.createAgent(agentName)
 
@@ -54,41 +90,44 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await expect(toolCall).toContainText('America/New York')
   })
 
-  test('scheduled task is created in the database and appears on agent home', async ({ page: _page }) => {
+  test('scheduled task is created in the database and appears on agent home', async ({ page, request }) => {
     const agentName = `Schedule DB ${Date.now()}`
     await agentPage.createAgent(agentName)
+    const agentSlug = getCurrentAgentSlug(page)
 
     await sessionPage.sendMessage('schedule task for daily issues')
     await sessionPage.waitForResponse(15000)
 
     // Wait for the tool call to complete
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
+    await waitForDailyIssueSummaryTask(request, agentSlug)
 
     // Scheduled tasks live on the agent home page (under the "Triggers"
-    // section), not in the sidebar. Click the agent row to clear the session
-    // selection and land on AgentHome.
-    await agentPage.selectAgent(agentName)
+    // section), not in the session transcript. Use the canonical sidebar link
+    // so we do not land on the stale pre-rename slug.
+    await openAgentHome(page, agentPage, agentName)
 
     const main = appPage.getMainContent()
     // Role-scoped: the section's empty state ("No triggers yet" / "Triggers
     // fire your agent…") also contains the word "Triggers", and bare
     // getByText trips strict mode while the task is still being created.
     await expect(main.getByRole('button', { name: 'Triggers' })).toBeVisible({ timeout: 5000 })
-    await expect(main.getByText('Daily Issue Summary')).toBeVisible({ timeout: 10000 })
+    await expect(getDailyIssueSummaryTaskRow(appPage)).toBeVisible({ timeout: 10000 })
   })
 
-  test('opening a scheduled task navigates to its own route and back returns home', async ({ page }) => {
+  test('opening a scheduled task navigates to its own route and back returns home', async ({ page, request }) => {
     const agentName = `Task Route ${Date.now()}`
     await agentPage.createAgent(agentName)
+    const agentSlug = getCurrentAgentSlug(page)
 
     await sessionPage.sendMessage('schedule task for daily issues')
     await sessionPage.waitForResponse(15000)
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
+    await waitForDailyIssueSummaryTask(request, agentSlug)
 
     // Land on agent home where the task lives under "Triggers"
-    await agentPage.selectAgent(agentName)
-    const main = appPage.getMainContent()
-    const taskRow = main.getByText('Daily Issue Summary')
+    await openAgentHome(page, agentPage, agentName)
+    const taskRow = getDailyIssueSummaryTaskRow(appPage)
     await expect(taskRow).toBeVisible({ timeout: 10000 })
 
     // Open the task → it has its own URL route
@@ -107,19 +146,21 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
   })
 
-  test('a cross-agent task deep-link canonicalizes to the task\'s true agent (P1-b)', async ({ page }) => {
+  test('a cross-agent task deep-link canonicalizes to the task\'s true agent (P1-b)', async ({ page, request }) => {
     // Tasks are addressed globally by id, so /agents/<other>/tasks/<id> would
     // otherwise render the task under the WRONG agent's shell (mismatched chrome,
     // back-links, permission gating). The view redirects to the task's true agent.
     const ownerName = `Task Owner ${Date.now()}`
     await agentPage.createAgent(ownerName)
+    const ownerApiSlug = getCurrentAgentSlug(page)
     await sessionPage.sendMessage('schedule task for daily issues')
     await sessionPage.waitForResponse(15000)
     await sessionPage.expectToolCall('mcp__user-input__schedule_task', 15000)
+    await waitForDailyIssueSummaryTask(request, ownerApiSlug)
 
     // Open the task to capture its id + the owner's slug from the URL.
-    await agentPage.selectAgent(ownerName)
-    const taskRow = appPage.getMainContent().getByText('Daily Issue Summary')
+    await openAgentHome(page, agentPage, ownerName)
+    const taskRow = getDailyIssueSummaryTaskRow(appPage)
     await expect(taskRow).toBeVisible({ timeout: 10000 })
     await taskRow.click()
     await expect(page).toHaveURL(/\/tasks\/[^/]+$/)

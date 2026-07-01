@@ -239,3 +239,36 @@ describe('TelegramConnector — media handlers (photo/document)', () => {
     })
   }
 })
+
+// ── Working indicator: dumb (no self-heartbeat) ─────────────────────────────────
+// The manager's per-session tick drives keep-alive now, so startWorking renders
+// the labeled draft once per call and never installs its own setInterval.
+describe('startWorking (dumb, no self-heartbeat)', () => {
+  function makeDmConnector() {
+    const connector = new TelegramConnector({ botToken: 'fake:token' })
+    const sendRichMessageDraft = vi.fn().mockResolvedValue(true)
+    ;(connector as unknown as { bot: unknown }).bot = {
+      api: { raw: { sendRichMessageDraft }, sendChatAction: vi.fn() },
+    }
+    return { connector, sendRichMessageDraft }
+  }
+
+  it('renders exactly once per startWorking and never re-sends on a timer', async () => {
+    vi.useFakeTimers()
+    try {
+      const { connector, sendRichMessageDraft } = makeDmConnector()
+      await connector.startWorking('999', 'working') // positive id → private DM → native draft
+      expect(sendRichMessageDraft).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(sendRichMessageDraft).toHaveBeenCalledTimes(1) // no heartbeat re-sends
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stopWorking resolves and leaves the draft id intact for stream reuse', async () => {
+    const { connector } = makeDmConnector()
+    await connector.startWorking('999', 'working')
+    await expect(connector.stopWorking('999')).resolves.toBeUndefined()
+  })
+})

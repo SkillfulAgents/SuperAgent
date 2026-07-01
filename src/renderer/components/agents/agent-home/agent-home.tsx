@@ -246,6 +246,11 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   return (
     <>
     <div
+      data-testid="agent-home"
+      // Surfaces the one-shot new-agent intro state for tests/debugging without
+      // coupling to CSS classes: absent when no morph, 'pending' while the
+      // "Creating" beat holds, 'playing' once the staggered slide-in runs.
+      data-intro={introStagger ? (introPlaying ? 'playing' : 'pending') : undefined}
       className={cn(
         'flex-1 flex flex-col overflow-y-auto overscroll-contain px-4 py-6 md:px-10 md:py-10 bg-background',
         introStagger && 'agent-home-intro relative',

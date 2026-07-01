@@ -44,12 +44,20 @@ export const CLAUDE_BARE_CATALOG: ModelDefinition[] = [
   {
     id: 'claude-sonnet-4-6',
     label: 'Sonnet 4.6',
+    family: 'sonnet',
+    icon: ICON,
+    supportedEfforts: STANDARD_EFFORTS,
+    pricing: pricingFor('claude-sonnet-4-6'),
+  },
+  {
+    id: 'claude-sonnet-5',
+    label: 'Sonnet 5',
     blurb: 'Balanced speed and capability',
     family: 'sonnet',
     isLatest: true,
     icon: ICON,
     supportedEfforts: STANDARD_EFFORTS,
-    pricing: pricingFor('claude-sonnet-4-6'),
+    pricing: pricingFor('claude-sonnet-5'),
   },
   {
     id: 'claude-opus-4-6',
@@ -103,12 +111,20 @@ export const BEDROCK_CATALOG: ModelDefinition[] = [
   {
     id: 'us.anthropic.claude-sonnet-4-6',
     label: 'Sonnet 4.6',
+    family: 'sonnet',
+    icon: ICON,
+    supportedEfforts: STANDARD_EFFORTS,
+    pricing: pricingFor('claude-sonnet-4-6'),
+  },
+  {
+    id: 'us.anthropic.claude-sonnet-5',
+    label: 'Sonnet 5',
     blurb: 'Balanced speed and capability',
     family: 'sonnet',
     isLatest: true,
     icon: ICON,
     supportedEfforts: STANDARD_EFFORTS,
-    pricing: pricingFor('claude-sonnet-4-6'),
+    pricing: pricingFor('claude-sonnet-5'),
   },
   {
     id: 'us.anthropic.claude-opus-4-6-v1',
