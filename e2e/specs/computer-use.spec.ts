@@ -40,6 +40,7 @@ test.describe('Computer Use requests', () => {
 
     // Session should complete
     await sessionPage.waitForInputEnabled(15000)
+    await sessionPage.expectAssistantMessage('Thank you for providing the information.', 1, 15000)
   })
 
   test('computer use request: deny', async () => {
@@ -55,5 +56,6 @@ test.describe('Computer Use requests', () => {
 
     // Session should complete
     await sessionPage.waitForInputEnabled(15000)
+    await sessionPage.expectAssistantMessage('Thank you for providing the information.', 1, 15000)
   })
 })

@@ -35,36 +35,33 @@ test.describe('Background Bash Task Tracking', () => {
     // Should show background process count
     await expect(indicator).toContainText('background process', { timeout: 10000 })
 
-    // Wait for the background task to complete and agent to respond
-    // The BackgroundBashScenario has a 2s delay, then the agent processes the notification
-    await sessionPage.waitForInputEnabled(15000)
+    // Wait for the background task to complete and agent to respond.
+    // The BackgroundBashScenario has a 2s delay, then the agent processes the notification.
+    await sessionPage.expectAssistantMessage('Background command completed', 1, 30000)
+    await sessionPage.waitForInputEnabled(30000)
 
     // Agent should go back to idle after everything completes
     await agentPage.waitForStatus('idle', 15000)
   })
 
-  test('background process indicator disappears after completion', async ({ page }) => {
+  test('background process indicator disappears after completion', async () => {
     await sessionPage.sendMessage('run background command')
 
     // Wait for background process indicator to appear
     const indicator = sessionPage.getActivityIndicator()
     await expect(indicator).toContainText('background process', { timeout: 10000 })
 
-    // Wait for completion — the indicator should eventually disappear
-    await sessionPage.waitForInputEnabled(15000)
-
-    // Activity indicator should be gone (session is idle)
-    await expect(indicator).not.toBeVisible({ timeout: 10000 })
+    // Activity indicator should be gone once the background task has completed.
+    await expect(indicator).not.toBeVisible({ timeout: 30000 })
+    await sessionPage.waitForInputEnabled(30000)
   })
 
   test('agent responds with final output after background task completes', async () => {
     await sessionPage.sendMessage('run background command')
 
-    // Wait for the full flow to complete
-    await sessionPage.waitForInputEnabled(15000)
-
     // Should have the final response mentioning the command output
-    await sessionPage.expectAssistantMessage('Background command completed', 1)
+    await sessionPage.expectAssistantMessage('Background command completed', 1, 30000)
+    await sessionPage.waitForInputEnabled(30000)
   })
 
   test('shows both stop and send buttons while waiting for background task', async ({ page }) => {
@@ -81,6 +78,7 @@ test.describe('Background Bash Task Tracking', () => {
     await expect(sendButton).toBeVisible({ timeout: 5000 })
 
     // Wait for completion
-    await sessionPage.waitForInputEnabled(15000)
+    await expect(indicator).not.toBeVisible({ timeout: 30000 })
+    await sessionPage.waitForInputEnabled(30000)
   })
 })

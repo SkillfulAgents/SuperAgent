@@ -13,6 +13,8 @@ import {
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingProxyReviews, type PendingReview } from '@renderer/hooks/use-proxy-reviews'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
+import { getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
+import { askUserQuestionDef } from '@shared/lib/tool-definitions/ask-user-question'
 
 interface UsePendingRequestsArgs {
   sessionId: string
@@ -25,6 +27,176 @@ type Question = {
   header: string
   options: Array<{ label: string; description: string }>
   multiSelect: boolean
+}
+
+type PendingRequestBuckets = {
+  secretRequests: { toolUseId: string; secretName: string; reason?: string }[]
+  connectedAccountRequests: { toolUseId: string; toolkit: string; reason?: string }[]
+  questionRequests: { toolUseId: string; questions: Question[] }[]
+  fileRequests: { toolUseId: string; description: string; fileTypes?: string }[]
+  remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[]
+  browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[]
+  scriptRunRequests: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[]
+  computerUseRequests: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }[]
+}
+
+type RequestToolCall = {
+  id: string
+  name: string
+  input: unknown
+}
+
+const COMPUTER_USE_METHODS: Record<string, string> = {
+  apps: 'apps',
+  windows: 'windows',
+  snapshot: 'snapshot',
+  find: 'find',
+  screenshot: 'screenshot',
+  read: 'read',
+  status: 'status',
+  displays: 'displays',
+  permissions: 'permissions',
+  click: 'click',
+  type: 'type',
+  fill: 'fill',
+  key: 'key',
+  scroll: 'scroll',
+  select: 'select',
+  hover: 'hover',
+  launch: 'launch',
+  quit: 'quit',
+  grab: 'grab',
+  ungrab: 'ungrab',
+  menu: 'menuClick',
+  dialog: 'dialog',
+  run: 'run',
+}
+
+function computerUseMethodFromToolName(toolName: string): string {
+  const suffix = toolName.replace('mcp__computer-use__computer_', '')
+  return COMPUTER_USE_METHODS[suffix] ?? suffix
+}
+
+function recordFromInput(input: unknown): Record<string, unknown> {
+  return input && typeof input === 'object' && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : {}
+}
+
+function createPendingRequestBuckets(): PendingRequestBuckets {
+  return {
+    secretRequests: [],
+    connectedAccountRequests: [],
+    questionRequests: [],
+    fileRequests: [],
+    remoteMcpRequests: [],
+    browserInputRequests: [],
+    scriptRunRequests: [],
+    computerUseRequests: [],
+  }
+}
+
+function isScriptType(value: unknown): value is 'applescript' | 'shell' | 'powershell' {
+  return value === 'applescript' || value === 'shell' || value === 'powershell'
+}
+
+function normalizePendingQuestions(input: Record<string, unknown>): Question[] {
+  const questions = askUserQuestionDef.parseInput(input).questions
+  if (!questions?.length) return []
+
+  return questions.flatMap((question) => {
+    if (typeof question.question !== 'string' || !question.question.trim()) return []
+
+    return [{
+      question: question.question,
+      header: typeof question.header === 'string' ? question.header : '',
+      options: Array.isArray(question.options)
+        ? question.options.flatMap((option) => (
+          typeof option.label === 'string'
+            ? [{ label: option.label, description: typeof option.description === 'string' ? option.description : '' }]
+            : []
+        ))
+        : [],
+      multiSelect: question.multiSelect === true,
+    }]
+  })
+}
+
+function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall: RequestToolCall) {
+  const input = recordFromInput(toolCall.input)
+
+  if (toolCall.name === 'mcp__user-input__request_secret') {
+    if (typeof input.secretName === 'string') {
+      buckets.secretRequests.push({
+        toolUseId: toolCall.id,
+        secretName: input.secretName,
+        reason: typeof input.reason === 'string' ? input.reason : undefined,
+      })
+    }
+  } else if (toolCall.name === 'mcp__user-input__request_connected_account') {
+    if (typeof input.toolkit === 'string') {
+      buckets.connectedAccountRequests.push({
+        toolUseId: toolCall.id,
+        toolkit: input.toolkit,
+        reason: typeof input.reason === 'string' ? input.reason : undefined,
+      })
+    }
+  } else if (toolCall.name === 'AskUserQuestion') {
+    const questions = normalizePendingQuestions(input)
+    if (questions.length) {
+      buckets.questionRequests.push({
+        toolUseId: toolCall.id,
+        questions,
+      })
+    }
+  } else if (toolCall.name === 'mcp__user-input__request_remote_mcp') {
+    if (typeof input.url === 'string') {
+      buckets.remoteMcpRequests.push({
+        toolUseId: toolCall.id,
+        url: input.url,
+        name: typeof input.name === 'string' ? input.name : undefined,
+        reason: typeof input.reason === 'string' ? input.reason : undefined,
+        authHint: input.authHint === 'oauth' || input.authHint === 'bearer' ? input.authHint : undefined,
+      })
+    }
+  } else if (toolCall.name === 'mcp__user-input__request_file') {
+    if (typeof input.description === 'string') {
+      buckets.fileRequests.push({
+        toolUseId: toolCall.id,
+        description: input.description,
+        fileTypes: typeof input.fileTypes === 'string' ? input.fileTypes : undefined,
+      })
+    }
+  } else if (toolCall.name === 'mcp__user-input__request_browser_input') {
+    if (typeof input.message === 'string') {
+      buckets.browserInputRequests.push({
+        toolUseId: toolCall.id,
+        message: input.message,
+        // Model-controlled: coerce a non-array (e.g. a bare string) to []
+        // so downstream `.map()` can't crash the request card. `|| []`
+        // would let a non-empty string through.
+        requirements: Array.isArray(input.requirements) ? input.requirements : [],
+      })
+    }
+  } else if (toolCall.name === 'mcp__user-input__request_script_run') {
+    if (typeof input.script === 'string' && isScriptType(input.scriptType)) {
+      buckets.scriptRunRequests.push({
+        toolUseId: toolCall.id,
+        script: input.script,
+        explanation: typeof input.explanation === 'string' ? input.explanation : '',
+        scriptType: input.scriptType,
+      })
+    }
+  } else if (toolCall.name.startsWith('mcp__computer-use__computer_')) {
+    const method = computerUseMethodFromToolName(toolCall.name)
+    buckets.computerUseRequests.push({
+      toolUseId: toolCall.id,
+      method,
+      params: input,
+      permissionLevel: getRequiredPermissionLevel(method),
+      appName: resolveTargetApp(method, input),
+    })
+  }
 }
 
 export type PendingRequestDescriptor =
@@ -63,6 +235,7 @@ export function usePendingRequests({
     pendingBrowserInputRequests: sseBrowserInputRequests,
     pendingScriptRunRequests: sseScriptRunRequests,
     pendingComputerUseRequests: sseComputerUseRequests,
+    streamingToolUses,
     autoApprovedScriptRunIds,
   } = useMessageStream(sessionId, agentSlug)
 
@@ -73,15 +246,9 @@ export function usePendingRequests({
   // Tool calls without a result are still pending, but only if there are no
   // subsequent user messages (which would indicate user has moved past the request).
   const messagesBasedPendingRequests = useMemo(() => {
-    const secretRequests: { toolUseId: string; secretName: string; reason?: string }[] = []
-    const connectedAccountRequests: { toolUseId: string; toolkit: string; reason?: string }[] = []
-    const questionRequests: { toolUseId: string; questions: Question[] }[] = []
-    const fileRequests: { toolUseId: string; description: string; fileTypes?: string }[] = []
-    const remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[] = []
-    const browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[] = []
-    const scriptRunRequests: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[] = []
+    const buckets = createPendingRequestBuckets()
 
-    if (!messages) return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests, scriptRunRequests }
+    if (!messages) return buckets
 
     for (let i = 0; i < messages.length; i++) {
       const message = messages[i]
@@ -95,81 +262,36 @@ export function usePendingRequests({
 
       for (const toolCall of message.toolCalls) {
         if (toolCall.result !== undefined) continue
-
-        if (toolCall.name === 'mcp__user-input__request_secret') {
-          const input = toolCall.input as { secretName?: string; reason?: string }
-          if (input.secretName) {
-            secretRequests.push({
-              toolUseId: toolCall.id,
-              secretName: input.secretName,
-              reason: input.reason,
-            })
-          }
-        } else if (toolCall.name === 'mcp__user-input__request_connected_account') {
-          const input = toolCall.input as { toolkit?: string; reason?: string }
-          if (input.toolkit) {
-            connectedAccountRequests.push({
-              toolUseId: toolCall.id,
-              toolkit: input.toolkit,
-              reason: input.reason,
-            })
-          }
-        } else if (toolCall.name === 'AskUserQuestion') {
-          const input = toolCall.input as { questions?: Question[] }
-          if (input.questions?.length) {
-            questionRequests.push({
-              toolUseId: toolCall.id,
-              questions: input.questions,
-            })
-          }
-        } else if (toolCall.name === 'mcp__user-input__request_remote_mcp') {
-          const input = toolCall.input as { url?: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }
-          if (input.url) {
-            remoteMcpRequests.push({
-              toolUseId: toolCall.id,
-              url: input.url,
-              name: input.name,
-              reason: input.reason,
-              authHint: input.authHint,
-            })
-          }
-        } else if (toolCall.name === 'mcp__user-input__request_file') {
-          const input = toolCall.input as { description?: string; fileTypes?: string }
-          if (input.description) {
-            fileRequests.push({
-              toolUseId: toolCall.id,
-              description: input.description,
-              fileTypes: input.fileTypes,
-            })
-          }
-        } else if (toolCall.name === 'mcp__user-input__request_browser_input') {
-          const input = toolCall.input as { message?: string; requirements?: unknown }
-          if (input.message) {
-            browserInputRequests.push({
-              toolUseId: toolCall.id,
-              message: input.message,
-              // Model-controlled: coerce a non-array (e.g. a bare string) to []
-              // so downstream `.map()` can't crash the request card. `|| []`
-              // would let a non-empty string through.
-              requirements: Array.isArray(input.requirements) ? input.requirements : [],
-            })
-          }
-        } else if (toolCall.name === 'mcp__user-input__request_script_run') {
-          const input = toolCall.input as { script?: string; explanation?: string; scriptType?: 'applescript' | 'shell' | 'powershell' }
-          if (input.script && input.scriptType) {
-            scriptRunRequests.push({
-              toolUseId: toolCall.id,
-              script: input.script,
-              explanation: input.explanation || '',
-              scriptType: input.scriptType,
-            })
-          }
-        }
+        addPendingRequestFromToolCall(buckets, toolCall)
       }
     }
 
-    return { secretRequests, connectedAccountRequests, questionRequests, fileRequests, remoteMcpRequests, browserInputRequests, scriptRunRequests }
+    return buckets
   }, [messages, hasPendingUserMessage])
+
+  // Derive pending requests from ready in-flight tool calls too. This closes the
+  // gap where the one-shot request SSE event is missed but the tool call has not
+  // reached the persisted message-history fallback yet.
+  const streamingBasedPendingRequests = useMemo(() => {
+    const buckets = createPendingRequestBuckets()
+
+    for (const toolUse of streamingToolUses) {
+      if (!toolUse.ready) continue
+
+      try {
+        addPendingRequestFromToolCall(buckets, {
+          id: toolUse.id,
+          name: toolUse.name,
+          input: JSON.parse(toolUse.partialInput || '{}'),
+        })
+      } catch {
+        // The ready event should mean parseable input, but skip defensively
+        // rather than risking a render crash from malformed streaming data.
+      }
+    }
+
+    return buckets
+  }, [streamingToolUses])
 
   // Track toolUseIds the user has already answered, so the message-based
   // recovery source doesn't re-surface them before the tool result is persisted.
@@ -191,85 +313,92 @@ export function usePendingRequests({
     const seen = new Set<string>()
     const merged: { toolUseId: string; secretName: string; reason?: string }[] = []
     const messageBased = isActive ? messagesBasedPendingRequests.secretRequests : []
-    for (const req of [...sseSecretRequests, ...messageBased]) {
+    const streamingBased = isActive ? streamingBasedPendingRequests.secretRequests : []
+    for (const req of [...sseSecretRequests, ...streamingBased, ...messageBased]) {
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseSecretRequests, messagesBasedPendingRequests.secretRequests, isActive])
+  }, [sseSecretRequests, streamingBasedPendingRequests.secretRequests, messagesBasedPendingRequests.secretRequests, isActive])
 
   const pendingConnectedAccountRequests = useMemo(() => {
     const seen = new Set<string>()
     const merged: { toolUseId: string; toolkit: string; reason?: string }[] = []
     const messageBased = isActive ? messagesBasedPendingRequests.connectedAccountRequests : []
-    for (const req of [...sseConnectedAccountRequests, ...messageBased]) {
+    const streamingBased = isActive ? streamingBasedPendingRequests.connectedAccountRequests : []
+    for (const req of [...sseConnectedAccountRequests, ...streamingBased, ...messageBased]) {
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseConnectedAccountRequests, messagesBasedPendingRequests.connectedAccountRequests, isActive])
+  }, [sseConnectedAccountRequests, streamingBasedPendingRequests.connectedAccountRequests, messagesBasedPendingRequests.connectedAccountRequests, isActive])
 
   const pendingQuestionRequests = useMemo(() => {
     const seen = new Set<string>()
     const merged: { toolUseId: string; questions: Question[] }[] = []
     const messageBased = isActive ? messagesBasedPendingRequests.questionRequests : []
-    for (const req of [...sseQuestionRequests, ...messageBased]) {
+    const streamingBased = isActive ? streamingBasedPendingRequests.questionRequests : []
+    for (const req of [...sseQuestionRequests, ...streamingBased, ...messageBased]) {
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseQuestionRequests, messagesBasedPendingRequests.questionRequests, isActive])
+  }, [sseQuestionRequests, streamingBasedPendingRequests.questionRequests, messagesBasedPendingRequests.questionRequests, isActive])
 
   const pendingFileRequests = useMemo(() => {
     const seen = new Set<string>()
     const merged: { toolUseId: string; description: string; fileTypes?: string }[] = []
     const messageBased = isActive ? messagesBasedPendingRequests.fileRequests : []
-    for (const req of [...sseFileRequests, ...messageBased]) {
+    const streamingBased = isActive ? streamingBasedPendingRequests.fileRequests : []
+    for (const req of [...sseFileRequests, ...streamingBased, ...messageBased]) {
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseFileRequests, messagesBasedPendingRequests.fileRequests, isActive])
+  }, [sseFileRequests, streamingBasedPendingRequests.fileRequests, messagesBasedPendingRequests.fileRequests, isActive])
 
   const pendingRemoteMcpRequests = useMemo(() => {
     const seen = new Set<string>()
     const merged: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer' }[] = []
     const messageBased = isActive ? messagesBasedPendingRequests.remoteMcpRequests : []
-    for (const req of [...sseRemoteMcpRequests, ...messageBased]) {
+    const streamingBased = isActive ? streamingBasedPendingRequests.remoteMcpRequests : []
+    for (const req of [...sseRemoteMcpRequests, ...streamingBased, ...messageBased]) {
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseRemoteMcpRequests, messagesBasedPendingRequests.remoteMcpRequests, isActive])
+  }, [sseRemoteMcpRequests, streamingBasedPendingRequests.remoteMcpRequests, messagesBasedPendingRequests.remoteMcpRequests, isActive])
 
   const pendingBrowserInputRequests = useMemo(() => {
     const seen = new Set<string>()
     const merged: { toolUseId: string; message: string; requirements: string[] }[] = []
     const messageBased = isActive ? messagesBasedPendingRequests.browserInputRequests : []
-    for (const req of [...sseBrowserInputRequests, ...messageBased]) {
+    const streamingBased = isActive ? streamingBasedPendingRequests.browserInputRequests : []
+    for (const req of [...sseBrowserInputRequests, ...streamingBased, ...messageBased]) {
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseBrowserInputRequests, messagesBasedPendingRequests.browserInputRequests, isActive])
+  }, [sseBrowserInputRequests, streamingBasedPendingRequests.browserInputRequests, messagesBasedPendingRequests.browserInputRequests, isActive])
 
   const pendingScriptRunRequests = useMemo(() => {
     const seen = new Set<string>()
     const merged: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[] = []
     const messageBased = isActive ? messagesBasedPendingRequests.scriptRunRequests : []
-    for (const req of [...sseScriptRunRequests, ...messageBased]) {
+    const streamingBased = isActive ? streamingBasedPendingRequests.scriptRunRequests : []
+    for (const req of [...sseScriptRunRequests, ...streamingBased, ...messageBased]) {
       if (autoApprovedScriptRunIds.has(req.toolUseId)) continue
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
@@ -277,19 +406,21 @@ export function usePendingRequests({
       }
     }
     return merged
-  }, [sseScriptRunRequests, messagesBasedPendingRequests.scriptRunRequests, isActive, autoApprovedScriptRunIds])
+  }, [sseScriptRunRequests, streamingBasedPendingRequests.scriptRunRequests, messagesBasedPendingRequests.scriptRunRequests, isActive, autoApprovedScriptRunIds])
 
   const pendingComputerUseRequests = useMemo(() => {
     const seen = new Set<string>()
     const merged: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }[] = []
-    for (const req of sseComputerUseRequests) {
+    const messageBased = isActive ? messagesBasedPendingRequests.computerUseRequests : []
+    const streamingBased = isActive ? streamingBasedPendingRequests.computerUseRequests : []
+    for (const req of [...sseComputerUseRequests, ...streamingBased, ...messageBased]) {
       if (!seen.has(req.toolUseId) && !dismissedRequestIds.current.has(req.toolUseId)) {
         seen.add(req.toolUseId)
         merged.push(req)
       }
     }
     return merged
-  }, [sseComputerUseRequests])
+  }, [sseComputerUseRequests, streamingBasedPendingRequests.computerUseRequests, messagesBasedPendingRequests.computerUseRequests, isActive])
 
   // Track arrival order so the stack is chronological. Each id gets a
   // monotonically increasing sequence number the first time it appears.

@@ -26,6 +26,7 @@ const mockStreamState = {
   pendingBrowserInputRequests: [] as Array<{ toolUseId: string; message: string; requirements: string[] }>,
   pendingScriptRunRequests: [] as Array<{ toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }>,
   pendingComputerUseRequests: [] as Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }>,
+  streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string; ready?: boolean }>,
   autoApprovedScriptRunIds: new Set<string>(),
 }
 
@@ -104,6 +105,7 @@ describe('usePendingRequests', () => {
       pendingBrowserInputRequests: [],
       pendingScriptRunRequests: [],
       pendingComputerUseRequests: [],
+      streamingToolUses: [],
       autoApprovedScriptRunIds: new Set<string>(),
     })
   })
@@ -211,6 +213,49 @@ describe('usePendingRequests', () => {
     expect(matches[0].secretName).toBe('DB_PASSWORD')
   })
 
+  it('derives pending secret request from ready streaming tool use when SSE event is missed', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockStreamState.streamingToolUses = [
+      {
+        id: 'stream-secret',
+        name: 'mcp__user-input__request_secret',
+        partialInput: JSON.stringify({
+          secretName: 'OPENAI_API_KEY',
+          reason: 'Needed for API access',
+        }),
+        ready: true,
+      },
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'secret')
+    expect(matches).toHaveLength(1)
+    expect(matches[0]).toMatchObject({
+      toolUseId: 'stream-secret',
+      secretName: 'OPENAI_API_KEY',
+      reason: 'Needed for API access',
+    })
+  })
+
+  it('ignores non-ready streaming request tool use until input is parseable', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockStreamState.streamingToolUses = [
+      {
+        id: 'stream-secret',
+        name: 'mcp__user-input__request_secret',
+        partialInput: '{"secretName":"OPEN',
+        ready: false,
+      },
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(result.current.count).toBe(0)
+  })
+
   it('does not derive pending requests from history when session is idle', () => {
     mockStreamState.isActive = false
     mockMessagesData.data = [
@@ -306,6 +351,35 @@ describe('usePendingRequests', () => {
     expect(matches).toHaveLength(1)
   })
 
+  it('derives question pending request from stringified history input without unsafe casts', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-q-string',
+            name: 'AskUserQuestion',
+            input: {
+              questions: JSON.stringify([
+                { question: 'Which env?', options: [{ label: 'Prod' }], multiSelect: false },
+              ]),
+            },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'question')
+    expect(matches).toHaveLength(1)
+    expect(matches[0].questions).toEqual([
+      { question: 'Which env?', header: '', options: [{ label: 'Prod', description: '' }], multiSelect: false },
+    ])
+  })
+
   it('derives file pending request from message history when active', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [
@@ -350,6 +424,59 @@ describe('usePendingRequests', () => {
     const matches = ofKind(result.current.items, 'remote_mcp')
     expect(matches).toHaveLength(1)
     expect(matches[0].url).toBe('https://mcp.example.com')
+  })
+
+  it('derives computer-use pending request from message history when active', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-cu',
+            name: 'mcp__computer-use__computer_apps',
+            input: { includeHidden: false },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'computer_use')
+    expect(matches).toHaveLength(1)
+    expect(matches[0]).toMatchObject({
+      toolUseId: 'tc-cu',
+      method: 'apps',
+      params: { includeHidden: false },
+      permissionLevel: 'list_apps_windows',
+    })
+  })
+
+  it('derives computer-use pending request from ready streaming tool use', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockStreamState.streamingToolUses = [
+      {
+        id: 'stream-cu',
+        name: 'mcp__computer-use__computer_click',
+        partialInput: JSON.stringify({ app: 'Safari', x: 10, y: 20 }),
+        ready: true,
+      },
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'computer_use')
+    expect(matches).toHaveLength(1)
+    expect(matches[0]).toMatchObject({
+      toolUseId: 'stream-cu',
+      method: 'click',
+      params: { app: 'Safari', x: 10, y: 20 },
+      permissionLevel: 'use_application',
+      appName: 'Safari',
+    })
   })
 
   it('coerces a non-array requirements to [] (model emitted a bare string)', () => {

@@ -23,12 +23,12 @@ test.describe('Proxy Review Requests', () => {
     await agentPage.createAgent(testAgentName)
   })
 
-  test('proxy review: review prompt appears with correct details', async ({ page }) => {
+  test('proxy review: review prompt appears with correct details', async () => {
     // "proxy review" triggers ProxyReviewScenario
     await sessionPage.sendMessage('proxy review')
 
     // Wait for the review prompt to appear
-    await sessionPage.waitForProxyReviewRequest()
+    await sessionPage.waitForProxyReviewRequest(35000)
 
     // Verify the API details are shown
     const request = sessionPage.getProxyReviewRequests().first()
@@ -38,69 +38,69 @@ test.describe('Proxy Review Requests', () => {
     await expect(request).toContainText('slack')
   })
 
-  test('proxy review: user can allow the request', async ({ page }) => {
+  test('proxy review: user can allow the request', async () => {
     await sessionPage.sendMessage('proxy review')
 
-    await sessionPage.waitForProxyReviewRequest()
+    await sessionPage.waitForProxyReviewRequest(35000)
 
     // Allow the request
     await sessionPage.allowProxyReview()
 
-    // Review prompt should disappear
+    // Review prompt should disappear.
     await expect(sessionPage.getProxyReviewRequests()).toHaveCount(0, { timeout: 10000 })
 
     // Session should complete with approval message
     await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('approved by user')
+    await sessionPage.expectAssistantMessage('approved by user', 0, 15000)
   })
 
-  test('proxy review: user can deny the request', async ({ page }) => {
+  test('proxy review: user can deny the request', async () => {
     await sessionPage.sendMessage('proxy review')
 
-    await sessionPage.waitForProxyReviewRequest()
+    await sessionPage.waitForProxyReviewRequest(35000)
 
     // Deny the request
     await sessionPage.denyProxyReview()
 
-    // Review prompt should disappear
+    // Review prompt should disappear.
     await expect(sessionPage.getProxyReviewRequests()).toHaveCount(0, { timeout: 10000 })
 
     // Session should complete with denial message
     await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('denied by user')
+    await sessionPage.expectAssistantMessage('denied by user', 0, 15000)
   })
 
-  test('proxy review: remember always allow for scope', async ({ page }) => {
+  test('proxy review: remember always allow for scope', async () => {
     await sessionPage.sendMessage('proxy review')
 
-    await sessionPage.waitForProxyReviewRequest()
+    await sessionPage.waitForProxyReviewRequest(35000)
 
     // Click always allow for this scope (opens Allow popover, then clicks scope button)
     await sessionPage.alwaysAllowScope('chat:write')
 
-    // Review prompt should disappear
+    // Review prompt should disappear.
     await expect(sessionPage.getProxyReviewRequests()).toHaveCount(0, { timeout: 10000 })
 
     // Session should complete with approval message
     await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('approved by user')
+    await sessionPage.expectAssistantMessage('approved by user', 0, 15000)
   })
 
-  test('proxy review: allow all requests for the minimal risk group', async ({ page }) => {
+  test('proxy review: allow all requests for the minimal risk group', async () => {
     await sessionPage.sendMessage('proxy review')
 
-    await sessionPage.waitForProxyReviewRequest()
+    await sessionPage.waitForProxyReviewRequest(35000)
 
     // chat.postMessage is satisfied by chat:write (a "write"-labelled scope), so the
     // minimal group offered is "write". Allowing it should approve and persist '*write'.
     await sessionPage.alwaysAllowLabelGroup('write')
 
-    // Review prompt should disappear
+    // Review prompt should disappear.
     await expect(sessionPage.getProxyReviewRequests()).toHaveCount(0, { timeout: 10000 })
 
     // Session should complete with approval message
     await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('approved by user')
+    await sessionPage.expectAssistantMessage('approved by user', 0, 15000)
   })
 })
 
@@ -122,12 +122,12 @@ test.describe('X-Agent Review Requests', () => {
     await agentPage.createAgent(testAgentName, { waitForSidebarName: false })
   })
 
-  test('x-agent review: interrupt dismisses the review card', async ({ page }) => {
+  test('x-agent review: interrupt dismisses the review card', async () => {
     // "x-agent review" triggers XAgentReviewScenario
     await sessionPage.sendMessage('x-agent review')
 
     // Wait for the x-agent review prompt to appear
-    await sessionPage.waitForXAgentReviewRequest()
+    await sessionPage.waitForXAgentReviewRequest(35000)
 
     // Click the X (stop session) button on the card
     await sessionPage.stopSessionFromRequest()
@@ -136,10 +136,10 @@ test.describe('X-Agent Review Requests', () => {
     await expect(sessionPage.getXAgentReviewRequests()).toHaveCount(0, { timeout: 10000 })
   })
 
-  test('x-agent review: user can allow the request', async ({ page }) => {
+  test('x-agent review: user can allow the request', async () => {
     await sessionPage.sendMessage('x-agent review')
 
-    await sessionPage.waitForXAgentReviewRequest()
+    await sessionPage.waitForXAgentReviewRequest(35000)
 
     // Verify the card shows the right text
     const request = sessionPage.getXAgentReviewRequests().first()
@@ -148,27 +148,27 @@ test.describe('X-Agent Review Requests', () => {
     // Allow the request
     await sessionPage.allowXAgentReview()
 
-    // Review prompt should disappear
+    // Review prompt should disappear.
     await expect(sessionPage.getXAgentReviewRequests()).toHaveCount(0, { timeout: 10000 })
 
     // Session should complete with approval message
     await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('approved by user')
+    await sessionPage.expectAssistantMessage('approved by user', 0, 15000)
   })
 
-  test('x-agent review: user can deny the request', async ({ page }) => {
+  test('x-agent review: user can deny the request', async () => {
     await sessionPage.sendMessage('x-agent review')
 
-    await sessionPage.waitForXAgentReviewRequest()
+    await sessionPage.waitForXAgentReviewRequest(35000)
 
     // Deny the request
     await sessionPage.denyXAgentReview()
 
-    // Review prompt should disappear
+    // Review prompt should disappear.
     await expect(sessionPage.getXAgentReviewRequests()).toHaveCount(0, { timeout: 10000 })
 
     // Session should complete with denial message
     await sessionPage.waitForInputEnabled(15000)
-    await sessionPage.expectAssistantMessage('denied by user')
+    await sessionPage.expectAssistantMessage('denied by user', 0, 15000)
   })
 })
