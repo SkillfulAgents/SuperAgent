@@ -16,6 +16,7 @@ interface ChatComposerBoxProps {
   disabled?: boolean
   rows?: number
   autoFocus?: boolean
+  enterKeyHint?: 'enter' | 'done' | 'go' | 'next' | 'previous' | 'search' | 'send'
   dataTestId?: string
   leftActions?: ReactNode
   rightActions?: ReactNode
@@ -39,6 +40,7 @@ export function ChatComposerBox({
   disabled,
   rows = 2,
   autoFocus,
+  enterKeyHint,
   dataTestId,
   leftActions,
   rightActions,
@@ -53,7 +55,7 @@ export function ChatComposerBox({
       className
     )}>
       {topRightActions && (
-        <div className="absolute top-2 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">{topRightActions}</div>
+        <div className="absolute top-2 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100">{topRightActions}</div>
       )}
       <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} />
       <div className={attachments.length > 0 ? 'mt-2' : ''}>
@@ -69,6 +71,7 @@ export function ChatComposerBox({
           placeholder={placeholder}
           disabled={disabled}
           rows={rows}
+          enterKeyHint={enterKeyHint}
           autoFocus={autoFocus}
           data-testid={dataTestId}
           className={cn(

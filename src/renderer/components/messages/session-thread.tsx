@@ -50,7 +50,7 @@ export function SessionThread({
           pendingRequestCount={pendingRequestCount}
           onPendingMessageAppeared={onPendingMessageAppeared}
         />
-        <div className={`${footerClassName} pb-[env(safe-area-inset-bottom)]`}>
+        <div className={`${footerClassName} pb-[env(safe-area-inset-bottom)]`} data-composer-footer>
           <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
           {footer}
         </div>

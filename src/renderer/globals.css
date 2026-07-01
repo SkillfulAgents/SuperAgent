@@ -104,6 +104,19 @@
     -webkit-user-select: text;
   }
 }
+/*
+  Soft-keyboard handling (mobile web/PWA). `useKeyboardViewport` sets
+  `data-keyboard-open` on <html> while the keyboard is up. The home-indicator
+  safe-area pad below the composer is meaningless while the keyboard covers the
+  bottom, so drop it — the composer then sits flush above the keyboard. (iOS does
+  its native pan-up for the content; reliably pinning the top nav during the
+  keyboard animation without jank turned out to be an iOS limitation — parked.)
+  Inert on desktop/Electron — no soft keyboard, so the attribute never appears.
+*/
+html[data-keyboard-open] [data-composer-footer] {
+  padding-bottom: 0;
+}
+
 /* Force visible scrollbar on code blocks so users know content is scrollable */
 .code-scrollbar {
   overflow-x: auto !important;

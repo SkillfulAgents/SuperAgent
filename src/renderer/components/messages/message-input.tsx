@@ -190,6 +190,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     }
 
     if (e.key === 'Enter' && !e.shiftKey) {
+      // On touch (coarse pointer, no physical Shift key) Enter must insert a
+      // newline — the user taps the Send button instead. Otherwise every Return,
+      // including the keyboard's autocorrect-accept, would fire the message
+      // mid-thought. Desktop (fine pointer) keeps Enter-to-send unchanged.
+      if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
       e.preventDefault()
       composer.handleSubmit(e)
     }
@@ -239,6 +244,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         }
         disabled={isDisabled}
         rows={2}
+        enterKeyHint="enter"
         dataTestId="message-input"
         leftActions={(
           <>

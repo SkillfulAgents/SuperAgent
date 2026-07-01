@@ -43,7 +43,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
         onClick={handleCopy}
         className={cn(
           'absolute top-2 right-2 p-1 rounded',
-          'opacity-0 group-hover:opacity-100 transition-opacity',
+          'opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity',
           'hover:bg-black/[0.1] dark:hover:bg-white/[0.15]',
           'text-muted-foreground'
         )}

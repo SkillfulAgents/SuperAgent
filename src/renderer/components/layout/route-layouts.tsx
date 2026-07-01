@@ -16,6 +16,7 @@ import { SearchDialog } from '@renderer/components/search/search-dialog'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useTheme } from '@renderer/hooks/use-theme'
 import { useInsetRadius } from '@renderer/hooks/use-inset-radius'
+import { useKeyboardViewport } from '@renderer/hooks/use-keyboard-viewport'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -33,6 +34,7 @@ export function RootLayout() {
   useTheme()
   useInsetRadius()
   useDocumentTitle()
+  useKeyboardViewport()
 
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardAgentOnly, setWizardAgentOnly] = useState(false)

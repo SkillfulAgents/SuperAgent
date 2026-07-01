@@ -120,7 +120,7 @@ export function HomeChatIntegrations({ agentSlug, className }: HomeChatIntegrati
                         type="button"
                         size="icon"
                         variant="outline"
-                        className="h-6 w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 transition-opacity"
+                        className="h-6 w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 touch:opacity-100 transition-opacity"
                         aria-label={`Actions for ${displayName}`}
                         onClick={(e) => e.stopPropagation()}
                       >

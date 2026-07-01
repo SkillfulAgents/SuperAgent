@@ -121,7 +121,7 @@ function SkillRow({ skill, agentSlug, onRunSkill }: { skill: ApiSkillWithStatus;
         {skill.description && (
           <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{skill.description}</div>
         )}
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity flex items-center gap-1">
           {onRunSkill && (
             <Button
               type="button"

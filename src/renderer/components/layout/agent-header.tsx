@@ -1,4 +1,4 @@
-import { Power, Square, Clock, Loader2, Zap } from 'lucide-react'
+import { Power, Square, Clock, Loader2, Zap, MoreVertical } from 'lucide-react'
 import { AppLink } from '@renderer/components/ui/app-link'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useAgent, type useStartAgent, type useStopAgent } from '@renderer/hooks/use-agents'
@@ -13,6 +13,8 @@ import { SessionContextMenu } from '@renderer/components/sessions/session-contex
 import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { Button } from '@renderer/components/ui/button'
+import { Popover, PopoverTrigger, PopoverContent } from '@renderer/components/ui/popover'
+import type { ContainerStatus } from '@shared/lib/container/types'
 
 interface AgentHeaderProps {
   slug: string
@@ -160,7 +162,16 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
         )}
       </div>
       <div className="flex items-center gap-0 md:gap-2 shrink-0 app-no-drag">
-        {agent && <AgentStatus status={agent.status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} />}
+        {agent && (
+          <AgentStatus
+            status={agent.status}
+            hasActiveSessions={hasActiveSessions}
+            hasSessionsAwaitingInput={hasSessionsAwaitingInput}
+            // Mobile collapses the status into the kebab menu below; keep it
+            // inline on desktop. View-only mode has no kebab, so it stays inline.
+            className={!isViewOnly ? 'hidden md:flex' : undefined}
+          />
+        )}
         {!isViewOnly && (
           <>
             <Separator orientation="vertical" className="h-5 hidden md:block ml-2" />
@@ -224,10 +235,112 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
                 </TooltipProvider>
               )}
             </div>
+            {/* Mobile: the inline status pill + power controls above are
+                `hidden md:*`; collapse them into a kebab on small screens. */}
+            {agent && (
+              <AgentHeaderMobileMenu
+                slug={slug}
+                status={agent.status}
+                hasActiveSessions={hasActiveSessions}
+                hasSessionsAwaitingInput={hasSessionsAwaitingInput}
+                startAgent={startAgent}
+                stopAgent={stopAgent}
+                startDisabled={startAgent.isPending || !isRuntimeReady}
+                isStarting={isPulling || startAgent.isPending}
+                wakeDisabledReason={
+                  !apiKeyConfigured
+                    ? 'No API key configured. An administrator needs to set up the LLM API key.'
+                    : !isRuntimeReady
+                      ? readiness?.message ?? null
+                      : null
+                }
+              />
+            )}
           </>
         )}
       </div>
     </>
+  )
+}
+
+/**
+ * Mobile-only kebab for the agent header. Desktop keeps the inline status pill +
+ * start/stop cluster (`hidden md:*`); below `md` those collapse into this menu
+ * (`md:hidden`), which surfaces the agent status plus the Start/Stop action so a
+ * touch user can wake or stop the agent without a right-click or hover.
+ */
+function AgentHeaderMobileMenu({
+  slug,
+  status,
+  hasActiveSessions,
+  hasSessionsAwaitingInput,
+  startAgent,
+  stopAgent,
+  startDisabled,
+  isStarting,
+  wakeDisabledReason,
+}: {
+  slug: string
+  status: ContainerStatus
+  hasActiveSessions: boolean
+  hasSessionsAwaitingInput: boolean
+  startAgent: ReturnType<typeof useStartAgent>
+  stopAgent: ReturnType<typeof useStopAgent>
+  startDisabled: boolean
+  isStarting: boolean
+  wakeDisabledReason: string | null
+}) {
+  const isRunning = status === 'running'
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="md:hidden"
+          aria-label="Agent options"
+          data-testid="agent-mobile-menu"
+        >
+          <MoreVertical className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-52 p-1">
+        <div className="flex items-center gap-2 px-2 py-1.5">
+          <AgentStatus
+            status={status}
+            hasActiveSessions={hasActiveSessions}
+            hasSessionsAwaitingInput={hasSessionsAwaitingInput}
+          />
+        </div>
+        <Separator className="my-1" />
+        {isRunning ? (
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-50"
+            onClick={() => stopAgent.mutate(slug)}
+            disabled={stopAgent.isPending}
+          >
+            <Square className="h-4 w-4 fill-current" />
+            Stop Agent
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-muted transition-colors disabled:pointer-events-none disabled:opacity-50"
+              onClick={() => startAgent.mutate(slug)}
+              disabled={startDisabled}
+            >
+              {isStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Power className="h-4 w-4" />}
+              Wake up agent
+            </button>
+            {wakeDisabledReason && (
+              <p className="px-2 py-1.5 text-xs text-muted-foreground">{wakeDisabledReason}</p>
+            )}
+          </>
+        )}
+      </PopoverContent>
+    </Popover>
   )
 }
 

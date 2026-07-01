@@ -220,7 +220,7 @@ function TriggerRow({
           {subtitleLeft}
           {subtitleRight}
         </div>
-        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity">
           <Popover>
             <PopoverTrigger asChild>
               <Button
