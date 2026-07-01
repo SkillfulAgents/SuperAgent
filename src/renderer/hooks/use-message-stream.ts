@@ -6,6 +6,7 @@ import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
+import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 
 interface SecretRequest {
   toolUseId: string
@@ -176,13 +177,6 @@ const streamListeners = new Map<string, Set<() => void>>()
 
 // Slash commands per session (separate from streamStates to avoid touching 25+ set() calls)
 const sessionSlashCommands = new Map<string, SlashCommandInfo[]>()
-
-function isBlockingUserInputTool(toolName: unknown): boolean {
-  return toolName === 'AskUserQuestion' ||
-    (typeof toolName === 'string' &&
-      toolName.startsWith('mcp__user-input__request_') &&
-      toolName !== 'mcp__user-input__request_script_run')
-}
 
 // Extended-thinking stream per session. Kept outside StreamState (like slash commands)
 // so the ~15 full state-rebuild sites don't have to thread it through. `isThinking`
@@ -759,7 +753,7 @@ function getOrCreateEventSource(
             streamStates.set(sessionId, { ...current, streamingToolUses: updated })
           }
         }
-        if (isBlockingUserInputTool(data.toolName)) {
+        if (isBlockingUserInputToolName(data.toolName)) {
           // The request-specific SSE event can be missed under load while the
           // streaming fallback still renders the card. Keep status sidebars in sync.
           queryClient.invalidateQueries({ queryKey: ['sessions'] })

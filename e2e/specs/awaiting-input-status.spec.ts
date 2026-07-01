@@ -42,15 +42,11 @@ test.describe('Awaiting Input Status', () => {
     return session
   }
 
-  async function resolveActiveParallelRequest(secretAction: 'provide' | 'decline') {
+  async function resolveActiveParallelRequest() {
     const active = await sessionPage.getActiveRequestType()
 
     if (active === 'secret') {
-      if (secretAction === 'provide') {
-        await sessionPage.provideSecret('postgres://localhost:5432/db', 'DATABASE_URL')
-      } else {
-        await sessionPage.declineSecret('DATABASE_URL')
-      }
+      await sessionPage.provideSecret('postgres://localhost:5432/db', 'DATABASE_URL')
       await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
       return 'secret' as const
     }
@@ -120,7 +116,7 @@ test.describe('Awaiting Input Status', () => {
 
     // Resolve whichever card is visible first. The agent must still be awaiting
     // input until the second card is also resolved.
-    const firstResolved = await resolveActiveParallelRequest('provide')
+    const firstResolved = await resolveActiveParallelRequest()
     if (firstResolved === 'secret') {
       await expect(sessionPage.getQuestionRequests()).toHaveCount(1, { timeout: 10000 })
       await expect(sessionPage.getQuestionRequests().first()).toBeVisible()
@@ -130,7 +126,7 @@ test.describe('Awaiting Input Status', () => {
     }
     await agentPage.waitForStatus('awaiting_input', 15000)
 
-    await resolveActiveParallelRequest('provide')
+    await resolveActiveParallelRequest()
 
     await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
     await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })

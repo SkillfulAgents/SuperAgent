@@ -7,6 +7,7 @@ import type { RequestConnectedAccountInput } from '@shared/lib/tool-definitions/
 import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request-remote-mcp'
 import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
+import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import {
   createScheduledTask,
   listPendingScheduledTasks,
@@ -1973,11 +1974,7 @@ class MessagePersister {
           // Note: computer-use AND request_script_run tools are handled by their own
           // handlers which only mark awaiting input when user approval is actually
           // needed (not when auto-executed against a cached permission grant).
-          if (
-            state.currentToolUse.name === 'AskUserQuestion' ||
-            (state.currentToolUse.name.startsWith('mcp__user-input__request_') &&
-              state.currentToolUse.name !== 'mcp__user-input__request_script_run')
-          ) {
+          if (isBlockingUserInputToolName(state.currentToolUse.name)) {
             this.markSessionAwaitingInput(sessionId)
           }
 

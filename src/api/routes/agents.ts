@@ -19,6 +19,7 @@ import {
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
+import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -249,12 +250,6 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   )
 }
 
-function isBlockingInputToolCall(toolName: string): boolean {
-  return toolName === 'AskUserQuestion' ||
-    (toolName.startsWith('mcp__user-input__request_') &&
-      toolName !== 'mcp__user-input__request_script_run')
-}
-
 function hasUnresolvedBlockingInputRequest(items: TransformedItem[]): boolean {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i]
@@ -262,7 +257,7 @@ function hasUnresolvedBlockingInputRequest(items: TransformedItem[]): boolean {
     if (item.type !== 'assistant') continue
 
     for (const toolCall of item.toolCalls) {
-      if (toolCall.result === undefined && isBlockingInputToolCall(toolCall.name)) {
+      if (toolCall.result === undefined && isBlockingUserInputToolName(toolCall.name)) {
         return true
       }
     }
@@ -1352,21 +1347,32 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // Attach lifecycle state and the stream before slower metadata/DB work. The
     // first turn can start emitting shortly after createSession returns, and a
     // blocking input emitted during that window must not be missed or reset.
-    messagePersister.markSessionActive(sessionId, slug)
-    await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
+    let lifecycleStarted = false
+    let sessionRegistered = false
+    try {
+      messagePersister.markSessionActive(sessionId, slug)
+      lifecycleStarted = true
+      await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
 
-    // Record author for initial message after we know the sessionId
-    if (isAuthMode()) {
-      const userId = getCurrentUserId(c)
-      await db.insert(messageAuthor).values({
-        id: initialMessageUuid,
-        sessionId,
-        agentSlug: slug,
-        userId,
-      })
+      // Record author for initial message after we know the sessionId
+      if (isAuthMode()) {
+        const userId = getCurrentUserId(c)
+        await db.insert(messageAuthor).values({
+          id: initialMessageUuid,
+          sessionId,
+          agentSlug: slug,
+          userId,
+        })
+      }
+
+      await registerSession(slug, sessionId, 'New Session')
+      sessionRegistered = true
+    } catch (error) {
+      if (lifecycleStarted && !sessionRegistered) {
+        messagePersister.unsubscribeFromSession(sessionId)
+      }
+      throw error
     }
-
-    await registerSession(slug, sessionId, 'New Session')
     // Persist only what the user explicitly chose. The server-side fallback is
     // applied at session creation but should not masquerade as a user choice in
     // metadata — otherwise a later change to the global default wouldn't be
@@ -1434,6 +1440,9 @@ agents.get('/:id/sessions/:sessionId/messages', AgentRead(), async (c) => {
       messagePersister.isSessionActive(sessionId) &&
       hasUnresolvedBlockingInputRequest(transformed)
     ) {
+      // If the request-specific stream event was missed, persisted messages are
+      // the fallback source of truth. A stale transcript can briefly re-assert
+      // awaiting input, but the next stream result/idle event clears it.
       messagePersister.recoverSessionAwaitingInput(sessionId, agentSlug)
     }
 

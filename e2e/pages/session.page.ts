@@ -553,8 +553,9 @@ export class SessionPage {
 
   async stopSessionFromRequest(container?: Locator) {
     if (container) {
-      await this.paginateToCard(container)
-      await container.locator('[data-testid="request-stop-session"]').click()
+      const target = container.first()
+      await this.paginateToCard(target)
+      await target.locator('[data-testid="request-stop-session"]').click()
       return
     }
 
