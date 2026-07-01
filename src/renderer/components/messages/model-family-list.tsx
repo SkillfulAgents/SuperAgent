@@ -23,6 +23,21 @@ export function formatTokenThreshold(tokens: number): string {
   return String(tokens)
 }
 
+/**
+ * Warning copy for a model that can't do web search and/or fetch, or null when both work (no banner).
+ * Native web tools are Claude-only; a configured host vendor exposes the search tool to ANY model, so
+ * search is "unavailable" only when the model lacks native support AND no vendor is set - the caller
+ * passes those two booleans. Native web fetch has no vendor yet (search seam), so it stays Claude-only.
+ */
+export function webToolsWarning(searchUnavailable: boolean, fetchUnavailable: boolean): string | null {
+  if (!searchUnavailable && !fetchUnavailable) return null
+  if (searchUnavailable && fetchUnavailable) {
+    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web Search to use search on any model.'
+  }
+  if (fetchUnavailable) return 'Web fetch isn’t available on this model. Native web fetch works only on Claude models.'
+  return 'Web search isn’t available on this model. Set a provider under Settings → Web Search to use it on any model.'
+}
+
 type LongContextCliff = NonNullable<ModelDefinition['longContextPriceCliff']>
 
 // Picker copy for a model's long-context price step; frames the threshold as a
@@ -76,6 +91,12 @@ interface ModelFamilyListProps {
    * latest" case); omitted by the settings picker, where the family is just a toggle.
    */
   onSelectFamilyLatest?: (value: string) => void
+  /**
+   * Active host web-search provider id from global settings. Native web search is Claude-only
+   * (supportsWebSearch); a configured vendor exposes `mcp__web__web_search` to ANY model, so the
+   * "not available" warning clears for search once a vendor is set. Undefined = native.
+   */
+  webSearchProvider?: string
 }
 
 function Row({
@@ -127,6 +148,7 @@ export function ModelFamilyList({
   onPick,
   offerLatest = false,
   onSelectFamilyLatest,
+  webSearchProvider,
 }: ModelFamilyListProps) {
   const { families, standalone } = useMemo(() => {
     const order: string[] = []
@@ -162,15 +184,22 @@ export function ModelFamilyList({
   const [expanded, setExpanded] = useState<string | null | undefined>(undefined)
   const openFamily = expanded === undefined ? selectedFamily : expanded
 
+  // Native web tools are Claude-only; a configured search vendor makes search work on ANY model, so
+  // search is unavailable only when the model lacks native support AND no vendor is set. Native web
+  // fetch has no vendor in the search seam, so it stays Claude-only. `native`/undefined = no vendor.
+  const nativeWebUnavailable = resolved?.supportsWebSearch === false
+  const searchVendorSet = !!webSearchProvider && webSearchProvider !== 'native'
+  const webWarning = webToolsWarning(nativeWebUnavailable && !searchVendorSet, nativeWebUnavailable)
+
   return (
     <div className="flex flex-col gap-0.5">
-      {resolved?.supportsWebSearch === false && (
+      {webWarning && (
         <div
           data-testid="model-no-websearch-warning"
           className="mx-1 mb-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
         >
           <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
-          <span>Web search and fetch aren’t available on this model.</span>
+          <span>{webWarning}</span>
         </div>
       )}
       {resolved?.longContextPriceCliff && (

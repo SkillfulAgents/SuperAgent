@@ -72,7 +72,7 @@ interface ComposerOptionsPopoverProps {
 }
 
 function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: ComposerOptionsPopoverProps) {
-  const { effort, setEffort, model, setModel, catalog } = state
+  const { effort, setEffort, model, setModel, catalog, webSearchProvider } = state
   const [open, setOpen] = useState(false)
 
   // Trigger display fallback for the brief window before useComposerOptions
@@ -142,6 +142,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
               // One click on a family selects its latest and expands (no close),
               // so the 90% who just want the latest are done in a single click.
               onSelectFamilyLatest={(value) => setModel(value)}
+              webSearchProvider={webSearchProvider}
             />
             {includeEffort && <Separator className="my-2" />}
           </>
