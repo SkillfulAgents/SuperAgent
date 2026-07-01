@@ -51,7 +51,32 @@ export class AgentPage {
     // the sidebar refresh.
     await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(prompt, { timeout: 15000 })
     if (waitForSidebarName) {
-      await expect(this.getAgentItem(prompt)).toBeVisible({ timeout: 15000 })
+      await this.waitForAgentInSidebar(prompt)
+    }
+  }
+
+  private async waitForAgentInSidebar(name: string) {
+    const row = this.getAgentItem(name)
+
+    try {
+      await expect(row).toBeVisible({ timeout: 5000 })
+      return
+    } catch {
+      // The agent detail can observe the async rename before the sidebar list
+      // has refreshed under heavier parallel load. Reloading the current agent
+      // route forces a fresh /api/agents read without changing the selected
+      // agent.
+      await Promise.all([
+        this.page
+          .waitForResponse((response) => response.url().includes('/api/agents') && response.status() === 200, {
+            timeout: 15000,
+          })
+          .catch(() => undefined),
+        this.page.reload(),
+      ])
+      await expect(this.page.locator('[data-testid="new-agent-button"]')).toBeVisible({ timeout: 15000 })
+      await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(name, { timeout: 15000 })
+      await expect(row).toBeVisible({ timeout: 15000 })
     }
   }
 

@@ -1,14 +1,166 @@
 /**
- * Search palette — Cmd-K combo box that filters agents and sessions.
- * Covers both triggers (keyboard shortcut + sidebar button), substring
- * filtering, and arrow-key + Enter navigation into a session.
+ * Search palette - Cmd-K combo box that filters agents and sessions.
+ *
+ * Keep the primary search/navigation path as a real UI-created flow. API setup
+ * is used for supporting cases once creation itself is covered, so the spec can
+ * run fully parallel without shared ordering assumptions except for the
+ * intentionally bounded recent-agent coverage.
  */
-import { test, expect } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
+import {
+  createAgent as createAgentViaApi,
+  createSession,
+  type TestAgent,
+  type TestSession,
+} from '../helpers/agents'
 
-test.describe.configure({ mode: 'serial' })
+function uniqueSuffix(testInfo: TestInfo) {
+  return [
+    testInfo.workerIndex,
+    testInfo.repeatEachIndex,
+    testInfo.retry,
+    Date.now(),
+    Math.random().toString(36).slice(2, 8),
+  ].join('-')
+}
 
+function uniqueName(testInfo: TestInfo, label: string) {
+  return `${label} ${uniqueSuffix(testInfo)}`
+}
+
+function searchInput(page: Page) {
+  return page.locator('[data-testid="search-input"]')
+}
+
+function searchResults(page: Page) {
+  return page.locator('[data-testid="search-results"]')
+}
+
+function searchAgentRow(page: Page, agent: Pick<TestAgent, 'slug'>) {
+  return searchResults(page).locator(
+    `[data-testid="search-agent-row"][data-agent-slug="${agent.slug}"]`,
+  )
+}
+
+function searchSessionRow(
+  page: Page,
+  agent: Pick<TestAgent, 'slug'>,
+  session: Pick<TestSession, 'id'>,
+) {
+  return searchResults(page).locator(
+    `[data-testid="search-session-row"][data-agent-slug="${agent.slug}"][data-session-id="${session.id}"]`,
+  )
+}
+
+async function openSearchWithKeyboard(page: Page) {
+  await page.keyboard.press('ControlOrMeta+k')
+  await expect(searchInput(page)).toBeVisible()
+  await expect(searchInput(page)).toBeFocused()
+  await expect(searchResults(page)).toBeVisible()
+}
+
+async function openSearchWithSidebarButton(page: Page) {
+  await page.locator('[data-testid="search-button"]').click()
+  await expect(searchInput(page)).toBeVisible()
+  await expect(searchInput(page)).toBeFocused()
+  await expect(searchResults(page)).toBeVisible()
+}
+
+async function findAgentByName(
+  request: APIRequestContext,
+  name: string,
+): Promise<TestAgent> {
+  let found: TestAgent | undefined
+
+  await expect.poll(async () => {
+    const response = await request.get('/api/agents')
+    if (!response.ok()) return false
+
+    const agents = await response.json() as TestAgent[]
+    found = agents.find((agent) => agent.name === name)
+    return Boolean(found)
+  }, { timeout: 15000 }).toBe(true)
+
+  return found!
+}
+
+async function getFirstSession(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+): Promise<TestSession> {
+  let found: TestSession | undefined
+
+  await expect.poll(async () => {
+    const response = await request.get(`/api/agents/${agent.slug}/sessions`)
+    if (!response.ok()) return false
+
+    const sessions = await response.json() as TestSession[]
+    found = sessions[0]
+    return Boolean(found?.id)
+  }, { timeout: 15000 }).toBe(true)
+
+  return found!
+}
+
+async function renameSession(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+  session: Pick<TestSession, 'id'>,
+  name: string,
+): Promise<TestSession> {
+  let renamed: TestSession | undefined
+
+  await expect.poll(async () => {
+    const patchResponse = await request.patch(
+      `/api/agents/${agent.slug}/sessions/${session.id}`,
+      { data: { name } },
+    )
+    if (!patchResponse.ok()) return false
+
+    const sessionsResponse = await request.get(`/api/agents/${agent.slug}/sessions`)
+    if (!sessionsResponse.ok()) return false
+
+    const sessions = await sessionsResponse.json() as TestSession[]
+    renamed = sessions.find((candidate) => candidate.id === session.id)
+    return renamed?.name === name
+  }, { timeout: 15000 }).toBe(true)
+
+  return renamed!
+}
+
+async function createSearchData(
+  request: APIRequestContext,
+  testInfo: TestInfo,
+  label: string,
+) {
+  const suffix = uniqueSuffix(testInfo)
+  const agent = await createAgentViaApi(request, `Search ${label} Agent ${suffix}`)
+  const setupSession = await createSession(request, agent, `search ${label} setup ${suffix}`)
+  const session = await renameSession(
+    request,
+    agent,
+    setupSession,
+    `Search ${label} Session ${suffix}`,
+  )
+
+  return { agent, session, suffix }
+}
+
+async function expectSessionRoute(
+  page: Page,
+  agent: Pick<TestAgent, 'slug' | 'name'>,
+  session: Pick<TestSession, 'id'>,
+) {
+  await expect(page).toHaveURL(new RegExp(`/agents/${agent.slug}/sessions/${session.id}$`))
+  await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name, { timeout: 15000 })
+  await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
+}
+
+// Search reads global agent/session indexes. These tests leave their unique
+// data in the per-run data dir instead of deleting it mid-run, because deletes
+// can race sibling workers that are listing those file-backed indexes.
 test.describe('Search palette', () => {
   let appPage: AppPage
   let agentPage: AgentPage
@@ -20,235 +172,119 @@ test.describe('Search palette', () => {
     await appPage.waitForAgentsLoaded()
   })
 
-  test('Cmd-K opens dialog, filters by session name, Enter navigates into session', async ({ page, request }) => {
-    const stamp = Date.now()
-    const agentName = `Search Agent ${stamp}`
-    const sessionName = `Refactor Login ${stamp}`
+  test('UI: Cmd-K filters by session name and Enter navigates into the session', async ({ page, request }, testInfo) => {
+    const suffix = uniqueSuffix(testInfo)
+    const agentName = `Search UI Agent ${suffix}`
+    const sessionName = `Refactor Login Session ${suffix}`
 
-    await agentPage.createAgent(agentName)
+    await agentPage.createAgent(agentName, { waitForSidebarName: false })
+    const createdAgent = await findAgentByName(request, agentName)
+    const setupSession = await getFirstSession(request, createdAgent)
+    const session = await renameSession(request, createdAgent, setupSession, sessionName)
 
-    // Agents are created as "Untitled" with a random slug, then renamed
-    // asynchronously. The display name maps to the prompt; the slug does not.
-    // Look up the actual slug from the API by name.
-    const agentsRes = await request.get('/api/agents')
-    expect(agentsRes.ok()).toBe(true)
-    const agents = (await agentsRes.json()) as Array<{ slug: string; name: string }>
-    const slug = agents.find((a) => a.name === agentName)?.slug
-    expect(slug, `agent ${agentName} not found in API`).toBeDefined()
-
-    // The auto-created session keeps its default name in mock mode (no real
-    // LLM). Rename it via the API so we can match it by a distinctive substring.
-    const sessionsRes = await request.get(`/api/agents/${slug}/sessions`)
-    expect(sessionsRes.ok()).toBe(true)
-    const sessions = (await sessionsRes.json()) as Array<{ id: string }>
-    expect(sessions.length).toBeGreaterThan(0)
-    const sessionId = sessions[0].id
-    await expect(async () => {
-      const patchRes = await request.patch(
-        `/api/agents/${slug}/sessions/${sessionId}`,
-        { data: { name: sessionName } }
-      )
-      expect(patchRes.ok()).toBe(true)
-    }).toPass({ timeout: 5000 })
-
-    // Sessions are cached by React Query — the renderer hasn't seen the rename
-    // yet. Reload so the search palette pulls fresh data on first open.
+    // React Query may still hold the pre-rename session; reload so the search
+    // palette fetches the deterministic name on open.
     await appPage.reload()
 
-    // Open the dialog with the keyboard shortcut
-    await page.keyboard.press('ControlOrMeta+k')
-    const searchInput = page.locator('[data-testid="search-input"]')
-    await expect(searchInput).toBeVisible()
-    await expect(searchInput).toBeFocused()
+    await openSearchWithKeyboard(page)
+    await searchInput(page).fill(`refactor login session ${suffix}`)
 
-    // Filter case-insensitively by a substring of the session name
-    await searchInput.fill('refactor')
-    const results = page.locator('[data-testid="search-results"]')
-    await expect(results.getByTestId('search-agent-row').filter({ hasText: agentName })).toBeVisible()
-    await expect(results.getByTestId('search-session-row').filter({ hasText: sessionName })).toBeVisible()
+    await expect(searchAgentRow(page, createdAgent)).toBeVisible()
+    await expect(searchSessionRow(page, createdAgent, session)).toBeVisible()
 
-    // Active row should be the agent (index 0) — ArrowDown moves to the session
+    // The query matches only the session. The grouped result keeps the agent
+    // at index 0 and the matching session at index 1.
     await page.keyboard.press('ArrowDown')
     await page.keyboard.press('Enter')
 
-    // Landed in the session view: breadcrumb shows the session name and the
-    // message list mounts.
-    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName)
-    await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 10000 })
-
-    // Cleanup
-    await page.locator('[data-testid="agent-breadcrumb"]').click()
-    await agentPage.deleteAgent()
+    await expect(searchInput(page)).not.toBeVisible()
+    await expectSessionRoute(page, createdAgent, session)
   })
 
-  test('Cmd-K → session is a durable URL route that survives a hard reload', async ({ page, request }) => {
-    // The sibling above proves Cmd-K → filter → Enter LANDS in the session, but it
-    // never reloads — so it would still pass if the palette only set transient
-    // in-memory selection. Post-migration the palette navigate() must push a real
-    // sessionRoute, so the landed session is reload-durable. This pins that gap:
-    // assert the session path after Enter, then hard-reload and assert the path is
-    // unchanged and the message list is restored from the URL.
-    const stamp = Date.now()
-    const agentName = `Search Durable ${stamp}`
-    const sessionName = `Reload Durable ${stamp}`
+  test('API: Cmd-K session navigation pushes a reload-durable URL route', async ({ page, request }, testInfo) => {
+    const { agent, session, suffix } = await createSearchData(request, testInfo, 'Durable')
 
-    await agentPage.createAgent(agentName)
-
-    // Agents are created as "Untitled" with a random slug, then renamed
-    // asynchronously. Look up the actual slug from the API by name.
-    const agentsRes = await request.get('/api/agents')
-    expect(agentsRes.ok()).toBe(true)
-    const agents = (await agentsRes.json()) as Array<{ slug: string; name: string }>
-    const slug = agents.find((a) => a.name === agentName)?.slug
-    expect(slug, `agent ${agentName} not found in API`).toBeDefined()
-
-    // The auto-created session keeps its default name in mock mode. Rename it via
-    // the API so we can match it by a distinctive substring. A freshly-created
-    // session can briefly reject the PATCH while the backend's async name-
-    // generation settles (the mock LLM retries then fails), so poll the whole
-    // GET+rename until it sticks rather than racing a single attempt.
-    await expect
-      .poll(
-        async () => {
-          const sessionsRes = await request.get(`/api/agents/${slug}/sessions`)
-          if (!sessionsRes.ok()) return false
-          const sessions = (await sessionsRes.json()) as Array<{ id: string }>
-          if (sessions.length === 0) return false
-          const patchRes = await request.patch(
-            `/api/agents/${slug}/sessions/${sessions[0].id}`,
-            { data: { name: sessionName } },
-          )
-          return patchRes.ok()
-        },
-        { timeout: 10000 },
-      )
-      .toBe(true)
-
-    // Sessions are cached by React Query — reload so the palette pulls fresh data.
     await appPage.reload()
+    await openSearchWithKeyboard(page)
+    await searchInput(page).fill(`durable session ${suffix}`)
 
-    // Open the dialog with the keyboard shortcut
-    await page.keyboard.press('ControlOrMeta+k')
-    const searchInput = page.locator('[data-testid="search-input"]')
-    await expect(searchInput).toBeVisible()
-    await expect(searchInput).toBeFocused()
+    await expect(searchAgentRow(page, agent)).toBeVisible()
+    await expect(searchSessionRow(page, agent, session)).toBeVisible()
 
-    // Filter case-insensitively by a substring of the session name
-    await searchInput.fill('reload')
-    const results = page.locator('[data-testid="search-results"]')
-    await expect(results.getByTestId('search-agent-row').filter({ hasText: agentName })).toBeVisible()
-    await expect(results.getByTestId('search-session-row').filter({ hasText: sessionName })).toBeVisible()
-
-    // Active row is the agent (index 0) — ArrowDown moves to the session, Enter opens it
     await page.keyboard.press('ArrowDown')
     await page.keyboard.press('Enter')
+    await expectSessionRoute(page, agent, session)
 
-    // The palette pushed a real session route — not just an in-memory selection.
-    await expect(page).toHaveURL(/\/agents\/[^/]+\/sessions\/[^/]+$/)
-    await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 10000 })
-
-    // Hard reload — a transient selection would reset to home, but a durable route
-    // restores the same session straight from the path.
     await appPage.reload()
-    await expect(page).toHaveURL(/\/agents\/[^/]+\/sessions\/[^/]+$/)
-    await expect(page.locator('[data-testid="message-list"]')).toBeVisible({ timeout: 15000 })
-    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName)
-
-    // Cleanup — leave the session view (deleteAgent needs the agent-home settings button)
-    await page.locator('[data-testid="agent-breadcrumb"]').click()
-    await agentPage.deleteAgent()
+    await expectSessionRoute(page, agent, session)
   })
 
-  test('Sidebar Search button opens the dialog', async ({ page }) => {
-    await page.locator('[data-testid="search-button"]').click()
-    await expect(page.locator('[data-testid="search-input"]')).toBeVisible()
-    await expect(page.locator('[data-testid="search-input"]')).toBeFocused()
+  test('UI: sidebar Search button opens the dialog and Escape closes it', async ({ page }) => {
+    await openSearchWithSidebarButton(page)
 
-    // Empty query shows recent agents or a "No recent agents" hint
-    const results = page.locator('[data-testid="search-results"]')
-    await expect(results).toBeVisible()
-
-    // Close with Escape
     await page.keyboard.press('Escape')
-    await expect(page.locator('[data-testid="search-input"]')).not.toBeVisible()
+    await expect(searchInput(page)).not.toBeVisible()
   })
 
-  test('Empty query shows recent agents with expand/collapse for sessions', async ({ page, request }) => {
-    const stamp = Date.now()
-    const agentName = `Recent Agent ${stamp}`
-    const sessionName = `Deploy Pipeline ${stamp}`
-
-    await agentPage.createAgent(agentName)
-
-    // Look up the slug
-    const agentsRes = await request.get('/api/agents')
-    expect(agentsRes.ok()).toBe(true)
-    const agents = (await agentsRes.json()) as Array<{ slug: string; name: string }>
-    const slug = agents.find((a) => a.name === agentName)?.slug
-    expect(slug, `agent ${agentName} not found in API`).toBeDefined()
-
-    // Wait for the session to finish processing before renaming
-    const sessionsRes = await request.get(`/api/agents/${slug}/sessions`)
-    expect(sessionsRes.ok()).toBe(true)
-    const sessions = (await sessionsRes.json()) as Array<{ id: string }>
-    expect(sessions.length).toBeGreaterThan(0)
-    const sessionId = sessions[0].id
-
-    // Retry the PATCH in case the session is still being processed
-    await expect(async () => {
-      const res = await request.patch(
-        `/api/agents/${slug}/sessions/${sessionId}`,
-        { data: { name: sessionName } }
-      )
-      expect(res.ok()).toBe(true)
-    }).toPass({ timeout: 5000 })
+  test('API: filtering by agent name and Enter opens agent home', async ({ page, request }, testInfo) => {
+    const agent = await createAgentViaApi(request, uniqueName(testInfo, 'Search Direct Agent'))
 
     await appPage.reload()
+    await openSearchWithKeyboard(page)
+    await searchInput(page).fill(agent.name.toLowerCase())
 
-    // Open the search palette with empty query
-    await page.keyboard.press('ControlOrMeta+k')
-    const searchInput = page.locator('[data-testid="search-input"]')
-    await expect(searchInput).toBeVisible()
+    await expect(searchAgentRow(page, agent)).toBeVisible()
+    await expect(searchAgentRow(page, agent)).toHaveAttribute('data-agent-name', agent.name)
+    await page.keyboard.press('Enter')
 
-    const results = page.locator('[data-testid="search-results"]')
+    await expect(searchInput(page)).not.toBeVisible()
+    await expect(page).toHaveURL(new RegExp(`/agents/${agent.slug}$`))
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name, { timeout: 15000 })
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
+  })
 
-    // The agent should appear in the recent list without typing anything
-    const agentRow = results.getByTestId('search-agent-row').filter({ hasText: agentName })
-    const sessionRow = results.getByTestId('search-session-row').filter({ hasText: sessionName })
-    await expect(agentRow).toBeVisible()
+  test('API: empty query recent agent expands, collapses, and opens a targeted session', async ({ page, request }, testInfo) => {
+    const { agent, session } = await createSearchData(request, testInfo, 'Recent')
 
-    // Wait for sessions to load — the expand chevron only renders once sessions
-    // are fetched, so its presence signals the async useQueries completed.
-    await expect(agentRow.getByTestId('search-agent-expand')).toBeVisible()
+    await appPage.reload()
+    await openSearchWithKeyboard(page)
 
-    // Sessions should be collapsed (not visible yet)
+    const agentRow = searchAgentRow(page, agent)
+    const sessionRow = searchSessionRow(page, agent, session)
+
+    // Empty-query search intentionally exercises the top-10 recent-agent list.
+    // With workers=4, only a few sibling agents can become newer than this one;
+    // revisit this if main-suite parallelism approaches that recent-list width.
+    await expect(agentRow).toBeVisible({ timeout: 15000 })
+
+    const expand = agentRow.getByTestId('search-agent-expand')
+    await expect(expand).toBeVisible({ timeout: 15000 })
     await expect(sessionRow).not.toBeVisible()
 
-    // Hover over the agent to set keyboard focus to it (activeIndex).
-    // Other agents from parallel tests may be more recent, so the agent
-    // might not be at index 0.
     await agentRow.hover()
-
-    // ArrowRight expands the agent's sessions
     await page.keyboard.press('ArrowRight')
     await expect(sessionRow).toBeVisible()
 
-    // ArrowLeft collapses them
     await page.keyboard.press('ArrowLeft')
     await expect(sessionRow).not.toBeVisible()
 
-    // Click the chevron to expand
-    await agentRow.getByTestId('search-agent-expand').click()
+    await expand.click()
     await expect(sessionRow).toBeVisible()
 
-    // Enter on a session navigates to it (dialog closes, lands on the agent)
-    await page.keyboard.press('ArrowDown')
+    await sessionRow.hover()
     await page.keyboard.press('Enter')
-    await expect(page.locator('[data-testid="search-input"]')).not.toBeVisible()
-    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName)
+    await expect(searchInput(page)).not.toBeVisible()
+    await expectSessionRoute(page, agent, session)
+  })
 
-    // Cleanup — navigate to agent home before deleting
-    await page.locator('[data-testid="agent-breadcrumb"]').click()
-    await agentPage.deleteAgent()
+  test('API: unmatched query shows an empty state without stale rows', async ({ page }, testInfo) => {
+    const query = `no-search-results-${uniqueSuffix(testInfo)}`
+
+    await openSearchWithKeyboard(page)
+    await searchInput(page).fill(query)
+
+    await expect(searchResults(page).getByText('No matches found')).toBeVisible()
+    await expect(searchResults(page).getByTestId('search-agent-row')).toHaveCount(0)
+    await expect(searchResults(page).getByTestId('search-session-row')).toHaveCount(0)
   })
 })
