@@ -8,7 +8,10 @@
   <!-- PWA / "Add to Home Screen": run fullscreen (no Safari chrome) with the Electron app icon -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <!-- black-translucent = webview runs full-bleed under a transparent status bar, so our
+       content shows behind the Dynamic Island and env(safe-area-inset-top) reports the real
+       inset. Top chrome is padded by env(safe-area-inset-top); inert off iOS standalone. -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="Gamut" />
   <meta name="theme-color" content="#1a1a1a" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />

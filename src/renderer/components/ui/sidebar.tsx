@@ -8,13 +8,7 @@ import { cn } from "@shared/lib/utils"
 import { Button } from "@renderer/components/ui/button"
 import { Input } from "@renderer/components/ui/input"
 import { Separator } from "@renderer/components/ui/separator"
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@renderer/components/ui/sheet"
+import { MobileSidebarDrawer } from "@renderer/components/ui/mobile-sidebar-drawer"
 import { Skeleton } from "@renderer/components/ui/skeleton"
 import {
   Tooltip,
@@ -28,7 +22,6 @@ const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 const SIDEBAR_WIDTH_DEFAULT = 288 // 18rem in px
 const SIDEBAR_WIDTH_MIN = 288 // 18rem
 const SIDEBAR_WIDTH_MAX = 480 // 30rem
-const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 const SIDEBAR_WIDTH_STORAGE_KEY = "sidebar_width"
@@ -214,26 +207,12 @@ const Sidebar = React.forwardRef<
     }
 
     if (isMobile) {
+      // Custom finger-following drawer — reuses openMobile/setOpenMobile for the
+      // settled ends so the trigger button and close-on-nav keep working.
       return (
-        <Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
-          <SheetContent
-            data-sidebar="sidebar"
-            data-mobile="true"
-            className="w-[--sidebar-width] bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden"
-            style={
-              {
-                "--sidebar-width": SIDEBAR_WIDTH_MOBILE,
-              } as React.CSSProperties
-            }
-            side={side}
-          >
-            <SheetHeader className="sr-only">
-              <SheetTitle>Sidebar</SheetTitle>
-              <SheetDescription>Displays the mobile sidebar.</SheetDescription>
-            </SheetHeader>
-            <div className="flex h-full w-full flex-col">{children}</div>
-          </SheetContent>
-        </Sheet>
+        <MobileSidebarDrawer open={openMobile} onOpenChange={setOpenMobile} {...props}>
+          <div className="flex h-full w-full flex-col">{children}</div>
+        </MobileSidebarDrawer>
       )
     }
 
@@ -396,7 +375,10 @@ const SidebarInset = React.forwardRef<
     <main
       ref={ref}
       className={cn(
-        "relative flex w-full flex-1 flex-col bg-background",
+        // pt-[env(safe-area-inset-top)]: with the PWA full-bleed under a transparent iOS
+        // status bar, this keeps content clear of the Dynamic Island while bg-background
+        // fills behind it. No-op on desktop/Electron (env resolves to 0).
+        "relative flex w-full flex-1 flex-col bg-background pt-[env(safe-area-inset-top)]",
         "md:peer-data-[variant=inset]:m-2 md:peer-data-[state=collapsed]:peer-data-[variant=inset]:ml-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-[var(--inset-radius,16px)] md:peer-data-[variant=inset]:shadow md:peer-data-[variant=inset]:overflow-hidden",
         className
       )}

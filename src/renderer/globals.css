@@ -444,3 +444,19 @@ html[data-keyboard-open] [data-composer-footer] {
   @keyframes search-fade-up-out { from { opacity: 1; } to { opacity: 0; } }
 }
 
+/*
+  Installed-PWA full height (iOS). `h-screen`/`min-h-svh` resolve to the DYNAMIC viewport
+  (100dvh/100svh) so mobile-BROWSER layouts track the URL bar — keep that. But in an
+  installed PWA there's no URL bar, and iOS reports dvh/svh EXCLUDING the top safe area
+  (device-measured 812 vs 874 physical on a Dynamic-Island phone) while the shell is
+  anchored to the full-bleed top edge — so a dvh-tall shell falls ~62px short at the
+  bottom (the "chin"). vh/lvh report the full height and are stable with no browser
+  chrome, so pin full-height to the large viewport in standalone only. `!important`
+  because Tailwind's height utilities may be emitted after this file (see note above).
+  Inert in the browser (media doesn't match); a no-op on desktop (lvh == the window).
+*/
+@media (display-mode: standalone) {
+  html, body { height: 100vh !important; height: 100lvh !important; }
+  .h-screen { height: 100vh !important; height: 100lvh !important; }
+  .min-h-svh { min-height: 100vh !important; min-height: 100lvh !important; }
+}
