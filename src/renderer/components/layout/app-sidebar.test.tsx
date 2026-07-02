@@ -82,11 +82,6 @@ vi.mock('@renderer/hooks/use-webhook-triggers', () => ({
   useWebhookTriggers: () => ({ data: [] }),
 }))
 
-vi.mock('@renderer/hooks/use-chat-integrations', () => ({
-  useChatIntegrations: () => ({ data: [] }),
-  useChatIntegrationSessions: () => ({ data: [] }),
-}))
-
 const mockUnreadCount = vi.fn(() => ({ data: { count: 0 } }))
 vi.mock('@renderer/hooks/use-notifications', () => ({
   useUnreadNotificationCount: () => mockUnreadCount(),
@@ -518,6 +513,19 @@ describe('AppSidebar — agent rows', () => {
     // session-row dot has its accessible label so screen readers announce it.
     const dots = screen.getAllByLabelText('unread notifications')
     expect(dots.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('agent with only chat integrations does not render an expand chevron', () => {
+    // After removing chatIntegrationCount from the expand predicate, an agent
+    // whose only expandable children were chat integrations must NOT show a chevron.
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ sessionCount: 0, dashboardCount: 0, chatIntegrationCount: 1 })],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    const agentRow = screen.getByTestId('agent-item-test-agent').closest('li')!
+    expect(agentRow.querySelector('[aria-label="Expand"]')).toBeNull()
   })
 })
 

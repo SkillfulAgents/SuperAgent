@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
+import { SectionHeader } from '@renderer/components/ui/section-header'
 
 type RelatedSessionItem = Parameters<typeof RelatedSessions>[0]['sessions'][number]
 
@@ -27,13 +28,12 @@ export function RunHistorySection({
 
   return (
     <div className="pb-6">
-      <div className="flex items-center gap-2">
-        <h3 className="text-sm font-medium text-muted-foreground flex-1">{title}</h3>
-        {sessions.length > 0 && (
+      <SectionHeader
+        title={title}
+        actions={sessions.length > 0 ? (
           <SortPopover value={sortOrder} onChange={setSortOrder} ariaLabel="Sort runs" />
-        )}
-      </div>
-      <div className="border-b mt-2" />
+        ) : undefined}
+      />
       {sessions.length > 0 ? (
         <RelatedSessions
           sessions={sessions}

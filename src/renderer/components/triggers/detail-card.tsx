@@ -6,7 +6,7 @@ interface DetailCardProps {
   headerActions?: ReactNode
   footer?: ReactNode
   className?: string
-  children: ReactNode
+  children?: ReactNode
 }
 
 export function DetailCard({ label, headerActions, footer, className, children }: DetailCardProps) {
@@ -24,9 +24,11 @@ export function DetailCard({ label, headerActions, footer, className, children }
           {headerActions}
         </div>
       )}
-      <div className={cn('px-4', hasHeader && 'pt-3')}>
-        {children}
-      </div>
+      {children != null && (
+        <div className={cn('px-4', hasHeader && 'pt-3')}>
+          {children}
+        </div>
+      )}
       {footer && (
         <div className="px-4 pt-6 text-xs text-muted-foreground">
           {footer}

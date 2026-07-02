@@ -2,8 +2,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { IntegrationModelEffort } from './integration-settings-menu'
-import type { ChatIntegration } from '@shared/lib/db/schema'
+import { IntegrationModelEffort } from './integration-settings-controls'
+import { makeChatIntegration as makeIntegration } from './test-factories'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { EffortLevel } from '@shared/lib/container/types'
 
@@ -38,26 +38,6 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   }),
 }))
 
-function makeIntegration(overrides: Partial<ChatIntegration> = {}): ChatIntegration {
-  return {
-    id: 'int-1',
-    agentSlug: 'test-agent',
-    provider: 'telegram',
-    name: 'Test Bot',
-    config: '{}',
-    showToolCalls: false,
-    sessionTimeout: null,
-    model: null,
-    effort: null,
-    status: 'active',
-    errorMessage: null,
-    createdByUserId: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ...overrides,
-  } as ChatIntegration
-}
-
 describe('IntegrationModelEffort', () => {
   beforeEach(() => {
     mutateMock.mockReset()
@@ -83,13 +63,8 @@ describe('IntegrationModelEffort', () => {
     expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Low')
   })
 
-  it('does NOT call mutate on initial render', () => {
-    render(<IntegrationModelEffort integration={makeIntegration()} />)
-    expect(mutateMock).not.toHaveBeenCalled()
-  })
-
-  it('does NOT call mutate on initial render even with values set', () => {
-    render(<IntegrationModelEffort integration={makeIntegration({ model: 'opus', effort: 'xhigh' })} />)
+  it.each([{}, { model: 'opus', effort: 'xhigh' }])('does NOT call mutate on initial render (%o)', (overrides) => {
+    render(<IntegrationModelEffort integration={makeIntegration(overrides)} />)
     expect(mutateMock).not.toHaveBeenCalled()
   })
 

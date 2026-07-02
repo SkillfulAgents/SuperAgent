@@ -121,7 +121,7 @@ function SettingsModelSelectImpl({
             {triggerLabel ?? 'Select model'}
             {includeEffort && (
               <span className="text-muted-foreground">
-                {triggerLabel ? ' · ' : ''}{EFFORT_LABEL[effort]}
+                {' · '}{EFFORT_LABEL[effort]}
               </span>
             )}
           </span>

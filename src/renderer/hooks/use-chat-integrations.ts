@@ -107,7 +107,7 @@ export function useChatIntegrationSessions(integrationId: string | null) {
 
 // ── Access hook ────────────────────────────────────────────────────────
 
-export function useChatIntegrationAccess(integrationId: string | null) {
+export function useChatIntegrationAccess(integrationId: string | null, enabled = true) {
   return useQuery<ChatIntegrationAccess[]>({
     queryKey: chatIntegrationKeys.access(integrationId ?? ''),
     queryFn: async () => {
@@ -115,7 +115,9 @@ export function useChatIntegrationAccess(integrationId: string | null) {
       if (!res.ok) throw new Error('Failed to fetch chat integration access')
       return res.json()
     },
-    enabled: !!integrationId,
+    // The /access route is owner-gated; callers pass enabled=false for non-owners
+    // (and non-Telegram providers) so viewers don't trigger a 403.
+    enabled: !!integrationId && enabled,
     // Poll for new access requests — same cadence as sessions, no SSE fallback.
     refetchInterval: 20_000,
     refetchIntervalInBackground: false,
@@ -197,6 +199,7 @@ export function useUpdateChatIntegration() {
       return res.json() as Promise<ChatIntegration>
     },
     onSuccess: (data) => {
+      queryClient.setQueryData(chatIntegrationKeys.detail(data.id), data)
       queryClient.invalidateQueries({ queryKey: ['chat-integrations', data.agentSlug] })
       queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.detail(data.id) })
       queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.status(data.id) })
@@ -269,6 +272,7 @@ export function useSetRequireApproval() {
       return res.json() as Promise<ChatIntegration>
     },
     onSuccess: (data) => {
+      queryClient.setQueryData(chatIntegrationKeys.detail(data.id), data)
       queryClient.invalidateQueries({ queryKey: ['chat-integrations', data.agentSlug] })
       queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.detail(data.id) })
       queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.access(data.id) })
