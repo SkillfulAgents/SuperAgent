@@ -71,7 +71,7 @@ const TOUCHED = [
   ...Object.keys(FULL_ENV),
   'AWS_REGION', 'AWS_DEFAULT_REGION', 'MICROVM_AGENT_IMAGE_VERSION', 'MICROVM_INGRESS_CONNECTOR_ARN',
   'MICROVM_AGENT_PORT', 'MICROVM_MAX_DURATION_SECONDS', 'MICROVM_SUSPENDED_SECONDS', 'MICROVM_LOG_GROUP',
-  'MICROVM_FS_ID', 'MICROVM_ACCESS_POINT', 'MICROVM_MOUNT_TARGET_IP',
+  'MICROVM_FS_ID', 'MICROVM_ACCESS_POINT', 'MICROVM_MOUNT_TARGET_IP', 'ECS_CONTAINER_METADATA_URI_V4', 'PORT',
 ]
 
 beforeEach(() => {
@@ -205,6 +205,34 @@ describe('LambdaMicroVmRuntimeClient eligibility', () => {
   })
 })
 
+describe('LambdaMicroVmRuntimeClient host API base URL', () => {
+  beforeEach(() => {
+    Object.assign(process.env, FULL_ENV)
+    resetMicrovmRuntimeForTests()
+  })
+
+  it('falls back to HOST_PUBLIC_URL when ECS metadata is unavailable', async () => {
+    process.env.HOST_PUBLIC_URL = 'https://host.example/'
+    await expect(new LambdaMicroVmRuntimeClient({ agentId: 'agent-url' }).getHostApiBaseUrl()).resolves.toBe('https://host.example')
+  })
+
+  it('uses the ECS task private IP and host-app port when metadata is available', async () => {
+    process.env.ECS_CONTAINER_METADATA_URI_V4 = 'http://metadata.local/v4/container'
+    process.env.PORT = '3456'
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      if (String(input) === 'http://metadata.local/v4/container') {
+        return {
+          ok: true,
+          json: async () => ({ Networks: [{ IPv4Addresses: ['10.0.12.34'] }] }),
+        } as Response
+      }
+      return { ok: true } as Response
+    })
+
+    await expect(new LambdaMicroVmRuntimeClient({ agentId: 'agent-url' }).getHostApiBaseUrl()).resolves.toBe('http://10.0.12.34:3456')
+  })
+})
+
 describe('LambdaMicroVmRuntimeClient lifecycle', () => {
   beforeEach(() => {
     Object.assign(process.env, FULL_ENV)
@@ -239,6 +267,23 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(payload.mount).toBeUndefined() // no mount configured here
     // The full env is stashed host-side for the VM to fetch at boot.
     expect(readBootstrapEnv('agent-xyz')).toMatchObject({ FOO: 'bar' })
+  })
+
+  it('puts the direct private host-app URL in the bootstrap payload when ECS metadata is available', async () => {
+    process.env.ECS_CONTAINER_METADATA_URI_V4 = 'http://metadata.local/v4/container'
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      if (String(input) === 'http://metadata.local/v4/container') {
+        return {
+          ok: true,
+          json: async () => ({ Networks: [{ IPv4Addresses: ['10.0.12.34'] }] }),
+        } as Response
+      }
+      return { ok: true } as Response
+    })
+
+    await newClient().start()
+    const input = sendMock.mock.calls.find((c) => c[0].type === 'Run')![0].input
+    expect(JSON.parse(input.runHookPayload).bootstrap.url).toBe('http://10.0.12.34:3000/api/agent-bootstrap/agent-xyz/env')
   })
 
   it('the bootstrap credential carries the agent PROXY_TOKEN for the boot fetch', async () => {

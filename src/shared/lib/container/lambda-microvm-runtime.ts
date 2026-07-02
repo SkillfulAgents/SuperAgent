@@ -12,6 +12,11 @@ import {
   TerminateMicrovmCommand,
   CreateMicrovmAuthTokenCommand,
 } from '@aws-sdk/client-lambda-microvms'
+import type {
+  CreateMicrovmAuthTokenCommandOutput,
+  GetMicrovmCommandOutput,
+  RunMicrovmCommandOutput,
+} from '@aws-sdk/client-lambda-microvms'
 import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
 import type { ContainerConfig, ContainerInfo, ContainerStats, StartOptions, StopOptions, StopResult } from './types'
 import { getSettings } from '@shared/lib/config/settings'
@@ -33,6 +38,20 @@ const RESUME_RETRY_DELAY_MS = 400
 // which would otherwise wedge the resume-retry loop forever. Disabled once a WS
 // handshake completes (a live stream is idle by design).
 const UPSTREAM_IDLE_TIMEOUT_MS = 30_000
+const ECS_METADATA_TIMEOUT_MS = 2_000
+
+const ecsContainerMetadataSchema = z.object({
+  Networks: z.array(z.object({
+    IPv4Addresses: z.array(z.string().refine((ip) => net.isIP(ip) === 4)).optional().default([]),
+  })).optional().default([]),
+})
+
+const hostAppPortSchema = z.preprocess(
+  (value) => (value === undefined || value === '' ? CONTAINER_INTERNAL_PORT : value),
+  z.coerce.number().int().positive().max(65_535),
+)
+
+let memoizedHostPrivateIp: string | null | undefined
 
 // ---------------------------------------------------------------------------
 // Runtime config (env-driven, zod-validated, memoized)
@@ -116,6 +135,45 @@ export function getMicrovmRuntimeConfig(): MicrovmRuntimeConfig {
 
 export function isMicrovmRuntimeConfigured(): boolean {
   return resolveMicrovmRuntimeConfigOrNull() !== null
+}
+
+function getPublicHostApiBaseUrl(): string {
+  const publicUrl = process.env.HOST_PUBLIC_URL?.replace(/\/+$/, '')
+  if (!publicUrl) {
+    throw new Error('HOST_PUBLIC_URL is required for the MicroVM runtime')
+  }
+  return publicUrl
+}
+
+async function resolveHostPrivateIpFromEcsMetadata(): Promise<string | null> {
+  if (memoizedHostPrivateIp !== undefined) return memoizedHostPrivateIp
+
+  const metadataUrl = process.env.ECS_CONTAINER_METADATA_URI_V4?.trim()
+  if (!metadataUrl) {
+    memoizedHostPrivateIp = null
+    return memoizedHostPrivateIp
+  }
+
+  try {
+    const response = await fetch(metadataUrl, { signal: AbortSignal.timeout(ECS_METADATA_TIMEOUT_MS) })
+    if (!response.ok) throw new Error(`ECS metadata returned HTTP ${response.status}`)
+    const metadata = ecsContainerMetadataSchema.parse(await response.json())
+    memoizedHostPrivateIp = metadata.Networks.flatMap((network) => network.IPv4Addresses)[0] ?? null
+    return memoizedHostPrivateIp
+  } catch (error) {
+    console.warn('[LambdaMicroVmRuntimeClient] Failed to resolve ECS task private IP; falling back to HOST_PUBLIC_URL', error)
+    captureException(error, { tags: { area: 'container', op: 'microvm.resolveHostPrivateIp' } })
+    memoizedHostPrivateIp = null
+    return memoizedHostPrivateIp
+  }
+}
+
+async function resolveHostApiBaseUrlForMicrovm(): Promise<string> {
+  const privateIp = await resolveHostPrivateIpFromEcsMetadata()
+  if (!privateIp) return getPublicHostApiBaseUrl()
+
+  const port = hostAppPortSchema.parse(process.env.PORT)
+  return `http://${privateIp}:${port}`
 }
 
 // Idle→suspend window: app settings are the single source of truth.
@@ -428,9 +486,10 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
           subPath: `${process.env.K8S_WORKSPACES_SUBPATH_PREFIX || 'agents'}/${this.config.agentId}/workspace`,
         }
       : undefined
+    const hostApiBaseUrl = await this.getHostApiBaseUrl()
     const bootstrap = hasEnv
       ? {
-          url: `${this.getHostApiBaseUrl()}/api/agent-bootstrap/${this.config.agentId}/env`,
+          url: `${hostApiBaseUrl}/api/agent-bootstrap/${this.config.agentId}/env`,
           token: env.PROXY_TOKEN ?? '',
         }
       : undefined
@@ -465,7 +524,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
         // RunMicrovm return InternalFailure on the idempotency conflict).
         clientToken: randomUUID(),
       }),
-    )
+    ) as RunMicrovmCommandOutput
     if (!run.microvmId || !run.endpoint) {
       throw new Error('RunMicrovm returned no microvmId/endpoint')
     }
@@ -519,7 +578,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     try {
       const mvm = await getMicrovmClient(config.region).send(
         new GetMicrovmCommand({ microvmIdentifier: state.microvmId }),
-      )
+      ) as GetMicrovmCommandOutput
       // SUSPENDED is "running on demand": idlePolicy.autoResumeEnabled wakes it
       // on the next request through the proxy.
       if (mvm.state === 'RUNNING' || mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
@@ -550,12 +609,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     return ''
   }
 
-  public getHostApiBaseUrl(): string {
-    const publicUrl = process.env.HOST_PUBLIC_URL?.replace(/\/+$/, '')
-    if (!publicUrl) {
-      throw new Error('HOST_PUBLIC_URL is required for the MicroVM runtime')
-    }
-    return publicUrl
+  public getHostApiBaseUrl(): Promise<string> {
+    return resolveHostApiBaseUrlForMicrovm()
   }
 
   private async mintToken(microvmId: string): Promise<MicrovmAuthToken> {
@@ -566,7 +621,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
         expirationInMinutes: AUTH_TOKEN_EXPIRATION_MINUTES,
         allowedPorts: [{ port: config.agentPort }],
       }),
-    )
+    ) as CreateMicrovmAuthTokenCommandOutput
     if (!out.authToken) throw new Error('CreateMicrovmAuthToken returned no token')
     return out.authToken
   }
@@ -574,7 +629,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   private async waitForRunning(client: LambdaMicrovmsClient, microvmId: string, timeoutMs: number): Promise<void> {
     const startedAt = Date.now()
     while (Date.now() - startedAt < timeoutMs) {
-      const mvm = await client.send(new GetMicrovmCommand({ microvmIdentifier: microvmId }))
+      const mvm = await client.send(new GetMicrovmCommand({ microvmIdentifier: microvmId })) as GetMicrovmCommandOutput
       if (mvm.state === 'RUNNING') return
       if (mvm.state === 'TERMINATED' || mvm.state === 'TERMINATING') {
         throw new Error(`MicroVM ${microvmId} entered ${mvm.state} before becoming ready`)
@@ -592,7 +647,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     try {
       const mvm = await getMicrovmClient(config.region).send(
         new GetMicrovmCommand({ microvmIdentifier: state.microvmId }),
-      )
+      ) as GetMicrovmCommandOutput
       if (mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') return
       if (mvm.state === 'TERMINATED' || mvm.state === 'TERMINATING') {
         this.cleanupLocal()
@@ -636,5 +691,6 @@ export function resetMicrovmRuntimeForTests(): void {
   agentStates.clear()
   memoizedClient = null
   memoizedConfig = null
+  memoizedHostPrivateIp = undefined
   configComputed = false
 }
