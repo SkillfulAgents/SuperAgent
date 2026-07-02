@@ -181,8 +181,12 @@ export function SettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
+      {/* Installed-PWA full-bleed: on mobile, TOP-ANCHOR the full-height sheet (override the
+          primitive's top-1/2 centering) so its header sits right at the Dynamic Island edge with
+          no floating gap; pt clears the island and the absolute close X (top-4) is nudged down by
+          the same inset. md: restores the centered desktop dialog. env() is 0 off standalone. */}
       <DialogContent
-        className="overflow-hidden p-0 h-[100dvh] md:h-auto md:max-h-[500px] md:max-w-[700px] lg:max-w-[800px]"
+        className="overflow-hidden p-0 h-[100dvh] top-0 translate-y-0 pt-[env(safe-area-inset-top)] [&>button]:mt-[env(safe-area-inset-top)] md:h-auto md:max-h-[500px] md:max-w-[700px] lg:max-w-[800px] md:top-[50%] md:-translate-y-1/2 md:pt-0 md:[&>button]:mt-0"
         data-testid={dataTestId}
       >
         <DialogTitle className="sr-only">{title}</DialogTitle>

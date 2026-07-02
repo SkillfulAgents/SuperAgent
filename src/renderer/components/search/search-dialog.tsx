@@ -188,8 +188,11 @@ export function SearchDialog() {
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) closeSearch() }}>
+      {/* Installed-PWA full-bleed: the box is top-anchored (top-4), so a top margin of the
+          safe-area inset drops the whole palette (input + close X) below the Dynamic Island.
+          env() is 0 on desktop / non-standalone mobile Safari; md: resets it (desktop centers). */}
       <DialogContent
-        className="search-anim max-w-xl p-0 gap-0 overflow-hidden top-4 translate-y-0 md:top-[50%] md:-translate-y-1/2 [&>button]:top-3 [&>button]:right-3"
+        className="search-anim max-w-xl p-0 gap-0 overflow-hidden top-4 translate-y-0 mt-[env(safe-area-inset-top)] md:top-[50%] md:-translate-y-1/2 md:mt-0 [&>button]:top-3 [&>button]:right-3"
         onKeyDown={handleKeyDown}
         aria-label="Search agents, dashboards, and sessions"
       >
