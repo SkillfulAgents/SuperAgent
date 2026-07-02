@@ -10,6 +10,7 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
+import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
@@ -99,6 +100,12 @@ export interface AppPreferences {
   chromeHeadless?: boolean
   allowPrereleaseUpdates?: boolean
   theme?: 'system' | 'light' | 'dark'
+  /**
+   * OS-global accelerator that opens the quick-dispatch launcher (e.g.
+   * "CommandOrControl+Shift+Space"). Read by the main process at startup and
+   * re-registered live on change. Empty string disables the launcher.
+   */
+  globalDispatchShortcut?: string
   maxBrowserTabs?: number
   faviconDataUrl?: string
   faviconUpdatedAt?: string
@@ -317,6 +324,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   app: {
     showMenuBarIcon: true,
     autoSleepTimeoutMinutes: 30,
+    globalDispatchShortcut: DEFAULT_GLOBAL_DISPATCH_SHORTCUT,
     notifications: {
       enabled: true,
       sessionComplete: true,

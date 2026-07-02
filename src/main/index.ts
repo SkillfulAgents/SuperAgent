@@ -38,6 +38,21 @@ import { detectAllProviders } from './host-browser'
 import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from './auto-updater'
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, closeAllDashboardWindows } from './dashboard-window'
+import {
+  prewarmQuickDispatchWindow,
+  toggleQuickDispatchWindow,
+  hideQuickDispatchWindow,
+  closeQuickDispatchWindow,
+  setQuickDispatchModal,
+  setQuickDispatchContentHeight,
+  startQuickDispatchDrag,
+  moveQuickDispatchDrag,
+  endQuickDispatchDrag,
+  openQuickDispatchWithFile,
+  drainQuickDispatchAttachPaths,
+} from './quick-dispatch-window'
+import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
+import { filesFromCommandLine } from './opened-files'
 import { safeOpenExternalFromApp } from './safe-open-external'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
@@ -572,6 +587,61 @@ ipcMain.handle('flush-pending-menu-commands', () => {
   return flushPendingMenuCommands()
 })
 
+// --- Quick-dispatch launcher IPC ---
+
+// Dispatched an agent from the launcher: hide the panel and raise the main
+// window on the brand-new session so the user can watch it work.
+ipcMain.on('quick-dispatch:dispatched', (_event, payload: { agentSlug: string; sessionId: string }) => {
+  hideQuickDispatchWindow()
+  focusMainWindowOnSession(payload.agentSlug, payload.sessionId)
+})
+
+// Esc / explicit dismiss from the launcher.
+ipcMain.on('quick-dispatch:close', () => {
+  hideQuickDispatchWindow()
+})
+
+// The launcher reports its measured content height so the frameless panel can
+// hug its contents (and grow when a dropdown opens).
+ipcMain.on('quick-dispatch:resize', (_event, height: number) => {
+  if (typeof height === 'number' && Number.isFinite(height)) {
+    setQuickDispatchContentHeight(height)
+  }
+})
+
+// Suppress the blur-to-hide while a native picker (file/folder dialog) is open.
+ipcMain.on('quick-dispatch:set-modal', (_event, open: boolean) => {
+  setQuickDispatchModal(!!open)
+})
+
+// JS window drag (the frameless panel can't use a CSS drag region — that's inert
+// to file drops). The renderer streams cursor deltas; we reposition the window.
+ipcMain.on('quick-dispatch:drag-start', () => {
+  startQuickDispatchDrag()
+})
+ipcMain.on('quick-dispatch:drag-move', (_event, delta: { dx: number; dy: number }) => {
+  if (delta && Number.isFinite(delta.dx) && Number.isFinite(delta.dy)) {
+    moveQuickDispatchDrag(delta.dx, delta.dy)
+  }
+})
+ipcMain.on('quick-dispatch:drag-end', () => {
+  endQuickDispatchDrag()
+})
+
+// "Set up voice input" from the launcher's mic button → open the main window's
+// settings (the launcher itself has no settings surface).
+ipcMain.on('quick-dispatch:open-settings', () => {
+  hideQuickDispatchWindow()
+  showOrCreateMainWindow()
+  sendToMainWindowWhenReady((win) => win.webContents.send('open-settings'))
+})
+
+// Live re-bind the global shortcut after the user changes it in Settings.
+// Returns the registration result so the UI can surface a conflict.
+ipcMain.handle('set-global-dispatch-shortcut', (_event, accelerator: string) => {
+  return registerGlobalDispatchShortcut(accelerator, toggleQuickDispatchWindow)
+})
+
 // IPC handler for setting dock badge count (macOS)
 ipcMain.handle('set-badge-count', (_event, count: number) => {
   if (process.platform === 'darwin') {
@@ -626,6 +696,10 @@ const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'])
 
 // Track paths returned by get-recent-files so read-local-file can validate (#1 security)
 const allowedRecentPaths = new Set<string>()
+// Paths the user explicitly opened via the OS (dock drop / "Open With"). Kept
+// separate because get-recent-files clears allowedRecentPaths on every call —
+// that must not evict a just-opened file before the launcher reads it.
+const explicitlyOpenedPaths = new Set<string>()
 
 function sanitizeLimit(raw: unknown): number {
   const n = Math.floor(Number(raw) || 5)
@@ -736,8 +810,9 @@ function getRecentFilesMac(limit: number): Promise<{ name: string; path: string 
 
 // IPC handler for reading a local file as a buffer (used by recent files picker)
 ipcMain.handle('read-local-file', async (_event, filePath: string): Promise<{ buffer: ArrayBuffer; name: string; type: string } | null> => {
-  // Security: only allow reading files that were returned by get-recent-files (#1)
-  if (!allowedRecentPaths.has(filePath)) {
+  // Security: only allow reading files the user surfaced to us — either via
+  // get-recent-files (#1) or by explicitly opening them with the app.
+  if (!allowedRecentPaths.has(filePath) && !explicitlyOpenedPaths.has(filePath)) {
     console.warn('read-local-file: path not in allowed recent files:', filePath)
     return null
   }
@@ -1330,6 +1405,22 @@ async function startApp() {
   restoreKeepAwakeOnStartup(userSettings.keepAwakeEnabled).catch((error) => {
     console.error('Failed to restore keep-awake state:', error)
   })
+
+  // Quick-dispatch launcher: pre-create the hidden panel and bind its global
+  // shortcut so the first invocation appears instantly.
+  prewarmQuickDispatchWindow()
+  const dispatchResult = registerGlobalDispatchShortcut(settings.app?.globalDispatchShortcut, toggleQuickDispatchWindow)
+  if (!dispatchResult.success) {
+    console.warn(`Quick-dispatch shortcut not registered: ${dispatchResult.error}`)
+  }
+  // Windows/Linux "Open With" / drag-onto-exe / CLI file args come in on THIS
+  // launch's command line (macOS uses open-file). Queue them before the flush.
+  for (const filePath of openedFilesFrom(process.argv)) {
+    handleOpenedFile(filePath)
+  }
+  // The launcher window now exists, so any files opened before startup finished
+  // (dock drop on macOS, argv above) can be delivered to it.
+  flushPendingOpenedFiles()
 }
 
 // App lifecycle - handle activate separately
@@ -1354,6 +1445,30 @@ function showOrCreateMainWindow() {
   mainWindow.focus()
 }
 
+// Run `fn` against the main window once its renderer is ready to receive IPC.
+// If the window was just (re)created its listeners aren't mounted yet, so the
+// send would be lost — wait for the load and give React a beat to subscribe.
+function sendToMainWindowWhenReady(fn: (win: BrowserWindow) => void): void {
+  const win = mainWindow
+  if (!win || win.isDestroyed()) return
+  if (win.webContents.isLoading()) {
+    win.webContents.once('did-finish-load', () => setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) fn(mainWindow)
+    }, 300))
+  } else {
+    fn(win)
+  }
+}
+
+// Raise the main window and route it to a specific session. Reuses the same
+// 'navigate-to-agent' channel the tray/notifications use (MenuCommandHandler).
+function focusMainWindowOnSession(agentSlug: string, sessionId: string): void {
+  showOrCreateMainWindow()
+  sendToMainWindowWhenReady((win) =>
+    win.webContents.send('navigate-to-agent', agentSlug, sessionId),
+  )
+}
+
 app.whenReady().then(() => {
 
   app.on('activate', () => {
@@ -1370,6 +1485,63 @@ app.on('window-all-closed', () => {
   }
 })
 
+// Files opened with the app arrive differently per OS: macOS fires `open-file`
+// (dock drop / "Open With"), while Windows/Linux pass the paths as argv (on a
+// cold launch AND, for an already-running instance, via `second-instance`). Both
+// funnel into handleOpenedFile, which opens the launcher with the file attached.
+// open-file can fire before `ready` (cold launch by dropping a file), so paths
+// queue until the launcher window has been pre-warmed. Registered at module
+// scope so it's live before `ready`, per Electron's guidance.
+const pendingOpenedFiles: string[] = []
+let quickDispatchReadyForFiles = false
+
+// Resolve real file paths from a process command line (the Windows/Linux path),
+// wiring the pure helper to Electron/fs. No-op on macOS and in dev builds.
+function openedFilesFrom(commandLine: string[], workingDirectory?: string): string[] {
+  return filesFromCommandLine(commandLine, {
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    protocolScheme: PROTOCOL_SCHEME,
+    workingDirectory: workingDirectory || process.cwd(),
+    fileExists: (p) => {
+      try {
+        return fs.statSync(p).isFile()
+      } catch {
+        return false
+      }
+    },
+  })
+}
+
+function handleOpenedFile(filePath: string): void {
+  // Authorize this exact path for `read-local-file`: the user explicitly opened
+  // it with the app (dock drop / "Open With"), so the launcher renderer is
+  // allowed to read it. Kept in a dedicated set that get-recent-files never
+  // clears, so opening the Attach menu can't evict it before the drain reads it.
+  explicitlyOpenedPaths.add(filePath)
+  if (!quickDispatchReadyForFiles) {
+    pendingOpenedFiles.push(filePath)
+    return
+  }
+  openQuickDispatchWithFile(filePath)
+}
+
+// Renderer drains queued dock-drop / "Open With" files (pull, race-free).
+ipcMain.handle('quick-dispatch:drain-attach', () => drainQuickDispatchAttachPaths())
+
+function flushPendingOpenedFiles(): void {
+  quickDispatchReadyForFiles = true
+  while (pendingOpenedFiles.length > 0) {
+    const filePath = pendingOpenedFiles.shift()
+    if (filePath) openQuickDispatchWithFile(filePath)
+  }
+}
+
+app.on('open-file', (event, filePath) => {
+  event.preventDefault()
+  handleOpenedFile(filePath)
+})
+
 // Single-instance handling (must run BEFORE startApp). When the app is already
 // running in the tray and the user re-launches it (e.g. from the Start menu), a
 // second process spawns. It MUST bail out immediately — if it falls through to
@@ -1383,7 +1555,7 @@ if (!gotTheLock) {
   // up and nothing should ever become visible.
   app.exit(0)
 } else {
-  app.on('second-instance', (_event, commandLine) => {
+  app.on('second-instance', (_event, commandLine, workingDirectory) => {
     // The re-launch landed here on the original instance. Surface its window —
     // recreating it if it was closed to the tray — otherwise a plain re-launch
     // does nothing visible.
@@ -1393,6 +1565,12 @@ if (!gotTheLock) {
     const url = commandLine.find((arg) => arg.startsWith(`${PROTOCOL_SCHEME}://`))
     if (url) {
       handleDeepLinkUrl(url)
+    }
+
+    // Files "Open With"-ed / dropped on the exe while already running arrive as
+    // the re-launch's argv → open the launcher with them attached (Windows/Linux).
+    for (const filePath of openedFilesFrom(commandLine, workingDirectory)) {
+      handleOpenedFile(filePath)
     }
   })
 
@@ -1417,6 +1595,10 @@ async function gracefulShutdown() {
 
   // Close all dashboard windows
   closeAllDashboardWindows()
+
+  // Tear down the quick-dispatch launcher and release its global shortcut.
+  unregisterGlobalDispatchShortcut()
+  closeQuickDispatchWindow()
 
   // Destroy tray and app menu
   destroyTray()

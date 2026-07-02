@@ -219,7 +219,20 @@
       "icon": "build/icon.icon",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "notarize": true
+      "notarize": true,
+      "extendInfo": {
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Any File",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "public.item",
+              "public.content"
+            ]
+          }
+        ]
+      }
     },
     "win": {
       "target": [
@@ -239,6 +252,20 @@
         }
       ],
       "icon": "build/icon.png",
+      "fileAssociations": [
+        { "ext": "png", "name": "PNG Image" },
+        { "ext": "jpg", "name": "JPEG Image" },
+        { "ext": "jpeg", "name": "JPEG Image" },
+        { "ext": "gif", "name": "GIF Image" },
+        { "ext": "webp", "name": "WebP Image" },
+        { "ext": "pdf", "name": "PDF Document" },
+        { "ext": "txt", "name": "Text Document" },
+        { "ext": "md", "name": "Markdown Document" },
+        { "ext": "csv", "name": "CSV File" },
+        { "ext": "json", "name": "JSON File" },
+        { "ext": "docx", "name": "Word Document" },
+        { "ext": "xlsx", "name": "Excel Spreadsheet" }
+      ],
       "signExts": [
         ".exe",
         ".dll",

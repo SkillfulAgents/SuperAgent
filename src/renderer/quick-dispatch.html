@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quick Dispatch</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* Frameless + transparent window: the visible UI is the rounded card the
+       React app renders; everything else stays see-through so the OS vibrancy /
+       desktop shows in the corners. overflow:hidden avoids transient scrollbars
+       while the window auto-resizes to content. height:auto is LOAD-BEARING —
+       globals.css stretches #root to 100% for the main app, which would make the
+       window measure full-screen-tall; here the panel must hug its contents. */
+    html { overflow: hidden; }
+    html, body, #root {
+      margin: 0;
+      background: transparent !important;
+      height: auto !important;
+      min-height: 0 !important;
+    }
+    body { -webkit-user-select: none; user-select: none; }
+    /* The window is moved via a JS drag (mousedown → IPC setPosition), NOT a
+       CSS `-webkit-app-region: drag` region — a drag region is inert to file
+       drops, and the panel must accept dropped files. So no drag-region CSS. */
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./quick-dispatch-main.tsx"></script>
+</body>
+</html>

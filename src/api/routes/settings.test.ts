@@ -768,6 +768,43 @@ describe('settings route', () => {
   })
 
   // =========================================================================
+  // Quick-dispatch global shortcut validation
+  // =========================================================================
+  describe('app.globalDispatchShortcut validation', () => {
+    it('accepts a valid accelerator (200)', async () => {
+      const res = await putSettings({ app: { globalDispatchShortcut: 'CommandOrControl+Shift+K' } })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.app.globalDispatchShortcut).toBe('CommandOrControl+Shift+K')
+    })
+
+    it('accepts an empty string as "disabled" (200)', async () => {
+      const res = await putSettings({ app: { globalDispatchShortcut: '' } })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.app.globalDispatchShortcut).toBe('')
+    })
+
+    it('rejects a garbage accelerator (400) and does not persist', async () => {
+      const res = await putSettings({ app: { globalDispatchShortcut: 'not a shortcut' } })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('globalDispatchShortcut')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('rejects a non-string accelerator (400)', async () => {
+      const res = await putSettings({ app: { globalDispatchShortcut: 123 } })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+  })
+
+  // =========================================================================
   // STT key validation
   // =========================================================================
   describe('POST /validate-stt-key', () => {

@@ -53,6 +53,14 @@ export default defineConfig({
     root: './src/renderer',
     build: {
       outDir: path.resolve(__dirname, 'dist/renderer'),
+      rollupOptions: {
+        // Two entry HTMLs: the main app and the standalone quick-dispatch
+        // launcher window (a separate BrowserWindow / renderer process).
+        input: {
+          index: path.resolve(__dirname, 'src/renderer/index.html'),
+          quickDispatch: path.resolve(__dirname, 'src/renderer/quick-dispatch.html'),
+        },
+      },
     },
     resolve: {
       alias: {

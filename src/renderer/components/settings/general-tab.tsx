@@ -14,6 +14,7 @@ import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
+import { ShortcutsSection } from './shortcuts-section'
 import { applyWebFavicon, getWebFaviconHref } from '@renderer/lib/favicon'
 import {
   Wand2,
@@ -308,6 +309,8 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
           )}
         </div>
       </div>
+
+      {isElectronApp && <ShortcutsSection />}
 
       {showWebFaviconSettings && (
         <div className="space-y-2">
