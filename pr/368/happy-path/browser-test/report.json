@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the expected response.",
+  "reason": "Successfully tested browser-use feature by sending a browser navigation request to the agent, verifying it used browser tools to navigate to example.com and correctly reported the page title as \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage with sidebar showing agents.",
-    "Clicked on \"QA-20260701-221525-t4nm\" agent in the sidebar — Successfully navigated to the agent page with message input box.",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered into the textbox.",
-    "Clicked Send message button — Message successfully sent, and agent session created with URL showing the new session ID.",
-    "Waited for agent response (up to 3 minutes) — Agent completed work in approximately 10 seconds with status indicator showing task completion.",
-    "Verified response content — Response clearly states \"The page title is \\\"Example Domain\\\"\" and confirms \"Done — the page at https://example.com has the title \\\"Example Domain\\\". Browser closed.\"",
-    "Took screenshot — Screenshot captured showing the complete conversation flow with agent's response visible, including all tool calls (Open Browser → Browser Get State → Close Browser) with checkmarks indicating success."
+    "Step 1 - Navigate to http://localhost:47891 — Successfully navigated to the application home page. Page title is \"Gamut\" and the sidebar displays available agents.",
+    "Step 2 - Click on \"QA-20260702-223537-0mzy\" agent in sidebar — Successfully clicked on the agent link. The agent page loaded with the chat interface showing the agent name \"QA-20260702-223537-0mzy\" and session created with title \"Browser Navigation and Page Title Check\".",
+    "Step 3 - Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully typed the message into the chat input field and clicked the Send message button. The message was posted to the chat interface.",
+    "Step 4 - Wait up to 3 minutes for response — Response received within approximately 12 seconds. The agent completed the task and returned the result.",
+    "Step 5 - Verify response mentions \"Example Domain\" and take screenshot — Verified the response content. The agent:"
   ],
   "bugs": [],
-  "durationMs": 86312,
-  "sessionId": "e32ffdaa-255e-48bd-bed6-b15f1de97b00",
+  "durationMs": 131171,
+  "sessionId": "b1e2692a-992e-4f18-b6f1-bf1e9afd018b",
   "cost": {
-    "inputTokens": 323,
-    "outputTokens": 10641,
-    "cacheCreationTokens": 65346,
-    "cacheReadTokens": 975636,
+    "inputTokens": 399,
+    "outputTokens": 12255,
+    "cacheCreationTokens": 64635,
+    "cacheReadTokens": 1220558,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.232774
+    "totalCostUsd": 0.264524
   }
 }
