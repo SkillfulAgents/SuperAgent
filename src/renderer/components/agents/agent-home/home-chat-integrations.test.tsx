@@ -6,6 +6,9 @@ import { HomeChatIntegrations } from './home-chat-integrations'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ChatIntegration, ChatIntegrationAccess } from '@shared/lib/db/schema'
 
+// The list route enriches each row with the live transport state.
+type ListItem = ChatIntegration & { connected: boolean }
+
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 const mockUseChatIntegrations = vi.fn()
@@ -38,7 +41,7 @@ vi.mock('@renderer/components/chat-integrations/chat-integration-setup-dialog', 
 
 const NOW = new Date('2025-01-01')
 
-const INTEGRATION: ChatIntegration = {
+const INTEGRATION: ListItem = {
   id: 'int-1',
   agentSlug: 'test-agent',
   provider: 'telegram',
@@ -54,6 +57,7 @@ const INTEGRATION: ChatIntegration = {
   createdByUserId: null,
   createdAt: NOW,
   updatedAt: NOW,
+  connected: true,
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -83,7 +87,7 @@ describe('HomeChatIntegrations', () => {
   })
 
   it('shows "N pending" badge when there are pending access requests', async () => {
-    const integrationWithApproval: ChatIntegration = {
+    const integrationWithApproval: ListItem = {
       ...INTEGRATION,
       requireApproval: true,
     }
@@ -114,13 +118,17 @@ describe('HomeChatIntegrations', () => {
     expect(await screen.findByText('1 pending')).toBeInTheDocument()
   })
 
-  it.each<[ChatIntegration['status'], string]>([
-    ['active', 'Listening'],
-    ['paused', 'Paused'],
-    ['error', 'Error'],
-    ['disconnected', 'Disconnected'],
-  ])('renders a status tag whose label matches the Status card vocabulary (%s -> %s)', (status, label) => {
-    mockUseChatIntegrations.mockReturnValue({ data: [{ ...INTEGRATION, status }] })
+  // Same derivation (and vocabulary) as the connector page's Status card: the tag
+  // reads the live `connected` the list carries, so "active" splits into
+  // "Listening" (wire up) vs "Connecting…" (wire not up yet) instead of always
+  // claiming "Listening" from persisted status alone.
+  it.each<[ChatIntegration['status'], boolean, string]>([
+    ['active', true, 'Listening'],
+    ['active', false, 'Connecting…'],
+    ['paused', false, 'Paused'],
+    ['error', false, 'Error'],
+  ])('renders the status tag from (status=%s, connected=%s) -> %s', (status, connected, label) => {
+    mockUseChatIntegrations.mockReturnValue({ data: [{ ...INTEGRATION, status, connected }] })
     renderWithProviders(<HomeChatIntegrations agentSlug="test-agent" />)
     expect(screen.getByText(label)).toBeInTheDocument()
   })

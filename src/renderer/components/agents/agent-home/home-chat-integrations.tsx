@@ -2,15 +2,14 @@ import { useState } from 'react'
 import { Plus } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
-import { useChatIntegrations, useChatIntegrationAccess } from '@renderer/hooks/use-chat-integrations'
+import { useChatIntegrations, useChatIntegrationAccess, type ChatIntegrationListItem } from '@renderer/hooks/use-chat-integrations'
 import {
-  type ChatIntegrationState,
+  deriveChatIntegrationState,
   formatProviderName,
   CHAT_INTEGRATION_STATE_LABEL,
   CHAT_INTEGRATION_STATE_PILL,
 } from '@shared/lib/chat-integrations/utils'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
-import type { ChatIntegration } from '@shared/lib/db/schema'
 import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { useAgent } from '@renderer/hooks/use-agents'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
@@ -31,24 +30,12 @@ const PROVIDER_TILES: Array<{ slug: ChatProvider; label: string }> = [
   { slug: 'imessage', label: 'iMessage' },
 ]
 
-// Persisted status -> the shared display state, so the tag matches the Status
-// card's vocabulary. agent-home has no live `connected` signal, so an "active"
-// integration reads as its settled state, "Listening".
-const STATUS_TO_STATE: Record<string, ChatIntegrationState> = {
-  active: 'working',
-  paused: 'paused',
-  error: 'error',
-}
-
 // Small status tag - the same colors/labels as the Status card pill, sized like
-// the skills-section badges (text-2xs, tight padding, no dot).
-function StatusTag({ status }: { status: string }) {
-  const state = STATUS_TO_STATE[status]
-  if (!state) {
-    // Legacy 'disconnected' (runtime never writes it); show a neutral tag.
-    const label = status.charAt(0).toUpperCase() + status.slice(1)
-    return <span className="text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">{label}</span>
-  }
+// the skills-section badges (text-2xs, tight padding, no dot). Derived from the
+// same `(status, connected)` the connector page uses, so "Listening" here means
+// the wire is actually up - the two surfaces can't disagree.
+function StatusTag({ integration }: { integration: ChatIntegrationListItem }) {
+  const state = deriveChatIntegrationState(integration.status, integration.connected)
   return (
     <span className={`text-2xs px-1.5 py-0 rounded-full ${CHAT_INTEGRATION_STATE_PILL[state]}`}>
       {CHAT_INTEGRATION_STATE_LABEL[state]}
@@ -59,7 +46,7 @@ function StatusTag({ status }: { status: string }) {
 // Status dot + an owner-only "N pending" count, derived from the access list
 // the app already polls. Lives in its own component so the access query (one per
 // integration) obeys the rules of hooks inside the integration list.
-function IntegrationNameBadges({ integration, showPending }: { integration: ChatIntegration; showPending: boolean }) {
+function IntegrationNameBadges({ integration, showPending }: { integration: ChatIntegrationListItem; showPending: boolean }) {
   // Approval gating is Telegram-only (see chat-integration-access-service); other
   // providers always forward, so there are never pending requests to badge.
   const enabled = showPending && integration.provider === 'telegram' && !!integration.requireApproval
@@ -67,7 +54,7 @@ function IntegrationNameBadges({ integration, showPending }: { integration: Chat
   const pending = enabled ? (access?.filter((a) => a.status === 'pending').length ?? 0) : 0
   return (
     <span className="inline-flex items-center gap-1">
-      <StatusTag status={integration.status} />
+      <StatusTag integration={integration} />
       {pending > 0 && (
         <span className="text-2xs px-1.5 py-0 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400">
           {pending} pending
