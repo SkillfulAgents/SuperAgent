@@ -134,6 +134,10 @@ export function QuickDispatch() {
       [selectedSlug, createSession, composerOptions],
     ),
     submitDisabled: createSession.isPending || !selectedSlug,
+    // Keep the typed message in the (disabled) input while the dispatch is in
+    // flight, instead of clearing it up front — seeing your text vanish mid-send
+    // is unnerving. It clears once the session is created, or stays on failure.
+    keepMessageUntilComplete: true,
     draftKey: 'quick-dispatch',
   })
 
@@ -200,12 +204,19 @@ export function QuickDispatch() {
     return () => unsub?.()
   }, [])
 
-  // The panel is hidden (not destroyed) between uses, so attachments would
-  // otherwise linger into the next open. Clear them when main reports the hide.
+  // The panel is hidden (not destroyed) between uses, so transient state would
+  // otherwise linger into the next open. When main reports the hide (Esc, blur,
+  // post-dispatch), clear attachments AND stop any in-flight dictation — an
+  // active mic mustn't keep recording after the window is dismissed.
   const clearAttachmentsRef = useRef(composer.clearAttachments)
   clearAttachmentsRef.current = composer.clearAttachments
   useEffect(() => {
-    const unsub = window.electronAPI?.onQuickDispatchReset?.(() => clearAttachmentsRef.current())
+    const unsub = window.electronAPI?.onQuickDispatchReset?.(() => {
+      clearAttachmentsRef.current()
+      const vi = voiceRef.current
+      if (vi.isRecording || vi.isConnecting) void vi.stopRecording()
+      vi.clearError()
+    })
     return () => unsub?.()
   }, [])
 
