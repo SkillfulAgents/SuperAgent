@@ -487,6 +487,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
         }
       : undefined
     const hostApiBaseUrl = await this.getHostApiBaseUrl()
+    console.info(`[LambdaMicroVmRuntimeClient] Using host API base URL for MicroVM talk-back: ${hostApiBaseUrl}`)
     const bootstrap = hasEnv
       ? {
           url: `${hostApiBaseUrl}/api/agent-bootstrap/${this.config.agentId}/env`,
