@@ -1381,6 +1381,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   // cancelled before pickup (mirrors the CLI's cancel_async_message).
   private queuedSteeringTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>()
 
+  // Interrupt epoch per session — bumped by interruptSession() to supersede
+  // the in-flight scenario (see scenarioView).
+  private interruptEpochs = new Map<string, number>()
+
   getAgentId(): string {
     return this.config.agentId
   }
@@ -1764,7 +1768,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         // masking a regression of the capabilities handshake that the host
         // actually relies on (the exact failure that already shipped once).
         this.busySessions.add(sessionId)
-        scenario.execute(sessionId, this, options.initialMessage!)
+        scenario.execute(sessionId, this.scenarioView(sessionId), options.initialMessage!)
       }, 100)  // Brief delay to ensure subscription is set up
     }
 
@@ -1787,6 +1791,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       for (const timer of timers.values()) clearTimeout(timer)
       this.queuedSteeringTimers.delete(sessionId)
     }
+    this.interruptEpochs.delete(sessionId)
     console.log(`[MockContainerClient] Deleted session ${sessionId}`)
     return existed
   }
@@ -1928,7 +1933,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // publish — so emitting 'running' here mirrors the runtime.
     this.busySessions.add(sessionId)
     this.emitSessionState(sessionId, 'running')
-    scenario.execute(sessionId, this, content)
+    scenario.execute(sessionId, this.scenarioView(sessionId), content)
   }
 
   async getMessages(sessionId: string): Promise<unknown[]> {
@@ -1945,17 +1950,52 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return true
   }
 
+  /**
+   * A view of this client handed to a scenario execution, pinned to the
+   * session's interrupt epoch at turn start. interruptSession() bumps the
+   * epoch, which turns the superseded scenario's remaining scheduled
+   * emissions (stream events and JSONL writes from its pending setTimeouts)
+   * into no-ops — observationally the same as cancelling the timers, without
+   * threading a cancellation handle through every scenario. Mirrors the real
+   * CLI: an aborted turn produces no further output.
+   */
+  private scenarioView(sessionId: string): MockContainerClient {
+    const epoch = this.interruptEpochs.get(sessionId) ?? 0
+    const live = () => (this.interruptEpochs.get(sessionId) ?? 0) === epoch
+    const view = Object.create(this) as MockContainerClient
+    view.emitStreamMessage = (sid: string, content: { type: string; content: unknown }): void => {
+      if (live()) this.emitStreamMessage(sid, content)
+    }
+    view.writeJsonlEntry = (sid: string, entry: Record<string, unknown>): void => {
+      if (live()) this.writeJsonlEntry(sid, entry)
+    }
+    return view
+  }
+
   async interruptSession(sessionId: string): Promise<boolean> {
     const session = this.sessions.get(sessionId)
-    if (session) {
-      // Emit interrupt event
-      this.emitStreamMessage(sessionId, {
-        type: 'session_idle',
-        content: { interrupted: true },
-      })
-      return true
+    if (!session) return false
+
+    // Supersede the in-flight scenario so its pending timers can't finish the
+    // turn after the abort (see scenarioView), and let the next send start a
+    // fresh turn instead of taking the mid-turn steering path.
+    this.interruptEpochs.set(sessionId, (this.interruptEpochs.get(sessionId) ?? 0) + 1)
+    this.busySessions.delete(sessionId)
+
+    // Queued steering messages die with the turn — the real CLI never picks
+    // them up after an abort; the renderer restores their text into the
+    // composer draft.
+    const timers = this.queuedSteeringTimers.get(sessionId)
+    if (timers) {
+      for (const timer of timers.values()) clearTimeout(timer)
+      timers.clear()
     }
-    return false
+
+    this.emitStreamMessage(sessionId, {
+      type: 'session_idle',
+      content: { interrupted: true },
+    })
+    return true
   }
 
   // Streaming
