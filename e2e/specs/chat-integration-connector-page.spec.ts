@@ -16,7 +16,7 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { createAgentWithTelegramIntegration } from '../helpers/chat-integrations'
 
-test.describe('Chat integration UI overhaul', () => {
+test.describe('Chat integration connector page', () => {
   let appPage: AppPage
   let agentPage: AgentPage
 
