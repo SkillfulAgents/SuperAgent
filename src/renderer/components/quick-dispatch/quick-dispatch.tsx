@@ -134,6 +134,10 @@ export function QuickDispatch() {
       [selectedSlug, createSession, composerOptions],
     ),
     submitDisabled: createSession.isPending || !selectedSlug,
+    // Keep the typed message in the (disabled) input while the dispatch is in
+    // flight, instead of clearing it up front — seeing your text vanish mid-send
+    // is unnerving. It clears once the session is created, or stays on failure.
+    keepMessageUntilComplete: true,
     draftKey: 'quick-dispatch',
   })
 

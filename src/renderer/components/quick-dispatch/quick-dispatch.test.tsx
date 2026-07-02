@@ -45,9 +45,17 @@ const createSessionMock = vi.hoisted(() => ({
   isPending: false,
 }))
 
+// Captures the options QuickDispatch passes to useMessageComposer.
+const composerOptionsSpy = vi.hoisted(() => ({ value: null as Record<string, unknown> | null }))
+
 vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: state.agents }) }))
 vi.mock('@renderer/hooks/use-sessions', () => ({ useCreateSession: () => createSessionMock }))
-vi.mock('@renderer/hooks/use-message-composer', () => ({ useMessageComposer: () => composerMock }))
+vi.mock('@renderer/hooks/use-message-composer', () => ({
+  useMessageComposer: (options: Record<string, unknown>) => {
+    composerOptionsSpy.value = options
+    return composerMock
+  },
+}))
 vi.mock('@renderer/hooks/use-voice-input', () => ({
   useIsVoiceConfigured: () => true,
   useVoiceInput: () => ({}),
@@ -158,6 +166,14 @@ describe('QuickDispatch', () => {
 
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(composerMock.handleSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the typed message in the input until the dispatch completes', () => {
+    installElectronAPI()
+    render(<QuickDispatch />)
+    // Without this the composer clears the text up front, so it vanishes while
+    // the send spinner is showing.
+    expect(composerOptionsSpy.value?.keepMessageUntilComplete).toBe(true)
   })
 
   it('clears attachments when the window is hidden (reset)', async () => {
