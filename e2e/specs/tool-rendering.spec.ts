@@ -38,7 +38,27 @@ async function setToolCallExpanded(toolCall: Locator, toolName: string, expanded
   if (await toggle.getAttribute('aria-expanded') !== String(expanded)) {
     await toggle.click()
   }
-  await expect(toggle).toHaveAttribute('aria-expanded', String(expanded))
+  await expect(toggle).toHaveAttribute('aria-expanded', String(expanded), { timeout: 1000 })
+}
+
+async function expectToolCallExpanded(
+  toolCall: Locator,
+  toolName: string,
+  expanded: boolean,
+  expandedContent?: Locator,
+) {
+  // Tool calls can remount after a post-turn message refetch, resetting local
+  // expansion state. Re-drive the UI transition until the content agrees.
+  await expect(async () => {
+    await setToolCallExpanded(toolCall, toolName, expanded)
+    if (expandedContent) {
+      if (expanded) {
+        await expect(expandedContent).toBeVisible({ timeout: 1000 })
+      } else {
+        await expect(expandedContent).not.toBeVisible({ timeout: 1000 })
+      }
+    }
+  }).toPass({ timeout: 20000 })
 }
 
 test.describe('Tool Call Rendering', () => {
@@ -54,11 +74,11 @@ test.describe('Tool Call Rendering', () => {
     const toolCall = renderedToolCall(sessionPage, 'Bash')
     await expect(toolCall).toBeVisible()
 
-    // Click to expand
-    await setToolCallExpanded(toolCall, 'Bash', true)
+    const terminal = toolCall.getByTestId('bash-terminal')
+    await expectToolCallExpanded(toolCall, 'Bash', true, terminal)
 
-    // Verify terminal-style display (black background)
-    await expect(toolCall.getByTestId('bash-terminal')).toBeVisible()
+    // Verify terminal-style display
+    await expect(terminal).toHaveCSS('background-color', 'rgb(0, 0, 0)')
   })
 
   test('renders Read tool call with file path summary', async ({ page, request }, testInfo) => {
@@ -137,22 +157,10 @@ test.describe('Tool Call Rendering', () => {
     const toolCall = renderedToolCall(sessionPage, 'Bash')
     await expect(toolCall).toBeVisible({ timeout: 20000 })
 
-    // The row's expanded state is local; a post-turn message refetch can remount
-    // it and reset the toggle. Re-drive each transition until the rendered
-    // terminal matches, so the assertions don't race that remount.
-    await expect(async () => {
-      await setToolCallExpanded(toolCall, 'Bash', false)
-      await expect(toolCall.getByTestId('bash-terminal')).not.toBeVisible({ timeout: 1000 })
-    }).toPass({ timeout: 20000 })
+    const terminal = toolCall.getByTestId('bash-terminal')
 
-    await expect(async () => {
-      await setToolCallExpanded(toolCall, 'Bash', true)
-      await expect(toolCall.getByTestId('bash-terminal')).toBeVisible({ timeout: 1000 })
-    }).toPass({ timeout: 20000 })
-
-    await expect(async () => {
-      await setToolCallExpanded(toolCall, 'Bash', false)
-      await expect(toolCall.getByTestId('bash-terminal')).not.toBeVisible({ timeout: 1000 })
-    }).toPass({ timeout: 20000 })
+    await expectToolCallExpanded(toolCall, 'Bash', false, terminal)
+    await expectToolCallExpanded(toolCall, 'Bash', true, terminal)
+    await expectToolCallExpanded(toolCall, 'Bash', false, terminal)
   })
 })
