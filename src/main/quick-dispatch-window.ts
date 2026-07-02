@@ -235,19 +235,32 @@ export function setQuickDispatchContentHeight(height: number): void {
 // --- JS window drag (frameless move without a CSS drag region, which would be
 // inert to file drops). The renderer tracks the cursor and reports deltas; we
 // move the window relative to its position at drag-start.
-let dragOrigin: { x: number; y: number } | null = null
+//
+// We snapshot the SIZE at drag-start and re-assert it on every move via
+// setBounds (not setPosition). On Windows with fractional display scaling
+// (125%/150%), setPosition round-trips content-size ⇄ window-size ⇄ DIP ⇄
+// physical px and re-rounds each call, so a stream of setPosition calls during a
+// drag makes the window creep larger (vertically or horizontally) until release
+// (Electron #10862). Pinning width+height every move cancels that drift.
+let dragOrigin: { x: number; y: number; width: number; height: number } | null = null
 
-/** Begin a window drag: remember where the window was when the drag started. */
+/** Begin a window drag: remember where/how big the window was at drag start. */
 export function startQuickDispatchDrag(): void {
   if (!quickWindow || quickWindow.isDestroyed()) return
   const [x, y] = quickWindow.getPosition()
-  dragOrigin = { x, y }
+  const [width, height] = quickWindow.getSize()
+  dragOrigin = { x, y, width, height }
 }
 
 /** Move the window to its drag-start position offset by the cursor delta. */
 export function moveQuickDispatchDrag(dx: number, dy: number): void {
   if (!quickWindow || quickWindow.isDestroyed() || !dragOrigin) return
-  quickWindow.setPosition(Math.round(dragOrigin.x + dx), Math.round(dragOrigin.y + dy))
+  quickWindow.setBounds({
+    x: Math.round(dragOrigin.x + dx),
+    y: Math.round(dragOrigin.y + dy),
+    width: dragOrigin.width,
+    height: dragOrigin.height,
+  })
 }
 
 /** End the current window drag. */
