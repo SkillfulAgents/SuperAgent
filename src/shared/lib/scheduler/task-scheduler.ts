@@ -206,7 +206,25 @@ class TaskScheduler {
         console.log(
           `[TaskScheduler] Task ${task.id} held: previous run ${lastSessionId} still active; leaving task due`
         )
-        await recordTaskSkip(task.id)
+        // The skip counter is best-effort observability — a failed write must
+        // NOT escape as an execution failure. The recurring-task catch in
+        // executeOverdueTasks responds to failures with
+        // updateNextExecution(task.id, nextTime, ''), which advances the
+        // schedule, resets the skip streak, and blanks lastSessionId — disarming
+        // this guard on the next poll and allowing the exact overlap it exists
+        // to prevent. Report and hold regardless.
+        try {
+          await recordTaskSkip(task.id)
+        } catch (error) {
+          console.error(
+            `[TaskScheduler] Failed to record skip for task ${task.id}:`,
+            error
+          )
+          captureException(error, {
+            tags: { component: 'task-scheduler', phase: 'record-skip' },
+            extra: { taskId: task.id, agentSlug: task.agentSlug },
+          })
+        }
         return
       }
     }

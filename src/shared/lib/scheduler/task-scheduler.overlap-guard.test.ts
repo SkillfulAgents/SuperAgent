@@ -244,6 +244,45 @@ describe('TaskScheduler per-task overlap guard', () => {
     expect(mockUpdateNextExecution).toHaveBeenCalledWith('task-1', reanchoredAt, 'new-session-1')
   })
 
+  it('still holds when the skip bookkeeping write fails — the schedule must not advance', async () => {
+    // Regression (PR #363 review, P1): recordTaskSkip rejecting must NOT escape
+    // executeTaskInner as an execution failure. The outer recurring-task catch
+    // responds to failures with updateNextExecution(task.id, nextTime, '') —
+    // advancing the schedule, resetting skip state, and blanking lastSessionId,
+    // which disarms the guard on the next poll and allows the exact overlap the
+    // guard exists to prevent. The skip counter is best-effort observability;
+    // the hold itself must not depend on it.
+    mockGetDueTasks.mockResolvedValue([createRecurringTask()])
+    mockIsSessionActive.mockReturnValue(true)
+    mockIsSessionAwaitingInput.mockReturnValue(false)
+    mockRecordTaskSkip.mockRejectedValue(new Error('SQLite write failed'))
+
+    await taskScheduler.triggerExecution()
+
+    // Still held: no second session.
+    expect(mockCreateSession).not.toHaveBeenCalled()
+    // THE regression assertions: the failure path must not run.
+    expect(mockUpdateNextExecution).not.toHaveBeenCalled()
+    expect(mockMarkTaskFailed).not.toHaveBeenCalled()
+    // The bookkeeping failure is still reported, just not escalated.
+    expect(mockCaptureException).toHaveBeenCalled()
+  })
+
+  it('fires normally on a later poll after a failed skip write, once the slot frees', async () => {
+    mockGetDueTasks.mockResolvedValue([createRecurringTask()])
+    // Poll 1: occupied + skip write fails. Poll 2: slot freed.
+    mockIsSessionActive.mockReturnValueOnce(true).mockReturnValue(false)
+    mockRecordTaskSkip.mockRejectedValueOnce(new Error('SQLite write failed'))
+
+    await taskScheduler.triggerExecution()
+    await taskScheduler.triggerExecution()
+
+    // The guard stayed armed through the failed write: exactly one fire.
+    expect(mockCreateSession).toHaveBeenCalledTimes(1)
+    expect(mockUpdateNextExecution).toHaveBeenCalledTimes(1)
+    expect(mockUpdateNextExecution).toHaveBeenCalledWith('task-1', reanchoredAt, 'new-session-1')
+  })
+
   it('does not apply the overlap guard to a recurring task with no prior session', async () => {
     mockGetDueTasks.mockResolvedValue([createRecurringTask({ lastSessionId: null })])
     // Even if some stale streaming state is somehow active, a null lastSessionId
