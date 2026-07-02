@@ -129,6 +129,9 @@ beforeEach(() => {
   composerMock.isUploading = false
   composerMock.canSubmit = true
   composerMock.uploadError = null
+  composerMock.voiceInput.isRecording = false
+  composerMock.voiceInput.isConnecting = false
+  composerMock.voiceInput.isFinalizing = false
 })
 
 afterEach(() => {
@@ -184,6 +187,29 @@ describe('QuickDispatch', () => {
     act(() => listeners.reset())
 
     expect(composerMock.clearAttachments).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops in-flight dictation and clears its error on reset', async () => {
+    composerMock.voiceInput.isRecording = true
+    const listeners = installElectronAPI()
+    render(<QuickDispatch />)
+    await waitFor(() => expect(listeners.reset).toBeTypeOf('function'))
+
+    act(() => listeners.reset())
+
+    expect(composerMock.voiceInput.stopRecording).toHaveBeenCalledTimes(1)
+    expect(composerMock.voiceInput.clearError).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not call stopRecording on reset when not dictating', async () => {
+    const listeners = installElectronAPI()
+    render(<QuickDispatch />)
+    await waitFor(() => expect(listeners.reset).toBeTypeOf('function'))
+
+    act(() => listeners.reset())
+
+    expect(composerMock.voiceInput.stopRecording).not.toHaveBeenCalled()
+    expect(composerMock.voiceInput.clearError).toHaveBeenCalledTimes(1)
   })
 
   it('drains and attaches a dock-dropped file on mount', async () => {

@@ -204,12 +204,19 @@ export function QuickDispatch() {
     return () => unsub?.()
   }, [])
 
-  // The panel is hidden (not destroyed) between uses, so attachments would
-  // otherwise linger into the next open. Clear them when main reports the hide.
+  // The panel is hidden (not destroyed) between uses, so transient state would
+  // otherwise linger into the next open. When main reports the hide (Esc, blur,
+  // post-dispatch), clear attachments AND stop any in-flight dictation — an
+  // active mic mustn't keep recording after the window is dismissed.
   const clearAttachmentsRef = useRef(composer.clearAttachments)
   clearAttachmentsRef.current = composer.clearAttachments
   useEffect(() => {
-    const unsub = window.electronAPI?.onQuickDispatchReset?.(() => clearAttachmentsRef.current())
+    const unsub = window.electronAPI?.onQuickDispatchReset?.(() => {
+      clearAttachmentsRef.current()
+      const vi = voiceRef.current
+      if (vi.isRecording || vi.isConnecting) void vi.stopRecording()
+      vi.clearError()
+    })
     return () => unsub?.()
   }, [])
 
