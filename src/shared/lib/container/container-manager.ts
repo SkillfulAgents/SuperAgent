@@ -516,7 +516,7 @@ class ContainerManager {
 
       // Set up proxy authentication
       const proxyToken = await getOrCreateProxyToken(agentId)
-      const hostApiBaseUrl = client.getHostApiBaseUrl()
+      const hostApiBaseUrl = await client.getHostApiBaseUrl()
       envVars['PROXY_BASE_URL'] = `${hostApiBaseUrl}/api/proxy/${agentId}`
       envVars['PROXY_TOKEN'] = proxyToken
 

@@ -968,7 +968,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return `ws://127.0.0.1:${port}`
   }
 
-  public getHostApiBaseUrl(): string {
+  public getHostApiBaseUrl(): string | Promise<string> {
     return `http://${getContainerHostUrl()}:${getAppPort()}`
   }
 

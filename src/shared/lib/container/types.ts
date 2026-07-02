@@ -144,7 +144,7 @@ export interface ContainerClient {
   fetch(path: string, init?: RequestInit): Promise<Response>
 
   getWebSocketBaseUrl(port: number): string
-  getHostApiBaseUrl(): string
+  getHostApiBaseUrl(): string | Promise<string>
 
   // Health checks
   waitForHealthy(timeoutMs?: number, knownPort?: number): Promise<boolean>
