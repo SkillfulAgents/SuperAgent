@@ -386,11 +386,22 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const unpersistedThinkingBlocks = useMemo(() => {
     if (!thinkingBlocks.length || !messages?.length) return thinkingBlocks
     const persisted: string[] = []
-    for (const m of messages) {
+    let currentTurnHasPersistedThinking = false
+    let inCurrentTurn = true
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (inCurrentTurn && isTurnStartingUserMessage(m)) inCurrentTurn = false
       if (m.type === 'assistant' && Array.isArray((m as ApiMessage).thinking)) {
         persisted.push(...(m as ApiMessage).thinking!)
+        if (inCurrentTurn) currentTurnHasPersistedThinking = true
       }
     }
+    // Once the turn is over and its thinking made it into the transcript, the
+    // persisted cards own the display outright. This catches blocks whose
+    // streamed text diverged from the transcript (e.g. an SSE reconnect
+    // dropped deltas) — text matching would miss them and the leftover card
+    // would strand below the persisted message, appearing to "jump" there.
+    if (!isActive && currentTurnHasPersistedThinking) return []
     if (!persisted.length) return thinkingBlocks
     return thinkingBlocks.filter(b => {
       const t = b.text.trim()
@@ -399,7 +410,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (!t) return true
       return !persisted.some(p => p.startsWith(t) || t.startsWith(p.trim()))
     })
-  }, [messages, thinkingBlocks])
+  }, [messages, thinkingBlocks, isActive])
 
   // Filter streaming tool uses to only those NOT yet in persisted messages
   const unpersistedStreamingToolUses = useMemo(() => {
