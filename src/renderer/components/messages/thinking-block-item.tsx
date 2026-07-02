@@ -1,5 +1,5 @@
 import { cn } from '@shared/lib/utils/cn'
-import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
+import { Waypoints, ChevronDown, ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useElapsedTimer, formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import { StatusIndicator } from './tool-call-item'
@@ -78,7 +78,7 @@ export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs
         onClick={() => setUserExpanded(!expanded)}
         className={cn('flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
       >
-        <Brain className={cn(
+        <Waypoints className={cn(
           'h-3.5 w-3.5 shrink-0 transition-colors',
           active ? 'text-foreground' : 'text-foreground/45 group-hover:text-foreground'
         )} />
