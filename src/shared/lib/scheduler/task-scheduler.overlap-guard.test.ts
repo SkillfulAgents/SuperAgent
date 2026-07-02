@@ -11,6 +11,7 @@ const mockMarkTaskExecuted = vi.fn()
 const mockMarkTaskFailed = vi.fn()
 const mockUpdateNextExecution = vi.fn()
 const mockRecordTaskSkip = vi.fn()
+const mockRescheduleAfterFailure = vi.fn()
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: (...args: unknown[]) => mockGetDueTasks(...args),
@@ -18,6 +19,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   markTaskFailed: (...args: unknown[]) => mockMarkTaskFailed(...args),
   updateNextExecution: (...args: unknown[]) => mockUpdateNextExecution(...args),
   recordTaskSkip: (...args: unknown[]) => mockRecordTaskSkip(...args),
+  rescheduleAfterFailure: (...args: unknown[]) => mockRescheduleAfterFailure(...args),
 }))
 
 const mockCreateSession = vi.fn()
@@ -153,6 +155,7 @@ describe('TaskScheduler per-task overlap guard', () => {
     mockMarkTaskFailed.mockResolvedValue(undefined)
     mockUpdateNextExecution.mockResolvedValue(undefined)
     mockRecordTaskSkip.mockResolvedValue(undefined)
+    mockRescheduleAfterFailure.mockResolvedValue(undefined)
     mockGetNextCronTime.mockReturnValue(reanchoredAt)
     // Default: previous run is idle (not occupied) so tasks fire normally.
     mockIsSessionActive.mockReturnValue(false)
@@ -245,13 +248,10 @@ describe('TaskScheduler per-task overlap guard', () => {
   })
 
   it('still holds when the skip bookkeeping write fails — the schedule must not advance', async () => {
-    // Regression (PR #363 review, P1): recordTaskSkip rejecting must NOT escape
-    // executeTaskInner as an execution failure. The outer recurring-task catch
-    // responds to failures with updateNextExecution(task.id, nextTime, '') —
-    // advancing the schedule, resetting skip state, and blanking lastSessionId,
-    // which disarms the guard on the next poll and allows the exact overlap the
-    // guard exists to prevent. The skip counter is best-effort observability;
-    // the hold itself must not depend on it.
+    // Regression: recordTaskSkip rejecting must NOT escape executeTaskInner as
+    // an execution failure. A hold is not a failure — the failure path advances
+    // the schedule, abandoning the pending fire a held task is entitled to. The
+    // skip counter is best-effort observability; the hold must not depend on it.
     mockGetDueTasks.mockResolvedValue([createRecurringTask()])
     mockIsSessionActive.mockReturnValue(true)
     mockIsSessionAwaitingInput.mockReturnValue(false)
@@ -261,10 +261,49 @@ describe('TaskScheduler per-task overlap guard', () => {
 
     // Still held: no second session.
     expect(mockCreateSession).not.toHaveBeenCalled()
-    // THE regression assertions: the failure path must not run.
+    // THE regression assertions: neither the fire record nor the failure
+    // reschedule may run — the task must stay due and untouched.
     expect(mockUpdateNextExecution).not.toHaveBeenCalled()
+    expect(mockRescheduleAfterFailure).not.toHaveBeenCalled()
     expect(mockMarkTaskFailed).not.toHaveBeenCalled()
     // The bookkeeping failure is still reported, just not escalated.
+    expect(mockCaptureException).toHaveBeenCalled()
+  })
+
+  it('a transient pre-guard failure reschedules without touching the guard state', async () => {
+    // A throw before the guard (the reconcile lookup does disk I/O every held
+    // poll) must not blank lastSessionId or wipe the hold streak — that would
+    // disarm the guard and allow the overlap it exists to prevent. The failure
+    // path uses rescheduleAfterFailure (advance-only), never the fire record.
+    mockGetDueTasks.mockResolvedValue([createRecurringTask()])
+    mockGetSessionForScheduledExecution.mockRejectedValue(new Error('transient FS error'))
+
+    await taskScheduler.triggerExecution()
+
+    expect(mockCreateSession).not.toHaveBeenCalled()
+    // Advance-only reschedule; the fire record (which rewrites lastSessionId
+    // and resets the streak) must not run.
+    expect(mockRescheduleAfterFailure).toHaveBeenCalledTimes(1)
+    expect(mockRescheduleAfterFailure).toHaveBeenCalledWith('task-1', reanchoredAt)
+    expect(mockUpdateNextExecution).not.toHaveBeenCalled()
+    expect(mockCaptureException).toHaveBeenCalled()
+  })
+
+  it('records the real session when the fire fails after session creation', async () => {
+    // createSession succeeded — the prompt is already executing in the container.
+    // A subsequent registration failure must still record that session as the
+    // fire's session so the overlap guard arms against the orphan, rather than
+    // going through the failure path which records no session at all.
+    mockGetDueTasks.mockResolvedValue([createRecurringTask()])
+    mockIsSessionActive.mockReturnValue(false)
+    mockRegisterSession.mockRejectedValue(new Error('metadata write failed'))
+
+    await taskScheduler.triggerExecution()
+
+    expect(mockCreateSession).toHaveBeenCalledTimes(1)
+    // The orphan is recorded as this fire's session (real id, not '').
+    expect(mockUpdateNextExecution).toHaveBeenCalledWith('task-1', reanchoredAt, 'new-session-1')
+    // The error still surfaces through the failure accounting.
     expect(mockCaptureException).toHaveBeenCalled()
   })
 

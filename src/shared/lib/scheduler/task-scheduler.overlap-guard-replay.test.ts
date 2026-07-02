@@ -4,7 +4,7 @@ import { promises as fs } from 'fs'
 import type { ContainerClient, StreamMessage } from '@shared/lib/container/types'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
 
-// COMPOSITION test for the per-task overlap guard (SUP-329).
+// COMPOSITION test for the per-task overlap guard.
 //
 // The scheduler unit test (task-scheduler.overlap-guard.test.ts) mocks the
 // occupied predicate, and the message-persister suite proves the predicate's
@@ -36,6 +36,7 @@ const mockMarkTaskExecuted = vi.fn()
 const mockMarkTaskFailed = vi.fn()
 const mockUpdateNextExecution = vi.fn()
 const mockRecordTaskSkip = vi.fn()
+const mockRescheduleAfterFailure = vi.fn()
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   // Scheduler side
@@ -44,6 +45,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   markTaskFailed: (...a: unknown[]) => mockMarkTaskFailed(...a),
   updateNextExecution: (...a: unknown[]) => mockUpdateNextExecution(...a),
   recordTaskSkip: (...a: unknown[]) => mockRecordTaskSkip(...a),
+  rescheduleAfterFailure: (...a: unknown[]) => mockRescheduleAfterFailure(...a),
   // Persister side
   createScheduledTask: vi.fn(),
   listPendingScheduledTasks: vi.fn(() => Promise.resolve([])),

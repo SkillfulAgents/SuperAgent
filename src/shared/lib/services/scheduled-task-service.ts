@@ -7,7 +7,7 @@
 
 import { db } from '@shared/lib/db'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
-import { eq, and, lte, inArray } from 'drizzle-orm'
+import { eq, and, lte, inArray, sql } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
 
@@ -249,6 +249,10 @@ export async function resumeScheduledTask(taskId: string): Promise<boolean> {
       status: 'pending',
       nextExecutionAt,
       pausedAt: null,
+      // Re-anchoring abandons any held fire — clear the hold streak that was
+      // counting it, or the task reads as wedged until its next scheduled fire.
+      consecutiveSkips: 0,
+      lastSkippedAt: null,
     })
     .where(eq(scheduledTasks.id, taskId))
 
@@ -304,17 +308,37 @@ export async function updateNextExecution(
  * and stamps lastSkippedAt WITHOUT advancing nextExecutionAt, so the task stays
  * due and re-fires on the first poll after the slot frees. Both fields are reset
  * on the next successful fire (see updateNextExecution).
+ *
+ * SQL-side increment (same pattern as webhook-trigger-service's fireCount):
+ * one atomic statement, no read-modify-write. A nonexistent task is a natural
+ * no-op (the UPDATE matches zero rows).
  */
 export async function recordTaskSkip(taskId: string): Promise<void> {
-  const task = await getScheduledTask(taskId)
-  if (!task) return
-
   await db
     .update(scheduledTasks)
     .set({
-      consecutiveSkips: task.consecutiveSkips + 1,
+      consecutiveSkips: sql`${scheduledTasks.consecutiveSkips} + 1`,
       lastSkippedAt: new Date(),
     })
+    .where(eq(scheduledTasks.id, taskId))
+}
+
+/**
+ * Advance a recurring task's schedule after a FAILED fire attempt — without
+ * recording an execution. Deliberately preserves lastSessionId (the overlap
+ * guard's pointer to the previous run: blanking it would disarm the guard and
+ * allow the overlap it exists to prevent), the consecutiveSkips/lastSkippedAt
+ * hold streak (a failure is not a fire; wiping the streak would erase the
+ * wedge-observability signal), executionCount, and lastExecutedAt (nothing
+ * executed). Contrast with updateNextExecution, which records a real fire.
+ */
+export async function rescheduleAfterFailure(
+  taskId: string,
+  nextTime: Date
+): Promise<void> {
+  await db
+    .update(scheduledTasks)
+    .set({ nextExecutionAt: nextTime })
     .where(eq(scheduledTasks.id, taskId))
 }
 
@@ -353,6 +377,10 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
     .set({
       status: 'pending',
       nextExecutionAt,
+      // Same re-anchor semantics as resume: the held fire (if any) is abandoned,
+      // so the streak counting it must go too.
+      consecutiveSkips: 0,
+      lastSkippedAt: null,
     })
     .where(eq(scheduledTasks.id, taskId))
 
@@ -466,6 +494,11 @@ export async function recordManualExecution(
       lastExecutedAt: new Date(),
       lastSessionId: sessionId,
       executionCount: task.executionCount + 1,
+      // A manual run rebinds lastSessionId (above), making it "the previous run"
+      // for the overlap guard — reset the streak to match. If the scheduled slot
+      // is genuinely still blocked, recordTaskSkip rebuilds it on the next poll.
+      consecutiveSkips: 0,
+      lastSkippedAt: null,
     })
     .where(eq(scheduledTasks.id, taskId))
 }

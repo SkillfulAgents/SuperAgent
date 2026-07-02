@@ -5,12 +5,16 @@ const mockGetDueTasks = vi.fn()
 const mockMarkTaskExecuted = vi.fn()
 const mockMarkTaskFailed = vi.fn()
 const mockUpdateNextExecution = vi.fn()
+const mockRecordTaskSkip = vi.fn()
+const mockRescheduleAfterFailure = vi.fn()
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: (...args: unknown[]) => mockGetDueTasks(...args),
   markTaskExecuted: (...args: unknown[]) => mockMarkTaskExecuted(...args),
   markTaskFailed: (...args: unknown[]) => mockMarkTaskFailed(...args),
   updateNextExecution: (...args: unknown[]) => mockUpdateNextExecution(...args),
+  recordTaskSkip: (...args: unknown[]) => mockRecordTaskSkip(...args),
+  rescheduleAfterFailure: (...args: unknown[]) => mockRescheduleAfterFailure(...args),
 }))
 
 const mockCreateSession = vi.fn()
@@ -158,6 +162,8 @@ describe('TaskScheduler duplicate execution guard (SUP-243)', () => {
     mockMarkTaskExecuted.mockResolvedValue(undefined)
     mockMarkTaskFailed.mockResolvedValue(undefined)
     mockUpdateNextExecution.mockResolvedValue(undefined)
+    mockRecordTaskSkip.mockResolvedValue(undefined)
+    mockRescheduleAfterFailure.mockResolvedValue(undefined)
     mockGetNextCronTime.mockReturnValue(nextExecutionAt)
   })
 
@@ -222,23 +228,27 @@ describe('TaskScheduler duplicate execution guard (SUP-243)', () => {
       .mockResolvedValueOnce(existingScheduledSession())
     mockUpdateNextExecution
       .mockRejectedValueOnce(new Error('lost durable advance'))
-      .mockRejectedValueOnce(new Error('same SQLite outage'))
       .mockResolvedValueOnce(undefined)
+    mockRescheduleAfterFailure.mockRejectedValue(new Error('same SQLite outage'))
     mockMarkTaskFailed.mockRejectedValue(new Error('same SQLite outage'))
 
     await taskScheduler.triggerExecution()
     await taskScheduler.triggerExecution()
 
     expect(mockCreateSession).toHaveBeenCalledTimes(1)
+    // Fire attempt: the durable advance carries the real session id.
     expect(mockUpdateNextExecution).toHaveBeenNthCalledWith(
       1,
       'task-1',
       nextExecutionAt,
       'container-session-1',
     )
-    expect(mockUpdateNextExecution).toHaveBeenNthCalledWith(2, 'task-1', nextExecutionAt, '')
+    // Failure path: advance-only reschedule — never a fire record with a
+    // blank session id (that would disarm the overlap guard).
+    expect(mockRescheduleAfterFailure).toHaveBeenCalledWith('task-1', nextExecutionAt)
+    // Retry poll reconciles with the existing session and records it.
     expect(mockUpdateNextExecution).toHaveBeenNthCalledWith(
-      3,
+      2,
       'task-1',
       nextExecutionAt,
       'container-session-1',

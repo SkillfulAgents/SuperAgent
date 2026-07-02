@@ -15,6 +15,7 @@ import {
   markTaskExecuted,
   markTaskFailed,
   recordTaskSkip,
+  rescheduleAfterFailure,
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
@@ -130,12 +131,15 @@ class TaskScheduler {
             tags: { component: 'task-scheduler', phase: 'execute-task' },
             extra: { taskId: task.id, agentSlug: task.agentSlug, isRecurring: task.isRecurring },
           })
-          // For recurring tasks, schedule next execution even on failure
-          // For one-time tasks, mark as failed
+          // For recurring tasks, schedule the next attempt without recording an
+          // execution: rescheduleAfterFailure advances nextExecutionAt only,
+          // preserving lastSessionId (blanking it would disarm the overlap
+          // guard) and the consecutiveSkips hold streak.
+          // For one-time tasks, mark as failed.
           if (task.isRecurring) {
             try {
               const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
-              await updateNextExecution(task.id, nextTime, '')
+              await rescheduleAfterFailure(task.id, nextTime)
               console.log(
                 `[TaskScheduler] Recurring task ${task.id} failed but scheduled next: ${nextTime.toISOString()}`
               )
@@ -206,13 +210,9 @@ class TaskScheduler {
         console.log(
           `[TaskScheduler] Task ${task.id} held: previous run ${lastSessionId} still active; leaving task due`
         )
-        // The skip counter is best-effort observability — a failed write must
-        // NOT escape as an execution failure. The recurring-task catch in
-        // executeOverdueTasks responds to failures with
-        // updateNextExecution(task.id, nextTime, ''), which advances the
-        // schedule, resets the skip streak, and blanks lastSessionId — disarming
-        // this guard on the next poll and allowing the exact overlap it exists
-        // to prevent. Report and hold regardless.
+        // Best-effort bookkeeping: a hold is not a failure, so a failed skip
+        // write must not escape into the failure path (which would advance the
+        // schedule and abandon the pending fire). Report and hold regardless.
         try {
           await recordTaskSkip(task.id)
         } catch (error) {
@@ -260,21 +260,40 @@ class TaskScheduler {
     const sessionId = containerSession.id
     const sessionName = task.name || 'Scheduled Task'
 
-    await registerSession(task.agentSlug, sessionId, sessionName, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-      scheduledExecutionAt: task.nextExecutionAt.toISOString(),
-    })
+    try {
+      await registerSession(task.agentSlug, sessionId, sessionName, {
+        isScheduledExecution: true,
+        scheduledTaskId: task.id,
+        scheduledTaskName: task.name || undefined,
+        scheduledExecutionAt: task.nextExecutionAt.toISOString(),
+      })
 
-    // Subscribe to the session for SSE updates
-    await messagePersister.subscribeToSession(
-      sessionId,
-      client,
-      sessionId,
-      task.agentSlug
-    )
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
+      // Subscribe to the session for SSE updates
+      await messagePersister.subscribeToSession(
+        sessionId,
+        client,
+        sessionId,
+        task.agentSlug
+      )
+      messagePersister.markSessionActive(sessionId, task.agentSlug)
+    } catch (error) {
+      // The session already exists and is executing the prompt (initialMessage),
+      // even though registration/subscription failed. Record it as this fire's
+      // session before propagating so the schedule advances pointing at the real
+      // session — arming the overlap guard against the orphan — instead of going
+      // through the failure path, which records no session at all.
+      await this.recordTaskExecution(task, sessionId).catch((recordError) => {
+        console.error(
+          `[TaskScheduler] Failed to record orphaned session ${sessionId} for task ${task.id}:`,
+          recordError
+        )
+        captureException(recordError, {
+          tags: { component: 'task-scheduler', phase: 'record-orphan' },
+          extra: { taskId: task.id, agentSlug: task.agentSlug, sessionId },
+        })
+      })
+      throw error
+    }
 
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`
