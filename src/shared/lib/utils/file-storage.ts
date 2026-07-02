@@ -486,6 +486,15 @@ export function getAgentSessionsDir(slug: string): string {
 }
 
 /**
+ * Get the agent's persistent memory directory — the path the agent reads on its
+ * next run (memory_recall), per agent-container/src/system-prompt.md.
+ * ~/.superagent/agents/{slug}/workspace/.claude/projects/-workspace/memory/
+ */
+export function getAgentMemoryDir(slug: string): string {
+  return path.join(getAgentSessionsDir(slug), 'memory')
+}
+
+/**
  * Get path to a specific session's JSONL file
  * ~/.superagent/agents/{slug}/workspace/.claude/projects/-workspace/{sessionId}.jsonl
  */

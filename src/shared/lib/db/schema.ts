@@ -446,6 +446,9 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   sessionId: text('session_id').notNull(),
   displayName: text('display_name'), // e.g. "John's DM", "#general"
   archivedAt: integer('archived_at', { mode: 'timestamp_ms' }), // Set when session is cleared; null = active
+  rotatedAt: integer('rotated_at', { mode: 'timestamp_ms' }), // Set ONLY on sessionTimeout rotation; gates consolidation + recap eligibility for archived rows
+  recap: text('recap'), // Continuity summary stashed by consolidation; seeds the next conversation
+  consolidatedAt: integer('consolidated_at', { mode: 'timestamp_ms' }), // Atomic commit marker; null = not yet consolidated
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({

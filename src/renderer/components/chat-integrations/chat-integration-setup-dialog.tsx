@@ -194,7 +194,7 @@ function SetupForm({
   const [formData, setFormData] = useState<Record<string, string>>({})
   const [integrationName, setIntegrationName] = useState('')
   const [showToolCalls, setShowToolCalls] = useState(false)
-  const [sessionTimeout, setSessionTimeout] = useState('')
+  const [sessionTimeout, setSessionTimeout] = useState('6') // default: a fresh conversation (+ memory consolidation) after 6h idle; blank = never
   const [onlyMentioned, setOnlyMentioned] = useState(false)
   const [answerInThread, setAnswerInThread] = useState(false)
   const [newSessionPerThread, setNewSessionPerThread] = useState(false)
