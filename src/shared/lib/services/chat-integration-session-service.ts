@@ -4,7 +4,7 @@
  * Each integration can have multiple chat sessions (e.g. multiple users DMing the same Slack bot).
  */
 
-import { eq, and, isNull, isNotNull, desc } from 'drizzle-orm'
+import { eq, and, or, isNull, isNotNull, desc } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegrationSession, NewChatIntegrationSession } from '@shared/lib/db/schema'
@@ -184,7 +184,11 @@ export function archiveChatIntegrationSession(id: string): boolean {
 export function rotateChatIntegrationSession(id: string): boolean {
   const now = new Date()
   const result = db.update(chatIntegrationSessions)
-    .set({ archivedAt: now, rotatedAt: now, updatedAt: now })
+    // Deliberately NOT bumping updatedAt: it must keep reflecting last activity so the
+    // sweep's oldest-idle-first consolidation ordering (sort by updatedAt) stays
+    // meaningful. archivedAt/rotatedAt carry the rotation time, and getLatestTimeoutRecap
+    // orders by archivedAt, so nothing depends on updatedAt moving here.
+    .set({ archivedAt: now, rotatedAt: now })
     .where(eq(chatIntegrationSessions.id, id))
     .run()
   return result.changes > 0
@@ -209,12 +213,20 @@ export function markConversationConsolidated(id: string, recap: string): boolean
   return result.changes > 0
 }
 
-/** All not-yet-consolidated sessions for an integration (the sweep's input set). */
+/**
+ * The sweep's candidate set: un-consolidated sessions that are either still active
+ * (for the rotation pass) or were archived by timeout rotation. Excludes non-timeout
+ * archives (/clear, self-heal, revoke), which never consolidate.
+ */
 export function listConsolidationCandidates(integrationId: string): ChatIntegrationSession[] {
   return db.select().from(chatIntegrationSessions)
     .where(and(
       eq(chatIntegrationSessions.integrationId, integrationId),
       isNull(chatIntegrationSessions.consolidatedAt),
+      // Exclude non-timeout archives (/clear, self-heal, revoke) — they never
+      // consolidate, so loading them every tick just to filter them out is waste.
+      // Keeps active rows (for the rotation pass) and archived timeout-rotations.
+      or(isNull(chatIntegrationSessions.archivedAt), isNotNull(chatIntegrationSessions.rotatedAt)),
     ))
     .all()
 }

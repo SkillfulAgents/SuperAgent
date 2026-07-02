@@ -20,11 +20,11 @@ vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
 }))
 vi.mock('@shared/lib/llm-provider', () => ({
   getActiveLlmProvider: () => ({
-    getDefaultModel: () => 'sonnet',
     getApiKeyStatus: () => ({ isConfigured: true }),
   }),
   resolveActiveProviderModel: () => 'claude-sonnet-4-6',
 }))
+vi.mock('@shared/lib/services/chat-integration-access-service', () => ({ isChatAllowed: () => true }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
   getConfiguredLlmClient: () => ({ messages: { create: messagesCreate } }),

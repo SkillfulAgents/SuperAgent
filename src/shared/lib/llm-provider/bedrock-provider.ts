@@ -82,7 +82,6 @@ export class BedrockLlmProvider extends BaseLlmProvider {
       case 'agent': return 'sonnet'
       case 'browser': return 'sonnet'
       case 'dashboard': return 'opus'
-      case 'consolidator': return 'sonnet'
     }
   }
 

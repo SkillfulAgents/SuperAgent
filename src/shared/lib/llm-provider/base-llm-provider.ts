@@ -4,7 +4,7 @@ import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 
 export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock' | 'platform'
 
-export type ModelPurpose = 'agent' | 'summarizer' | 'browser' | 'dashboard' | 'consolidator'
+export type ModelPurpose = 'agent' | 'summarizer' | 'browser' | 'dashboard'
 
 export abstract class BaseLlmProvider {
   abstract readonly id: LlmProviderId

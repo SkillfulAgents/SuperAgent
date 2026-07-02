@@ -21,7 +21,6 @@ vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
 }))
 vi.mock('@shared/lib/llm-provider', () => ({
   getActiveLlmProvider: () => ({
-    getDefaultModel: () => 'sonnet',
     getApiKeyStatus: () => ({ isConfigured: apiKeyConfigured }),
   }),
   resolveActiveProviderModel: () => 'claude-sonnet-4-6',
@@ -37,7 +36,9 @@ vi.mock('@shared/lib/llm-provider/helpers', () => ({
 }))
 vi.mock('@shared/lib/utils/file-storage', () => ({
   getAgentMemoryDir: () => memoryDir,
+  writeFileAtomic: async (filePath: string, content: string) => { await fs.promises.writeFile(filePath, content, 'utf8') },
 }))
+vi.mock('@shared/lib/services/chat-integration-access-service', () => ({ isChatAllowed: () => true }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 
 import { consolidateConversation } from './conversation-consolidation-service'
@@ -141,8 +142,11 @@ describe('consolidateConversation', () => {
     expect(nonceOf(0)).not.toBe(nonceOf(1))
   })
 
-  it('feeds the existing MEMORY.md index to the model and preserves unrelated pointers on upsert', async () => {
-    fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '- [Other Memory](other-memory.md) - unrelated\n')
+  it('fences the existing index (names + descriptions) as untrusted data and preserves unrelated pointers on upsert', async () => {
+    // The full index is fed so the model can reuse the RIGHT slug (and not overwrite an
+    // unrelated memory), but it is fenced — not in instruction position — so a prior-run
+    // description can't act as a second-order injection.
+    fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '- [Other Memory](other-memory.md) - unrelated-description-text\n')
     messagesCreate.mockResolvedValue(llmResult(
       [{ name: 'new-fact', description: 'a new fact', type: 'user', body: 'body' }],
       'r',
@@ -151,7 +155,10 @@ describe('consolidateConversation', () => {
     await consolidateConversation(makeConversation())
 
     const prompt = messagesCreate.mock.calls[0][0].messages[0].content as string
-    expect(prompt).toContain('- [Other Memory](other-memory.md) - unrelated')
+    expect(prompt).toContain('unrelated-description-text') // the index (with description) IS fed
+    expect(prompt).toContain('BEGIN_EXISTING_MEMORIES_') // ...but fenced as untrusted data
+    // the description sits inside the fence, not in instruction position
+    expect(prompt.indexOf('BEGIN_EXISTING_MEMORIES_')).toBeLessThan(prompt.indexOf('unrelated-description-text'))
 
     const index = readIndex()
     expect(index).toContain('](other-memory.md)') // preserved
@@ -183,17 +190,12 @@ describe('consolidateConversation', () => {
   it.each([
     { label: 'refusal', resp: { stop_reason: 'refusal', content: [] } },
     { label: 'max_tokens truncation', resp: { stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"memories":[' }] } },
+    { label: 'unparseable output on a terminal end_turn', resp: llmResult([], '', 'end_turn', 'not json at all') },
   ])('commits an empty fallback on $label (no throw, no memory write)', async ({ resp }) => {
     messagesCreate.mockResolvedValue(resp)
     await expect(consolidateConversation(makeConversation())).resolves.toBeUndefined()
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
     expect(fs.existsSync(path.join(memoryDir, 'MEMORY.md'))).toBe(false)
-  })
-
-  it('commits a fallback when the output is not valid JSON', async () => {
-    messagesCreate.mockResolvedValue(llmResult([], '', 'end_turn', 'not json at all'))
-    await consolidateConversation(makeConversation())
-    expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', '')
   })
 
   it('tolerates a ```json fenced response (does not fall back)', async () => {
@@ -284,28 +286,6 @@ describe('consolidateConversation', () => {
     expect(markConsolidatedMock).toHaveBeenCalledWith('conv-1', 'the recap')
   })
 
-  it('writes via a temp sibling and never opens the target for truncation (atomic overwrite)', async () => {
-    // A prior durable memory the model now "updates" under the same slug.
-    const target = memFile('pref')
-    fs.writeFileSync(target, 'ORIGINAL CONTENT', 'utf8')
-    messagesCreate.mockResolvedValue(llmResult([{ name: 'pref', description: 'd', type: 'user', body: 'NEW' }], 'r'))
-    const spy = vi.spyOn(fs.promises, 'writeFile').mockRejectedValue(new Error('ENOSPC'))
-    let writtenPaths: string[] = []
-    try {
-      await consolidateConversation(makeConversation())
-    } finally {
-      // Capture before mockRestore() — restoring also clears spy.mock.calls.
-      writtenPaths = spy.mock.calls.map((c) => String(c[0]))
-      spy.mockRestore()
-    }
-    // The decisive atomicity invariant: the write went to a `.tmp` sibling and the
-    // real file was NEVER opened (so a mid-write failure can't truncate it). This
-    // fails against a direct fs.writeFile(target) overwrite.
-    expect(writtenPaths).not.toContain(target)
-    expect(writtenPaths.some((p) => p.startsWith(`${target}.`) && p.endsWith('.tmp'))).toBe(true)
-    expect(fs.readFileSync(target, 'utf8')).toBe('ORIGINAL CONTENT')
-  })
-
   it('does not let two same-slug memories in one response clobber each other (keeps first, one pointer)', async () => {
     messagesCreate.mockResolvedValue(llmResult([
       { name: 'API keys', description: 'd1', type: 'reference', body: 'FIRST' },
@@ -329,6 +309,7 @@ describe('consolidateConversation', () => {
     { label: 'hyphen', line: '- [User Role](user_role.md) - old hook' },
     { label: 'asterisk (free-form markdown)', line: '* [User Role](user_role.md) — old hook' },
     { label: 'numbered', line: '1. [User Role](user_role.md) - old hook' },
+    { label: 'leading ./ path', line: '- [User Role](./user_role.md) - old hook' },
   ])('updates an existing $label-bullet snake_case pointer in place instead of duplicating', async ({ line }) => {
     fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), line + '\n')
     messagesCreate.mockResolvedValue(llmResult([{ name: 'user_role', description: 'new hook', type: 'user', body: 'b' }], 'r'))

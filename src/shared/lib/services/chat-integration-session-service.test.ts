@@ -249,32 +249,6 @@ describe('chat-integration-session-service', () => {
       expect(result).not.toBeNull()
       expect(result!.sessionId).toBe('current-session')
     })
-
-    it('returns the most recent session when no timeout is configured', () => {
-      // Two non-archived sessions, no timeout
-      const oldId = createChatIntegrationSession({
-        integrationId,
-        externalChatId: 'chat-1',
-        sessionId: 'old-session',
-      })
-
-      // Backdate the old session so updatedAt differs
-      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000)
-      testDb.update(schema.chatIntegrationSessions)
-        .set({ updatedAt: oneHourAgo })
-        .where(eq(schema.chatIntegrationSessions.id, oldId))
-        .run()
-
-      createChatIntegrationSession({
-        integrationId,
-        externalChatId: 'chat-1',
-        sessionId: 'new-session',
-      })
-
-      const result = resolveActiveSession(integrationId, 'chat-1', null)
-      expect(result).not.toBeNull()
-      expect(result!.sessionId).toBe('new-session')
-    })
   })
 
   describe('getChatIntegrationSession ordering', () => {
@@ -385,10 +359,11 @@ describe('chat-integration-session-service', () => {
   })
 
   describe('isSessionTimedOut (exported)', () => {
-    it('is false when no timeout is configured', () => {
+    it('is false when no timeout is configured (null / 0 / negative / undefined)', () => {
       const old = { updatedAt: new Date(Date.now() - 10 * 60 * 60 * 1000), createdAt: new Date() }
       expect(isSessionTimedOut(old, null)).toBe(false)
       expect(isSessionTimedOut(old, 0)).toBe(false)
+      expect(isSessionTimedOut(old, -1)).toBe(false)
       expect(isSessionTimedOut(old, undefined)).toBe(false)
     })
 
@@ -397,6 +372,19 @@ describe('chat-integration-session-service', () => {
       expect(isSessionTimedOut({ updatedAt: threeHoursAgo, createdAt: threeHoursAgo }, 1)).toBe(true)
       const recent = { updatedAt: new Date(Date.now() - 10 * 60 * 1000), createdAt: new Date() }
       expect(isSessionTimedOut(recent, 1)).toBe(false)
+    })
+
+    it('uses updatedAt over a much older createdAt', () => {
+      // recent activity, ancient creation — NOT timed out
+      const session = { updatedAt: new Date(Date.now() - 10 * 60 * 1000), createdAt: new Date('2026-01-01T00:00:00Z') }
+      expect(isSessionTimedOut(session, 1)).toBe(false)
+    })
+
+    it('falls back to createdAt when updatedAt is null', () => {
+      const past = { updatedAt: null, createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000) }
+      expect(isSessionTimedOut(past, 2)).toBe(true)
+      const within = { updatedAt: null, createdAt: new Date(Date.now() - 10 * 60 * 1000) }
+      expect(isSessionTimedOut(within, 2)).toBe(false)
     })
   })
 

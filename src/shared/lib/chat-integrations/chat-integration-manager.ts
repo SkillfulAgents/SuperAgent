@@ -34,6 +34,7 @@ import {
   resolveActiveSession,
   getLastDisplayName,
   isSessionTimedOut,
+  rotateChatIntegrationSession,
   listConsolidationCandidates,
   getLatestTimeoutRecap,
 } from '@shared/lib/services/chat-integration-session-service'
@@ -104,7 +105,7 @@ const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow t
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
 // Cap conversations consolidated per sweep tick so a large backlog drains over
-// several ticks instead of stalling one tick (each is one Sonnet call).
+// several ticks instead of stalling one tick (each is one summarizer LLM call).
 const CONSOLIDATION_PER_TICK_LIMIT = 10
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024 // 50 MB
@@ -584,13 +585,27 @@ class ChatIntegrationManager {
         try {
           const integration = getChatIntegration(id)
           if (!integration) continue
-          // Do NOT skip on sessionTimeout <= 0: isSessionTimedOut(., <=0) already
-          // excludes active rows, but already-rotated archived rows must still
-          // drain even if the timeout was later disabled.
-          const targets = selectConsolidationTargets(
+          // 1. Rotate conversations that went idle past the timeout while still active
+          //    (mirrors the lazy resolveActiveSession path) so they become
+          //    archived+rotated candidates. Rotating BEFORE consolidating keeps
+          //    consolidatedAt off still-active rows — a consolidated-but-active row
+          //    could otherwise be revived if the timeout were later raised.
+          for (const row of selectRotationTargets(
             listConsolidationCandidates(id),
             integration.sessionTimeout,
             (sid) => messagePersister.isSessionActive(sid),
+          )) {
+            rotateChatIntegrationSession(row.id)
+            // Mirror the lazy rotation path's connector cleanup (resolveActiveSession's
+            // onArchive) so a sweep-rotated conversation doesn't leak its managed
+            // session + lastSessionTouch entry on the long-running server.
+            this.teardownManagedSession(id, row.externalChatId)
+            this.lastSessionTouch.delete(row.sessionId)
+          }
+          // 2. Consolidate archived timeout-rotations (oldest-first, capped, allowed
+          //    only). Re-read to pick up the rotations just made above.
+          const targets = selectConsolidationTargets(
+            listConsolidationCandidates(id),
             (chatId) => isChatAllowed(id, chatId),
             CONSOLIDATION_PER_TICK_LIMIT,
           )
@@ -1988,44 +2003,37 @@ export function isDisplayNameFallback(name: string | null | undefined): boolean 
 
 export { formatSessionTimestamp } from './utils'
 
-/** Decide whether a chat session should be rotated based on the configured timeout. */
-export function shouldRotateSession(
-  session: { updatedAt: Date | null; createdAt: Date },
-  timeoutHours: number | null | undefined,
-  now: Date = new Date(),
-): boolean {
-  if (!timeoutHours || timeoutHours <= 0) return false
-  const lastActivity = session.updatedAt?.getTime?.() ?? session.createdAt.getTime()
-  const timeoutMs = timeoutHours * 60 * 60 * 1000
-  return now.getTime() - lastActivity > timeoutMs
-}
-
 /**
- * Pick the conversations a sweep tick should consolidate: not mid-turn, and
- * either an active conversation past its timeout OR an already-archived row that
- * was archived BY TIMEOUT ROTATION (rotatedAt set). Oldest-first, capped.
- *
- * The timeout clause MUST be gated on `archivedAt == null`: `isSessionTimedOut`
- * only looks at `updatedAt`, so without the gate an old `/clear`, self-heal or
- * revoke row (rotatedAt null) would be mistaken for a timed-out conversation and
- * consolidated — exactly what the rotatedAt marker exists to prevent.
- *
- * `isAllowed` excludes chats that are no longer permitted (banned / revoked) so a
- * timed-out-or-rotated conversation of a now-banned chat is never mined into the
- * agent's shared memory — same access gate every other chat-processing path uses.
+ * Rows to ROTATE this tick: active conversations (not archived, not mid-turn) that
+ * have gone idle past the timeout. The sweep archives+rotates these so they become
+ * consolidation candidates — the same transition the lazy `resolveActiveSession`
+ * path makes on the user's next message.
  */
-export function selectConsolidationTargets(
+export function selectRotationTargets(
   rows: ChatIntegrationSession[],
   sessionTimeout: number | null | undefined,
   isActive: (sessionId: string) => boolean,
+): ChatIntegrationSession[] {
+  return rows.filter(
+    (r) => r.archivedAt == null && !isActive(r.sessionId) && isSessionTimedOut(r, sessionTimeout),
+  )
+}
+
+/**
+ * Rows to CONSOLIDATE this tick: archived timeout-rotations (rotatedAt set) whose
+ * chat is still allowed, oldest-first, capped. Consolidation only ever runs on
+ * archived rows now (actives are rotated first, in the sweep), so a consolidated row
+ * can never be revived. `/clear`, self-heal and revoke archives (rotatedAt null) are
+ * excluded, as the rotatedAt marker intends; `isAllowed` keeps a now-banned chat
+ * from being mined into the agent's shared memory.
+ */
+export function selectConsolidationTargets(
+  rows: ChatIntegrationSession[],
   isAllowed: (externalChatId: string) => boolean,
   limit: number,
 ): ChatIntegrationSession[] {
   return rows
-    .filter((r) => !isActive(r.sessionId) && isAllowed(r.externalChatId) && (
-      (r.archivedAt == null && isSessionTimedOut(r, sessionTimeout)) || // active AND timed out
-      (r.archivedAt != null && r.rotatedAt != null)                     // archived BY TIMEOUT only
-    ))
+    .filter((r) => r.archivedAt != null && r.rotatedAt != null && isAllowed(r.externalChatId))
     .sort((a, b) => (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0))
     .slice(0, limit)
 }

@@ -364,9 +364,6 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('mystery', 'anthropic', 'agent')).toBe('claude-opus-4-8')
     // Summarizer default 'haiku' → latest haiku.
     expect(resolveModelForProvider('mystery', 'anthropic', 'summarizer')).toBe('claude-haiku-4-5')
-    // Consolidator default 'sonnet' across providers → latest sonnet (anthropic + bedrock region id).
-    expect(resolveModelForProvider('mystery', 'anthropic', 'consolidator')).toBe('claude-sonnet-5')
-    expect(resolveModelForProvider('mystery', 'bedrock', 'consolidator')).toBe('us.anthropic.claude-sonnet-5')
   })
 
   it('resolves OpenRouter non-Claude models (gpt alias → latest id, glm slug passthrough)', () => {
