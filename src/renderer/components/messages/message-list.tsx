@@ -12,6 +12,7 @@ import {
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { MessageItem } from './message-item'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
+import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
 import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
@@ -132,6 +133,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     typingUser,
     peerUserMessages,
     workflows,
+    isThinking,
+    thinkingBlocks,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
 
@@ -522,7 +525,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessages, streamingMessage, streamingToolUses, isCompacting, pendingRequestCount, activeSubagents])
+  }, [messages, pendingUserMessages, streamingMessage, streamingToolUses, thinkingBlocks, isCompacting, pendingRequestCount, activeSubagents])
 
   // Peer messages still worth showing optimistically: not our own, and the
   // persisted copy (by uuid, or — for queued/steering messages whose uuid the
@@ -743,6 +746,20 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             </div>
           </div>
         )}
+
+        {/* Thinking episodes for the current turn — tool-call-style cards, expanded
+            and scrollable while streaming, collapsed to a "Thought for Ns" header
+            once done. Ephemeral: cleared when the next turn starts. */}
+        {thinkingBlocks.map((block, i) => (
+          <MessageErrorBoundary key={block.id} kind="thinking block" raw={block} itemId={`thinking-${block.id}`}>
+            <div className="max-w-[80%]">
+              <ThinkingBlockItem
+                block={block}
+                active={isActive && isThinking && i === thinkingBlocks.length - 1}
+              />
+            </div>
+          </MessageErrorBoundary>
+        ))}
 
         {/* Streaming text message - keep visible until persisted data arrives */}
         {streamingMessage && !isStreamingMessagePersisted && (
