@@ -1,3 +1,10 @@
+# TODO(SUP): re-enable in Agent E2E Test (happy-path).
+# Disabled because the `ensureOAuth` setup hook consistently fails with
+# `Composio API error: 401 Invalid API key: ak_**71Tq` in CI, failing every
+# PR's Agent E2E Test run regardless of the change under test. Root cause
+# looks like the COMPOSIO_API_KEY GitHub secret being invalid/expired.
+# Fix: rotate/validate the COMPOSIO_API_KEY repo secret, then rename this
+# file back to `github-whoami.yaml`.
 id: github-whoami
 name: "Agent requests GitHub account, perform who-am-i"
 mode: happy-path
