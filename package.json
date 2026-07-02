@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.4.4",
+  "version": "0.4.5-rc.1",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -253,18 +253,54 @@
       ],
       "icon": "build/icon.png",
       "fileAssociations": [
-        { "ext": "png", "name": "PNG Image" },
-        { "ext": "jpg", "name": "JPEG Image" },
-        { "ext": "jpeg", "name": "JPEG Image" },
-        { "ext": "gif", "name": "GIF Image" },
-        { "ext": "webp", "name": "WebP Image" },
-        { "ext": "pdf", "name": "PDF Document" },
-        { "ext": "txt", "name": "Text Document" },
-        { "ext": "md", "name": "Markdown Document" },
-        { "ext": "csv", "name": "CSV File" },
-        { "ext": "json", "name": "JSON File" },
-        { "ext": "docx", "name": "Word Document" },
-        { "ext": "xlsx", "name": "Excel Spreadsheet" }
+        {
+          "ext": "png",
+          "name": "PNG Image"
+        },
+        {
+          "ext": "jpg",
+          "name": "JPEG Image"
+        },
+        {
+          "ext": "jpeg",
+          "name": "JPEG Image"
+        },
+        {
+          "ext": "gif",
+          "name": "GIF Image"
+        },
+        {
+          "ext": "webp",
+          "name": "WebP Image"
+        },
+        {
+          "ext": "pdf",
+          "name": "PDF Document"
+        },
+        {
+          "ext": "txt",
+          "name": "Text Document"
+        },
+        {
+          "ext": "md",
+          "name": "Markdown Document"
+        },
+        {
+          "ext": "csv",
+          "name": "CSV File"
+        },
+        {
+          "ext": "json",
+          "name": "JSON File"
+        },
+        {
+          "ext": "docx",
+          "name": "Word Document"
+        },
+        {
+          "ext": "xlsx",
+          "name": "Excel Spreadsheet"
+        }
       ],
       "signExts": [
         ".exe",
