@@ -161,11 +161,12 @@ export interface ApiMessage {
    */
   queued?: boolean
   /**
-   * Summarized extended-thinking text persisted in the session transcript,
-   * one entry per thinking block, in order. Absent when the turn had no
-   * thinking or the transcript predates thinking-text persistence.
+   * Summarized extended-thinking blocks persisted in the session transcript,
+   * in order. Absent when the turn had no thinking or the transcript predates
+   * thinking-text persistence. `durationMs` is derived from transcript entry
+   * timestamps and absent when underivable.
    */
-  thinking?: string[]
+  thinking?: Array<{ text: string; durationMs?: number }>
 }
 
 /**

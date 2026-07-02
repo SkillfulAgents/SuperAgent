@@ -233,10 +233,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const text = textAfterNotifs
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
-  // Persisted extended-thinking text. Defensive shape check — this field
+  // Persisted extended-thinking blocks. Defensive shape check — this field
   // crosses the wire, and empty strings are real data in older transcripts.
   const thinking = isAssistant && Array.isArray(message.thinking)
-    ? message.thinking.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    ? message.thinking.filter(
+        (t): t is { text: string; durationMs?: number } =>
+          typeof t?.text === 'string' && t.text.trim().length > 0
+      )
     : []
 
   const isSlashCommand = isUser && hasText && text.startsWith('/')
@@ -292,7 +295,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           <div className="w-full space-y-2">
             {thinking.map((t, i) => (
               <MessageErrorBoundary key={i} kind="thinking block" raw={t} itemId={`${message.id}-thinking-${i}`}>
-                <ThinkingBlockItem text={t} active={false} />
+                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} />
               </MessageErrorBoundary>
             ))}
           </div>

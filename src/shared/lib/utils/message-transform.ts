@@ -36,11 +36,12 @@ export interface TransformedMessage {
   /** User message delivered mid-turn (queued/steering input) — does not end the turn it appears in */
   queued?: boolean
   /**
-   * Summarized extended-thinking text, one entry per thinking block, in order.
-   * Only present when the transcript carries non-empty text (CLI 2.1.181+ —
-   * older transcripts persist the block with an empty string, which is skipped).
+   * Summarized extended-thinking blocks, in order. Only present when the
+   * transcript carries non-empty text (CLI 2.1.181+ — older transcripts persist
+   * the block with an empty string, which is skipped). `durationMs` is derived
+   * from entry timestamps (see thinkingByEntry) and absent when underivable.
    */
-  thinking?: string[]
+  thinking?: Array<{ text: string; durationMs?: number }>
 }
 
 export interface TransformedCompactBoundary {
@@ -201,8 +202,18 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   const mergedEntries: JsonlMessageEntry[] = []
   const assistantMessageIds = new Map<string, number>() // message.id -> index in mergedEntries
 
+  // Extended-thinking blocks per merged entry. Extracted here — before the merge
+  // collapses per-block entries — because the duration is derived from entry
+  // timestamps: the CLI writes an assistant entry when its content block
+  // completes, so (thinking entry ts − previous entry ts) ≈ how long the agent
+  // thought. Old transcripts (pre CLI 2.1.181) persist the block with an empty
+  // string (signature only) — those are skipped, they carry nothing to show.
+  const thinkingByEntry = new Map<JsonlMessageEntry, Array<{ text: string; durationMs?: number }>>()
+  let prevEntryTs: number | null = null
+
   for (const entry of messageEntries) {
     const messageId = entry.message.id
+    let target = entry
     if (entry.type === 'assistant' && messageId) {
       const existingIndex = assistantMessageIds.get(messageId)
       if (existingIndex !== undefined) {
@@ -216,6 +227,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
           ;(existing.message.content as ContentBlock[]).push(...(newContent as ContentBlock[]))
         }
         // Keep the original entry's uuid and timestamp for correct ordering
+        target = existing
       } else {
         // First time seeing this message.id - clone to avoid mutating original
         const clonedEntry = {
@@ -229,11 +241,31 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         }
         assistantMessageIds.set(messageId, mergedEntries.length)
         mergedEntries.push(clonedEntry)
+        target = clonedEntry
       }
     } else {
       // User messages or messages without id - keep as-is
       mergedEntries.push(entry)
     }
+
+    const entryTs = new Date(entry.timestamp).getTime()
+    if (entry.type === 'assistant' && Array.isArray(entry.message.content)) {
+      const texts = (entry.message.content as ContentBlock[])
+        .filter((b) => b.type === 'thinking' && b.thinking?.trim())
+        .map((b) => (b as { thinking: string }).thinking)
+      if (texts.length > 0) {
+        const durationMs =
+          prevEntryTs !== null && Number.isFinite(entryTs) && entryTs > prevEntryTs
+            ? entryTs - prevEntryTs
+            : undefined
+        const list = thinkingByEntry.get(target) ?? []
+        // The duration covers the whole entry — if one entry carries several
+        // thinking blocks (rare), attach it to the first
+        texts.forEach((text, i) => list.push(i === 0 && durationMs !== undefined ? { text, durationMs } : { text }))
+        thinkingByEntry.set(target, list)
+      }
+    }
+    if (Number.isFinite(entryTs)) prevEntryTs = entryTs
   }
 
   // First pass: build a map of tool_use_id -> result
@@ -348,7 +380,8 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     let text = ''
     let messageType: 'user' | 'assistant' = entry.type
     const toolCalls: TransformedMessage['toolCalls'] = []
-    const thinking: string[] = []
+    // Extracted during the merge pass (needs per-entry timestamps for durations)
+    const thinking = thinkingByEntry.get(entry)
 
     if (typeof content === 'string') {
       text = content
@@ -356,12 +389,6 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       for (const block of content as ContentBlock[]) {
         if (block.type === 'text') {
           text += block.text
-        } else if (block.type === 'thinking') {
-          // Old transcripts (pre CLI 2.1.181) persist the block with an empty
-          // string (signature only) — skip those, they carry nothing to show.
-          if (block.thinking?.trim()) {
-            thinking.push(block.thinking)
-          }
         } else if (block.type === 'tool_use') {
           const toolResult = toolResults.get(block.id)
           // Use toolUseResult.stdout if available, otherwise use content
@@ -413,7 +440,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       createdAt: new Date(entry.timestamp),
       ...(entry.error && { apiError: entry.error }),
       ...(entry.isQueuedCommand && { queued: true }),
-      ...(thinking.length > 0 && { thinking }),
+      ...(thinking && thinking.length > 0 && { thinking }),
     })
   }
 

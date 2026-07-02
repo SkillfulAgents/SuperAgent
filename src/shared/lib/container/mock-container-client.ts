@@ -152,6 +152,13 @@ export class ThinkingResponseScenario implements MockScenario {
     const chunks = this.thinkingText.split(' ')
 
     setTimeout(() => {
+      // Written up front (like the real CLI) so the read-path can derive the
+      // thinking duration from the user→assistant entry timestamp gap.
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_start' } },
@@ -196,11 +203,6 @@ export class ThinkingResponseScenario implements MockScenario {
     }, thinkingDone)
 
     setTimeout(() => {
-      client.writeJsonlEntry(sessionId, {
-        type: 'user',
-        message: { content: userMessage },
-        timestamp: new Date().toISOString(),
-      })
       // The real CLI persists the thinking block in the transcript (CLI 2.1.181+),
       // which the messages read-path extracts into ApiMessage.thinking.
       client.writeJsonlEntry(sessionId, {

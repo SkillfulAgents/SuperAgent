@@ -52,7 +52,7 @@ test.describe('Thinking Display', () => {
     await sessionPage.waitForInputEnabled(30000)
     await expect(page.getByText('Done thinking — here is the answer.')).toBeVisible({ timeout: 10000 })
     await expect(page.getByTestId('thinking-block')).toHaveCount(1, { timeout: 15000 })
-    await expect(toggle).toContainText('Thought', { timeout: 10000 })
+    await expect(toggle).toContainText('Thought for', { timeout: 10000 })
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await expect(body).not.toBeVisible()
 
@@ -111,7 +111,8 @@ test.describe('Thinking Display', () => {
     const toggle = card.getByTestId('thinking-block-toggle')
     const body = card.getByTestId('thinking-block-body')
     await expect(card).toBeVisible({ timeout: 15000 })
-    await expect(toggle).toContainText('Thought')
+    // Duration comes from transcript timestamps, so it survives the reopen
+    await expect(toggle).toContainText('Thought for')
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
 
     await toggle.click()

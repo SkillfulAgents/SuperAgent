@@ -392,7 +392,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       const m = messages[i]
       if (inCurrentTurn && isTurnStartingUserMessage(m)) inCurrentTurn = false
       if (m.type === 'assistant' && Array.isArray((m as ApiMessage).thinking)) {
-        persisted.push(...(m as ApiMessage).thinking!)
+        for (const t of (m as ApiMessage).thinking!) {
+          if (typeof t?.text === 'string') persisted.push(t.text)
+        }
         if (inCurrentTurn) currentTurnHasPersistedThinking = true
       }
     }

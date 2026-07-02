@@ -1,7 +1,7 @@
 import { cn } from '@shared/lib/utils/cn'
 import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
+import { useElapsedTimer, formatElapsed } from '@renderer/hooks/use-elapsed-timer'
 import { StatusIndicator } from './tool-call-item'
 
 interface ThinkingBlockItemProps {
@@ -11,11 +11,13 @@ interface ThinkingBlockItemProps {
   /**
    * Live-stream timing (ms epoch). Present for stream-state blocks so the
    * header can show a live timer / "Thought for Ns"; absent for blocks read
-   * back from the persisted transcript, which carries no timing.
+   * back from the persisted transcript.
    */
   startedAt?: number
   /** null while the live block is still streaming */
   endedAt?: number | null
+  /** Transcript-derived duration for persisted blocks (no live timing). */
+  durationMs?: number
 }
 
 // How close (px) to the bottom counts as "pinned" — matches the tolerance the
@@ -30,7 +32,7 @@ const PIN_THRESHOLD_PX = 32
  * "Thought for Ns" header (unless the user toggled it themselves, which wins).
  * Persisted transcript blocks render the same card, collapsed, headed "Thought".
  */
-export function ThinkingBlockItem({ text, active, startedAt, endedAt }: ThinkingBlockItemProps) {
+export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs }: ThinkingBlockItemProps) {
   // null = follow the default (expanded while active); a user click overrides it
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
   const expanded = userExpanded ?? active
@@ -46,9 +48,9 @@ export function ThinkingBlockItem({ text, active, startedAt, endedAt }: Thinking
     return active ? null : new Date(startedAt)
   }, [endedAt, active, startedAt])
   const elapsed = useElapsedTimer(startDate, endDate)
-
-  // Rough token estimate for the streamed reasoning (~4 chars/token). UI-only.
-  const tokens = text ? Math.ceil(text.length / 4) : 0
+  // Live timing wins (exact); persisted blocks fall back to the
+  // transcript-derived duration; header degrades to plain "Thought" without either.
+  const doneDuration = elapsed ?? (durationMs !== undefined ? formatElapsed(durationMs) : null)
 
   // Stick-to-bottom: follow the streaming text unless the user scrolls up to read.
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -84,13 +86,8 @@ export function ThinkingBlockItem({ text, active, startedAt, endedAt }: Thinking
           'font-sans font-normal shrink-0 text-sm leading-none transition-colors',
           active ? 'text-foreground' : 'text-foreground/65 group-hover:text-foreground'
         )}>
-          {active ? 'Thinking' : elapsed ? `Thought for ${elapsed}` : 'Thought'}
+          {active ? 'Thinking' : doneDuration ? `Thought for ${doneDuration}` : 'Thought'}
         </span>
-        {tokens > 0 && (
-          <span className="shrink-0 text-xs leading-none text-muted-foreground/70 group-hover:text-muted-foreground tabular-nums transition-colors">
-            ~{tokens.toLocaleString()} tokens
-          </span>
-        )}
         {active && elapsed && (
           <span className="shrink-0 text-2xs text-muted-foreground/70 tabular-nums ml-auto">
             {elapsed}

@@ -684,18 +684,21 @@ describe('transformMessages', () => {
 
     it('extracts thinking blocks into the thinking field', () => {
       const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-0', 'Question?', '2026-01-24T10:00:00.000Z'),
         createAssistantMessage('uuid-1', 'msg-1', [
           { type: 'thinking', thinking: 'Let me think about this...' } as ContentBlock,
           { type: 'text', text: 'Here is my answer.' },
-        ]),
+        ], '2026-01-24T10:00:05.000Z'),
       ]
 
       const result = transformMessages(entries)
 
-      // Thinking text is extracted alongside the message text
-      expect(asMessage(result[0]).content.text).toBe('Here is my answer.')
-      expect(asMessage(result[0]).thinking).toEqual(['Let me think about this...'])
-      expect(asMessage(result[0]).toolCalls).toHaveLength(0)
+      // Thinking is extracted alongside the message text, with a duration
+      // derived from the gap to the previous entry's timestamp
+      const message = asMessage(result[1])
+      expect(message.content.text).toBe('Here is my answer.')
+      expect(message.thinking).toEqual([{ text: 'Let me think about this...', durationMs: 5000 }])
+      expect(message.toolCalls).toHaveLength(0)
     })
 
     it('extracts multiple thinking blocks in order, skipping empty ones', () => {
@@ -713,8 +716,34 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      expect(asMessage(result[0]).thinking).toEqual(['First episode.', 'Second episode.'])
+      // No preceding entry — durations are underivable and omitted
+      expect(asMessage(result[0]).thinking).toEqual([{ text: 'First episode.' }, { text: 'Second episode.' }])
       expect(asMessage(result[0]).toolCalls).toHaveLength(1)
+    })
+
+    it('derives per-episode durations across merged entries', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-0', 'Question?', '2026-01-24T10:00:00.000Z'),
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'thinking', thinking: 'First episode.' } as ContentBlock,
+        ], '2026-01-24T10:00:03.000Z'),
+        createAssistantMessage('uuid-2', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+        ], '2026-01-24T10:00:04.000Z'),
+        createUserMessage('uuid-3', [
+          { type: 'tool_result', tool_use_id: 'tool-1', content: 'result' },
+        ], '2026-01-24T10:00:05.000Z'),
+        createAssistantMessage('uuid-4', 'msg-2', [
+          { type: 'thinking', thinking: 'Second episode.' } as ContentBlock,
+          { type: 'text', text: 'Answer.' },
+        ], '2026-01-24T10:00:09.000Z'),
+      ]
+
+      const result = transformMessages(entries)
+
+      // Message 1: thinking took user→entry gap; message 2: tool_result→entry gap
+      expect(asMessage(result[1]).thinking).toEqual([{ text: 'First episode.', durationMs: 3000 }])
+      expect(asMessage(result[2]).thinking).toEqual([{ text: 'Second episode.', durationMs: 4000 }])
     })
 
     it('omits the thinking field when there are no thinking blocks', () => {
@@ -813,9 +842,10 @@ describe('transformMessages', () => {
       const result = transformMessages(entries)
 
       // Should produce a message with empty text but the thinking preserved
+      // (no preceding entry, so no derivable duration)
       expect(result).toHaveLength(1)
       expect(asMessage(result[0]).content.text).toBe('')
-      expect(asMessage(result[0]).thinking).toEqual(['Deep thoughts...'])
+      expect(asMessage(result[0]).thinking).toEqual([{ text: 'Deep thoughts...' }])
       expect(asMessage(result[0]).toolCalls).toHaveLength(0)
     })
 
