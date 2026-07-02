@@ -303,6 +303,21 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(tokens[0]).not.toBe(tokens[1])
   })
 
+  it('mints a fresh hookToken per start and never leaks it into the agent env', async () => {
+    await new LambdaMicroVmRuntimeClient({ agentId: 'a', envVars: { FOO: 'bar' } }).start()
+    resetMicrovmRuntimeForTests()
+    Object.assign(process.env, FULL_ENV)
+    await new LambdaMicroVmRuntimeClient({ agentId: 'a', envVars: { FOO: 'bar' } }).start()
+    const tokens = sendMock.mock.calls
+      .filter((c) => c[0].type === 'Run')
+      .map((c) => JSON.parse(c[0].input.runHookPayload).hookToken)
+    expect(tokens).toHaveLength(2)
+    expect(tokens[0]).toBeTruthy()
+    expect(tokens[0]).not.toBe(tokens[1])
+    // The token rides only the run payload, never the agent's fetched env.
+    expect(readBootstrapEnv('a')).not.toHaveProperty('hookToken')
+  })
+
   it('includes the workspace mount in runHookPayload when fs/ap/mtip are configured', async () => {
     Object.assign(process.env, {
       MICROVM_FS_ID: 'fs-1',
