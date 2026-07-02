@@ -682,7 +682,7 @@ describe('transformMessages', () => {
       expect(asMessage(result[0]).content.text).toBe('Hello')
     })
 
-    it('ignores thinking blocks in content', () => {
+    it('extracts thinking blocks into the thinking field', () => {
       const entries: JsonlMessageEntry[] = [
         createAssistantMessage('uuid-1', 'msg-1', [
           { type: 'thinking', thinking: 'Let me think about this...' } as ContentBlock,
@@ -692,9 +692,41 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      // Thinking block should be ignored, only text extracted
+      // Thinking text is extracted alongside the message text
       expect(asMessage(result[0]).content.text).toBe('Here is my answer.')
+      expect(asMessage(result[0]).thinking).toEqual(['Let me think about this...'])
       expect(asMessage(result[0]).toolCalls).toHaveLength(0)
+    })
+
+    it('extracts multiple thinking blocks in order, skipping empty ones', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'thinking', thinking: 'First episode.' } as ContentBlock,
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+          // Old transcripts (pre CLI 2.1.181) persist empty thinking text — skipped
+          { type: 'thinking', thinking: '' } as ContentBlock,
+          { type: 'thinking', thinking: '   ' } as ContentBlock,
+          { type: 'thinking', thinking: 'Second episode.' } as ContentBlock,
+          { type: 'text', text: 'Answer.' },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).thinking).toEqual(['First episode.', 'Second episode.'])
+      expect(asMessage(result[0]).toolCalls).toHaveLength(1)
+    })
+
+    it('omits the thinking field when there are no thinking blocks', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'text', text: 'No thinking here.' },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).thinking).toBeUndefined()
     })
 
     it('handles tool result for non-existent tool (orphaned result)', () => {
@@ -780,9 +812,10 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      // Should produce a message with empty text
+      // Should produce a message with empty text but the thinking preserved
       expect(result).toHaveLength(1)
       expect(asMessage(result[0]).content.text).toBe('')
+      expect(asMessage(result[0]).thinking).toEqual(['Deep thoughts...'])
       expect(asMessage(result[0]).toolCalls).toHaveLength(0)
     })
 

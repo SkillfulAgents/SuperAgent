@@ -378,6 +378,29 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return persistedText.startsWith(streamingText) || streamingText.startsWith(persistedText)
   }, [messages, streamingMessage])
 
+  // Filter live thinking blocks to only those NOT yet carried by a persisted
+  // message (mirrors unpersistedStreamingToolUses). Once the refetched assistant
+  // message arrives with its `thinking` array, the persisted card in MessageItem
+  // takes over and the ephemeral one must not double-render. Matched by text
+  // prefix in either direction since the stream can trail the transcript.
+  const unpersistedThinkingBlocks = useMemo(() => {
+    if (!thinkingBlocks.length || !messages?.length) return thinkingBlocks
+    const persisted: string[] = []
+    for (const m of messages) {
+      if (m.type === 'assistant' && Array.isArray((m as ApiMessage).thinking)) {
+        persisted.push(...(m as ApiMessage).thinking!)
+      }
+    }
+    if (!persisted.length) return thinkingBlocks
+    return thinkingBlocks.filter(b => {
+      const t = b.text.trim()
+      // Blocks with no streamed text (display option off) have no persisted
+      // counterpart to collide with — keep them.
+      if (!t) return true
+      return !persisted.some(p => p.startsWith(t) || t.startsWith(p.trim()))
+    })
+  }, [messages, thinkingBlocks])
+
   // Filter streaming tool uses to only those NOT yet in persisted messages
   const unpersistedStreamingToolUses = useMemo(() => {
     if (!streamingToolUses.length || !messages?.length) return streamingToolUses
@@ -749,13 +772,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
 
         {/* Thinking episodes for the current turn — tool-call-style cards, expanded
             and scrollable while streaming, collapsed to a "Thought for Ns" header
-            once done. Ephemeral: cleared when the next turn starts. */}
-        {thinkingBlocks.map((block, i) => (
+            once done. Kept until the refetched persisted message carries the same
+            text (see unpersistedThinkingBlocks), then MessageItem's card takes over. */}
+        {unpersistedThinkingBlocks.map(block => (
           <MessageErrorBoundary key={block.id} kind="thinking block" raw={block} itemId={`thinking-${block.id}`}>
             <div className="max-w-[80%]">
               <ThinkingBlockItem
-                block={block}
-                active={isActive && isThinking && i === thinkingBlocks.length - 1}
+                text={block.text}
+                startedAt={block.startedAt}
+                endedAt={block.endedAt}
+                active={isActive && isThinking && block.id === thinkingBlocks[thinkingBlocks.length - 1]?.id}
               />
             </div>
           </MessageErrorBoundary>

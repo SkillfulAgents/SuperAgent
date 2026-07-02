@@ -25,7 +25,7 @@ async function setupThinkingTest(
   await openAgentSession(page, agent, setupSession)
   await sessionPage.waitForInputEnabled(15000)
 
-  return { sessionPage }
+  return { appPage, sessionPage, agent, setupSession }
 }
 
 test.describe('Thinking Display', () => {
@@ -33,7 +33,7 @@ test.describe('Thinking Display', () => {
     const { sessionPage } = await setupThinkingTest(page, request, testInfo, 'Card')
 
     // Triggers the "think out loud" mock scenario: ~5s of thinking_delta
-    // chunks, then a text response.
+    // chunks, then a text response (thinking persisted in the JSONL).
     await sessionPage.sendMessage('please think out loud about this')
 
     // While thinking: the card is in the transcript, expanded, and shows the
@@ -47,20 +47,25 @@ test.describe('Thinking Display', () => {
     await expect(body).toBeVisible()
     await expect(body).toContainText('Let me reason about this', { timeout: 10000 })
 
-    // After the thinking block stops, the card auto-collapses to a summary header.
-    await expect(toggle).toContainText('Thought for', { timeout: 20000 })
+    // Turn finishes: the live card hands off to the persisted one (carried on
+    // the refetched message) with no duplication, collapsed to a summary header.
+    await sessionPage.waitForInputEnabled(30000)
+    await expect(page.getByText('Done thinking — here is the answer.')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByTestId('thinking-block')).toHaveCount(1, { timeout: 15000 })
+    await expect(toggle).toContainText('Thought', { timeout: 10000 })
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await expect(body).not.toBeVisible()
 
-    // The trace stays readable for the rest of the turn: expanding shows the full text.
-    await toggle.click()
-    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    await expect(body).toBeVisible()
+    // The trace stays readable: expanding shows the full text. The card can
+    // remount on a post-turn refetch (resetting local expansion state), so
+    // re-drive the toggle until the body agrees — mirrors tool-rendering.spec.
+    await expect(async () => {
+      if (await toggle.getAttribute('aria-expanded') !== 'true') {
+        await toggle.click()
+      }
+      await expect(body).toBeVisible({ timeout: 1000 })
+    }).toPass({ timeout: 20000 })
     await expect(body).toContainText('stream a few sentences of summarized reasoning')
-
-    // And the text response still arrives as normal.
-    await sessionPage.waitForInputEnabled(20000)
-    await expect(page.getByText('Done thinking — here is the answer.')).toBeVisible({ timeout: 10000 })
   })
 
   test('collapsing the card mid-stream sticks', async ({ page, request }, testInfo) => {
@@ -86,5 +91,32 @@ test.describe('Thinking Display', () => {
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
 
     await sessionPage.waitForInputEnabled(30000)
+  })
+
+  test('thinking persists in the transcript across a reopen', async ({ page, request }, testInfo) => {
+    const { appPage, sessionPage, agent, setupSession } = await setupThinkingTest(page, request, testInfo, 'Persist')
+
+    await sessionPage.sendMessage('please think out loud about this')
+    await sessionPage.waitForInputEnabled(30000)
+    await expect(page.getByText('Done thinking — here is the answer.')).toBeVisible({ timeout: 10000 })
+
+    // Re-open the session from scratch — the card now comes purely from the
+    // persisted transcript (stream state is gone).
+    await appPage.goto()
+    await appPage.waitForAgentsLoaded()
+    await openAgentSession(page, agent, setupSession)
+    await sessionPage.waitForInputEnabled(15000)
+
+    const card = page.getByTestId('thinking-block').last()
+    const toggle = card.getByTestId('thinking-block-toggle')
+    const body = card.getByTestId('thinking-block-body')
+    await expect(card).toBeVisible({ timeout: 15000 })
+    await expect(toggle).toContainText('Thought')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+
+    await toggle.click()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(body).toContainText('Let me reason about this')
+    await expect(page.getByTestId('thinking-block')).toHaveCount(1)
   })
 })

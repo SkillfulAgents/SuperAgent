@@ -3,12 +3,19 @@ import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import { StatusIndicator } from './tool-call-item'
-import type { ThinkingBlock } from '@renderer/hooks/use-message-stream'
 
 interface ThinkingBlockItemProps {
-  block: ThinkingBlock
+  text: string
   /** True while this block is the one currently streaming reasoning text. */
   active: boolean
+  /**
+   * Live-stream timing (ms epoch). Present for stream-state blocks so the
+   * header can show a live timer / "Thought for Ns"; absent for blocks read
+   * back from the persisted transcript, which carries no timing.
+   */
+  startedAt?: number
+  /** null while the live block is still streaming */
+  endedAt?: number | null
 }
 
 // How close (px) to the bottom counts as "pinned" — matches the tolerance the
@@ -16,15 +23,14 @@ interface ThinkingBlockItemProps {
 const PIN_THRESHOLD_PX = 32
 
 /**
- * A thinking episode rendered as a tool-call-style card in the transcript.
+ * A thinking episode rendered as a tool-call-style card.
  *
  * While the block streams it is expanded with a scrollable, bottom-pinned body so
  * the trace can be read as it happens; when the block ends it collapses to a
  * "Thought for Ns" header (unless the user toggled it themselves, which wins).
- * Blocks are ephemeral — they live in stream state for the current turn only and
- * are not persisted to the transcript.
+ * Persisted transcript blocks render the same card, collapsed, headed "Thought".
  */
-export function ThinkingBlockItem({ block, active }: ThinkingBlockItemProps) {
+export function ThinkingBlockItem({ text, active, startedAt, endedAt }: ThinkingBlockItemProps) {
   // null = follow the default (expanded while active); a user click overrides it
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
   const expanded = userExpanded ?? active
@@ -33,15 +39,16 @@ export function ThinkingBlockItem({ block, active }: ThinkingBlockItemProps) {
   // Live while streaming (endDate null), static "Thought for" duration once done.
   // A block that never got its stop event (interrupted turn) freezes rather than
   // ticking forever on an idle session.
-  const startDate = useMemo(() => new Date(block.startedAt), [block.startedAt])
+  const startDate = useMemo(() => (startedAt !== undefined ? new Date(startedAt) : null), [startedAt])
   const endDate = useMemo(() => {
-    if (block.endedAt !== null) return new Date(block.endedAt)
-    return active ? null : new Date(block.startedAt)
-  }, [block.endedAt, active, block.startedAt])
+    if (startedAt === undefined) return null
+    if (endedAt !== null && endedAt !== undefined) return new Date(endedAt)
+    return active ? null : new Date(startedAt)
+  }, [endedAt, active, startedAt])
   const elapsed = useElapsedTimer(startDate, endDate)
 
   // Rough token estimate for the streamed reasoning (~4 chars/token). UI-only.
-  const tokens = block.text ? Math.ceil(block.text.length / 4) : 0
+  const tokens = text ? Math.ceil(text.length / 4) : 0
 
   // Stick-to-bottom: follow the streaming text unless the user scrolls up to read.
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -51,7 +58,7 @@ export function ThinkingBlockItem({ block, active }: ThinkingBlockItemProps) {
     if (active && expanded && el && pinnedRef.current) {
       el.scrollTop = el.scrollHeight
     }
-  }, [block.text, active, expanded])
+  }, [text, active, expanded])
 
   const handleScroll = () => {
     const el = scrollRef.current
@@ -77,7 +84,7 @@ export function ThinkingBlockItem({ block, active }: ThinkingBlockItemProps) {
           'font-sans font-normal shrink-0 text-sm leading-none transition-colors',
           active ? 'text-foreground' : 'text-foreground/65 group-hover:text-foreground'
         )}>
-          {active ? 'Thinking' : `Thought for ${elapsed}`}
+          {active ? 'Thinking' : elapsed ? `Thought for ${elapsed}` : 'Thought'}
         </span>
         {tokens > 0 && (
           <span className="shrink-0 text-xs leading-none text-muted-foreground/70 group-hover:text-muted-foreground tabular-nums transition-colors">
@@ -113,7 +120,7 @@ export function ThinkingBlockItem({ block, active }: ThinkingBlockItemProps) {
           data-testid="thinking-block-body"
         >
           <pre className="whitespace-pre-wrap break-words text-xs text-muted-foreground select-text font-sans">
-            {block.text || <span className="italic">Thinking…</span>}
+            {text || <span className="italic">Thinking…</span>}
             {active && <span className="animate-pulse">|</span>}
           </pre>
         </div>

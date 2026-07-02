@@ -4,6 +4,7 @@ import { Check, Copy, Link2 } from 'lucide-react'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { InsufficientBalanceCard, usePlatformBillingUrl } from './insufficient-balance-card'
 import { ToolCallItem } from './tool-call-item'
+import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
 import { WorkflowBlock } from './workflow-block'
 import { WorkflowResultCard } from './workflow-result-card'
@@ -232,6 +233,11 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const text = textAfterNotifs
   const hasText = text && text.length > 0
   const toolCalls = message.toolCalls || []
+  // Persisted extended-thinking text. Defensive shape check — this field
+  // crosses the wire, and empty strings are real data in older transcripts.
+  const thinking = isAssistant && Array.isArray(message.thinking)
+    ? message.thinking.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    : []
 
   const isSlashCommand = isUser && hasText && text.startsWith('/')
 
@@ -245,10 +251,10 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const billingUrl = usePlatformBillingUrl(rawText ?? '')
   const showBillingCard = isAssistant && !!message.apiError && !!billingUrl
 
-  // Don't render assistant messages that have no text and no tool calls
-  // (and aren't streaming). These are transient empty entries from partially-
-  // persisted JSONL that will be filled in on the next refetch.
-  if (isAssistant && !hasText && toolCalls.length === 0 && !isStreaming) {
+  // Don't render assistant messages that have no text, no tool calls, and no
+  // thinking (and aren't streaming). These are transient empty entries from
+  // partially-persisted JSONL that will be filled in on the next refetch.
+  if (isAssistant && !hasText && toolCalls.length === 0 && thinking.length === 0 && !isStreaming) {
     return null
   }
 
@@ -277,6 +283,19 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         {/* Sender name for shared agent sessions */}
         {isUser && message.sender?.name && (
           <span className="text-xs text-muted-foreground">{message.sender.name}</span>
+        )}
+
+        {/* Persisted thinking — collapsed cards above the message text, one per
+            episode. Same card the live stream uses, minus timing (the transcript
+            doesn't carry it). */}
+        {thinking.length > 0 && (
+          <div className="w-full space-y-2">
+            {thinking.map((t, i) => (
+              <MessageErrorBoundary key={i} kind="thinking block" raw={t} itemId={`${message.id}-thinking-${i}`}>
+                <ThinkingBlockItem text={t} active={false} />
+              </MessageErrorBoundary>
+            ))}
+          </div>
         )}
 
         {/* Message bubble - only show if there's text content */}

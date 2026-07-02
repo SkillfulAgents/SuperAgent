@@ -201,9 +201,16 @@ export class ThinkingResponseScenario implements MockScenario {
         message: { content: userMessage },
         timestamp: new Date().toISOString(),
       })
+      // The real CLI persists the thinking block in the transcript (CLI 2.1.181+),
+      // which the messages read-path extracts into ApiMessage.thinking.
       client.writeJsonlEntry(sessionId, {
         type: 'assistant',
-        message: { content: [{ type: 'text', text: this.responseText }] },
+        message: {
+          content: [
+            { type: 'thinking', thinking: this.thinkingText, signature: 'mock-signature' },
+            { type: 'text', text: this.responseText },
+          ],
+        },
         timestamp: new Date().toISOString(),
       })
       client.emitStreamMessage(sessionId, {

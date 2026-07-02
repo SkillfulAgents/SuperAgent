@@ -160,6 +160,12 @@ export interface ApiMessage {
    * detection) must skip it.
    */
   queued?: boolean
+  /**
+   * Summarized extended-thinking text persisted in the session transcript,
+   * one entry per thinking block, in order. Absent when the turn had no
+   * thinking or the transcript predates thinking-text persistence.
+   */
+  thinking?: string[]
 }
 
 /**
