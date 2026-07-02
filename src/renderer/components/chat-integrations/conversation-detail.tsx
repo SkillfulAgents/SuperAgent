@@ -90,7 +90,7 @@ export function ConversationDetail({
       </div>
 
       {blank ? (
-        <div className="chat-thread mt-3 flex min-h-[180px] items-center justify-center rounded-xl border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
+        <div className="mt-3 flex min-h-[180px] items-center justify-center rounded-xl border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
           No messages yet. The next message from {row.title} on {providerName} starts a new conversation.
         </div>
       ) : (
@@ -102,7 +102,7 @@ export function ConversationDetail({
                 chat". The opacity wash only works in light mode (it lightens content
                 toward the page); in dark mode it muddies contrast and hides bubbles,
                 so we drop it there and lean on the muted panel instead. */}
-            <div className={`chat-thread mt-3 overflow-hidden rounded-xl border bg-muted/30 ${CONVERSATION_PANEL_SCROLL}`}>
+            <div className={`reader-scrollbar mt-3 overflow-hidden rounded-xl border bg-muted/30 ${CONVERSATION_PANEL_SCROLL}`}>
               <div className="cursor-default opacity-75 dark:opacity-100">
                 <SessionThread
                   sessionId={openWindowId as string}

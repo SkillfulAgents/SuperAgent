@@ -133,22 +133,24 @@ html[data-keyboard-open] [data-composer-footer] {
   background-color: rgba(255, 255, 255, .3);
 }
 
-/* Chat-integration read-only thread: replace the pale native overlay scrollbar with
-   a subtle neutral thumb that reads as intentional under the read-only veil. */
-.chat-thread [data-message-content-area]::-webkit-scrollbar {
+/* Reader surfaces (e.g. the chat-integration read-only thread): replace the pale
+   native overlay scrollbar on the inner message scroller with a subtle neutral
+   thumb that reads as intentional under the read-only veil. Add `reader-scrollbar`
+   to the wrapper of any read-only MessageList to opt in. */
+.reader-scrollbar [data-message-content-area]::-webkit-scrollbar {
   -webkit-appearance: none;
   width: 10px;
 }
-.chat-thread [data-message-content-area]::-webkit-scrollbar-track {
+.reader-scrollbar [data-message-content-area]::-webkit-scrollbar-track {
   background: transparent;
 }
-.chat-thread [data-message-content-area]::-webkit-scrollbar-thumb {
+.reader-scrollbar [data-message-content-area]::-webkit-scrollbar-thumb {
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: padding-box;
   background-color: rgba(120, 120, 130, .35);
 }
-.chat-thread [data-message-content-area]:hover::-webkit-scrollbar-thumb {
+.reader-scrollbar [data-message-content-area]:hover::-webkit-scrollbar-thumb {
   background-color: rgba(120, 120, 130, .55);
 }
 
