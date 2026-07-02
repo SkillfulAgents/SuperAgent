@@ -3,12 +3,8 @@ import { Plus } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { useChatIntegrations, useChatIntegrationAccess, type ChatIntegrationListItem } from '@renderer/hooks/use-chat-integrations'
-import {
-  deriveChatIntegrationState,
-  formatProviderName,
-  CHAT_INTEGRATION_STATE_LABEL,
-  CHAT_INTEGRATION_STATE_PILL,
-} from '@shared/lib/chat-integrations/utils'
+import { deriveChatIntegrationState, formatProviderName } from '@shared/lib/chat-integrations/utils'
+import { ChatIntegrationPill } from '@renderer/components/chat-integrations/chat-integration-pill'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { useAgent } from '@renderer/hooks/use-agents'
@@ -30,19 +26,6 @@ const PROVIDER_TILES: Array<{ slug: ChatProvider; label: string }> = [
   { slug: 'imessage', label: 'iMessage' },
 ]
 
-// Small status tag - the same colors/labels as the Status card pill, sized like
-// the skills-section badges (text-2xs, tight padding, no dot). Derived from the
-// same `(status, connected)` the connector page uses, so "Listening" here means
-// the wire is actually up - the two surfaces can't disagree.
-function StatusTag({ integration }: { integration: ChatIntegrationListItem }) {
-  const state = deriveChatIntegrationState(integration.status, integration.connected)
-  return (
-    <span className={`text-2xs px-1.5 py-0 rounded-full ${CHAT_INTEGRATION_STATE_PILL[state]}`}>
-      {CHAT_INTEGRATION_STATE_LABEL[state]}
-    </span>
-  )
-}
-
 // Status dot + an owner-only "N pending" count, derived from the access list
 // the app already polls. Lives in its own component so the access query (one per
 // integration) obeys the rules of hooks inside the integration list.
@@ -54,7 +37,7 @@ function IntegrationNameBadges({ integration, showPending }: { integration: Chat
   const pending = enabled ? (access?.filter((a) => a.status === 'pending').length ?? 0) : 0
   return (
     <span className="inline-flex items-center gap-1">
-      <StatusTag integration={integration} />
+      <ChatIntegrationPill state={deriveChatIntegrationState(integration.status, integration.connected)} size="xs" />
       {pending > 0 && (
         <span className="text-2xs px-1.5 py-0 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400">
           {pending} pending
