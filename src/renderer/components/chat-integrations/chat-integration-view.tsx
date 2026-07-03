@@ -9,14 +9,17 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { SettingsPageContainer, PageTitle } from '@renderer/components/layout/settings-page'
 import {
   useChatIntegration,
   useChatIntegrationStatus,
   useChatIntegrationSessions,
   useClearChatSession,
+  useUpdateChatIntegration,
 } from '@renderer/hooks/use-chat-integrations'
 import { useAgent, useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useNavigate } from '@tanstack/react-router'
@@ -44,6 +47,7 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId, c
   const { data: agent } = useAgent(agentSlug)
   const { data: agents } = useAgents()
   const clearSession = useClearChatSession()
+  const updateIntegration = useUpdateChatIntegration()
   const navigate = useNavigate()
   const { canUseAgent, canAdminAgent } = useUser()
   const canManage = canUseAgent(agentSlug)
@@ -168,7 +172,28 @@ export function ChatIntegrationView({ integrationId, agentSlug, chatSessionId, c
       <PageTitle
         title={
           <div className="flex items-center gap-2 min-w-0">
-            <h2 className="truncate text-xl font-medium">{displayName}</h2>
+            <InlineEditableTitle
+              value={displayName}
+              canEdit={canManage}
+              isSaving={updateIntegration.isPending}
+              onSave={async (name) => {
+                await updateIntegration.mutateAsync({ id: integration.id, name })
+              }}
+              onError={(error) => {
+                console.error('Failed to rename integration:', error)
+                toast.error('Failed to rename integration', {
+                  description: error instanceof Error ? error.message : 'Please try again.',
+                })
+              }}
+              readOnlyAs="h2"
+              displayClassName="text-xl font-medium"
+              inputClassName="h-9 text-xl font-medium"
+              saveButtonClassName="h-8 w-8"
+              ariaLabel="Rename integration"
+              saveAriaLabel="Save name"
+              displayTestId="integration-name"
+              inputTestId="integration-name-input"
+            />
             <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-muted px-2 py-1 text-xs">
               <ServiceIcon slug={integration.provider} fallback="mcp" className="h-3.5 w-3.5 shrink-0" />
               <span className="font-medium">{providerName}</span>

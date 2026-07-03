@@ -43,11 +43,13 @@ const integrationMock = vi.hoisted(() => ({
   current: { id: 'int-1', agentSlug: 'a', provider: 'telegram', name: 'Bot', status: 'active', errorMessage: null },
 }))
 const clearAsync = vi.fn<(args: unknown) => Promise<unknown>>().mockResolvedValue(undefined)
+const updateAsync = vi.fn<(args: unknown) => Promise<unknown>>().mockResolvedValue({})
 vi.mock('@renderer/hooks/use-chat-integrations', () => ({
   useChatIntegration: () => ({ data: integrationMock.current, isLoading: false, error: null }),
   useChatIntegrationStatus: () => ({ data: { connected: true } }),
   useChatIntegrationSessions: () => ({ data: sessionsMock }),
   useClearChatSession: () => ({ mutateAsync: clearAsync, isPending: false }),
+  useUpdateChatIntegration: () => ({ mutateAsync: updateAsync, isPending: false }),
 }))
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgent: () => ({ data: { slug: 'a', name: 'Story Spinner' } }),
@@ -65,6 +67,8 @@ afterEach(() => {
   navigate.mockReset()
   clearAsync.mockReset()
   clearAsync.mockResolvedValue(undefined)
+  updateAsync.mockReset()
+  updateAsync.mockResolvedValue({})
 })
 
 async function confirmNewConversation() {
@@ -88,6 +92,24 @@ describe('ChatIntegrationView', () => {
     integrationMock.current = { ...integrationMock.current, name: '' }
     render(<ChatIntegrationView integrationId="int-1" agentSlug="a" chatSessionId={null} chatNewConvId={null} />)
     expect(screen.getByText('Story Spinner')).toBeInTheDocument()
+  })
+
+  it('renames the integration when the owner edits the title inline', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    render(<ChatIntegrationView integrationId="int-1" agentSlug="a" chatSessionId={null} chatNewConvId={null} />)
+    await user.click(screen.getByTestId('integration-name'))
+    const input = screen.getByTestId('integration-name-input')
+    await user.clear(input)
+    await user.type(input, 'Support Bot{Enter}')
+    expect(updateAsync).toHaveBeenCalledWith({ id: 'int-1', name: 'Support Bot' })
+  })
+
+  it('shows the title read-only for a viewer (no rename affordance)', () => {
+    userState.canUseAgent = false
+    render(<ChatIntegrationView integrationId="int-1" agentSlug="a" chatSessionId={null} chatNewConvId={null} />)
+    expect(screen.getByText('Bot')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Rename integration' })).toBeNull()
   })
 
   it('passes the route ?session through to the inbox', () => {
