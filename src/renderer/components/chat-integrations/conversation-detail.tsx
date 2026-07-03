@@ -10,6 +10,7 @@ import { SessionThread } from '@renderer/components/messages/session-thread'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
+import { AccessActions } from './access-actions'
 import type { ChatRow } from './chat-inbox-model'
 import type { ChatIntegrationSession } from '@shared/lib/db/schema'
 
@@ -30,7 +31,11 @@ interface ConversationDetailProps {
   openWindowId: string | null
   agentSlug: string
   providerName: string
-  onSelectWindow: (sessionId: string) => void
+  integrationId: string
+  /** Telegram owner: can approve/deny a chat request from the request view. */
+  canManageAccess: boolean
+  /** Open a window by sessionId, or pass null to close back to the inbox list. */
+  onSelectWindow: (sessionId: string | null) => void
   onNewConversation: (externalChatId: string) => void
 }
 
@@ -46,10 +51,50 @@ export function ConversationDetail({
   openWindowId,
   agentSlug,
   providerName,
+  integrationId,
+  canManageAccess,
   onSelectWindow,
   onNewConversation,
 }: ConversationDetailProps) {
   const blank = openWindowId == null
+
+  // A not-yet-allowed chat (pending or denied) with no conversation window: the bot
+  // ignores it until allowed, so there's no thread - show its chat-request first
+  // message instead, with the access decision inline. A denied chat that kept a
+  // prior conversation (windows.length > 0) still browses its thread like any other.
+  const isBlocked = row.status === 'pending' || row.status === 'denied'
+  if (isBlocked && row.windows.length === 0) {
+    return (
+      <div>
+        {/* pr-8 leaves room for the Dialog's close button in the top-right corner. */}
+        <div className="flex items-baseline gap-2 pr-8">
+          <DialogTitle className="truncate text-sm font-medium">{row.title}</DialogTitle>
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {row.status === 'pending' ? 'Chat request - awaiting approval' : 'Blocked'}
+          </span>
+        </div>
+
+        <div className="mt-3 rounded-xl border bg-muted/30 p-4">
+          {row.firstMessagePreview ? (
+            <div className="flex justify-end">
+              <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-zinc-100 px-4 py-2 text-sm dark:bg-zinc-800/70">
+                {row.firstMessagePreview}
+              </div>
+            </div>
+          ) : (
+            <p className="py-6 text-center text-sm text-muted-foreground">No message preview available.</p>
+          )}
+        </div>
+
+        {canManageAccess && (
+          <div className="mt-4 flex justify-end gap-2">
+            {/* Deciding from here closes back to the inbox (clears the route). */}
+            <AccessActions row={row} integrationId={integrationId} onActed={() => onSelectWindow(null)} />
+          </div>
+        )}
+      </div>
+    )
+  }
 
   // The chat has no live conversation (all windows cleared, or none yet), so the
   // "current" conversation is a fresh one - offer it in the switcher alongside the

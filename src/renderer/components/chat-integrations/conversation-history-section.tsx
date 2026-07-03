@@ -105,6 +105,8 @@ export function ConversationHistorySection({
               openWindowId={openWindowId}
               agentSlug={agentSlug}
               providerName={providerName}
+              integrationId={integration.id}
+              canManageAccess={canAccess}
               onSelectWindow={onSelectWindow}
               onNewConversation={onNewConversation}
             />

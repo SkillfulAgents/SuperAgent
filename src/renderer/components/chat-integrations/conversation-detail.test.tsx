@@ -35,6 +35,17 @@ vi.mock('@renderer/components/messages/session-thread', async () => {
 vi.mock('@renderer/context/file-preview-context', () => ({
   FilePreviewProvider: ({ children }: any) => <>{children}</>,
 }))
+// AccessActions (rendered in the request view) pulls the access mutations; stub them
+// so the decision buttons work without a QueryClient. The thread-view tests never
+// render AccessActions, so these stay untouched there.
+const approveMutate = vi.fn()
+const denyMutate = vi.fn()
+const revokeMutate = vi.fn()
+vi.mock('@renderer/hooks/use-chat-integrations', () => ({
+  useApproveChatAccess: () => ({ mutate: approveMutate, isPending: false }),
+  useDenyChatAccess: () => ({ mutate: denyMutate, isPending: false }),
+  useRevokeChatAccess: () => ({ mutate: revokeMutate, isPending: false }),
+}))
 
 function win(sessionId: string, iso: string, cleared = false): ChatIntegrationSession {
   return makeSession({
@@ -50,9 +61,9 @@ function makeRow(windows: ChatIntegrationSession[]): ChatRow {
   }
 }
 
-const props = { agentSlug: 'a', providerName: 'Telegram' }
+const props = { agentSlug: 'a', providerName: 'Telegram', integrationId: 'i', canManageAccess: false }
 
-const onSelectWindow = vi.fn<(sessionId: string) => void>()
+const onSelectWindow = vi.fn<(sessionId: string | null) => void>()
 const onNewConversation = vi.fn<(externalChatId: string) => void>()
 
 describe('ConversationDetail window switcher', () => {
@@ -110,5 +121,58 @@ describe('ConversationDetail window switcher', () => {
 
     expect(onNewConversation).toHaveBeenCalledWith('chat-1')
     expect(onSelectWindow).not.toHaveBeenCalled()
+  })
+})
+
+describe('ConversationDetail request view (pending/blocked, no window)', () => {
+  beforeEach(() => {
+    approveMutate.mockReset()
+    denyMutate.mockReset()
+    onSelectWindow.mockReset()
+  })
+
+  function pendingRow(): ChatRow {
+    return {
+      externalChatId: 'chat-9', title: 'Dana', status: 'pending', accessId: 'acc-1',
+      firstMessagePreview: 'hey can I get in?', windows: [], latestSessionId: null, lastActivityAt: 0,
+    }
+  }
+
+  it('shows the chat-request first message with Approve/Deny for the owner', async () => {
+    const user = userEvent.setup()
+    render(
+      <ConversationDetail
+        row={pendingRow()}
+        openWindowId={null}
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+        canManageAccess
+      />,
+    )
+    expect(screen.getByText('hey can I get in?')).toBeInTheDocument()
+    expect(screen.getByText('Chat request - awaiting approval')).toBeInTheDocument()
+    // A request has no conversation, so no read-only thread is rendered.
+    expect(screen.queryByTestId('session-thread')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Approve' }))
+    expect(approveMutate).toHaveBeenCalledWith(
+      { integrationId: 'i', accessId: 'acc-1' },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    )
+  })
+
+  it('hides the decision actions for a viewer without manage access', () => {
+    render(
+      <ConversationDetail
+        row={pendingRow()}
+        openWindowId={null}
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+      />,
+    )
+    expect(screen.getByText('hey can I get in?')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
   })
 })

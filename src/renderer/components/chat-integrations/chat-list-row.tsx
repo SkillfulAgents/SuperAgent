@@ -1,38 +1,9 @@
-import { Loader2 } from 'lucide-react'
-import { Button } from '@renderer/components/ui/button'
 import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
-import {
-  useApproveChatAccess,
-  useRevokeChatAccess,
-} from '@renderer/hooks/use-chat-integrations'
+import { AccessActions } from './access-actions'
 import { isBrowsable, type ChatRow } from './chat-inbox-model'
 
 const lastActive = (row: ChatRow) =>
   row.lastActivityAt ? formatSessionTimestamp(new Date(row.lastActivityAt)) : null
-
-/** Access action with a per-button spinner while its mutation is in flight. */
-function AccessButton({ label, pending, onClick, className, variant = 'ghost' }: {
-  label: string
-  pending: boolean
-  onClick: () => void
-  className?: string
-  variant?: 'ghost' | 'outline'
-}) {
-  return (
-    <Button
-      size="xs"
-      variant={variant}
-      className={className}
-      disabled={pending}
-      onClick={(e) => {
-        e.stopPropagation()
-        onClick()
-      }}
-    >
-      {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : label}
-    </Button>
-  )
-}
 
 interface ChatListRowProps {
   row: ChatRow
@@ -44,29 +15,27 @@ interface ChatListRowProps {
 }
 
 /**
- * One chat in the conversation inbox. Allowed/ungated chats open their thread on
- * click; not-yet-allowed chats (pending or denied) render the same - a "Blocked"
- * tag with a single Unblock action. Styled like the cron Run History rows.
+ * One chat in the conversation inbox. Allowed/ungated chats open their read-only
+ * thread; not-yet-allowed chats (pending or denied) open the same dialog to their
+ * chat-request first message. Styled like the cron Run History rows.
  */
 export function ChatListRow({ row, integrationId, isSelected, canManageAccess, onOpen }: ChatListRowProps) {
-  const approve = useApproveChatAccess()
-  const revoke = useRevokeChatAccess()
-
-  const browsable = isBrowsable(row)
-  // Pending and denied are both "not allowed" - the bot ignores both - so we show
-  // them identically as Blocked; the only action is Unblock (Block lives on allowed rows).
+  // Pending and denied are both "not allowed" - the bot ignores both - so we tag
+  // them identically as Blocked.
   const isBlocked = row.status === 'pending' || row.status === 'denied'
-  const accessId = row.accessId
+  // Allowed/ungated chats open their thread; blocked chats have no window but still
+  // open the dialog to show their chat request (the first message).
+  const openable = isBrowsable(row) || isBlocked
 
-  const open = () => browsable && onOpen(row)
+  const open = () => openable && onOpen(row)
 
   return (
     <div
-      role={browsable ? 'button' : undefined}
-      tabIndex={browsable ? 0 : undefined}
+      role={openable ? 'button' : undefined}
+      tabIndex={openable ? 0 : undefined}
       onClick={open}
       onKeyDown={(e) => {
-        if (browsable && (e.key === 'Enter' || e.key === ' ')) {
+        if (openable && (e.key === 'Enter' || e.key === ' ')) {
           e.preventDefault()
           open()
         }
@@ -74,7 +43,7 @@ export function ChatListRow({ row, integrationId, isSelected, canManageAccess, o
       data-testid={`chat-row-${row.externalChatId}`}
       className={[
         'group flex items-center gap-3 px-1 py-3 text-left transition-colors',
-        browsable ? 'cursor-pointer hover:bg-muted/50' : 'cursor-default',
+        openable ? 'cursor-pointer hover:bg-muted/50' : 'cursor-default',
         isSelected ? 'bg-muted/50' : '',
       ].join(' ')}
     >
@@ -94,27 +63,17 @@ export function ChatListRow({ row, integrationId, isSelected, canManageAccess, o
           )}
         </div>
         <div className="mt-0.5 truncate text-xs text-muted-foreground">
-          {lastActive(row) ?? 'No messages yet'}
+          {/* A blocked chat has no conversation activity worth timestamping; surface
+              what it said (the chat request) so the owner can triage from the list. */}
+          {isBlocked && row.firstMessagePreview
+            ? row.firstMessagePreview
+            : (lastActive(row) ?? 'No messages yet')}
         </div>
       </div>
 
-      {canManageAccess && accessId && (
+      {canManageAccess && row.accessId && (
         <div className="flex shrink-0 items-center gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-          {isBlocked && (
-            <AccessButton
-              label="Unblock"
-              pending={approve.isPending}
-              onClick={() => approve.mutate({ integrationId, accessId })}
-            />
-          )}
-          {row.status === 'allowed' && (
-            <AccessButton
-              label="Block"
-              pending={revoke.isPending}
-              onClick={() => revoke.mutate({ integrationId, accessId })}
-              className="text-muted-foreground hover:text-destructive"
-            />
-          )}
+          <AccessActions row={row} integrationId={integrationId} />
         </div>
       )}
     </div>
