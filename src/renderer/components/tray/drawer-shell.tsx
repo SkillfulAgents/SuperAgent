@@ -88,7 +88,7 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
         !isResizing && 'transition-[width] duration-300 ease-in-out',
         className
       )}
-      style={{ width: isOpen ? drawerWidth : 0, contain: 'layout paint', willChange: 'transform' }}
+      style={{ width: isOpen ? drawerWidth : 0, maxWidth: '100%', contain: 'layout paint', willChange: 'transform' }}
       onTransitionEnd={onTransitionEnd}
     >
       {/* Resize handle on left edge */}

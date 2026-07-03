@@ -221,6 +221,44 @@ test.describe('File Preview', () => {
     await expect(page.getByText('At 0:00', { exact: false }).first()).toBeVisible({ timeout: 10000 })
   })
 
+  test.describe('narrow window', () => {
+    test.use({ viewport: { width: 800, height: 700 } })
+
+    test('header controls stay on-screen when the stored drawer width exceeds the window', async ({ page }) => {
+      // Persisted drawer width wider than the window used to push the drawer
+      // past the right viewport edge, clipping the download/close buttons.
+      await page.addInitScript(() => localStorage.setItem('tray_drawer_width', '800'))
+      await appPage.goto()
+      await appPage.waitForAgentsLoaded()
+
+      await agentPage.createAgent(`NarrowTray ${Date.now()}`)
+      const agentSlug = await getLatestAgentSlug(page)
+      seedWorkspaceFile(agentSlug, 'output/report.md', '# Report')
+
+      await sessionPage.sendMessage('deliver file')
+      await sessionPage.waitForResponse(15000)
+
+      const filePill = getFilePill(page, 'report.md').first()
+      await expect(filePill).toBeVisible({ timeout: 10000 })
+      await filePill.click()
+
+      const header = page.getByTestId('file-preview-header')
+      await expect(header).toBeVisible({ timeout: 5000 })
+
+      // Poll: the drawer animates open (300ms width transition), during which
+      // header controls are transiently clipped even in the fixed layout.
+      const viewportWidth = page.viewportSize()!.width
+      await expect(async () => {
+        for (const control of [header.getByTitle('Download file'), header.getByTitle('Hide files panel')]) {
+          await expect(control).toBeVisible()
+          const box = await control.boundingBox()
+          expect(box).not.toBeNull()
+          expect(box!.x + box!.width).toBeLessThanOrEqual(viewportWidth)
+        }
+      }).toPass({ timeout: 5000 })
+    })
+  })
+
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {
     await agentPage.createAgent(`MultiFile ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
