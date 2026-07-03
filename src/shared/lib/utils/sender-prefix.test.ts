@@ -6,8 +6,10 @@ describe('parseSenderPrefix', () => {
     expect(parseSenderPrefix('\\[Dana]: hello')).toEqual({ sender: 'Dana', cleanText: 'hello' })
   })
 
-  it('handles an unescaped "[sender]: " prefix', () => {
-    expect(parseSenderPrefix('[Dana]: hi there')).toEqual({ sender: 'Dana', cleanText: 'hi there' })
+  it('leaves an unescaped "[sender]: " prefix alone - it is user text, not a connector prefix', () => {
+    // The connector always escapes; an unescaped leading bracket is the user's own
+    // words (e.g. a DM that literally starts "[TODO]: buy milk") and must not be split.
+    expect(parseSenderPrefix('[TODO]: buy milk')).toEqual({ sender: null, cleanText: '[TODO]: buy milk' })
   })
 
   it('preserves sender names with spaces', () => {

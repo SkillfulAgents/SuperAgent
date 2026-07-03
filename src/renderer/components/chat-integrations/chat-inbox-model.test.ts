@@ -81,6 +81,18 @@ describe('buildChatRows', () => {
     expect(rows[0].accessId).toBeUndefined()
   })
 
+  it('names a no-access chat from its newest window, not the oldest', () => {
+    // Same chat, renamed between windows: the current (newest) name should win.
+    const rows = buildChatRows(
+      [
+        session({ externalChatId: 'c1', sessionId: 's-old', displayName: 'Old Name', updatedAt: new Date('2026-06-19T10:00:00Z') }),
+        session({ externalChatId: 'c1', sessionId: 's-new', displayName: 'New Name', updatedAt: new Date('2026-06-20T10:00:00Z') }),
+      ],
+      [],
+    )
+    expect(rows[0].title).toBe('New Name')
+  })
+
   it('prefers the access title over a session display name', () => {
     const rows = buildChatRows(
       [session({ externalChatId: 'c1', sessionId: 's', displayName: 'stale name' })],

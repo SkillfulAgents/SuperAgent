@@ -67,6 +67,10 @@ export function buildChatRows(
     if (!row) {
       row = {
         externalChatId: s.externalChatId,
+        // No access row (Slack/iMessage): name the chat from its window. byRecency is
+        // newest-first, so the first window we see - the newest - wins; a later window's
+        // stale name never overwrites it. Access rows are created earlier and keep their
+        // canonical title.
         title: s.displayName ?? chatFallbackTitle(s.externalChatId),
         windows: [],
         latestSessionId: null,
@@ -74,8 +78,6 @@ export function buildChatRows(
       }
       byChat.set(s.externalChatId, row)
     }
-    // Access title wins (it's the canonical chat title); fall back to a session name.
-    if (!row.accessId && s.displayName) row.title = s.displayName
     if (row.windows.length === 0) row.latestSessionId = s.sessionId
     row.windows.push(s)
     // A blocked chat (pending/denied) keeps its first-contact key even when it
