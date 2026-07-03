@@ -269,6 +269,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
             <ComposerActionButton
               isActive={isActive}
               isWaitingBackground={isWaitingBackground}
+              hasContent={composer.hasContent}
               canSubmit={composer.canSubmit}
               isSending={sendMessage.isPending || composer.isUploading}
               isInterrupting={interruptSession.isPending}

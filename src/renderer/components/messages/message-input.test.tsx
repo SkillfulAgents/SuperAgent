@@ -128,13 +128,25 @@ describe('MessageInput', () => {
     expect(screen.getByTestId('message-input')).not.toBeDisabled()
   })
 
-  it('shows stop and send buttons when active', () => {
+  it('swaps stop for send while active as the user types, and back when cleared', async () => {
     mockStreamState.isActive = true
+    const user = userEvent.setup()
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
+
+    // Empty composer: only the stop button occupies the action slot
     expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Follow up')
     expect(screen.getByTestId('send-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('stop-button')).not.toBeInTheDocument()
+
+    await user.clear(input)
+    expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
   })
 
   it('queues a message sent while the agent is active (localId, queued=true, no model/effort)', async () => {

@@ -64,18 +64,26 @@ test.describe('Background Bash Task Tracking', () => {
     await sessionPage.waitForInputEnabled(30000)
   })
 
-  test('shows both stop and send buttons while waiting for background task', async ({ page }) => {
+  test('swaps stop for send while waiting for background task as the user types', async ({ page }) => {
     await sessionPage.sendMessage('run background command')
 
     // Wait for the background process indicator (agent turn ended, bg task pending)
     const indicator = sessionPage.getActivityIndicator()
     await expect(indicator).toContainText('background process', { timeout: 10000 })
 
-    // Both stop and send buttons should be visible
+    // Empty composer: only the stop button occupies the action slot
     const stopButton = page.locator('[data-testid="stop-button"]')
     const sendButton = page.locator('[data-testid="send-button"]')
     await expect(stopButton).toBeVisible({ timeout: 5000 })
+    await expect(sendButton).not.toBeVisible()
+
+    // Typing swaps stop for send; clearing swaps back
+    await sessionPage.typeMessage('follow up while waiting')
     await expect(sendButton).toBeVisible({ timeout: 5000 })
+    await expect(stopButton).not.toBeVisible()
+    await sessionPage.typeMessage('')
+    await expect(stopButton).toBeVisible({ timeout: 5000 })
+    await expect(sendButton).not.toBeVisible()
 
     // Wait for completion
     await expect(indicator).not.toBeVisible({ timeout: 30000 })

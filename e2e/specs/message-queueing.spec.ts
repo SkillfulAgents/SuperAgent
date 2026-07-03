@@ -36,13 +36,15 @@ test.describe('Message queueing while agent is working', () => {
     // Start a slow turn (~5s working window)
     await sessionPage.sendMessage('please work slowly on this task')
 
-    // Agent goes busy — stop button appears, and the send button is still
-    // available alongside it (queueing enabled)
+    // Agent goes busy — the action slot shows the stop button while the
+    // composer is empty
     await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 10000 })
-    await expect(sessionPage.getSendButton()).toBeVisible()
+    await expect(sessionPage.getSendButton()).not.toBeVisible()
 
-    // Send a second message mid-turn
+    // Typing mid-turn swaps stop for send (queueing enabled)
     await sessionPage.typeMessage('queued follow up instruction')
+    await expect(sessionPage.getSendButton()).toBeVisible()
+    await expect(sessionPage.getStopButton()).not.toBeVisible()
     await sessionPage.getSendButton().click()
 
     // The queued ghost appears at reduced opacity with a "Queued" label

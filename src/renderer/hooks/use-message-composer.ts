@@ -197,7 +197,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
   }
 
-  const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !isUploading && !submitDisabled
+  const hasContent = !!message.trim() || attachments.length > 0 || voiceInput.isRecording
+  const canSubmit = hasContent && !isUploading && !submitDisabled
 
   return {
     // Message state
@@ -228,6 +229,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     isUploading,
     handleSubmit,
     handlePaste,
+    hasContent,
     canSubmit,
 
     // Upload error (surfaced to the user; cleared on next submit attempt)

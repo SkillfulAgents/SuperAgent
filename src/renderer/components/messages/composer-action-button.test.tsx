@@ -8,6 +8,7 @@ describe('ComposerActionButton', () => {
   const baseProps = {
     isActive: false,
     isWaitingBackground: false,
+    hasContent: false,
     canSubmit: true,
     isSending: false,
     isInterrupting: false,
@@ -20,14 +21,28 @@ describe('ComposerActionButton', () => {
     expect(screen.queryByTestId('stop-button')).not.toBeInTheDocument()
   })
 
-  it('renders both stop and a queue-send button when active', () => {
-    // Mid-turn the composer keeps a send button (labelled "Queue message") so
-    // the user can queue a follow-up while the agent works.
+  it('renders only the stop button when active with an empty composer', () => {
     render(<ComposerActionButton {...baseProps} isActive />)
     expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+  })
+
+  it('swaps stop for a queue-send button once the composer has content', () => {
+    // Mid-turn the single slot flips to Send (labelled "Queue message") as
+    // soon as the user types, so a follow-up can be queued while the agent works.
+    render(<ComposerActionButton {...baseProps} isActive hasContent />)
     const send = screen.getByTestId('send-button')
     expect(send).toBeInTheDocument()
     expect(send).toHaveAttribute('aria-label', 'Queue message')
+    expect(screen.queryByTestId('stop-button')).not.toBeInTheDocument()
+  })
+
+  it('swaps back to the stop button when the composer is cleared', () => {
+    const { rerender } = render(<ComposerActionButton {...baseProps} isActive hasContent />)
+    expect(screen.getByTestId('send-button')).toBeInTheDocument()
+    rerender(<ComposerActionButton {...baseProps} isActive hasContent={false} />)
+    expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
   })
 
   it('disables the send button when canSubmit is false', () => {
@@ -53,15 +68,19 @@ describe('ComposerActionButton', () => {
     expect(screen.getByTestId('stop-button')).toBeDisabled()
   })
 
-  it('shows both stop and send buttons when waiting for background tasks', () => {
+  it('shows the background stop button when waiting with an empty composer', () => {
     render(<ComposerActionButton {...baseProps} isActive isWaitingBackground />)
-    expect(screen.getByTestId('stop-button')).toBeInTheDocument()
-    expect(screen.getByTestId('send-button')).toBeInTheDocument()
+    const stop = screen.getByTestId('stop-button')
+    expect(stop).toHaveAttribute('aria-label', 'Stop background processes')
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
   })
 
-  it('send button is enabled when waiting for background with canSubmit', () => {
-    render(<ComposerActionButton {...baseProps} isActive isWaitingBackground canSubmit />)
-    expect(screen.getByTestId('send-button')).not.toBeDisabled()
+  it('shows a regular send button when waiting for background with content', () => {
+    render(<ComposerActionButton {...baseProps} isActive isWaitingBackground hasContent />)
+    const send = screen.getByTestId('send-button')
+    expect(send).toHaveAttribute('aria-label', 'Send message')
+    expect(send).not.toBeDisabled()
+    expect(screen.queryByTestId('stop-button')).not.toBeInTheDocument()
   })
 
   it('stop button calls onInterrupt when waiting for background', async () => {
