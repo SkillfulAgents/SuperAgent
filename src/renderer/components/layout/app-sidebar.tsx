@@ -462,10 +462,14 @@ function SessionsSkeleton() {
 }
 
 // Right-side indicator on the agent row.
-// When expanded, suppress session-derived states (awaiting / working / unread)
-// since the individual session rows already surface those. Keep agent-level
-// sleeping / idle states which describe the container itself.
-// Priority when collapsed: awaiting > working > unread > sleeping/idle.
+// Awaiting / working aggregate across sessions regardless of expansion, with
+// the same formula as the agent header's AgentStatus (fresh sessions data
+// when loaded, agent-level flags as fallback) — the sidebar and the top nav
+// render on the same screen and must never disagree about whether an agent
+// is working. The unread dot IS still suppressed when expanded: it's a
+// sidebar-only navigation aid with no header counterpart, and the session
+// rows already point at the unread session.
+// Priority: awaiting > working > unread > sleeping/idle.
 function AgentRowIndicator({
   agent,
   sessions,
@@ -475,8 +479,8 @@ function AgentRowIndicator({
   sessions: ApiSession[] | undefined
   isOpen: boolean
 }) {
-  const isAwaiting = !isOpen && (sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false))
-  const isWorking = !isOpen && !isAwaiting && (sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false))
+  const isAwaiting = sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)
+  const isWorking = !isAwaiting && (sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false))
   const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
   if (isUnread) {
     return (

@@ -545,36 +545,14 @@ describe('AppSidebar — notifications', () => {
 // ============================================================================
 // AgentRowIndicator: priority + collapse-vs-expand behavior
 // ----------------------------------------------------------------------------
-// The right-side indicator on the agent row collapses session-derived states
-// (awaiting / working / unread) when the agent is expanded — those states
-// surface on the individual session sub-rows instead. When collapsed, priority
+// The right-side indicator on the agent row aggregates awaiting / working
+// across sessions with the same formula as the top-nav AgentStatus — the two
+// render on the same screen and must agree. Only the unread dot is collapsed
+// away when the agent is expanded (the session sub-rows surface it). Priority
 // is awaiting > working > unread > sleeping/idle. Sleeping/idle (which
 // describe the container itself) always render via <AgentStatus iconOnly>.
 // ============================================================================
 describe('AppSidebar — agent row indicator', () => {
-  it('uses fresh sessions data over stale agent flags when sessions are loaded', () => {
-    mockUseAgents.mockReturnValue({
-      data: [makeAgent({ hasSessionsAwaitingInput: false /* stale */, sessionCount: 1 })],
-      isLoading: false,
-      error: null,
-    })
-    mockUseSessions.mockImplementation((slug: string | null) => ({
-      data: slug === 'test-agent' ? [makeSession({ isAwaitingInput: true /* fresh */ })] : [],
-      isLoading: false,
-    }))
-    mockRouteParams = { slug: 'test-agent' }
-
-    renderWithProviders(<AppSidebar />)
-    // Agent is selected (expanded) so AgentRowIndicator suppresses
-    // session-derived flags on the AGENT row. But the session sub-row should
-    // still surface its awaiting indicator — which our mock shows via the
-    // `<AgentStatus>` `data-awaiting` attribute on session-derived flags.
-    // Since the agent is expanded, the agent-level status should NOT be
-    // marked awaiting (data-awaiting='false').
-    const status = screen.getByTestId('agent-status-running')
-    expect(status).toHaveAttribute('data-awaiting', 'false')
-  })
-
   it('falls back to agent-level flags when sessions data is not yet loaded', () => {
     mockUseAgents.mockReturnValue({
       data: [makeAgent({ hasSessionsAwaitingInput: true })],
@@ -602,6 +580,48 @@ describe('AppSidebar — agent row indicator', () => {
     // Sessions data has no unread, so no session-row dot either. Net: zero
     // accessible "unread notifications" labels.
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+  })
+
+  // Regression: the selected agent auto-expands, and the expanded agent row
+  // used to zero out its working/awaiting state — while the top-nav
+  // AgentStatus (agent-header) kept aggregating session activity. Same
+  // screen, two answers: header said "working", sidebar row said idle. The
+  // agent row must keep reporting working/awaiting when expanded.
+  it('shows working on the expanded agent row when a session is active (top-nav parity)', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasActiveSessions: true })],
+      isLoading: false,
+      error: null,
+    })
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent' ? [makeSession({ isActive: true })] : [],
+      isLoading: false,
+    }))
+    mockRouteParams = { slug: 'test-agent' }
+
+    renderWithProviders(<AppSidebar />)
+    // The agent is expanded — its session sub-row is visible and working…
+    expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
+    // …and the agent row itself still reports working, like the top nav.
+    const status = screen.getByTestId('agent-status-running')
+    expect(status).toHaveAttribute('data-active', 'true')
+  })
+
+  it('shows awaiting on the expanded agent row when a session awaits input (top-nav parity)', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasSessionsAwaitingInput: false /* stale */ })],
+      isLoading: false,
+      error: null,
+    })
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent' ? [makeSession({ isAwaitingInput: true /* fresh */ })] : [],
+      isLoading: false,
+    }))
+    mockRouteParams = { slug: 'test-agent' }
+
+    renderWithProviders(<AppSidebar />)
+    const status = screen.getByTestId('agent-status-running')
+    expect(status).toHaveAttribute('data-awaiting', 'true')
   })
 
   it('prioritizes awaiting > working > unread when collapsed', () => {
