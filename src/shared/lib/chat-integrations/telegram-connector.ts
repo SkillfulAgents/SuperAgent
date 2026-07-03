@@ -13,8 +13,9 @@ import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
+import type { UpdateDeduplicator } from './update-deduplicator'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
-import { captureException } from '@shared/lib/error-reporting'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
 
@@ -166,7 +167,7 @@ export class TelegramConnector extends ChatClientConnector {
   // the current label even when it changes mid-turn (working → thinking → …).
   private workingActivity: Map<string, SessionActivity> = new Map()
 
-  constructor(private config: TelegramConfig) {
+  constructor(private config: TelegramConfig, private deduplicator?: UpdateDeduplicator) {
     super()
   }
 
@@ -185,6 +186,8 @@ export class TelegramConnector extends ChatClientConnector {
 
     // Handle photo messages (images sent directly, not as documents)
     this.bot.on('message:photo', async (ctx) => {
+      if (this.disconnecting) return
+      if (this.isDuplicateUpdate(ctx)) return
       const photos = ctx.message.photo
       if (!photos || photos.length === 0) return
 
@@ -220,6 +223,8 @@ export class TelegramConnector extends ChatClientConnector {
 
     // Handle document uploads (for file request resolution)
     this.bot.on('message:document', async (ctx) => {
+      if (this.disconnecting) return
+      if (this.isDuplicateUpdate(ctx)) return
       const doc = ctx.message.document
       const chatType = ctx.chat.type
 
@@ -614,6 +619,10 @@ export class TelegramConnector extends ChatClientConnector {
    *  and only resolves on Done. The callback is answered inside each branch so the empty-Done
    *  toast can fire (a callback can be answered exactly once). */
   private async handleCallbackQuery(ctx: GrammyContext): Promise<void> {
+    if (this.disconnecting) return
+    // Dedupe callback redeliveries too: a redelivered multiSelect toggle would flip a
+    // checkbox back off (its callback mapping isn't consumed on tap), corrupting the answer.
+    if (this.isDuplicateUpdate(ctx)) return
     const data = ctx.callbackQuery?.data
     if (!data) { await ctx.answerCallbackQuery(); return }
     const mapping = this.callbackDataMap.get(data)
@@ -797,7 +806,26 @@ export class TelegramConnector extends ChatClientConnector {
 
   // ── First-poll batching ─────────────────────────────────────────────
 
+  /**
+   * True if this update_id was already accepted (a redelivery to drop). Checked before
+   * first-poll batching so a repeat can't bleed into a batch. Fail-open with no deduplicator.
+   */
+  private isDuplicateUpdate(ctx: GrammyContext): boolean {
+    if (!this.deduplicator) return false
+    const updateId = ctx.update?.update_id
+    if (updateId === undefined) return false
+    if (this.deduplicator.isDuplicate(String(updateId))) {
+      // Breadcrumb, not error: a redelivery is normal; recording it lets a wrongly-dropped
+      // message be traced (the one failure mode a dedup gate can introduce).
+      addErrorBreadcrumb({ category: 'chat-integration', message: 'Dropped duplicate Telegram update', data: { updateId } })
+      return true
+    }
+    return false
+  }
+
   private handleTextMessage(ctx: GrammyContext): void {
+    if (this.disconnecting) return
+    if (this.isDuplicateUpdate(ctx)) return
     const text = ctx.message?.text
     if (!text || !ctx.chat) return
 

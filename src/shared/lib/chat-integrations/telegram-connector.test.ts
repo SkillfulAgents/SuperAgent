@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TelegramConnector } from './telegram-connector'
 import type { IncomingMessage } from './base-connector'
+import { UpdateDeduplicator } from './update-deduplicator'
 
 // ── grammY mock ────────────────────────────────────────────────────────────────
 // The photo/document handlers are inline closures registered inside connect(),
@@ -383,6 +384,22 @@ describe('TelegramConnector — AskUserQuestion multi-select', () => {
     expect(responses).toHaveLength(0)
   })
 
+  it('drops a REDELIVERED multiSelect toggle (same update_id) so the selection is not un-toggled', async () => {
+    // D4: a redelivered toggle would flip the checkbox back off, corrupting the answer set.
+    const dedup = new UpdateDeduplicator(100)
+    const c = new TelegramConnector({ botToken: 'fake:TOKEN' }, dedup)
+    const sent2 = attachFakeBot(c).sent
+    await (c as any).sendUserRequestCard('123', multiSelectEvent())
+    const redisCb = sent2[0].reply_markup.inline_keyboard[0][0].callback_data
+    const ctxA = makeCbCtx(redisCb); ctxA.update = { update_id: 8001 }
+    const ctxB = makeCbCtx(redisCb); ctxB.update = { update_id: 8001 } // redelivery — same update_id
+    await (c as any).handleCallbackQuery(ctxA) // check Redis
+    await (c as any).handleCallbackQuery(ctxB) // redelivery must be dropped, NOT toggle off
+    const state = [...(c as any).pendingMultiSelect.values()][0]
+    expect(state.checked.has('Redis')).toBe(true) // toggled exactly once
+    expect(state.checked.size).toBe(1)
+  })
+
   it('Done with nothing checked shows a toast and does not resolve', async () => {
     await (connector as any).sendUserRequestCard('123', multiSelectEvent())
     const kb = sent[0].reply_markup.inline_keyboard
@@ -673,5 +690,134 @@ describe('TelegramConnector — secret/file requests route to the desktop-only f
     const md = sent[0].rich_message.markdown as string
     expect(md).toContain("isn't supported in chat")
     expect(md).not.toMatch(/please (upload|send) the file/i)
+  })
+})
+
+describe('TelegramConnector — update deduplication (at-least-once redelivery guard)', () => {
+  /** A text ctx carrying a raw Telegram update_id (the redelivery key). */
+  function makeTextCtxWithUpdate(updateId: number, opts: { chatId?: number; text?: string; messageId?: number } = {}): any {
+    const ctx = makeCtx({
+      type: 'private',
+      chatId: opts.chatId ?? 123,
+      text: opts.text ?? 'hello',
+      messageId: opts.messageId ?? 1,
+    }) as any
+    ctx.update = { update_id: updateId }
+    return ctx
+  }
+
+  it('drops a redelivered update with the same update_id (emits once, not twice)', () => {
+    const dedup = new UpdateDeduplicator(100)
+    const connector = new TelegramConnector({ botToken: 'fake:TOKEN' }, dedup)
+    const emitted: IncomingMessage[] = []
+    connector.onMessage((m) => emitted.push(m))
+    ;(connector as any).hasCompletedFirstPoll = true
+
+    const ctx = makeTextCtxWithUpdate(5001, { text: 'hi', messageId: 100 })
+    ;(connector as any).handleTextMessage(ctx) // first delivery
+    ;(connector as any).handleTextMessage(ctx) // redelivery — same update_id
+
+    expect(emitted).toHaveLength(1)
+  })
+
+  it('emits both when the update_ids differ', () => {
+    const dedup = new UpdateDeduplicator(100)
+    const connector = new TelegramConnector({ botToken: 'fake:TOKEN' }, dedup)
+    const emitted: IncomingMessage[] = []
+    connector.onMessage((m) => emitted.push(m))
+    ;(connector as any).hasCompletedFirstPoll = true
+
+    ;(connector as any).handleTextMessage(makeTextCtxWithUpdate(5001, { text: 'one', messageId: 100 }))
+    ;(connector as any).handleTextMessage(makeTextCtxWithUpdate(5002, { text: 'two', messageId: 101 }))
+
+    expect(emitted).toHaveLength(2)
+  })
+
+  it('dedupes BEFORE first-poll batching, so a redelivered update never bleeds into the batch', () => {
+    const dedup = new UpdateDeduplicator(100)
+    // Update 5001 was already accepted before a reconnect wiped the connector.
+    dedup.isDuplicate('5001')
+    const connector = new TelegramConnector({ botToken: 'fake:TOKEN' }, dedup)
+    const emitted: IncomingMessage[] = []
+    connector.onMessage((m) => emitted.push(m))
+    // First-poll window (as on a reconnect): messages buffer + batch.
+    ;(connector as any).hasCompletedFirstPoll = false
+
+    // Redelivered old update + a genuinely new one arrive in the same batch window.
+    ;(connector as any).handleTextMessage(makeTextCtxWithUpdate(5001, { chatId: 200, text: 'old message', messageId: 100 }))
+    ;(connector as any).handleTextMessage(makeTextCtxWithUpdate(5002, { chatId: 200, text: 'new message', messageId: 101 }))
+    ;(connector as any).flushBatch('200', '456', '101')
+
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0].text).toBe('new message')
+    expect(emitted[0].text).not.toContain('old message')
+  })
+
+  it('does not dedupe when no deduplicator is wired (back-compat)', () => {
+    const connector = new TelegramConnector({ botToken: 'fake:TOKEN' })
+    const emitted: IncomingMessage[] = []
+    connector.onMessage((m) => emitted.push(m))
+    ;(connector as any).hasCompletedFirstPoll = true
+
+    const ctx = makeTextCtxWithUpdate(5001, { text: 'hi', messageId: 100 })
+    ;(connector as any).handleTextMessage(ctx)
+    ;(connector as any).handleTextMessage(ctx)
+
+    expect(emitted).toHaveLength(2)
+  })
+
+  it('a disconnecting connector ignores updates (no emit, and does not record them)', () => {
+    // D1: during teardown the manager has already unsubscribed, so processing here would
+    // drop the message AND record its id in the shared deduplicator — the new connector would
+    // then drop the redelivery as a "duplicate" and the message is lost. So ignore updates
+    // entirely while disconnecting; the new connector re-reads and delivers.
+    const dedup = new UpdateDeduplicator(100)
+    const connector = new TelegramConnector({ botToken: 'fake:TOKEN' }, dedup)
+    const emitted: IncomingMessage[] = []
+    connector.onMessage((m) => emitted.push(m))
+    ;(connector as any).hasCompletedFirstPoll = true
+    ;(connector as any).disconnecting = true
+
+    ;(connector as any).handleTextMessage(makeTextCtxWithUpdate(9101, { text: 'hi', messageId: 100 }))
+
+    expect(emitted).toHaveLength(0)               // not processed by the tearing-down connector
+    expect(dedup.isDuplicate('9101')).toBe(false) // not recorded → a fresh connector will deliver it
+  })
+})
+
+describe('TelegramConnector — update deduplication on media handlers', () => {
+  let connector: TelegramConnector
+  let emitted: IncomingMessage[]
+
+  beforeEach(async () => {
+    // connect() registers the photo/document closures into capturedHandlers; drive its
+    // poll + first-poll timers deterministically (mirrors the media-handlers suite).
+    vi.useFakeTimers()
+    for (const k of Object.keys(capturedHandlers)) delete capturedHandlers[k]
+    getFileMock.mockReset().mockResolvedValue({ file_path: 'files/x' })
+    connector = new TelegramConnector({ botToken: 'fake:TOKEN' }, new UpdateDeduplicator(100))
+    emitted = []
+    connector.onMessage((m) => emitted.push(m))
+    const p = connector.connect()
+    await vi.advanceTimersByTimeAsync(1100)
+    await p
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
+  it('drops a redelivered document (emits once, no re-download)', async () => {
+    const ctx: any = {
+      chat: { id: 123, type: 'private' },
+      from: { id: 456, first_name: 'Bob' },
+      message: { document: { file_id: 'd1', file_name: 'report.pdf', mime_type: 'application/pdf' }, caption: '', message_id: 11, date: 0 },
+      update: { update_id: 7002 },
+    }
+    await capturedHandlers['message:document'](ctx)
+    await capturedHandlers['message:document'](ctx) // redelivery — same update_id
+    expect(emitted).toHaveLength(1)
+    expect(getFileMock).toHaveBeenCalledTimes(1) // the second delivery never re-fetches
   })
 })
