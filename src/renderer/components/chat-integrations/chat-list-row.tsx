@@ -1,6 +1,6 @@
 import { Loader2 } from 'lucide-react'
-import { format } from 'date-fns'
 import { Button } from '@renderer/components/ui/button'
+import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
 import {
   useApproveChatAccess,
   useRevokeChatAccess,
@@ -8,7 +8,7 @@ import {
 import { isBrowsable, type ChatRow } from './chat-inbox-model'
 
 const lastActive = (row: ChatRow) =>
-  row.lastActivityAt ? format(new Date(row.lastActivityAt), 'MMM d, h:mm a') : null
+  row.lastActivityAt ? formatSessionTimestamp(new Date(row.lastActivityAt)) : null
 
 /** Access action with a per-button spinner while its mutation is in flight. */
 function AccessButton({ label, pending, onClick, className, variant = 'ghost' }: {

@@ -6,6 +6,7 @@
 
 import type { ChatIntegration, ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { isSettling } from '@shared/lib/chat-integrations/utils'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
@@ -56,11 +57,11 @@ export function useChatIntegrations(agentSlug: string | null, status?: string) {
     enabled: !!agentSlug,
     // Keep the live `connected` fresh so the home tag tracks the wire like the
     // connector card does (same cadence as useChatIntegrationStatus): poll fast
-    // while any integration is still connecting, idle once all are settled.
-    refetchInterval: (query) => {
-      const settling = query.state.data?.some((i) => i.status === 'active' && !i.connected)
-      return settling ? 3_000 : 30_000
-    },
+    // while any integration is still connecting, idle once all are settled. Only
+    // while foregrounded - a stuck "Connecting…" shouldn't churn a backgrounded tab.
+    refetchInterval: (query) =>
+      query.state.data?.some((i) => isSettling(i.status, i.connected)) ? 3_000 : 30_000,
+    refetchIntervalInBackground: false,
   })
 }
 
@@ -97,12 +98,13 @@ export function useChatIntegrationStatus(id: string | null) {
     // transport leaves within a second or two of a (re)connect. Poll fast while
     // it's unsettled so the card converges to "Listening" promptly instead of
     // sitting on a stale `connected:false` for a full idle interval; back off to
-    // the idle cadence once it's up (or paused/errored — settled states).
+    // the idle cadence once it's up (or paused/errored — settled states). Only
+    // while foregrounded so a stuck "Connecting…" can't churn a backgrounded tab.
     refetchInterval: (query) => {
       const data = query.state.data
-      const settling = data?.status === 'active' && !data.connected
-      return settling ? 3_000 : 30_000
+      return data && isSettling(data.status, data.connected) ? 3_000 : 30_000
     },
+    refetchIntervalInBackground: false,
   })
 }
 

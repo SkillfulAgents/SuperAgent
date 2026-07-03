@@ -29,6 +29,17 @@ export function deriveChatIntegrationState(
   return connected ? 'working' : 'connecting'
 }
 
+/**
+ * Whether an integration is mid-connect: toggled on but the transport isn't up yet
+ * (the transient "Connecting…" state). The status card and the agent-home tag both
+ * fast-poll while this holds so they converge to "Listening" promptly instead of
+ * waiting a full idle interval - one predicate so the two surfaces can't drift.
+ * A failed connect settles to `status: 'error'`, so this can't stay true forever.
+ */
+export function isSettling(status: string, connected?: boolean): boolean {
+  return status === 'active' && !connected
+}
+
 /** User-facing label per state. The one place these words live, so the Status
  *  card and the agent-home status tag can't drift apart. */
 export const CHAT_INTEGRATION_STATE_LABEL: Record<ChatIntegrationState, string> = {

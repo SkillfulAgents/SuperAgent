@@ -1,4 +1,3 @@
-import { format } from 'date-fns'
 import {
   Select,
   SelectContent,
@@ -10,6 +9,7 @@ import { DialogTitle } from '@renderer/components/ui/dialog'
 import { SessionThread } from '@renderer/components/messages/session-thread'
 import { FilePreviewProvider } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
+import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
 import type { ChatRow } from './chat-inbox-model'
 import type { ChatIntegrationSession } from '@shared/lib/db/schema'
 
@@ -19,7 +19,7 @@ import type { ChatIntegrationSession } from '@shared/lib/db/schema'
 const CONVERSATION_PANEL_SCROLL = '[&_[data-message-content-area]]:max-h-[65vh] [&_[data-message-content-area]]:!h-auto'
 
 const windowLabel = (w: ChatIntegrationSession) =>
-  `${format(new Date(w.updatedAt), 'MMM d, h:mm a')}${w.archivedAt ? ' (cleared)' : ''}`
+  `${formatSessionTimestamp(new Date(w.updatedAt))}${w.archivedAt ? ' (cleared)' : ''}`
 
 // Switcher value for the fresh, not-yet-created conversation.
 const NEW_WINDOW = '__new__'
