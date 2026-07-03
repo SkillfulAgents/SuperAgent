@@ -24,7 +24,7 @@ const mockStreamState = {
   activeSubagents: [] as any[],
   completedSubagents: null as Set<string> | null,
   slashCommands: [],
-  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean }>,
+  backgroundTasks: [] as Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }>,
 }
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -626,6 +626,31 @@ describe('AgentActivityIndicator', () => {
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('2 background workflows')).toBeInTheDocument()
+  })
+
+  it('hides the background section when the only task is a background subagent', () => {
+    // A background subagent already renders as a named subagent row; counting it
+    // in "N background processes" would show the same work twice.
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'a1b2c3', startedAt: Date.now() - 5000, isSubagent: true },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.queryByText(/background process/)).not.toBeInTheDocument()
+  })
+
+  it('counts only non-subagent tasks when background subagents and bash tasks mix', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'a1b2c3', startedAt: Date.now() - 5000, isSubagent: true },
+      { taskId: 'bg-1', startedAt: Date.now() - 3000 },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('1 background process')).toBeInTheDocument()
   })
 
   describe('subagent status', () => {

@@ -91,7 +91,7 @@ interface StreamingState {
   // the task_id and is the name of the `subagents/workflows/<runId>` dir.
   activeBackgroundTasks: Map<
     string,
-    { startedAt: number; isWorkflow?: boolean; toolUseId?: string; workflowName?: string; runId?: string }
+    { startedAt: number; isWorkflow?: boolean; isSubagent?: boolean; toolUseId?: string; workflowName?: string; runId?: string }
   >
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
   // True when the runtime publishes session_state_changed events — then IT is
@@ -472,13 +472,14 @@ class MessagePersister {
     }
   }
 
-  getActiveBackgroundTasks(sessionId: string): Array<{ taskId: string; startedAt: number; isWorkflow?: boolean }> {
+  getActiveBackgroundTasks(sessionId: string): Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> {
     const state = this.streamingStates.get(sessionId)
     if (!state) return []
     return Array.from(state.activeBackgroundTasks.entries()).map(([taskId, info]) => ({
       taskId,
       startedAt: info.startedAt,
       isWorkflow: info.isWorkflow,
+      isSubagent: info.isSubagent,
     }))
   }
 
@@ -903,10 +904,45 @@ class MessagePersister {
                 // before it's parsed, leaving isBackground=false). Marking it here
                 // both prevents the ack from completing the subagent and lets the
                 // later task event complete it.
-                const tur = content.tool_use_result as { status?: string; isAsync?: boolean } | undefined
+                const tur = content.tool_use_result as
+                  | { status?: string; isAsync?: boolean; agentId?: string }
+                  | undefined
                 const isAsyncLaunchAck = tur?.status === 'async_launched' || tur?.isAsync === true
                 if (isAsyncLaunchAck) {
                   sub.isBackground = true
+                  // A background subagent outlives its launch turn, and since SDK
+                  // 0.3.197 the runtime settles the turn (result + idle) while the
+                  // subagent is still running — older SDKs held them back, which is
+                  // why local_agent was never tracked here. Register it exactly like
+                  // a backgrounded Bash command so it surfaces in the same
+                  // "N background processes" UI and holds the session in the
+                  // waiting-background state; its terminal task_updated /
+                  // task_notification (task_id === agentId) clears it through the
+                  // existing paths.
+                  const bgAgentId = tur?.agentId ?? sub.agentId
+                  if (bgAgentId && !state.activeBackgroundTasks.has(bgAgentId)) {
+                    const startedAt = Date.now()
+                    state.activeBackgroundTasks.set(bgAgentId, {
+                      startedAt,
+                      isSubagent: true,
+                      toolUseId: block.tool_use_id,
+                    })
+                    // isSubagent lets the renderer skip these in the generic
+                    // "N background processes" row — the named subagent row
+                    // already represents this work in the activity tray.
+                    this.broadcastToSSE(sessionId, {
+                      type: 'background_task_started',
+                      taskId: bgAgentId,
+                      startedAt,
+                      isSubagent: true,
+                    })
+                    this.broadcastGlobal({
+                      type: 'background_task_started',
+                      sessionId,
+                      agentSlug: state.agentSlug,
+                      taskId: bgAgentId,
+                    })
+                  }
                 } else {
                   // Foreground subagent: the tool_result IS the completion.
                   let resultText: string | undefined
@@ -1025,7 +1061,11 @@ class MessagePersister {
           // guarantees task_id === subagent session ID === JSONL filename).
           const toolUseId = content.tool_use_id as string | undefined
           const agentId = content.task_id as string | undefined
-          if (toolUseId) {
+          // A subagent's own inner Bash can surface in the parent stream as an
+          // unparented task_started{task_type:'local_bash'} — it is not a
+          // subagent, and creating an entry for it renders a phantom subagent
+          // card that lingers for the whole background wait.
+          if (toolUseId && content.task_type !== 'local_bash') {
             const existing = state.activeSubagents.get(toolUseId)
             if (existing) {
               if (agentId) existing.agentId = agentId

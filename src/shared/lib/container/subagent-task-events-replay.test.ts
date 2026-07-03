@@ -631,4 +631,97 @@ describe('subagent task_started / task_progress replay harness', () => {
       expect(completedIdx).toBeLessThan(turnEndIdx)
     })
   })
+
+  // Real capture (2026-07-02, claude-agent-sdk 0.3.197) of the premature-idle
+  // regression for background SUBAGENTS (task_type 'local_agent'). Older SDKs held
+  // the turn's result/idle back until background agents finished, so the session
+  // stayed working with no host-side tracking. 0.3.197's background-by-default
+  // subagent rework settles the turn immediately: session_state_changed:'idle'
+  // fires while the subagent still has ~28s to run, and the completion arrives
+  // ~31s later as task_updated + 'running' + task_notification. The idle handler
+  // must treat a running background subagent exactly like a backgrounded Bash:
+  // surface session_waiting_background and do NOT finalize — finalizing drops the
+  // indicator and un-gates container auto-sleep mid-job.
+  describe('background subagent premature-idle (real capture)', () => {
+    const isTerminal = (s: ReplaySnapshot, taskId: string) =>
+      s.taskId === taskId &&
+      ((s.subtype === 'task_notification' && s.status === 'completed') ||
+        (s.subtype === 'task_updated' &&
+          (s.patchStatus === 'completed' || s.patchStatus === 'failed' || s.patchStatus === 'killed')))
+
+    it('keeps the session active and un-finalized for the full time the subagent runs', async () => {
+      const { meta, timeline } = await replayFixtureTracked('background-subagent-premature-idle')
+      const taskId = meta.subagents[0].taskId!
+
+      const startedIdx = timeline.findIndex((s) => s.subtype === 'task_started' && s.taskId === taskId)
+      const completedIdx = timeline.findIndex((s) => isTerminal(s, taskId))
+      const prematureIdx = timeline.findIndex(
+        (s, i) =>
+          i > startedIdx && i < completedIdx && s.subtype === 'session_state_changed' && s.state === 'idle'
+      )
+      expect(startedIdx).toBeGreaterThanOrEqual(0)
+      expect(completedIdx).toBeGreaterThan(startedIdx)
+      // The capture's defining feature: a turn-end idle between launch and completion.
+      expect(prematureIdx).toBeGreaterThan(startedIdx)
+
+      for (let i = startedIdx; i < completedIdx; i++) {
+        expect(timeline[i].isActive, `session finalized mid-flight at entry ${i} (${timeline[i].subtype})`).toBe(
+          true
+        )
+        expect(timeline[i].sessionIdleCount, `session_idle emitted mid-flight at entry ${i}`).toBe(0)
+      }
+    })
+
+    it('tracks the subagent as a background task and surfaces the waiting state at the premature idle', async () => {
+      const { meta, sseEvents } = await replayFixtureTracked('background-subagent-premature-idle')
+      const taskId = meta.subagents[0].taskId!
+
+      const started = sseEvents.filter((e) => e['type'] === 'background_task_started')
+      expect(started.map((e) => e['taskId'])).toContain(taskId)
+      // Flagged so the renderer can skip it in the generic "N background
+      // processes" row — the named subagent row already shows this work.
+      expect(started.find((e) => e['taskId'] === taskId)?.['isSubagent']).toBe(true)
+
+      // The premature turn-end idle must downgrade to waiting-on-background.
+      expect(sseEvents.some((e) => e['type'] === 'session_waiting_background')).toBe(true)
+
+      const completed = sseEvents.filter((e) => e['type'] === 'background_task_completed')
+      expect(completed.map((e) => e['taskId'])).toContain(taskId)
+    })
+
+    it('finalizes exactly once, at the truly-settled idle after the wake turn', async () => {
+      const { meta, timeline } = await replayFixtureTracked('background-subagent-premature-idle')
+      const taskId = meta.subagents[0].taskId!
+
+      const completedIdx = timeline.findIndex((s) => isTerminal(s, taskId))
+      const last = timeline[timeline.length - 1]
+      expect(last.sessionIdleCount).toBe(1)
+      expect(last.isActive).toBe(false)
+      // ...and that single finalize happened after the real completion.
+      const firstIdleIdx = timeline.findIndex((s) => s.sessionIdleCount > 0)
+      expect(firstIdleIdx).toBeGreaterThan(completedIdx)
+    })
+
+    it('completes the subagent card once and ignores the leaked inner-bash task_started', async () => {
+      const { meta, sseEvents } = await replayFixtureTracked('background-subagent-premature-idle')
+      const sub = meta.subagents[0]
+
+      const bg = sseEvents.filter(
+        (e) => e['type'] === 'subagent_completed' && e['parentToolId'] === sub.parentToolId
+      )
+      expect(bg).toHaveLength(1)
+      expect(bg[0]['agentId']).toBe(sub.agentId)
+
+      // The subagent's INNER Bash leaks into the main stream as an unparented
+      // task_started{task_type:'local_bash'} — it must not spawn a phantom
+      // subagent card (it would linger for the whole background wait).
+      const knownParents = meta.subagents.map((s) => s.parentToolId)
+      const startedParents = sseEvents
+        .filter((e) => e['type'] === 'subagent_started')
+        .map((e) => e['parentToolId'])
+      for (const p of startedParents) {
+        expect(knownParents, `phantom subagent_started for ${String(p)}`).toContain(p)
+      }
+    })
+  })
 })

@@ -126,7 +126,7 @@ interface StreamState {
   typingUser: { id: string; name?: string } | null // User currently typing (auth mode shared agents)
   peerUserMessages: PeerUserMessage[] // Messages from other users not yet seen in fetched messages
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
-  backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean }> // Active background Bash commands + dynamic workflows
+  backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> // Active background Bash commands, dynamic workflows + background subagents
   isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
 }
 
@@ -539,7 +539,7 @@ function getOrCreateEventSource(
           const existing = current.backgroundTasks.filter(t => t.taskId !== data.taskId)
           streamStates.set(sessionId, {
             ...current,
-            backgroundTasks: [...existing, { taskId: data.taskId, startedAt: data.startedAt, isWorkflow: data.isWorkflow }],
+            backgroundTasks: [...existing, { taskId: data.taskId, startedAt: data.startedAt, isWorkflow: data.isWorkflow, isSubagent: data.isSubagent }],
           })
         }
       }

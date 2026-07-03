@@ -316,9 +316,11 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
           </ul>
         )}
 
-        {/* Active background processes */}
-        {backgroundTasks.length > 0 && (
-          <BackgroundTasksSection tasks={backgroundTasks} />
+        {/* Active background processes. Background subagents are excluded: they
+            already render as named subagent rows above, and counting them here
+            would show the same work twice. */}
+        {backgroundTasks.some((t) => !t.isSubagent) && (
+          <BackgroundTasksSection tasks={backgroundTasks.filter((t) => !t.isSubagent)} />
         )}
 
         {/* Todo list if available and at least one item is not completed */}
@@ -398,7 +400,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   )
 }
 
-function BackgroundTasksSection({ tasks }: { tasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean }> }) {
+function BackgroundTasksSection({ tasks }: { tasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> }) {
   const earliest = Math.min(...tasks.map(t => t.startedAt))
   const elapsed = useElapsedTimer(new Date(earliest))
   // Label as "workflow" when every active background task is a dynamic workflow;
