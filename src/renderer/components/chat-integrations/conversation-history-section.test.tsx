@@ -72,10 +72,30 @@ describe('ConversationHistorySection (inbox)', () => {
     render(<ConversationHistorySection {...base} sessions={[]} routeSessionId={null} />)
     expect(screen.getByText('Dana')).toBeInTheDocument()
     expect(screen.getByText('Blocked')).toBeInTheDocument()
+    // The first message (chat request) is surfaced in the row subtitle for triage.
+    expect(screen.getByText('hello?')).toBeInTheDocument()
     // A pending request offers both decisions directly - not a single "Unblock".
     expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Deny' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Block' })).not.toBeInTheDocument()
+  })
+
+  it('opens a pending chat to its request when the row body is clicked', () => {
+    h.access = [makeAccess({ externalChatId: 'chat-p', status: 'pending', title: 'Dana', firstMessagePreview: 'hello?' })]
+    render(<ConversationHistorySection {...base} sessions={[]} routeSessionId={null} />)
+    // A blocked chat has no window, so opening it routes through onNewConversation
+    // (which sets ?newchat) - the dialog then renders the request view.
+    fireEvent.click(screen.getByTestId('chat-row-chat-p'))
+    expect(base.onNewConversation).toHaveBeenCalledWith('chat-p')
+  })
+
+  it('acting on a pending chat via keyboard does not also open the row', () => {
+    h.access = [makeAccess({ externalChatId: 'chat-p', status: 'pending', title: 'Dana' })]
+    render(<ConversationHistorySection {...base} sessions={[]} routeSessionId={null} />)
+    // Enter on the Approve button bubbles to the row's keydown; the row must ignore it
+    // (target !== the row) so the dialog doesn't open on top of the decision.
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Approve' }), { key: 'Enter' })
+    expect(base.onNewConversation).not.toHaveBeenCalled()
   })
 
   it('shows a denied chat with an Unblock action', () => {

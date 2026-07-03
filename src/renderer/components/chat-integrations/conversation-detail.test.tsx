@@ -175,4 +175,61 @@ describe('ConversationDetail request view (pending/blocked, no window)', () => {
     expect(screen.getByText('hey can I get in?')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
   })
+
+  it('closes back to the inbox after the owner decides from the request view', async () => {
+    const user = userEvent.setup()
+    // Make the mutation invoke its onSuccess so onActed (-> onSelectWindow(null)) fires.
+    approveMutate.mockImplementation((_vars: unknown, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.())
+    render(
+      <ConversationDetail
+        row={pendingRow()}
+        openWindowId={null}
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+        canManageAccess
+      />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Approve' }))
+    expect(onSelectWindow).toHaveBeenCalledWith(null)
+  })
+
+  it('shows a denied chat with no windows as Blocked with an Unblock action', () => {
+    const row: ChatRow = {
+      externalChatId: 'chat-9', title: 'Blocked Bob', status: 'denied', accessId: 'acc-1',
+      firstMessagePreview: 'let me in', windows: [], latestSessionId: null, lastActivityAt: 0,
+    }
+    render(
+      <ConversationDetail
+        row={row}
+        openWindowId={null}
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+        canManageAccess
+      />,
+    )
+    expect(screen.getByText('Blocked')).toBeInTheDocument()
+    expect(screen.getByText('let me in')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Unblock' })).toBeInTheDocument()
+  })
+
+  it('opens a denied chat that kept a window to its thread, not the request view', () => {
+    const row: ChatRow = {
+      externalChatId: 'chat-1', title: 'Blocked Bob', status: 'denied', accessId: 'acc-1',
+      windows: [win('sess-a', '2026-06-20T12:00:00Z')], latestSessionId: 'sess-a', lastActivityAt: 0,
+    }
+    render(
+      <ConversationDetail
+        row={row}
+        openWindowId="sess-a"
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+      />,
+    )
+    // windows.length > 0 -> falls through to the thread, never the request preview.
+    expect(screen.getByTestId('session-thread')).toHaveTextContent('sess-a')
+    expect(screen.queryByText('Blocked')).toBeNull()
+  })
 })

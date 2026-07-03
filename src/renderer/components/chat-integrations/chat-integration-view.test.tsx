@@ -58,6 +58,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   // `integration.agentSlug !== agentSlug`, matching these tests' assumptions.
   resolveRouteAgentId: (slug: string) => slug,
 }))
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 
 afterEach(() => {
   sessionsMock = DEFAULT_SESSIONS
@@ -110,6 +111,20 @@ describe('ChatIntegrationView', () => {
     render(<ChatIntegrationView integrationId="int-1" agentSlug="a" chatSessionId={null} chatNewConvId={null} />)
     expect(screen.getByText('Bot')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Rename integration' })).toBeNull()
+  })
+
+  it('toasts an error when the rename fails', async () => {
+    const { toast } = await import('sonner')
+    vi.mocked(toast.error).mockClear()
+    updateAsync.mockRejectedValue(new Error('boom'))
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+    render(<ChatIntegrationView integrationId="int-1" agentSlug="a" chatSessionId={null} chatNewConvId={null} />)
+    await user.click(screen.getByTestId('integration-name'))
+    const input = screen.getByTestId('integration-name-input')
+    await user.clear(input)
+    await user.type(input, 'Nope{Enter}')
+    expect(toast.error).toHaveBeenCalledWith('Failed to rename integration', expect.anything())
   })
 
   it('passes the route ?session through to the inbox', () => {

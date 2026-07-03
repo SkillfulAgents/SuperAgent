@@ -67,16 +67,20 @@ export function buildChatRows(
     if (!row) {
       row = {
         externalChatId: s.externalChatId,
-        // No access row (Slack/iMessage): name the chat from its window. byRecency is
-        // newest-first, so the first window we see - the newest - wins; a later window's
-        // stale name never overwrites it. Access rows are created earlier and keep their
-        // canonical title.
-        title: s.displayName ?? chatFallbackTitle(s.externalChatId),
+        // No access row (Slack/iMessage): the chat is named from its windows just below.
+        title: chatFallbackTitle(s.externalChatId),
         windows: [],
         latestSessionId: null,
         lastActivityAt: 0,
       }
       byChat.set(s.externalChatId, row)
+    }
+    // Name a no-access chat from its newest NAMED window: byRecency is newest-first, so
+    // the first window with a display name wins (a later window's stale name never
+    // overwrites it), and an unnamed newest window falls through to the next one. Access
+    // rows are created earlier and keep their canonical title, so they're skipped here.
+    if (!row.accessId && s.displayName && row.title === chatFallbackTitle(row.externalChatId)) {
+      row.title = s.displayName
     }
     if (row.windows.length === 0) row.latestSessionId = s.sessionId
     row.windows.push(s)

@@ -35,7 +35,9 @@ export function ChatListRow({ row, integrationId, isSelected, canManageAccess, o
       tabIndex={openable ? 0 : undefined}
       onClick={open}
       onKeyDown={(e) => {
-        if (openable && (e.key === 'Enter' || e.key === ' ')) {
+        // Only the row itself opens on Enter/Space; a keystroke bubbling up from a
+        // child control (the access buttons) must not also open the dialog.
+        if (e.target === e.currentTarget && openable && (e.key === 'Enter' || e.key === ' ')) {
           e.preventDefault()
           open()
         }

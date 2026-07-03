@@ -93,6 +93,19 @@ describe('buildChatRows', () => {
     expect(rows[0].title).toBe('New Name')
   })
 
+  it('falls through to an older window name when the newest window is unnamed', () => {
+    // Newest window has no displayName; the title should adopt the next-newest NAMED
+    // window rather than dropping to the "Chat <id>" fallback.
+    const rows = buildChatRows(
+      [
+        session({ externalChatId: 'c1', sessionId: 's-old', displayName: 'Dana', updatedAt: new Date('2026-06-19T10:00:00Z') }),
+        session({ externalChatId: 'c1', sessionId: 's-new', displayName: null, updatedAt: new Date('2026-06-20T10:00:00Z') }),
+      ],
+      [],
+    )
+    expect(rows[0].title).toBe('Dana')
+  })
+
   it('prefers the access title over a session display name', () => {
     const rows = buildChatRows(
       [session({ externalChatId: 'c1', sessionId: 's', displayName: 'stale name' })],
