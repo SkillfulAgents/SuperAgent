@@ -131,4 +131,39 @@ test.describe('Composer failure recovery', () => {
     await expect(page.getByTestId('file-pill').filter({ hasText: 'guarded.txt' }).first()).toBeVisible({ timeout: 5000 })
     await expect(sessionPage.getMessageInput()).toHaveValue('')
   })
+
+  test('a slow successful send is not yanked back into the composer', async ({ page }) => {
+    // Regression for the restored-successful-send bug: sending into a session
+    // whose container is waking means the server spends seconds before it
+    // accepts the message and broadcasts session_active. The 1.5s undelivered-
+    // ghost grace used to fire in that window and restore the text into the
+    // composer even though the send was on its way — the message then landed
+    // in the transcript with its text ALSO sitting in the input, baiting a
+    // duplicate resend. Holding the POST for 2.5s reproduces that shape
+    // deterministically (session_active is only broadcast once the server
+    // processes the POST).
+    const text = 'slow send that must stay sent'
+    await page.route('**/sessions/*/messages', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue()
+      await new Promise((r) => setTimeout(r, 2500))
+      return route.continue()
+    })
+
+    await sessionPage.typeMessage(text)
+    await sessionPage.getSendButton().click()
+
+    // The held send completes and materializes as a real message with a
+    // normal response — exactly one copy
+    await sessionPage.waitForUserMessageCount(2, 20000)
+    await sessionPage.expectUserMessage(text, 1)
+    await expect(
+      sessionPage.getAssistantMessages().filter({ hasText: 'This is a mock response from the E2E test container.' })
+    ).toHaveCount(2, { timeout: 15000 })
+    await expect(sessionPage.getUserMessages()).toHaveCount(2)
+
+    // ...and the composer stayed empty throughout — the mid-flight message
+    // was never treated as undelivered (pre-fix, its text reappeared here at
+    // ~1.5s and was still present at this point)
+    await expect(sessionPage.getMessageInput()).toHaveValue('')
+  })
 })

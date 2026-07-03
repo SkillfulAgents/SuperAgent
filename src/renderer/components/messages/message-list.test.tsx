@@ -731,6 +731,85 @@ describe('MessageList', () => {
     }
   })
 
+  it('does not restore a non-queued pending whose POST is still in flight', async () => {
+    // A send into a waking container: the session still reads inactive and the
+    // POST has not returned a uuid yet. The message is usually mid-delivery —
+    // yanking it back into the composer makes it land in the transcript AND
+    // the input (the restored-successful-send bug). Failure of the POST has
+    // its own restore path (the composer's catch), so idle-restore must leave
+    // these pending.
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      mockMessagesData.data = []
+      mockStreamState.isActive = false
+
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
+
+      renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={[{ localId: 'l1', text: 'mid-delivery message', sentAt: Date.now() }]}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        vi.advanceTimersByTime(1500)
+      })
+
+      expect(onAppeared).not.toHaveBeenCalled()
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still restores a non-queued pending that was accepted (uuid) but never materialized', async () => {
+    // The POST succeeded but the message never showed up in the transcript by
+    // idle (e.g. an interrupt raced the CLI before it persisted the entry) —
+    // this is genuinely lost work, so the restore must still fire.
+    vi.useFakeTimers()
+    try {
+      const onAppeared = vi.fn()
+      mockMessagesData.data = []
+      mockStreamState.isActive = false
+
+      const DraftProbe = () => {
+        const [draft] = useDraft<string>('session:s-1')
+        return <div data-testid="draft-probe">{draft ?? ''}</div>
+      }
+
+      renderWithProviders(
+        <>
+          <MessageList
+            sessionId="s-1"
+            agentSlug="agent-1"
+            pendingUserMessages={[{ localId: 'l1', uuid: 'server-uuid', text: 'accepted then dropped', sentAt: Date.now() }]}
+            onPendingMessageAppeared={onAppeared}
+          />
+          <DraftProbe />
+        </>
+      )
+
+      await act(async () => {
+        vi.advanceTimersByTime(1500)
+      })
+
+      expect(onAppeared).toHaveBeenCalledWith('l1')
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('accepted then dropped')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // ---- Cancelling queued messages ----
 
   it('shows Cancel on queued ghosts only once the server uuid is known', () => {

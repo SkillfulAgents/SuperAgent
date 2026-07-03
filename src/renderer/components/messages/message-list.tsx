@@ -213,20 +213,28 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     }
   }, [messages, pendingUserMessages, peerUserMessages, onPendingMessageAppeared, sessionId, user?.id])
 
-  // Once the session goes idle, any of our messages still showing as pending
-  // were never persisted to the transcript — the agent was interrupted before
-  // picking them up, or the turn ended without consuming them. Restore their
-  // text to the composer so the user can edit/resend, and remove the ghosts;
-  // drop peer ghosts (we can't restore another user's text into our composer —
-  // their own client restores it for them). Messages that WERE delivered clear
-  // via the materialize effect above, which prunes them from this list as the
-  // post-idle refetch lands. The short grace below gives that refetch a beat to
-  // settle so a just-answered message isn't yanked back into the composer; it's
-  // a single refetch window, not a delivery guess (restoring is non-destructive
-  // either way). While the agent is active, queued ghosts may wait minutes.
+  // Once the session goes idle, our messages still showing as pending are
+  // treated as undelivered — the agent was interrupted before picking them
+  // up, or the turn ended without consuming them. Restore their text to the
+  // composer so the user can edit/resend, and remove the ghosts; drop peer
+  // ghosts (we can't restore another user's text into our composer — their
+  // own client restores it for them). Messages that WERE delivered clear via
+  // the materialize effect above, which prunes them from this list as the
+  // post-idle refetch lands. The short grace below gives that refetch a beat
+  // to settle so a just-answered message isn't yanked back into the composer.
+  // While the agent is active, queued ghosts may wait minutes.
+  //
+  // EXCEPT: a non-queued pending without a uuid has its POST still in flight
+  // — commonly a send into a session whose container is waking, where the
+  // server can spend seconds before it accepts the message and broadcasts
+  // session_active. Its outcome already has owners (a failed POST restores
+  // the text via the composer's catch; a successful one assigns the uuid and
+  // materializes above), so restoring it here would yank back a message that
+  // is actually mid-delivery — it then lands in the transcript AND sits in
+  // the composer, baiting a duplicate resend. Leave those pending.
   useEffect(() => {
     if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
-    const undelivered = pendingUserMessages ?? []
+    const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
     const timerId = setTimeout(() => {
       if (undelivered.length > 0) {
         const draftKey = `session:${sessionId}`
