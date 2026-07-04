@@ -95,7 +95,7 @@ test.describe('Chat integration connector page', () => {
 
     // Settings cards (canManage gate is open in mock mode for the creating user).
     await expect(mainContent.getByText('Status', { exact: true })).toBeVisible()
-    await expect(mainContent.getByText('Conversation Settings', { exact: true })).toBeVisible()
+    await expect(mainContent.getByText('Integration Settings', { exact: true })).toBeVisible()
     await expect(mainContent.getByText('Model & Effort', { exact: true })).toBeVisible()
 
     // Access control is folded into the conversation inbox (no separate Access

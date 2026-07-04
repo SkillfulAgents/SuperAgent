@@ -13,7 +13,7 @@ export function IntegrationSettingsCard({ integration, canManageAccess }: {
   const setRequireApproval = useSetRequireApproval()
 
   return (
-    <DetailCard label="Conversation Settings">
+    <DetailCard label="Integration Settings">
       {/* -mx-4 cancels the card's px-4 so rows span edge-to-edge with full-width dividers. */}
       <div className="-mx-4 divide-y divide-border/50">
         <SessionTimeoutSelect
