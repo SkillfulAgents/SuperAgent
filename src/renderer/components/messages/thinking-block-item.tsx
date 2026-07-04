@@ -20,8 +20,8 @@ interface ThinkingBlockItemProps {
   durationMs?: number
 }
 
-// How close (px) to the bottom counts as "pinned" — matches the tolerance the
-// message list uses for its own stick-to-bottom behavior.
+// How close (px) to the bottom counts as "pinned" — tighter than the message
+// list's 80px tolerance since the card body is a small (max-h-64) scroller.
 const PIN_THRESHOLD_PX = 32
 
 /**
@@ -39,13 +39,15 @@ export function ThinkingBlockItem({ text, active, startedAt, endedAt, durationMs
 
   // Memoized so the timer effect doesn't reset its interval on every delta re-render.
   // Live while streaming (endDate null), static "Thought for" duration once done.
-  // A block that never got its stop event (interrupted turn) freezes rather than
-  // ticking forever on an idle session.
+  // A block that never got its stop event (interrupted turn, missed idle event)
+  // freezes at the elapsed time when `active` flips off, rather than ticking
+  // forever or snapping back to 0s. Normally dead code: the stream handlers
+  // close open blocks on thinking_start/stop and session_idle.
   const startDate = useMemo(() => (startedAt !== undefined ? new Date(startedAt) : null), [startedAt])
   const endDate = useMemo(() => {
     if (startedAt === undefined) return null
     if (endedAt !== null && endedAt !== undefined) return new Date(endedAt)
-    return active ? null : new Date(startedAt)
+    return active ? null : new Date()
   }, [endedAt, active, startedAt])
   const elapsed = useElapsedTimer(startDate, endDate)
   // Live timing wins (exact); persisted blocks fall back to the

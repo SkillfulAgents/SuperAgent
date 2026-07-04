@@ -758,6 +758,24 @@ describe('transformMessages', () => {
       expect(asMessage(result[0]).thinking).toBeUndefined()
     })
 
+    it('skips thinking blocks whose value is not a string instead of throwing', () => {
+      // A corrupt or hand-edited transcript entry must not take down the whole
+      // messages read path (the route 500s the entire session on a throw here)
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'thinking', thinking: 123 } as unknown as ContentBlock,
+          { type: 'thinking', thinking: { nested: true } } as unknown as ContentBlock,
+          { type: 'thinking', thinking: 'Valid episode.' } as ContentBlock,
+          { type: 'text', text: 'Answer.' },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).content.text).toBe('Answer.')
+      expect(asMessage(result[0]).thinking).toEqual([{ text: 'Valid episode.' }])
+    })
+
     it('handles tool result for non-existent tool (orphaned result)', () => {
       const entries: JsonlMessageEntry[] = [
         createAssistantMessage('uuid-1', 'msg-1', [

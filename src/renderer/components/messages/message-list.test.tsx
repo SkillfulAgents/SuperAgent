@@ -51,6 +51,7 @@ const mockStreamState = {
   completedSubagents: null as Set<string> | null,
   typingUser: null as { id: string; name?: string } | null,
   peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
+  thinkingBlocks: [] as Array<{ id: number; text: string; startedAt: number; endedAt: number | null }>,
 }
 
 const mockClearCompacting = vi.fn()

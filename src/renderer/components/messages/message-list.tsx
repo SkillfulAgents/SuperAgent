@@ -133,7 +133,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     typingUser,
     peerUserMessages,
     workflows,
-    isThinking,
     thinkingBlocks,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
@@ -383,19 +382,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // message arrives with its `thinking` array, the persisted card in MessageItem
   // takes over and the ephemeral one must not double-render. Matched by text
   // prefix in either direction since the stream can trail the transcript.
+  // Only the current turn's persisted thinking is compared — live blocks are
+  // reset on session_active, so a match against an older turn can only be a
+  // false positive (the model reusing a stock opener suppresses the live card).
   const unpersistedThinkingBlocks = useMemo(() => {
     if (!thinkingBlocks.length || !messages?.length) return thinkingBlocks
     const persisted: string[] = []
-    let currentTurnHasPersistedThinking = false
-    let inCurrentTurn = true
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
-      if (inCurrentTurn && isTurnStartingUserMessage(m)) inCurrentTurn = false
+      if (isTurnStartingUserMessage(m)) break
       if (m.type === 'assistant' && Array.isArray((m as ApiMessage).thinking)) {
         for (const t of (m as ApiMessage).thinking!) {
-          if (typeof t?.text === 'string') persisted.push(t.text)
+          if (typeof t?.text === 'string' && t.text.trim()) persisted.push(t.text.trim())
         }
-        if (inCurrentTurn) currentTurnHasPersistedThinking = true
       }
     }
     // Once the turn is over and its thinking made it into the transcript, the
@@ -403,14 +402,14 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // streamed text diverged from the transcript (e.g. an SSE reconnect
     // dropped deltas) — text matching would miss them and the leftover card
     // would strand below the persisted message, appearing to "jump" there.
-    if (!isActive && currentTurnHasPersistedThinking) return []
-    if (!persisted.length) return thinkingBlocks
+    if (!isActive && persisted.length) return []
     return thinkingBlocks.filter(b => {
       const t = b.text.trim()
       // Blocks with no streamed text (display option off) have no persisted
-      // counterpart to collide with — keep them.
-      if (!t) return true
-      return !persisted.some(p => p.startsWith(t) || t.startsWith(p.trim()))
+      // counterpart to collide with — keep them while the turn runs, but don't
+      // let them strand in an idle transcript.
+      if (!t) return isActive
+      return !persisted.some(p => p.startsWith(t) || t.startsWith(p))
     })
   }, [messages, thinkingBlocks, isActive])
 
@@ -794,7 +793,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 text={block.text}
                 startedAt={block.startedAt}
                 endedAt={block.endedAt}
-                active={isActive && isThinking && block.id === thinkingBlocks[thinkingBlocks.length - 1]?.id}
+                active={isActive && block.endedAt === null}
               />
             </div>
           </MessageErrorBoundary>

@@ -199,6 +199,14 @@ const EMPTY_THINKING: ThinkingState = { blocks: [], isThinking: false }
 const sessionThinking = new Map<string, ThinkingState>()
 let nextThinkingBlockId = 1
 
+// Stamp endedAt on any still-open block. Used when a new block starts (at most
+// one may be live), when a block stops, and at turn end — a turn that ends
+// without thinking_stop (interrupt, error) must freeze its timer at the actual
+// elapsed time, not tick forever or read "0s".
+function closeOpenThinkingBlocks(blocks: ThinkingBlock[]): ThinkingBlock[] {
+  return blocks.map(b => b.endedAt === null ? { ...b, endedAt: Date.now() } : b)
+}
+
 // Live state for dynamic-workflow (`Workflow` tool) runs in this session. Kept
 // outside StreamState (like thinking/slash commands) so the ~15 full state-rebuild
 // sites don't thread it through. A workflow's per-agent tree lives on disk (fetched
@@ -461,6 +469,13 @@ function getOrCreateEventSource(
         // Clear streamingToolUses - if tools were persisted, ToolCallItem renders them;
         // if they weren't (interrupted mid-stream), they should disappear.
         if (data.sessionId && data.sessionId !== sessionId) return
+        // A turn interrupted mid-thinking never gets thinking_stop: close open
+        // blocks so their cards freeze at the real elapsed time instead of "0s",
+        // and drop the "Thinking" status.
+        const thinkingAtIdle = sessionThinking.get(sessionId)
+        if (thinkingAtIdle && (thinkingAtIdle.isThinking || thinkingAtIdle.blocks.some(b => b.endedAt === null))) {
+          sessionThinking.set(sessionId, { blocks: closeOpenThinkingBlocks(thinkingAtIdle.blocks), isThinking: false })
+        }
         streamStates.set(sessionId, {
           isActive: false,
           isStreaming: false,
@@ -877,7 +892,7 @@ function getOrCreateEventSource(
         // New thinking episode — open a fresh block. If a previous block never got
         // its stop (dropped event), close it now so at most one block is live.
         const t = sessionThinking.get(sessionId) ?? EMPTY_THINKING
-        const blocks = t.blocks.map(b => b.endedAt === null ? { ...b, endedAt: Date.now() } : b)
+        const blocks = closeOpenThinkingBlocks(t.blocks)
         blocks.push({ id: nextThinkingBlockId++, text: '', startedAt: Date.now(), endedAt: null })
         sessionThinking.set(sessionId, { blocks, isThinking: true })
       }
@@ -899,8 +914,7 @@ function getOrCreateEventSource(
         // collapses but stays readable for the rest of the turn)
         const t = sessionThinking.get(sessionId)
         if (t) {
-          const blocks = t.blocks.map(b => b.endedAt === null ? { ...b, endedAt: Date.now() } : b)
-          sessionThinking.set(sessionId, { blocks, isThinking: false })
+          sessionThinking.set(sessionId, { blocks: closeOpenThinkingBlocks(t.blocks), isThinking: false })
         }
       }
       else if (data.type === 'secret_request') {

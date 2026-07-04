@@ -251,7 +251,9 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     const entryTs = new Date(entry.timestamp).getTime()
     if (entry.type === 'assistant' && Array.isArray(entry.message.content)) {
       const texts = (entry.message.content as ContentBlock[])
-        .filter((b) => b.type === 'thinking' && b.thinking?.trim())
+        // typeof guard: this runs server-side on raw JSONL — a malformed
+        // non-string `thinking` must be skipped, not throw and 500 the route
+        .filter((b) => b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim())
         .map((b) => (b as { thinking: string }).thinking)
       if (texts.length > 0) {
         const durationMs =
