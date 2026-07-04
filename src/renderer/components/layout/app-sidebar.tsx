@@ -11,7 +11,6 @@ import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import {
   Collapsible,
   CollapsibleContent,
-  CollapsibleTrigger,
 } from '@renderer/components/ui/collapsible'
 import {
   Sidebar,
@@ -52,14 +51,12 @@ import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
 import { useQueryClient } from '@tanstack/react-query'
-import { useParams, useRouterState, useSearch as useRouteSearch } from '@tanstack/react-router'
+import { useParams, useRouterState } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useHistoryNavigation } from '@renderer/router/use-history-navigation'
 import { useSearch } from '@renderer/context/search-context'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
-import { useChatIntegrations, useChatIntegrationSessions, type ChatIntegration } from '@renderer/hooks/use-chat-integrations'
-import { formatProviderName } from '@shared/lib/chat-integrations/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
@@ -88,7 +85,6 @@ import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
-import { formatSessionTimestamp } from '@shared/lib/chat-integrations/utils'
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -168,160 +164,6 @@ function SessionSubItem({
           </AppLink>
         </SidebarMenuSubButton>
       </SessionContextMenu>
-    </SidebarMenuSubItem>
-  )
-}
-
-// Chat integration sub-item (with expandable chat sessions)
-function ChatIntegrationSubItem({
-  integration,
-  agentSlug,
-}: {
-  integration: ChatIntegration
-  agentSlug: string
-}) {
-  const { data: sessions } = useChatIntegrationSessions(integration.id)
-  // Route-derived active state (URL-authoritative; correct on cold reload).
-  const { integrationId: routeIntegrationId } = useParams({ strict: false }) as { integrationId?: string }
-  const routeAgentId = useRouteAgentId()
-  const chatSearch = useRouteSearch({ strict: false }) as { session?: unknown }
-  const viewingThisIntegration = routeAgentId === agentSlug && routeIntegrationId === integration.id
-  const selectedChatSessionId = viewingThisIntegration && typeof chatSearch.session === 'string' ? chatSearch.session : null
-  const isSelected = viewingThisIntegration && !selectedChatSessionId
-  const hasSelectedSession = viewingThisIntegration && selectedChatSessionId != null
-  const [isOpen, setIsOpen] = useState(viewingThisIntegration || hasSelectedSession)
-
-  const statusDot = integration.status === 'active' ? 'bg-green-500' :
-    integration.status === 'paused' ? 'bg-yellow-500' :
-    integration.status === 'error' ? 'bg-red-500' : 'bg-gray-400'
-
-  const tooltip = `${integration.provider}: ${integration.status}`
-  const hasSessions = sessions && sessions.length > 0
-
-  return (
-    <SidebarMenuSubItem>
-      {hasSessions ? (
-        <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-          {/* Chevron is a SIBLING of the row link (not nested) so the row can be
-              a single <a> — no interactive controls inside an anchor. */}
-          <div className="flex items-center">
-            <SidebarMenuSubButton
-              asChild
-              isActive={isSelected}
-              title={tooltip}
-              className="flex-1"
-            >
-              <AppLink
-                to="/agents/$slug/chat/$integrationId"
-                params={{ slug: agentSlug, integrationId: integration.id }}
-                className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
-              >
-                <span className="truncate">
-                  {integration.name || formatProviderName(integration.provider)}
-                </span>
-                <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${statusDot}`} />
-              </AppLink>
-            </SidebarMenuSubButton>
-            <CollapsibleTrigger asChild>
-              <button
-                onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen) }}
-                aria-label={isOpen ? 'Collapse' : 'Expand'}
-                className="p-0.5 shrink-0"
-              >
-                <ChevronRight className="h-3 w-3 shrink-0 transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'none' }} />
-              </button>
-            </CollapsibleTrigger>
-          </div>
-          <CollapsibleContent>
-            <SidebarMenuSub>
-              {sessions.map((session) => {
-                const isArchived = session.archivedAt != null
-                return (
-                  <SidebarMenuSubItem key={session.id}>
-                    <SidebarMenuSubButton
-                      asChild
-                      isActive={selectedChatSessionId === session.sessionId}
-                    >
-                      <AppLink
-                        to="/agents/$slug/chat/$integrationId"
-                        params={{ slug: agentSlug, integrationId: integration.id }}
-                        search={{ session: session.sessionId }}
-                        className={`flex items-center gap-2 w-full text-muted-foreground ${isArchived ? 'opacity-40' : 'opacity-70'}`}
-                      >
-                        <span className="truncate text-xs">
-                          {session.displayName || `Chat ${session.externalChatId.slice(-6)}`}
-                          {session.createdAt && (
-                            <span className="text-muted-foreground/50">
-                              {' — '}{formatSessionTimestamp(new Date(session.createdAt))}
-                            </span>
-                          )}
-                        </span>
-                        {isArchived && (
-                          <span className="ml-auto text-2xs text-muted-foreground/50 shrink-0">archived</span>
-                        )}
-                      </AppLink>
-                    </SidebarMenuSubButton>
-                  </SidebarMenuSubItem>
-                )
-              })}
-            </SidebarMenuSub>
-          </CollapsibleContent>
-        </Collapsible>
-      ) : (
-        <SidebarMenuSubButton
-          asChild
-          isActive={isSelected}
-          title={tooltip}
-        >
-          <AppLink
-            to="/agents/$slug/chat/$integrationId"
-            params={{ slug: agentSlug, integrationId: integration.id }}
-            className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
-          >
-            <span className="truncate">
-              {integration.name || formatProviderName(integration.provider)}
-            </span>
-            <span className={`ml-auto h-1.5 w-1.5 rounded-full shrink-0 ${statusDot}`} />
-          </AppLink>
-        </SidebarMenuSubButton>
-      )}
-    </SidebarMenuSubItem>
-  )
-}
-
-// Collapsible group for multiple chat integrations
-function ChatIntegrationsGroup({
-  integrations,
-  agentSlug,
-}: {
-  integrations: ChatIntegration[]
-  agentSlug: string
-}) {
-  const [isOpen, setIsOpen] = useState(false)
-
-  return (
-    <SidebarMenuSubItem>
-      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-        <CollapsibleTrigger asChild>
-          <SidebarMenuSubButton asChild>
-            <button className="flex items-center gap-2 w-full text-muted-foreground opacity-70">
-              <span className="truncate">Chat Integrations ({integrations.length})</span>
-              <ChevronRight className="ml-auto h-3 w-3 shrink-0 transition-transform duration-200 data-[state=open]:rotate-90" data-state={isOpen ? 'open' : 'closed'} />
-            </button>
-          </SidebarMenuSubButton>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <SidebarMenuSub>
-            {integrations.map((integration) => (
-              <ChatIntegrationSubItem
-                key={integration.id}
-                integration={integration}
-                agentSlug={agentSlug}
-              />
-            ))}
-          </SidebarMenuSub>
-        </CollapsibleContent>
-      </Collapsible>
     </SidebarMenuSubItem>
   )
 }
@@ -514,11 +356,10 @@ export const AgentMenuItem = React.forwardRef<
   const routeAgentId = useRouteAgentId()
   const isSelected = agent.slug === routeAgentId
   // Auto-expand on selection only if the agent has content to show. Brand-new
-  // agents (no sessions / dashboards / chat integrations yet) start collapsed
-  // — the empty submenu would just be visual noise.
+  // agents (no sessions / dashboards yet) start collapsed - the empty submenu
+  // would just be visual noise.
   const hasInitialContent =
     (agent.sessionCount ?? 0) > 0 ||
-    (agent.chatIntegrationCount ?? 0) > 0 ||
     (agent.dashboardCount ?? 0) > 0
   const [isOpen, setIsOpen] = useState(isSelected && hasInitialContent)
 
@@ -544,12 +385,10 @@ export const AgentMenuItem = React.forwardRef<
   // Lazy-load detail data only when expanded
   const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
   const { data: artifacts } = useArtifacts(isOpen ? agent.slug : null)
-  const { data: chatIntegrationsData } = useChatIntegrations(isOpen ? agent.slug : null, 'active')
 
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
   const dashboards = Array.isArray(artifacts) ? artifacts : []
-  const chatIntegrations = chatIntegrationsData || []
 
   // Use pre-aggregated counts to determine if the chevron should show.
   // Also show when isOpen (agent selected) since sessions may have been
@@ -557,7 +396,6 @@ export const AgentMenuItem = React.forwardRef<
   const hasExpandableContent =
     isOpen ||
     (agent.sessionCount ?? 0) > 0 ||
-    (agent.chatIntegrationCount ?? 0) > 0 ||
     (agent.dashboardCount ?? 0) > 0
 
   // Show skeleton after 100ms if sessions haven't loaded yet
@@ -617,22 +455,26 @@ export const AgentMenuItem = React.forwardRef<
           </AgentContextMenu>
           {/*
             Sibling chevron button overlays its slot in the row so the row stays a
-            single <button> (no nested interactive controls).
+            single <button> (no nested interactive controls). Only rendered when
+            there is expandable content so agents with no sessions or dashboards
+            do not show an empty chevron.
           */}
-          <button
-            type="button"
-            onClick={handleChevronClick}
-            aria-label={isOpen ? 'Collapse' : 'Expand'}
-            aria-expanded={isOpen}
-            className="absolute left-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
-          >
-            <ChevronRight
-              className={cn(
-                'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
-                isOpen && 'rotate-90'
-              )}
-            />
-          </button>
+          {hasExpandableContent && (
+            <button
+              type="button"
+              onClick={handleChevronClick}
+              aria-label={isOpen ? 'Collapse' : 'Expand'}
+              aria-expanded={isOpen}
+              className="absolute left-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
+            >
+              <ChevronRight
+                className={cn(
+                  'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
+                  isOpen && 'rotate-90'
+                )}
+              />
+            </button>
+          )}
         </div>
         {hasExpandableContent ? (
           <>
@@ -650,18 +492,6 @@ export const AgentMenuItem = React.forwardRef<
                         agentSlug={agent.slug}
                       />
                     ))}
-                    {/* Chat integrations */}
-                    {chatIntegrations.length > 1 ? (
-                      <ChatIntegrationsGroup
-                        integrations={chatIntegrations}
-                        agentSlug={agent.slug}
-                      />
-                    ) : chatIntegrations.length === 1 ? (
-                      <ChatIntegrationSubItem
-                        integration={chatIntegrations[0]}
-                        agentSlug={agent.slug}
-                      />
-                    ) : null}
                     {/* Regular sessions */}
                     {visibleSessions?.map((session) => (
                       <SessionSubItem

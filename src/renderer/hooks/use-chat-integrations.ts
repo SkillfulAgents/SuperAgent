@@ -6,10 +6,16 @@
 
 import type { ChatIntegration, ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { isSettling } from '@shared/lib/chat-integrations/utils'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 export type { ChatIntegration, ChatIntegrationSession, ChatIntegrationAccess }
+
+/** A list row plus the live transport state the list route computes, so the
+ *  agent-home tag can derive its state from the same `(status, connected)` the
+ *  connector page uses. */
+export type ChatIntegrationListItem = ChatIntegration & { connected: boolean }
 
 export class ChatIntegrationApiError extends Error {
   readonly status: number
@@ -38,7 +44,7 @@ export const chatIntegrationKeys = {
 // ── List hooks ──────────────────────────────────────────────────────────
 
 export function useChatIntegrations(agentSlug: string | null, status?: string) {
-  return useQuery<ChatIntegration[]>({
+  return useQuery<ChatIntegrationListItem[]>({
     queryKey: chatIntegrationKeys.list(agentSlug, status),
     queryFn: async () => {
       const url = status
@@ -49,6 +55,13 @@ export function useChatIntegrations(agentSlug: string | null, status?: string) {
       return res.json()
     },
     enabled: !!agentSlug,
+    // Keep the live `connected` fresh so the home tag tracks the wire like the
+    // connector card does (same cadence as useChatIntegrationStatus): poll fast
+    // while any integration is still connecting, idle once all are settled. Only
+    // while foregrounded - a stuck "Connecting…" shouldn't churn a backgrounded tab.
+    refetchInterval: (query) =>
+      query.state.data?.some((i) => isSettling(i.status, i.connected)) ? 3_000 : 30_000,
+    refetchIntervalInBackground: false,
   })
 }
 
@@ -81,7 +94,17 @@ export function useChatIntegrationStatus(id: string | null) {
       return res.json()
     },
     enabled: !!id,
-    refetchInterval: 30_000,
+    // "Connecting…" (active but the wire isn't up yet) is a transient state the
+    // transport leaves within a second or two of a (re)connect. Poll fast while
+    // it's unsettled so the card converges to "Listening" promptly instead of
+    // sitting on a stale `connected:false` for a full idle interval; back off to
+    // the idle cadence once it's up (or paused/errored — settled states). Only
+    // while foregrounded so a stuck "Connecting…" can't churn a backgrounded tab.
+    refetchInterval: (query) => {
+      const data = query.state.data
+      return data && isSettling(data.status, data.connected) ? 3_000 : 30_000
+    },
+    refetchIntervalInBackground: false,
   })
 }
 
@@ -107,7 +130,7 @@ export function useChatIntegrationSessions(integrationId: string | null) {
 
 // ── Access hook ────────────────────────────────────────────────────────
 
-export function useChatIntegrationAccess(integrationId: string | null) {
+export function useChatIntegrationAccess(integrationId: string | null, enabled = true) {
   return useQuery<ChatIntegrationAccess[]>({
     queryKey: chatIntegrationKeys.access(integrationId ?? ''),
     queryFn: async () => {
@@ -115,7 +138,9 @@ export function useChatIntegrationAccess(integrationId: string | null) {
       if (!res.ok) throw new Error('Failed to fetch chat integration access')
       return res.json()
     },
-    enabled: !!integrationId,
+    // The /access route is owner-gated; callers pass enabled=false for non-owners
+    // (and non-Telegram providers) so viewers don't trigger a 403.
+    enabled: !!integrationId && enabled,
     // Poll for new access requests — same cadence as sessions, no SSE fallback.
     refetchInterval: 20_000,
     refetchIntervalInBackground: false,
@@ -197,6 +222,7 @@ export function useUpdateChatIntegration() {
       return res.json() as Promise<ChatIntegration>
     },
     onSuccess: (data) => {
+      queryClient.setQueryData(chatIntegrationKeys.detail(data.id), data)
       queryClient.invalidateQueries({ queryKey: ['chat-integrations', data.agentSlug] })
       queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.detail(data.id) })
       queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.status(data.id) })
@@ -269,6 +295,7 @@ export function useSetRequireApproval() {
       return res.json() as Promise<ChatIntegration>
     },
     onSuccess: (data) => {
+      queryClient.setQueryData(chatIntegrationKeys.detail(data.id), data)
       queryClient.invalidateQueries({ queryKey: ['chat-integrations', data.agentSlug] })
       queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.detail(data.id) })
       queryClient.invalidateQueries({ queryKey: chatIntegrationKeys.access(data.id) })

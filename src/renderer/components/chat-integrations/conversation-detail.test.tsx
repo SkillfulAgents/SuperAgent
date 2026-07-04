@@ -1,0 +1,235 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { ConversationDetail } from './conversation-detail'
+import { makeSession } from './test-factories'
+import type { ChatRow } from './chat-inbox-model'
+import type { ChatIntegrationSession } from '@shared/lib/db/schema'
+
+// Shims for Radix Select in jsdom (mirrors runtime-tab.test).
+Element.prototype.scrollIntoView = vi.fn()
+Element.prototype.hasPointerCapture = vi.fn(() => false)
+Element.prototype.releasePointerCapture = vi.fn()
+
+// DialogTitle needs a Radix Dialog context; stub it so ConversationDetail renders
+// standalone. SessionThread/FilePreview are stubbed like the inbox test does.
+vi.mock('@renderer/components/ui/dialog', () => ({
+  DialogTitle: ({ children, ...p }: any) => <div {...p}>{children}</div>,
+}))
+// The stub calls the REAL useWorkflow so this test reproduces the thread's
+// dependency on WorkflowContext (MessageList reads it): if ConversationDetail
+// ever stops wrapping the thread in WorkflowProvider, this render throws - the
+// exact crash that shipped when the rebase added useWorkflow to MessageList.
+vi.mock('@renderer/components/messages/session-thread', async () => {
+  const { useWorkflow } = await vi.importActual<typeof import('@renderer/context/workflow-context')>(
+    '@renderer/context/workflow-context',
+  )
+  return {
+    SessionThread: (p: any) => {
+      useWorkflow()
+      return <div data-testid="session-thread">{p.sessionId}</div>
+    },
+  }
+})
+vi.mock('@renderer/context/file-preview-context', () => ({
+  FilePreviewProvider: ({ children }: any) => <>{children}</>,
+}))
+// AccessActions (rendered in the request view) pulls the access mutations; stub them
+// so the decision buttons work without a QueryClient. The thread-view tests never
+// render AccessActions, so these stay untouched there.
+const approveMutate = vi.fn()
+const denyMutate = vi.fn()
+const revokeMutate = vi.fn()
+vi.mock('@renderer/hooks/use-chat-integrations', () => ({
+  useApproveChatAccess: () => ({ mutate: approveMutate, isPending: false }),
+  useDenyChatAccess: () => ({ mutate: denyMutate, isPending: false }),
+  useRevokeChatAccess: () => ({ mutate: revokeMutate, isPending: false }),
+}))
+
+function win(sessionId: string, iso: string, cleared = false): ChatIntegrationSession {
+  return makeSession({
+    externalChatId: 'chat-1', sessionId,
+    updatedAt: new Date(iso), archivedAt: cleared ? new Date(iso) : null,
+  })
+}
+
+function makeRow(windows: ChatIntegrationSession[]): ChatRow {
+  return {
+    externalChatId: 'chat-1', title: 'Dana', status: 'allowed',
+    windows, latestSessionId: windows[0]?.sessionId ?? null, lastActivityAt: 0,
+  }
+}
+
+const props = { agentSlug: 'a', providerName: 'Telegram', integrationId: 'i', canManageAccess: false }
+
+const onSelectWindow = vi.fn<(sessionId: string | null) => void>()
+const onNewConversation = vi.fn<(externalChatId: string) => void>()
+
+describe('ConversationDetail window switcher', () => {
+  beforeEach(() => {
+    onSelectWindow.mockReset()
+    onNewConversation.mockReset()
+  })
+
+  it('switches to another window by its sessionId', async () => {
+    const user = userEvent.setup()
+    // Two live windows -> switcher lists both, no "New conversation" option.
+    const row = makeRow([win('sess-a', '2026-06-20T12:00:00Z'), win('sess-b', '2026-06-19T09:00:00Z')])
+    render(
+      <ConversationDetail
+        row={row}
+        openWindowId="sess-a"
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+      />,
+    )
+
+    const trigger = screen.getByRole('combobox', { name: 'Switch conversation' })
+    trigger.focus()
+    // Radix Select in jsdom is unreliable via click on the trigger; keyboard is deterministic.
+    await user.keyboard('[Enter]')
+    // Options render in row.windows order (no "New conversation" prepended here),
+    // so [1] is the other window (sess-b).
+    const options = await screen.findAllByRole('option')
+    expect(options).toHaveLength(2)
+    await user.click(options[1])
+
+    expect(onSelectWindow).toHaveBeenCalledWith('sess-b')
+    expect(onNewConversation).not.toHaveBeenCalled()
+  })
+
+  it('picks "New conversation" to start a fresh one for the chat', async () => {
+    const user = userEvent.setup()
+    // Every window cleared -> the switcher offers "New conversation" as the fresh option.
+    const row = makeRow([win('sess-a', '2026-06-20T12:00:00Z', true), win('sess-b', '2026-06-19T09:00:00Z', true)])
+    render(
+      <ConversationDetail
+        row={row}
+        openWindowId="sess-a"
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+      />,
+    )
+
+    const trigger = screen.getByRole('combobox', { name: 'Switch conversation' })
+    trigger.focus()
+    await user.keyboard('[Enter]')
+    await user.click(await screen.findByRole('option', { name: 'New conversation' }))
+
+    expect(onNewConversation).toHaveBeenCalledWith('chat-1')
+    expect(onSelectWindow).not.toHaveBeenCalled()
+  })
+})
+
+describe('ConversationDetail request view (pending/blocked, no window)', () => {
+  beforeEach(() => {
+    approveMutate.mockReset()
+    denyMutate.mockReset()
+    onSelectWindow.mockReset()
+  })
+
+  function pendingRow(): ChatRow {
+    return {
+      externalChatId: 'chat-9', title: 'Dana', status: 'pending', accessId: 'acc-1',
+      firstMessagePreview: 'hey can I get in?', windows: [], latestSessionId: null, lastActivityAt: 0,
+    }
+  }
+
+  it('shows the chat-request first message with Approve/Deny for the owner', async () => {
+    const user = userEvent.setup()
+    render(
+      <ConversationDetail
+        row={pendingRow()}
+        openWindowId={null}
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+        canManageAccess
+      />,
+    )
+    expect(screen.getByText('hey can I get in?')).toBeInTheDocument()
+    expect(screen.getByText('Chat request - awaiting approval')).toBeInTheDocument()
+    // A request has no conversation, so no read-only thread is rendered.
+    expect(screen.queryByTestId('session-thread')).toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Approve' }))
+    expect(approveMutate).toHaveBeenCalledWith(
+      { integrationId: 'i', accessId: 'acc-1' },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    )
+  })
+
+  it('hides the decision actions for a viewer without manage access', () => {
+    render(
+      <ConversationDetail
+        row={pendingRow()}
+        openWindowId={null}
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+      />,
+    )
+    expect(screen.getByText('hey can I get in?')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+  })
+
+  it('closes back to the inbox after the owner decides from the request view', async () => {
+    const user = userEvent.setup()
+    // Make the mutation invoke its onSuccess so onActed (-> onSelectWindow(null)) fires.
+    approveMutate.mockImplementation((_vars: unknown, opts?: { onSuccess?: () => void }) => opts?.onSuccess?.())
+    render(
+      <ConversationDetail
+        row={pendingRow()}
+        openWindowId={null}
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+        canManageAccess
+      />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Approve' }))
+    expect(onSelectWindow).toHaveBeenCalledWith(null)
+  })
+
+  it('shows a denied chat with no windows as Blocked with an Unblock action', () => {
+    const row: ChatRow = {
+      externalChatId: 'chat-9', title: 'Blocked Bob', status: 'denied', accessId: 'acc-1',
+      firstMessagePreview: 'let me in', windows: [], latestSessionId: null, lastActivityAt: 0,
+    }
+    render(
+      <ConversationDetail
+        row={row}
+        openWindowId={null}
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+        canManageAccess
+      />,
+    )
+    expect(screen.getByText('Blocked')).toBeInTheDocument()
+    expect(screen.getByText('let me in')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Unblock' })).toBeInTheDocument()
+  })
+
+  it('opens a denied chat that kept a window to its thread, not the request view', () => {
+    const row: ChatRow = {
+      externalChatId: 'chat-1', title: 'Blocked Bob', status: 'denied', accessId: 'acc-1',
+      windows: [win('sess-a', '2026-06-20T12:00:00Z')], latestSessionId: 'sess-a', lastActivityAt: 0,
+    }
+    render(
+      <ConversationDetail
+        row={row}
+        openWindowId="sess-a"
+        onSelectWindow={onSelectWindow}
+        onNewConversation={onNewConversation}
+        {...props}
+      />,
+    )
+    // windows.length > 0 -> falls through to the thread, never the request preview.
+    expect(screen.getByTestId('session-thread')).toHaveTextContent('sess-a')
+    expect(screen.queryByText('Blocked')).toBeNull()
+  })
+})

@@ -112,7 +112,9 @@ export function IntegrationRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 min-w-0">
             <span className="text-xs font-medium truncate">{name}</span>
-            {nameBadge && <span className="shrink-0">{nameBadge}</span>}
+            {/* text-2xs/leading-none pins the badge slot's line-height so a badge
+                can't inflate the name row (else it inherits the 16px/1.5 base). */}
+            {nameBadge && <span className="shrink-0 text-2xs leading-none">{nameBadge}</span>}
           </div>
           {subtitle && (
             <div className="flex items-center gap-1 text-[11px] text-muted-foreground mt-0.5">

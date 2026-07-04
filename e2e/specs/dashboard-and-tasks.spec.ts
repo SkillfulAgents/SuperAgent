@@ -2,6 +2,7 @@ import { test, expect, type APIRequestContext, type Page } from '@playwright/tes
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { createAgentWithTelegramIntegration } from '../helpers/chat-integrations'
 
 async function openAgentHome(page: Page, agentPage: AgentPage, agentName: string) {
   await agentPage.selectAgent(agentName)
@@ -193,31 +194,19 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     const errors: string[] = []
     page.on('pageerror', (e) => errors.push(e.message))
 
-    // Agent A owns the integration. createAgent lands on A's agent-home.
+    // Agent A owns the integration. createAgent lands on A's agent-home, then we
+    // seed a telegram integration for A and capture its globally-addressable id.
     const ownerName = `Chat Canon Owner ${Date.now()}`
-    await agentPage.createAgent(ownerName)
-    const aSlug = page.url().match(/\/agents\/([^/?#]+)/)?.[1]
-    expect(aSlug).toBeTruthy()
-
-    // Seed a telegram integration for A and capture its globally-addressable id.
-    const seedResp = await page.request.post(`/api/chat-integrations/${aSlug}`, {
-      data: {
-        provider: 'telegram',
-        name: 'E2E Canon Bot',
-        config: { botToken: `fake-${Date.now()}`, chatId: '12345' },
-      },
+    const { slug: aSlug, integrationId } = await createAgentWithTelegramIntegration(page, agentPage, {
+      agentName: ownerName,
+      integrationName: 'E2E Canon Bot',
     })
-    expect(seedResp.ok()).toBeTruthy()
-
     const listResp = await page.request.get(`/api/agents/${aSlug}/chat-integrations`)
     expect(listResp.ok()).toBeTruthy()
     const integrations = await listResp.json() as Array<{ id: string; agentSlug: string }>
-    expect(integrations.length).toBeGreaterThan(0)
-    const integrationId = integrations[0].id
-    expect(integrationId).toBeTruthy()
-    // The integration is stored under the canonical agent id; the canonicalize
-    // redirect lands there (the same id form the app uses for chat routes). The
-    // captured `aSlug` from the URL is a stale display slug (deferred URL rewrite).
+    // The captured `aSlug` from the URL is a stale display slug (deferred URL
+    // rewrite); the integration is stored under the canonical agent id, which is
+    // where the canonicalize redirect lands.
     const trueAgentSlug = integrations[0].agentSlug
 
     // Create agent B and deep-link A's integration under ITS slug, with a sub-session.
@@ -233,8 +222,9 @@ test.describe('Dashboard & Scheduled Task Tool Rendering', () => {
     await expect(page).toHaveURL(new RegExp(`/agents/${trueAgentSlug}/chat/${integrationId}\\?session=sample$`))
 
     // The owner's shell renders: agent breadcrumb + the integration header name.
-    // Scope the name to main-content — the sidebar also lists integration.name,
-    // so a bare getByText would trip strict mode.
+    // Scope the name to main-content - the sidebar no longer lists integration.name
+    // (the chat tab was removed in the three-pane overhaul), but scoping is kept
+    // as a defence against future additions that might cause a strict-mode collision.
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible()
     await expect(appPage.getMainContent().getByText('E2E Canon Bot')).toBeVisible({ timeout: 10000 })
 

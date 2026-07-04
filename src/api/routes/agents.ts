@@ -22,6 +22,7 @@ import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { listChatIntegrations, listChatIntegrationsByAgents } from '@shared/lib/services/chat-integration-service'
+import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { parseByteRange } from '@shared/lib/utils/http-range'
@@ -2790,7 +2791,15 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
     const status = c.req.query('status')
 
     const integrations = listChatIntegrations(slug, status || undefined)
-    return c.json(integrations)
+    // Enrich each row with the live transport state (the same isIntegrationConnected
+    // the /status route reads) so the agent-home list derives "Listening" vs
+    // "Connecting…" from the same source of truth as the connector page, instead
+    // of guessing from persisted status alone.
+    const withConnection = integrations.map((integration) => ({
+      ...integration,
+      connected: chatIntegrationManager.isIntegrationConnected(integration.id),
+    }))
+    return c.json(withConnection)
   } catch (error) {
     console.error('Failed to fetch chat integrations:', error)
     return c.json({ error: 'Failed to fetch chat integrations' }, 500)

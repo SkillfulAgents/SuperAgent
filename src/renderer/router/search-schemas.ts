@@ -11,8 +11,12 @@ import { isSafeInternalPath } from '@renderer/lib/api'
 // specific sub-session are the same view (`view.sessionId` is `string?` on the
 // `chat` variant of AgentView). NOT `.uuid()` — legacy/test session ids may not
 // be UUID-shaped.
+// `newchat` is the externalChatId of a chat opened to a fresh, not-yet-created
+// conversation (after "New conversation"): no `session` exists yet, so we address
+// the chat itself and render a blank thread until the next inbound message.
 export const chatSearchSchema = z.object({
   session: z.string().optional(),
+  newchat: z.string().optional(),
 })
 
 // A connection-detail overlay key: `account-${id}` / `mcp-${id}` (see

@@ -12,6 +12,7 @@ import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { parseAttachedFiles, parseMountedFolders } from '@shared/lib/utils/attached-files'
+import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
@@ -214,15 +215,24 @@ interface MessageItemProps {
   completedSubagents?: Set<string> | null
   onRemoveMessage?: (messageId: string) => void
   onRemoveToolCall?: (toolCallId: string) => void
+  /** Read-only mirror (chat-integration replay): no edit actions; lift the
+   *  connector's inline sender prefix into the sender label. */
+  readOnly?: boolean
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
   const rawText = message.content.text
-  const { cleanText: textAfterFiles, attachedFiles } = isUser && rawText ? parseAttachedFiles(rawText) : { cleanText: rawText, attachedFiles: [] }
+  // Read-only chat mirror: the connector prefixes incoming messages with an
+  // escaped "\[sender]: " so the agent can attribute them. Lift that into the
+  // sender label instead of showing it inline. Live sessions never carry it.
+  const { sender: senderFromPrefix, cleanText: baseText } = readOnly && isUser && rawText
+    ? parseSenderPrefix(rawText)
+    : { sender: null, cleanText: rawText }
+  const { cleanText: textAfterFiles, attachedFiles } = isUser && baseText ? parseAttachedFiles(baseText) : { cleanText: baseText, attachedFiles: [] }
   const { cleanText, mountedFolders } = isUser && textAfterFiles ? parseMountedFolders(textAfterFiles) : { cleanText: textAfterFiles, mountedFolders: [] }
   // Strip SDK-injected `<task-notification>` blocks that land in assistant text on
   // the busy path; surface any `workflow-complete` result as a structured card.
@@ -274,9 +284,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           isUser && 'items-end'
         )}
       >
-        {/* Sender name for shared agent sessions */}
-        {isUser && message.sender?.name && (
-          <span className="text-xs text-muted-foreground">{message.sender.name}</span>
+        {/* Sender name: shared agent sessions, or lifted from a read-only mirror prefix. */}
+        {isUser && (message.sender?.name ?? senderFromPrefix) && (
+          <span className="text-xs text-muted-foreground">{message.sender?.name ?? senderFromPrefix}</span>
         )}
 
         {/* Message bubble - only show if there's text content */}

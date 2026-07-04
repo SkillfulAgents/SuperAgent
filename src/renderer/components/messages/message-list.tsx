@@ -59,9 +59,12 @@ interface MessageListProps {
   pendingRequestCount?: number
   /** The pending message materialized (or was restored to the composer) — remove it. */
   onPendingMessageAppeared?: (localId: string) => void
+  /** Read-only mirror (chat-integration replay): suppress edit/delete actions and
+   *  lift the connector's inline sender prefix into a label. */
+  readOnly?: boolean
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
@@ -679,7 +682,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   return (
     <div className="relative flex-1 min-h-0 overflow-hidden">
       <div className="overflow-y-auto overscroll-contain h-full" style={{ overflowAnchor: 'none' }} ref={scrollRef} onScroll={handleScroll} data-testid="message-list" data-message-content-area>
-        <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-14 space-y-4">
+        <div className={`mx-auto w-full max-w-[720px] px-4 pb-4 space-y-4 ${readOnly ? 'pt-3' : 'pt-14'}`}>
         {hiddenCount > 0 && (
           <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
             {hiddenCount} earlier {hiddenCount === 1 ? 'message' : 'messages'} hidden — scroll up to load
@@ -694,7 +697,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             ) : (
               <>
                 <MessageErrorBoundary kind="message" raw={item} itemId={item.id}>
-                  <MessageItem message={item as ApiMessage} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={canHaveRunningToolCalls.has(item.id)} activeSubagents={activeSubagents} completedSubagents={completedSubagents} onRemoveMessage={handleRemoveMessage} onRemoveToolCall={handleRemoveToolCall} />
+                  <MessageItem message={item as ApiMessage} agentSlug={agentSlug} sessionId={sessionId} isSessionActive={canHaveRunningToolCalls.has(item.id)} activeSubagents={activeSubagents} completedSubagents={completedSubagents} onRemoveMessage={readOnly ? undefined : handleRemoveMessage} onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall} readOnly={readOnly} />
                 </MessageErrorBoundary>
                 {turnDeliveredFiles.has(item.id) && item.id !== deferredElapsedMessageId && (
                   <DeliveredFiles files={turnDeliveredFiles.get(item.id)!} agentSlug={agentSlug} />

@@ -13,6 +13,8 @@ interface SessionThreadProps {
   footerClassName?: string
   /** Whether the browser tray tab is available (interactive session view only). */
   browserActive?: boolean
+  /** Read-only mirror (chat-integration replay): suppress message edit/delete actions. */
+  readOnly?: boolean
   // MessageList passthrough — supplied by the interactive session view, omitted when read-only.
   pendingUserMessages?: PendingMessage[]
   pendingRequestCount?: number
@@ -34,6 +36,7 @@ export function SessionThread({
   footer,
   footerClassName = 'bg-background',
   browserActive = false,
+  readOnly,
   pendingUserMessages,
   pendingRequestCount,
   onPendingMessageAppeared,
@@ -46,6 +49,7 @@ export function SessionThread({
           key={sessionId}
           sessionId={sessionId}
           agentSlug={agentSlug}
+          readOnly={readOnly}
           pendingUserMessages={pendingUserMessages}
           pendingRequestCount={pendingRequestCount}
           onPendingMessageAppeared={onPendingMessageAppeared}
