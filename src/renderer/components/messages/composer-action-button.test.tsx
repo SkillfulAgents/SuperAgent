@@ -9,6 +9,7 @@ describe('ComposerActionButton', () => {
     isActive: false,
     isWaitingBackground: false,
     hasContent: false,
+    willQueue: false,
     canSubmit: true,
     isSending: false,
     isInterrupting: false,
@@ -28,20 +29,44 @@ describe('ComposerActionButton', () => {
   })
 
   it('swaps stop for a queue-send button once the composer has content', () => {
-    // Mid-turn the single slot flips to Send (labelled "Queue message") as
-    // soon as the user types, so a follow-up can be queued while the agent works.
-    render(<ComposerActionButton {...baseProps} isActive hasContent />)
+    render(<ComposerActionButton {...baseProps} isActive hasContent willQueue />)
     const send = screen.getByTestId('send-button')
-    expect(send).toBeInTheDocument()
     expect(send).toHaveAttribute('aria-label', 'Queue message')
     expect(screen.queryByTestId('stop-button')).not.toBeInTheDocument()
   })
 
   it('swaps back to the stop button when the composer is cleared', () => {
-    const { rerender } = render(<ComposerActionButton {...baseProps} isActive hasContent />)
+    const { rerender } = render(<ComposerActionButton {...baseProps} isActive hasContent willQueue />)
     expect(screen.getByTestId('send-button')).toBeInTheDocument()
-    rerender(<ComposerActionButton {...baseProps} isActive hasContent={false} />)
+    rerender(<ComposerActionButton {...baseProps} isActive hasContent={false} willQueue />)
     expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+  })
+
+  it('is a single element across the swap so keyboard focus survives', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(<ComposerActionButton {...baseProps} isActive hasContent willQueue />)
+    await user.tab()
+    expect(screen.getByTestId('send-button')).toHaveFocus()
+    rerender(<ComposerActionButton {...baseProps} isActive hasContent={false} willQueue />)
+    expect(screen.getByTestId('stop-button')).toHaveFocus()
+  })
+
+  it('stays a disabled send button while a mid-turn send is in flight', () => {
+    // Submit clears the composer synchronously; the slot must NOT become an
+    // enabled Stop under the pointer (a double-click would interrupt the turn).
+    render(<ComposerActionButton {...baseProps} isActive hasContent={false} isSending willQueue />)
+    const send = screen.getByTestId('send-button')
+    expect(send).toBeDisabled()
+    expect(screen.queryByTestId('stop-button')).not.toBeInTheDocument()
+  })
+
+  it('stays a disabled stop button while interrupting even if the user types', () => {
+    // Typing during a pending interrupt must not hide the interrupt feedback
+    // or offer an enabled Send against a session mid-teardown.
+    render(<ComposerActionButton {...baseProps} isActive isInterrupting hasContent willQueue />)
+    const stop = screen.getByTestId('stop-button')
+    expect(stop).toBeDisabled()
     expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
   })
 

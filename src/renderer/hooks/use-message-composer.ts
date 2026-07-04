@@ -28,6 +28,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
   const [draft, setDraft] = useDraft<string>(draftKey)
   const [message, setMessage] = useState(draft ?? '')
+  // True once the user has interacted with the composer this mount (typing,
+  // dictating, attaching). Content restored from the draft store does NOT set
+  // it — a saved draft alone must not flip the mid-turn action button from
+  // Stop to Send, or a runaway session with a draft has no stop affordance.
+  const [touched, setTouched] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const addMountMutation = useAddMount()
@@ -78,9 +83,15 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
+      setTouched(true)
       setMessage(text)
     }, []),
   })
+
+  const setMessageFromUser = useCallback((value: string) => {
+    setTouched(true)
+    setMessage(value)
+  }, [])
 
   const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {
     setShowMountDialog(false)
@@ -125,8 +136,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const effectiveMessage = voiceText ?? message
-    const hasContent = effectiveMessage.trim() || attachments.length > 0
-    if (!hasContent || isUploading || submitDisabled) return
+    const hasSubmittableContent = effectiveMessage.trim() || attachments.length > 0
+    if (!hasSubmittableContent || isUploading || submitDisabled) return
 
     let content = effectiveMessage.trim()
 
@@ -197,13 +208,19 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
   }
 
-  const hasContent = !!message.trim() || attachments.length > 0 || voiceInput.isRecording
-  const canSubmit = hasContent && !isUploading && !submitDisabled
+  // hasContent drives the mid-turn Stop↔Send button swap, so it deliberately
+  // differs from canSubmit's predicate: restored drafts don't count until the
+  // user touches the composer, and a live recording with no words yet doesn't
+  // count (Send would stop the mic and no-op on the empty transcript).
+  // Attachments always count — they can't be draft-restored, so their presence
+  // is itself user interaction.
+  const hasContent = (touched && !!message.trim()) || attachments.length > 0
+  const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !isUploading && !submitDisabled
 
   return {
     // Message state
     message,
-    setMessage,
+    setMessage: setMessageFromUser,
 
     // Attachments
     attachments,

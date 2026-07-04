@@ -233,13 +233,6 @@ export class SessionPage {
     await this.getEnabledMessageInput(timeout)
   }
 
-  /**
-   * Check if the agent is currently working (stop button visible)
-   */
-  async isAgentWorking(): Promise<boolean> {
-    return await this.getStopButton().isVisible()
-  }
-
   // --- User Input Request Helpers ---
 
   /**

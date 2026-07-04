@@ -58,6 +58,10 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const isRuntimeReady = isRuntimePending || runtimeStatus?.runtimeReadiness?.status === 'READY'
 
+  // Single source of truth for "a send right now queues behind the running
+  // turn" — drives both the send semantics below and the action button label.
+  const willQueue = isActive && !isWaitingBackground
+
   const composer = useMessageComposer({
     agentSlug,
     uploadFile: useCallback(
@@ -77,7 +81,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       // picked up after the current step. They must not carry model/effort —
       // a parameter change would interrupt/restart the in-flight query.
       // (The server also strips them when it sees the session is active.)
-      const queued = isActive && !isWaitingBackground
+      const queued = willQueue
       onMessageSent?.(content, localId, queued)
       try {
         const result = await sendMessage.mutateAsync({
@@ -97,8 +101,10 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
         throw error
       }
       track('message_sent')
-    }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
-    submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
+    }, [onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, willQueue]),
+    // interruptSession.isPending: no queueing against a session mid-teardown —
+    // whether an interrupted turn ever consumes a queued message is undefined.
+    submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady || interruptSession.isPending,
     draftKey: `session:${sessionId}`,
   })
 
@@ -270,6 +276,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
               isActive={isActive}
               isWaitingBackground={isWaitingBackground}
               hasContent={composer.hasContent}
+              willQueue={willQueue}
               canSubmit={composer.canSubmit}
               isSending={sendMessage.isPending || composer.isUploading}
               isInterrupting={interruptSession.isPending}
