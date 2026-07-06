@@ -7,10 +7,17 @@ import * as http from 'http'
 export interface MockMcpServer {
   url: string
   port: number
+  /**
+   * Every tools/call the server received, in arrival order. Lets specs prove
+   * a policy-blocked call never reached the upstream server, not just that
+   * the proxy returned 403.
+   */
+  toolCalls: Array<{ name: string; arguments?: Record<string, unknown> }>
   close: () => Promise<void>
 }
 
 export async function startMockMcpServer(port = 9876): Promise<MockMcpServer> {
+  const toolCalls: MockMcpServer['toolCalls'] = []
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       if (req.method !== 'POST') {
@@ -71,6 +78,16 @@ export async function startMockMcpServer(port = 9876): Promise<MockMcpServer> {
                 ],
               },
             }))
+          } else if (rpc.method === 'tools/call') {
+            toolCalls.push({ name: rpc.params?.name, arguments: rpc.params?.arguments })
+            res.writeHead(200)
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              id: rpc.id,
+              result: {
+                content: [{ type: 'text', text: `mock tool result for ${rpc.params?.name}` }],
+              },
+            }))
           } else {
             res.writeHead(200)
             res.end(JSON.stringify({
@@ -92,6 +109,7 @@ export async function startMockMcpServer(port = 9876): Promise<MockMcpServer> {
       resolve({
         url: `http://127.0.0.1:${actualPort}/mcp`,
         port: actualPort,
+        toolCalls,
         close: () => new Promise<void>((res) => server.close(() => res())),
       })
     })
