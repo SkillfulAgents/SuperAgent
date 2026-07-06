@@ -80,8 +80,14 @@ export abstract class ChatClientConnector {
    * Stop the working indicator as the response takes over. Idempotent — safe to
    * call repeatedly. Default no-op for connectors whose indicator is ephemeral
    * and self-expires.
+   *
+   * `yieldingToStream` marks the clear that fires on the first reply token: a
+   * connector whose indicator SHARES the reply surface (Telegram streams the reply
+   * into the same draft the placeholder used) must leave that surface for the
+   * stream rather than tear it down. Connectors with an independent surface (a
+   * Slack reaction, an iMessage typing bubble) ignore the flag and always clear.
    */
-  async stopWorking(_chatId: string): Promise<void> {}
+  async stopWorking(_chatId: string, _opts?: { yieldingToStream?: boolean }): Promise<void> {}
 
   /**
    * Send a file to the chat. Returns the external message ID.

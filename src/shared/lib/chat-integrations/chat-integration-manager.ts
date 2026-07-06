@@ -1541,11 +1541,16 @@ export function reconcileIndicator(managed: ManagedConnector, activity: SessionA
  * so repeated clears (idle ticks, several clear events in a row) make ZERO connector
  * calls. Clearing is always EXPLICIT — stopping the tick never clears a persistent
  * draft, so the four immediate clears and the non-busy tick all route through here.
+ *
+ * `yieldingToStream` is set only by the first-reply-token clear: the streamed reply
+ * takes over the reply surface, so a connector whose indicator shares that surface
+ * (Telegram's draft) must not tear it down. Every other clear (card, idle, error,
+ * the tick, teardown) tears the surface down authoritatively.
  */
-export function clearIndicator(managed: ManagedConnector): void {
+export function clearIndicator(managed: ManagedConnector, yieldingToStream = false): void {
   if (!managed.indicatorShown) return
   managed.indicatorShown = false
-  managed.connector.stopWorking(managed.chatId).catch(() => {})
+  managed.connector.stopWorking(managed.chatId, { yieldingToStream }).catch(() => {})
 }
 
 /** Pull cadence for the indicator tick. At/under Telegram's draft expiry so drafts stay alive. */
@@ -1669,8 +1674,10 @@ export async function processSSEEvent(
       const text = data.text as string
       if (!text) break
       // First reply token → 'streaming' (non-busy): the streamed text owns the
-      // reply surface, so settle the indicator now. Idempotent; the tick backstops.
-      clearIndicator(managed)
+      // reply surface, so settle the indicator now. Yield the surface — on Telegram
+      // this streamed reply reuses the placeholder's draft, so a hard teardown would
+      // wipe it. Idempotent; the tick backstops.
+      clearIndicator(managed, true)
       managed.streamingState.accumulatedText += text
 
       const now = Date.now()

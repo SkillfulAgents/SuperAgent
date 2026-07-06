@@ -467,3 +467,49 @@ describe('Telegram: the native draft is labeled by activity', () => {
     await connector.stopWorking(DM_CHAT)
   })
 })
+
+// ── Root C: authoritative surface teardown ─────────────────────────────────────
+// The manager settles the indicator correctly, but the connector's VISIBLE surface can
+// outlive that settle: a Telegram "Working…" draft on a no-stream terminal turn (an
+// errored / card-only / file-only turn) lingers until the ~30s draft expiry because
+// stopWorking was a no-op. stopWorking must be authoritative at the surface — while
+// still YIELDING the shared draft to a streamed reply, which reuses the same draft_id
+// and would be wiped by a blank.
+
+describe('Telegram: stopWorking tears down a stranded "Working…" draft', () => {
+  it('replaces the stale draft in place on a no-stream terminal turn (not a ~30s leak)', async () => {
+    const { connector, sendRichMessageDraft } = makeRealDmConnector()
+    await connector.startWorking(DM_CHAT, 'working')
+    const workingDraftId = sendRichMessageDraft.mock.calls[0][0].draft_id
+    sendRichMessageDraft.mockClear()
+
+    // No streamed reply overwrote the draft, so stop must clear it in place rather
+    // than wait out Telegram's ephemeral-draft expiry.
+    await connector.stopWorking(DM_CHAT)
+
+    expect(sendRichMessageDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ draft_id: workingDraftId, rich_message: { html: '' } }),
+    )
+  })
+
+  it('is idempotent: a second stop makes no further draft call (no blank-draft spam)', async () => {
+    const { connector, sendRichMessageDraft } = makeRealDmConnector()
+    await connector.startWorking(DM_CHAT, 'working')
+    await connector.stopWorking(DM_CHAT)
+    sendRichMessageDraft.mockClear()
+    await connector.stopWorking(DM_CHAT)
+    expect(sendRichMessageDraft).not.toHaveBeenCalled()
+  })
+
+  it('yields the draft to an incoming stream: does NOT blank it (the reply reuses the draft_id)', async () => {
+    const { connector, sendRichMessageDraft } = makeRealDmConnector()
+    await connector.startWorking(DM_CHAT, 'working')
+    sendRichMessageDraft.mockClear()
+
+    // The first reply token settles the indicator, but the streamed reply reuses this
+    // draft — blanking here would wipe/renumber the live reply, so stop is a no-op.
+    await connector.stopWorking(DM_CHAT, { yieldingToStream: true })
+
+    expect(sendRichMessageDraft).not.toHaveBeenCalled()
+  })
+})

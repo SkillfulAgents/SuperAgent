@@ -458,10 +458,28 @@ export class TelegramConnector extends ChatClientConnector {
     await this.sendWorkingIndicator(chatId)
   }
 
-  async stopWorking(chatId: string): Promise<void> {
+  async stopWorking(chatId: string, opts?: { yieldingToStream?: boolean }): Promise<void> {
     this.workingActivity.delete(chatId)
-    // The streaming response shares the draft_id and replaces the draft in place,
-    // so the clear yields the surface — there is nothing else to tear down.
+    // The streamed reply reuses this chat's draft_id (the "Working…" placeholder
+    // morphs into the reply text), so when we are yielding to that stream there is
+    // nothing to tear down — blanking here would wipe the live reply.
+    if (opts?.yieldingToStream) return
+    // Otherwise the turn ended with no streamed reply to overwrite the draft (an
+    // errored, card-only, or file-only turn). Telegram has no delete-draft API, so
+    // replace the stale placeholder in place with a blank draft (same draft_id →
+    // animated) — else it lingers showing "Working…" until the ~30s draft expiry.
+    const draftId = this.activeDrafts.get(chatId)
+    if (draftId === undefined || !this.bot) return
+    this.activeDrafts.delete(chatId)
+    try {
+      await this.bot.api.raw.sendRichMessageDraft({
+        chat_id: Number(chatId),
+        draft_id: draftId,
+        rich_message: { html: '' },
+      })
+    } catch {
+      // Non-critical: the stale draft self-expires within ~30s if this send fails.
+    }
   }
 
   /** The native-draft label for a busy activity (`<tg-thinking>` inner HTML). */
