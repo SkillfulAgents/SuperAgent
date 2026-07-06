@@ -210,6 +210,12 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // string (signature only) — those are skipped, they carry nothing to show.
   const thinkingByEntry = new Map<JsonlMessageEntry, Array<{ text: string; durationMs?: number }>>()
   let prevEntryTs: number | null = null
+  // message.id of the entry prevEntryTs came from (null for user entries).
+  // Some provider paths flush ALL of a message's block entries in one burst at
+  // response completion, with thinking ordered after its sibling text block —
+  // a gap measured against a sibling of the same message is milliseconds of
+  // write jitter, not thinking time, and must not become a "Thought for 0s".
+  let prevEntryMessageId: string | null = null
 
   for (const entry of messageEntries) {
     const messageId = entry.message.id
@@ -256,8 +262,12 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         .filter((b) => b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim())
         .map((b) => (b as { thinking: string }).thinking)
       if (texts.length > 0) {
+        // Only derivable when the previous entry is a different message (user
+        // entry or another assistant response) — an intra-message gap is write
+        // jitter. Underivable durations are omitted (header reads "Thought").
+        const prevIsSameMessage = messageId !== undefined && prevEntryMessageId === messageId
         const durationMs =
-          prevEntryTs !== null && Number.isFinite(entryTs) && entryTs > prevEntryTs
+          prevEntryTs !== null && !prevIsSameMessage && Number.isFinite(entryTs) && entryTs > prevEntryTs
             ? entryTs - prevEntryTs
             : undefined
         const list = thinkingByEntry.get(target) ?? []
@@ -267,7 +277,10 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         thinkingByEntry.set(target, list)
       }
     }
-    if (Number.isFinite(entryTs)) prevEntryTs = entryTs
+    if (Number.isFinite(entryTs)) {
+      prevEntryTs = entryTs
+      prevEntryMessageId = entry.type === 'assistant' ? (messageId ?? null) : null
+    }
   }
 
   // First pass: build a map of tool_use_id -> result

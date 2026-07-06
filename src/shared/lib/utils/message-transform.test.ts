@@ -746,6 +746,29 @@ describe('transformMessages', () => {
       expect(asMessage(result[2]).thinking).toEqual([{ text: 'Second episode.', durationMs: 4000 }])
     })
 
+    it('omits durationMs when the previous entry belongs to the same message', () => {
+      // Some provider paths (e.g. OpenRouter reasoning) flush all of a message's
+      // block entries in one burst at completion, with thinking AFTER its sibling
+      // text entry. The ms-scale gap to the sibling is write jitter, not thinking
+      // time — deriving it produced "Thought for 0s" cards.
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-0', 'Question?', '2026-01-24T10:00:00.000Z'),
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'text', text: 'I will search the web.' },
+        ], '2026-01-24T10:00:06.327Z'),
+        createAssistantMessage('uuid-2', 'msg-1', [
+          { type: 'thinking', thinking: 'Reasoning that arrived after the text entry.' } as ContentBlock,
+        ], '2026-01-24T10:00:06.332Z'),
+      ]
+
+      const result = transformMessages(entries)
+
+      // No duration — the 5ms sibling gap must not be reported as thinking time
+      expect(asMessage(result[1]).thinking).toEqual([
+        { text: 'Reasoning that arrived after the text entry.' },
+      ])
+    })
+
     it('omits the thinking field when there are no thinking blocks', () => {
       const entries: JsonlMessageEntry[] = [
         createAssistantMessage('uuid-1', 'msg-1', [
