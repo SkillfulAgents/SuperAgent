@@ -180,12 +180,32 @@ const sessionSlashCommands = new Map<string, SlashCommandInfo[]>()
 
 // Extended-thinking stream per session. Kept outside StreamState (like slash commands)
 // so the ~15 full state-rebuild sites don't have to thread it through. `isThinking`
-// drives the "Thinking" status; `text` accumulates the streamed (summarized) reasoning
-// for the "View thinking" panel. Text only arrives when the agent requests
+// drives the "Thinking" status; `blocks` accumulates one entry per thinking episode
+// (a turn can think several times, between tool calls) so each renders as its own
+// card in the transcript. Text only arrives when the agent requests
 // `display: 'summarized'` (see agent-container/src/claude-code.ts).
-interface ThinkingState { text: string; isThinking: boolean }
-const EMPTY_THINKING: ThinkingState = { text: '', isThinking: false }
+// Blocks are ephemeral — never persisted — and reset when the next turn starts.
+// State is updated immutably (fresh state object + blocks array per event) so the
+// hook mirror can bail out of re-renders with a reference check.
+export interface ThinkingBlock {
+  id: number
+  text: string
+  startedAt: number
+  /** null while this block is still streaming */
+  endedAt: number | null
+}
+interface ThinkingState { blocks: ThinkingBlock[]; isThinking: boolean }
+const EMPTY_THINKING: ThinkingState = { blocks: [], isThinking: false }
 const sessionThinking = new Map<string, ThinkingState>()
+let nextThinkingBlockId = 1
+
+// Stamp endedAt on any still-open block. Used when a new block starts (at most
+// one may be live), when a block stops, and at turn end — a turn that ends
+// without thinking_stop (interrupt, error) must freeze its timer at the actual
+// elapsed time, not tick forever or read "0s".
+function closeOpenThinkingBlocks(blocks: ThinkingBlock[]): ThinkingBlock[] {
+  return blocks.map(b => b.endedAt === null ? { ...b, endedAt: Date.now() } : b)
+}
 
 // Live state for dynamic-workflow (`Workflow` tool) runs in this session. Kept
 // outside StreamState (like thinking/slash commands) so the ~15 full state-rebuild
@@ -449,6 +469,13 @@ function getOrCreateEventSource(
         // Clear streamingToolUses - if tools were persisted, ToolCallItem renders them;
         // if they weren't (interrupted mid-stream), they should disappear.
         if (data.sessionId && data.sessionId !== sessionId) return
+        // A turn interrupted mid-thinking never gets thinking_stop: close open
+        // blocks so their cards freeze at the real elapsed time instead of "0s",
+        // and drop the "Thinking" status.
+        const thinkingAtIdle = sessionThinking.get(sessionId)
+        if (thinkingAtIdle && (thinkingAtIdle.isThinking || thinkingAtIdle.blocks.some(b => b.endedAt === null))) {
+          sessionThinking.set(sessionId, { blocks: closeOpenThinkingBlocks(thinkingAtIdle.blocks), isThinking: false })
+        }
         streamStates.set(sessionId, {
           isActive: false,
           isStreaming: false,
@@ -862,18 +889,33 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'thinking_start') {
-        // New thinking episode — reset text so the panel shows only the current block
-        sessionThinking.set(sessionId, { text: '', isThinking: true })
+        // New thinking episode — open a fresh block. If a previous block never got
+        // its stop (dropped event), close it now so at most one block is live.
+        const t = sessionThinking.get(sessionId) ?? EMPTY_THINKING
+        const blocks = closeOpenThinkingBlocks(t.blocks)
+        blocks.push({ id: nextThinkingBlockId++, text: '', startedAt: Date.now(), endedAt: null })
+        sessionThinking.set(sessionId, { blocks, isThinking: true })
       }
       else if (data.type === 'thinking_delta') {
-        // Accumulate streamed (summarized) reasoning text for the "View thinking" panel
+        // Accumulate streamed (summarized) reasoning text on the live block.
+        // A delta with no open block (missed start after reconnect) opens one.
         const t = sessionThinking.get(sessionId) ?? EMPTY_THINKING
-        sessionThinking.set(sessionId, { text: t.text + (data.text ?? ''), isThinking: true })
+        const blocks = [...t.blocks]
+        const last = blocks[blocks.length - 1]
+        if (last && last.endedAt === null) {
+          blocks[blocks.length - 1] = { ...last, text: last.text + (data.text ?? '') }
+        } else {
+          blocks.push({ id: nextThinkingBlockId++, text: data.text ?? '', startedAt: Date.now(), endedAt: null })
+        }
+        sessionThinking.set(sessionId, { blocks, isThinking: true })
       }
       else if (data.type === 'thinking_stop') {
-        // Thinking block ended — flip back to "Working", keep accumulated text
+        // Thinking block ended — flip back to "Working", keep the block (its card
+        // collapses but stays readable for the rest of the turn)
         const t = sessionThinking.get(sessionId)
-        if (t) sessionThinking.set(sessionId, { text: t.text, isThinking: false })
+        if (t) {
+          sessionThinking.set(sessionId, { blocks: closeOpenThinkingBlocks(t.blocks), isThinking: false })
+        }
       }
       else if (data.type === 'secret_request') {
         // Agent is requesting a secret from the user
@@ -1502,13 +1544,14 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
         setState(globalState)
       }
       setSlashCommands(sessionSlashCommands.get(sessionId) ?? [])
-      // Mirror the thinking side-map into React state, preserving referential
-      // stability when nothing changed so consumers don't re-render needlessly.
+      // Mirror the thinking side-map into React state. The map's value is replaced
+      // wholesale on every thinking event, so a reference check is enough to
+      // preserve referential stability when nothing changed.
       const t = sessionThinking.get(sessionId)
       setThinking((prev) => {
         if (!t) return prev === EMPTY_THINKING ? prev : EMPTY_THINKING
-        if (prev.text === t.text && prev.isThinking === t.isThinking) return prev
-        return { text: t.text, isThinking: t.isThinking }
+        if (prev.blocks === t.blocks && prev.isThinking === t.isThinking) return prev
+        return t
       })
       const approved = sessionAutoApprovedScriptRunIds.get(sessionId)
       // Hand back a fresh snapshot when the contents changed so React re-renders consumers.
@@ -1585,5 +1628,5 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
     }
   }, [sessionId, agentSlug, updateState, queryClient])
 
-  return { ...state, slashCommands, autoApprovedScriptRunIds, autoApprovedComputerUseIds, workflows, isThinking: thinking.isThinking, thinkingText: thinking.text }
+  return { ...state, slashCommands, autoApprovedScriptRunIds, autoApprovedComputerUseIds, workflows, isThinking: thinking.isThinking, thinkingBlocks: thinking.blocks }
 }

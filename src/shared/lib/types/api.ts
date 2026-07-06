@@ -160,6 +160,13 @@ export interface ApiMessage {
    * detection) must skip it.
    */
   queued?: boolean
+  /**
+   * Summarized extended-thinking blocks persisted in the session transcript,
+   * in order. Absent when the turn had no thinking or the transcript predates
+   * thinking-text persistence. `durationMs` is derived from transcript entry
+   * timestamps and absent when underivable.
+   */
+  thinking?: Array<{ text: string; durationMs?: number }>
 }
 
 /**

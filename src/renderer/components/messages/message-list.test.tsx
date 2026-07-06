@@ -51,6 +51,7 @@ const mockStreamState = {
   completedSubagents: null as Set<string> | null,
   typingUser: null as { id: string; name?: string } | null,
   peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
+  thinkingBlocks: [] as Array<{ id: number; text: string; startedAt: number; endedAt: number | null }>,
 }
 
 const mockClearCompacting = vi.fn()
@@ -147,6 +148,7 @@ describe('MessageList', () => {
       completedSubagents: null,
       typingUser: null,
       peerUserMessages: [],
+      thinkingBlocks: [],
     })
   })
 
@@ -1763,6 +1765,86 @@ describe('MessageList', () => {
       // Pinned to bottom: the slice slides so the DOM stays bounded — m5 drops off.
       expect(screen.queryByText('m5')).not.toBeInTheDocument()
       expect(screen.getByText('m305')).toBeInTheDocument()
+    })
+  })
+
+  describe('thinking block dedup (live vs persisted)', () => {
+    const liveBlock = (text: string, endedAt: number | null = null) =>
+      ({ id: 1, text, startedAt: Date.now() - 5000, endedAt })
+
+    it('renders a live thinking card while the turn streams', () => {
+      mockMessagesData.data = [createUserMessage({ content: { text: 'Question' } })]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [liveBlock('Reasoning about the question')]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+      expect(screen.getByText('Reasoning about the question')).toBeInTheDocument()
+    })
+
+    it('hands off to the persisted card when the current turn carries the same text', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({ content: { text: '' }, thinking: [{ text: 'Reasoning about the question in detail' }] }),
+      ]
+      mockStreamState.isActive = true
+      // Live stream trails the transcript — prefix in one direction
+      mockStreamState.thinkingBlocks = [liveBlock('Reasoning about the question')]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      // Only the persisted card (from MessageItem) — no double render. It's
+      // collapsed, so identify it by its "Thought" header (a live card reads "Thinking").
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+      expect(screen.getByTestId('thinking-block-toggle')).toHaveTextContent('Thought')
+    })
+
+    it('does not suppress the live card when only an older turn has matching thinking', () => {
+      // Regression: models reuse stock openers ("Let me..."). A live block whose
+      // early streamed prefix matches a PREVIOUS turn's persisted thinking must
+      // still render — only the current turn participates in dedup.
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'First question' } }),
+        createAssistantMessage({ content: { text: 'Answer one' }, thinking: [{ text: 'Let me check the config and think it through' }] }),
+        createUserMessage({ content: { text: 'Second question' } }),
+      ]
+      mockStreamState.isActive = true
+      mockStreamState.thinkingBlocks = [liveBlock('Let me check')]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      // Old turn's persisted card + the new turn's live card
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(2)
+    })
+
+    it('removes leftover live cards at idle once the turn persisted its thinking, even when text diverged', () => {
+      // An SSE reconnect can drop deltas so the streamed text never prefix-matches
+      // the transcript — at idle the persisted cards own the display outright.
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({ content: { text: 'Answer' }, thinking: [{ text: 'the full persisted reasoning' }] }),
+      ]
+      mockStreamState.isActive = false
+      mockStreamState.thinkingBlocks = [liveBlock('divergent streamed fragment', Date.now())]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+      expect(screen.queryByText('divergent streamed fragment')).not.toBeInTheDocument()
+    })
+
+    it('keeps an empty-text live block while active but drops it at idle', () => {
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({ content: { text: 'Answer with no persisted thinking' } }),
+      ]
+      mockStreamState.thinkingBlocks = [liveBlock('')]
+
+      mockStreamState.isActive = true
+      const { unmount } = renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(1)
+      unmount()
+
+      mockStreamState.isActive = false
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
     })
   })
 })

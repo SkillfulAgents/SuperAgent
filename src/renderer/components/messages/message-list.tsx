@@ -12,6 +12,7 @@ import {
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { MessageItem } from './message-item'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
+import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
 import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
@@ -135,6 +136,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     typingUser,
     peerUserMessages,
     workflows,
+    thinkingBlocks,
   } = useMessageStream(sessionId, agentSlug)
   const isOnline = useIsOnline()
 
@@ -386,6 +388,42 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     return persistedText.startsWith(streamingText) || streamingText.startsWith(persistedText)
   }, [messages, streamingMessage])
 
+  // Filter live thinking blocks to only those NOT yet carried by a persisted
+  // message (mirrors unpersistedStreamingToolUses). Once the refetched assistant
+  // message arrives with its `thinking` array, the persisted card in MessageItem
+  // takes over and the ephemeral one must not double-render. Matched by text
+  // prefix in either direction since the stream can trail the transcript.
+  // Only the current turn's persisted thinking is compared — live blocks are
+  // reset on session_active, so a match against an older turn can only be a
+  // false positive (the model reusing a stock opener suppresses the live card).
+  const unpersistedThinkingBlocks = useMemo(() => {
+    if (!thinkingBlocks.length || !messages?.length) return thinkingBlocks
+    const persisted: string[] = []
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (isTurnStartingUserMessage(m)) break
+      if (m.type === 'assistant' && Array.isArray((m as ApiMessage).thinking)) {
+        for (const t of (m as ApiMessage).thinking!) {
+          if (typeof t?.text === 'string' && t.text.trim()) persisted.push(t.text.trim())
+        }
+      }
+    }
+    // Once the turn is over and its thinking made it into the transcript, the
+    // persisted cards own the display outright. This catches blocks whose
+    // streamed text diverged from the transcript (e.g. an SSE reconnect
+    // dropped deltas) — text matching would miss them and the leftover card
+    // would strand below the persisted message, appearing to "jump" there.
+    if (!isActive && persisted.length) return []
+    return thinkingBlocks.filter(b => {
+      const t = b.text.trim()
+      // Blocks with no streamed text (display option off) have no persisted
+      // counterpart to collide with — keep them while the turn runs, but don't
+      // let them strand in an idle transcript.
+      if (!t) return isActive
+      return !persisted.some(p => p.startsWith(t) || t.startsWith(p))
+    })
+  }, [messages, thinkingBlocks, isActive])
+
   // Filter streaming tool uses to only those NOT yet in persisted messages
   const unpersistedStreamingToolUses = useMemo(() => {
     if (!streamingToolUses.length || !messages?.length) return streamingToolUses
@@ -533,7 +571,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     if (scrollRef.current && isScrolledToBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, pendingUserMessages, streamingMessage, streamingToolUses, isCompacting, pendingRequestCount, activeSubagents])
+  }, [messages, pendingUserMessages, streamingMessage, streamingToolUses, thinkingBlocks, isCompacting, pendingRequestCount, activeSubagents])
 
   // Peer messages still worth showing optimistically: not our own, and the
   // persisted copy (by uuid, or — for queued/steering messages whose uuid the
@@ -754,6 +792,23 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             </div>
           </div>
         )}
+
+        {/* Thinking episodes for the current turn — tool-call-style cards, expanded
+            and scrollable while streaming, collapsed to a "Thought for Ns" header
+            once done. Kept until the refetched persisted message carries the same
+            text (see unpersistedThinkingBlocks), then MessageItem's card takes over. */}
+        {unpersistedThinkingBlocks.map(block => (
+          <MessageErrorBoundary key={block.id} kind="thinking block" raw={block} itemId={`thinking-${block.id}`}>
+            <div className="max-w-[80%]">
+              <ThinkingBlockItem
+                text={block.text}
+                startedAt={block.startedAt}
+                endedAt={block.endedAt}
+                active={isActive && block.endedAt === null}
+              />
+            </div>
+          </MessageErrorBoundary>
+        ))}
 
         {/* Streaming text message - keep visible until persisted data arrives */}
         {streamingMessage && !isStreamingMessagePersisted && (

@@ -2968,3 +2968,109 @@ describe('useMessageStream — workflow drawer reducers', () => {
     expect(typeof result.current.workflows[0].completedAt).toBe('number')
   })
 })
+
+describe('useMessageStream — extended thinking blocks', () => {
+  async function setup() {
+    const { useMessageStream } = await getHookModule()
+    const rendered = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+    const es = () => MockEventSource.instances[MockEventSource.instances.length - 1]
+    return { ...rendered, es }
+  }
+
+  it('opens a block on thinking_start and accumulates deltas onto it', async () => {
+    const { result, es } = await setup()
+
+    act(() => { es().simulateMessage({ type: 'thinking_start' }) })
+    expect(result.current.isThinking).toBe(true)
+    expect(result.current.thinkingBlocks).toHaveLength(1)
+    expect(result.current.thinkingBlocks[0]).toMatchObject({ text: '', endedAt: null })
+
+    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'Let me ' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'reason.' }) })
+    expect(result.current.thinkingBlocks).toHaveLength(1)
+    expect(result.current.thinkingBlocks[0].text).toBe('Let me reason.')
+    expect(result.current.thinkingBlocks[0].endedAt).toBeNull()
+  })
+
+  it('thinking_stop closes the block but keeps it readable for the rest of the turn', async () => {
+    const { result, es } = await setup()
+
+    act(() => { es().simulateMessage({ type: 'thinking_start' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'Deep thought.' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_stop' }) })
+
+    expect(result.current.isThinking).toBe(false)
+    expect(result.current.thinkingBlocks).toHaveLength(1)
+    expect(result.current.thinkingBlocks[0].text).toBe('Deep thought.')
+    expect(typeof result.current.thinkingBlocks[0].endedAt).toBe('number')
+  })
+
+  it('a bare thinking_delta opens a block (missed start after reconnect)', async () => {
+    const { result, es } = await setup()
+
+    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'resumed mid-block' }) })
+
+    expect(result.current.isThinking).toBe(true)
+    expect(result.current.thinkingBlocks).toHaveLength(1)
+    expect(result.current.thinkingBlocks[0]).toMatchObject({ text: 'resumed mid-block', endedAt: null })
+  })
+
+  it('a new thinking_start closes the previous block so at most one is live', async () => {
+    const { result, es } = await setup()
+
+    act(() => { es().simulateMessage({ type: 'thinking_start' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'first episode' }) })
+    // No thinking_stop — the stop event was dropped
+    act(() => { es().simulateMessage({ type: 'thinking_start' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'second episode' }) })
+
+    expect(result.current.thinkingBlocks).toHaveLength(2)
+    expect(result.current.thinkingBlocks[0].text).toBe('first episode')
+    expect(typeof result.current.thinkingBlocks[0].endedAt).toBe('number')
+    expect(result.current.thinkingBlocks[1]).toMatchObject({ text: 'second episode', endedAt: null })
+  })
+
+  it('session_idle closes an open block (interrupt without thinking_stop)', async () => {
+    const { result, es } = await setup()
+
+    act(() => { es().simulateMessage({ type: 'connected', isActive: true }) })
+    act(() => { es().simulateMessage({ type: 'thinking_start' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'interrupted mid-thought' }) })
+    act(() => { es().simulateMessage({ type: 'session_idle' }) })
+
+    // The card must freeze at the real elapsed time, not tick forever or read 0s
+    expect(result.current.isThinking).toBe(false)
+    expect(result.current.thinkingBlocks).toHaveLength(1)
+    expect(result.current.thinkingBlocks[0].text).toBe('interrupted mid-thought')
+    expect(typeof result.current.thinkingBlocks[0].endedAt).toBe('number')
+  })
+
+  it('session_active resets blocks for the new turn', async () => {
+    const { result, es } = await setup()
+
+    act(() => { es().simulateMessage({ type: 'thinking_start' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'old turn' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_stop' }) })
+    expect(result.current.thinkingBlocks).toHaveLength(1)
+
+    act(() => { es().simulateMessage({ type: 'session_active' }) })
+
+    expect(result.current.thinkingBlocks).toEqual([])
+    expect(result.current.isThinking).toBe(false)
+  })
+
+  it('keeps the blocks array reference stable across unrelated events', async () => {
+    const { result, es } = await setup()
+
+    act(() => { es().simulateMessage({ type: 'thinking_start' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_delta', text: 'stable' }) })
+    act(() => { es().simulateMessage({ type: 'thinking_stop' }) })
+    const before = result.current.thinkingBlocks
+
+    act(() => { es().simulateMessage({ type: 'stream_start' }) })
+    act(() => { es().simulateMessage({ type: 'stream_delta', text: 'unrelated text' }) })
+
+    // No thinking event fired — consumers must not re-derive from a fresh array
+    expect(result.current.thinkingBlocks).toBe(before)
+  })
+})

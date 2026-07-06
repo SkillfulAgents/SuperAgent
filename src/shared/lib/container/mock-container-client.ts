@@ -135,6 +135,95 @@ export class SimpleTextResponseScenario implements MockScenario {
 }
 
 /**
+ * Extended-thinking scenario — streams a thinking block (content_block_start
+ * type:'thinking' + thinking_delta chunks) before the text response, so E2E
+ * tests can exercise the thinking card in the transcript: expanded while
+ * streaming, collapsed to a "Thought for Ns" header once the block stops.
+ */
+export class ThinkingResponseScenario implements MockScenario {
+  constructor(
+    private thinkingText: string,
+    private responseText: string,
+    /** Delay between thinking chunks — sets how long the card stays live. */
+    private chunkDelayMs = 200
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const chunks = this.thinkingText.split(' ')
+
+    setTimeout(() => {
+      // Written up front (like the real CLI) so the read-path can derive the
+      // thinking duration from the user→assistant entry timestamp gap.
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'thinking' } } },
+      })
+    }, 10)
+
+    chunks.forEach((word, i) => {
+      setTimeout(() => {
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: (i > 0 ? ' ' : '') + word } } },
+        })
+      }, 20 + i * this.chunkDelayMs)
+    })
+
+    const thinkingDone = 30 + chunks.length * this.chunkDelayMs
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: this.responseText } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+    }, thinkingDone)
+
+    setTimeout(() => {
+      // The real CLI persists the thinking block in the transcript (CLI 2.1.181+),
+      // which the messages read-path extracts into ApiMessage.thinking.
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'thinking', thinking: this.thinkingText, signature: 'mock-signature' },
+            { type: 'text', text: this.responseText },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, thinkingDone + 50)
+  }
+}
+
+/**
  * Slow scenario for message-queueing E2E tests: holds the session in the
  * working state long enough for the test to send mid-turn messages, which the
  * mock records as queued_command attachments (mirroring the real CLI's
@@ -1035,6 +1124,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Extended-thinking card in the transcript (expanded while streaming, then collapsed)
+    ['think out loud', new ThinkingResponseScenario(
+      'Let me reason about this. The user wants a demonstration of extended thinking, ' +
+      'so I will stream a few sentences of summarized reasoning before replying.',
+      'Done thinking — here is the answer.'
+    )],
     // Register the "list files" scenario for tool use tests
     ['list files', new ToolUseScenario(
       'Bash',

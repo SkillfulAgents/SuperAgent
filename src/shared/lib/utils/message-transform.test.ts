@@ -682,19 +682,121 @@ describe('transformMessages', () => {
       expect(asMessage(result[0]).content.text).toBe('Hello')
     })
 
-    it('ignores thinking blocks in content', () => {
+    it('extracts thinking blocks into the thinking field', () => {
       const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-0', 'Question?', '2026-01-24T10:00:00.000Z'),
         createAssistantMessage('uuid-1', 'msg-1', [
           { type: 'thinking', thinking: 'Let me think about this...' } as ContentBlock,
           { type: 'text', text: 'Here is my answer.' },
+        ], '2026-01-24T10:00:05.000Z'),
+      ]
+
+      const result = transformMessages(entries)
+
+      // Thinking is extracted alongside the message text, with a duration
+      // derived from the gap to the previous entry's timestamp
+      const message = asMessage(result[1])
+      expect(message.content.text).toBe('Here is my answer.')
+      expect(message.thinking).toEqual([{ text: 'Let me think about this...', durationMs: 5000 }])
+      expect(message.toolCalls).toHaveLength(0)
+    })
+
+    it('extracts multiple thinking blocks in order, skipping empty ones', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'thinking', thinking: 'First episode.' } as ContentBlock,
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+          // Old transcripts (pre CLI 2.1.181) persist empty thinking text — skipped
+          { type: 'thinking', thinking: '' } as ContentBlock,
+          { type: 'thinking', thinking: '   ' } as ContentBlock,
+          { type: 'thinking', thinking: 'Second episode.' } as ContentBlock,
+          { type: 'text', text: 'Answer.' },
         ]),
       ]
 
       const result = transformMessages(entries)
 
-      // Thinking block should be ignored, only text extracted
-      expect(asMessage(result[0]).content.text).toBe('Here is my answer.')
-      expect(asMessage(result[0]).toolCalls).toHaveLength(0)
+      // No preceding entry — durations are underivable and omitted
+      expect(asMessage(result[0]).thinking).toEqual([{ text: 'First episode.' }, { text: 'Second episode.' }])
+      expect(asMessage(result[0]).toolCalls).toHaveLength(1)
+    })
+
+    it('derives per-episode durations across merged entries', () => {
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-0', 'Question?', '2026-01-24T10:00:00.000Z'),
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'thinking', thinking: 'First episode.' } as ContentBlock,
+        ], '2026-01-24T10:00:03.000Z'),
+        createAssistantMessage('uuid-2', 'msg-1', [
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+        ], '2026-01-24T10:00:04.000Z'),
+        createUserMessage('uuid-3', [
+          { type: 'tool_result', tool_use_id: 'tool-1', content: 'result' },
+        ], '2026-01-24T10:00:05.000Z'),
+        createAssistantMessage('uuid-4', 'msg-2', [
+          { type: 'thinking', thinking: 'Second episode.' } as ContentBlock,
+          { type: 'text', text: 'Answer.' },
+        ], '2026-01-24T10:00:09.000Z'),
+      ]
+
+      const result = transformMessages(entries)
+
+      // Message 1: thinking took user→entry gap; message 2: tool_result→entry gap
+      expect(asMessage(result[1]).thinking).toEqual([{ text: 'First episode.', durationMs: 3000 }])
+      expect(asMessage(result[2]).thinking).toEqual([{ text: 'Second episode.', durationMs: 4000 }])
+    })
+
+    it('omits durationMs when the previous entry belongs to the same message', () => {
+      // Some provider paths (e.g. OpenRouter reasoning) flush all of a message's
+      // block entries in one burst at completion, with thinking AFTER its sibling
+      // text entry. The ms-scale gap to the sibling is write jitter, not thinking
+      // time — deriving it produced "Thought for 0s" cards.
+      const entries: JsonlMessageEntry[] = [
+        createUserMessage('uuid-0', 'Question?', '2026-01-24T10:00:00.000Z'),
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'text', text: 'I will search the web.' },
+        ], '2026-01-24T10:00:06.327Z'),
+        createAssistantMessage('uuid-2', 'msg-1', [
+          { type: 'thinking', thinking: 'Reasoning that arrived after the text entry.' } as ContentBlock,
+        ], '2026-01-24T10:00:06.332Z'),
+      ]
+
+      const result = transformMessages(entries)
+
+      // No duration — the 5ms sibling gap must not be reported as thinking time
+      expect(asMessage(result[1]).thinking).toEqual([
+        { text: 'Reasoning that arrived after the text entry.' },
+      ])
+    })
+
+    it('omits the thinking field when there are no thinking blocks', () => {
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'text', text: 'No thinking here.' },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).thinking).toBeUndefined()
+    })
+
+    it('skips thinking blocks whose value is not a string instead of throwing', () => {
+      // A corrupt or hand-edited transcript entry must not take down the whole
+      // messages read path (the route 500s the entire session on a throw here)
+      const entries: JsonlMessageEntry[] = [
+        createAssistantMessage('uuid-1', 'msg-1', [
+          { type: 'thinking', thinking: 123 } as unknown as ContentBlock,
+          { type: 'thinking', thinking: { nested: true } } as unknown as ContentBlock,
+          { type: 'thinking', thinking: 'Valid episode.' } as ContentBlock,
+          { type: 'text', text: 'Answer.' },
+        ]),
+      ]
+
+      const result = transformMessages(entries)
+
+      expect(asMessage(result[0]).content.text).toBe('Answer.')
+      expect(asMessage(result[0]).thinking).toEqual([{ text: 'Valid episode.' }])
     })
 
     it('handles tool result for non-existent tool (orphaned result)', () => {
@@ -780,9 +882,11 @@ describe('transformMessages', () => {
 
       const result = transformMessages(entries)
 
-      // Should produce a message with empty text
+      // Should produce a message with empty text but the thinking preserved
+      // (no preceding entry, so no derivable duration)
       expect(result).toHaveLength(1)
       expect(asMessage(result[0]).content.text).toBe('')
+      expect(asMessage(result[0]).thinking).toEqual([{ text: 'Deep thoughts...' }])
       expect(asMessage(result[0]).toolCalls).toHaveLength(0)
     })
 
