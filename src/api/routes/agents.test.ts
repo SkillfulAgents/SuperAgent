@@ -105,6 +105,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
     markSessionActive: vi.fn(),
+    markSessionInterrupted: vi.fn(),
     cancelAwaitingInput: vi.fn(),
     broadcastSessionEvent: vi.fn(),
   },
@@ -2189,6 +2190,43 @@ describe('message author attribution — POST /:id/sessions/:sessionId/messages'
     const body = await res.json()
     expect(body.queued).toBe(true)
     expect(mockSendMessage).toHaveBeenCalledWith('sess-1', 'hello', expect.any(String), {})
+  })
+})
+
+describe('failed send does not strand the working indicator — POST /:id/sessions/:sessionId/messages', () => {
+  let app: ReturnType<typeof createApp>
+  const URL = '/api/agents/test-agent/sessions/sess-1/messages'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(getAgent).mockResolvedValue({ slug: 'test-agent', name: 'Test Agent' } as any)
+    mockIsAuthMode.mockReturnValue(false)
+  })
+
+  it('clears the freshly-activated session when the container send throws', async () => {
+    // Fresh turn (not queued): the handler marks the session active, then the send fails.
+    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(false)
+    mockSendMessage.mockRejectedValueOnce(new Error('container unreachable'))
+
+    const res = await postJson(app, URL, { content: 'hello' })
+
+    expect(res.status).toBe(500)
+    // No turn will run to emit the settling idle, so the working indicator (and the
+    // desktop sidebar) would stay stuck forever unless we clear the session here.
+    expect(messagePersister.markSessionInterrupted).toHaveBeenCalledWith('sess-1')
+  })
+
+  it('does NOT clear the session when a queued send throws (an in-flight turn is still running)', async () => {
+    // wasQueued: the session was already active, so a real turn is mid-flight.
+    vi.mocked(messagePersister.isSessionActive).mockReturnValueOnce(true)
+    mockSendMessage.mockRejectedValueOnce(new Error('boom'))
+
+    const res = await postJson(app, URL, { content: 'hello' })
+
+    expect(res.status).toBe(500)
+    // The original turn will still emit its own idle — clearing here would wrongly settle it.
+    expect(messagePersister.markSessionInterrupted).not.toHaveBeenCalled()
   })
 })
 

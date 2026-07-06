@@ -1573,6 +1573,10 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
 
 // POST /api/agents/:id/sessions/:sessionId/messages - Send a message
 agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
+  // Set once we mark a fresh turn active. Hoisted so the catch can settle it: if the
+  // send (or the pre-send DB/broadcast work) throws, no turn runs to emit the idle that
+  // would clear the "Working…" indicator, so we must clear it ourselves.
+  let freshTurnSessionId: string | null = null
   try {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
@@ -1616,6 +1620,9 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     const wasQueued = messagePersister.isSessionActive(sessionId)
 
     messagePersister.markSessionActive(sessionId, agentSlug)
+    // Only a fresh turn: a queued send rides an already-active turn, whose own idle
+    // settles the indicator — clearing it on our send failure would wrongly cut it short.
+    if (!wasQueued) freshTurnSessionId = sessionId
 
     // A mid-turn send must not carry model/effort: the container treats a
     // parameter change as interrupt/restart of the in-flight query. The
@@ -1668,6 +1675,12 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     return c.json({ success: true, uuid: messageUuid, queued: wasQueued }, 201)
   } catch (error) {
     console.error('Failed to send message:', error)
+    // A fresh turn we marked active never dispatched — clear it so the indicator
+    // doesn't hang (markSessionInterrupted only touches host state; nothing is
+    // running in the container to interrupt).
+    if (freshTurnSessionId) {
+      await messagePersister.markSessionInterrupted(freshTurnSessionId)
+    }
     return c.json({ error: 'Failed to send message' }, 500)
   }
 })
