@@ -211,11 +211,19 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
         }
       }
     } catch {
-      // Revert the optimistic override so the row snaps back.
-      setGrantOverrides((prev) => {
-        const n = { ...prev }
-        delete n[row.key]
-        return n
+      // Revert the optimistic override so the row snaps back. Must go through
+      // the same view-transition queue as the optimistic set: the browser runs
+      // update callbacks in queue order but defers them past snapshot capture,
+      // so a fast failure would otherwise revert BEFORE the optimistic set
+      // lands and leave the row stuck in its new section.
+      startViewTransition(() => {
+        flushSync(() => {
+          setGrantOverrides((prev) => {
+            const n = { ...prev }
+            delete n[row.key]
+            return n
+          })
+        })
       })
     }
   }
