@@ -30,6 +30,12 @@ test.describe('Stop button interrupts the working agent', () => {
   let sessionPage: SessionPage
 
   test.beforeEach(async ({ page }, testInfo) => {
+    // These tests chain an interrupted turn plus three scripted mock turns
+    // (~15s of scheduled delays before any UI overhead), which doesn't fit the
+    // default test timeout on a loaded CI runner — both tests have timed out
+    // there with a fully correct end state in the failure snapshot.
+    test.slow()
+
     appPage = new AppPage(page)
     agentPage = new AgentPage(page)
     sessionPage = new SessionPage(page)
@@ -77,6 +83,12 @@ test.describe('Stop button interrupts the working agent', () => {
 
     // The new turn's stream replaced the interrupted partial text
     await expect(page.getByText('Working on the slow task...')).not.toBeVisible({ timeout: 10000 })
+
+    // Gate the next send on the composer leaving the working state: the mock
+    // emits the response text a few ms before its result/idle, so a send fired
+    // the instant the text renders can still hit the mid-turn steering path
+    // (which answers "Adjusting based on: ..." instead of running a fresh turn).
+    await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 10000 })
     await sessionPage.sendMessage('slow response please, second check')
     await expect(delayedResponses).toHaveCount(2, { timeout: 15000 })
 
@@ -128,9 +140,14 @@ test.describe('Stop button interrupts the working agent', () => {
 
     // Chain two more 3s turns: with the resend gated on the 1.5s rescue grace,
     // finishing three chained turns is provably past both cancelled timers
-    // (the turn's 5s tail and the queued message's 8s steering pickup).
+    // (the turn's 5s tail and the queued message's 8s steering pickup). Each
+    // send is gated on the composer leaving the working state — the mock emits
+    // the response text a few ms before its result/idle, and a send in that
+    // window would take the mid-turn steering path instead of a fresh turn.
+    await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 10000 })
     await sessionPage.sendMessage('slow response please, first check')
     await expect(delayedResponses).toHaveCount(2, { timeout: 15000 })
+    await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 10000 })
     await sessionPage.sendMessage('slow response please, second check')
     await expect(delayedResponses).toHaveCount(3, { timeout: 15000 })
 
