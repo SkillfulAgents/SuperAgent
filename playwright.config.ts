@@ -19,6 +19,8 @@ const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
 const webTestIgnore = [
   '**/auth/**',
   '**/getting-started-wizard.spec.ts',
+  // Mutates the global provider API key — quarantined to the wizard config.
+  '**/provider-api-key.spec.ts',
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {

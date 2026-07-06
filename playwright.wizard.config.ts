@@ -1,8 +1,9 @@
 import { defineConfig, devices, chromium } from '@playwright/test'
 import path from 'path'
 
-// Wizard tests intentionally mutate onboarding state. Keep that state in a
-// server/data directory that is separate from the main web suite.
+// Quarantine config for specs that mutate GLOBAL server state (onboarding
+// flags, the provider API key): single worker, own server/data directory,
+// separate from the fully-parallel main web suite.
 const defaultE2eDataDir = path.join(__dirname, '.e2e-data', 'wizard')
 if (!process.env.SUPERAGENT_DATA_DIR) {
   process.env.SUPERAGENT_DATA_DIR = defaultE2eDataDir
@@ -27,6 +28,9 @@ function buildWebServerCommand() {
     E2E_MOCK: 'true',
     PORT: e2ePort,
     VITE_CACHE_DIR: path.join(e2eDataDir, '.vite'),
+    // A machine-level key would flip apiKeyStatus.source to 'env' and break
+    // the keyless baseline these specs assert. Empty string reads as unset.
+    ANTHROPIC_API_KEY: '',
   }
   if (chromiumPath) env.E2E_CHROMIUM_PATH = chromiumPath
 
@@ -41,7 +45,10 @@ function buildWebServerCommand() {
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: '**/getting-started-wizard.spec.ts',
+  testMatch: [
+    '**/getting-started-wizard.spec.ts',
+    '**/provider-api-key.spec.ts',
+  ],
   outputDir: playwrightOutputDir,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
