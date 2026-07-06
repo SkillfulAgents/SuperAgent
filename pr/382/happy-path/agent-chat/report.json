@@ -1,27 +1,25 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "All test steps completed successfully - agent responded with \"4\" to the \"What is 2+2?\" question",
+  "reason": "Agent QA-20260706-163617-f2al successfully responded to the math question \"Hello! What is 2+2?\" with the correct answer \"4\"",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 - Page loaded successfully with title \"Gamut\"",
-    "Step 2: Located agent \"QA-20260704-004208-scto\" in the sidebar with idle status - Found at ref=e46",
-    "Step 3: Clicked the agent \"QA-20260704-004208-scto\" - Successfully navigated to agent detail page at /agents/qa-20260704-004208-scto-i03caylqvx",
-    "Step 4: Verified agent status is \"idle\" - Status indicator showed \"idle\" as required",
-    "Step 5: Typed message \"Hello! What is 2+2?\" in the message input field - Message successfully entered at ref=e140",
-    "Step 6: Clicked the Send button - Message sent and page navigated to chat session view",
-    "Step 7: Waited for response - Agent responded immediately with message \"4\" which was displayed in the message list",
-    "Step 8: Verified response mentions \"4\" - Response text was exactly \"4\" as expected",
-    "Step 9: Took screenshot of the response - Screenshot saved showing the conversation with the correct answer"
+    "Navigated to http://localhost:47891 — Page loaded successfully, showing sidebar with agents",
+    "Found and clicked \"QA-20260706-163617-f2al\" agent in the sidebar — Agent page loaded, showing agent detail view",
+    "Verified agent status is \"running\" or \"idle\" — Agent status showed \"idle\"",
+    "Typed message \"Hello! What is 2+2?\" into message input field — Message successfully entered in textbox",
+    "Clicked \"Send message\" button — Message sent, agent transitioned to \"working\" status",
+    "Waited for agent response (up to 3 minutes) — Agent responded within 2 seconds",
+    "Verified response mentions \"4\" and took screenshot — Response clearly shows agent answered \"4\", session was titled \"Math Question with QA Agent\", and agent status returned to \"idle\""
   ],
   "bugs": [],
-  "durationMs": 118104,
-  "sessionId": "b14d7662-ddeb-4df6-ac44-5bebc9074cda",
+  "durationMs": 65044,
+  "sessionId": "dd281bd0-c09f-4908-af77-565f6a3fd0c9",
   "cost": {
-    "inputTokens": 330,
-    "outputTokens": 8499,
-    "cacheCreationTokens": 95195,
-    "cacheReadTokens": 882242,
+    "inputTokens": 309,
+    "outputTokens": 10919,
+    "cacheCreationTokens": 112180,
+    "cacheReadTokens": 921210,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.250043
+    "totalCostUsd": 0.28725
   }
 }

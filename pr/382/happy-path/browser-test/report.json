@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result in the chat response.",
+  "reason": "Agent successfully executed browser tool calls to navigate to example.com, retrieved the page title \"Example Domain\", and reported the correct result.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut application with agent list in sidebar",
-    "Clicked on \"QA-20260704-004209-eg0l\" agent in the sidebar — Agent page opened with chat interface and settings panels",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was sent successfully and agent status changed to \"working\"",
-    "Waited up to 3 minutes for response — Agent completed the task in 12 seconds and returned response",
-    "Verified response mentions \"Example Domain\" — Response clearly states \"The page title is \"Example Domain\".\" and confirms \"Done — the page at https://example.com has the title \"Example Domain\". I've closed the browser.\""
+    "Navigated to http://localhost:47891 — Application loaded successfully with title \"Gamut\" and displayed the agent list in the sidebar.",
+    "Clicked on the \"QA-20260706-163619-2jkl\" agent in the sidebar — Agent page opened and displayed the chat interface with message input field.",
+    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully sent to the agent.",
+    "Waited for agent response (up to 3 minutes) — Agent completed its work in 12 seconds and provided the full response with browser tool outputs.",
+    "Verified the response contains \"Example Domain\" — The response clearly states: \"The page title is \"Example Domain\".\" and also confirms: \"Done — the page at https://example.com has the title \"Example Domain\". I've closed the browser.\" The agent successfully executed three browser tools: Open Browser (navigated to https://example.com), Browser MCP: Browser Get State (retrieved page information), and Close Browser (closed the session). All tool calls executed successfully as indicated by green checkmarks."
   ],
   "bugs": [],
-  "durationMs": 68586,
-  "sessionId": "6a85f1c9-3bf3-4585-baf7-ffdcf8bf2320",
+  "durationMs": 77578,
+  "sessionId": "6df63609-1262-4dbb-b639-11d8ad3013df",
   "cost": {
-    "inputTokens": 336,
-    "outputTokens": 10935,
-    "cacheCreationTokens": 66145,
-    "cacheReadTokens": 1017294,
+    "inputTokens": 408,
+    "outputTokens": 12394,
+    "cacheCreationTokens": 80392,
+    "cacheReadTokens": 1377128,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.239422
+    "totalCostUsd": 0.300581
   }
 }
