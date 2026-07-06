@@ -253,6 +253,18 @@ export async function listSessions(
   return await response.json() as TestSession[]
 }
 
+export async function renameSessionViaApi(
+  request: APIRequestContext,
+  agent: Pick<TestAgent, 'slug'>,
+  session: Pick<TestSession, 'id'>,
+  name: string,
+) {
+  const response = await request.patch(`/api/agents/${agent.slug}/sessions/${session.id}`, {
+    data: { name },
+  })
+  expect(response.ok()).toBeTruthy()
+}
+
 export async function expectSessionNamed(
   request: APIRequestContext,
   agent: Pick<TestAgent, 'slug'>,

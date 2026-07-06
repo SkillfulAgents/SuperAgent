@@ -175,22 +175,25 @@ export class SessionPage {
   }
 
   /**
-   * Delete a session via context menu
+   * Delete a session via the sidebar right-click context menu, confirming the
+   * dialog. Targets the row by session id (names appear in the breadcrumb and
+   * agent-home list too, so a text match would be ambiguous). Pass expectedName
+   * to also assert the confirm dialog names the right session.
    */
-  async deleteSessionViaContextMenu(sessionName: string) {
-    // Right-click on the session in the sidebar
-    const sessionItem = this.page.getByText(sessionName)
+  async deleteSessionViaContextMenu(sessionId: string, expectedName?: string) {
+    const sessionItem = this.page.locator(`[data-testid="session-item-${sessionId}"]`)
+    await expect(sessionItem).toBeVisible({ timeout: 15000 })
     await sessionItem.click({ button: 'right' })
 
-    // Click delete
     await this.page.locator('[data-testid="delete-session-item"]').click()
 
-    // Confirm deletion
-    await expect(this.page.locator('[data-testid="confirm-dialog"]')).toBeVisible()
+    const dialog = this.page.locator('[data-testid="confirm-dialog"]')
+    await expect(dialog).toBeVisible()
+    if (expectedName) {
+      await expect(dialog).toContainText(expectedName)
+    }
     await this.page.locator('[data-testid="confirm-button"]').click()
-
-    // Wait for dialog to close
-    await expect(this.page.locator('[data-testid="confirm-dialog"]')).not.toBeVisible()
+    await expect(dialog).not.toBeVisible()
   }
 
   /**
