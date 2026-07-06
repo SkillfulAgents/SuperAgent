@@ -1623,8 +1623,20 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Lifecycle management
 
-  async start(_options?: StartOptions): Promise<void> {
+  async start(options?: StartOptions): Promise<void> {
     this.running = true
+    // Surface the container env that carries the proxy credentials so E2E
+    // specs can call the API/MCP proxies the way a real container would
+    // (there is deliberately no HTTP endpoint that returns the proxy token).
+    if (options?.envVars?.['PROXY_TOKEN']) {
+      this.writeMockRecord({
+        type: 'container_start',
+        agentSlug: this.config.agentId,
+        proxyToken: options.envVars['PROXY_TOKEN'],
+        remoteMcps: options.envVars['REMOTE_MCPS'] ?? null,
+        timestamp: new Date().toISOString(),
+      })
+    }
     console.log(`[MockContainerClient] Started mock container for agent ${this.config.agentId}`)
   }
 
