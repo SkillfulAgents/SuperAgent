@@ -494,8 +494,13 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
           token: env.PROXY_TOKEN ?? '',
         }
       : undefined
-    const payloadObj = { ...(bootstrap ? { bootstrap } : {}), ...(mount ? { mount } : {}) }
-    const runHookPayload = bootstrap || mount ? JSON.stringify(payloadObj) : undefined
+    // Per-VM secret the supervisor pins on its first (trusted) run hook and then
+    // requires on every later /run, so the untrusted in-VM agent can't forge a
+    // /run to re-mount /workspace with attacker-chosen S3 Files params. Delivered
+    // only in runHookPayload (never in the agent env), so the agent never sees it.
+    const hookToken = randomUUID()
+    const payloadObj = { ...(bootstrap ? { bootstrap } : {}), ...(mount ? { mount } : {}), hookToken }
+    const runHookPayload = JSON.stringify(payloadObj)
     const payloadBytes = runHookPayload ? Buffer.byteLength(runHookPayload, 'utf8') : 0
     if (payloadBytes > RUN_HOOK_PAYLOAD_MAX_BYTES) {
       throw new Error(
