@@ -3,7 +3,7 @@
  * writes so an interleaved or interrupted read-modify-write can't drop other
  * secrets or truncate the file (which doubles as the container runtime env).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -88,6 +88,37 @@ describe('atomic .env writes', () => {
     const before = fs.readFileSync(envPath('agent'), 'utf-8')
 
     expect(await deleteSecret('agent', 'NOPE')).toBe(false)
+    expect(fs.readFileSync(envPath('agent'), 'utf-8')).toBe(before)
+  })
+
+  it('setSecret fails closed when the .env is unreadable — never rewrites from an empty view', async () => {
+    // If the under-lock re-read errors (NFS ESTALE, EIO — anything but a true
+    // ENOENT), setSecret must abort, NOT treat the file as empty: merging into
+    // "empty" and writing back atomically wipes every other secret.
+    const { setSecret } = await importService()
+    await setSecret('agent', { envVar: 'SUPABASE_URL', key: 'SUPABASE_URL', value: 'https://x' })
+    await setSecret('agent', { envVar: 'STRIPE_KEY', key: 'STRIPE_KEY', value: 'sk-1' })
+    const before = fs.readFileSync(envPath('agent'), 'utf-8')
+
+    const realReadFile = fs.promises.readFile.bind(fs.promises)
+    const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation((async (
+      p: unknown,
+      ...args: unknown[]
+    ) => {
+      if (typeof p === 'string' && p.endsWith(path.join('workspace', '.env'))) {
+        throw Object.assign(new Error('ESTALE: stale file handle'), { code: 'ESTALE' })
+      }
+      return (realReadFile as any)(p, ...args)
+    }) as typeof fs.promises.readFile)
+
+    try {
+      await expect(
+        setSecret('agent', { envVar: 'NEW', key: 'NEW', value: 'v' })
+      ).rejects.toMatchObject({ code: 'ESTALE' })
+    } finally {
+      spy.mockRestore()
+    }
+
     expect(fs.readFileSync(envPath('agent'), 'utf-8')).toBe(before)
   })
 

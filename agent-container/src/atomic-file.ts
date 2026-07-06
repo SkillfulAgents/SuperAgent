@@ -79,8 +79,11 @@ export async function writeFileAtomic(filePath: string, content: string, mode = 
   let existingMode: number | undefined;
   try {
     existingMode = (await fs.promises.stat(filePath)).mode & 0o777;
-  } catch {
-    // target absent → create with `mode`
+  } catch (err) {
+    // Only a confirmed-absent target is a create. Anything else (ESTALE from a
+    // cross-client NFS rename, EIO) must fail the write — treating it as a
+    // create would silently reset the file's permissions to `mode`.
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
   }
   try {
     // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
@@ -109,8 +112,9 @@ export function writeFileAtomicSync(filePath: string, content: string, mode = 0o
   let existingMode: number | undefined;
   try {
     existingMode = fs.statSync(filePath).mode & 0o777;
-  } catch {
-    // target absent → create with `mode`
+  } catch (err) {
+    // See writeFileAtomic: ENOENT-only, everything else fails the write.
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
   }
   try {
     const fd = fs.openSync(tmpPath, 'wx', mode);

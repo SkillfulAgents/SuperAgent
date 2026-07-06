@@ -15,7 +15,7 @@ import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
 import { runBrowserUpload } from './browser-upload';
-import { withEnvFileLock, writeFileAtomic } from './env-file-store';
+import { updateEnvFileEntry } from './env-file-store';
 
 import { getEditingCommands } from './cdp-editing-commands';
 
@@ -345,44 +345,12 @@ async function updateEnvFile(key: string, value: string): Promise<void> {
   const envFilePath = '/workspace/.env';
 
   try {
-    // The host app also writes this file (user secrets). Serialize via the shared
-    // on-disk lock and write atomically so neither side drops the
-    // other's keys or sees a torn file. Read-modify-write happens INSIDE the lock.
-    await withEnvFileLock(envFilePath, async () => {
-      // Read existing .env file or start fresh
-      let envContent = '';
-      try {
-        envContent = await fs.promises.readFile(envFilePath, 'utf-8');
-      } catch {
-        // File doesn't exist yet, start fresh
-      }
-
-      // Parse existing entries
-      const lines = envContent.split('\n');
-      const entries = new Map<string, string>();
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('#')) {
-          const eqIndex = trimmed.indexOf('=');
-          if (eqIndex > 0) {
-            const k = trimmed.substring(0, eqIndex);
-            const v = trimmed.substring(eqIndex + 1);
-            entries.set(k, v);
-          }
-        }
-      }
-
-      // Update or add the new entry (quote the value to handle special chars)
-      entries.set(key, `"${value.replace(/"/g, '\\"')}"`);
-
-      // Write back atomically
-      const newContent = Array.from(entries.entries())
-        .map(([k, v]) => `${k}=${v}`)
-        .join('\n') + '\n';
-
-      await writeFileAtomic(envFilePath, newContent, 0o600);
-    });
+    // The host app also writes this file (user secrets). updateEnvFileEntry
+    // serializes via the shared on-disk lock, reads fail-closed (an unreadable
+    // file THROWS instead of being treated as empty — merging into "empty" and
+    // writing back once wiped every secret), merges line-preservingly (the
+    // host's header and display-name comments survive), and writes atomically.
+    await updateEnvFileEntry(envFilePath, key, value);
     console.log(`[ENV] Updated .env file with ${key}`);
   } catch (error) {
     console.error(`[ENV] Failed to update .env file:`, error);
