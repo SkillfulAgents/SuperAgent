@@ -1,0 +1,77 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]:
+            - generic [ref=e10]: Gamut
+            - button "Search" [ref=e12] [cursor=pointer]:
+              - img [ref=e13]
+          - list [ref=e17]:
+            - listitem [ref=e18]:
+              - link "Home" [ref=e19] [cursor=pointer]:
+                - /url: /
+                - img [ref=e20]
+                - generic [ref=e25]: Home
+            - listitem [ref=e26]:
+              - link "Notifications" [ref=e27] [cursor=pointer]:
+                - /url: /notifications
+                - img [ref=e28]
+                - generic [ref=e31]: Notifications
+            - listitem [ref=e32]:
+              - button "New Agent" [ref=e33] [cursor=pointer]:
+                - img [ref=e34]
+                - generic [ref=e35]: New Agent
+        - generic [ref=e36]:
+          - generic [ref=e37]: Your Agents
+          - list [ref=e39]:
+            - button "QA-20260706-223213-p4bw idle" [ref=e80] [cursor=pointer]:
+              - link "QA-20260706-223213-p4bw idle" [ref=e82]:
+                - /url: /agents/qa-20260706-223213-p4bw-622vamtaq9
+                - generic [ref=e84]: QA-20260706-223213-p4bw
+                - img "idle" [ref=e85]:
+                  - img [ref=e86]
+            - button "QA-20260706-223212-qaah idle" [ref=e95] [cursor=pointer]:
+              - link "QA-20260706-223212-qaah idle" [ref=e97]:
+                - /url: /agents/qa-20260706-223212-qaah-1cqako636m
+                - generic [ref=e99]: QA-20260706-223212-qaah
+                - img "idle" [ref=e100]:
+                  - img [ref=e101]
+            - status [ref=e110]
+      - generic [ref=e50]:
+        - button "Settings" [ref=e51] [cursor=pointer]:
+          - img [ref=e52]
+          - generic [ref=e55]: Settings
+        - button "v0.4.5" [ref=e56] [cursor=pointer]:
+          - generic [ref=e57]: v0.4.5
+      - button "Toggle Sidebar" [ref=e58]
+    - main [ref=e59]:
+      - generic [ref=e60]:
+        - generic [ref=e61]:
+          - button "Toggle Sidebar" [ref=e62] [cursor=pointer]:
+            - img
+            - generic [ref=e63]: Toggle Sidebar
+          - button "Search agents and sessions... Ctrl+K" [ref=e65] [cursor=pointer]:
+            - img [ref=e66]
+            - generic [ref=e69]: Search agents and sessions...
+            - generic [ref=e70]: Ctrl+K
+        - generic [ref=e73]:
+          - generic [ref=e74]:
+            - heading "Your Agents" [level=2] [ref=e75]
+            - button "New Agent" [ref=e76] [cursor=pointer]:
+              - img
+              - text: New Agent
+          - generic [ref=e77]:
+            - link "idle QA-20260706-223213-p4bw" [ref=e112] [cursor=pointer]:
+              - /url: /agents/qa-20260706-223213-p4bw-622vamtaq9
+              - generic [ref=e114]:
+                - img [ref=e115]
+                - generic [ref=e124]: idle
+              - generic [ref=e127]: QA-20260706-223213-p4bw
+            - link "idle QA-20260706-223212-qaah" [ref=e129] [cursor=pointer]:
+              - /url: /agents/qa-20260706-223212-qaah-1cqako636m
+              - generic [ref=e131]:
+                - img [ref=e132]
+                - generic [ref=e141]: idle
+              - generic [ref=e144]: QA-20260706-223212-qaah
+  - region "Notifications alt+T"
