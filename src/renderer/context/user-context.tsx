@@ -1,7 +1,7 @@
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSession, signOut as authSignOut } from '@renderer/lib/auth-client'
-import { apiFetch, clearRedirectStash } from '@renderer/lib/api'
+import { apiFetch, clearRedirectStash, markDeliberateSignOut, clearDeliberateSignOut } from '@renderer/lib/api'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import type { AgentRole } from '@shared/lib/types/agent'
 
@@ -110,6 +110,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (isAuthenticated) {
       wasAuthenticatedRef.current = true
+      // Re-arm the apiFetch 401 auto-sign-out once a session is live again —
+      // signOut() below latches it off so trailing 401s from a deliberate
+      // sign-out can't re-stash the signed-out user's URL.
+      clearDeliberateSignOut()
     } else if (wasAuthenticatedRef.current) {
       wasAuthenticatedRef.current = false
       queryClient.clear()
@@ -178,6 +182,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
   )
 
   const signOut = useCallback(async () => {
+    // Gate the apiFetch 401 handler FIRST: revoking the session 401s every
+    // trailing background request, and each would otherwise re-stash this
+    // user's URL right after we drop it below (defeating the shared-tab
+    // guard) and re-fire the auto sign-out.
+    markDeliberateSignOut()
     // Drop any stashed redirect target so this user's last path can't be restored
     // into the next user's session on a shared tab (e.g. a residual stash left by
     // their own OAuth login, which peeks but never clears it).

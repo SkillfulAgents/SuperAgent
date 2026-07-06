@@ -18,6 +18,8 @@ import {
   peekRedirectStash,
   consumeRedirectStash,
   clearRedirectStash,
+  markDeliberateSignOut,
+  clearDeliberateSignOut,
 } from './api'
 
 const KEY = 'superagent.redirect'
@@ -174,5 +176,22 @@ describe('apiFetch 401 auto-stash (warm, router-mounted)', () => {
     await apiFetch('/api/agents/foo')
     expect(sessionStorage.getItem(KEY)).toBeNull()
     expect(signOutMock).not.toHaveBeenCalled()
+  })
+
+  it('is latched off during a deliberate sign-out and re-arms after sign-in', async () => {
+    window.history.replaceState(null, '', '/agents/foo')
+
+    // Trailing background 401s after the user clicked Sign out must not
+    // re-stash the signed-out user's URL (shared-tab leak) nor re-fire signOut.
+    markDeliberateSignOut()
+    await apiFetch('/api/agents/foo')
+    expect(sessionStorage.getItem(KEY)).toBeNull()
+    expect(signOutMock).not.toHaveBeenCalled()
+
+    // Once a session authenticates again the handler is re-armed.
+    clearDeliberateSignOut()
+    await apiFetch('/api/agents/foo')
+    expect(sessionStorage.getItem(KEY)).toBe('/agents/foo')
+    expect(signOutMock).toHaveBeenCalledTimes(1)
   })
 })

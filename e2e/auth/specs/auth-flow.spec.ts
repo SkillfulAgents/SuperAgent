@@ -517,4 +517,97 @@ test.describe('Auth Flow', () => {
     const afterLogin = await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))
     expect(afterLogin).toBeNull()
   })
+
+  // ── Live 401 (session expiry mid-use) ───────────────────
+
+  test('mid-session 401 signs out in place and re-login restores the exact URL', async ({ user2Page }) => {
+    // The other half of the redirect-stash machinery: the session dies while
+    // the app is OPEN. The next apiFetch 401s, the handler stashes the current
+    // URL FIRST, then auto-signs-out — via the auth client directly, NOT the
+    // user-context signOut, so the stash survives for the in-place re-login.
+    expect(agentSlug).toBeTruthy()
+
+    const authPage = new AuthPage(user2Page)
+    const appPage = new AppPage(user2Page)
+
+    // Entering state: user2 signed in on the agent page (previous test).
+    await user2Page.goto(`/agents/${agentSlug}`)
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible({ timeout: 15000 })
+
+    // Expire the session out from under the open app. The app's background
+    // polling fires the next apiFetch within seconds — don't drive the UI
+    // here: any element clicked can detach mid-action when the gate swaps in.
+    await user2Page.context().clearCookies()
+
+    // Auth gate renders IN PLACE: the address bar stays on the agent URL and
+    // the URL is stashed for restore.
+    await expect(user2Page.locator('[data-testid="auth-page"]')).toBeVisible({ timeout: 20000 })
+    await expect(user2Page).toHaveURL(new RegExp(`/agents/${agentSlug}$`))
+    const stashed = await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))
+    expect(stashed).toBe(`/agents/${agentSlug}`)
+
+    // Re-login restores the EXACT URL and consumes the stash.
+    await authPage.signIn(user2.email, user2.password)
+    await appPage.waitForAppLoaded()
+    await appPage.dismissWizardIfVisible()
+    await expect(user2Page).toHaveURL(new RegExp(`/agents/${agentSlug}$`))
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible({ timeout: 15000 })
+    expect(await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))).toBeNull()
+  })
+
+  test('a 403 response never triggers the auto-signout', async ({ user2Page }) => {
+    // 403 means forbidden, not expired — the 401 handler must leave the
+    // session alone or a permission error would boot the user out.
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible({ timeout: 15000 })
+
+    let saw403 = false
+    await user2Page.route('**/api/agents/**', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      saw403 = true
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'Forbidden' }),
+      })
+    })
+
+    try {
+      await user2Page.locator('[data-testid="home-message-input"]').fill('this send gets a 403')
+      await user2Page.locator('[data-testid="home-send-button"]').click()
+      await expect.poll(() => saw403, { timeout: 10000 }).toBe(true)
+    } finally {
+      await user2Page.unroute('**/api/agents/**')
+    }
+
+    // Durable proof the session survived: a reload comes back signed in.
+    // (If the 403 had triggered authSignOut, the server session would be
+    // revoked and this reload would land on the auth gate.)
+    await user2Page.reload()
+    await expect(user2Page.locator('[data-testid="agent-breadcrumb"]')).toBeVisible({ timeout: 15000 })
+    await expect(user2Page.locator('[data-testid="auth-page"]')).not.toBeVisible()
+    expect(await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))).toBeNull()
+  })
+
+  test('manual sign-out clears a residual stash so it cannot leak into the next login', async ({ user2Page }) => {
+    // A residual stash can exist (the OAuth login path peeks without
+    // clearing). Manual sign-out must drop it so the next user on a shared
+    // tab is not pushed into the previous user's URL.
+    const authPage = new AuthPage(user2Page)
+    const appPage = new AppPage(user2Page)
+    const userBar = new UserBarPage(user2Page)
+
+    await user2Page.evaluate(() =>
+      sessionStorage.setItem('superagent.redirect', '/agents/leaked-path'),
+    )
+
+    await userBar.signOut()
+    await authPage.expectVisible()
+    expect(await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))).toBeNull()
+
+    // Sign back in: nothing to restore, so no push to the leaked path.
+    await authPage.signIn(user2.email, user2.password)
+    await appPage.waitForAppLoaded()
+    await appPage.dismissWizardIfVisible()
+    await expect(user2Page).not.toHaveURL(/leaked-path/)
+  })
 })

@@ -16,9 +16,13 @@ export async function apiFetch(
 
   // Auto-sign-out on 401 in auth mode (skip auth endpoints to avoid loops).
   // Stash the current URL FIRST so any successful in-place re-sign-in restores it.
-  // Only on 401 (expired) — never 403 (forbidden). AUTH_MODE is web-only,
-  // so pathname+search is the route; the hash is included for completeness.
-  if (__AUTH_MODE__ && response.status === 401 && !path.startsWith('/api/auth/')) {
+  // Only on 401 (expired) — never 403 (forbidden), and never while a deliberate
+  // sign-out is in effect: revoking the session 401s every trailing background
+  // request, and without the gate those would re-stash the signed-out user's
+  // URL right after clearRedirectStash() dropped it (shared-tab leak).
+  // AUTH_MODE is web-only, so pathname+search is the route; the hash is
+  // included for completeness.
+  if (__AUTH_MODE__ && response.status === 401 && !deliberateSignOut && !path.startsWith('/api/auth/')) {
     const here = window.location.pathname + window.location.search + window.location.hash
     if (here !== '/') sessionStorage.setItem(REDIRECT_KEY, here)
     const { signOut } = await import('./auth-client')
@@ -29,6 +33,21 @@ export async function apiFetch(
 }
 
 const REDIRECT_KEY = 'superagent.redirect'
+
+// Latched while a deliberate sign-out is in effect, gating the 401 branch
+// above. Module state, so a full page load naturally resets it; the warm
+// reset happens when the next session authenticates.
+let deliberateSignOut = false
+
+/** Called by the user-context sign-out before revoking the session. */
+export function markDeliberateSignOut(): void {
+  deliberateSignOut = true
+}
+
+/** Called once a session is authenticated again, re-arming the 401 handler. */
+export function clearDeliberateSignOut(): void {
+  deliberateSignOut = false
+}
 
 /**
  * A safe internal path. Must start with a single `/` and reject anything the
