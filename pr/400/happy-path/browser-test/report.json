@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified browser-use feature allows agent to open browser, navigate to URL, extract page title, and report it back with correct information",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully with Gamut interface showing agent list",
+    "Clicked on \"QA-20260706-235426-d8j2\" agent in sidebar — Agent page loaded with chat interface showing agent settings and controls",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in textbox — Message appeared in input field (ref=e172)",
+    "Clicked Send message button — Message was sent successfully and agent status changed to \"working\"",
+    "Waited for agent response (up to 3 minutes) — Agent completed work in 12 seconds and returned response",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response clearly states \"The page title is \\\"Example Domain\\\"\" and shows agent successfully:"
+  ],
+  "bugs": [],
+  "durationMs": 80359,
+  "sessionId": "ab92b21f-c954-4ff3-8e5f-3182395af4a7",
+  "cost": {
+    "inputTokens": 302,
+    "outputTokens": 9213,
+    "cacheCreationTokens": 108497,
+    "cacheReadTokens": 839512,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.265939
+  }
+}
