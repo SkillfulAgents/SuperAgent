@@ -93,4 +93,21 @@ describe('writeFileAtomic (async)', () => {
     expect(fs.statSync(target).isDirectory()).toBe(true);
     expect(leftoverTmpFiles(tmpDir)).toEqual([]);
   });
+
+  // forceMode: for two-uid files (the agent .env) the mode must be applied on
+  // EVERY write — the rename transfers ownership, so preserving a stray
+  // restrictive mode locks the other writer out permanently.
+  it.runIf(process.platform !== 'win32')('forceMode overrides an existing restrictive mode', async () => {
+    const p = path.join(tmpDir, 'shared.env');
+    fs.writeFileSync(p, 'A=1\n');
+    fs.chmodSync(p, 0o600);
+    await writeFileAtomic(p, 'A=2\n', 0o666, { forceMode: true });
+    expect(fs.statSync(p).mode & 0o777).toBe(0o666);
+  });
+
+  it.runIf(process.platform !== 'win32')('forceMode applies the exact mode on create (not umask-reduced)', async () => {
+    const p = path.join(tmpDir, 'fresh.env');
+    await writeFileAtomic(p, 'A=1\n', 0o666, { forceMode: true });
+    expect(fs.statSync(p).mode & 0o777).toBe(0o666);
+  });
 });

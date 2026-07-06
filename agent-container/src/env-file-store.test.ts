@@ -270,19 +270,20 @@ describe('updateEnvFileEntry', () => {
   });
 
   it.runIf(process.platform !== 'win32')(
-    'creates the file 0o666 (umask-applied) so the host — a different uid — can write it too',
+    'creates the file world-writable (exact 0o666) so the host — a different uid — can write it too',
     async () => {
       await updateEnvFileEntry(envPath, 'K', 'v');
-      const umask = process.umask();
-      expect(fs.statSync(envPath).mode & 0o777).toBe(0o666 & ~umask);
+      expect(fs.statSync(envPath).mode & 0o777).toBe(0o666);
     }
   );
 
-  it.runIf(process.platform !== 'win32')('preserves an existing file mode', async () => {
+  it.runIf(process.platform !== 'win32')('heals a stuck restrictive mode back to 0o666', async () => {
+    // The atomic rename transfers ownership; preserving a stray 0o600 on this
+    // two-uid file would lock the host writer out of its own next update.
     fs.writeFileSync(envPath, 'A=1\n');
-    fs.chmodSync(envPath, 0o640);
+    fs.chmodSync(envPath, 0o600);
     await updateEnvFileEntry(envPath, 'K', 'v');
-    expect(fs.statSync(envPath).mode & 0o777).toBe(0o640);
+    expect(fs.statSync(envPath).mode & 0o777).toBe(0o666);
   });
 
   it('concurrent upserts of distinct keys all survive', async () => {

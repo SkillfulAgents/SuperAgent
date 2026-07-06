@@ -679,7 +679,7 @@ function renameWithRetrySync(from: string, to: string, attempts = 10): void {
 export async function writeFileAtomic(
   filePath: string,
   content: string,
-  options?: { mode?: number }
+  options?: { mode?: number; forceMode?: boolean }
 ): Promise<void> {
   const dir = path.dirname(filePath)
   const tmpPath = tempPathFor(filePath)
@@ -687,14 +687,21 @@ export async function writeFileAtomic(
   // target. If it already exists, preserve its current permissions — an atomic
   // rename would otherwise reset perms to the temp file's (which could, e.g.,
   // make a world-writable .env or relax a 0o600 secrets file).
+  //
+  // `forceMode` inverts this for files that MUST hold a specific mode no matter
+  // what (the agent .env is written by two different uids; because the rename
+  // also transfers ownership, preserving a stray 0o600 permanently locks the
+  // other writer out).
   let existingMode: number | undefined
-  try {
-    existingMode = (await fs.promises.stat(filePath)).mode & 0o777
-  } catch (err) {
-    // Only a confirmed-absent target is a create. Anything else (ESTALE from a
-    // cross-client NFS rename, EIO) must fail the write — treating it as a
-    // create would silently reset the file's permissions to options.mode.
-    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+  if (!options?.forceMode) {
+    try {
+      existingMode = (await fs.promises.stat(filePath)).mode & 0o777
+    } catch (err) {
+      // Only a confirmed-absent target is a create. Anything else (ESTALE from a
+      // cross-client NFS rename, EIO) must fail the write — treating it as a
+      // create would silently reset the file's permissions to options.mode.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
   }
   try {
     // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
@@ -703,7 +710,8 @@ export async function writeFileAtomic(
       await handle.writeFile(content, 'utf-8')
       // Best-effort: object-storage / perms-less mounts (e.g. an S3 FUSE driver)
       // may reject chmod — a permission tweak must never fail the data write.
-      if (existingMode !== undefined) await handle.chmod(existingMode).catch(() => {})
+      const chmodTo = options?.forceMode ? (options.mode ?? 0o666) : existingMode
+      if (chmodTo !== undefined) await handle.chmod(chmodTo).catch(() => {})
       await handle.sync()
     } finally {
       await handle.close()
@@ -720,16 +728,18 @@ export async function writeFileAtomic(
 export function writeFileAtomicSync(
   filePath: string,
   content: string,
-  options?: { mode?: number }
+  options?: { mode?: number; forceMode?: boolean }
 ): void {
   const dir = path.dirname(filePath)
   const tmpPath = tempPathFor(filePath)
   let existingMode: number | undefined
-  try {
-    existingMode = (fs.statSync(filePath).mode & 0o777)
-  } catch (err) {
-    // See writeFileAtomic: ENOENT-only, everything else fails the write.
-    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+  if (!options?.forceMode) {
+    try {
+      existingMode = (fs.statSync(filePath).mode & 0o777)
+    } catch (err) {
+      // See writeFileAtomic: ENOENT-only, everything else fails the write.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
   }
   try {
     const fd = fs.openSync(tmpPath, 'wx', options?.mode ?? 0o666)
@@ -737,9 +747,10 @@ export function writeFileAtomicSync(
       fs.writeFileSync(fd, content, 'utf-8')
       // Best-effort (see writeFileAtomic): never let a perms-less mount's chmod
       // rejection fail the data write.
-      if (existingMode !== undefined) {
+      const chmodTo = options?.forceMode ? (options.mode ?? 0o666) : existingMode
+      if (chmodTo !== undefined) {
         try {
-          fs.fchmodSync(fd, existingMode)
+          fs.fchmodSync(fd, chmodTo)
         } catch {
           // ignore — perms are advisory on object-storage mounts
         }

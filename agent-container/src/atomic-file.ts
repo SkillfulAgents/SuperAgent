@@ -73,17 +73,28 @@ function fsyncDirSync(dir: string): void {
  * dir). On ANY error the temp file is removed and the existing target is left
  * exactly as it was. The parent directory must already exist.
  */
-export async function writeFileAtomic(filePath: string, content: string, mode = 0o666): Promise<void> {
+export async function writeFileAtomic(
+  filePath: string,
+  content: string,
+  mode = 0o666,
+  opts: { forceMode?: boolean } = {}
+): Promise<void> {
   const dir = path.dirname(filePath);
   const tmpPath = tempPathFor(filePath);
+  // `forceMode` skips the preserve-existing-perms behavior for files that must
+  // hold `mode` no matter what: the rename below also transfers OWNERSHIP to
+  // this process, so preserving a stray restrictive mode on a two-uid file
+  // (the agent .env) would lock the other writer out permanently.
   let existingMode: number | undefined;
-  try {
-    existingMode = (await fs.promises.stat(filePath)).mode & 0o777;
-  } catch (err) {
-    // Only a confirmed-absent target is a create. Anything else (ESTALE from a
-    // cross-client NFS rename, EIO) must fail the write — treating it as a
-    // create would silently reset the file's permissions to `mode`.
-    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+  if (!opts.forceMode) {
+    try {
+      existingMode = (await fs.promises.stat(filePath)).mode & 0o777;
+    } catch (err) {
+      // Only a confirmed-absent target is a create. Anything else (ESTALE from a
+      // cross-client NFS rename, EIO) must fail the write — treating it as a
+      // create would silently reset the file's permissions to `mode`.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+    }
   }
   try {
     // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
@@ -92,7 +103,8 @@ export async function writeFileAtomic(filePath: string, content: string, mode = 
       await handle.writeFile(content, 'utf-8');
       // Best-effort: a perms-less mount (e.g. an S3 FUSE driver) may reject
       // chmod — never let a permission tweak fail the data write.
-      if (existingMode !== undefined) await handle.chmod(existingMode).catch(() => {});
+      const chmodTo = opts.forceMode ? mode : existingMode;
+      if (chmodTo !== undefined) await handle.chmod(chmodTo).catch(() => {});
       await handle.sync();
     } finally {
       await handle.close();

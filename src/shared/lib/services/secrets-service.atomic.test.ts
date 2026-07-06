@@ -73,13 +73,24 @@ describe('atomic .env writes', () => {
     expect(secrets[0]).toMatchObject({ envVar: 'API_KEY', value: 'sk-123' })
   })
 
-  it.runIf(process.platform !== 'win32')('creates the .env with the agent-container 0o666 mode (umask-applied), matching prior behavior', async () => {
+  it.runIf(process.platform !== 'win32')('creates the .env world-writable (exact 0o666) so the container — a different uid — can write it', async () => {
     const { setSecret } = await importService()
     await setSecret('agent', { envVar: 'X', key: 'X', value: '1' })
-    // Atomic write preserves the same creation perms the old fs.writeFile used:
-    // 0o666 reduced by the process umask (e.g. 0o644). NOT forced world-writable.
-    const umask = process.umask()
-    expect(fs.statSync(envPath('agent')).mode & 0o777).toBe(0o666 & ~umask)
+    expect(fs.statSync(envPath('agent')).mode & 0o777).toBe(0o666)
+  })
+
+  it.runIf(process.platform !== 'win32')('heals a .env stuck at 0o600 back to 0o666 on the next write', async () => {
+    // The atomic rename transfers ownership to this process; if it also
+    // preserved a stray 0o600 (left by the old container create-mode), the
+    // container could no longer even READ the file — its next POST /env would
+    // fail with EACCES (or, before the fail-closed fix, wipe the file).
+    const { setSecret } = await importService()
+    await setSecret('agent', { envVar: 'A', key: 'A', value: '1' })
+    fs.chmodSync(envPath('agent'), 0o600)
+
+    await setSecret('agent', { envVar: 'B', key: 'B', value: '2' })
+
+    expect(fs.statSync(envPath('agent')).mode & 0o777).toBe(0o666)
   })
 
   it('deleteSecret returns false and writes nothing for an unknown key', async () => {
