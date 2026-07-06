@@ -307,6 +307,45 @@ export function reactionsForChat(activeReactions: Set<string>, chatId: string): 
     .map((k) => ({ key: k, ts: k.slice(prefix.length) }))
 }
 
+// Slack error codes meaning the reaction (or its message/channel) is already gone,
+// so there is nothing left to remove — safe to stop tracking it.
+const REACTION_GONE_CODES = new Set(['no_reaction', 'message_not_found', 'channel_not_found'])
+
+/**
+ * After attempting reactions.remove, decide whether the thinking reaction is settled
+ * (gone) and can be untracked, or whether the removal failed transiently and the key
+ * must stay tracked for a later retry. A Slack reaction never expires, so untracking a
+ * still-live reaction strands it forever — default to "not settled" on any unknown error.
+ */
+export function reactionRemovalSettled(err: unknown): boolean {
+  if (err == null) return true // removed successfully
+  const code = (err as { data?: { error?: string } })?.data?.error
+  return code !== undefined && REACTION_GONE_CODES.has(code)
+}
+
+/**
+ * Serialize async operations per key: each op chains off the prior op on the same key,
+ * so fire-and-forget calls that would otherwise race at the network (e.g. a reaction add
+ * from one indicator tick and a remove from the next) apply in call order. Mirrors the
+ * per-chat promise-tail idiom used for the message queue in ChatIntegrationManager.
+ */
+export function createPerKeySerializer(): <T>(key: string, op: () => Promise<T>) => Promise<T> {
+  const tails = new Map<string, Promise<unknown>>()
+  return function run<T>(key: string, op: () => Promise<T>): Promise<T> {
+    const prev = tails.get(key) ?? Promise.resolve()
+    // Run op regardless of whether the prior op resolved or rejected, so one failed op
+    // doesn't stall the rest of the queue.
+    const result = prev.then(op, op)
+    const tail = result.catch(() => {}) // swallow so the chain itself never rejects
+    tails.set(key, tail)
+    // Evict once settled, but only if a newer op hasn't already replaced this tail.
+    void tail.finally(() => {
+      if (tails.get(key) === tail) tails.delete(key)
+    })
+    return result
+  }
+}
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class SlackConnector extends ChatClientConnector {
@@ -359,6 +398,10 @@ export class SlackConnector extends ChatClientConnector {
 
   // Track whether we have a thinking reaction active
   private activeReactions: Set<string> = new Set() // effectiveChatId:ts
+
+  // Serialize reaction add/remove per chat so a paint (add) from one indicator tick and
+  // a clear (remove) from the next don't race at the network and re-strand the reaction.
+  private runReaction = createPerKeySerializer()
 
   // Thread context: maps effective chatId → real channel + thread anchor ts (for answerInThread)
   private threadContextMap: Map<string, { channel: string; threadTs: string }> = new Map()
@@ -812,16 +855,23 @@ export class SlackConnector extends ChatClientConnector {
     if (this.activeReactions.has(key)) return // Already reacting
 
     const { channel } = this.resolveChannel(chatId)
-    try {
-      await this.app.client.reactions.add({
-        channel,
-        timestamp: lastTs,
-        name: 'thinking_face',
-      })
-      this.activeReactions.add(key)
-    } catch {
-      // Already reacted or message deleted — non-critical
-    }
+    // Track BEFORE the network call: an add that lands on Slack but whose response is
+    // lost (timeout after commit) would otherwise leave a live reaction that no teardown
+    // sweep knows about, so it never clears. Tracking first means the sweep always sees
+    // it; a spurious remove of one that never landed is a harmless no-op.
+    this.activeReactions.add(key)
+    await this.runReaction(chatId, async () => {
+      try {
+        await this.app?.client.reactions.add({
+          channel,
+          timestamp: lastTs,
+          name: 'thinking_face',
+        })
+      } catch {
+        // Already reacted or message deleted — non-critical. The key stays tracked so the
+        // teardown sweep will attempt (and harmlessly no-op) a remove.
+      }
+    })
   }
 
   async stopWorking(chatId: string): Promise<void> {
@@ -1088,22 +1138,30 @@ export class SlackConnector extends ChatClientConnector {
     if (entries.length === 0) return
 
     const { channel } = this.resolveChannel(chatId)
-    for (const { key, ts } of entries) {
-      await this.removeThinkingReaction(channel, ts)
-      this.activeReactions.delete(key)
-    }
+    await this.runReaction(chatId, async () => {
+      for (const { key, ts } of entries) {
+        const settled = await this.removeThinkingReaction(channel, ts)
+        // Only stop tracking once the reaction is confirmed gone. A transient failure
+        // keeps the key so the next clear retries — a Slack reaction never self-expires,
+        // so dropping tracking on a failed remove would strand it forever.
+        if (settled) this.activeReactions.delete(key)
+      }
+    })
   }
 
-  private async removeThinkingReaction(channel: string, ts: string): Promise<void> {
-    if (!this.app) return
+  // Returns whether the reaction is settled (gone) and can be untracked; false on a
+  // transient failure that leaves it possibly-live, so the caller keeps it for retry.
+  private async removeThinkingReaction(channel: string, ts: string): Promise<boolean> {
+    if (!this.app) return false
     try {
       await this.app.client.reactions.remove({
         channel,
         timestamp: ts,
         name: 'thinking_face',
       })
-    } catch {
-      // Reaction already removed or message deleted — non-critical
+      return true
+    } catch (err) {
+      return reactionRemovalSettled(err)
     }
   }
 
