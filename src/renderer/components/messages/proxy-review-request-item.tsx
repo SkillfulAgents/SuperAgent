@@ -297,6 +297,7 @@ export function ProxyReviewRequestItem({
                   <div className="mx-3 mt-2 flex min-h-10 gap-2 rounded-md border border-border bg-background pl-3 pr-0 pb-1">
                     <textarea
                       ref={denyReasonInputRef}
+                      data-testid="proxy-review-deny-reason-input"
                       placeholder="Reason for denying..."
                       value={denyReason}
                       rows={1}
@@ -317,6 +318,7 @@ export function ProxyReviewRequestItem({
                     <Button
                       type="button"
                       size="icon"
+                      data-testid="proxy-review-deny-reason-submit"
                       disabled={!denyReason.trim() || status === 'submitting'}
                       onClick={() => {
                         setDenyMenuOpen(false)
