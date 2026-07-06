@@ -119,6 +119,43 @@ BAZ=qux`
 
     expect(result.size).toBe(2)
   })
+
+  it('unescapes quotes, backslashes and newlines in double-quoted values', () => {
+    const content = 'JSON="{\\"a\\": \\"b c\\"}"\nMULTI="line1\\nline2"\nSLASH="a\\\\b"'
+    const result = parseEnvFile(content)
+
+    expect(result.get('JSON')?.value).toBe('{"a": "b c"}')
+    expect(result.get('MULTI')?.value).toBe('line1\nline2')
+    expect(result.get('SLASH')?.value).toBe('a\\b')
+  })
+
+  it('leaves single-quoted values literal (no unescaping)', () => {
+    const result = parseEnvFile("RAW='a\\nb'")
+    expect(result.get('RAW')?.value).toBe('a\\nb')
+  })
+})
+
+describe('serialize → parse round trip', () => {
+  it('values with quotes/JSON/backslashes/newlines survive repeated cycles unchanged', () => {
+    // Regression: parseEnvFile used to strip quotes WITHOUT unescaping, so a
+    // value containing `"` gained an escape level on every read-modify-write —
+    // progressive corruption of e.g. JSON-valued secrets.
+    const values = [
+      '{"github": [{"name": "x y"}]}',
+      'has "quotes" and \\backslash\\',
+      'line1\nline2',
+      'plain',
+      'tricky \\" pre-escaped-looking',
+    ]
+    let secrets = values.map((value, i) => ({ key: `K_${i}`, envVar: `K_${i}`, value }))
+
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const parsed = parseEnvFile(serializeEnvFile(secrets))
+      secrets = secrets.map((s) => ({ ...s, value: parsed.get(s.envVar)!.value }))
+    }
+
+    expect(secrets.map((s) => s.value)).toEqual(values)
+  })
 })
 
 describe('serializeEnvFile', () => {

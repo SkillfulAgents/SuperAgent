@@ -65,11 +65,15 @@ export function parseEnvFile(content: string): Map<string, { value: string; comm
       value = rest.trim()
     }
 
-    // Remove surrounding quotes
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
+    // Remove surrounding quotes. Double-quoted values also unescape the
+    // sequences serializeEnvFile writes (\\ , \" , \n) — without this, a value
+    // containing quotes gained an escape level on EVERY read-modify-write
+    // cycle, progressively corrupting it. Single-quoted values stay literal.
+    if (value.startsWith('"') && value.endsWith('"')) {
+      value = value
+        .slice(1, -1)
+        .replace(/\\(["\\n])/g, (_, c: string) => (c === 'n' ? '\n' : c))
+    } else if (value.startsWith("'") && value.endsWith("'")) {
       value = value.slice(1, -1)
     }
 
@@ -100,8 +104,10 @@ export function serializeEnvFile(secrets: AgentSecret[]): string {
       value.includes('#') ||
       value.includes('\n')
     ) {
-      // Escape double quotes and wrap in double quotes
-      value = `"${value.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`
+      // Escape backslashes first, then quotes and newlines, and wrap in double
+      // quotes — the exact inverse of parseEnvFile's unescape, so values
+      // round-trip byte-for-byte through repeated read-modify-write cycles.
+      value = `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`
     }
 
     // Add inline comment with display name if different from env var

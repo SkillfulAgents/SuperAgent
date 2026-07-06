@@ -3,11 +3,17 @@
  * protocol-compatible with the host's withCrossProcessFileLock / writeFileAtomic
  * (same `<target>.lock` O_EXCL convention, same atomic temp+rename).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { writeFileAtomic, withEnvFileLock } from './env-file-store';
+import {
+  writeFileAtomic,
+  withEnvFileLock,
+  readEnvFileOrNull,
+  upsertEnvContent,
+  updateEnvFileEntry,
+} from './env-file-store';
 
 let tmpDir: string;
 let envPath: string;
@@ -90,5 +96,202 @@ describe('withEnvFileLock', () => {
     });
     expect(ran).toBe(true);
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+});
+
+/** An NFS stale-file-handle error, as raised after another client rename-replaces
+ *  the file this client has a cached lookup for. */
+function estale(): NodeJS.ErrnoException {
+  return Object.assign(new Error('ESTALE: stale file handle'), { code: 'ESTALE' });
+}
+
+function enoent(p: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`ENOENT: no such file or directory, open '${p}'`), {
+    code: 'ENOENT',
+  });
+}
+
+/** Fail fs.promises.readFile for `target` the first `times` calls (-1 = always),
+ *  pass everything else (the lock release reads `<target>.lock`) through. */
+function failReadsOf(target: string, err: () => Error, times: number) {
+  const real = fs.promises.readFile.bind(fs.promises);
+  let remaining = times;
+  return vi.spyOn(fs.promises, 'readFile').mockImplementation((async (p: unknown, ...args: unknown[]) => {
+    if (p === target && (remaining === -1 || remaining-- > 0)) throw err();
+    return (real as any)(p, ...args);
+  }) as typeof fs.promises.readFile);
+}
+
+describe('readEnvFileOrNull', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns the file content', async () => {
+    fs.writeFileSync(envPath, 'A=1\n');
+    expect(await readEnvFileOrNull(envPath)).toBe('A=1\n');
+  });
+
+  it('returns null when the file is genuinely absent', async () => {
+    expect(await readEnvFileOrNull(envPath)).toBeNull();
+  });
+
+  it('retries through a transient ESTALE and returns the content', async () => {
+    fs.writeFileSync(envPath, 'A=1\n');
+    failReadsOf(envPath, estale, 2);
+    expect(await readEnvFileOrNull(envPath)).toBe('A=1\n');
+  });
+
+  it('retries through a transient ENOENT (mid-rename lookup) and returns the content', async () => {
+    fs.writeFileSync(envPath, 'A=1\n');
+    failReadsOf(envPath, () => enoent(envPath), 1);
+    expect(await readEnvFileOrNull(envPath)).toBe('A=1\n');
+  });
+
+  it(
+    'THROWS on a persistent non-ENOENT error — never reports an existing file as absent',
+    { timeout: 10_000 },
+    async () => {
+      // Fail-closed is the load-bearing property: reporting an unreadable .env as
+      // "absent" made the caller merge into empty and atomically wipe every secret.
+      fs.writeFileSync(envPath, 'A=1\n');
+      failReadsOf(envPath, estale, -1);
+      await expect(readEnvFileOrNull(envPath)).rejects.toMatchObject({ code: 'ESTALE' });
+    }
+  );
+});
+
+describe('upsertEnvContent', () => {
+  const hostWritten = [
+    '# Superagent Secrets',
+    '# Format: ENV_VAR=value  # Display Name',
+    '',
+    'SUPABASE_URL=https://x.supabase.co',
+    'SUPABASE_SERVICE_ROLE_KEY=eyJhbGc  # Supabase Key',
+    'CLICKHOUSE_PASSWORD="p w"',
+    '',
+  ].join('\n');
+
+  it('appends a new key, preserving every existing line byte-for-byte', () => {
+    const result = upsertEnvContent(hostWritten, 'APOLLO_API_KEY', 'tok-123');
+    expect(result).toBe(hostWritten + 'APOLLO_API_KEY="tok-123"\n');
+  });
+
+  it('replaces an existing key in place, keeping its display-name comment', () => {
+    const result = upsertEnvContent(hostWritten, 'SUPABASE_SERVICE_ROLE_KEY', 'newkey');
+    expect(result).toContain('SUPABASE_SERVICE_ROLE_KEY="newkey"  # Supabase Key');
+    // Everything else untouched.
+    expect(result).toContain('# Superagent Secrets');
+    expect(result).toContain('SUPABASE_URL=https://x.supabase.co');
+    expect(result).toContain('CLICKHOUSE_PASSWORD="p w"');
+  });
+
+  it('does not treat a # inside a quoted value as a comment', () => {
+    const result = upsertEnvContent('K="a#b"\nOTHER=1\n', 'K', 'new');
+    expect(result).toBe('K="new"\nOTHER=1\n');
+  });
+
+  it('drops duplicate definitions of the updated key, keeps everything else', () => {
+    const result = upsertEnvContent('A=1\nB=2\nA=3\n', 'A', 'x');
+    expect(result).toBe('A="x"\nB=2\n');
+  });
+
+  it('handles empty content', () => {
+    expect(upsertEnvContent('', 'K', 'v')).toBe('K="v"\n');
+  });
+
+  it('adds a trailing newline when the source lacks one', () => {
+    expect(upsertEnvContent('A=1', 'B', 'v')).toBe('A=1\nB="v"\n');
+  });
+
+  it('escapes quotes and newlines so a value cannot break the line structure', () => {
+    const result = upsertEnvContent('', 'K', 'say "hi"\nline2');
+    expect(result).toBe('K="say \\"hi\\"\\nline2"\n');
+  });
+
+  it('escapes backslashes (matching the host serializer, so values round-trip)', () => {
+    const result = upsertEnvContent('', 'K', 'a\\b');
+    expect(result).toBe('K="a\\\\b"\n');
+  });
+
+  it('does not match keys of which the target is a prefix/suffix', () => {
+    const result = upsertEnvContent('MY_KEY=1\nKEY_2=2\n', 'KEY', 'v');
+    expect(result).toBe('MY_KEY=1\nKEY_2=2\nKEY="v"\n');
+  });
+});
+
+describe('updateEnvFileEntry', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('adding a key NEVER drops existing secrets (the .env wipe regression)', async () => {
+    // Reproduces the prod wipe: a host-format .env full of secrets, then the
+    // container upserts one new key via POST /env. Every prior secret must survive.
+    const before = [
+      '# Superagent Secrets',
+      '# Format: ENV_VAR=value  # Display Name',
+      '',
+      'SUPABASE_URL=https://x.supabase.co',
+      'SUPABASE_SERVICE_ROLE_KEY=eyJhbGc  # Supabase Key',
+      'STRIPE_SECRET_KEY=sk_live_123',
+      '',
+    ].join('\n');
+    fs.writeFileSync(envPath, before);
+
+    await updateEnvFileEntry(envPath, 'APOLLO_API_KEY', 'tok-123');
+
+    const after = fs.readFileSync(envPath, 'utf-8');
+    expect(after).toBe(before + 'APOLLO_API_KEY="tok-123"\n');
+  });
+
+  it(
+    'fails closed: a persistently unreadable .env aborts the update and leaves the file untouched',
+    { timeout: 10_000 },
+    async () => {
+      const before = 'SUPABASE_URL=https://x.supabase.co\n';
+      fs.writeFileSync(envPath, before);
+      failReadsOf(envPath, estale, -1);
+
+      await expect(
+        updateEnvFileEntry(envPath, 'APOLLO_API_KEY', 'tok')
+      ).rejects.toMatchObject({ code: 'ESTALE' });
+      vi.restoreAllMocks();
+
+      expect(fs.readFileSync(envPath, 'utf-8')).toBe(before);
+      // And the lock was released despite the failure.
+      expect(fs.existsSync(`${envPath}.lock`)).toBe(false);
+    }
+  );
+
+  it('creates a missing .env and works end-to-end', async () => {
+    await updateEnvFileEntry(envPath, 'K', 'v');
+    expect(fs.readFileSync(envPath, 'utf-8')).toBe('K="v"\n');
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'creates the file 0o666 (umask-applied) so the host — a different uid — can write it too',
+    async () => {
+      await updateEnvFileEntry(envPath, 'K', 'v');
+      const umask = process.umask();
+      expect(fs.statSync(envPath).mode & 0o777).toBe(0o666 & ~umask);
+    }
+  );
+
+  it.runIf(process.platform !== 'win32')('preserves an existing file mode', async () => {
+    fs.writeFileSync(envPath, 'A=1\n');
+    fs.chmodSync(envPath, 0o640);
+    await updateEnvFileEntry(envPath, 'K', 'v');
+    expect(fs.statSync(envPath).mode & 0o777).toBe(0o640);
+  });
+
+  it('concurrent upserts of distinct keys all survive', async () => {
+    fs.writeFileSync(envPath, 'SEED=1\n');
+    await Promise.all(
+      Array.from({ length: 10 }, (_, i) => updateEnvFileEntry(envPath, `KEY_${i}`, `v${i}`))
+    );
+    const content = fs.readFileSync(envPath, 'utf-8');
+    expect(content).toContain('SEED=1');
+    for (let i = 0; i < 10; i++) expect(content).toContain(`KEY_${i}="v${i}"`);
   });
 });
