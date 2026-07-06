@@ -517,13 +517,27 @@ export class SessionPage {
   async alwaysDenyScope(scope: string, reviewId?: string) {
     const container = this.getProxyReviewRequests(reviewId).first()
     await this.paginateToCard(container)
-    await container.locator(`[data-testid="proxy-review-always-deny-${scope}"]`).click()
+    // The "Always deny <scope>" options live inside the Deny chevron popover —
+    // open it first, otherwise the portaled content isn't mounted yet.
+    await container.locator('[data-testid="proxy-review-deny-btn-chevron"]').click()
+    await this.page.locator(`[data-testid="proxy-review-always-deny-${scope}"]`).click()
+  }
+
+  async denyWithReason(reason: string, reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
+    // The reason textarea + submit arrow live inside the Deny chevron popover.
+    await container.locator('[data-testid="proxy-review-deny-btn-chevron"]').click()
+    await this.page.locator('[data-testid="proxy-review-deny-reason-input"]').fill(reason)
+    await this.page.locator('[data-testid="proxy-review-deny-reason-submit"]').click()
   }
 
   async alwaysAllowAll(reviewId?: string) {
     const container = this.getProxyReviewRequests(reviewId).first()
     await this.paginateToCard(container)
-    await container.locator('[data-testid="proxy-review-always-allow-all"]').click()
+    // "Always allow all <toolkit> requests" lives inside the Allow popover — open it first.
+    await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
+    await this.page.locator('[data-testid="proxy-review-always-allow-all"]').click()
   }
 
   // --- X-Agent Review Request Helpers ---

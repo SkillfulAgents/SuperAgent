@@ -26,13 +26,19 @@ export const MOCK_ACCOUNT_ID = 'mock-account-id'
 // /proxy-review/.../always endpoint persists an apiScopePolicies row whose
 // account_id has a FK on connected_accounts; without this seed the insert
 // fails and the route returns 500, breaking the "always allow" test.
-let mockAccountSeeded = false
-async function seedMockConnectedAccount(): Promise<void> {
-  if (mockAccountSeeded) return
+//
+// The account id is parameterizable so a spec can pass a per-test id
+// (`proxy review account_id=<uuid>`). apiScopePolicies is keyed by
+// (accountId, scope), so tests that persist "always" decisions must each own a
+// distinct account or they race on the shared MOCK_ACCOUNT_ID rows across the
+// 6 workers. The toolkit stays 'slack' so 'chat:write' remains a valid scope.
+const seededMockAccounts = new Set<string>()
+async function seedMockConnectedAccount(accountId: string = MOCK_ACCOUNT_ID): Promise<void> {
+  if (seededMockAccounts.has(accountId)) return
   const now = new Date()
   await db.insert(connectedAccounts).values({
-    id: MOCK_ACCOUNT_ID,
-    providerConnectionId: MOCK_ACCOUNT_ID,
+    id: accountId,
+    providerConnectionId: accountId,
     providerName: 'composio',
     toolkitSlug: 'slack',
     displayName: 'Mock Account',
@@ -41,7 +47,7 @@ async function seedMockConnectedAccount(): Promise<void> {
     createdAt: now,
     updatedAt: now,
   }).onConflictDoNothing()
-  mockAccountSeeded = true
+  seededMockAccounts.add(accountId)
 }
 
 /**
@@ -751,14 +757,18 @@ export class ProxyReviewScenario implements MockScenario {
     }, delay)
     delay += 20
 
-    // Now trigger the proxy review via ReviewManager
+    // Now trigger the proxy review via ReviewManager. The account id is
+    // parameterizable (`account_id=<uuid>`) so specs that persist "always"
+    // policies each own a distinct account and don't race on the shared
+    // MOCK_ACCOUNT_ID scope-policy rows across workers.
+    const accountId = getMessageParam(userMessage, 'account_id') ?? MOCK_ACCOUNT_ID
     const capturedDelay = delay
     setTimeout(async () => {
-      await seedMockConnectedAccount()
+      await seedMockConnectedAccount(accountId)
       // Fire-and-forget — the promise resolves when the user decides
       reviewManager.requestReview({
         agentSlug,
-        accountId: MOCK_ACCOUNT_ID,
+        accountId,
         toolkit: this.toolkit,
         method: this.method,
         targetPath: this.targetPath,
