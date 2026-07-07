@@ -26,6 +26,13 @@ const authProjects = [
     dataDir: path.join(e2eDataDir, 'settings'),
     viteCacheDir: path.join(e2eDataDir, '.vite', 'settings'),
   },
+  {
+    name: 'auth-users',
+    testMatch: '**/user-onboarding.spec.ts',
+    port: e2ePort + 2,
+    dataDir: path.join(e2eDataDir, 'users'),
+    viteCacheDir: path.join(e2eDataDir, '.vite', 'users'),
+  },
 ].map((project, index) => ({
   ...project,
   baseURL: index === 0 && process.env.E2E_BASE_URL
