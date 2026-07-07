@@ -70,6 +70,7 @@ Today `/clear` only unsubscribes and clears the indicator (`stopSession` `:978`)
 ### Part 2 - stall nudge (the discovery trigger)
 
 A per-session SILENCE timer: armed at turn dispatch, RESET on every SSE event, fired after 7 minutes of total silence, at which point it sends ONE informational message pointing at `/stop`.
+"Once" is per USER MESSAGE, not per container-turn: a steering message mid-turn re-opens the latch, so a user who steered and then got 7 more minutes of silence gets a second nudge - each nudge is preceded by a user action.
 It NEVER touches the indicator.
 
 - `ManagedConnector` (`chat-integration-manager.ts:124`) gains `stallNudgeTimer?` and `stallNotified?`.

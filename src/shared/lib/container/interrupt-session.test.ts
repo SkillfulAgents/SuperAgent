@@ -80,4 +80,16 @@ describe('interruptAgentSession', () => {
     expect(denyAllForAgent).toHaveBeenCalledWith('agent-1')
     expect(outcome).toBe('error-settled-locally')
   })
+
+  it('rethrows on a double fault (interrupt AND local settling both throw), skipping denyAll', async () => {
+    // Pins the contract the API route's 500 depends on: only when even the
+    // catch-path markSessionInterrupted throws does the helper propagate.
+    const interruptSession = vi.fn().mockRejectedValue(new Error('wedged'))
+    getClient.mockReturnValue({ interruptSession })
+    getCachedInfo.mockReturnValue({ status: 'running' })
+    markSessionInterrupted.mockRejectedValue(new Error('persister down'))
+
+    await expect(interruptAgentSession('agent-1', 'session-1')).rejects.toThrow('persister down')
+    expect(denyAllForAgent).not.toHaveBeenCalled()
+  })
 })
