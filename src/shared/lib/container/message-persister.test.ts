@@ -3587,6 +3587,11 @@ describe('MessagePersister', () => {
         const body = JSON.parse(resolveCall[1].body)
         expect(body.value).toContain(ENDPOINT.url)
         expect(body.value).toContain('UNVERIFIED')
+        // Registration guidance: agent-does-it-first (API → browser), user
+        // walkthrough only as the fallback.
+        expect(body.value).toContain('YOURSELF')
+        expect(body.value).toContain('browser')
+        expect(body.value).toContain('walkthrough')
 
         expect(sseEvents.filter((e) => e.type === 'webhook_trigger_created')).toHaveLength(1)
         expect(globalEvents.filter((e) => e.type === 'webhook_trigger_created')).toHaveLength(1)
@@ -3745,6 +3750,9 @@ describe('MessagePersister', () => {
         expect(body.value).toContain('GMAIL_NEW_EMAIL')
         expect(body.value).toContain('SLACK_NEW_MESSAGE')
         expect(body.value).toContain('setup_trigger')
+        // Custom endpoints surfaced as complementary, not a replacement.
+        expect(body.value).toContain('create_webhook_endpoint')
+        expect(body.value).toContain('side by side')
       })
 
       it('rejects when connected account not found', async () => {
@@ -3798,6 +3806,9 @@ describe('MessagePersister', () => {
         expect(resolveCall).toBeDefined()
         const body = JSON.parse(resolveCall![1].body)
         expect(body.value).toContain('No webhook triggers available')
+        // Dead end must redirect to the custom-endpoint path.
+        expect(body.value).toContain('create_webhook_endpoint')
+        expect(body.value).toContain('update_webhook_endpoint')
       })
     })
   })

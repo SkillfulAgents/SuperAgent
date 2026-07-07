@@ -2740,10 +2740,15 @@ ${continuation}`
 
         const triggers = await getAvailableTriggers(account.toolkitSlug)
         const formatted = triggers.length === 0
-          ? 'No webhook triggers available for this account.'
+          ? 'No webhook triggers available for this account.\n\n' +
+            'You can still react to events from this service with a custom webhook endpoint:\n' +
+            '1. Call create_webhook_endpoint to mint a public URL (with a prompt describing what to do per event).\n' +
+            `2. Register that URL with the service — most expose webhook registration via their API (use the connected ${account.toolkitSlug} account) or a settings page.\n` +
+            '3. If the service provides a signing secret, attach it with update_webhook_endpoint so deliveries are verified.'
           : `Available triggers for ${account.toolkitSlug}:\n\n${triggers.map((t) =>
               `- **${t.slug}** (${t.name}): ${t.description}${t.type === 'poll' ? ' [poll-based]' : ''}`
-            ).join('\n')}\n\nUse setup_trigger with the trigger slug to subscribe.`
+            ).join('\n')}\n\nUse setup_trigger with the trigger slug to subscribe. ` +
+            'For events this catalog does not cover, you can also mint a custom webhook endpoint (create_webhook_endpoint) and register its URL with the service directly — both kinds can run side by side.'
 
         await this.resolveContainerInput(agentSlug, toolUseId, formatted)
       } catch (error) {
@@ -3001,9 +3006,12 @@ ${continuation}`
         await this.resolveContainerInput(agentSlug, toolUseId,
           `Webhook endpoint "${input.name}" created (trigger ID: ${triggerId}).\n\n` +
           `Public URL: ${endpoint.url}\n\n` +
-          `Next steps:\n` +
-          `1. Register this URL with the third-party service (via its API or settings page). Registration handshakes (Slack url_verification, Dropbox/Meta challenges, MS Graph validationToken) are answered automatically.\n` +
-          `2. ${verification
+          `Next: register this URL with the third-party service. Do the registration YOURSELF whenever possible — in order of preference:\n` +
+          `1. The service's API: use the connected account through the authenticated proxy, or call it directly (request_secret for an API key if needed).\n` +
+          `2. Offer to do it via the browser (navigate to the service's webhook settings page and fill it in).\n` +
+          `3. Only if the user prefers to do it themselves (or registration requires access you don't have): give them a precise, copy-pasteable walkthrough — the exact settings path for that service, the URL to paste, the content type to pick, which events to enable, and where to put the signing secret.\n\n` +
+          `Registration handshakes (Slack url_verification, Dropbox/Meta challenges, MS Graph validationToken) are answered automatically.\n\n` +
+          `${verification
             ? 'Signature verification is configured — events with bad signatures are rejected at the edge.'
             : 'No signature verification is configured yet — events will be marked UNVERIFIED. If the service provides a signing secret (many reveal it only after registration), attach it with update_webhook_endpoint.'}\n\n` +
           `Every delivery to this URL starts a session with your prompt plus the request details.`)
