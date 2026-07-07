@@ -171,6 +171,25 @@ export function upsertEnvContent(content: string, key: string, value: string): s
 }
 
 /**
+ * Best-effort startup heal for a .env left with broken permissions by older
+ * builds: an atomic rename-replace flipped the file's owner while preserving a
+ * stray 0o600, locking the OTHER writer out entirely (it can't even read the
+ * file, let alone chmod it). chmod succeeds only for the file's owner — which
+ * is exactly the poisoned state this side can and must fix; everything else
+ * (absent file, not ours) is ignored. Returns true when a fix was applied.
+ */
+export async function healEnvFilePermissions(filePath: string): Promise<boolean> {
+  try {
+    const st = await fs.promises.stat(filePath);
+    if ((st.mode & 0o777) === 0o666) return false;
+    await fs.promises.chmod(filePath, 0o666);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Cross-process-safe upsert of a single `key=value` into the env file:
  * lock → fail-closed read → line-preserving merge → atomic write.
  *
