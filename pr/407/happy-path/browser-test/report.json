@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can successfully execute browser tools to navigate to a URL and retrieve the page title.",
+  "reason": "Agent successfully opened browser, navigated to example.com, retrieved page title \"Example Domain\", and returned the result in the chat response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page with agent list in sidebar.",
-    "Clicked on agent \"QA-20260707-021124-0h7d\" in the sidebar — Successfully opened the agent's chat interface.",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted to the agent.",
-    "Waited for agent response (up to 3 minutes) — Agent completed the task in 16 seconds, well within the 3-minute timeout.",
-    "Verified response mentions \"Example Domain\" — The agent's response clearly states: \"The page title is 'Example Domain'.\" The full response confirms: \"The page at https://example.com loaded successfully — its title/heading is 'Example Domain'. I've closed the browser.\""
+    "Navigated to http://localhost:47891 — Application loaded successfully, showing Gamut interface with agent sidebar",
+    "Clicked on \"QA-20260707-025911-8veq\" agent in sidebar — Agent page loaded, showing chat interface and agent configuration",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in input field — Message successfully entered in textbox",
+    "Clicked \"Send message\" button — Message sent, agent transitioned to \"working\" state, new session \"Browser Title Retrieval Test\" created",
+    "Waited for response to complete (3-minute timeout) — Response completed in 11 seconds with \"Working...\" indicator disappearing",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response clearly shows two mentions of \"Example Domain\": (1) \"The page title is \"Example Domain\".\" and (2) \"The page at https://example.com has the title \"Example Domain\".\" All browser tool calls executed successfully with green checkmarks."
   ],
   "bugs": [],
-  "durationMs": 103059,
-  "sessionId": "16b8854f-9d21-4e81-a433-65639bad6897",
+  "durationMs": 69930,
+  "sessionId": "28e51994-1587-4cc2-beb7-5ef4cd3afada",
   "cost": {
-    "inputTokens": 381,
-    "outputTokens": 11468,
-    "cacheCreationTokens": 109103,
-    "cacheReadTokens": 1105580,
+    "inputTokens": 336,
+    "outputTokens": 11053,
+    "cacheCreationTokens": 111706,
+    "cacheReadTokens": 989915,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.304658
+    "totalCostUsd": 0.294225
   }
 }
