@@ -1013,6 +1013,22 @@ class ChatIntegrationManager {
     try {
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession) {
+        // Clear = stop + forget: without the interrupt, a busy turn keeps running
+        // orphaned in the container (burning tokens with nowhere to deliver) after
+        // the mapping is archived. Same shared path as /stop. Best-effort in its
+        // own try so a failed interrupt can never block the archive below.
+        if (BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(chatSession.sessionId))) {
+          try {
+            const integration = getChatIntegration(integrationId)
+            if (integration) {
+              const { interruptAgentSession } = await import('@shared/lib/container/interrupt-session')
+              await interruptAgentSession(integration.agentSlug, chatSession.sessionId)
+            }
+          } catch (err) {
+            console.error('[ChatIntegrationManager] Failed to interrupt before clear:', err)
+            reportError(err, 'clear-session-interrupt', { integrationId, chatId })
+          }
+        }
         this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
       }
     } catch (err) {

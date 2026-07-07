@@ -313,8 +313,8 @@ describe('Chat integration E2E', () => {
 
       expect(interruptSpy).toHaveBeenCalledWith(sessionId)
       expect(messagePersister.isSessionActive(sessionId)).toBe(false)
-      // The conversation mapping survives (unlike /clear)
-      expect(listChatIntegrationSessions(integrationId)).toHaveLength(1)
+      // The conversation mapping survives un-archived (unlike /clear)
+      expect(listChatIntegrationSessions(integrationId).find(s => s.sessionId === sessionId)!.archivedAt).toBeNull()
     })
 
     it('acks gracefully when nothing is running', async () => {
@@ -361,6 +361,35 @@ describe('Chat integration E2E', () => {
 
       expect(interruptSpy).not.toHaveBeenCalled()
       expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+    })
+  })
+
+  describe('/clear on a busy session', () => {
+    it('interrupts the running turn before archiving', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
+      // Same deterministic setup as the /stop tests: wait on the DB mapping,
+      // then let the mock turn settle before simulating the hang.
+      await waitForCondition(() =>
+        listChatIntegrationSessions(integrationId).some(s => s.externalChatId === 'chat-1'))
+      await waitForCondition(() =>
+        mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0, 3000)
+      const sessionId = listChatIntegrationSessions(integrationId).find(s => s.externalChatId === 'chat-1')!.sessionId
+
+      messagePersister.markSessionActive(sessionId, 'test-agent')
+      const interruptSpy = vi.spyOn(mockContainerClient, 'interruptSession')
+
+      mockConnector.simulateIncomingMessage('/clear', 'chat-1', 'user-1')
+      await waitForCondition(() =>
+        mockConnector.sentMessages.some(m => m.message.text?.includes('Session cleared')))
+
+      // Stop first: the turn must not keep running orphaned after the mapping is archived
+      expect(interruptSpy).toHaveBeenCalledWith(sessionId)
+      expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+      // And the clear still archived the mapping (listChatIntegrationSessions
+      // intentionally returns archived rows too, so assert the flag itself)
+      expect(listChatIntegrationSessions(integrationId).find(s => s.sessionId === sessionId)!.archivedAt).not.toBeNull()
     })
   })
 
