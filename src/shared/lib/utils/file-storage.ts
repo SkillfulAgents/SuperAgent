@@ -684,18 +684,22 @@ export async function writeFileAtomic(
   const dir = path.dirname(filePath)
   const tmpPath = tempPathFor(filePath)
   // Match fs.writeFile(mode) semantics: `mode` applies only when CREATING the
-  // target. If it already exists, preserve its current permissions — an atomic
-  // rename would otherwise reset perms to the temp file's (which could, e.g.,
-  // make a world-writable .env or relax a 0o600 secrets file).
+  // target. If it already exists, preserve its current owner, group, and
+  // permissions — the rename below replaces the inode, which would otherwise
+  // hand the file to this process's uid with the temp file's perms. Ownership
+  // preservation is best-effort (only root can give a file away; EPERM is
+  // ignored), matching npm write-file-atomic.
   //
-  // `forceMode` inverts this for files that MUST hold a specific mode no matter
-  // what (the agent .env is written by two different uids; because the rename
-  // also transfers ownership, preserving a stray 0o600 permanently locks the
-  // other writer out).
-  let existingMode: number | undefined
+  // `forceMode` inverts the mode handling for files that MUST hold a specific
+  // mode no matter what (the agent .env is written by two different uids, and
+  // the non-root writer can never chown it back — so a preserved stray 0o600
+  // would permanently lock the other writer out; only a forced world-RW mode
+  // makes ownership irrelevant).
+  let existing: { mode: number; uid: number; gid: number } | undefined
   if (!options?.forceMode) {
     try {
-      existingMode = (await fs.promises.stat(filePath)).mode & 0o777
+      const st = await fs.promises.stat(filePath)
+      existing = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid }
     } catch (err) {
       // Only a confirmed-absent target is a create. Anything else (ESTALE from a
       // cross-client NFS rename, EIO) must fail the write — treating it as a
@@ -709,9 +713,14 @@ export async function writeFileAtomic(
     try {
       await handle.writeFile(content, 'utf-8')
       // Best-effort: object-storage / perms-less mounts (e.g. an S3 FUSE driver)
-      // may reject chmod — a permission tweak must never fail the data write.
-      const chmodTo = options?.forceMode ? (options.mode ?? 0o666) : existingMode
-      if (chmodTo !== undefined) await handle.chmod(chmodTo).catch(() => {})
+      // may reject chown/chmod — a metadata tweak must never fail the data write.
+      // chown before chmod: chown can clear mode bits on some platforms.
+      if (options?.forceMode) {
+        await handle.chmod(options.mode ?? 0o666).catch(() => {})
+      } else if (existing) {
+        await handle.chown(existing.uid, existing.gid).catch(() => {})
+        await handle.chmod(existing.mode).catch(() => {})
+      }
       await handle.sync()
     } finally {
       await handle.close()
@@ -732,10 +741,11 @@ export function writeFileAtomicSync(
 ): void {
   const dir = path.dirname(filePath)
   const tmpPath = tempPathFor(filePath)
-  let existingMode: number | undefined
+  let existing: { mode: number; uid: number; gid: number } | undefined
   if (!options?.forceMode) {
     try {
-      existingMode = (fs.statSync(filePath).mode & 0o777)
+      const st = fs.statSync(filePath)
+      existing = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid }
     } catch (err) {
       // See writeFileAtomic: ENOENT-only, everything else fails the write.
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
@@ -745,15 +755,21 @@ export function writeFileAtomicSync(
     const fd = fs.openSync(tmpPath, 'wx', options?.mode ?? 0o666)
     try {
       fs.writeFileSync(fd, content, 'utf-8')
-      // Best-effort (see writeFileAtomic): never let a perms-less mount's chmod
-      // rejection fail the data write.
-      const chmodTo = options?.forceMode ? (options.mode ?? 0o666) : existingMode
-      if (chmodTo !== undefined) {
-        try {
-          fs.fchmodSync(fd, chmodTo)
-        } catch {
-          // ignore — perms are advisory on object-storage mounts
+      // Best-effort (see writeFileAtomic): never let a perms-less mount's
+      // chown/chmod rejection fail the data write. chown before chmod.
+      try {
+        if (options?.forceMode) {
+          fs.fchmodSync(fd, options.mode ?? 0o666)
+        } else if (existing) {
+          try {
+            fs.fchownSync(fd, existing.uid, existing.gid)
+          } catch {
+            // ignore — only root can give a file away
+          }
+          fs.fchmodSync(fd, existing.mode)
         }
+      } catch {
+        // ignore — perms are advisory on object-storage mounts
       }
       fs.fsyncSync(fd)
     } finally {
