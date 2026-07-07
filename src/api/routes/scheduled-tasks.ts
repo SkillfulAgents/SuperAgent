@@ -270,6 +270,20 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       return c.json({ error: 'Task is not pending' }, 400)
     }
 
+    // Per-task overlap guard, same predicate as the scheduler's: a manual run
+    // must not overlap a still-active previous run either. A held task shows a
+    // stale past "next run" timestamp, making Run Now the natural user response —
+    // an unguarded spawn here would create exactly the concurrent overlap the
+    // scheduler is holding back.
+    if (task.isRecurring && task.lastSessionId) {
+      const occupied =
+        messagePersister.isSessionActive(task.lastSessionId) &&
+        !messagePersister.isSessionAwaitingInput(task.lastSessionId)
+      if (occupied) {
+        return c.json({ error: 'Previous run of this task is still in progress' }, 409)
+      }
+    }
+
     const client = await containerManager.ensureRunning(task.agentSlug)
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
     const models = getEffectiveModels()

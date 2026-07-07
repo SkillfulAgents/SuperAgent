@@ -35,6 +35,11 @@ import {
   cancelScheduledTask,
   markTaskExecuted,
   updateNextExecution,
+  recordTaskSkip,
+  rescheduleAfterFailure,
+  recordManualExecution,
+  pauseScheduledTask,
+  resumeScheduledTask,
   markTaskFailed,
   resetScheduledTask,
   updateTaskName,
@@ -442,6 +447,173 @@ describe('scheduled-task-service', () => {
       expect(updatedTask!.lastSessionId).toBe('session-xyz')
       expect(updatedTask!.executionCount).toBe(initialCount + 1)
       expect(updatedTask!.status).toBe('pending') // Should stay pending for recurring
+    })
+  })
+
+  // ============================================================================
+  // recordTaskSkip / overlap-guard skip counters
+  // ============================================================================
+
+  describe('recordTaskSkip', () => {
+    it('increments consecutiveSkips and stamps lastSkippedAt without advancing the schedule', async () => {
+      const taskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '*/15 * * * *',
+        prompt: 'Recurring test',
+      })
+
+      const before = await getScheduledTask(taskId)
+      expect(before!.consecutiveSkips).toBe(0)
+      expect(before!.lastSkippedAt).toBeNull()
+      const originalNext = before!.nextExecutionAt.getTime()
+
+      await recordTaskSkip(taskId)
+
+      const afterOne = await getScheduledTask(taskId)
+      expect(afterOne!.consecutiveSkips).toBe(1)
+      expect(afterOne!.lastSkippedAt).not.toBeNull()
+      // Held cycle must NOT advance the schedule — the task stays due.
+      expect(afterOne!.nextExecutionAt.getTime()).toBe(originalNext)
+      // A hold is not an execution.
+      expect(afterOne!.executionCount).toBe(0)
+      expect(afterOne!.lastExecutedAt).toBeNull()
+
+      await recordTaskSkip(taskId)
+      const afterTwo = await getScheduledTask(taskId)
+      expect(afterTwo!.consecutiveSkips).toBe(2)
+    })
+
+    it('is a no-op for a nonexistent task', async () => {
+      await expect(recordTaskSkip('nonexistent-id')).resolves.toBeUndefined()
+    })
+  })
+
+  describe('updateNextExecution skip reset', () => {
+    it('resets consecutiveSkips and lastSkippedAt on a successful fire', async () => {
+      const taskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '*/15 * * * *',
+        prompt: 'Recurring test',
+      })
+
+      // Accumulate a hold streak.
+      await recordTaskSkip(taskId)
+      await recordTaskSkip(taskId)
+      const held = await getScheduledTask(taskId)
+      expect(held!.consecutiveSkips).toBe(2)
+      expect(held!.lastSkippedAt).not.toBeNull()
+
+      // A successful fire clears the streak.
+      await updateNextExecution(taskId, new Date('2024-06-15T13:00:00.000Z'), 'session-xyz')
+
+      const fired = await getScheduledTask(taskId)
+      expect(fired!.consecutiveSkips).toBe(0)
+      expect(fired!.lastSkippedAt).toBeNull()
+      expect(fired!.executionCount).toBe(1)
+    })
+  })
+
+  // ============================================================================
+  // rescheduleAfterFailure Tests
+  // ============================================================================
+
+  describe('rescheduleAfterFailure', () => {
+    it('advances the schedule but preserves the guard pointer, hold streak, and execution stats', async () => {
+      const taskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '*/15 * * * *',
+        prompt: 'Recurring test',
+      })
+
+      // Establish a real prior fire, then a hold streak on top of it.
+      await updateNextExecution(taskId, new Date('2024-06-15T12:15:00.000Z'), 'prev-session')
+      await recordTaskSkip(taskId)
+      await recordTaskSkip(taskId)
+      const before = await getScheduledTask(taskId)
+      expect(before!.lastSessionId).toBe('prev-session')
+      expect(before!.consecutiveSkips).toBe(2)
+      const beforeExecutedAt = before!.lastExecutedAt
+
+      const nextTime = new Date('2024-06-15T12:30:00.000Z')
+      await rescheduleAfterFailure(taskId, nextTime)
+
+      const after = await getScheduledTask(taskId)
+      // Schedule advanced (failure must not hot-loop the same slot)...
+      expect(after!.nextExecutionAt.getTime()).toBe(nextTime.getTime())
+      // ...but nothing else: the failure is not an execution, and blanking
+      // lastSessionId here is what disarms the overlap guard.
+      expect(after!.lastSessionId).toBe('prev-session')
+      expect(after!.consecutiveSkips).toBe(2)
+      expect(after!.lastSkippedAt).not.toBeNull()
+      expect(after!.executionCount).toBe(1)
+      expect(after!.lastExecutedAt?.getTime()).toBe(beforeExecutedAt?.getTime())
+      expect(after!.status).toBe('pending')
+    })
+
+    it('is a no-op for a nonexistent task', async () => {
+      await expect(
+        rescheduleAfterFailure('nonexistent-id', new Date('2024-06-15T13:00:00.000Z'))
+      ).resolves.toBeUndefined()
+    })
+  })
+
+  // ============================================================================
+  // Skip-streak reset on re-anchor and manual run
+  // ============================================================================
+
+  describe('skip-streak reset on re-anchor and manual run', () => {
+    async function createHeldTask(): Promise<string> {
+      const taskId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '*/15 * * * *',
+        prompt: 'Recurring test',
+      })
+      await recordTaskSkip(taskId)
+      await recordTaskSkip(taskId)
+      await recordTaskSkip(taskId)
+      const held = await getScheduledTask(taskId)
+      expect(held!.consecutiveSkips).toBe(3)
+      return taskId
+    }
+
+    it('resumeScheduledTask clears the streak (the held fire is abandoned by the re-anchor)', async () => {
+      const taskId = await createHeldTask()
+      await pauseScheduledTask(taskId)
+
+      const resumed = await resumeScheduledTask(taskId)
+      expect(resumed).toBe(true)
+
+      const task = await getScheduledTask(taskId)
+      expect(task!.consecutiveSkips).toBe(0)
+      expect(task!.lastSkippedAt).toBeNull()
+    })
+
+    it('resetScheduledTask clears the streak', async () => {
+      const taskId = await createHeldTask()
+      await markTaskFailed(taskId, 'boom')
+
+      const reset = await resetScheduledTask(taskId)
+      expect(reset).toBe(true)
+
+      const task = await getScheduledTask(taskId)
+      expect(task!.consecutiveSkips).toBe(0)
+      expect(task!.lastSkippedAt).toBeNull()
+    })
+
+    it('recordManualExecution clears the streak (manual run becomes the guarded previous run)', async () => {
+      const taskId = await createHeldTask()
+
+      await recordManualExecution(taskId, 'manual-session')
+
+      const task = await getScheduledTask(taskId)
+      expect(task!.consecutiveSkips).toBe(0)
+      expect(task!.lastSkippedAt).toBeNull()
+      expect(task!.lastSessionId).toBe('manual-session')
+      expect(task!.executionCount).toBe(1)
     })
   })
 

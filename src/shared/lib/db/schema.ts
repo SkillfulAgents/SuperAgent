@@ -157,6 +157,15 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   isRecurring: integer('is_recurring', { mode: 'boolean' }).notNull().default(false),
   executionCount: integer('execution_count').notNull().default(0),
 
+  // Overlap guard (recurring tasks): number of consecutive poll cycles this task
+  // was held because its previous run was still actively progressing, and when it
+  // was last held. Reset to 0/null on any fire (scheduled or manual) and whenever
+  // the schedule is re-anchored (resume/reset); preserved across failed fire
+  // attempts. Written for skip observability (surfacing skipped & wedged
+  // recurring tasks) — no consumer reads them yet.
+  consecutiveSkips: integer('consecutive_skips').notNull().default(0),
+  lastSkippedAt: integer('last_skipped_at', { mode: 'timestamp_ms' }),
+
   // Session tracking
   lastSessionId: text('last_session_id'),
   createdBySessionId: text('created_by_session_id'),

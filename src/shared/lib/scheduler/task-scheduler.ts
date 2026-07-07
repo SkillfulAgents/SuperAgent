@@ -14,6 +14,8 @@ import {
   getDueTasks,
   markTaskExecuted,
   markTaskFailed,
+  recordTaskSkip,
+  rescheduleAfterFailure,
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
@@ -129,12 +131,15 @@ class TaskScheduler {
             tags: { component: 'task-scheduler', phase: 'execute-task' },
             extra: { taskId: task.id, agentSlug: task.agentSlug, isRecurring: task.isRecurring },
           })
-          // For recurring tasks, schedule next execution even on failure
-          // For one-time tasks, mark as failed
+          // For recurring tasks, schedule the next attempt without recording an
+          // execution: rescheduleAfterFailure advances nextExecutionAt only,
+          // preserving lastSessionId (blanking it would disarm the overlap
+          // guard) and the consecutiveSkips hold streak.
+          // For one-time tasks, mark as failed.
           if (task.isRecurring) {
             try {
               const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
-              await updateNextExecution(task.id, nextTime, '')
+              await rescheduleAfterFailure(task.id, nextTime)
               console.log(
                 `[TaskScheduler] Recurring task ${task.id} failed but scheduled next: ${nextTime.toISOString()}`
               )
@@ -182,6 +187,48 @@ class TaskScheduler {
       return
     }
 
+    // Per-task overlap guard (recurring crons only): if the previous run of THIS
+    // task is still actively progressing, hold this fire instead of spawning a
+    // second concurrent session. "Actively progressing" means busy AND not parked
+    // on user input — a parked run has nobody to answer an offline scheduled
+    // question, so it must not wedge the task forever, whereas a run with a
+    // backgrounded task still executing stays isActive=true / isAwaitingInput=false
+    // and correctly counts as occupied.
+    //
+    // Hold semantics: we do NOT advance nextExecutionAt, leaving the task due so
+    // the next poll re-checks and fires the freshest run the moment the slot frees
+    // (re-anchoring forward via getNextCronTime(now) in recordTaskExecution).
+    // Because nextExecutionAt is a single scalar, at most one pending fire exists
+    // per task — coalesce-to-latest is automatic. Each held cycle bumps
+    // consecutiveSkips / lastSkippedAt for skip observability.
+    if (task.isRecurring && task.lastSessionId) {
+      const lastSessionId = task.lastSessionId
+      const occupied =
+        messagePersister.isSessionActive(lastSessionId) &&
+        !messagePersister.isSessionAwaitingInput(lastSessionId)
+      if (occupied) {
+        console.log(
+          `[TaskScheduler] Task ${task.id} held: previous run ${lastSessionId} still active; leaving task due`
+        )
+        // Best-effort bookkeeping: a hold is not a failure, so a failed skip
+        // write must not escape into the failure path (which would advance the
+        // schedule and abandon the pending fire). Report and hold regardless.
+        try {
+          await recordTaskSkip(task.id)
+        } catch (error) {
+          console.error(
+            `[TaskScheduler] Failed to record skip for task ${task.id}:`,
+            error
+          )
+          captureException(error, {
+            tags: { component: 'task-scheduler', phase: 'record-skip' },
+            extra: { taskId: task.id, agentSlug: task.agentSlug },
+          })
+        }
+        return
+      }
+    }
+
     // Verify agent still exists
     if (!(await agentExists(task.agentSlug))) {
       console.error(
@@ -213,21 +260,40 @@ class TaskScheduler {
     const sessionId = containerSession.id
     const sessionName = task.name || 'Scheduled Task'
 
-    await registerSession(task.agentSlug, sessionId, sessionName, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-      scheduledExecutionAt: task.nextExecutionAt.toISOString(),
-    })
+    try {
+      await registerSession(task.agentSlug, sessionId, sessionName, {
+        isScheduledExecution: true,
+        scheduledTaskId: task.id,
+        scheduledTaskName: task.name || undefined,
+        scheduledExecutionAt: task.nextExecutionAt.toISOString(),
+      })
 
-    // Subscribe to the session for SSE updates
-    await messagePersister.subscribeToSession(
-      sessionId,
-      client,
-      sessionId,
-      task.agentSlug
-    )
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
+      // Subscribe to the session for SSE updates
+      await messagePersister.subscribeToSession(
+        sessionId,
+        client,
+        sessionId,
+        task.agentSlug
+      )
+      messagePersister.markSessionActive(sessionId, task.agentSlug)
+    } catch (error) {
+      // The session already exists and is executing the prompt (initialMessage),
+      // even though registration/subscription failed. Record it as this fire's
+      // session before propagating so the schedule advances pointing at the real
+      // session — arming the overlap guard against the orphan — instead of going
+      // through the failure path, which records no session at all.
+      await this.recordTaskExecution(task, sessionId).catch((recordError) => {
+        console.error(
+          `[TaskScheduler] Failed to record orphaned session ${sessionId} for task ${task.id}:`,
+          recordError
+        )
+        captureException(recordError, {
+          tags: { component: 'task-scheduler', phase: 'record-orphan' },
+          extra: { taskId: task.id, agentSlug: task.agentSlug, sessionId },
+        })
+      })
+      throw error
+    }
 
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`
