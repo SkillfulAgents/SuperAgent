@@ -159,7 +159,7 @@ const bgLaunch = (seq: number) => ({
   tool_use_result: { backgroundTaskId: 'bg-1' },
 })
 
-async function setUp() {
+async function setUp(subscribeOpts?: { fromStart?: boolean }) {
   vi.resetModules()
   const { messagePersister } = await import('./message-persister')
   const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
@@ -175,7 +175,7 @@ async function setUp() {
     messagePersister.unsubscribeFromSession(sessionId)
   }
 
-  await messagePersister.subscribeToSession(sessionId, client, sessionId, AGENT_SLUG)
+  await messagePersister.subscribeToSession(sessionId, client, sessionId, AGENT_SLUG, subscribeOpts)
 
   const resubscribe = () =>
     messagePersister.subscribeToSession(sessionId, client, sessionId, AGENT_SLUG)
@@ -284,6 +284,53 @@ describe('stream cursor + epoch reconcile', () => {
     expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
   })
 
+  it('an epoch mismatch while the grace timer is armed settles exactly once', async () => {
+    // The grace backstop arms a setTimeout after the result; fake timers for
+    // this one test so its window can be driven past deterministically.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const { messagePersister, notificationManager, sessionId, sseEvents, send, resubscribe } =
+        await setUp()
+
+      await send(hello('epoch-1', -1))
+      messagePersister.markSessionActive(sessionId, AGENT_SLUG)
+      await send(assistant(0))
+      await send(result(1)) // result seen, idle pending → grace arms
+
+      // The container died inside the grace window; the re-attach hello
+      // carries a new epoch and the reconcile settles (with the notification).
+      await resubscribe()
+      await send(hello('epoch-2', -1))
+
+      expect(countIdle(sseEvents)).toBe(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+
+      // The armed grace window elapsing afterwards must not settle again.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(countIdle(sseEvents)).toBe(1)
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a same-epoch hello on re-attach reconciles nothing: a mid-turn session stays active', async () => {
+    const { messagePersister, notificationManager, sessionId, sseEvents, send, resubscribe } =
+      await setUp()
+
+    await send(hello('epoch-1', -1))
+    messagePersister.markSessionActive(sessionId, AGENT_SLUG)
+    await send(assistant(0))
+
+    // Same incarnation across the reconnect gap: the turn is still running.
+    await resubscribe()
+    await send(hello('epoch-1', 0))
+
+    expect(messagePersister.isSessionActive(sessionId)).toBe(true)
+    expect(countIdle(sseEvents)).toBe(0)
+    expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+  })
+
   it('skips already-processed seqs (duplicate delivery is idempotent)', async () => {
     const { messagePersister, sessionId, sseEvents, send } = await setUp()
 
@@ -325,5 +372,44 @@ describe('stream cursor + epoch reconcile', () => {
 
     await resubscribe()
     expect(cursors[1]).toBeUndefined()
+  })
+
+  it('a hello with an epoch but no max_seq is treated as legacy (no cursor)', async () => {
+    const { messagePersister, sessionId, send, cursors, resubscribe } = await setUp()
+
+    await send({ type: 'system', subtype: 'capabilities', session_state_events: true, epoch: 'epoch-1' })
+    messagePersister.markSessionActive(sessionId, AGENT_SLUG)
+    await send(assistant(0))
+
+    // Baselining a missing max_seq would make this re-subscribe request a
+    // full-history replay of an old session — the dead-background-task wedge.
+    await resubscribe()
+    expect(cursors[1]).toBeUndefined()
+    expect(messagePersister.isSessionActive(sessionId)).toBe(true)
+  })
+
+  it('a from-start subscribe replays the just-created session it would otherwise have missed', async () => {
+    // The stuck-case this kills: createSession dispatches the first turn
+    // BEFORE the host subscribes. A fast first turn's result+idle land before
+    // the attach — live-only, they are gone, and the session pins "working"
+    // forever (no result seen means the grace backstop can never arm).
+    const { messagePersister, notificationManager, sessionId, sseEvents, send, cursors } =
+      await setUp({ fromStart: true })
+
+    // The first attach must request everything from the very start.
+    expect(cursors[0]).toEqual({ sinceSeq: -1 })
+
+    messagePersister.markSessionActive(sessionId, AGENT_SLUG)
+
+    // Container replays the whole young history after the hello: the first
+    // turn already ran to completion inside the attach gap.
+    await send(hello('epoch-1', 2))
+    await send(assistant(0))
+    await send(result(1))
+    await send(idle(2))
+
+    expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+    expect(countIdle(sseEvents)).toBe(1)
+    expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
   })
 })

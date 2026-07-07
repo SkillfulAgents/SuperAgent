@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { SessionManager } from './session-manager';
+import { parseStreamCursor } from './stream-replay';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import type { UUID } from 'crypto';
 import * as http from 'http';
@@ -1648,11 +1649,7 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
     const sessionId = sessionMatch[1];
     // Optional resume cursor: the host's last-processed position. Replay picks
     // up exactly after it (same epoch) so no message is lost across reconnects.
-    const cursorEpoch = url.searchParams.get('epoch');
-    const sinceSeqRaw = url.searchParams.get('since_seq');
-    const sinceSeq = sinceSeqRaw !== null && Number.isInteger(Number(sinceSeqRaw))
-      ? Number(sinceSeqRaw)
-      : null;
+    const { epoch: cursorEpoch, sinceSeq } = parseStreamCursor(url.searchParams);
 
     wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
       handleWebSocketConnection(ws, sessionId, cursorEpoch, sinceSeq);

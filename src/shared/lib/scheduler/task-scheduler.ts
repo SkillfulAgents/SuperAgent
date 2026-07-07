@@ -220,12 +220,15 @@ class TaskScheduler {
       scheduledExecutionAt: task.nextExecutionAt.toISOString(),
     })
 
-    // Subscribe to the session for SSE updates
+    // Subscribe to the session for SSE updates. fromStart: the task prompt is
+    // already running in the container — replay from the start so a fast
+    // first turn's terminal events aren't missed.
     await messagePersister.subscribeToSession(
       sessionId,
       client,
       sessionId,
-      task.agentSlug
+      task.agentSlug,
+      { fromStart: true }
     )
     messagePersister.markSessionActive(sessionId, task.agentSlug)
 

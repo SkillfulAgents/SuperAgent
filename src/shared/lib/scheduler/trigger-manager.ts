@@ -319,11 +319,14 @@ class TriggerManager {
       webhookTriggerName: trigger.name || undefined,
     })
 
+    // fromStart: the trigger prompt is already running in the container —
+    // replay from the start so a fast first turn's terminal events aren't missed.
     await messagePersister.subscribeToSession(
       sessionId,
       client,
       sessionId,
-      trigger.agentSlug
+      trigger.agentSlug,
+      { fromStart: true }
     )
     messagePersister.markSessionActive(sessionId, trigger.agentSlug)
 

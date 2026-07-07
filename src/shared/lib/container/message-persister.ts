@@ -136,9 +136,11 @@ async function getContainerManager() {
 // Grace window between a turn's `result` and the authoritative idle. The
 // post-result wind-down is normally milliseconds; when the runtime hangs in
 // it, the session would otherwise stay "working" forever (state events are
-// the idle authority and no further result will come). Long enough for a slow
-// machine's wind-down, short enough that a stuck light heals promptly.
-const RESULT_IDLE_GRACE_MS = 10_000
+// the idle authority and no further result will come). Sized to tolerate the
+// slowest legitimate silences in that window — a queued continuation the
+// runtime is slow to dequeue, or a background-drain wake waiting on model
+// latency — while still healing a stuck light promptly.
+const RESULT_IDLE_GRACE_MS = 30_000
 
 // TODO this file is too big, this class is HUGE. Needs breaking up
 class MessagePersister {
@@ -154,6 +156,11 @@ class MessagePersister {
   // swallowed. Held outside streamingStates and NOT cleared on unsubscribe —
   // surviving the re-subscribe is its entire purpose.
   private streamCursors: Map<string, { epoch: string; seq: number }> = new Map()
+  // Sessions whose in-flight attach requested a from-start replay (just
+  // created, no cursor yet). Consumed by the attach hello: the cursor must
+  // baseline to -1 there, not to the hello's max_seq, or the dedup would
+  // skip the very replay the attach asked for.
+  private fromStartAttaches: Set<string> = new Set()
   private sseClients: Map<string, Set<(data: unknown) => void>> = new Map()
   // Per-run journal tailers driving the live workflow drawer, keyed `${sessionId}::${runId}`
   private workflowTailers: Map<string, WorkflowJournalTailer> = new Map()
@@ -180,11 +187,12 @@ class MessagePersister {
     sessionId: string,
     client: ContainerClient,
     containerSessionId: string,
-    agentSlug?: string
+    agentSlug?: string,
+    opts?: { fromStart?: boolean }
   ): Promise<void> {
     const inFlight = this.subscribingNow.get(sessionId)
     if (inFlight) return inFlight
-    const promise = this.doSubscribeToSession(sessionId, client, containerSessionId, agentSlug)
+    const promise = this.doSubscribeToSession(sessionId, client, containerSessionId, agentSlug, opts)
       .finally(() => {
         this.subscribingNow.delete(sessionId)
       })
@@ -196,7 +204,8 @@ class MessagePersister {
     sessionId: string,
     client: ContainerClient,
     containerSessionId: string,
-    agentSlug?: string
+    agentSlug?: string,
+    opts?: { fromStart?: boolean }
   ): Promise<void> {
     // Preserve session-lifecycle flags across (re-)subscribe so callers that
     // markSessionActive *before* subscribing (e.g. x-agent sync invoke) and
@@ -245,12 +254,21 @@ class MessagePersister {
     this.containerClients.set(sessionId, client)
 
     // Subscribe to the container's message stream, resuming from the last
-    // processed position so nothing emitted during a gap is lost.
+    // processed position so nothing emitted during a gap is lost. A caller
+    // that JUST created the session asks for a from-start replay instead
+    // (epochless sinceSeq -1): createSession dispatches the first turn before
+    // any subscriber exists, so a fast first turn's terminal events would
+    // otherwise be missed entirely — with no result ever seen, not even the
+    // grace backstop could settle it. Safe by construction: a just-created
+    // session's history is tiny. A stored cursor always wins over fromStart.
     const cursor = this.streamCursors.get(sessionId)
+    const fromStart = opts?.fromStart === true && !cursor
+    if (fromStart) this.fromStartAttaches.add(sessionId)
+    else this.fromStartAttaches.delete(sessionId)
     const { unsubscribe, ready } = client.subscribeToStream(
       containerSessionId,
       (message) => this.handleMessage(sessionId, message),
-      cursor ? { epoch: cursor.epoch, sinceSeq: cursor.seq } : undefined
+      cursor ? { epoch: cursor.epoch, sinceSeq: cursor.seq } : fromStart ? { sinceSeq: -1 } : undefined
     )
 
     this.subscriptions.set(sessionId, unsubscribe)
@@ -308,6 +326,18 @@ class MessagePersister {
   // continuation's first message re-opens the turn within ms of the previous
   // result) — only in the dead post-result / post-background-drain wind-down,
   // where the sole legitimate next event is the settling idle.
+  // One completion-notification idiom for all three settle paths — the
+  // authoritative idle, the grace backstop, and the epoch reconcile. Parity
+  // between them is load-bearing: a settle path that forgot the subtype gate
+  // would fire phantom "done" pings for error/resume exits.
+  private notifyCompletionIfSuccess(sessionId: string, state: StreamingState): void {
+    if (state.lastResultSubtype === 'success' && state.agentSlug) {
+      notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+        console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+      })
+    }
+  }
+
   private graceGateHolds(state: StreamingState): boolean {
     return (
       state.stateEventsAuthority &&
@@ -347,16 +377,23 @@ class MessagePersister {
     state: StreamingState,
     content: { epoch?: unknown; max_seq?: unknown }
   ): void {
+    // A cursor-capable hello carries BOTH fields; anything less is treated as
+    // legacy (no cursor, no reconcile). Baselining a missing max_seq to -1
+    // would make the next re-subscribe request a full-history replay of an
+    // old session — re-registering long-dead background tasks.
     const helloEpoch = typeof content.epoch === 'string' ? content.epoch : null
-    if (!helloEpoch) return
+    const maxSeq = typeof content.max_seq === 'number' ? content.max_seq : null
+    if (!helloEpoch || maxSeq === null) return
 
     const prev = this.streamCursors.get(sessionId)
     if (!prev) {
       // First attach with a cursor-capable container: baseline live-only.
       // Replaying an old session's history here would re-register long-dead
       // background tasks; live events settle everything from this point on.
-      const maxSeq = typeof content.max_seq === 'number' ? content.max_seq : -1
-      this.streamCursors.set(sessionId, { epoch: helloEpoch, seq: maxSeq })
+      // Exception: a from-start attach (just-created session) baselines to -1
+      // so the requested replay is processed rather than dedup-skipped.
+      const fromStart = this.fromStartAttaches.delete(sessionId)
+      this.streamCursors.set(sessionId, { epoch: helloEpoch, seq: fromStart ? -1 : maxSeq })
       return
     }
     if (prev.epoch === helloEpoch) return
@@ -366,9 +403,8 @@ class MessagePersister {
     )
     // A completed reply (result seen, idle lost with the process) still gets
     // its "done" notification; a mid-turn death must not fabricate one.
-    const completedAgentSlug =
-      state.isActive && state.lastResultSubtype === 'success' ? state.agentSlug : undefined
-    if (state.isActive) {
+    const wasActive = state.isActive
+    if (wasActive) {
       // Settles isActive and clears everything that died with the old
       // process: background tasks, subagents, workflow tailers. Deliberately
       // NOT markSessionInterrupted — its isInterrupted flag would gate the
@@ -378,10 +414,8 @@ class MessagePersister {
       state.activeBackgroundTasks.clear()
       this.stopAllWorkflowTailers(sessionId)
     }
-    if (completedAgentSlug) {
-      notificationManager.triggerSessionComplete(sessionId, completedAgentSlug).catch((err) => {
-        console.error('[MessagePersister] Failed to trigger session complete notification:', err)
-      })
+    if (wasActive) {
+      this.notifyCompletionIfSuccess(sessionId, state)
     }
     // The new epoch's numbering starts at 0; the full replay that follows the
     // hello is small by construction (the incarnation just started).
@@ -401,11 +435,7 @@ class MessagePersister {
       `[MessagePersister] No idle within ${RESULT_IDLE_GRACE_MS}ms of result for session ${sessionId}, settling via grace backstop`
     )
     this.finalizeIdle(sessionId, state)
-    if (state.lastResultSubtype === 'success' && state.agentSlug) {
-      notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
-        console.error('[MessagePersister] Failed to trigger session complete notification:', err)
-      })
-    }
+    this.notifyCompletionIfSuccess(sessionId, state)
   }
 
   // Check if a session is currently active (processing user request)
@@ -683,6 +713,14 @@ class MessagePersister {
           this.subscriptions.delete(sessionId)
         }
         this.containerClients.delete(sessionId)
+        // Symmetric with unsubscribeFromSession: an armed grace timer's fire
+        // would no-op (the gate re-check sees isActive false), but don't leave
+        // it ticking against a stopped container.
+        const graceTimer = this.graceTimers.get(sessionId)
+        if (graceTimer) {
+          clearTimeout(graceTimer)
+          this.graceTimers.delete(sessionId)
+        }
       }
     }
   }
@@ -952,9 +990,13 @@ class MessagePersister {
     // Advanced at delivery, not after handling — a message the handlers below
     // choose to drop (interrupted gate, sidechain filter) counts as consumed;
     // redelivering it after a reconnect would make the same choice with stale
-    // context. Seq-less frames (broadcasts, the synthesized connection_closed)
-    // pass through untouched. The hello re-baselines the cursor on epoch change
-    // before any of the new epoch's seqs arrive (WS is FIFO).
+    // context, and redelivering a partially-handled frame is NOT idempotent
+    // (double SSE broadcasts). Accepted residual: a swallowed handler throw on
+    // a terminal frame forfeits its replay — ultra-rare, and the grace
+    // backstop covers the result-shaped cases. Seq-less frames (broadcasts,
+    // the synthesized connection_closed) pass through untouched. The hello
+    // re-baselines the cursor on epoch change before any of the new epoch's
+    // seqs arrive (WS is FIFO).
     const seq = typeof message.content?.seq === 'number' ? (message.content.seq as number) : null
     if (seq !== null) {
       const cursor = this.streamCursors.get(sessionId)
@@ -965,8 +1007,17 @@ class MessagePersister {
     }
 
     // Skip processing if session was interrupted (prevents race conditions)
-    // Allow 'result' through as it indicates the container actually stopped
-    if (state.isInterrupted && message.content?.type !== 'result') {
+    // Allow 'result' through as it indicates the container actually stopped.
+    // Allow 'connection_closed' through too: its handler only does connection
+    // hygiene (settle or re-subscribe, and drop the dead subscription entry) —
+    // swallowing it here would strand a dead entry that makes isSubscribed()
+    // lie, so every later send skips its re-subscribe and the turn runs with
+    // no stream at all: no result, no grace, pinned "working" forever.
+    if (
+      state.isInterrupted &&
+      message.content?.type !== 'result' &&
+      message.content?.type !== 'connection_closed'
+    ) {
       return
     }
 
@@ -1411,11 +1462,7 @@ class MessagePersister {
                 this.finalizeIdle(sessionId, state)
                 // Completion notification at the real end of the work. Skip
                 // resume-exits: the session is pausing for a resume, not done.
-                if (state.lastResultSubtype === 'success' && state.agentSlug) {
-                  notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
-                    console.error('[MessagePersister] Failed to trigger session complete notification:', err)
-                  })
-                }
+                this.notifyCompletionIfSuccess(sessionId, state)
               }
             }
           } else if (content.state === 'running' && !state.isActive) {
@@ -1567,10 +1614,21 @@ class MessagePersister {
   }
 
   // Handle connection closed - check container and mark inactive if session is done
+  // On every path that does NOT re-subscribe, the dead subscription entry must
+  // be dropped: isSubscribed() feeds the send routes' `if (!isSubscribed)
+  // subscribe` guard, and a stale true makes the next turn run with no stream
+  // attached — no result ever seen, the grace backstop can never arm, pinned
+  // "working" forever. Dropping it means the next send re-attaches, WITH the
+  // surviving cursor, so replay heals whatever the gap swallowed.
+  private dropDeadSubscription(sessionId: string): void {
+    this.subscriptions.delete(sessionId)
+  }
+
   private handleConnectionClosed(sessionId: string, state: StreamingState): void {
     const client = this.containerClients.get(sessionId)
     if (!client) {
       // No client reference, assume session is done
+      this.dropDeadSubscription(sessionId)
       this.markSessionInactive(sessionId, state)
       return
     }
@@ -1581,6 +1639,7 @@ class MessagePersister {
         if (!containerSession) {
           // Session doesn't exist in container anymore
           console.log(`[MessagePersister] Session ${sessionId} not found in container, marking inactive`)
+          this.dropDeadSubscription(sessionId)
           this.markSessionInactive(sessionId, state)
           return
         }
@@ -1610,12 +1669,14 @@ class MessagePersister {
         } else {
           // Session finished
           console.log(`[MessagePersister] Session ${sessionId} not running in container, marking inactive`)
+          this.dropDeadSubscription(sessionId)
           this.markSessionInactive(sessionId, state)
         }
       })
       .catch((error) => {
         // Can't reach container, assume session is done
         console.error(`[MessagePersister] Failed to check container for session ${sessionId}:`, error)
+        this.dropDeadSubscription(sessionId)
         this.markSessionInactive(sessionId, state)
       })
   }

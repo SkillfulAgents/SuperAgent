@@ -615,7 +615,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', metaErr)
   }
 
-  await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug)
+  // fromStart: the initial message is already running in the container —
+  // replay from the start so a fast first turn's terminal events aren't missed.
+  await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug, { fromStart: true })
   if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
     messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
   }

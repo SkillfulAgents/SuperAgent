@@ -397,20 +397,6 @@ export class SessionManager extends EventEmitter {
     return [...sessionData.messages];
   }
 
-  subscribe(sessionId: string, callback: (message: SDKMessage) => void): () => void {
-    const sessionData = this.sessions.get(sessionId);
-    if (!sessionData) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
-
-    sessionData.subscribers.add(callback);
-
-    // Return unsubscribe function
-    return () => {
-      sessionData.subscribers.delete(callback);
-    };
-  }
-
   // Attach a stream consumer with a lossless handoff: snapshot the replay set
   // and subscribe in ONE synchronous operation, so no message can fall between
   // them and wire order is strict (attach header < replay < live). The replay

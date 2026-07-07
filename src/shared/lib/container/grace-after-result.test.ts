@@ -13,7 +13,8 @@ import type { ContainerClient, StreamMessage } from './types'
 // it arms only when the SDK's last word was "work done" (a result, with no
 // background tasks left and nothing opened since) and disarms the moment any
 // turn activity appears. It can therefore never fire during a genuinely
-// running turn (the #339 trap), including the queued-continuation turn that
+// running turn (the deleted-watchdog trap: a legit 20-minute silent tool also
+// emits no events), including the queued-continuation turn that
 // starts 73ms after the previous result (real capture, session d6ca7b70).
 
 // ----- Mocks for external dependencies (mirrors queued-message-idle-replay) -----
@@ -82,7 +83,7 @@ vi.mock('@shared/lib/utils/file-storage', () => ({
 // ----- Helpers -----
 
 // Must match RESULT_IDLE_GRACE_MS in message-persister.ts.
-const GRACE_MS = 10_000
+const GRACE_MS = 30_000
 
 const SESSION_ID = 'grace-test-session'
 const AGENT_SLUG = 'test-agent'
@@ -127,6 +128,7 @@ function streamMsg(content: Record<string, unknown>): StreamMessage {
 // Container message shapes (mirroring real captures)
 const CAPABILITIES = { type: 'system', subtype: 'capabilities', session_state_events: true }
 const RESULT_SUCCESS = { type: 'result', subtype: 'success' }
+const RESULT_ERROR_MAX_TURNS = { type: 'result', subtype: 'error_max_turns' }
 const STATE_IDLE = { type: 'system', subtype: 'session_state_changed', state: 'idle' }
 const ASSISTANT_MSG = { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }
 const BROWSER_INACTIVE = { type: 'browser_active', active: false }
@@ -384,6 +386,45 @@ describe('grace-after-result backstop', () => {
     await vi.advanceTimersByTimeAsync(GRACE_MS * 3)
     expect(countIdle(sseEvents)).toBe(1)
     expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+
+    cleanup()
+    messagePersister.unsubscribeFromSession(SESSION_ID)
+  })
+
+  it('settles a non-success result via grace without a completion notification', async () => {
+    const { messagePersister, notificationManager, sseEvents, cleanup, send } = await setUp()
+
+    await send(ASSISTANT_MSG)
+    await send(RESULT_ERROR_MAX_TURNS)
+
+    // error_max_turns is not a hard error (isActive stays true) and no idle
+    // follows — only the grace backstop settles it, and silently: a turn that
+    // did not succeed must not fabricate a "done" notification.
+    await vi.advanceTimersByTimeAsync(GRACE_MS + 1000)
+
+    expect(countIdle(sseEvents)).toBe(1)
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+
+    cleanup()
+    messagePersister.unsubscribeFromSession(SESSION_ID)
+  })
+
+  it('a user interrupt inside the grace window settles once and the backstop adds nothing', async () => {
+    const { messagePersister, notificationManager, sseEvents, cleanup, send } = await setUp()
+
+    await send(ASSISTANT_MSG)
+    await send(RESULT_SUCCESS)
+
+    // The user interrupts while the grace timer is armed: the interrupt emits
+    // its own session_idle, and the backstop firing later must add nothing.
+    await messagePersister.markSessionInterrupted(SESSION_ID)
+    const idleCountAtInterrupt = countIdle(sseEvents)
+
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 3)
+
+    expect(countIdle(sseEvents)).toBe(idleCountAtInterrupt)
+    expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
 
     cleanup()
     messagePersister.unsubscribeFromSession(SESSION_ID)

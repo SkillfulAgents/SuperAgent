@@ -293,7 +293,11 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       scheduledTaskName: task.name || undefined,
     })
 
-    await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug)
+    // fromStart: the task prompt is already running in the container —
+    // replay from the start so a fast first turn's terminal events aren't missed.
+    await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug, {
+      fromStart: true,
+    })
     messagePersister.markSessionActive(sessionId, task.agentSlug)
 
     if (task.isRecurring) {

@@ -228,6 +228,7 @@ describe('scheduled-tasks route', () => {
       { createSession: mockCreateSession },
       'container-session-1',
       'agent-one',
+      { fromStart: true },
     )
     expect(mockMessagePersister.markSessionActive).toHaveBeenCalledWith('container-session-1', 'agent-one')
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')

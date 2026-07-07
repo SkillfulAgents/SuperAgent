@@ -169,11 +169,12 @@ export interface ContainerClient {
   // Streaming - returns unsubscribe function and a ready promise. The optional
   // cursor is the host's last-processed (epoch, seq) position: the container
   // replays exactly what was missed after it (same epoch), so terminal events
-  // emitted during a reconnect gap are never lost.
+  // emitted during a reconnect gap are never lost. An epochless sinceSeq of -1
+  // requests a from-start replay (first attach to a just-created session).
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void,
-    cursor?: { epoch: string; sinceSeq: number }
+    cursor?: { epoch?: string; sinceSeq: number }
   ): { unsubscribe: () => void; ready: Promise<void> }
 
   // Events

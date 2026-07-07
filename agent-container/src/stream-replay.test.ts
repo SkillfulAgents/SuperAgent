@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeReplay } from './stream-replay';
+import { computeReplay, parseStreamCursor } from './stream-replay';
 import type { SDKMessage } from './types';
 
 // Replay selection for a (re)attaching stream consumer. The contract:
@@ -39,5 +39,51 @@ describe('computeReplay', () => {
   it('returns a copy, never the live array', () => {
     const out = computeReplay(MESSAGES, EPOCH, 'epoch-old', 0);
     expect(out).not.toBe(MESSAGES);
+  });
+
+  it('handles an empty history for every cursor kind', () => {
+    expect(computeReplay([], EPOCH, null, null)).toEqual([]);
+    expect(computeReplay([], EPOCH, EPOCH, -1)).toEqual([]);
+    expect(computeReplay([], EPOCH, 'epoch-old', 5)).toEqual([]);
+  });
+
+  it('returns nothing when the cursor claims to be ahead of the history', () => {
+    expect(computeReplay(MESSAGES, EPOCH, EPOCH, 999)).toEqual([]);
+  });
+
+  it('clamps a below-range cursor to a full replay instead of slicing the tail', () => {
+    expect(computeReplay(MESSAGES, EPOCH, EPOCH, -5)).toEqual(MESSAGES);
+  });
+
+  it('replays from the start when asked without an epoch (fresh-session first attach)', () => {
+    // A host subscribing to a session it JUST created has no epoch yet but
+    // must not miss the first turn's events emitted before it attached.
+    expect(computeReplay(MESSAGES, EPOCH, null, -1)).toEqual(MESSAGES);
+  });
+
+  it('stays live-only for an epochless cursor at any other position', () => {
+    expect(computeReplay(MESSAGES, EPOCH, null, 1)).toEqual([]);
+  });
+});
+
+describe('parseStreamCursor', () => {
+  const parse = (qs: string) => parseStreamCursor(new URLSearchParams(qs));
+
+  it('returns nulls when the params are absent', () => {
+    expect(parse('')).toEqual({ epoch: null, sinceSeq: null });
+  });
+
+  it('parses a well-formed cursor', () => {
+    expect(parse('epoch=e1&since_seq=5')).toEqual({ epoch: 'e1', sinceSeq: 5 });
+    expect(parse('epoch=e1&since_seq=-1')).toEqual({ epoch: 'e1', sinceSeq: -1 });
+  });
+
+  it('treats an empty since_seq as no cursor (Number("") is 0, not a position)', () => {
+    expect(parse('epoch=e1&since_seq=')).toEqual({ epoch: 'e1', sinceSeq: null });
+  });
+
+  it('rejects non-integer since_seq values', () => {
+    expect(parse('since_seq=abc')).toEqual({ epoch: null, sinceSeq: null });
+    expect(parse('since_seq=1.5')).toEqual({ epoch: null, sinceSeq: null });
   });
 });

@@ -955,7 +955,11 @@ class ChatIntegrationManager {
       displayName,
     })
 
-    await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
+    // fromStart: the initial message is already running in the container —
+    // replay from the start so a fast first turn's terminal events aren't missed.
+    await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug, {
+      fromStart: true,
+    })
     messagePersister.markSessionActive(sessionId, integration.agentSlug)
     this.subscribeChatSession(integration.id, chatId, sessionId)
   }

@@ -1353,7 +1353,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     try {
       messagePersister.markSessionActive(sessionId, slug)
       lifecycleStarted = true
-      await messagePersister.subscribeToSession(sessionId, client, sessionId, slug)
+      // fromStart: the first turn began at createSession, before this attach —
+      // replay from the start so a fast turn's terminal events aren't missed.
+      await messagePersister.subscribeToSession(sessionId, client, sessionId, slug, { fromStart: true })
 
       // Record author for initial message after we know the sessionId
       if (isAuthMode()) {
