@@ -231,6 +231,13 @@ describe('scheduled-tasks route', () => {
       { fromStart: true },
     )
     expect(mockMessagePersister.markSessionActive).toHaveBeenCalledWith('container-session-1', 'agent-one')
+    // Ordering matters: markSessionActive must run BEFORE subscribeToSession so
+    // the from-start replay's terminal events land with isActive already true.
+    // Marking after would let a fast turn's replayed result/idle be skipped,
+    // then clear the grace bits — pinning "working" forever.
+    expect(mockMessagePersister.markSessionActive.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMessagePersister.subscribeToSession.mock.invocationCallOrder[0],
+    )
     expect(mockRecordManualExecution).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
   })

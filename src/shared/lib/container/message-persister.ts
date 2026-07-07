@@ -299,6 +299,10 @@ class MessagePersister {
       clearTimeout(graceTimer)
       this.graceTimers.delete(sessionId)
     }
+    // A from-start marker is normally consumed by the attach hello; if that
+    // hello was legacy (no epoch) or never arrived, the entry would linger.
+    // Clear it on teardown so the Set can't accumulate across sessions.
+    this.fromStartAttaches.delete(sessionId)
     this.streamingStates.delete(sessionId)
     this.containerClients.delete(sessionId)
   }
@@ -1568,8 +1572,10 @@ class MessagePersister {
         // notification (vs just creating the DB record) is the renderer's
         // call — it knows about window focus, per-user viewing, and the
         // `notifyWhenUnfocused` toggle. Skip for 'resume' exits — the
-        // session is pausing for a resume, not truly finished.
-        if (content.subtype !== 'resume' && state.agentSlug) {
+        // session is pausing for a resume, not truly finished. Skip when the
+        // user interrupted — a turn they stopped must not ping "done" (the
+        // state-events path gates this via isActive; legacy has no such gate).
+        if (content.subtype !== 'resume' && !state.isInterrupted && state.agentSlug) {
           notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
             console.error('[MessagePersister] Failed to trigger session complete notification:', err)
           })
@@ -1620,15 +1626,24 @@ class MessagePersister {
   // attached — no result ever seen, the grace backstop can never arm, pinned
   // "working" forever. Dropping it means the next send re-attaches, WITH the
   // surviving cursor, so replay heals whatever the gap swallowed.
-  private dropDeadSubscription(sessionId: string): void {
-    this.subscriptions.delete(sessionId)
+  private dropDeadSubscription(sessionId: string, deadUnsub: (() => void) | undefined): void {
+    // Only drop the entry if it is STILL the dead socket's. The container check
+    // below is async, and during that window a send-route re-subscribe can
+    // install a fresh live unsubscribe under this sessionId; deleting THAT would
+    // make isSubscribed() lie false about a live socket and strand the next turn.
+    if (this.subscriptions.get(sessionId) === deadUnsub) {
+      this.subscriptions.delete(sessionId)
+    }
   }
 
   private handleConnectionClosed(sessionId: string, state: StreamingState): void {
+    // Capture the dying socket's entry now; every drop path below only fires if
+    // this is still the installed subscription when the async check resolves.
+    const deadUnsub = this.subscriptions.get(sessionId)
     const client = this.containerClients.get(sessionId)
     if (!client) {
       // No client reference, assume session is done
-      this.dropDeadSubscription(sessionId)
+      this.dropDeadSubscription(sessionId, deadUnsub)
       this.markSessionInactive(sessionId, state)
       return
     }
@@ -1639,7 +1654,7 @@ class MessagePersister {
         if (!containerSession) {
           // Session doesn't exist in container anymore
           console.log(`[MessagePersister] Session ${sessionId} not found in container, marking inactive`)
-          this.dropDeadSubscription(sessionId)
+          this.dropDeadSubscription(sessionId, deadUnsub)
           this.markSessionInactive(sessionId, state)
           return
         }
@@ -1669,14 +1684,14 @@ class MessagePersister {
         } else {
           // Session finished
           console.log(`[MessagePersister] Session ${sessionId} not running in container, marking inactive`)
-          this.dropDeadSubscription(sessionId)
+          this.dropDeadSubscription(sessionId, deadUnsub)
           this.markSessionInactive(sessionId, state)
         }
       })
       .catch((error) => {
         // Can't reach container, assume session is done
         console.error(`[MessagePersister] Failed to check container for session ${sessionId}:`, error)
-        this.dropDeadSubscription(sessionId)
+        this.dropDeadSubscription(sessionId, deadUnsub)
         this.markSessionInactive(sessionId, state)
       })
   }

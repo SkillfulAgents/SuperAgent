@@ -200,4 +200,30 @@ describe('connection-loss recovery keeps isSubscribed honest', () => {
 
     expect(messagePersister.isSubscribed(sessionId)).toBe(false)
   })
+
+  it('does not drop a fresh subscription installed by a concurrent re-subscribe', async () => {
+    const { messagePersister, sessionId, client, send, getSession } = await setUp()
+
+    // handleConnectionClosed queries the container asynchronously; hold that
+    // check open so a concurrent send-route re-subscribe can install a fresh
+    // live socket under this sessionId while the check is in flight. Dropping
+    // the entry then would delete a LIVE subscription — isSubscribed() would
+    // lie false and the next turn would run with no stream.
+    let resolveGetSession: (v: unknown) => void = () => {}
+    getSession.mockReturnValue(new Promise((r) => { resolveGetSession = r }))
+
+    // Enter handleConnectionClosed; its getSession stays parked (unresolved).
+    await send({ type: 'connection_closed' })
+
+    // Concurrent re-subscribe replaces the entry with a fresh live unsubscribe.
+    await messagePersister.subscribeToSession(sessionId, client, sessionId, AGENT_SLUG)
+    expect(messagePersister.isSubscribed(sessionId)).toBe(true)
+
+    // Now the stale check resolves "session gone".
+    resolveGetSession(null)
+    for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r))
+
+    // Only the dead socket's entry may be dropped — the fresh one survives.
+    expect(messagePersister.isSubscribed(sessionId)).toBe(true)
+  })
 })

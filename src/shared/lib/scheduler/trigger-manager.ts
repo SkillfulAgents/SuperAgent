@@ -319,8 +319,12 @@ class TriggerManager {
       webhookTriggerName: trigger.name || undefined,
     })
 
-    // fromStart: the trigger prompt is already running in the container —
-    // replay from the start so a fast first turn's terminal events aren't missed.
+    // Mark active BEFORE subscribing (matches agents.ts / x-agent.ts): the
+    // trigger turn is already running and subscribeToSession replays it from the
+    // start, so a fast turn's replayed result/idle must land with isActive
+    // already true. Marking after would let the idle be skipped, then clear the
+    // grace bits — pinning "working" forever.
+    messagePersister.markSessionActive(sessionId, trigger.agentSlug)
     await messagePersister.subscribeToSession(
       sessionId,
       client,
@@ -328,7 +332,6 @@ class TriggerManager {
       trigger.agentSlug,
       { fromStart: true }
     )
-    messagePersister.markSessionActive(sessionId, trigger.agentSlug)
 
     // Update trigger tracking
     await markTriggerFired(trigger.id, sessionId)
