@@ -519,9 +519,11 @@ class ChatIntegrationManager {
     const session = this.getOrCreateChatSession(integrationId, chatId)
     if (!session) return
 
-    // Clean up any previous subscription + its indicator tick
+    // Clean up any previous subscription + its indicator tick + any stall timer
+    // (a session swap must not leave a stale countdown running)
     session.sseUnsubscribe?.()
     stopIndicatorTick(session)
+    cancelStallNudge(session)
 
     const unsubscribe = messagePersister.addSSEClient(sessionId, (event: unknown) => {
       // Wake on a BUSY snapshot: an event means something changed, so re-arm the tick if the
@@ -530,6 +532,10 @@ class ChatIntegrationManager {
       // sleep. Synchronous and BEFORE the serialization queue, so a backed-up handler can't
       // delay the wake. The tick — not this — keeps painting.
       armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(sessionId))
+      // Any event is a sign of life: re-arm the stall-nudge silence countdown.
+      // Synchronous and BEFORE the queue, same reasoning as the wake above - a
+      // backed-up handler must not let the nudge fire while events are arriving.
+      resetStallNudgeIfArmed(session, sessionId)
       // Serialize SSE event processing per chat session to prevent race conditions
       // (e.g. session_idle arriving while stream_delta's sendStreamingUpdate is still in-flight)
       this.enqueueSSEEvent(integrationId, chatId, event)
@@ -907,6 +913,9 @@ class ChatIntegrationManager {
       // message). Reset here, once per turn, so a single multi-segment turn can't
       // emit repeated notices.
       dispatched.turnNotified = false
+      // Same once-per-turn contract for the stall nudge, then start its countdown.
+      dispatched.stallNotified = false
+      armStallNudge(dispatched, sessionId)
     }
   }
 
@@ -969,6 +978,12 @@ class ChatIntegrationManager {
     await messagePersister.subscribeToSession(sessionId, client, sessionId, integration.agentSlug)
     messagePersister.markSessionActive(sessionId, integration.agentSlug)
     this.subscribeChatSession(integration.id, chatId, sessionId)
+    const managed = this.chatSessions.get(this.getChatSessionKey(integration.id, chatId))
+    if (managed) {
+      // First turn of a fresh session: start the stall-nudge countdown.
+      managed.stallNotified = false
+      armStallNudge(managed, sessionId)
+    }
   }
 
   /**
@@ -989,6 +1004,7 @@ class ChatIntegrationManager {
   private stopSession(session: ManagedConnector): void {
     session.sseUnsubscribe?.()
     stopIndicatorTick(session)
+    cancelStallNudge(session)
     // Force-clear on teardown (unconditional, not the idempotent clearIndicator): the
     // session is going away, so settle the connector even if indicatorShown drifted.
     session.connector.stopWorking(session.chatId).catch(() => {})
@@ -1923,6 +1939,7 @@ export async function processSSEEvent(
     case 'session_idle': {
       // Turn ended → settle the indicator instantly, then finalize the streamed text.
       // The tick sleeps itself once it reads the now-idle state.
+      cancelStallNudge(managed)
       clearIndicator(managed)
       await finalizeTurn(managed)
       break
@@ -1934,6 +1951,7 @@ export async function processSSEEvent(
       // it never strands, finalize the turn the same way session_idle does, then
       // surface a curated error so the user isn't left staring at a frozen reply.
       // The tick sleeps itself once it reads the now-idle/non-busy state.
+      cancelStallNudge(managed)
       clearIndicator(managed)
       await finalizeTurn(managed)
       if (!managed.turnNotified) {
