@@ -24,6 +24,8 @@ import {
   listTriggersTool,
   setupTriggerTool,
   cancelTriggerTool,
+  createWebhookEndpointTool,
+  updateWebhookEndpointTool,
 } from './tools/webhook-triggers'
 import { deliverFileTool } from './tools/deliver-file'
 import { deliverSessionTool } from './tools/deliver-session'
@@ -59,8 +61,12 @@ export function createUserInputMcpServer() {
   const hostPlatform = process.env.HOST_PLATFORM
   const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
 
-  // Webhook trigger tools only available when platform Composio is active
-  const includeWebhookTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true'
+  // Composio-catalog trigger tools need platform Composio; custom webhook
+  // endpoints only need platform auth (they live on the platform proxy, so a
+  // personal Composio key must not hide them). list/cancel work on local
+  // trigger rows and are useful in either mode.
+  const includeComposioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true'
+  const includeWebhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true'
 
   return createSdkMcpServer({
     name: 'user-input',
@@ -72,7 +78,11 @@ export function createUserInputMcpServer() {
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),
-      ...(includeWebhookTriggers ? [getAvailableTriggersTool, listTriggersTool, setupTriggerTool, cancelTriggerTool] : []),
+      ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),
+      ...(includeComposioTriggers || includeWebhookEndpoints
+        ? [listTriggersTool, cancelTriggerTool]
+        : []),
+      ...(includeWebhookEndpoints ? [createWebhookEndpointTool, updateWebhookEndpointTool] : []),
     ],
   })
 }

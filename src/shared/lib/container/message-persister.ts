@@ -8,6 +8,7 @@ import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request
 import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { captureException } from '@shared/lib/error-reporting'
 import {
   createScheduledTask,
   listPendingScheduledTasks,
@@ -21,7 +22,22 @@ import {
   createWebhookTrigger,
   listActiveWebhookTriggers,
   cancelWebhookTriggerWithCleanup,
+  getWebhookTrigger,
+  resolvePlatformMemberForCandidates,
+  updateWebhookTriggerName,
 } from '@shared/lib/services/webhook-trigger-service'
+import {
+  createPlatformWebhookEndpoint,
+  updatePlatformWebhookEndpoint,
+  disablePlatformWebhookEndpoint,
+} from '@shared/lib/services/webhook-endpoints-client'
+import {
+  createWebhookEndpointInputSchema,
+  updateWebhookEndpointInputSchema,
+  extractEndpointUrl,
+  CUSTOM_WEBHOOK_TRIGGER_TYPE,
+} from '@shared/lib/services/webhook-endpoint-schema'
+import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 import {
   getAvailableTriggers,
   enableComposioTrigger,
@@ -127,6 +143,35 @@ async function getContainerManager() {
     _containerManagerModule = await _containerManagerImport
   }
   return _containerManagerModule.containerManager
+}
+
+// Tool inputs whose streamed JSON may carry an HMAC signing secret in a
+// `secret` field. That secret is a shared credential — anyone holding it can
+// forge signed webhooks — so it must never render in the live transcript / go
+// out over SSE. (The SDK still persists the raw tool_use to the container's
+// JSONL; that is agent-supplied and container-local. This masks the one path
+// the host controls: the UI broadcast.)
+const SECRET_BEARING_TOOL_NAMES = new Set([
+  'create_webhook_endpoint',
+  'update_webhook_endpoint',
+])
+
+/**
+ * Mask the value of a `secret` field in (possibly still-streaming) tool-input
+ * JSON. Idempotent across deltas: the whole accumulated buffer is re-masked
+ * each time, and a value whose closing quote hasn't streamed yet is masked as
+ * far as it has arrived.
+ */
+export function redactStreamedToolInput(toolName: string | undefined, partialInput: string): string {
+  if (!toolName) return partialInput
+  // MCP tools stream under their qualified name (`mcp__<server>__<tool>`);
+  // match on the bare tool name so the allowlist can't silently miss the wire
+  // format.
+  const bareName = toolName.startsWith('mcp__') ? toolName.slice(toolName.lastIndexOf('__') + 2) : toolName
+  if (!SECRET_BEARING_TOOL_NAMES.has(bareName)) return partialInput
+  // Replace the JSON string value after `"secret":"` with `***`, stopping at
+  // the (unescaped) closing quote — which is left intact when present.
+  return partialInput.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
 }
 
 // TODO this file is too big, this class is HUGE. Needs breaking up
@@ -1771,7 +1816,10 @@ class MessagePersister {
             agentId: sub.agentId,
             toolId: sub.currentToolUse?.id,
             toolName: sub.currentToolUse?.name,
-            partialInput: sub.currentToolInput,
+            partialInput: redactStreamedToolInput(
+              sub.currentToolUse?.name,
+              sub.currentToolInput,
+            ),
           })
         }
         break
@@ -1891,7 +1939,10 @@ class MessagePersister {
             type: 'tool_use_streaming',
             toolId: state.currentToolUse?.id,
             toolName: state.currentToolUse?.name,
-            partialInput: state.currentToolInput,
+            partialInput: redactStreamedToolInput(
+              state.currentToolUse?.name,
+              state.currentToolInput,
+            ),
           })
         }
         break
@@ -2002,6 +2053,16 @@ class MessagePersister {
           }
           if (state.currentToolUse.name === 'mcp__user-input__cancel_trigger') {
             this.handleCancelTriggerTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
+            )
+          }
+          if (state.currentToolUse.name === 'mcp__user-input__create_webhook_endpoint') {
+            this.handleCreateWebhookEndpointTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
+            )
+          }
+          if (state.currentToolUse.name === 'mcp__user-input__update_webhook_endpoint') {
+            this.handleUpdateWebhookEndpointTool(
               sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
             )
           }
@@ -2679,10 +2740,15 @@ ${continuation}`
 
         const triggers = await getAvailableTriggers(account.toolkitSlug)
         const formatted = triggers.length === 0
-          ? 'No webhook triggers available for this account.'
+          ? 'No webhook triggers available for this account.\n\n' +
+            'You can still react to events from this service with a custom webhook endpoint:\n' +
+            '1. Call create_webhook_endpoint to mint a public URL (with a prompt describing what to do per event).\n' +
+            `2. Register that URL with the service — most expose webhook registration via their API (use the connected ${account.toolkitSlug} account) or a settings page.\n` +
+            '3. If the service provides a signing secret, attach it with update_webhook_endpoint so deliveries are verified.'
           : `Available triggers for ${account.toolkitSlug}:\n\n${triggers.map((t) =>
               `- **${t.slug}** (${t.name}): ${t.description}${t.type === 'poll' ? ' [poll-based]' : ''}`
-            ).join('\n')}\n\nUse setup_trigger with the trigger slug to subscribe.`
+            ).join('\n')}\n\nUse setup_trigger with the trigger slug to subscribe. ` +
+            'For events this catalog does not cover, you can also mint a custom webhook endpoint (create_webhook_endpoint) and register its URL with the service directly — both kinds can run side by side.'
 
         await this.resolveContainerInput(agentSlug, toolUseId, formatted)
       } catch (error) {
@@ -2823,6 +2889,246 @@ ${continuation}`
     })()
   }
 
+  /**
+   * Member context for platform webhook-endpoint calls: session owner first,
+   * stored member as fallback, 'local' placeholder last (opaque platform keys
+   * ignore the member suffix entirely).
+   */
+  private async resolvePlatformMemberForSession(agentSlug: string, sessionId: string): Promise<string> {
+    const ownerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+    const resolved = resolvePlatformMemberForCandidates([ownerId])
+    return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
+  }
+
+  // Handle create_webhook_endpoint - blocking: mint on platform + save SQLite
+  // trigger row (kind='custom'), rolling back the mint if the local save fails.
+  private handleCreateWebhookEndpointTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] create_webhook_endpoint missing agentSlug')
+          return
+        }
+
+        // Gate on platform auth, not Composio mode: custom endpoints live on
+        // the platform proxy and must keep working when the user brings their
+        // own Composio key (mirrors the teardown gate in
+        // webhook-trigger-service).
+        if (!getPlatformAccessToken()) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
+          return
+        }
+
+        let rawInput: unknown
+        try {
+          rawInput = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        const parsedInput = createWebhookEndpointInputSchema.safeParse(rawInput)
+        if (!parsedInput.success) {
+          await this.rejectContainerInput(agentSlug, toolUseId,
+            `Invalid tool input: ${parsedInput.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`)
+          return
+        }
+        const input = parsedInput.data
+        const verification = input.verification ?? undefined
+
+        const memberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
+
+        // 1. Mint the endpoint on the platform proxy
+        const endpoint = await createPlatformWebhookEndpoint(memberId, {
+          name: input.name.trim(),
+          ...(verification ? { verification } : {}),
+        })
+
+        // 2. Save the local trigger row (rollback the mint on failure)
+        let triggerId: string
+        try {
+          const triggerOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+          triggerId = await createWebhookTrigger({
+            agentSlug,
+            kind: 'custom',
+            composioTriggerId: endpoint.id,
+            triggerType: CUSTOM_WEBHOOK_TRIGGER_TYPE,
+            // The public URL lives platform-side; mirror it here so list/UI
+            // don't need a platform round-trip.
+            triggerConfig: JSON.stringify({ url: endpoint.url, endpointId: endpoint.id }),
+            prompt: input.prompt,
+            name: input.name.trim(),
+            createdBySessionId: sessionId,
+            createdByUserId: triggerOwnerId ?? undefined,
+            model: input.model,
+            effort: input.effort,
+          })
+        } catch (dbError) {
+          console.error('[MessagePersister] SQLite save failed, disabling platform endpoint:', dbError)
+          captureException(dbError, {
+            tags: { area: 'webhook-endpoints', op: 'create-local-save' },
+            extra: { endpointId: endpoint.id, agentSlug, sessionId },
+          })
+          await disablePlatformWebhookEndpoint(memberId, endpoint.id).catch((rollbackError) => {
+            // Mint succeeded, local save failed, and now the rollback failed too:
+            // a live public URL is orphaned with no local row. Loudest signal.
+            console.error('[MessagePersister] Endpoint rollback failed — endpoint orphaned live:', rollbackError)
+            captureException(rollbackError, {
+              tags: { area: 'webhook-endpoints', op: 'create-rollback' },
+              extra: { endpointId: endpoint.id, agentSlug, sessionId, memberId },
+            })
+          })
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Failed to save trigger locally').catch(console.error)
+          return
+        }
+
+        // 3. Broadcast events (same shape as Composio trigger creation)
+        this.broadcastToSSE(sessionId, {
+          type: 'webhook_trigger_created',
+          toolUseId,
+          triggerId,
+          triggerType: CUSTOM_WEBHOOK_TRIGGER_TYPE,
+          name: input.name,
+          agentSlug,
+        })
+
+        this.broadcastGlobal({
+          type: 'webhook_trigger_created',
+          triggerId,
+          agentSlug,
+        })
+
+        await this.resolveContainerInput(agentSlug, toolUseId,
+          `Webhook endpoint "${input.name}" created (trigger ID: ${triggerId}).\n\n` +
+          `Public URL: ${endpoint.url}\n\n` +
+          `Next: register this URL with the third-party service. Do the registration YOURSELF whenever possible — in order of preference:\n` +
+          `1. The service's API: use the connected account through the authenticated proxy, or call it directly (request_secret for an API key if needed).\n` +
+          `2. Offer to do it via the browser (navigate to the service's webhook settings page and fill it in).\n` +
+          `3. Only if the user prefers to do it themselves (or registration requires access you don't have): give them a precise, copy-pasteable walkthrough — the exact settings path for that service, the URL to paste, the content type to pick, which events to enable, and where to put the signing secret.\n\n` +
+          `Registration handshakes (Slack url_verification, Dropbox/Meta challenges, MS Graph validationToken) are answered automatically.\n\n` +
+          `${verification
+            ? 'Signature verification is configured — events with bad signatures are rejected at the edge.'
+            : 'No signature verification is configured yet — events will be marked UNVERIFIED. If the service provides a signing secret (many reveal it only after registration), attach it with update_webhook_endpoint.'}\n\n` +
+          `Every delivery to this URL starts a session with your prompt plus the request details.`)
+
+        console.log(`[MessagePersister] Custom webhook endpoint ${endpoint.id} created (trigger: ${triggerId})`)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling create_webhook_endpoint:', error)
+        // Agent-visible via the reject below, but capture so a recurring
+        // platform-integration regression surfaces in aggregate. Never attach
+        // the tool input — it carries the HMAC secret.
+        captureException(error, {
+          tags: { area: 'webhook-endpoints', op: 'create' },
+          extra: { agentSlug, sessionId, toolUseId },
+        })
+        if (agentSlug) {
+          const msg = error instanceof Error ? error.message : String(error)
+          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to create webhook endpoint: ${msg}`).catch(console.error)
+        }
+      }
+    })()
+  }
+
+  // Handle update_webhook_endpoint - blocking: PATCH the platform endpoint
+  // (verification is usually attached AFTER registration reveals the secret).
+  private handleUpdateWebhookEndpointTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] update_webhook_endpoint missing agentSlug')
+          return
+        }
+
+        // Gate on platform auth, not Composio mode: custom endpoints live on
+        // the platform proxy and must keep working when the user brings their
+        // own Composio key (mirrors the teardown gate in
+        // webhook-trigger-service).
+        if (!getPlatformAccessToken()) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
+          return
+        }
+
+        let rawInput: unknown
+        try {
+          rawInput = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        const parsedInput = updateWebhookEndpointInputSchema.safeParse(rawInput)
+        if (!parsedInput.success) {
+          await this.rejectContainerInput(agentSlug, toolUseId,
+            `Invalid tool input: ${parsedInput.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`)
+          return
+        }
+        const input = parsedInput.data
+
+        const trigger = await getWebhookTrigger(input.trigger_id)
+        if (!trigger || trigger.agentSlug !== agentSlug || trigger.kind !== 'custom' || !trigger.composioTriggerId) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `No custom webhook endpoint found for trigger ${input.trigger_id}`)
+          return
+        }
+        if (trigger.status === 'cancelled') {
+          await this.rejectContainerInput(agentSlug, toolUseId, `Trigger ${input.trigger_id} is cancelled; create a new endpoint instead`)
+          return
+        }
+
+        const patch: { name?: string; verification?: import('@shared/lib/services/webhook-endpoint-schema').VerificationProfile | null } = {}
+        if (input.name) patch.name = input.name
+        if (input.verification !== undefined) patch.verification = input.verification
+        if (Object.keys(patch).length === 0) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Nothing to update: pass name and/or verification')
+          return
+        }
+
+        // Creator-first member resolution, matching teardown: the endpoint is
+        // scoped to whoever minted it, not whoever's session runs the update.
+        const memberId =
+          resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+          (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
+        await updatePlatformWebhookEndpoint(memberId, trigger.composioTriggerId, patch)
+
+        // Keep the local row in sync so list_triggers/UI don't show a stale name.
+        if (patch.name) {
+          await updateWebhookTriggerName(trigger.id, patch.name)
+        }
+
+        const changed = [
+          patch.name ? 'name' : null,
+          patch.verification === null ? 'verification removed' : patch.verification ? 'verification attached' : null,
+        ].filter(Boolean).join(', ')
+        await this.resolveContainerInput(agentSlug, toolUseId,
+          `Webhook endpoint updated (${changed}).${patch.verification
+            ? ' Incoming requests are now signature-verified at the edge; events with bad signatures are rejected.'
+            : ''}`)
+
+        console.log(`[MessagePersister] Custom webhook endpoint ${trigger.composioTriggerId} updated (${changed})`)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling update_webhook_endpoint:', error)
+        // Never attach the tool input — it carries the HMAC secret.
+        captureException(error, {
+          tags: { area: 'webhook-endpoints', op: 'update' },
+          extra: { agentSlug, sessionId, toolUseId },
+        })
+        if (agentSlug) {
+          const msg = error instanceof Error ? error.message : String(error)
+          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to update webhook endpoint: ${msg}`).catch(console.error)
+        }
+      }
+    })()
+  }
+
   // Handle list_triggers - blocking: read from SQLite and resolve
   private handleListTriggersTool(
     _sessionId: string,
@@ -2840,9 +3146,12 @@ ${continuation}`
         const triggers = await listActiveWebhookTriggers(agentSlug)
         const formatted = triggers.length === 0
           ? 'No active webhook triggers for this agent.'
-          : `Active webhook triggers:\n\n${triggers.map((t) =>
-              `- **${t.name || t.triggerType}** (ID: ${t.id})\n  Type: ${t.triggerType}\n  Account: ${t.connectedAccountId}\n  Fires: ${t.fireCount} time(s)\n  Prompt: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
-            ).join('\n\n')}`
+          : `Active webhook triggers:\n\n${triggers.map((t) => {
+              const source = t.kind === 'custom'
+                ? `URL: ${extractEndpointUrl(t.triggerConfig) ?? '(unknown)'}`
+                : `Account: ${t.connectedAccountId}`
+              return `- **${t.name || t.triggerType}** (ID: ${t.id})\n  Type: ${t.triggerType}${t.kind === 'custom' ? ' (custom endpoint)' : ''}\n  ${source}\n  Fires: ${t.fireCount} time(s)\n  Prompt: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
+            }).join('\n\n')}`
 
         await this.resolveContainerInput(agentSlug, toolUseId, formatted)
       } catch (error) {
@@ -2881,7 +3190,9 @@ ${continuation}`
           return
         }
 
-        const cancelled = await cancelWebhookTriggerWithCleanup(input.trigger_id)
+        // Scope to the calling agent so it can't cancel (and, for custom kind,
+        // disable the public endpoint of) another agent's trigger by id.
+        const cancelled = await cancelWebhookTriggerWithCleanup(input.trigger_id, agentSlug)
         if (!cancelled) {
           await this.rejectContainerInput(agentSlug, toolUseId, `Trigger ${input.trigger_id} not found or already cancelled`)
           return

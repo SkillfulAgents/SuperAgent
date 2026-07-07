@@ -32,6 +32,7 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   'TZ',
   'HOST_PLATFORM',
   'COMPOSIO_PLATFORM_MODE',
+  'PLATFORM_AUTH_ACTIVE',
   'CLAUDE_CODE_ATTRIBUTION_HEADER',
 ])
 
