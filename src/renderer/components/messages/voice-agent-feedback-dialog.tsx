@@ -146,7 +146,6 @@ export function VoiceAgentFeedbackDialog({
           <VoiceAgent
             config={voiceAgentConfig}
             onResult={handleResult}
-            onClose={() => onOpenChange(false)}
           />
         ) : (
           <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">

@@ -44,9 +44,11 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
   const playbackAnalyserRef = useRef<AnalyserNode | null>(null)
   const nextPlaybackTimeRef = useRef(0)
   const speakingDoneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
+  const micAnalyserRef = useRef<AnalyserNode | null>(null)
   const stateRef = useRef<VoiceAgentState>('idle')
-  const mutedRef = useRef(false)
+  // Mic gate for push-to-talk: true = drop audio (send silence) so server VAD
+  // sees a continuous silent stream. Defaults to muted; user holds Space to talk.
+  const micMutedRef = useRef(true)
   const pendingFunctionCallRef = useRef<{ name: string; arguments: string } | null>(null)
   const audioDrainedRef = useRef(true) // true when no audio is in flight
 
@@ -69,8 +71,7 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
     streamRef.current?.getTracks().forEach(t => t.stop())
     streamRef.current = null
 
-    analyserRef.current = null
-
+    micAnalyserRef.current = null
     playbackAnalyserRef.current = null
     playbackContextRef.current?.close()
     playbackContextRef.current = null
@@ -87,6 +88,8 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
     adapterRef.current = null
     pendingFunctionCallRef.current = null
     audioDrainedRef.current = true
+    // Reset PTT mute so a restart starts cleanly muted.
+    micMutedRef.current = true
   }, [cleanupAudio])
 
   const handleEvent = useCallback((event: VoiceAgentEvent) => {
@@ -253,19 +256,27 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
 
       const source = audioContext.createMediaStreamSource(stream)
 
-      // Set up analyser for visualization
-      const analyser = audioContext.createAnalyser()
-      analyser.fftSize = 256
-      analyser.smoothingTimeConstant = 0.6
-      source.connect(analyser)
-      analyserRef.current = analyser
+      // Mic analyser drives the live waveform shown while push-to-talk is held.
+      const micAnalyser = audioContext.createAnalyser()
+      micAnalyser.fftSize = 256
+      micAnalyser.smoothingTimeConstant = 0.6
+      source.connect(micAnalyser)
+      micAnalyserRef.current = micAnalyser
 
-      // Set up processor to pipe audio to adapter
-      const processor = audioContext.createScriptProcessor(2048, 1, 1)
+      // Set up processor to pipe audio to adapter.
+      // Stream is continuous (silence frames while PTT muted) so provider-side VAD
+      // stays in sync — without this, releasing Space leaves the server waiting on
+      // audio that never arrives and the agent never responds.
+      const PROCESSOR_FRAME_SIZE = 2048
+      const silenceFrame = new Int16Array(PROCESSOR_FRAME_SIZE).buffer as ArrayBuffer
+      const processor = audioContext.createScriptProcessor(PROCESSOR_FRAME_SIZE, 1, 1)
       processor.onaudioprocess = (e) => {
-        if (mutedRef.current) return
-        const float32 = e.inputBuffer.getChannelData(0)
-        adapter.sendAudio(float32ToInt16(float32).buffer as ArrayBuffer)
+        if (micMutedRef.current) {
+          adapter.sendAudio(silenceFrame)
+        } else {
+          const float32 = e.inputBuffer.getChannelData(0)
+          adapter.sendAudio(float32ToInt16(float32).buffer as ArrayBuffer)
+        }
       }
       processorRef.current = processor
       source.connect(processor)
@@ -303,20 +314,16 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
 
   const stop = useCallback(() => {
     cleanup()
+    // Sync the ref synchronously so a follow-up start() (e.g. from Restart)
+    // sees the idle state before React's next render flushes.
+    stateRef.current = 'idle'
     setState('idle')
     setSpeakingState('none')
   }, [cleanup])
 
-  const pause = useCallback(() => {
-    mutedRef.current = true
-    // Suspend audio playback
-    void playbackContextRef.current?.suspend()
-  }, [])
-
-  const resume = useCallback(() => {
-    mutedRef.current = false
-    // Resume audio playback
-    void playbackContextRef.current?.resume()
+  /** Set the push-to-talk mic gate. True = mute (send silence), false = pass real audio. */
+  const setMicMuted = useCallback((muted: boolean) => {
+    micMutedRef.current = muted
   }, [])
 
   // Cleanup on unmount
@@ -329,12 +336,11 @@ export function useVoiceAgent({ config, onFunctionCall, onError }: UseVoiceAgent
     speakingState,
     transcript,
     error,
-    analyserRef,
+    micAnalyserRef,
     playbackAnalyserRef,
     start,
     stop,
-    pause,
-    resume,
+    setMicMuted,
     isActive: state === 'active',
     isConnecting: state === 'connecting',
   }

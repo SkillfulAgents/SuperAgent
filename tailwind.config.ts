@@ -117,10 +117,19 @@ const config: Config = {
 					opacity: '1',
 				},
 			},
+			'voice-listening': {
+				'0%, 100%': {
+					boxShadow: '0 0 0 0 hsl(var(--foreground) / 0)',
+				},
+				'50%': {
+					boxShadow: '0 0 18px 1px hsl(var(--foreground) / 0.22)',
+				},
+			},
 		},
 		animation: {
 			'cobalt-glow': 'cobalt-glow 4s ease-in-out infinite',
 			'dot-wave': 'dot-wave 2s ease-in-out infinite',
+			'voice-listening': 'voice-listening 2.6s ease-in-out infinite',
 		}
 	}
   },
