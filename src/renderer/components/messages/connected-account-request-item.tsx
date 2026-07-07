@@ -11,11 +11,22 @@ import {
   Pencil,
   MoreVertical,
   RefreshCw,
+  Trash2,
 } from 'lucide-react'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@renderer/components/ui/alert-dialog'
 import { DeclineButton } from './decline-button'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
@@ -28,6 +39,7 @@ import {
   useConnectedAccountsByToolkit,
   useInvalidateConnectedAccounts,
   useRenameConnectedAccount,
+  useDeleteConnectedAccount,
   type ConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
@@ -62,9 +74,12 @@ export function ConnectedAccountRequestItem({
   const [editName, setEditName] = useState('')
   const [policyEditorAccountId, setPolicyEditorAccountId] = useState<string | null>(null)
   const [policyEditorIsNewAccount, setPolicyEditorIsNewAccount] = useState(false)
+  const [deletingAccountId, setDeletingAccountId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const { data, isLoading, refetch } = useConnectedAccountsByToolkit(toolkit)
   const invalidateConnectedAccounts = useInvalidateConnectedAccounts()
   const renameAccount = useRenameConnectedAccount()
+  const deleteAccount = useDeleteConnectedAccount()
   // Track account IDs before OAuth to detect new accounts
   const accountIdsBeforeOAuth = useRef<Set<string>>(new Set())
   // Track whether this component instance initiated the OAuth flow
@@ -293,6 +308,25 @@ export function ConnectedAccountRequestItem({
     }
   }
 
+  const deletingAccount = accounts.find((a) => a.id === deletingAccountId) ?? null
+
+  const handleConfirmDelete = async () => {
+    if (!deletingAccountId) return
+    setDeleteError(null)
+    try {
+      await deleteAccount.mutateAsync(deletingAccountId)
+      setSelectedAccountIds((prev) => {
+        if (!prev.has(deletingAccountId)) return prev
+        const next = new Set(prev)
+        next.delete(deletingAccountId)
+        return next
+      })
+      setDeletingAccountId(null)
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete account')
+    }
+  }
+
   // Build completed config
   const isCompleted = status === 'provided' || status === 'declined'
   const completedConfig = isCompleted
@@ -379,6 +413,10 @@ export function ConnectedAccountRequestItem({
                   setPolicyEditorIsNewAccount(false)
                   setPolicyEditorAccountId(account.id)
                 }}
+                onDelete={() => {
+                  setDeleteError(null)
+                  setDeletingAccountId(account.id)
+                }}
                 onReconnect={account.status !== 'active'
                   ? () => oauthReconnect(account.id, account.toolkitSlug)
                   : undefined}
@@ -462,6 +500,44 @@ export function ConnectedAccountRequestItem({
         </RequestItemActions>
       )}
 
+      {/* Delete confirmation */}
+      <AlertDialog
+        open={!!deletingAccountId}
+        onOpenChange={(open) => {
+          if (deleteAccount.isPending) return
+          if (!open) {
+            setDeletingAccountId(null)
+            setDeleteError(null)
+          }
+        }}
+      >
+        <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete account?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes &quot;{deletingAccount?.displayName}&quot; and revokes access for
+              every agent using it. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteError && (
+            <p className="text-xs text-destructive" role="alert">{deleteError}</p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteAccount.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault()
+                void handleConfirmDelete()
+              }}
+              disabled={deleteAccount.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteAccount.isPending ? 'Deleting...' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Policy editor dialog */}
       {policyEditorAccountId && (
         <ScopePolicyEditor
@@ -500,6 +576,7 @@ interface AccountOptionProps {
   isSavingRename: boolean
   onReconnect?: () => void
   onOpenPolicies: () => void
+  onDelete: () => void
 }
 
 function AccountOption({
@@ -515,6 +592,7 @@ function AccountOption({
   onEditNameChange,
   isSavingRename,
   onOpenPolicies,
+  onDelete,
   onReconnect,
 }: AccountOptionProps) {
   const connectedDate = new Date(account.createdAt)
@@ -628,6 +706,7 @@ function AccountOption({
               size="xs"
               variant="ghost"
               className="h-5 w-5 shrink-0 p-0 text-muted-foreground/70 hover:bg-transparent hover:text-muted-foreground"
+              data-testid={`account-option-menu-${account.id}`}
               onClick={(e) => {
                 e.stopPropagation()
               }}
@@ -652,6 +731,20 @@ function AccountOption({
             >
               <Pencil className="h-3.5 w-3.5" />
               Rename
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              className="w-full justify-start gap-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              data-testid={`account-option-delete-${account.id}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                setMenuOpen(false)
+                onDelete()
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete
             </Button>
           </PopoverContent>
         </Popover>
