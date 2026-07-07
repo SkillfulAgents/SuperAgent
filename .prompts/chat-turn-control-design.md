@@ -1,7 +1,7 @@
 # Chat turn control - `/stop` affordance + stall nudge
 
-Status: design SETTLED with Jeremy (2026-07-06), grounded against merged main.
-Next: adversarial cross-model pass on this doc, then TDD implementation.
+Status: design SETTLED with Jeremy (2026-07-06), grounded against merged main; adversarial codex pass DONE, all findings triaged and folded in below.
+Next: TDD implementation.
 Branch: `feat/chat-turn-control` (this worktree), rebased onto `upstream/main` (PR B merged as squash `5bc8cbf2`, #339).
 
 ## Context (read first)
@@ -34,13 +34,26 @@ A chat command that interrupts the current turn, reusing the SAME path the app's
 - NEW shared helper `interruptAgentSession(agentSlug, sessionId)` in `src/shared/lib/container/interrupt-session.ts`, the interrupt route body factored out verbatim: read cached container info; if the container is not running, settle locally only; otherwise `client.interruptSession(sessionId)`; then `markSessionInterrupted(sessionId)` + `reviewManager.denyAllForAgent(agentSlug)` REGARDLESS of the result.
 The key property: it ALWAYS unsticks the session locally, even on a wedged or dead container.
 The API route (`src/api/routes/agents.ts:1925`) becomes a thin wrapper (auth + params + response) around the helper.
+The helper is a LEAF module: nothing in `src/shared/lib/container/` may import it (`container-manager` already imports `message-persister`, which lazy-imports back to avoid a cycle - do not extend that graph).
+The chat manager imports it via dynamic `await import(...)`, matching its existing container-manager idiom (`chat-integration-manager.ts:717`).
+All three deps (`containerManager`, `messagePersister`, `reviewManager`) live in `src/shared/lib/`, so the helper is shared→shared with no API-layer inversion.
 - `denyAllForAgent` is INCLUDED (settled): exact parity with the app's Stop button and maximal reuse of the existing route body.
 It is agent-scoped, so a `/stop` in one chat can deny a pending tool-approval in a sibling chat of the same agent; accepted - the collision is rare and recoverable (the agent re-asks), and a wedged tool-approval is a top hang cause, so omitting it would make `/stop` fail on the very hangs it exists for.
 - Wire `/stop` in `chat-integration-manager.ts`'s command block next to `/start` (`:705`) and `/clear` (`:711`).
 Placement inside that block inherits the `decideInboundAccess` gate (`:676`), which runs before any command; blocked chats never reach `/stop`.
 - `/stop` does NOT tear down the chat-session mapping (unlike `/clear`): conversation context survives, and the next message runs as a fresh turn in the same conversation instead of queuing behind the hung one.
-- Indicator settlement is event-driven, not tick-driven: `markSessionInterrupted` (`message-persister.ts:577`) broadcasts `session_idle` (`:595`), which the manager's own SSE subscription already routes to `clearIndicator` + `finalizeTurn` (`chat-integration-manager.ts:1794`).
+- `/stop` discards the WHOLE in-flight turn, including any mid-turn messages queued as steering (interrupt clears the container's queued sends).
+That is the intended "reset" semantics; the ack copy tells the user to resend.
+- `/stop` sets `managed.turnNotified = true`: a stale `session_error` already sitting in the SSE queue would otherwise send a second, contradictory error notice after the stop ack; the existing latch check (`:1810`) suppresses it.
+- `/stop` rides the normal per-chat serial inbound queue (settled: accept + document).
+The dominant hang - a turn wedged in the container - does NOT occupy that queue: the message handler returns right after `client.sendMessage` (`:846`), so `/stop` enters an empty queue and runs immediately.
+The one true blocking case is the delivery hand-off itself freezing (a wedged container's HTTP call never returning, or a hung `ensureRunning` on the new-session path); that is a missing-timeout root cause fixed separately (see Out of scope).
+Queue-jumping was REJECTED: it reorders bursts - a `/stop` could execute before the message sent just before it, which then dispatches AFTER the interrupt and resurrects work the user just killed.
+- Indicator settlement is event-driven, not tick-driven: `markSessionInterrupted` (`message-persister.ts:577`) broadcasts `session_idle` (`:595`), which the manager's own SSE subscription routes to `clearIndicator` + `finalizeTurn` (`chat-integration-manager.ts:1794`).
+Scope: that path exists only while a managed subscription is live - which is the only state `/stop` is reachable from anyway; the persister settles its own state regardless.
 The pull tick is only the backstop.
+- `/clear` on a BUSY session now interrupts FIRST via the same helper, then archives ("clear = stop + forget").
+Today `/clear` only unsubscribes and clears the indicator (`stopSession` `:978`), leaving the container turn running orphaned and burning tokens with nowhere to deliver.
 - Acks: active turn stopped → "⏹ Stopped. Send a message to start again."; nothing running → "⏹ Nothing is running right now." (graceful, no error).
 
 ### Part 2 - stall nudge (the discovery trigger)
@@ -51,9 +64,14 @@ It NEVER touches the indicator.
 - `ManagedConnector` (`chat-integration-manager.ts:124`) gains `stallNudgeTimer?` and `stallNotified?`.
 - ARM at BOTH dispatch points: the existing-session send path (near `markSessionActive`, `:847`) and `startNewChatSession` (`:959`).
 Reset `stallNotified = false` per turn at dispatch.
-- RESET the timer at the top of `processSSEEvent` (`:1659`) on every event.
-- CANCEL (not just reset) on the terminal events `session_idle` (`:1794`) and `session_error` (`:1802`), on `/stop`, and in every teardown path that clears `indicatorTickTimer` today, so no timer dangles past a settled turn.
-- FIRE: at most once per turn (`stallNotified` latch - SEPARATE from `turnNotified`, so a nudge never suppresses a later `session_error` notice); re-check `BUSY_ACTIVITIES.has(getSessionActivity(sessionId))` at fire time (the exact pattern at `:1643`) so a settled turn is never nudged; send the nudge; touch nothing else.
+- RESET the timer SYNCHRONOUSLY in the `addSSEClient` subscription callback (`:521`, next to `armIndicatorIfBusy`), BEFORE the serialization queue.
+NOT inside `processSSEEvent`: a backed-up SSE queue (handlers awaiting connector work) must not let the nudge fire while events are in fact arriving - the same reasoning the indicator wake already uses.
+- CANCEL (not just reset) on the terminal events `session_idle` (`:1794`) and `session_error` (`:1802`), on `/stop`, in every teardown path that clears `indicatorTickTimer` today, AND in `subscribeChatSession`'s resubscribe cleanup (`:517`, alongside `stopIndicatorTick`) so a session swap cannot leave a stale timer running.
+- FIRE: at most once per turn (`stallNotified` latch - SEPARATE from `turnNotified`, so a nudge never suppresses a later `session_error` notice).
+The timer closure CAPTURES its sessionId; at fire time, check the captured id is still `managed.sessionId` AND `BUSY_ACTIVITIES.has(getSessionActivity(sessionId))` (the exact pattern at `:1643`), so neither a swapped session nor a settled turn is ever nudged.
+Send the nudge; touch nothing else.
+- Delivery is best-effort, AT-MOST-ONCE: set `stallNotified` BEFORE sending, `.catch(log)` the send.
+A missed nudge is cheaper than a double nudge - deliberately the opposite of the `session_error` notice, which releases its latch on delivery failure to stay at-least-once.
 - `STALL_NUDGE_MS = 7 * 60_000`, hardcoded const.
 No setting (YAGNI until someone asks).
 
@@ -99,7 +117,8 @@ Ship the command first; buttons are purely additive.
 
 ## Test matrix
 
-TDD. Fake timers for the nudge; reuse the chat-integration test harnesses (`sse-event-processing.test.ts`, `mock-connector.ts`).
+TDD. Two harnesses, matched to what each can exercise: `sse-event-processing.test.ts` constructs `ManagedConnector` directly and only drives `processSSEEvent` - use it for the pure timer/event cases; command, gating, queue, and interrupt cases need the manager-level harness (`chat-integration-e2e.test.ts`) with mocked `getClient` / `getCachedInfo` / `interruptSession` / `reviewManager`.
+Fake timers for the nudge.
 
 | # | Scenario | Expected |
 |---|---|---|
@@ -113,6 +132,10 @@ TDD. Fake timers for the nudge; reuse the chat-integration test harnesses (`sse-
 | 8 | nudge fires twice in one multi-segment turn | at most one message (latch) |
 | 9 | nudge after the turn already settled | does not fire (cancelled on terminal events + busy re-check at fire time) |
 | 10 | nudge then `/stop` | `/stop` interrupts and clears; timer cancelled |
+| 11 | `/clear` during a running turn | interrupts via the helper FIRST, then archives + clears |
+| 12 | `/stop` racing an already-enqueued `session_error` | no stale error notice after the stop ack (`turnNotified` set by `/stop`) |
+| 13 | nudge send fails (connector throws) | latch stays set, no retry, error logged |
+| 14 | resubscribe / session swap while a stall timer is armed | timer cancelled; no nudge for the old session |
 
 Plus route parity for the helper extraction: the interrupt route's existing behavior (running and not-running container cases) is preserved through the refactor.
 
@@ -121,6 +144,9 @@ Plus route parity for the helper extraction: the interrupt route's existing beha
 - Inline Stop buttons (additive follow-up).
 - Any change to the indicator projection - that is PR B; this PR must NOT touch the tick or the four clears.
 - Auto-interrupt-on-resend (rejected: too magical, would cancel legitimately-slow work).
+- Out-of-band / queue-jumping `/stop` (rejected: reorders bursts and resurrects killed work; see Part 1).
+- Bounding the container client's send call with a timeout - the real fix for a frozen delivery hand-off blocking the inbound queue.
+Root-cause follow-up, benefits every queued message, not just `/stop`.
 
 ## Pre-PR cleanup
 
