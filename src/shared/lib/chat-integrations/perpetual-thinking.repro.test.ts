@@ -61,18 +61,24 @@ function makeManaged(connector: ManagedConnector['connector'], chatId: string): 
   }
 }
 
-/** A real TelegramConnector with a stubbed grammy bot that records draft sends. */
+/** A real TelegramConnector with a stubbed grammy bot that records the indicator's
+ *  real-message sends/edits/deletes. The working/thinking indicator is a docked
+ *  ⏹ Stop-keyboard message (not a draft), relabeled in place on activity change. */
 function makeRealDmConnector() {
   const connector = new TelegramConnector({ botToken: 'fake:token' })
-  const sendRichMessageDraft = vi.fn().mockResolvedValue(true)
-  const sendRichMessage = vi.fn().mockResolvedValue({ message_id: 1 })
+  const sendMessage = vi.fn().mockResolvedValue({ message_id: 42 })
+  const editMessageText = vi.fn().mockResolvedValue(true)
+  const deleteMessage = vi.fn().mockResolvedValue(true)
   ;(connector as unknown as { bot: unknown }).bot = {
-    api: { raw: { sendRichMessageDraft, sendRichMessage }, sendChatAction: vi.fn() },
+    api: {
+      raw: { sendRichMessageDraft: vi.fn(), sendRichMessage: vi.fn().mockResolvedValue({ message_id: 1 }) },
+      sendMessage, editMessageText, deleteMessage, sendChatAction: vi.fn(),
+    },
   }
-  return { connector, sendRichMessageDraft }
+  return { connector, sendMessage, editMessageText, deleteMessage }
 }
 
-const DM_CHAT = '999' // positive id → private DM → native <tg-thinking> draft path
+const DM_CHAT = '999' // positive id → private DM → real-message indicator path
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -91,7 +97,7 @@ describe('reconcileIndicator (idempotent paint/clear)', () => {
     expect(managed.indicatorShown).toBe(true)
   })
 
-  it('busy re-paints on every call (keep-alive — Telegram re-renders the draft)', () => {
+  it('busy re-paints on every call (keep-alive — the Telegram indicator re-renders)', () => {
     const connector = new MockChatClientConnector()
     const managed = makeManaged(connector, 'chat-w')
     reconcileIndicator(managed, 'working')
@@ -436,10 +442,10 @@ describe('session_error: curated message by apiErrorCode, raw error never leaked
 })
 
 // ── Honest, activity-specific Telegram label ───────────────────────────────────
-// The native draft is labeled by what the agent is actually doing. startWorking
+// The indicator message is labeled by what the agent is actually doing. startWorking
 // renders once per call (the manager's tick drives keep-alive).
 
-describe('Telegram: the native draft is labeled by activity', () => {
+describe('Telegram: the working/thinking indicator is labeled by activity', () => {
   const cases: Array<{ activity: SessionActivity; label: string }> = [
     { activity: 'working', label: '✨ Working…' },
     { activity: 'thinking', label: '✨ Thinking…' },
@@ -448,22 +454,22 @@ describe('Telegram: the native draft is labeled by activity', () => {
   ]
   for (const { activity, label } of cases) {
     it(`${activity} → "${label}"`, async () => {
-      const { connector, sendRichMessageDraft } = makeRealDmConnector()
+      const { connector, sendMessage } = makeRealDmConnector()
       await connector.startWorking(DM_CHAT, activity)
-      expect(sendRichMessageDraft).toHaveBeenLastCalledWith(expect.objectContaining({
-        rich_message: { html: `<tg-thinking>${label}</tg-thinking>` },
+      // The indicator's create sends the activity label + docks the ⏹ Stop keyboard.
+      expect(sendMessage).toHaveBeenLastCalledWith(DM_CHAT, label, expect.objectContaining({
+        reply_markup: expect.objectContaining({ keyboard: [[{ text: '⏹ Stop' }]], one_time_keyboard: true }),
       }))
       await connector.stopWorking(DM_CHAT)
     })
   }
 
   it('relabels in place when the activity changes mid-turn (working → compacting)', async () => {
-    const { connector, sendRichMessageDraft } = makeRealDmConnector()
+    const { connector, editMessageText } = makeRealDmConnector()
     await connector.startWorking(DM_CHAT, 'working')
     await connector.startWorking(DM_CHAT, 'compacting')
-    expect(sendRichMessageDraft).toHaveBeenLastCalledWith(expect.objectContaining({
-      rich_message: { html: '<tg-thinking>🗜 Compacting…</tg-thinking>' },
-    }))
+    // Relabel edits the existing indicator message in place (no reply_markup on the edit).
+    expect(editMessageText).toHaveBeenLastCalledWith(DM_CHAT, 42, '🗜 Compacting…')
     await connector.stopWorking(DM_CHAT)
   })
 })

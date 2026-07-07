@@ -33,6 +33,10 @@ export interface TelegramConfig {
 const FIRST_POLL_BATCH_DELAY_MS = 500
 const RICH_DRAFT_SENTINEL_PREFIX = 'draft:'
 
+/** The ⏹ Stop reply-keyboard button's label. A tap sends this exact text; handleTextMessage
+ *  normalizes it to /stop so the existing stop path handles it. */
+const STOP_KEYBOARD_TEXT = '⏹ Stop'
+
 // ── Markdown → Telegram HTML ─────────────────────────────────────────────
 
 function escapeHtml(text: string): string {
@@ -165,6 +169,14 @@ export class TelegramConnector extends ChatClientConnector {
   // Latest activity per chat, so each render (driven by the manager's tick) shows
   // the current label even when it changes mid-turn (working → thinking → …).
   private workingActivity: Map<string, SessionActivity> = new Map()
+  // The working/thinking indicator per chat: a real editable message showing the activity
+  // label. Holds its message id + last-rendered label so the tick edits only on change.
+  // Deleted in stopWorking when the reply takes over.
+  private statusMessages: Map<string, { id: string; label: string }> = new Map()
+  // Chats with a status-message send in flight. The id isn't known until the async
+  // send resolves, so this guards against a second concurrent create (slow send +
+  // next tick) stranding an untracked message.
+  private statusCreating: Set<string> = new Set()
 
   constructor(private config: TelegramConfig) {
     super()
@@ -309,6 +321,8 @@ export class TelegramConnector extends ChatClientConnector {
     this.pendingQuestions.clear()
     this.activeDrafts.clear()
     this.workingActivity.clear()
+    this.statusMessages.clear()
+    this.statusCreating.clear()
 
     if (this.bot) {
       await this.bot.stop()
@@ -449,22 +463,33 @@ export class TelegramConnector extends ChatClientConnector {
     }
   }
 
+  private async deleteStatusMessage(chatId: string): Promise<void> {
+    const status = this.statusMessages.get(chatId)
+    if (!status) return
+    this.statusMessages.delete(chatId)
+    try { await this.bot?.api.deleteMessage(chatId, Number(status.id)) } catch { /* best-effort */ }
+  }
+
   async startWorking(chatId: string, activity: SessionActivity): Promise<void> {
     if (!this.bot) return
-    // Render the labeled draft once. The manager's per-session tick re-calls this
-    // for keep-alive (drafts expire ~30s), so the connector keeps no timer of its
-    // own. Record the activity first so the render below shows the current label.
+    // The manager's per-session tick re-calls this; the indicator is a real message (no
+    // keep-alive needed) that edits its label in place. Record the activity first so the
+    // render below shows the current label.
     this.workingActivity.set(chatId, activity)
     await this.sendWorkingIndicator(chatId)
   }
 
   async stopWorking(chatId: string): Promise<void> {
+    // The reply is taking over (first token) or the turn ended: delete the indicator
+    // message. The ⏹ Stop reply keyboard is chat-level state, independent of this message,
+    // so it stays docked — while the reply draft is live a typed /stop is deferred, the
+    // accepted tradeoff for smooth streaming (Stop matters during working/thinking, where
+    // there is no draft blocking it).
     this.workingActivity.delete(chatId)
-    // The streaming response shares the draft_id and replaces the draft in place,
-    // so the clear yields the surface — there is nothing else to tear down.
+    await this.deleteStatusMessage(chatId)
   }
 
-  /** The native-draft label for a busy activity (`<tg-thinking>` inner HTML). */
+  /** The indicator label for a busy activity. */
   private workingLabel(activity: SessionActivity | undefined): string {
     switch (activity) {
       case 'compacting': return '🗜 Compacting…'
@@ -474,28 +499,55 @@ export class TelegramConnector extends ChatClientConnector {
     }
   }
 
-  /** Post the "working" indicator once: a native draft in rich DMs, else typing. */
+  /**
+   * Show the "working"/"thinking" indicator.
+   * - DMs → a real, editable message showing the activity label, edited in place only when
+   *   the label changes. Its create also docks the ⏹ Stop reply keyboard (chat-level state
+   *   that outlives this message and persists across turns). The reply then streams as a
+   *   draft; this message is deleted on the first token (stopWorking), and the keyboard
+   *   stays. Stop works during working/thinking (no draft blocking the /stop it sends).
+   * - Groups → the ambient typing action (groups never draft, so typed /stop always works).
+   */
   private async sendWorkingIndicator(chatId: string): Promise<void> {
     if (!this.bot) return
     try {
-      if (this.useRich && this.config.draftStreaming !== false && this.isPrivateChat(chatId)) {
-        // Native Telegram placeholder (RichBlockThinking / <tg-thinking>), labeled
-        // by the agent's current activity. Draft-only, so DM-only. Static glyph:
-        // the animated AIActions custom emoji only render when the bot's owner has
-        // Telegram Premium (otherwise Telegram strips the entity), so we use plain
-        // glyphs that render for everyone. The manager's tick re-sends it (drafts
-        // expire ~30s) and it shares the streaming draft_id, so the response replaces it.
+      if (this.isPrivateChat(chatId)) {
         const label = this.workingLabel(this.workingActivity.get(chatId))
-        await this.bot.api.raw.sendRichMessageDraft({
-          chat_id: Number(chatId),
-          draft_id: this.draftIdFor(chatId),
-          rich_message: { html: `<tg-thinking>${label}</tg-thinking>` },
-        })
+        const existing = this.statusMessages.get(chatId)
+        if (existing) {
+          if (existing.label !== label) {
+            await this.bot.api.editMessageText(chatId, Number(existing.id), label)
+            existing.label = label
+          }
+          return
+        }
+        // Create one, guarding two races: a concurrent create (skip if one is already in
+        // flight) and a teardown (stopWorking) that lands mid-create — in which case
+        // workingActivity is gone, so delete the just-sent message rather than strand it.
+        if (this.statusCreating.has(chatId)) return
+        this.statusCreating.add(chatId)
+        try {
+          // Dock the ⏹ Stop reply keyboard here. one_time_keyboard hides it after the first
+          // tap, so a burst of taps can't spam multiple /stop messages (each tap is a real
+          // message); it re-appears on the next turn's indicator. A tap sends
+          // STOP_KEYBOARD_TEXT, which handleTextMessage maps to /stop.
+          const sent = await this.bot.api.sendMessage(chatId, label, {
+            reply_markup: { keyboard: [[{ text: STOP_KEYBOARD_TEXT }]], one_time_keyboard: true, resize_keyboard: true },
+          })
+          if (this.workingActivity.has(chatId)) {
+            this.statusMessages.set(chatId, { id: String(sent.message_id), label })
+          } else {
+            await this.bot.api.deleteMessage(chatId, sent.message_id).catch(() => {})
+          }
+        } finally {
+          this.statusCreating.delete(chatId)
+        }
         return
       }
+
       await this.bot.api.sendChatAction(chatId, 'typing')
     } catch {
-      // Non-critical; the manager's tick re-sends on the next tick.
+      // Non-critical; the manager's tick retries on the next tick.
     }
   }
 
@@ -798,13 +850,20 @@ export class TelegramConnector extends ChatClientConnector {
   // ── First-poll batching ─────────────────────────────────────────────
 
   private handleTextMessage(ctx: GrammyContext): void {
-    const text = ctx.message?.text
-    if (!text || !ctx.chat) return
+    const rawText = ctx.message?.text
+    if (!rawText || !ctx.chat) return
 
     const chatType = ctx.chat.type
     if (chatType === 'channel') return // out of scope v1; no chat row
 
     const chatId = String(ctx.chat.id)
+
+    // A ⏹ Stop reply-keyboard tap arrives as a normal message. Normalize it to /stop so the
+    // existing stop path (priority lane → stopChatTurn) handles it. During working/thinking
+    // there is no draft, so it reaches the bot and interrupts; during a reply stream it is
+    // deferred until the draft finalizes (the accepted tradeoff for smooth streaming).
+    const text = rawText.trim() === STOP_KEYBOARD_TEXT ? '/stop' : rawText
+
     const fromId = String(ctx.from?.id || '')
     const messageId = String(ctx.message?.message_id || '')
     const userName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ')

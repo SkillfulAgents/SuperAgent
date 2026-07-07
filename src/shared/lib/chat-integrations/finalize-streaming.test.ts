@@ -366,7 +366,8 @@ describe('TelegramConnector streaming (DM, draft)', () => {
   let connector: TelegramConnector
   let raw: { sendRichMessageDraft: ReturnType<typeof vi.fn>; sendRichMessage: ReturnType<typeof vi.fn> }
   beforeEach(() => {
-    connector = new TelegramConnector({ botToken: 'fake:token' })
+    // draftStreaming is on by default; this block covers the DM draft path.
+    connector = new TelegramConnector({ botToken: 'fake:token', draftStreaming: true })
     raw = {
       sendRichMessageDraft: vi.fn().mockResolvedValue(true),
       sendRichMessage: vi.fn().mockResolvedValue({ message_id: 200 }),
@@ -403,18 +404,19 @@ describe('TelegramConnector streaming (DM, draft)', () => {
 })
 
 describe('TelegramConnector.startWorking / stopWorking', () => {
-  it('shows the native <tg-thinking> draft in a DM', async () => {
+  it('docks a real Stop-keyboard status message in a DM (not the group typing action)', async () => {
     const connector = new TelegramConnector({ botToken: 'fake:token' })
-    const sendRichMessageDraft = vi.fn().mockResolvedValue(true)
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 321 })
+    const deleteMessage = vi.fn().mockResolvedValue(true)
     const sendChatAction = vi.fn().mockResolvedValue(true)
-    ;(connector as any).bot = { api: { raw: { sendRichMessageDraft }, sendChatAction } }
+    ;(connector as any).bot = { api: { raw: { sendRichMessageDraft: vi.fn() }, sendMessage, editMessageText: vi.fn(), deleteMessage, sendChatAction } }
 
     await connector.startWorking('999', 'thinking')
-    expect(sendRichMessageDraft).toHaveBeenCalledWith(expect.objectContaining({
-      chat_id: 999,
-      rich_message: { html: '<tg-thinking>✨ Thinking…</tg-thinking>' },
+    // A real message labeled by the activity, docking the ⏹ Stop reply keyboard.
+    expect(sendMessage).toHaveBeenCalledWith('999', '✨ Thinking…', expect.objectContaining({
+      reply_markup: expect.objectContaining({ keyboard: [[{ text: '⏹ Stop' }]], one_time_keyboard: true, resize_keyboard: true }),
     }))
-    // A draft (native thinking block), not the group typing action.
+    // A docked message, not the group typing action.
     expect(sendChatAction).not.toHaveBeenCalled()
     await connector.stopWorking('999')
   })
@@ -423,26 +425,28 @@ describe('TelegramConnector.startWorking / stopWorking', () => {
     vi.useFakeTimers()
     try {
       const connector = new TelegramConnector({ botToken: 'fake:token' })
-      const sendRichMessageDraft = vi.fn().mockResolvedValue(true)
-      ;(connector as any).bot = { api: { raw: { sendRichMessageDraft }, sendChatAction: vi.fn() } }
+      const sendMessage = vi.fn().mockResolvedValue({ message_id: 700 })
+      const editMessageText = vi.fn().mockResolvedValue(true)
+      const deleteMessage = vi.fn().mockResolvedValue(true)
+      ;(connector as any).bot = { api: { raw: { sendRichMessageDraft: vi.fn() }, sendMessage, editMessageText, deleteMessage, sendChatAction: vi.fn() } }
 
       await connector.startWorking('999', 'working')
-      expect(sendRichMessageDraft).toHaveBeenCalledTimes(1) // sent right away
+      expect(sendMessage).toHaveBeenCalledTimes(1) // sent right away
 
       // No internal timer: nothing re-sends on its own. The manager's tick re-calls
-      // startWorking for keep-alive, so a second call renders again on the SAME draft id.
+      // startWorking for keep-alive; a same-label re-call is a no-op (no redundant edit).
       await vi.advanceTimersByTimeAsync(5000)
-      expect(sendRichMessageDraft).toHaveBeenCalledTimes(1)
+      expect(sendMessage).toHaveBeenCalledTimes(1)
+      expect(editMessageText).not.toHaveBeenCalled()
 
-      await connector.startWorking('999', 'working') // tick-driven keep-alive re-render
-      expect(sendRichMessageDraft).toHaveBeenCalledTimes(2)
-      const first = (sendRichMessageDraft.mock.calls[0][0] as any).draft_id
-      const second = (sendRichMessageDraft.mock.calls[1][0] as any).draft_id
-      expect(second).toBe(first) // stable draft id, so the streaming response replaces it in place
+      await connector.startWorking('999', 'working') // tick-driven keep-alive, same label → no-op
+      expect(sendMessage).toHaveBeenCalledTimes(1)
+      expect(editMessageText).not.toHaveBeenCalled()
 
       await connector.stopWorking('999')
+      expect(deleteMessage).toHaveBeenCalledWith('999', 700)
       await vi.advanceTimersByTimeAsync(5000)
-      expect(sendRichMessageDraft).toHaveBeenCalledTimes(2) // stop yields the draft; no further sends
+      expect(sendMessage).toHaveBeenCalledTimes(1) // stop tears the indicator down; no further sends
     } finally {
       vi.useRealTimers()
     }
@@ -458,6 +462,53 @@ describe('TelegramConnector.startWorking / stopWorking', () => {
     expect(sendChatAction).toHaveBeenCalledWith('-1001', 'typing')
     expect(sendRichMessageDraft).not.toHaveBeenCalled()
     await connector.stopWorking('-1001')
+  })
+
+  it('shows a non-blocking labeled status message in a DM by default (no draft)', async () => {
+    const connector = new TelegramConnector({ botToken: 'fake:token' })
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 555 })
+    const editMessageText = vi.fn().mockResolvedValue(true)
+    const deleteMessage = vi.fn().mockResolvedValue(true)
+    const sendRichMessageDraft = vi.fn().mockResolvedValue(true)
+    ;(connector as any).bot = { api: { raw: { sendRichMessageDraft }, sendMessage, editMessageText, deleteMessage, sendChatAction: vi.fn() } }
+
+    // First render → a real message with the activity label + docked ⏹ Stop keyboard, never a draft.
+    await connector.startWorking('999', 'working')
+    expect(sendMessage).toHaveBeenCalledWith('999', '✨ Working…', expect.objectContaining({
+      reply_markup: expect.objectContaining({ keyboard: [[{ text: '⏹ Stop' }]], one_time_keyboard: true }),
+    }))
+    expect(sendRichMessageDraft).not.toHaveBeenCalled()
+
+    // Same label on the next tick → no redundant edit.
+    await connector.startWorking('999', 'working')
+    expect(editMessageText).not.toHaveBeenCalled()
+
+    // Changed label → edited in place on the same message.
+    await connector.startWorking('999', 'compacting')
+    expect(editMessageText).toHaveBeenCalledWith('999', 555, '🗜 Compacting…')
+
+    // Clear tears the status message down, so a stuck turn never strands it.
+    await connector.stopWorking('999')
+    expect(deleteMessage).toHaveBeenCalledWith('999', 555)
+  })
+
+  it('never strands a status message when stopWorking lands mid-create', async () => {
+    const connector = new TelegramConnector({ botToken: 'fake:token' })
+    let resolveSend: (v: { message_id: number }) => void = () => {}
+    const sendMessage = vi.fn().mockReturnValue(new Promise((r) => { resolveSend = r }))
+    const deleteMessage = vi.fn().mockResolvedValue(true)
+    ;(connector as any).bot = { api: { raw: { sendRichMessageDraft: vi.fn() }, sendMessage, deleteMessage, editMessageText: vi.fn(), sendChatAction: vi.fn() } }
+
+    // Start the create (send is still in flight), then stop before it resolves —
+    // mimics the first reply token clearing the indicator mid-send.
+    const startP = connector.startWorking('999', 'working')
+    await connector.stopWorking('999')
+    resolveSend({ message_id: 777 })
+    await startP
+
+    // The message that landed after the stop is deleted, not left tracked/stranded.
+    expect(deleteMessage).toHaveBeenCalledWith('999', 777)
+    expect((connector as any).statusMessages.has('999')).toBe(false)
   })
 })
 
@@ -488,11 +539,11 @@ describe('TelegramConnector.sendStreamingUpdate (DM, real message edit)', () => 
     expect(id).toBe('12345')
   })
 
-  it('still uses the draft path for the streaming-response flow (no id, then draft sentinel)', async () => {
+  it('defaults to a draft for the streaming-response flow', async () => {
+    // draftStreaming is on by default, so the first DM update streams via a draft
+    // (committed to a real message on finalize) rather than a real editable message.
     const first = await connector.sendStreamingUpdate('999', 'partial')
-    expect(first).toBe('draft:999')
-    await connector.sendStreamingUpdate('999', 'partial more', first)
-    expect(raw.sendRichMessageDraft).toHaveBeenCalledTimes(2)
-    expect(raw.editMessageText).not.toHaveBeenCalled()
+    expect(raw.sendRichMessageDraft).toHaveBeenCalled()
+    expect(first.startsWith('draft:')).toBe(true)
   })
 })

@@ -655,6 +655,20 @@ class ChatIntegrationManager {
   // ── Message queue (serial per integration+chat) ─────────────────────
 
   private enqueueMessage(integrationId: string, message: IncomingMessage): void {
+    // Priority lane: /stop is an interrupt against the in-flight turn, not a turn
+    // of its own. It must act immediately, so it bypasses the serial per-chat
+    // queue instead of waiting behind an in-flight normal message (e.g. a cold
+    // container start that can take 20-30s). It still runs the full access gate
+    // and the existing /stop dispatch via handleIncomingMessage; it just isn't
+    // chained onto the queue.
+    if (isChatCommand(message.text, 'stop')) {
+      void this.handleIncomingMessage(integrationId, message).catch((err) => {
+        console.error(`[ChatIntegrationManager] Error handling /stop:`, err)
+        reportError(err, 'incoming-message', { integrationId, chatId: message.chatId })
+      })
+      return
+    }
+
     const queueKey = `${integrationId}:${message.chatId}`
     const current = this.messageQueues.get(queueKey) ?? Promise.resolve()
     const next = current.then(() =>
@@ -1102,6 +1116,10 @@ class ChatIntegrationManager {
     // Lazy import, same idiom as the send path's container-manager import.
     const { interruptAgentSession } = await import('@shared/lib/container/interrupt-session')
     await interruptAgentSession(integration.agentSlug, sessionId)
+    // Clear the stopped turn's working indicator immediately, not on the next 1s tick — a
+    // rapid stop-then-send would otherwise leave the stale indicator up to collide with the
+    // new turn's messages.
+    if (managed) clearIndicator(managed)
     // A question card left open would look answerable, but the turn is dead and
     // a tap after this fails silently - strip open cards best-effort.
     await connector.dismissOpenCards(chatId).catch(() => {})
