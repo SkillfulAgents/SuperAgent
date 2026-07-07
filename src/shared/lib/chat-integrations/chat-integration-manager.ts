@@ -150,6 +150,11 @@ export interface ManagedConnector {
   // True once the session_error notice has gone out for the current turn, so a
   // turn can't emit duplicate notices.
   turnNotified?: boolean
+  // Stall-nudge silence timer (see armStallNudge). Named to make its job
+  // unmistakable: it NEVER paints or clears the indicator.
+  stallNudgeTimer?: ReturnType<typeof setTimeout> | null
+  // True once this turn's stall nudge has gone out, so a turn nudges at most once.
+  stallNotified?: boolean
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────
@@ -1621,6 +1626,64 @@ export function cancelIndicatorSleep(managed: ManagedConnector): void {
     clearTimeout(managed.sleepTimer)
     managed.sleepTimer = null
   }
+}
+
+// ── Stall nudge ─────────────────────────────────────────────────────────
+//
+// A silence timer, NOT an indicator timer: armed at turn dispatch, reset on every
+// SSE event (synchronously, before the serialization queue), cancelled on terminal
+// events and teardown. After STALL_NUDGE_MS of total silence it sends ONE
+// informational message pointing at /stop. It never paints or clears the
+// indicator - that stays 100% tick-driven (PR B's invariant).
+
+/** Silence threshold before the one-per-turn stall nudge. Generous so that most
+ * legitimately-silent long tools (builds, installs, browser waits) finish first. */
+export const STALL_NUDGE_MS = 7 * 60_000
+
+/** Frames /stop as optional and never asserts the agent died: a silent-but-alive
+ * tool past the threshold is expected, so a false positive must read as harmless. */
+export const STALL_NUDGE_TEXT =
+  '⏳ Still working on this. Could be a long-running step, or the turn might be stuck. If it looks hung, send /stop to reset it and try again.'
+
+/**
+ * (Re)arm the silence countdown for a turn. Captures sessionId so a fire after a
+ * resubscribe/session swap is a no-op (checked against managed.sessionId).
+ */
+export function armStallNudge(managed: ManagedConnector, sessionId: string): void {
+  if (managed.stallNudgeTimer) clearTimeout(managed.stallNudgeTimer)
+  managed.stallNudgeTimer = setTimeout(() => onStallNudgeFired(managed, sessionId), STALL_NUDGE_MS)
+}
+
+/** Reset the countdown if one is armed - the every-SSE-event hook. An unarmed
+ * managed session (turn already settled) stays unarmed. */
+export function resetStallNudgeIfArmed(managed: ManagedConnector, sessionId: string): void {
+  if (!managed.stallNudgeTimer) return
+  armStallNudge(managed, sessionId)
+}
+
+/** Cancel outright: terminal events, /stop, teardown, resubscribe. */
+export function cancelStallNudge(managed: ManagedConnector): void {
+  if (managed.stallNudgeTimer) clearTimeout(managed.stallNudgeTimer)
+  managed.stallNudgeTimer = null
+}
+
+function onStallNudgeFired(managed: ManagedConnector, sessionId: string): void {
+  managed.stallNudgeTimer = null
+  // Stale timer: the managed session moved on (resubscribe/swap). Never nudge
+  // the old session.
+  if (managed.sessionId !== sessionId) return
+  // At most once per turn.
+  if (managed.stallNotified) return
+  // Re-read reality: only nudge a turn that is STILL busy, so a settled turn
+  // whose cancel raced this fire stays silent.
+  if (!BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(sessionId))) return
+  // Latch BEFORE sending: a missed nudge is cheaper than a double nudge (the
+  // deliberate opposite of the session_error notice, which re-opens its latch
+  // on delivery failure).
+  managed.stallNotified = true
+  managed.connector.sendMessage(managed.chatId, { text: STALL_NUDGE_TEXT }).catch((err) => {
+    console.error('[ChatIntegrationManager] Failed to send stall nudge:', err)
+  })
 }
 
 /**
