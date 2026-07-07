@@ -718,6 +718,12 @@ class ChatIntegrationManager {
       return
     }
 
+    // Handle /stop command — interrupt the in-flight turn, keep the conversation
+    if (message.text.trim().toLowerCase() === '/stop') {
+      await this.stopChatTurn(integration, chatId, conn.connector)
+      return
+    }
+
     // Lazy imports to avoid circular dependencies
     const { containerManager } = await import('@shared/lib/container/container-manager')
     const { agentExists } = await import('@shared/lib/services/agent-service')
@@ -1017,6 +1023,40 @@ class ChatIntegrationManager {
     await connector.sendMessage(chatId, {
       text: '🗑️ Session cleared. Your next message will start a fresh conversation.',
     }).catch(() => {})
+  }
+
+  /**
+   * /stop — interrupt the chat's in-flight turn via the app Stop button's shared
+   * path (interruptAgentSession always settles locally, even on a wedged
+   * container). Unlike /clear, the session mapping survives: the next message
+   * runs as a fresh turn in the same conversation. The whole in-flight turn is
+   * discarded, including container-queued mid-turn messages.
+   */
+  private async stopChatTurn(
+    integration: ChatIntegration,
+    chatId: string,
+    connector: ChatClientConnector,
+  ): Promise<void> {
+    const chatSession = getChatIntegrationSession(integration.id, chatId)
+    const sessionId = chatSession?.sessionId
+    if (!sessionId || !BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(sessionId))) {
+      await connector.sendMessage(chatId, { text: '⏹ Nothing is running right now.' }).catch(() => {})
+      return
+    }
+
+    const managed = this.chatSessions.get(this.getChatSessionKey(integration.id, chatId))
+    if (managed) {
+      // The stop ack is this turn's terminal notice: a stale session_error may
+      // already sit in the SSE queue, and the turnNotified latch keeps it from
+      // sending a second, contradictory one.
+      managed.turnNotified = true
+      cancelStallNudge(managed)
+    }
+
+    // Lazy import, same idiom as the send path's container-manager import.
+    const { interruptAgentSession } = await import('@shared/lib/container/interrupt-session')
+    await interruptAgentSession(integration.agentSlug, sessionId)
+    await connector.sendMessage(chatId, { text: '⏹ Stopped. Send a message to start again.' }).catch(() => {})
   }
 
   /** Clear a chat session by its DB row ID (called from API route). */
