@@ -24,6 +24,8 @@ import {
   listTriggersTool,
   setupTriggerTool,
   cancelTriggerTool,
+  createWebhookEndpointTool,
+  updateWebhookEndpointTool,
 } from './tools/webhook-triggers'
 import { deliverFileTool } from './tools/deliver-file'
 import { deliverSessionTool } from './tools/deliver-session'
@@ -72,7 +74,10 @@ export function createUserInputMcpServer() {
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),
-      ...(includeWebhookTriggers ? [getAvailableTriggersTool, listTriggersTool, setupTriggerTool, cancelTriggerTool] : []),
+      ...(includeWebhookTriggers ? [
+        getAvailableTriggersTool, listTriggersTool, setupTriggerTool, cancelTriggerTool,
+        createWebhookEndpointTool, updateWebhookEndpointTool,
+      ] : []),
     ],
   })
 }

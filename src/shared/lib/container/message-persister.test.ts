@@ -89,10 +89,26 @@ type MockFn = (...args: any[]) => any
 const mockCreateWebhookTrigger = vi.fn<MockFn>(() => Promise.resolve('trigger_new_id'))
 const mockListActiveWebhookTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
 const mockCancelWebhookTriggerWithCleanup = vi.fn<MockFn>(() => Promise.resolve(true))
+const mockGetWebhookTrigger = vi.fn<MockFn>(() => Promise.resolve(null))
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   createWebhookTrigger: (...args: unknown[]) => mockCreateWebhookTrigger(...args),
   listActiveWebhookTriggers: (...args: unknown[]) => mockListActiveWebhookTriggers(...args),
   cancelWebhookTriggerWithCleanup: (...args: unknown[]) => mockCancelWebhookTriggerWithCleanup(...args),
+  getWebhookTrigger: (...args: unknown[]) => mockGetWebhookTrigger(...args),
+  resolvePlatformMemberForCandidates: () => null,
+}))
+
+const mockCreatePlatformWebhookEndpoint = vi.fn<MockFn>()
+const mockUpdatePlatformWebhookEndpoint = vi.fn<MockFn>(() => Promise.resolve({}))
+const mockDisablePlatformWebhookEndpoint = vi.fn<MockFn>(() => Promise.resolve())
+vi.mock('@shared/lib/services/webhook-endpoints-client', () => ({
+  createPlatformWebhookEndpoint: (...args: unknown[]) => mockCreatePlatformWebhookEndpoint(...args),
+  updatePlatformWebhookEndpoint: (...args: unknown[]) => mockUpdatePlatformWebhookEndpoint(...args),
+  disablePlatformWebhookEndpoint: (...args: unknown[]) => mockDisablePlatformWebhookEndpoint(...args),
+}))
+
+vi.mock('@shared/lib/services/platform-auth-service', () => ({
+  getStoredPlatformMemberId: () => null,
 }))
 
 const mockGetAvailableTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
@@ -130,8 +146,33 @@ vi.mock('./container-manager', () => ({
 }))
 
 // Import after mocks are set up
-import { messagePersister } from './message-persister'
+import { messagePersister, redactStreamedToolInput } from './message-persister'
 import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+
+describe('redactStreamedToolInput', () => {
+  it('masks the secret in create/update_webhook_endpoint streamed input', () => {
+    const input = '{"name":"gh","verification":{"algorithm":"hmac-sha256","secret":"whsec_supersecret","header":"x-sig"}}'
+    for (const tool of ['create_webhook_endpoint', 'update_webhook_endpoint']) {
+      const out = redactStreamedToolInput(tool, input)
+      expect(out).not.toContain('whsec_supersecret')
+      expect(out).toContain('"secret":"***"')
+      expect(out).toContain('"header":"x-sig"') // other fields untouched
+    }
+  })
+
+  it('masks a value whose closing quote has not streamed yet', () => {
+    const partial = '{"name":"gh","verification":{"secret":"whsec_partial'
+    const out = redactStreamedToolInput('create_webhook_endpoint', partial)
+    expect(out).not.toContain('whsec_partial')
+    expect(out).toContain('"secret":"***')
+  })
+
+  it('leaves input for unrelated tools untouched', () => {
+    const input = '{"secret":"not-a-webhook-secret"}'
+    expect(redactStreamedToolInput('some_other_tool', input)).toBe(input)
+    expect(redactStreamedToolInput(undefined, input)).toBe(input)
+  })
+})
 
 // Helper to create a mock ContainerClient
 function createMockClient(): ContainerClient & {
@@ -3479,6 +3520,184 @@ describe('MessagePersister', () => {
         expect(resolveCall).toBeDefined()
         const body = JSON.parse(resolveCall![1].body)
         expect(body.value).toContain('No active webhook triggers')
+      })
+    })
+
+    describe('create_webhook_endpoint', () => {
+      const ENDPOINT = {
+        id: 'whep_11111111-2222-4333-8444-555555555555',
+        url: 'https://proxy.test/v1/hooks/whep_11111111-2222-4333-8444-555555555555',
+        name: 'Deploy hook',
+        status: 'active',
+        verification: null,
+        receive_count: 0,
+        rejected_count: 0,
+        last_received_at: null,
+        created_at: '2026-07-06T00:00:00Z',
+      }
+
+      beforeEach(() => {
+        mockCreatePlatformWebhookEndpoint.mockClear()
+        mockDisablePlatformWebhookEndpoint.mockClear()
+        mockCreatePlatformWebhookEndpoint.mockResolvedValue(ENDPOINT)
+      })
+
+      it('mints on the platform, saves a kind=custom trigger row, and resolves with the URL', async () => {
+        const { events: globalEvents, cleanup } = collectGlobalEvents()
+        sseEvents.length = 0
+
+        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-1', {
+          name: 'Deploy hook',
+          prompt: 'Summarize the deploy result',
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-mint-1/resolve')
+
+        expect(mockCreatePlatformWebhookEndpoint).toHaveBeenCalledTimes(1)
+        expect(mockCreatePlatformWebhookEndpoint.mock.calls[0][1]).toEqual({ name: 'Deploy hook' })
+
+        expect(mockCreateWebhookTrigger).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: 'custom',
+            composioTriggerId: ENDPOINT.id,
+            triggerType: 'CUSTOM_WEBHOOK',
+            prompt: 'Summarize the deploy result',
+            name: 'Deploy hook',
+          }),
+        )
+        const triggerConfig = JSON.parse(
+          mockCreateWebhookTrigger.mock.calls[0][0].triggerConfig,
+        )
+        expect(triggerConfig.url).toBe(ENDPOINT.url)
+
+        const body = JSON.parse(resolveCall[1].body)
+        expect(body.value).toContain(ENDPOINT.url)
+        expect(body.value).toContain('UNVERIFIED')
+
+        expect(sseEvents.filter((e) => e.type === 'webhook_trigger_created')).toHaveLength(1)
+        expect(globalEvents.filter((e) => e.type === 'webhook_trigger_created')).toHaveLength(1)
+        cleanup()
+      })
+
+      it('passes a valid verification profile through to the platform', async () => {
+        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-2', {
+          name: 'Signed hook',
+          prompt: 'Handle it',
+          verification: {
+            algorithm: 'hmac-sha256',
+            encoding: 'hex',
+            header: 'x-hub-signature-256',
+            prefix: 'sha256=',
+            template: '{body}',
+            secret: 'shh',
+          },
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-mint-2/resolve')
+        expect(mockCreatePlatformWebhookEndpoint.mock.calls[0][1].verification.secret).toBe('shh')
+        const body = JSON.parse(resolveCall[1].body)
+        expect(body.value).not.toContain('UNVERIFIED')
+      })
+
+      it('rejects an invalid verification profile before any platform call', async () => {
+        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-3', {
+          name: 'Bad profile',
+          prompt: 'Handle it',
+          verification: { algorithm: 'rot13' },
+        })
+
+        const rejectCall = await flushHandlers('/inputs/tool-mint-3/reject')
+        expect(JSON.parse(rejectCall[1].body).reason).toContain('Invalid tool input: verification.')
+        expect(mockCreatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+      })
+
+      it('disables the platform endpoint when the local save fails (rollback)', async () => {
+        mockCreateWebhookTrigger.mockRejectedValueOnce(new Error('disk full'))
+
+        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-4', {
+          name: 'Doomed hook',
+          prompt: 'Handle it',
+        })
+
+        const rejectCall = await flushHandlers('/inputs/tool-mint-4/reject')
+        expect(JSON.parse(rejectCall[1].body).reason).toContain('Failed to save trigger locally')
+        expect(mockDisablePlatformWebhookEndpoint).toHaveBeenCalledWith(expect.any(String), ENDPOINT.id)
+      })
+
+      it('rejects when the platform is not active', async () => {
+        mockIsPlatformComposioActive.mockReturnValue(false)
+
+        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-5', {
+          name: 'No platform',
+          prompt: 'Handle it',
+        })
+
+        const rejectCall = await flushHandlers('/inputs/tool-mint-5/reject')
+        expect(JSON.parse(rejectCall[1].body).reason).toContain('platform')
+        expect(mockCreatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+      })
+    })
+
+    describe('update_webhook_endpoint', () => {
+      const customTrigger = {
+        id: 'trigger_custom_1',
+        agentSlug: 'test-agent',
+        kind: 'custom',
+        composioTriggerId: 'whep_11111111-2222-4333-8444-555555555555',
+        status: 'active',
+      }
+
+      beforeEach(() => {
+        mockUpdatePlatformWebhookEndpoint.mockClear()
+        mockGetWebhookTrigger.mockResolvedValue(customTrigger)
+      })
+
+      it('attaches verification post-mint (the secret-arrives-later flow)', async () => {
+        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-1', {
+          trigger_id: 'trigger_custom_1',
+          verification: {
+            algorithm: 'hmac-sha256',
+            encoding: 'base64',
+            header: 'webhook-signature',
+            template: '{webhook_id}.{timestamp}.{body}',
+            timestamp_header: 'webhook-timestamp',
+            secret: 'whsec_abc',
+            secret_encoding: 'base64',
+          },
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-upd-1/resolve')
+        expect(mockUpdatePlatformWebhookEndpoint).toHaveBeenCalledWith(
+          expect.any(String),
+          customTrigger.composioTriggerId,
+          expect.objectContaining({ verification: expect.objectContaining({ secret: 'whsec_abc' }) }),
+        )
+        expect(JSON.parse(resolveCall[1].body).value).toContain('signature-verified')
+      })
+
+      it('rejects for a non-custom trigger', async () => {
+        mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, kind: 'composio' })
+
+        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-2', {
+          trigger_id: 'trigger_custom_1',
+          name: 'renamed',
+        })
+
+        const rejectCall = await flushHandlers('/inputs/tool-upd-2/reject')
+        expect(JSON.parse(rejectCall[1].body).reason).toContain('No custom webhook endpoint')
+        expect(mockUpdatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+      })
+
+      it('rejects an unknown trigger id', async () => {
+        mockGetWebhookTrigger.mockResolvedValue(null)
+
+        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-3', {
+          trigger_id: 'nope',
+          name: 'renamed',
+        })
+
+        await flushHandlers('/inputs/tool-upd-3/reject')
+        expect(mockUpdatePlatformWebhookEndpoint).not.toHaveBeenCalled()
       })
     })
 

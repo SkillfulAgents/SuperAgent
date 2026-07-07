@@ -393,13 +393,18 @@ function WebhookRow({
   const isPaused = trigger.status === 'paused'
   const isDeleted = trigger.status === 'cancelled'
   const displayName = trigger.name ?? trigger.triggerType
+  const isCustom = trigger.kind === 'custom'
 
   return (
     <TriggerRow
       kind="webhook"
       isDeleted={isDeleted}
       name={displayName}
-      subtitleLeft={<span className="truncate lowercase">webhook · {trigger.triggerType}</span>}
+      subtitleLeft={
+        <span className="truncate lowercase">
+          {isCustom ? 'webhook · custom endpoint' : `webhook · ${trigger.triggerType}`}
+        </span>
+      }
       subtitleRight={
         <span className="shrink-0">
           {trigger.lastFiredAt ? (

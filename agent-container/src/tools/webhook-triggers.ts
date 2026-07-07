@@ -1,16 +1,55 @@
 /**
  * Webhook Trigger Tools
  *
- * Tools for managing Composio webhook trigger subscriptions.
+ * Tools for managing Composio webhook trigger subscriptions and custom webhook
+ * endpoints (dedicated public URLs for services Composio has no trigger for).
  * - get_available_triggers: blocking — returns available trigger types
- * - list_triggers: blocking — returns active triggers for this agent
+ * - list_triggers: blocking — returns active triggers/endpoints for this agent
  * - setup_trigger: blocking — message persister handles dual-write, resolves with result
  * - cancel_trigger: blocking — message persister handles dual-delete, resolves with result
+ * - create_webhook_endpoint: blocking — mints a public webhook URL on the platform
+ * - update_webhook_endpoint: blocking — attaches/updates signature verification
  */
 
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { inputManager } from '../input-manager'
+
+/**
+ * Generic HMAC verification profile for custom webhook endpoints. Covers ~80%
+ * of providers (incl. everything Standard-Webhooks/svix-based: OpenAI,
+ * Anthropic, Supabase, ...).
+ */
+const verificationProfileSchema = z.object({
+  algorithm: z.enum(['hmac-sha256', 'hmac-sha1']).describe('HMAC hash algorithm'),
+  encoding: z.enum(['hex', 'base64']).describe('How the provider encodes the digest'),
+  header: z
+    .string()
+    .describe('Header carrying the signature (e.g. "X-Hub-Signature-256", "Stripe-Signature")'),
+  prefix: z
+    .string()
+    .optional()
+    .describe('Literal prefix to strip from the signature value (e.g. "sha256=", "v0=")'),
+  template: z
+    .string()
+    .describe(
+      'Signed-string template; must include {body}. Vars: {body} {timestamp} {webhook_id} {url} {method}. Examples: GitHub/Shopify "{body}", Stripe "{timestamp}.{body}", Slack/Zoom "v0:{timestamp}:{body}", Standard Webhooks "{webhook_id}.{timestamp}.{body}", Square "{url}{body}", HubSpot v3 "{method}{url}{body}{timestamp}"',
+    ),
+  timestamp_header: z
+    .string()
+    .optional()
+    .describe('Header carrying the replay timestamp (e.g. "X-Slack-Request-Timestamp"). Enables a replay window. Not needed for Stripe (embedded in the signature header).'),
+  webhook_id_header: z
+    .string()
+    .optional()
+    .describe('Header carrying the message id for {webhook_id} (default "webhook-id")'),
+  tolerance_secs: z.number().optional().describe('Replay tolerance in seconds (default 300)'),
+  secret: z.string().describe('The signing secret the provider gave you'),
+  secret_encoding: z
+    .enum(['utf8', 'base64'])
+    .optional()
+    .describe('Set "base64" for Standard-Webhooks/svix secrets (whsec_...); default utf8'),
+})
 
 export const getAvailableTriggersTool = tool(
   'get_available_triggers',
@@ -56,7 +95,7 @@ Call this before setup_trigger to discover what triggers are available for a giv
 
 export const listTriggersTool = tool(
   'list_triggers',
-  `List all active webhook triggers for this agent. Returns trigger IDs, types, connected accounts, and prompts.`,
+  `List all active webhook triggers and custom webhook endpoints for this agent. Returns trigger IDs, types, connected accounts / public URLs, and prompts.`,
   {},
   async () => {
     console.log('[list_triggers] Fetching active triggers')
@@ -166,9 +205,125 @@ Use get_available_triggers first to discover what triggers are available for an 
   },
 )
 
+export const createWebhookEndpointTool = tool(
+  'create_webhook_endpoint',
+  `Mint a dedicated public webhook URL for ANY external service — including ones with no Composio trigger. When the service delivers a webhook to the URL, a new agent session runs with your prompt plus the request details.
+
+Returns the public URL. You then register it with the third-party service yourself (via its API or by telling the user where to paste it). Registration handshakes (Slack url_verification, Dropbox/Meta GET challenges, MS Graph validationToken) are answered automatically.
+
+If the service reveals a signing secret only AFTER registration, attach it afterwards with update_webhook_endpoint — until then events are marked unverified. Prefer setup_trigger when a Composio trigger exists for the service.`,
+  {
+    name: z.string().describe('Display name for this endpoint (e.g. "Vercel deploy hook")'),
+    prompt: z
+      .string()
+      .describe('What the agent should do when a webhook arrives. The request payload will be appended automatically.'),
+    verification: verificationProfileSchema
+      .optional()
+      .describe('Optional HMAC signature verification profile, if you already know the signing secret'),
+    model: z
+      .enum(['opus', 'sonnet', 'haiku'])
+      .optional()
+      .describe('Optional model family to use when this endpoint fires. If not specified, uses the global default.'),
+    effort: z
+      .enum(['low', 'medium', 'high', 'xhigh', 'max'])
+      .optional()
+      .describe('Optional effort level when this endpoint fires. If not specified, uses the global default.'),
+  },
+  async (args) => {
+    console.log(`[create_webhook_endpoint] Minting endpoint "${args.name}"`)
+
+    if (!args.prompt.trim()) {
+      return {
+        content: [{ type: 'text' as const, text: 'Prompt cannot be empty.' }],
+        isError: true,
+      }
+    }
+
+    const toolUseId = inputManager.consumeCurrentToolUseId()
+    if (!toolUseId) {
+      return {
+        content: [{ type: 'text' as const, text: 'Unable to process request — no tool use ID available.' }],
+        isError: true,
+      }
+    }
+
+    try {
+      const result = await inputManager.createPendingWithType<string>(
+        toolUseId,
+        'create_webhook_endpoint',
+        {
+          name: args.name,
+          prompt: args.prompt,
+          verification: args.verification,
+          model: args.model,
+          effort: args.effort,
+        },
+      )
+
+      return {
+        content: [{ type: 'text' as const, text: result }],
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        content: [{ type: 'text' as const, text: `Failed to create webhook endpoint: ${msg}` }],
+        isError: true,
+      }
+    }
+  },
+)
+
+export const updateWebhookEndpointTool = tool(
+  'update_webhook_endpoint',
+  `Update a custom webhook endpoint: attach or change its HMAC signature verification (many services only reveal the signing secret after you register the URL), or rename it. Pass the trigger ID from list_triggers or create_webhook_endpoint.
+
+Once verification is attached, incoming requests with bad signatures are rejected at the edge and valid events are marked verified.`,
+  {
+    trigger_id: z.string().describe('The trigger ID of the custom webhook endpoint (from list_triggers)'),
+    name: z.string().optional().describe('New display name'),
+    verification: verificationProfileSchema
+      .nullable()
+      .optional()
+      .describe('HMAC verification profile to attach; pass null to remove verification'),
+  },
+  async (args) => {
+    console.log(`[update_webhook_endpoint] Updating endpoint for trigger ${args.trigger_id}`)
+
+    const toolUseId = inputManager.consumeCurrentToolUseId()
+    if (!toolUseId) {
+      return {
+        content: [{ type: 'text' as const, text: 'Unable to process request — no tool use ID available.' }],
+        isError: true,
+      }
+    }
+
+    try {
+      const result = await inputManager.createPendingWithType<string>(
+        toolUseId,
+        'update_webhook_endpoint',
+        {
+          trigger_id: args.trigger_id,
+          name: args.name,
+          verification: args.verification,
+        },
+      )
+
+      return {
+        content: [{ type: 'text' as const, text: result }],
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        content: [{ type: 'text' as const, text: `Failed to update webhook endpoint: ${msg}` }],
+        isError: true,
+      }
+    }
+  },
+)
+
 export const cancelTriggerTool = tool(
   'cancel_trigger',
-  `Cancel an active webhook trigger by ID. This permanently removes the trigger subscription.`,
+  `Cancel an active webhook trigger or custom webhook endpoint by ID. This permanently removes the trigger subscription (custom endpoint URLs stop accepting requests).`,
   {
     trigger_id: z
       .string()
