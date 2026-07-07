@@ -226,4 +226,64 @@ describe('connection-loss recovery keeps isSubscribed honest', () => {
     // Only the dead socket's entry may be dropped — the fresh one survives.
     expect(messagePersister.isSubscribed(sessionId)).toBe(true)
   })
+
+  it('a fromStart subscribe that never connects settles instead of pinning active', async () => {
+    // Regression guard for the mark-active-BEFORE-subscribe reorder: if the WS
+    // never opens, base-container-client synthesizes a connection_closed through
+    // the callback (asynchronously, AFTER doSubscribeToSession installs the
+    // subscription entry). With isActive already true and the container gone,
+    // that must SETTLE the session and drop the dead entry — not leave it pinned
+    // "working" with a stale subscription. This is why the reorder needs no
+    // try/catch cleanup: the self-heal already covers a failed attach.
+    vi.resetModules()
+    const { messagePersister } = await import('./message-persister')
+    const sessionId = `recovery-fail-session-${++sessionCounter}`
+
+    const getSession = vi.fn(() => Promise.resolve<unknown>(null)) // container gone
+    const client = {
+      subscribeToStream: vi.fn((_sid: string, cb: (message: StreamMessage) => void) => {
+        // Mirror setupWebSocket().catch: connection_closed lands async, after the
+        // subscription entry is installed and after `ready` rejects.
+        setImmediate(() =>
+          cb({
+            type: 'connection_closed',
+            content: { type: 'connection_closed' },
+            timestamp: new Date(),
+            sessionId,
+          } as StreamMessage),
+        )
+        return { unsubscribe: vi.fn(), ready: Promise.reject(new Error('WS connect failed')) }
+      }),
+      start: vi.fn(),
+      stop: vi.fn(),
+      stopSync: vi.fn(),
+      getInfoFromRuntime: vi.fn(),
+      getInfo: vi.fn(),
+      fetch: vi.fn(),
+      waitForHealthy: vi.fn(),
+      isHealthy: vi.fn(),
+      getStats: vi.fn(),
+      createSession: vi.fn(),
+      getSession,
+      deleteSession: vi.fn(),
+      sendMessage: vi.fn(),
+      getMessages: vi.fn(),
+      interruptSession: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    } as unknown as ContainerClient
+
+    teardown = () => messagePersister.unsubscribeFromSession(sessionId)
+
+    // Fixed call-site order: mark active BEFORE subscribing.
+    messagePersister.markSessionActive(sessionId, AGENT_SLUG)
+    await messagePersister
+      .subscribeToSession(sessionId, client, sessionId, AGENT_SLUG, { fromStart: true })
+      .catch(() => {}) // ready rejects → subscribeToSession throws; the heal is async
+    for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r))
+
+    // Settled via the synthesized connection_closed, not pinned working.
+    expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+    expect(messagePersister.isSubscribed(sessionId)).toBe(false)
+  })
 })
