@@ -79,6 +79,8 @@ Copy:
 
 > ⏳ Still working on this. Could be a long-running step, or the turn might be stuck. If it looks hung, send `/stop` to reset it and try again.
 
+The sent string is PLAIN TEXT: the backticks above are doc formatting, not part of the copy (iMessage renders backticks literally; Slack uses different markup).
+
 ### The guardrails (keep the nudge honest and non-annoying)
 
 1. The nudge NEVER paints or clears the indicator.

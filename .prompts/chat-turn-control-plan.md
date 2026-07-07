@@ -605,9 +605,15 @@ Add a new describe block to `chat-integration-e2e.test.ts` (sibling of `'incomin
   describe('/stop command', () => {
     async function startConversation(integrationId: string): Promise<string> {
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
-      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
-      const sessions = listChatIntegrationSessions(integrationId)
-      return sessions[0].sessionId
+      // Wait on the DB mapping itself (created AFTER the container call, so
+      // createSessionCalls is not the right sync point), then let the mock turn
+      // fully settle so no late scenario event races the test body (e.g. a
+      // trailing session_idle un-doing a simulated hang).
+      await waitForCondition(() =>
+        listChatIntegrationSessions(integrationId).some(s => s.externalChatId === 'chat-1'))
+      await waitForCondition(() =>
+        mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0, 3000)
+      return listChatIntegrationSessions(integrationId).find(s => s.externalChatId === 'chat-1')!.sessionId
     }
 
     it('interrupts an active turn, settles the session, and acks', async () => {
@@ -769,8 +775,13 @@ Add to the `/stop command` describe block's sibling level (inside `describe('Cha
       const integrationId = createTestIntegration()
       await chatIntegrationManager.addIntegration(integrationId)
       mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
-      await waitForCondition(() => MockContainerClient.createSessionCalls.length > 0)
-      const sessionId = listChatIntegrationSessions(integrationId)[0].sessionId
+      // Same deterministic setup as the /stop tests: wait on the DB mapping,
+      // then let the mock turn settle before simulating the hang.
+      await waitForCondition(() =>
+        listChatIntegrationSessions(integrationId).some(s => s.externalChatId === 'chat-1'))
+      await waitForCondition(() =>
+        mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0, 3000)
+      const sessionId = listChatIntegrationSessions(integrationId).find(s => s.externalChatId === 'chat-1')!.sessionId
 
       messagePersister.markSessionActive(sessionId, 'test-agent')
       const interruptSpy = vi.spyOn(mockContainerClient, 'interruptSession')
@@ -816,12 +827,18 @@ becomes:
       if (chatSession) {
         // Clear = stop + forget: without the interrupt, a busy turn keeps running
         // orphaned in the container (burning tokens with nowhere to deliver) after
-        // the mapping is archived. Same shared path as /stop.
+        // the mapping is archived. Same shared path as /stop. Best-effort in its
+        // own try so a failed interrupt can never block the archive below.
         if (BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(chatSession.sessionId))) {
-          const integration = getChatIntegration(integrationId)
-          if (integration) {
-            const { interruptAgentSession } = await import('@shared/lib/container/interrupt-session')
-            await interruptAgentSession(integration.agentSlug, chatSession.sessionId)
+          try {
+            const integration = getChatIntegration(integrationId)
+            if (integration) {
+              const { interruptAgentSession } = await import('@shared/lib/container/interrupt-session')
+              await interruptAgentSession(integration.agentSlug, chatSession.sessionId)
+            }
+          } catch (err) {
+            console.error('[ChatIntegrationManager] Failed to interrupt before clear:', err)
+            reportError(err, 'clear-session-interrupt', { integrationId, chatId })
           }
         }
         this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
@@ -829,7 +846,7 @@ becomes:
     } catch (err) {
 ```
 
-(`getChatIntegration` is already imported at the top of the manager. The existing catch already makes the whole clear best-effort, so a failed interrupt still proceeds to the user ack.)
+(`getChatIntegration` and `reportError` are already imported at the top of the manager. The inner catch keeps the interrupt best-effort: a wedged interrupt must not stop the clear from archiving.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -853,6 +870,7 @@ git commit -m "feat(chat): /clear interrupts a busy turn before archiving"
 **Files:**
 - Modify: `src/shared/lib/chat-integrations/chat-integration-manager.ts` (five wiring sites, below)
 - Test: `src/shared/lib/chat-integrations/sse-event-processing.test.ts`
+- Test: `src/shared/lib/chat-integrations/chat-integration-e2e.test.ts` (end-to-end nudge cases)
 
 **Interfaces:**
 - Consumes: `armStallNudge`, `resetStallNudgeIfArmed`, `cancelStallNudge` (Task 3).
@@ -904,10 +922,77 @@ describe('stall nudge lifecycle in processSSEEvent', () => {
 
 (If an identical `turnNotified` suppression assertion already exists in this file, keep the existing one and skip the duplicate.)
 
+Also add end-to-end nudge tests to `chat-integration-e2e.test.ts`. These prove the WIRING (arm at dispatch, silence fires, `/stop` cancels), which the unit tests cannot. Add to the imports-after-mocks section:
+
+```typescript
+import { STALL_NUDGE_MS, STALL_NUDGE_TEXT } from './chat-integration-manager'
+import { SlowWorkScenario } from '@shared/lib/container/mock-container-client'
+```
+
+New describe block (sibling of `'/stop command'`):
+
+```typescript
+  describe('stall nudge end-to-end', () => {
+    // A turn that opens with a couple of stream events (10ms/50ms) then goes
+    // COMPLETELY silent for an hour - the hung-turn signature. Registered per
+    // test so it can't leak into other suites.
+    beforeEach(() => {
+      MockContainerClient.scenarios.set('hang forever', new SlowWorkScenario(60 * 60_000))
+    })
+    afterEach(() => {
+      MockContainerClient.scenarios.delete('hang forever')
+    })
+
+    it('nudges exactly once after the silence threshold on a hung turn', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      vi.useFakeTimers()
+      try {
+        mockConnector.simulateIncomingMessage('hang forever', 'chat-1', 'user-1')
+        // Drive dispatch + the scenario's opening events (10ms/50ms)
+        await vi.advanceTimersByTimeAsync(1000)
+        expect(MockContainerClient.createSessionCalls.length).toBeGreaterThan(0)
+
+        // 7 minutes of total silence → exactly one nudge, with the locked copy
+        await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS)
+        expect(mockConnector.sentMessages.filter(m => m.message.text === STALL_NUDGE_TEXT)).toHaveLength(1)
+
+        // Latch: another full silence window never produces a second nudge
+        await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS)
+        expect(mockConnector.sentMessages.filter(m => m.message.text === STALL_NUDGE_TEXT)).toHaveLength(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('/stop cancels the pending nudge', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      vi.useFakeTimers()
+      try {
+        mockConnector.simulateIncomingMessage('hang forever', 'chat-1', 'user-1')
+        await vi.advanceTimersByTimeAsync(1000)
+
+        mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+        await vi.advanceTimersByTimeAsync(1000)
+        expect(mockConnector.sentMessages.some(m => m.message.text === '⏹ Stopped. Send a message to start again.')).toBe(true)
+
+        // Well past the threshold: the cancelled timer must never fire
+        await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS * 2)
+        expect(mockConnector.sentMessages.some(m => m.message.text === STALL_NUDGE_TEXT)).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+```
+
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `npx vitest run src/shared/lib/chat-integrations/sse-event-processing.test.ts`
-Expected: the two cancel tests FAIL (`stallNudgeTimer` still set); the suppression test may already pass.
+Run: `npx vitest run src/shared/lib/chat-integrations/sse-event-processing.test.ts src/shared/lib/chat-integrations/chat-integration-e2e.test.ts`
+Expected: the two cancel tests FAIL (`stallNudgeTimer` still set); the nudge-fires e2e test FAILS (nothing arms the timer yet); the `/stop`-cancels test PASSES vacuously (no nudge exists at all yet) - it becomes meaningful once Step 3 lands, guarded by the nudge-fires test proving arming works. The suppression test may already pass.
 
 - [ ] **Step 3: Wire the five sites**
 
@@ -1002,13 +1087,18 @@ And in `startNewChatSession`, after `this.subscribeChatSession(integration.id, c
 Run: `npx vitest run src/shared/lib/chat-integrations/sse-event-processing.test.ts src/shared/lib/chat-integrations/stall-nudge.test.ts src/shared/lib/chat-integrations/chat-integration-e2e.test.ts`
 Expected: all pass.
 
-- [ ] **Step 5: Typecheck, lint, commit**
+- [ ] **Step 5: Structural check on the reset placement**
+
+Run: `grep -n "resetStallNudgeIfArmed" src/shared/lib/chat-integrations/chat-integration-manager.ts`
+Expected: exactly two hits - the exported function definition, and the call inside `subscribeChatSession`'s `addSSEClient` callback. It must NOT appear inside `processSSEEvent` (behind the serialization queue, where a backed-up handler could false-fire the nudge).
+
+- [ ] **Step 6: Typecheck, lint, commit**
 
 Run: `npm run typecheck && npm run lint`
 Expected: clean.
 
 ```bash
-git add src/shared/lib/chat-integrations/chat-integration-manager.ts src/shared/lib/chat-integrations/sse-event-processing.test.ts
+git add src/shared/lib/chat-integrations/chat-integration-manager.ts src/shared/lib/chat-integrations/sse-event-processing.test.ts src/shared/lib/chat-integrations/chat-integration-e2e.test.ts
 git commit -m "feat(chat): wire stall nudge into dispatch, SSE, and teardown lifecycle"
 ```
 
@@ -1032,12 +1122,12 @@ Expected: clean.
 
 Re-read `.prompts/chat-turn-control-design.md`'s test matrix (14 cases) and confirm each maps to a passing test:
 - Cases 1-4 → Task 4 e2e tests
-- Case 5 → stall-nudge "fires exactly one nudge"
-- Case 6 → "reset defers firing"
+- Case 5 → Task 6 e2e "nudges exactly once after the silence threshold" (wiring) + stall-nudge unit "fires exactly one nudge" (helper)
+- Case 6 → "reset defers firing" (unit) + Task 6 Step 5 structural check (reset placement)
 - Case 7 → "never touches the indicator"
-- Case 8 → "at most once per turn"
+- Case 8 → "at most once per turn" (unit) + the latch assertion inside the Task 6 e2e nudge test
 - Case 9 → "cancel prevents firing" + "not busy at fire time"
-- Case 10 → covered by Task 4 test 1 (`/stop` acks) + Task 6 cancel-on-terminal tests (the /stop path calls `cancelStallNudge` directly, asserted implicitly by no stray nudge in e2e runs)
+- Case 10 → Task 6 e2e "/stop cancels the pending nudge" (explicit)
 - Case 11 → Task 5 e2e test
 - Case 12 → Task 6 suppression test (+ `/stop` sets the latch, Task 4 Step 4)
 - Case 13 → "keeps the latch set... when the send fails"
