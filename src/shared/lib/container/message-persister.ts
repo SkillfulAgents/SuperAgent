@@ -108,6 +108,10 @@ interface StreamingState {
   // Subtype of the most recent result — gates the completion notification when
   // idle arrives via session_state_changed (resume-exits pause, not finish).
   lastResultSubtype: string | null
+  // Turn-phase bit for the grace-after-result backstop: true when the runtime's
+  // last word was "work done" (a result), false the moment any turn activity
+  // (assistant/user/stream/init message, or a host send) re-opens the turn.
+  turnClosed: boolean
   isRetrying: boolean // True while an API retry is in progress, cleared when the next message starts
 }
 
@@ -129,10 +133,21 @@ async function getContainerManager() {
   return _containerManagerModule.containerManager
 }
 
+// Grace window between a turn's `result` and the authoritative idle. The
+// post-result wind-down is normally milliseconds; when the runtime hangs in
+// it, the session would otherwise stay "working" forever (state events are
+// the idle authority and no further result will come). Long enough for a slow
+// machine's wind-down, short enough that a stuck light heals promptly.
+const RESULT_IDLE_GRACE_MS = 10_000
+
 // TODO this file is too big, this class is HUGE. Needs breaking up
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
   private subscriptions: Map<string, () => void> = new Map()
+  // Grace-after-result backstop timers, keyed by sessionId. Held outside
+  // streamingStates so a mid-window re-subscribe (which replaces the state
+  // object) can't strand an armed timer or leak one across state resets.
+  private graceTimers: Map<string, ReturnType<typeof setTimeout>> = new Map()
   private sseClients: Map<string, Set<(data: unknown) => void>> = new Map()
   // Per-run journal tailers driving the live workflow drawer, keyed `${sessionId}::${runId}`
   private workflowTailers: Map<string, WorkflowJournalTailer> = new Map()
@@ -212,7 +227,11 @@ class MessagePersister {
       activeBackgroundTasks: priorBackgroundTasks,
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
-      lastResultSubtype: null,
+      // Carried like the other prior-flags: a re-subscribe landing inside the
+      // result→idle window must not wipe the turn's "result seen" memory, or
+      // the authoritative idle (and the grace backstop) would no-op → stuck.
+      lastResultSubtype: prior?.lastResultSubtype ?? null,
+      turnClosed: prior?.turnClosed ?? false,
       isRetrying: false,
     })
 
@@ -235,6 +254,10 @@ class MessagePersister {
 
     // Wait for the WebSocket connection to be established
     await ready
+
+    // A re-subscribe may have landed inside the result→idle window (its
+    // unsubscribe cancelled any armed grace) — re-arm from the carried state.
+    this.evaluateGrace(sessionId)
   }
 
   // Unsubscribe from a session
@@ -243,6 +266,11 @@ class MessagePersister {
     if (unsubscribe) {
       unsubscribe()
       this.subscriptions.delete(sessionId)
+    }
+    const graceTimer = this.graceTimers.get(sessionId)
+    if (graceTimer) {
+      clearTimeout(graceTimer)
+      this.graceTimers.delete(sessionId)
     }
     this.streamingStates.delete(sessionId)
     this.containerClients.delete(sessionId)
@@ -260,6 +288,62 @@ class MessagePersister {
       agentSlug: state.agentSlug,
       isActive: false,
     })
+  }
+
+  // Grace-after-result backstop — the derived arm/disarm evaluation, run after
+  // every processed message and after (re)subscribe. The gate holds only when
+  // the runtime's last word was "work done": a result was seen, nothing
+  // re-opened the turn since (turnClosed), no background task is pending and
+  // no input request is open. It therefore can't run during a genuinely
+  // working turn (a silent 20-minute tool has no result yet, and a queued
+  // continuation's first message re-opens the turn within ms of the previous
+  // result) — only in the dead post-result / post-background-drain wind-down,
+  // where the sole legitimate next event is the settling idle.
+  private graceGateHolds(state: StreamingState): boolean {
+    return (
+      state.stateEventsAuthority &&
+      state.isActive &&
+      state.lastResultSubtype !== null &&
+      state.turnClosed &&
+      state.activeBackgroundTasks.size === 0 &&
+      !state.isAwaitingInput
+    )
+  }
+
+  private evaluateGrace(sessionId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    const armed = this.graceTimers.get(sessionId)
+    const gate = state !== undefined && this.graceGateHolds(state)
+    if (gate && !armed) {
+      const timer = setTimeout(() => {
+        this.graceTimers.delete(sessionId)
+        this.fireGrace(sessionId)
+      }, RESULT_IDLE_GRACE_MS)
+      this.graceTimers.set(sessionId, timer)
+    } else if (!gate && armed) {
+      clearTimeout(armed)
+      this.graceTimers.delete(sessionId)
+    }
+  }
+
+  // The idle never came. Re-check the full gate against CURRENT state (the
+  // state object may have been replaced since arming), then settle exactly
+  // like the authoritative-idle path — including the completion notification:
+  // a merely-lost idle must not cost the user the "done" signal.
+  private fireGrace(sessionId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state || !this.graceGateHolds(state)) {
+      return
+    }
+    console.log(
+      `[MessagePersister] No idle within ${RESULT_IDLE_GRACE_MS}ms of result for session ${sessionId}, settling via grace backstop`
+    )
+    this.finalizeIdle(sessionId, state)
+    if (state.lastResultSubtype === 'success' && state.agentSlug) {
+      notificationManager.triggerSessionComplete(sessionId, state.agentSlug).catch((err) => {
+        console.error('[MessagePersister] Failed to trigger session complete notification:', err)
+      })
+    }
   }
 
   // Check if a session is currently active (processing user request)
@@ -654,6 +738,7 @@ class MessagePersister {
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
         lastResultSubtype: null,
+        turnClosed: false,
         isRetrying: false,
       }
       this.streamingStates.set(sessionId, state)
@@ -677,6 +762,7 @@ class MessagePersister {
     // already-finished (or interrupted) run can't fire a stale "success"
     // completion notification against the turn this message is starting.
     state.lastResultSubtype = null
+    state.turnClosed = false // The send opens a turn — disarm the grace backstop
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -830,6 +916,21 @@ class MessagePersister {
     if (content.parent_tool_use_id != null) {
       this.handleSidechainMessage(sessionId, content, state)
       return
+    }
+
+    // Turn-phase tracking for the grace backstop: these messages evidence a
+    // running turn (a queued continuation's `init` arrives ~ms after the
+    // previous result). Everything else — state events, task terminals,
+    // browser/capabilities frames — says nothing about turn progress and must
+    // not touch the bit, or a stray frame could disarm the backstop for good.
+    if (
+      content.type === 'assistant' ||
+      content.type === 'user' ||
+      content.type === 'stream_event' ||
+      content.event != null ||
+      (content.type === 'system' && content.subtype === 'init')
+    ) {
+      state.turnClosed = false
     }
 
     switch (content.type) {
@@ -1271,6 +1372,7 @@ class MessagePersister {
         if (isError) state.isActive = false
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
+        state.turnClosed = true // The runtime's last word is "work done" until something re-opens the turn
 
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)
@@ -1376,6 +1478,12 @@ class MessagePersister {
           this.handleStreamEvent(sessionId, content.event, state)
         }
     }
+
+    // Every message can move the grace gate — a result (or the terminal task
+    // event that drains the last background task) arms it, turn activity
+    // disarms it, and the authoritative idle settles first and leaves it
+    // nothing to do.
+    this.evaluateGrace(sessionId)
   }
 
   // Handle connection closed - check container and mark inactive if session is done
