@@ -2,6 +2,7 @@
 
 declare const __APP_VERSION__: string
 declare const __AUTH_MODE__: boolean
+declare const __E2E_MOCK__: boolean
 declare const __AMPLITUDE_API_KEY__: string
 declare const __RENDER_TRACKING__: boolean
 declare const __WEB__: boolean
