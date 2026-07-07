@@ -1646,9 +1646,16 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
   const sessionMatch = pathname.match(/^\/sessions\/([^/]+)\/stream$/);
   if (sessionMatch) {
     const sessionId = sessionMatch[1];
+    // Optional resume cursor: the host's last-processed position. Replay picks
+    // up exactly after it (same epoch) so no message is lost across reconnects.
+    const cursorEpoch = url.searchParams.get('epoch');
+    const sinceSeqRaw = url.searchParams.get('since_seq');
+    const sinceSeq = sinceSeqRaw !== null && Number.isInteger(Number(sinceSeqRaw))
+      ? Number(sinceSeqRaw)
+      : null;
 
     wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
-      handleWebSocketConnection(ws, sessionId);
+      handleWebSocketConnection(ws, sessionId, cursorEpoch, sinceSeq);
     });
     return;
   }
@@ -1669,7 +1676,12 @@ server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) 
   socket.destroy();
 });
 
-async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
+async function handleWebSocketConnection(
+  ws: WebSocket,
+  sessionId: string,
+  cursorEpoch: string | null = null,
+  sinceSeq: number | null = null
+) {
   console.log(`WebSocket connection established for session ${sessionId}`);
 
   const session = await sessionManager.getSession(sessionId);
@@ -1679,26 +1691,43 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
     return;
   }
 
-  // Announce the stream contract before relaying any SDK message (WS is FIFO,
-  // and this is sent before the subscription below, so it always precedes the
-  // first relayed message). session_state_events: this build runs the CLI with
-  // CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, so the host can treat
-  // session_state_changed:'idle' as the idle authority from the first turn —
-  // a 'result' alone must not end the session while queued messages keep the
-  // runtime going.
-  ws.send(JSON.stringify({
-    type: 'system',
-    subtype: 'capabilities',
-    session_state_events: true,
-    timestamp: new Date(),
-  }));
-
-  // Subscribe to session events (SDK messages)
-  const unsubscribe = sessionManager.subscribe(sessionId, (message) => {
+  // Snapshot the replay set and subscribe in one synchronous operation, so no
+  // message can fall between them and wire order is strict: hello < replay <
+  // live (ws.send buffers FIFO; nothing can interleave inside this sync block).
+  const attach = sessionManager.attachStream(sessionId, cursorEpoch, sinceSeq, (message) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
     }
   });
+  if (!attach) {
+    ws.send(JSON.stringify({ type: 'error', message: 'Session not found' }));
+    ws.close();
+    return;
+  }
+
+  // Announce the stream contract before relaying any SDK message.
+  // session_state_events: this build runs the CLI with
+  // CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, so the host can treat
+  // session_state_changed:'idle' as the idle authority from the first turn —
+  // a 'result' alone must not end the session while queued messages keep the
+  // runtime going. epoch/max_seq: this incarnation's identity and current
+  // position, so the host can baseline (first attach), resume (same epoch),
+  // or reconcile a session whose previous incarnation died (epoch mismatch).
+  ws.send(JSON.stringify({
+    type: 'system',
+    subtype: 'capabilities',
+    session_state_events: true,
+    epoch: attach.epoch,
+    max_seq: attach.maxSeq,
+    timestamp: new Date(),
+  }));
+
+  // Lossless resume: everything after the host's cursor, before live relay.
+  for (const message of attach.replay) {
+    ws.send(JSON.stringify(message));
+  }
+
+  const unsubscribe = attach.unsubscribe;
 
   // Handle incoming messages
   ws.on('message', async (data: Buffer) => {

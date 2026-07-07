@@ -166,10 +166,14 @@ export interface ContainerClient {
   getMessages(sessionId: string): Promise<any[]>
   interruptSession(sessionId: string): Promise<boolean>
 
-  // Streaming - returns unsubscribe function and a ready promise
+  // Streaming - returns unsubscribe function and a ready promise. The optional
+  // cursor is the host's last-processed (epoch, seq) position: the container
+  // replays exactly what was missed after it (same epoch), so terminal events
+  // emitted during a reconnect gap are never lost.
   subscribeToStream(
     sessionId: string,
-    callback: (message: StreamMessage) => void
+    callback: (message: StreamMessage) => void,
+    cursor?: { epoch: string; sinceSeq: number }
   ): { unsubscribe: () => void; ready: Promise<void> }
 
   // Events

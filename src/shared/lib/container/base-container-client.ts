@@ -19,6 +19,7 @@ import type {
   StreamMessage,
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
+import { streamEnvelopeSchema } from './stream-schema'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getSettings } from '@shared/lib/config/settings'
@@ -1238,7 +1239,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   subscribeToStream(
     sessionId: string,
-    callback: (message: StreamMessage) => void
+    callback: (message: StreamMessage) => void,
+    cursor?: { epoch: string; sinceSeq: number }
   ): { unsubscribe: () => void; ready: Promise<void> } {
     let resolveReady: () => void
     let rejectReady: (error: Error) => void
@@ -1255,8 +1257,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         existing.close()
       }
 
+      // Resume cursor: the container replays exactly what was missed after the
+      // host's last-processed (epoch, seq) position, so terminal events emitted
+      // during a reconnect gap are never lost.
+      const cursorParams = cursor
+        ? `?epoch=${encodeURIComponent(cursor.epoch)}&since_seq=${cursor.sinceSeq}`
+        : ''
       const ws = new WebSocket(
-        `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream`
+        `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream${cursorParams}`
       )
 
       ws.on('open', () => {
@@ -1266,11 +1274,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       ws.on('message', (data) => {
         try {
-          const message = JSON.parse(data.toString())
+          const message = streamEnvelopeSchema.parse(JSON.parse(data.toString()))
           const streamMessage: StreamMessage = {
             type: message.type,
             content: message,
-            timestamp: new Date(message.timestamp || Date.now()),
+            timestamp: new Date((message.timestamp as string | number | undefined) || Date.now()),
             sessionId,
           }
           callback(streamMessage)
@@ -1281,8 +1289,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       })
 
       ws.on('error', (error) => {
-        // Only log and emit if this connection is still tracked (not cleaned up by stop())
-        if (this.wsConnections.has(sessionId)) {
+        // Only log and emit if this exact socket is still the tracked one
+        // (not cleaned up by stop(), not replaced by a re-subscribe)
+        if (this.wsConnections.get(sessionId) === ws) {
           console.error(`WebSocket error for session ${sessionId}:`, error)
           this.safeEmitError(error)
         }
@@ -1290,6 +1299,16 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       })
 
       ws.on('close', () => {
+        // Identity guard: a replaced or deliberately-unsubscribed socket's
+        // close must be silent. Without it, the old socket's async close
+        // deletes the NEW socket from the map and routes a spurious
+        // connection_closed — handleConnectionClosed then re-subscribes,
+        // closing a healthy socket or leaving one open and untracked
+        // (duplicate delivery), and with replay cursors that becomes
+        // double-processing.
+        if (this.wsConnections.get(sessionId) !== ws) {
+          return
+        }
         console.log(`WebSocket closed for session ${sessionId}`)
         this.wsConnections.delete(sessionId)
         // Notify the callback that the connection was lost
