@@ -93,12 +93,12 @@ vi.mock('./telegram-connector', () => ({
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { chatIntegrationManager, STALL_NUDGE_MS, STALL_NUDGE_TEXT } from './chat-integration-manager'
 import { createChatIntegration, getChatIntegration } from '@shared/lib/services/chat-integration-service'
 import { listChatIntegrationSessions } from '@shared/lib/services/chat-integration-session-service'
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { MockContainerClient } from '@shared/lib/container/mock-container-client'
+import { MockContainerClient, SlowWorkScenario } from '@shared/lib/container/mock-container-client'
 import { messagePersister } from '@shared/lib/container/message-persister'
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -390,6 +390,77 @@ describe('Chat integration E2E', () => {
       // And the clear still archived the mapping (listChatIntegrationSessions
       // intentionally returns archived rows too, so assert the flag itself)
       expect(listChatIntegrationSessions(integrationId).find(s => s.sessionId === sessionId)!.archivedAt).not.toBeNull()
+    })
+  })
+
+  describe('stall nudge end-to-end', () => {
+    // A turn that opens with a couple of stream events (10ms/50ms) then goes
+    // COMPLETELY silent for an hour - the hung-turn signature. Registered per
+    // test so it can't leak into other suites.
+    beforeEach(() => {
+      MockContainerClient.scenarios.set('hang forever', new SlowWorkScenario(60 * 60_000))
+    })
+    afterEach(() => {
+      MockContainerClient.scenarios.delete('hang forever')
+    })
+
+    // Warm the full dispatch path under REAL timers: the manager lazy-imports
+    // modules (container-manager, agent-service, interrupt-session), and vitest
+    // module loading is real I/O that fake timers stall on first use.
+    async function warmDispatchPath(integrationId: string): Promise<number> {
+      mockConnector.simulateIncomingMessage('warmup', 'chat-0', 'user-0')
+      await waitForCondition(() =>
+        listChatIntegrationSessions(integrationId).some(s => s.externalChatId === 'chat-0'))
+      await waitForCondition(() =>
+        mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0, 3000)
+      await import('@shared/lib/container/interrupt-session')
+      return MockContainerClient.createSessionCalls.length
+    }
+
+    it('nudges exactly once after the silence threshold on a hung turn', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      const baselineSessions = await warmDispatchPath(integrationId)
+
+      vi.useFakeTimers()
+      try {
+        mockConnector.simulateIncomingMessage('hang forever', 'chat-1', 'user-1')
+        // Drive dispatch + the scenario's opening events (10ms/50ms)
+        await vi.advanceTimersByTimeAsync(1000)
+        expect(MockContainerClient.createSessionCalls.length).toBeGreaterThan(baselineSessions)
+
+        // 7 minutes of total silence → exactly one nudge, with the locked copy
+        await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS)
+        expect(mockConnector.sentMessages.filter(m => m.message.text === STALL_NUDGE_TEXT)).toHaveLength(1)
+
+        // Latch: another full silence window never produces a second nudge
+        await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS)
+        expect(mockConnector.sentMessages.filter(m => m.message.text === STALL_NUDGE_TEXT)).toHaveLength(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('/stop cancels the pending nudge', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      await warmDispatchPath(integrationId)
+
+      vi.useFakeTimers()
+      try {
+        mockConnector.simulateIncomingMessage('hang forever', 'chat-1', 'user-1')
+        await vi.advanceTimersByTimeAsync(1000)
+
+        mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+        await vi.advanceTimersByTimeAsync(1000)
+        expect(mockConnector.sentMessages.some(m => m.message.text === '⏹ Stopped. Send a message to start again.')).toBe(true)
+
+        // Well past the threshold: the cancelled timer must never fire
+        await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS * 2)
+        expect(mockConnector.sentMessages.some(m => m.message.text === STALL_NUDGE_TEXT)).toBe(false)
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

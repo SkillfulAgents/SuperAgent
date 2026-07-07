@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-integration-manager'
+import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, armStallNudge, type ManagedConnector } from './chat-integration-manager'
 import { MockChatClientConnector } from './mock-connector'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
@@ -1184,5 +1184,41 @@ describe('processSSEEvent: immediate clears', () => {
     await processSSEEvent(managed, { type: 'stream_delta', text: '' })
     expect(getMock(managed).stoppedWorking).toEqual([])
     expect(managed.indicatorShown).toBe(true)
+  })
+})
+
+describe('stall nudge lifecycle in processSSEEvent', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('session_idle cancels an armed stall-nudge timer', async () => {
+    const managed = createManagedConnector({ sessionId: 'session-1' })
+    armStallNudge(managed, 'session-1')
+
+    await processSSEEvent(managed, { type: 'session_idle' })
+
+    expect(managed.stallNudgeTimer).toBeNull()
+  })
+
+  it('session_error cancels an armed stall-nudge timer', async () => {
+    const managed = createManagedConnector({ sessionId: 'session-1' })
+    armStallNudge(managed, 'session-1')
+
+    await processSSEEvent(managed, { type: 'session_error', apiErrorCode: null })
+
+    expect(managed.stallNudgeTimer).toBeNull()
+  })
+
+  it('does not send an error notice when turnNotified was already set (e.g. by /stop)', async () => {
+    const managed = createManagedConnector({ turnNotified: true })
+
+    await processSSEEvent(managed, { type: 'session_error', apiErrorCode: null })
+
+    expect(getMock(managed).sentMessages).toHaveLength(0)
   })
 })

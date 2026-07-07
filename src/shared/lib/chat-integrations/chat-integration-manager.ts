@@ -1013,11 +1013,13 @@ class ChatIntegrationManager {
     try {
       const chatSession = getChatIntegrationSession(integrationId, chatId)
       if (chatSession) {
-        // Clear = stop + forget: without the interrupt, a busy turn keeps running
-        // orphaned in the container (burning tokens with nowhere to deliver) after
-        // the mapping is archived. Same shared path as /stop. Best-effort in its
-        // own try so a failed interrupt can never block the archive below.
-        if (BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(chatSession.sessionId))) {
+        // Clear = stop + forget: without the interrupt, an in-flight turn keeps
+        // running orphaned in the container (burning tokens with nowhere to
+        // deliver) after the mapping is archived. Same shared path and same
+        // turn-lifecycle gate as /stop (NOT the indicator's BUSY_ACTIVITIES).
+        // Best-effort in its own try so a failed interrupt can never block the
+        // archive below.
+        if (messagePersister.isSessionActive(chatSession.sessionId)) {
           try {
             const integration = getChatIntegration(integrationId)
             if (integration) {
@@ -1055,7 +1057,11 @@ class ChatIntegrationManager {
   ): Promise<void> {
     const chatSession = getChatIntegrationSession(integration.id, chatId)
     const sessionId = chatSession?.sessionId
-    if (!sessionId || !BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(sessionId))) {
+    // Turn-lifecycle gate, NOT the indicator's BUSY_ACTIVITIES: a turn hung
+    // mid-stream ('streaming') or parked on a question ('awaiting') is still an
+    // in-flight turn the user must be able to stop - same any-time semantics as
+    // the app's Stop button.
+    if (!sessionId || !messagePersister.isSessionActive(sessionId)) {
       await connector.sendMessage(chatId, { text: '⏹ Nothing is running right now.' }).catch(() => {})
       return
     }
@@ -1730,9 +1736,13 @@ function onStallNudgeFired(managed: ManagedConnector, sessionId: string): void {
   if (managed.sessionId !== sessionId) return
   // At most once per turn.
   if (managed.stallNotified) return
-  // Re-read reality: only nudge a turn that is STILL busy, so a settled turn
-  // whose cancel raced this fire stays silent.
-  if (!BUSY_ACTIVITIES.has(messagePersister.getSessionActivity(sessionId))) return
+  // Re-read reality: only nudge when the AGENT still owes progress. 'idle'
+  // means the turn settled (a cancel raced this fire); 'awaiting' means the
+  // USER owes input - a person pondering the agent's question is never nudged.
+  // Everything else (working/thinking/compacting/retrying/streaming) is an
+  // in-flight turn that has been silent the whole countdown - the hang signature.
+  const activity = messagePersister.getSessionActivity(sessionId)
+  if (activity === 'idle' || activity === 'awaiting') return
   // Latch BEFORE sending: a missed nudge is cheaper than a double nudge (the
   // deliberate opposite of the session_error notice, which re-opens its latch
   // on delivery failure).

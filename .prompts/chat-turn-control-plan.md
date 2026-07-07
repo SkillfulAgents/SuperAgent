@@ -27,6 +27,12 @@
 - Vitest: run the targeted test files named in each task. The FULL unit suite has known pre-existing flakes (webhook/scheduler DB isolation); do not chase those.
 - No new JSON persistence boundaries are introduced, so no new Zod schemas are needed.
 
+## Deviation log
+
+- 2026-07-06 (during Task 6, approved by Jeremy): all three gates corrected from `BUSY_ACTIVITIES` (indicator semantics) to turn-lifecycle semantics - `BUSY_ACTIVITIES` excludes `streaming`/`awaiting`, which made a mid-stream hang unstoppable and un-nudged.
+Substitutions vs the code printed in Tasks 3-5: `stopChatTurn` and `clearChatSession` gate on `messagePersister.isSessionActive(sessionId)`; `onStallNudgeFired` re-checks `getSessionActivity(sessionId)` is not `'idle'` and not `'awaiting'`.
+See the spec's "Gate semantics" section.
+
 ---
 
 ### Task 1: `interruptAgentSession` shared helper
