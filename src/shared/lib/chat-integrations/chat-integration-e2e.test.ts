@@ -44,6 +44,8 @@ vi.mock('@shared/lib/platform-attribution', () => ({
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
     ensureRunning: vi.fn(),
+    getClient: vi.fn(),
+    getCachedInfo: vi.fn(),
   },
 }))
 
@@ -97,6 +99,7 @@ import { listChatIntegrationSessions } from '@shared/lib/services/chat-integrati
 import { approveChatAccess, revokeChatAccess } from '@shared/lib/services/chat-integration-access-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
+import { messagePersister } from '@shared/lib/container/message-persister'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -156,6 +159,8 @@ describe('Chat integration E2E', () => {
 
     // Wire container manager mock
     (containerManager.ensureRunning as any).mockResolvedValue(mockContainerClient)
+    ;(containerManager.getClient as any).mockReturnValue(mockContainerClient)
+    ;(containerManager.getCachedInfo as any).mockReturnValue({ status: 'running' })
 
     registeredSessions.clear()
   })
@@ -276,6 +281,86 @@ describe('Chat integration E2E', () => {
       await waitForCondition(() => MockContainerClient.createSessionCalls.length === 2)
 
       expect(MockContainerClient.createSessionCalls[1].initialMessage).toBe('After clear')
+    })
+  })
+
+  describe('/stop command', () => {
+    async function startConversation(integrationId: string): Promise<string> {
+      mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
+      // Wait on the DB mapping itself (created AFTER the container call, so
+      // createSessionCalls is not the right sync point), then let the mock turn
+      // fully settle so no late scenario event races the test body (e.g. a
+      // trailing session_idle un-doing a simulated hang).
+      await waitForCondition(() =>
+        listChatIntegrationSessions(integrationId).some(s => s.externalChatId === 'chat-1'))
+      await waitForCondition(() =>
+        mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0, 3000)
+      return listChatIntegrationSessions(integrationId).find(s => s.externalChatId === 'chat-1')!.sessionId
+    }
+
+    it('interrupts an active turn, settles the session, and acks', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      const sessionId = await startConversation(integrationId)
+
+      // Simulate a hung turn: active in the persister, no terminal event coming
+      messagePersister.markSessionActive(sessionId, 'test-agent')
+      const interruptSpy = vi.spyOn(mockContainerClient, 'interruptSession')
+
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+      await waitForCondition(() =>
+        mockConnector.sentMessages.some(m => m.message.text === '⏹ Stopped. Send a message to start again.'))
+
+      expect(interruptSpy).toHaveBeenCalledWith(sessionId)
+      expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+      // The conversation mapping survives (unlike /clear)
+      expect(listChatIntegrationSessions(integrationId)).toHaveLength(1)
+    })
+
+    it('acks gracefully when nothing is running', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      const interruptSpy = vi.spyOn(mockContainerClient, 'interruptSession')
+
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+      await waitForCondition(() =>
+        mockConnector.sentMessages.some(m => m.message.text === '⏹ Nothing is running right now.'))
+
+      expect(interruptSpy).not.toHaveBeenCalled()
+      // No session was created by the command
+      expect(MockContainerClient.createSessionCalls).toHaveLength(0)
+    })
+
+    it('is blocked by the access gate for a non-approved chat', async () => {
+      const integrationId = createTestIntegration()
+      // Re-enable the approval gate that createTestIntegration disables
+      testSqlite.prepare('UPDATE chat_integrations SET require_approval = 1 WHERE id = ?').run(integrationId)
+      await chatIntegrationManager.addIntegration(integrationId)
+      const interruptSpy = vi.spyOn(mockContainerClient, 'interruptSession')
+
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+      // Let the (gated) handler drain
+      await new Promise(r => setTimeout(r, 100))
+
+      expect(interruptSpy).not.toHaveBeenCalled()
+      expect(mockConnector.sentMessages.some(m => m.message.text?.includes('Stopped'))).toBe(false)
+    })
+
+    it('settles locally when the container is not running', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      const sessionId = await startConversation(integrationId)
+
+      messagePersister.markSessionActive(sessionId, 'test-agent')
+      ;(containerManager.getCachedInfo as any).mockReturnValue({ status: 'stopped' })
+      const interruptSpy = vi.spyOn(mockContainerClient, 'interruptSession')
+
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+      await waitForCondition(() =>
+        mockConnector.sentMessages.some(m => m.message.text === '⏹ Stopped. Send a message to start again.'))
+
+      expect(interruptSpy).not.toHaveBeenCalled()
+      expect(messagePersister.isSessionActive(sessionId)).toBe(false)
     })
   })
 
