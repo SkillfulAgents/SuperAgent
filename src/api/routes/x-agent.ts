@@ -532,7 +532,15 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
       await messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug)
     }
     messagePersister.markSessionActive(existingSessionId, targetSlug)
-    await client.sendMessage(existingSessionId, prompt)
+    try {
+      await client.sendMessage(existingSessionId, prompt)
+    } catch (error) {
+      // The send never reached the container, so no turn will run to emit the idle that
+      // settles the indicator. The 409 guard above guarantees we started this turn fresh,
+      // so clear the active state we just set (host-only — nothing is running to interrupt).
+      await messagePersister.markSessionInterrupted(existingSessionId)
+      throw error
+    }
 
     if (sync) {
       try {
@@ -607,7 +615,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', metaErr)
   }
 
-  await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug)
+  // fromStart: the initial message is already running in the container —
+  // replay from the start so a fast first turn's terminal events aren't missed.
+  await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug, { fromStart: true })
   if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
     messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
   }

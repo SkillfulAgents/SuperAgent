@@ -7,12 +7,17 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import { releaseBrowserLock } from './browser-state';
 import { claudeSettingsSchema, SESSION_RETENTION_DAYS } from './claude-settings-schema';
+import { computeReplay } from './stream-replay';
 
 interface SessionData {
   session: Session;
   process: ClaudeCodeProcess;
   messages: SDKMessage[];
   subscribers: Set<(message: SDKMessage) => void>;
+  // Identity of this in-memory incarnation (fresh on create AND on resume).
+  // Message seq numbers are per-epoch (the messages[] index); a host cursor
+  // from another epoch is meaningless and gets a full replay instead.
+  epoch: string;
 }
 
 export class SessionManager extends EventEmitter {
@@ -174,6 +179,7 @@ export class SessionManager extends EventEmitter {
       process,
       messages: [],
       subscribers: new Set(),
+      epoch: uuidv4(),
     };
 
     // Set up event listeners
@@ -262,6 +268,7 @@ export class SessionManager extends EventEmitter {
         process,
         messages: [],
         subscribers: new Set(),
+        epoch: uuidv4(),
       };
 
       // Set up event listeners (same as createSession)
@@ -390,17 +397,29 @@ export class SessionManager extends EventEmitter {
     return [...sessionData.messages];
   }
 
-  subscribe(sessionId: string, callback: (message: SDKMessage) => void): () => void {
+  // Attach a stream consumer with a lossless handoff: snapshot the replay set
+  // and subscribe in ONE synchronous operation, so no message can fall between
+  // them and wire order is strict (attach header < replay < live). The replay
+  // honors the consumer's (epoch, sinceSeq) cursor — see computeReplay.
+  attachStream(
+    sessionId: string,
+    cursorEpoch: string | null,
+    sinceSeq: number | null,
+    callback: (message: SDKMessage) => void
+  ): { epoch: string; maxSeq: number; replay: SDKMessage[]; unsubscribe: () => void } | null {
     const sessionData = this.sessions.get(sessionId);
-    if (!sessionData) {
-      throw new Error(`Session ${sessionId} not found`);
-    }
+    if (!sessionData) return null;
 
+    const replay = computeReplay(sessionData.messages, sessionData.epoch, cursorEpoch, sinceSeq);
     sessionData.subscribers.add(callback);
 
-    // Return unsubscribe function
-    return () => {
-      sessionData.subscribers.delete(callback);
+    return {
+      epoch: sessionData.epoch,
+      maxSeq: sessionData.messages.length - 1,
+      replay,
+      unsubscribe: () => {
+        sessionData.subscribers.delete(callback);
+      },
     };
   }
 
@@ -421,6 +440,12 @@ export class SessionManager extends EventEmitter {
   private handleMessage(sessionId: string, message: SDKMessage): void {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return;
+
+    // Stamp the per-epoch sequence number (the messages[] index) before
+    // storing, so the stored copy and every relayed copy carry it. A
+    // reconnecting host resumes from its last-processed (epoch, seq) cursor
+    // via attachStream's replay. broadcast() frames are seq-less by design.
+    (message as SDKMessage & { seq?: number }).seq = sessionData.messages.length;
 
     // Store the message
     sessionData.messages.push(message);

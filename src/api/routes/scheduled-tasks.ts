@@ -293,8 +293,15 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       scheduledTaskName: task.name || undefined,
     })
 
-    await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug)
+    // Mark active BEFORE subscribing (matches agents.ts / x-agent.ts): the task
+    // turn is already running and subscribeToSession replays it from the start,
+    // so a fast turn's replayed result/idle must land with isActive already true.
+    // Marking after would let the idle be skipped, then clear the grace bits —
+    // pinning "working" forever.
     messagePersister.markSessionActive(sessionId, task.agentSlug)
+    await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug, {
+      fromStart: true,
+    })
 
     if (task.isRecurring) {
       // Recurring: keep schedule, just record the manual execution

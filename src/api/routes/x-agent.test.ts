@@ -104,6 +104,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({
 const mockIsSessionActive = vi.fn((_sessionId?: string): boolean => false)
 const mockIsSessionAwaitingInput = vi.fn((_sessionId?: string): boolean => false)
 const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
+const mockMarkSessionInterrupted = vi.fn(async (..._args: unknown[]) => {})
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
     isSessionActive: (sessionId?: string) => mockIsSessionActive(sessionId),
@@ -113,6 +114,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     subscribeToSession: vi.fn(),
     unsubscribeFromSession: vi.fn(),
     markSessionActive: vi.fn(),
+    markSessionInterrupted: (...args: unknown[]) => mockMarkSessionInterrupted(...args),
     setSlashCommands: vi.fn(),
   },
 }))
@@ -426,6 +428,24 @@ describe('/invoke', () => {
     mockGetAgent.mockResolvedValue(null)
     const res = await authedFetch('/x-agent/invoke', { slug: 'ghost', prompt: 'hi' })
     expect(res.status).toBe(404)
+  })
+
+  it('clears an existing session when the container send throws (no turn to emit the settling idle)', async () => {
+    reviewDecisions.push('allow')
+    // Existing-session invoke: isSessionActive=false (default) passes the 409 guard, so
+    // the handler marks the session active and dispatches. Make the container send fail.
+    mockSendMessage.mockRejectedValueOnce(new Error('container unreachable'))
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'hi',
+      sessionId: 'existing-sess-1',
+    })
+
+    // The send never reached the container, so nothing will emit the idle that settles
+    // the target's "Working…" (desktop sidebar + any mapped chat). Clear it, then fail.
+    expect(mockMarkSessionInterrupted).toHaveBeenCalledWith('existing-sess-1')
+    expect(res.status).toBe(500)
   })
 
   it('blocks invoke when policy is block', async () => {

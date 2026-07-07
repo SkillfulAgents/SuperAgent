@@ -220,14 +220,19 @@ class TaskScheduler {
       scheduledExecutionAt: task.nextExecutionAt.toISOString(),
     })
 
-    // Subscribe to the session for SSE updates
+    // Mark active BEFORE subscribing (matches agents.ts / x-agent.ts): the task
+    // turn is already running and subscribeToSession replays it from the start,
+    // so a fast turn's replayed result/idle must land with isActive already true.
+    // Marking after would let the idle be skipped, then clear the grace bits —
+    // pinning "working" forever.
+    messagePersister.markSessionActive(sessionId, task.agentSlug)
     await messagePersister.subscribeToSession(
       sessionId,
       client,
       sessionId,
-      task.agentSlug
+      task.agentSlug,
+      { fromStart: true }
     )
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
 
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`

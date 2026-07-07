@@ -19,6 +19,7 @@ import type {
   StreamMessage,
 } from './types'
 import type { RuntimeOptions } from './runtime-options'
+import { streamEnvelopeSchema } from './stream-schema'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getSettings } from '@shared/lib/config/settings'
@@ -217,6 +218,13 @@ export function isConnectionError(err: Error): boolean {
 
 export const AGENT_CONTAINER_PATH = './agent-container'
 export const CONTAINER_INTERNAL_PORT = 3000
+
+// Liveness probe for the session stream socket. The host never writes on it
+// (messages go over HTTP), so a half-open TCP connection would otherwise die
+// silently — no close event, no reconnect, and every event in the gap lost.
+// A missed pong terminates the socket, which fires the close handler and
+// routes into the normal reconnect + cursor-replay recovery.
+export const STREAM_PING_INTERVAL_MS = 30_000
 // Host port where findAvailablePort() starts scanning. Overridable via
 // SUPERAGENT_BASE_PORT so a second app instance (e.g. `dev:electron` alongside a
 // prod install) can publish containers in a non-overlapping range. Cross-runtime
@@ -1238,7 +1246,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   subscribeToStream(
     sessionId: string,
-    callback: (message: StreamMessage) => void
+    callback: (message: StreamMessage) => void,
+    cursor?: { epoch?: string; sinceSeq: number }
   ): { unsubscribe: () => void; ready: Promise<void> } {
     let resolveReady: () => void
     let rejectReady: (error: Error) => void
@@ -1255,22 +1264,58 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         existing.close()
       }
 
+      // Resume cursor: the container replays exactly what was missed after the
+      // host's last-processed (epoch, seq) position, so terminal events emitted
+      // during a reconnect gap are never lost. Epochless -1 = from-start
+      // (first attach to a just-created session).
+      let cursorParams = ''
+      if (cursor) {
+        const params = new URLSearchParams()
+        if (cursor.epoch) params.set('epoch', cursor.epoch)
+        params.set('since_seq', String(cursor.sinceSeq))
+        cursorParams = `?${params}`
+      }
       const ws = new WebSocket(
-        `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream`
+        `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream${cursorParams}`
       )
+
+      // Liveness: the host never writes on this socket, so a half-open TCP
+      // connection (NAT idle-timeout, VM pause) would die silently — no close
+      // event, no reconnect, every event in the gap lost. Ping each interval;
+      // a window with no pong means the peer is gone: terminate(), which
+      // fires the close handler and routes into reconnect + cursor replay.
+      let pongReceived = true
+      let pingTimer: ReturnType<typeof setInterval> | null = null
 
       ws.on('open', () => {
         console.log(`WebSocket connected for session ${sessionId}`)
+        pingTimer = setInterval(() => {
+          if (ws.readyState !== WebSocket.OPEN) return
+          if (!pongReceived) {
+            console.warn(`No pong on session ${sessionId} stream, terminating half-open socket`)
+            ws.terminate()
+            return
+          }
+          pongReceived = false
+          ws.ping()
+        }, STREAM_PING_INTERVAL_MS)
         resolveReady()
+      })
+
+      ws.on('pong', () => {
+        pongReceived = true
       })
 
       ws.on('message', (data) => {
         try {
-          const message = JSON.parse(data.toString())
+          const message = streamEnvelopeSchema.parse(JSON.parse(data.toString()))
+          // Narrow the loose passthrough field at runtime rather than casting;
+          // a malformed timestamp degrades to "now" instead of dropping the frame.
+          const ts = message.timestamp
           const streamMessage: StreamMessage = {
             type: message.type,
             content: message,
-            timestamp: new Date(message.timestamp || Date.now()),
+            timestamp: new Date(typeof ts === 'string' || typeof ts === 'number' ? ts : Date.now()),
             sessionId,
           }
           callback(streamMessage)
@@ -1281,8 +1326,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       })
 
       ws.on('error', (error) => {
-        // Only log and emit if this connection is still tracked (not cleaned up by stop())
-        if (this.wsConnections.has(sessionId)) {
+        // Only log and emit if this exact socket is still the tracked one
+        // (not cleaned up by stop(), not replaced by a re-subscribe)
+        if (this.wsConnections.get(sessionId) === ws) {
           console.error(`WebSocket error for session ${sessionId}:`, error)
           this.safeEmitError(error)
         }
@@ -1290,6 +1336,22 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       })
 
       ws.on('close', () => {
+        // The ping timer belongs to THIS socket — clear it whether or not the
+        // socket is still the tracked one.
+        if (pingTimer) {
+          clearInterval(pingTimer)
+          pingTimer = null
+        }
+        // Identity guard: a replaced or deliberately-unsubscribed socket's
+        // close must be silent. Without it, the old socket's async close
+        // deletes the NEW socket from the map and routes a spurious
+        // connection_closed — handleConnectionClosed then re-subscribes,
+        // closing a healthy socket or leaving one open and untracked
+        // (duplicate delivery), and with replay cursors that becomes
+        // double-processing.
+        if (this.wsConnections.get(sessionId) !== ws) {
+          return
+        }
         console.log(`WebSocket closed for session ${sessionId}`)
         this.wsConnections.delete(sessionId)
         // Notify the callback that the connection was lost

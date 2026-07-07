@@ -4357,6 +4357,32 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'session_waiting_background')).toHaveLength(0)
     })
 
+    it('does not fire the legacy completion notification for a user-interrupted turn', async () => {
+      // Legacy container (no session-state events): the result handler fires the
+      // completion notification directly. A turn the user *interrupted* must not
+      // produce a "done" ping — isInterrupted gates it out. On state-events
+      // images the notification is already gated (idle/grace both require
+      // isActive), so this closes the legacy-only path.
+      const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      await messagePersister.markSessionInterrupted(SESSION_ID)
+
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+
+      expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
+    })
+
+    it('still fires the legacy completion notification for a normally-finished turn', async () => {
+      // Discriminator for the guard above: a normal (uninterrupted) legacy turn
+      // must still notify, so the isInterrupted check isn't suppressing everything.
+      const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+
+      expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+    })
+
     it('ignores task_updated for non-terminal status or untracked task', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       mockClient._sendMessage({
