@@ -18,6 +18,7 @@ import {
   AgentContainerStopError,
 } from '@shared/lib/services/agent-service'
 import { containerManager } from '@shared/lib/container/container-manager'
+import { interruptAgentSession } from '@shared/lib/container/interrupt-session'
 import { parseRuntimeOptions } from '@shared/lib/container/runtime-options'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
@@ -1928,45 +1929,19 @@ agents.post('/:id/sessions/:sessionId/interrupt', AgentUser(), async (c) => {
     const agentSlug = getAgentId(c)
     const sessionId = c.req.param('sessionId')
 
+    const outcome = await interruptAgentSession(agentSlug, sessionId)
 
-    const client = containerManager.getClient(agentSlug)
-    // Use cached status to avoid spawning docker process
-    const info = containerManager.getCachedInfo(agentSlug)
-
-    // If container isn't running, just mark the session as interrupted locally
-    // This handles the case where container crashed/restarted but UI still shows active
-    if (info.status !== 'running') {
-      console.log(`[Agents] Container not running for ${agentSlug}, marking session ${sessionId} as interrupted locally`)
-      await messagePersister.markSessionInterrupted(sessionId)
-      reviewManager.denyAllForAgent(agentSlug)
+    if (outcome === 'container-not-running') {
       return c.json({ success: true, note: 'Container not running, session marked inactive' })
     }
-
-    // Try to interrupt in the container
-    const interrupted = await client.interruptSession(sessionId)
-
-    // Even if container interrupt fails (session might not exist there anymore),
-    // still mark it as interrupted locally to update the UI
-    if (!interrupted) {
-      console.log(`[Agents] Container interrupt returned false for session ${sessionId}, marking as interrupted locally`)
+    if (outcome === 'error-settled-locally') {
+      return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
     }
-
-    await messagePersister.markSessionInterrupted(sessionId)
-    reviewManager.denyAllForAgent(agentSlug)
-
     return c.json({ success: true })
   } catch (error) {
+    // Only reachable when even the helper's local settling threw.
     console.error('Failed to interrupt session:', error)
-    // Even on error, try to mark session as interrupted to fix UI state
-    try {
-      const sessionId = c.req.param('sessionId')
-      const agentSlugFallback = getAgentId(c)
-      await messagePersister.markSessionInterrupted(sessionId)
-      reviewManager.denyAllForAgent(agentSlugFallback)
-      return c.json({ success: true, note: 'Error during interrupt, but session marked inactive' })
-    } catch {
-      return c.json({ error: 'Failed to interrupt session' }, 500)
-    }
+    return c.json({ error: 'Failed to interrupt session' }, 500)
   }
 })
 
