@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, armStallNudge, type ManagedConnector } from './chat-integration-manager'
 import { MockChatClientConnector } from './mock-connector'
+import { messagePersister } from '@shared/lib/container/message-persister'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
 // ── Test helpers ────────────────────────────────────────────────────────
@@ -1220,5 +1221,19 @@ describe('stall nudge lifecycle in processSSEEvent', () => {
     await processSSEEvent(managed, { type: 'session_error', apiErrorCode: null })
 
     expect(getMock(managed).sentMessages).toHaveLength(0)
+  })
+
+  it("a stale session_idle does not cancel a newer turn's armed timer", async () => {
+    // The event waited behind a slow send on the SSE queue while the next turn
+    // dispatched and armed; the re-read guard must skip the cancel.
+    const managed = createManagedConnector({ sessionId: 'session-1' })
+    armStallNudge(managed, 'session-1')
+    const activeSpy = vi.spyOn(messagePersister, 'isSessionActive').mockReturnValue(true)
+    try {
+      await processSSEEvent(managed, { type: 'session_idle' })
+      expect(managed.stallNudgeTimer).not.toBeNull()
+    } finally {
+      activeSpy.mockRestore()
+    }
   })
 })

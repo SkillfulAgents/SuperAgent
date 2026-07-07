@@ -23,7 +23,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
-import { interruptAgentSession } from './interrupt-session'
+import { interruptAgentSession, INTERRUPT_TIMEOUT_MS } from './interrupt-session'
 
 describe('interruptAgentSession', () => {
   beforeEach(() => {
@@ -79,6 +79,27 @@ describe('interruptAgentSession', () => {
     expect(markSessionInterrupted).toHaveBeenCalledWith('session-1')
     expect(denyAllForAgent).toHaveBeenCalledWith('agent-1')
     expect(outcome).toBe('error-settled-locally')
+  })
+
+  it('settles locally when the container interrupt HANGS (bounded by the timeout)', async () => {
+    // The unbounded case is /stop's own pathology: a wedged container whose
+    // HTTP call never returns must not block the chat's serial queue.
+    vi.useFakeTimers()
+    try {
+      const interruptSession = vi.fn().mockReturnValue(new Promise(() => {}))
+      getClient.mockReturnValue({ interruptSession })
+      getCachedInfo.mockReturnValue({ status: 'running' })
+
+      const pending = interruptAgentSession('agent-1', 'session-1')
+      await vi.advanceTimersByTimeAsync(INTERRUPT_TIMEOUT_MS)
+      const outcome = await pending
+
+      expect(markSessionInterrupted).toHaveBeenCalledWith('session-1')
+      expect(denyAllForAgent).toHaveBeenCalledWith('agent-1')
+      expect(outcome).toBe('error-settled-locally')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('rethrows on a double fault (interrupt AND local settling both throw), skipping denyAll', async () => {

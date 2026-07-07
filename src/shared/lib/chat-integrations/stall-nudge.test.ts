@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   armStallNudge,
-  resetStallNudgeIfArmed,
+  armStallNudgeIfBusy,
   cancelStallNudge,
+  isChatCommand,
   STALL_NUDGE_MS,
   STALL_NUDGE_TEXT,
+  STALL_NUDGE_TEXT_NO_COMMAND,
   type ManagedConnector,
 } from './chat-integration-manager'
 import { MockChatClientConnector } from './mock-connector'
@@ -73,12 +75,12 @@ describe('stall nudge timer', () => {
     expect(managed.stallNotified).toBe(true)
   })
 
-  it('reset defers firing - silence is measured from the last event', async () => {
+  it('an event on a busy session defers firing - silence is measured from the last event', async () => {
     const managed = createManagedConnector()
     armStallNudge(managed, 'session-1')
 
     await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS - 60_000)
-    resetStallNudgeIfArmed(managed, 'session-1')
+    armStallNudgeIfBusy(managed, 'session-1', 'working')
     await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS - 60_000)
 
     expect(getMock(managed).sentMessages).toHaveLength(0)
@@ -87,9 +89,23 @@ describe('stall nudge timer', () => {
     expect(getMock(managed).sentMessages).toHaveLength(1)
   })
 
-  it('reset is a no-op when no timer is armed', () => {
+  it('arm-if-busy self-arms an unarmed session with an agent-owed activity', async () => {
+    // A turn that started or resumed outside the dispatch points (an answered
+    // question, a container-queued follow-up, a restart re-subscribe) arms off
+    // its own events.
     const managed = createManagedConnector()
-    resetStallNudgeIfArmed(managed, 'session-1')
+    armStallNudgeIfBusy(managed, 'session-1', 'streaming')
+    expect(managed.stallNudgeTimer).not.toBeNull()
+
+    await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS)
+    expect(getMock(managed).sentMessages).toHaveLength(1)
+  })
+
+  it('arm-if-busy never arms for idle or awaiting', () => {
+    const managed = createManagedConnector()
+    armStallNudgeIfBusy(managed, 'session-1', 'idle')
+    expect(managed.stallNudgeTimer).toBeUndefined()
+    armStallNudgeIfBusy(managed, 'session-1', 'awaiting')
     expect(managed.stallNudgeTimer).toBeUndefined()
   })
 
@@ -166,6 +182,17 @@ describe('stall nudge timer', () => {
     expect(managed.stallNotified).toBe(true)
   })
 
+  it('sends the no-command copy on Slack (client-typed slash commands never reach the bot)', async () => {
+    const managed = createManagedConnector()
+    managed.integration = { ...managed.integration, provider: 'slack' }
+    armStallNudge(managed, 'session-1')
+
+    await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS)
+
+    expect(getMock(managed).sentMessages).toHaveLength(1)
+    expect(getMock(managed).sentMessages[0].message.text).toBe(STALL_NUDGE_TEXT_NO_COMMAND)
+  })
+
   it('never touches the indicator', async () => {
     const managed = createManagedConnector()
     const stopWorkingSpy = vi.spyOn(managed.connector, 'stopWorking')
@@ -176,5 +203,21 @@ describe('stall nudge timer', () => {
     expect(getMock(managed).workingActivities).toHaveLength(0)
     expect(stopWorkingSpy).not.toHaveBeenCalled()
     expect(managed.indicatorShown).toBeUndefined()
+  })
+})
+
+describe('isChatCommand', () => {
+  it('matches the bare command and the Telegram group form', () => {
+    expect(isChatCommand('/stop', 'stop')).toBe(true)
+    expect(isChatCommand('  /STOP  ', 'stop')).toBe(true)
+    expect(isChatCommand('/stop@MyAgentBot', 'stop')).toBe(true)
+    expect(isChatCommand('/clear@bot', 'clear')).toBe(true)
+  })
+
+  it('leaves near-misses as normal messages for the agent', () => {
+    expect(isChatCommand('/stop now', 'stop')).toBe(false)
+    expect(isChatCommand('/stopping', 'stop')).toBe(false)
+    expect(isChatCommand('please /stop', 'stop')).toBe(false)
+    expect(isChatCommand('/stop@', 'stop')).toBe(false)
   })
 })
