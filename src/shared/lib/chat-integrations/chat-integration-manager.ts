@@ -719,7 +719,7 @@ class ChatIntegrationManager {
     // Telegram-only: /start is the Telegram onboarding convention and part of the
     // allowlist bootstrap UX. Other providers forward "/start" to the agent as a
     // normal message (their pre-allowlist behavior).
-    if (integration.provider === 'telegram' && message.text.trim().toLowerCase() === '/start') {
+    if (integration.provider === 'telegram' && isChatCommand(message.text, 'start')) {
       await conn.connector.sendMessage(chatId, { text: "You're connected. Send a message to start." }).catch(() => {})
       return
     }
@@ -1975,6 +1975,9 @@ export async function processSSEEvent(
       // broadcasting terminals, so a real turn end always reads inactive here.
       if (!managed.sessionId || !messagePersister.isSessionActive(managed.sessionId)) {
         cancelStallNudge(managed)
+        // A genuine turn boundary also reopens the nudge latch, so a turn that
+        // self-arms outside the dispatch points (arm-if-busy) can nudge too.
+        managed.stallNotified = false
       }
       clearIndicator(managed)
       await finalizeTurn(managed)
@@ -1987,9 +1990,10 @@ export async function processSSEEvent(
       // it never strands, finalize the turn the same way session_idle does, then
       // surface a curated error so the user isn't left staring at a frozen reply.
       // The tick sleeps itself once it reads the now-idle/non-busy state.
-      // Same stale-event guard as session_idle.
+      // Same stale-event guard and latch-reopen as session_idle.
       if (!managed.sessionId || !messagePersister.isSessionActive(managed.sessionId)) {
         cancelStallNudge(managed)
+        managed.stallNotified = false
       }
       clearIndicator(managed)
       await finalizeTurn(managed)
