@@ -662,7 +662,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('transitions to READY when runner is available and image exists', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(true)
 
@@ -675,7 +675,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('transitions to RUNTIME_UNAVAILABLE when configured runner is not available', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: false, running: false, available: false, canStart: false },
+      { runner: 'docker', installed: false, running: false, available: false, canStart: false, supportsCustomAgentImage: true },
     ])
 
     await containerManager.ensureImageReady()
@@ -687,7 +687,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('pulls image when runner available but image does not exist', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(false)
     vi.mocked(canBuildImage).mockReturnValue(false)
@@ -704,7 +704,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('builds image when canBuildImage is true and image does not exist', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(false)
     vi.mocked(canBuildImage).mockReturnValue(true)
@@ -722,7 +722,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('transitions to ERROR when pull fails', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(false)
     vi.mocked(canBuildImage).mockReturnValue(false)
@@ -737,7 +737,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('transitions to ERROR when build fails', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(false)
     vi.mocked(canBuildImage).mockReturnValue(true)
@@ -752,7 +752,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('broadcasts readiness changes via SSE', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(true)
 
@@ -770,8 +770,8 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('auto-switches runner when configured runner unavailable but alternative exists', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: false, running: false, available: false, canStart: false },
-      { runner: 'podman', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: false, running: false, available: false, canStart: false, supportsCustomAgentImage: true },
+      { runner: 'podman', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(true)
 
@@ -786,7 +786,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('reports RUNTIME_UNAVAILABLE when runner installed but not running and no alternative', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: false, available: false, canStart: false },
+      { runner: 'docker', installed: true, running: false, available: false, canStart: false, supportsCustomAgentImage: true },
     ])
 
     await containerManager.ensureImageReady()
@@ -798,7 +798,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('invokes progress callback during pull', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(false)
     vi.mocked(canBuildImage).mockReturnValue(false)
@@ -823,7 +823,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('transitions to ERROR when disk space is insufficient', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(false)
     // 1 GB free (below 5 GB threshold)
@@ -841,7 +841,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('sends info-level Sentry event when disk space is insufficient', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(false)
     mockStatfs.mockResolvedValue({ bavail: 2 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
@@ -860,7 +860,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('proceeds with pull when disk space is sufficient', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(false)
     vi.mocked(canBuildImage).mockReturnValue(false)
@@ -876,7 +876,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('proceeds with pull when statfs fails', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(false)
     vi.mocked(canBuildImage).mockReturnValue(false)
@@ -891,7 +891,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
 
   it('skips disk space check when image already exists', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
-      { runner: 'docker', installed: true, running: true, available: true, canStart: false },
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
     ])
     vi.mocked(checkImageExists).mockResolvedValue(true)
 

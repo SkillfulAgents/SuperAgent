@@ -446,6 +446,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly runnerName = 'lambda-microvm'
   // Image is built once via create-microvm-image and run by AWS; nothing local.
   static readonly requiresLocalImage = false
+  // Image comes solely from MICROVM_AGENT_IMAGE_ARN/_VERSION; settings.container.agentImage is ignored.
+  static readonly supportsCustomAgentImage = false
 
   constructor(config: ContainerConfig) {
     super(config)

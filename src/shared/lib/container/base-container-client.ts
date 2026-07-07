@@ -276,6 +276,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
   static readonly requiresLocalImage: boolean = true
 
+  /** Whether settings.container.agentImage is honored by this runtime. */
+  static readonly supportsCustomAgentImage: boolean = true
+
   /** Whether the CLI is installed. Subclasses must override. */
   static async isAvailable(): Promise<boolean> {
     throw new Error('Subclass must implement static isAvailable()')
