@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: tate, Close Browser). Full-page screenshot captured.\n\n**No bugs found** — All features working as expected:\n- Browser navigation tool integration functional\n- Tool call cards displaying correctly with execution status\n- Agent response accurate and complete\n- \"Example Domain\" verification successful\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 259378,
+  "sessionId": "02c1f9fa-ab07-41c0-9506-25b1d3aad51f",
+  "cost": {
+    "inputTokens": 369,
+    "outputTokens": 12009,
+    "cacheCreationTokens": 68719,
+    "cacheReadTokens": 1145401,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.260853
+  }
+}
