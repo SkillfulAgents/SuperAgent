@@ -80,6 +80,9 @@ vi.mock('@shared/lib/container/client-factory', () => ({
   checkAllRunnersAvailability: (...args: unknown[]) => mockCheckAllRunnersAvailability(...args),
   refreshRunnerAvailability: (...args: unknown[]) => mockRefreshRunnerAvailability(...args),
   startRunner: (...args: unknown[]) => mockStartRunner(...args),
+  getContainerClientClass: (runner: string) => ({
+    supportsCustomAgentImage: runner !== 'lambda-microvm',
+  }),
   SUPPORTED_RUNNERS: ['docker', 'podman'],
 }))
 
@@ -302,6 +305,68 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.container.resourceLimits).toEqual({ cpu: 8, memory: '16g' })
+    })
+  })
+
+  // =========================================================================
+  // Agent image locked for deployment-managed runners
+  // =========================================================================
+  describe('agentImage guard for runners without custom image support', () => {
+    it('returns 400 when changing agentImage while lambda-microvm is the configured runner', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        container: {
+          containerRunner: 'lambda-microvm',
+          agentImage: 'superagent:latest',
+          resourceLimits: { cpu: 2, memory: '4g' },
+        },
+      })
+
+      const res = await putSettings({
+        container: { agentImage: 'ghcr.io/custom/image:v9' },
+      })
+
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('managed by the deployment')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('returns 400 when switching to lambda-microvm and changing agentImage in one request', async () => {
+      const res = await putSettings({
+        container: { containerRunner: 'lambda-microvm', agentImage: 'ghcr.io/custom/image:v9' },
+      })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('accepts an unchanged agentImage for lambda-microvm', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        container: {
+          containerRunner: 'lambda-microvm',
+          agentImage: 'superagent:latest',
+          resourceLimits: { cpu: 2, memory: '4g' },
+        },
+      })
+
+      const res = await putSettings({
+        container: { agentImage: 'superagent:latest' },
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings).toHaveBeenCalledOnce()
+    })
+
+    it('still allows agentImage changes for runners that support it', async () => {
+      const res = await putSettings({
+        container: { agentImage: 'ghcr.io/custom/image:v9' },
+      })
+
+      expect(res.status).toBe(200)
+      const saved = mockUpdateSettings.mock.calls[0][0]
+      expect(saved.container.agentImage).toBe('ghcr.io/custom/image:v9')
     })
   })
 

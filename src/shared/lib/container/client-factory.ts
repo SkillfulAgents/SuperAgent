@@ -26,6 +26,8 @@ export interface RunnerAvailability {
   available: boolean
   /** If installed but not running, can we attempt to start it? */
   canStart: boolean
+  /** Whether settings.container.agentImage is honored by this runner. */
+  supportsCustomAgentImage: boolean
 }
 
 export interface StartRunnerResult {
@@ -277,9 +279,10 @@ export async function restartRunner(runner: ContainerRunner): Promise<StartRunne
  * Check detailed availability of a specific runner.
  */
 async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise<RunnerAvailability> {
+  const supportsCustomAgentImage = getContainerClientClass(runner).supportsCustomAgentImage
   const entry = ALL_RUNNERS.find((r) => r.name === runner)
   if (!entry) {
-    return { runner, installed: false, running: false, available: false, canStart: false }
+    return { runner, installed: false, running: false, available: false, canStart: false, supportsCustomAgentImage }
   }
 
   const installed = await entry.isAvailable()
@@ -291,6 +294,7 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
       running: false,
       available: false,
       canStart: false,
+      supportsCustomAgentImage,
     }
   }
 
@@ -302,6 +306,7 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
     running,
     available: running,
     canStart: !running && canAttemptStart(runner),
+    supportsCustomAgentImage,
   }
 }
 
@@ -312,7 +317,7 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
 export async function checkAllRunnersAvailability(): Promise<RunnerAvailability[]> {
   // In E2E mock mode, skip real runtime checks
   if (process.env.E2E_MOCK === 'true') {
-    return [{ runner: 'docker', installed: true, running: true, available: true, canStart: false }]
+    return [{ runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true }]
   }
 
   const now = Date.now()
