@@ -74,4 +74,11 @@ describe('createPerKeySerializer', () => {
     await p2
     expect(order).toEqual(['A', 'B'])
   })
+
+  it('run resolves with the operation value even after a prior rejection on the same key', async () => {
+    const run = createPerKeySerializer()
+
+    await expect(run('k', async () => { throw new Error('x') })).rejects.toThrow()
+    await expect(run('k', async () => 42)).resolves.toBe(42)
+  })
 })

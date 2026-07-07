@@ -116,6 +116,24 @@ describe('reconcileIndicator (idempotent paint/clear)', () => {
     clearIndicator(managed)
     expect(connector.stoppedWorking).toEqual([])
   })
+
+  // Both immediate clears route through stopWorking, but only the first-reply-token
+  // clear yields the shared surface (Telegram's draft becomes the streamed reply);
+  // terminal clears must tear the surface down authoritatively.
+  it('first-token clear yields the surface; terminal clears tear it down', async () => {
+    const connector = new MockChatClientConnector()
+    const managed = makeManaged(connector, 'chat-w')
+    const stop = vi.spyOn(connector, 'stopWorking')
+
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'answer' })
+    expect(stop).toHaveBeenCalledWith('chat-w', { yieldingToStream: true })
+
+    stop.mockClear()
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'session_idle' })
+    expect(stop).toHaveBeenCalledWith('chat-w', { yieldingToStream: false })
+  })
 })
 
 // ── The per-session tick (pull) ────────────────────────────────────────────────
@@ -496,6 +514,23 @@ describe('Telegram: stopWorking tears down a stranded "Working…" draft', () =>
     const { connector, sendRichMessageDraft } = makeRealDmConnector()
     await connector.startWorking(DM_CHAT, 'working')
     await connector.stopWorking(DM_CHAT)
+    sendRichMessageDraft.mockClear()
+    await connector.stopWorking(DM_CHAT)
+    expect(sendRichMessageDraft).not.toHaveBeenCalled()
+  })
+
+  it('a failed teardown send is swallowed and not retried', async () => {
+    const { connector, sendRichMessageDraft } = makeRealDmConnector()
+    await connector.startWorking(DM_CHAT, 'working')
+    sendRichMessageDraft.mockClear()
+    sendRichMessageDraft.mockRejectedValueOnce(new Error('telegram unreachable'))
+
+    // The blank-draft send fails: non-critical (the draft self-expires), so the
+    // failure is swallowed rather than surfaced to the clear path.
+    await expect(connector.stopWorking(DM_CHAT)).resolves.toBeUndefined()
+    expect(sendRichMessageDraft).toHaveBeenCalledTimes(1)
+
+    // Tracking was dropped before the attempt, so a later stop does not retry.
     sendRichMessageDraft.mockClear()
     await connector.stopWorking(DM_CHAT)
     expect(sendRichMessageDraft).not.toHaveBeenCalled()

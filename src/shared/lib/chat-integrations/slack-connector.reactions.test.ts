@@ -59,6 +59,30 @@ describe('SlackConnector thinking-reaction teardown', () => {
     )
   })
 
+  it('a sweep over two tracked reactions drops only the confirmed-gone one and retries the other', async () => {
+    const { connector, remove } = makeConnector()
+    // A second message landed mid-turn, so TWO reactions are tracked. The sweep
+    // visits them in insertion order: the first removes cleanly, the second
+    // fails transiently and must stay tracked.
+    remove
+      .mockResolvedValueOnce({ ok: true }) // '100.1' → settled, untracked
+      .mockRejectedValueOnce({ data: { error: 'ratelimited' } }) // '200.2' → kept
+    seedUserMessage(connector, 'C1', '100.1')
+    await connector.startWorking('C1', 'working')
+    seedUserMessage(connector, 'C1', '200.2')
+    await connector.startWorking('C1', 'working')
+
+    await connector.stopWorking('C1') // sweep attempts both
+    expect(remove).toHaveBeenCalledTimes(2)
+    expect(remove).toHaveBeenCalledWith(expect.objectContaining({ timestamp: '100.1' }))
+    expect(remove).toHaveBeenCalledWith(expect.objectContaining({ timestamp: '200.2' }))
+
+    remove.mockClear()
+    await connector.stopWorking('C1') // retry sweep: only the kept key
+    expect(remove).toHaveBeenCalledTimes(1)
+    expect(remove).toHaveBeenCalledWith(expect.objectContaining({ timestamp: '200.2' }))
+  })
+
   it('serializes a paint then clear so the reaction ends up removed even if add resolves late', async () => {
     const { connector, add, remove } = makeConnector()
     let releaseAdd!: () => void
