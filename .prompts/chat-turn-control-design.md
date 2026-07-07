@@ -27,6 +27,17 @@ Chat has no Stop affordance, and a bare `/stop` command would be undiscoverable 
 
 Two parts, symbiotic: the command is the recovery, the nudge is the discovery trigger that makes the command usable.
 
+### Gate semantics (corrected 2026-07-06 during implementation, approved)
+
+All three gates use TURN-LIFECYCLE semantics, not the indicator's `BUSY_ACTIVITIES` (which deliberately excludes `streaming` and `awaiting` for surface-ownership reasons):
+
+- `/stop` and busy-`/clear` gate on `messagePersister.isSessionActive(sessionId)`.
+A turn hung mid-stream (`streaming`) or parked on a question (`awaiting`) is still an in-flight turn the user must be able to stop - the app Stop button's any-time semantics.
+- The nudge fires only when the AGENT owes progress: activity not `idle` (turn settled) and not `awaiting` (the USER owes input; a person pondering the agent's question is never nudged).
+`streaming` IS nudge-eligible: a healthy stream emits deltas constantly and every delta resets the timer, so seven straight minutes of mid-stream silence is the hang signature.
+
+Found in implementation: the original spec borrowed `BUSY_ACTIVITIES`, which made a mid-stream hang unstoppable from chat and un-nudged.
+
 ### Part 1 - `/stop` command (the recovery)
 
 A chat command that interrupts the current turn, reusing the SAME path the app's Stop button uses.
@@ -68,7 +79,7 @@ Reset `stallNotified = false` per turn at dispatch.
 NOT inside `processSSEEvent`: a backed-up SSE queue (handlers awaiting connector work) must not let the nudge fire while events are in fact arriving - the same reasoning the indicator wake already uses.
 - CANCEL (not just reset) on the terminal events `session_idle` (`:1794`) and `session_error` (`:1802`), on `/stop`, in every teardown path that clears `indicatorTickTimer` today, AND in `subscribeChatSession`'s resubscribe cleanup (`:517`, alongside `stopIndicatorTick`) so a session swap cannot leave a stale timer running.
 - FIRE: at most once per turn (`stallNotified` latch - SEPARATE from `turnNotified`, so a nudge never suppresses a later `session_error` notice).
-The timer closure CAPTURES its sessionId; at fire time, check the captured id is still `managed.sessionId` AND `BUSY_ACTIVITIES.has(getSessionActivity(sessionId))` (the exact pattern at `:1643`), so neither a swapped session nor a settled turn is ever nudged.
+The timer closure CAPTURES its sessionId; at fire time, check the captured id is still `managed.sessionId` AND the activity is agent-owed (not `idle`, not `awaiting` - see Gate semantics above), so neither a swapped session, a settled turn, nor a user pondering the agent's question is ever nudged.
 Send the nudge; touch nothing else.
 - Delivery is best-effort, AT-MOST-ONCE: set `stallNotified` BEFORE sending, `.catch(log)` the send.
 A missed nudge is cheaper than a double nudge - deliberately the opposite of the `session_error` notice, which releases its latch on delivery failure to stay at-least-once.
@@ -112,7 +123,7 @@ Ship the command first; buttons are purely additive.
 - Access gate above the commands: `decideInboundAccess` at `:676`; blocked chats return by `:697`.
 - Dispatch points: `client.sendMessage` `:846` + `markSessionActive` `:847` (existing session); `startNewChatSession` `:959` (new session). `turnNotified` reset `:898`.
 - SSE processing: `processSSEEvent` `:1659`; `session_idle` `:1794`; `session_error` `:1802` (with the `turnNotified` latch `:1810`).
-- Busy predicate: `BUSY_ACTIVITIES` `:1518`; fire-time re-check pattern `:1643`.
+- Turn-in-flight predicate: `messagePersister.isSessionActive` (`message-persister.ts:266`); nudge fire eligibility: `getSessionActivity` not `idle`/`awaiting` (see Gate semantics).
 - `ManagedConnector` type: `:124`.
 - Interrupt route to factor: `src/api/routes/agents.ts:1925` (`denyAllForAgent` at `:1955`).
 - `markSessionInterrupted`: `src/shared/lib/container/message-persister.ts:577` (broadcasts `session_idle` at `:595`).
@@ -132,7 +143,7 @@ Fake timers for the nudge.
 | 6 | nudge on a healthy long turn (periodic SSE events) | never fires (reset on each event) |
 | 7 | nudge path touches the indicator | NO `startWorking` / `stopWorking` from the nudge (assert) |
 | 8 | nudge fires twice in one multi-segment turn | at most one message (latch) |
-| 9 | nudge after the turn already settled | does not fire (cancelled on terminal events + busy re-check at fire time) |
+| 9 | nudge after the turn already settled or while awaiting user input | does not fire (cancelled on terminal events + settled/awaiting re-check at fire time) |
 | 10 | nudge then `/stop` | `/stop` interrupts and clears; timer cancelled |
 | 11 | `/clear` during a running turn | interrupts via the helper FIRST, then archives + clears |
 | 12 | `/stop` racing an already-enqueued `session_error` | no stale error notice after the stop ack (`turnNotified` set by `/stop`) |

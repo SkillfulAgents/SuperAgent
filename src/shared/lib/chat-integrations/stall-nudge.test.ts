@@ -104,7 +104,7 @@ describe('stall nudge timer', () => {
     expect(managed.stallNudgeTimer).toBeNull()
   })
 
-  it('does not fire when the session is no longer busy at fire time', async () => {
+  it('does not fire when the turn already settled at fire time', async () => {
     const managed = createManagedConnector()
     armStallNudge(managed, 'session-1')
     activitySpy.mockReturnValue('idle')
@@ -112,6 +112,26 @@ describe('stall nudge timer', () => {
     await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS)
 
     expect(getMock(managed).sentMessages).toHaveLength(0)
+  })
+
+  it('does not fire while the agent awaits user input (the user owes progress)', async () => {
+    const managed = createManagedConnector()
+    armStallNudge(managed, 'session-1')
+    activitySpy.mockReturnValue('awaiting')
+
+    await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS)
+
+    expect(getMock(managed).sentMessages).toHaveLength(0)
+  })
+
+  it('fires on a turn hung mid-stream (streaming is agent-owed progress)', async () => {
+    const managed = createManagedConnector()
+    armStallNudge(managed, 'session-1')
+    activitySpy.mockReturnValue('streaming')
+
+    await vi.advanceTimersByTimeAsync(STALL_NUDGE_MS)
+
+    expect(getMock(managed).sentMessages).toHaveLength(1)
   })
 
   it('fires at most once per turn (latch survives a re-arm)', async () => {
