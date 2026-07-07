@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the SuperAgent application correctly executes browser-use tasks, including opening a browser, navigating to a URL, retrieving the page title, and providing a response that mentions \"Example Domain\".",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 - Success. The application loaded and displayed the home page with available agents.",
+    "Step 2 - Found and clicked the \"QA-20260707-004222-culk\" agent in the sidebar - Success. The agent page loaded, displaying the agent configuration and message input interface.",
+    "Step 3 - Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" - Success. The message was entered in the input field and sent using the Send button. A new session was created titled \"Browser Navigation and Page Title Query\" and the agent status changed from \"idle\" to \"working\".",
+    "Step 4 - Waited for the agent response - Success. The agent completed processing within 13 seconds (well within the 3-minute timeout). The response included browser tool calls showing the agent opened a browser, navigated to the URL, retrieved the page state, and closed the browser.",
+    "Step 5 - Verified the response mentions \"Example Domain\" - Success. The final response clearly states: \"The page at https://example.com has the title \"Example Domain\". I've closed the browser.\" The page title \"Example Domain\" was mentioned twice in the response."
+  ],
+  "bugs": [],
+  "durationMs": 84480,
+  "sessionId": "3402ac08-9b9e-4295-867f-c07044fcd29f",
+  "cost": {
+    "inputTokens": 438,
+    "outputTokens": 12406,
+    "cacheCreationTokens": 126754,
+    "cacheReadTokens": 1453361,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.366247
+  }
+}
