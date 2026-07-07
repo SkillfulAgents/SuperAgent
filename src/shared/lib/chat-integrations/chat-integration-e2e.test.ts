@@ -456,6 +456,46 @@ describe('Chat integration E2E', () => {
       expect(interruptSpy).not.toHaveBeenCalled()
       expect(messagePersister.isSessionActive(sessionId)).toBe(false)
     })
+
+    it('a concurrent second /stop is a no-op (one interrupt, one ack, no "nothing running")', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      const sessionId = await startConversation(integrationId)
+      messagePersister.markSessionActive(sessionId, 'test-agent')
+
+      // Hold the interrupt open so the first /stop parks mid-interrupt while the second
+      // races the stopInFlight guard. The gate stays held through the flush below, so the
+      // first can't settle and release the latch — without the guard the second would
+      // pass the still-active gate and interrupt a second time.
+      let releaseInterrupt: () => void = () => {}
+      const interruptGate = new Promise<void>((r) => { releaseInterrupt = r })
+      const interruptSpy = vi.spyOn(mockContainerClient, 'interruptSession').mockImplementation(async () => {
+        await interruptGate
+        return true
+      })
+
+      // Two /stops arrive together (double-tap, or a tap racing a typed /stop). The priority
+      // lane dispatches both off the serial queue, so they reach stopChatTurn concurrently.
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+
+      // First /stop is now parked in the interrupt; flush the loop so the second reaches
+      // (and is no-op'd by) the guard while the first still holds it.
+      await waitForCondition(() => interruptSpy.mock.calls.length >= 1)
+      for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0))
+      expect(interruptSpy).toHaveBeenCalledTimes(1) // guard blocked the second interrupt
+
+      releaseInterrupt()
+      await waitForCondition(() =>
+        mockConnector.sentMessages.some(m => m.message.text === '⏹ Stopped. Send a message to start again.'))
+
+      // Exactly one interrupt and one "Stopped" ack; never a contradictory "Nothing is running".
+      expect(interruptSpy).toHaveBeenCalledTimes(1)
+      expect(mockConnector.sentMessages.filter(m =>
+        m.message.text === '⏹ Stopped. Send a message to start again.')).toHaveLength(1)
+      expect(mockConnector.sentMessages.some(m =>
+        m.message.text === '⏹ Nothing is running right now.')).toBe(false)
+    })
   })
 
   describe('/clear on a busy session', () => {

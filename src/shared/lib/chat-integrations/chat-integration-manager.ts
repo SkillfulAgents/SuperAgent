@@ -150,6 +150,10 @@ export interface ManagedConnector {
   // True once the session_error notice has gone out for the current turn, so a
   // turn can't emit duplicate notices.
   turnNotified?: boolean
+  // True while a /stop is being processed for this chat. The priority lane runs
+  // concurrent /stops (they bypass the serial queue), so this latch keeps a double-tap
+  // or tap+typed /stop from double-interrupting or trailing a contradictory ack.
+  stopInFlight?: boolean
   // Stall-nudge silence timer (see armStallNudge). Named to make its job
   // unmistakable: it NEVER paints or clears the indicator.
   stallNudgeTimer?: ReturnType<typeof setTimeout> | null
@@ -1093,6 +1097,16 @@ class ChatIntegrationManager {
     chatId: string,
     connector: ChatClientConnector,
   ): Promise<void> {
+    const managed = this.chatSessions.get(this.getChatSessionKey(integration.id, chatId))
+    // A concurrent /stop (double-tap, or a tap racing a typed /stop) bypasses the serial
+    // queue via the priority lane, so two can reach here at once. The first stop's
+    // interrupt + "⏹ Stopped" ack is the turn's terminal notice; a second racing it must
+    // not double-interrupt or trail it with a contradictory "⏹ Nothing is running". The
+    // guard is await-free up to the flag set below, so the first call latches before it
+    // yields at the interrupt and the second returns silently. (The serial queue used to
+    // provide this ordering; the priority lane traded it away, so re-establish it here.)
+    if (managed?.stopInFlight) return
+
     const chatSession = getChatIntegrationSession(integration.id, chatId)
     const sessionId = chatSession?.sessionId
     // Turn-lifecycle gate, NOT the indicator's BUSY_ACTIVITIES: a turn hung
@@ -1104,26 +1118,32 @@ class ChatIntegrationManager {
       return
     }
 
-    const managed = this.chatSessions.get(this.getChatSessionKey(integration.id, chatId))
     if (managed) {
       // The stop ack is this turn's terminal notice: a stale session_error may
       // already sit in the SSE queue, and the turnNotified latch keeps it from
       // sending a second, contradictory one.
+      managed.stopInFlight = true
       managed.turnNotified = true
       cancelStallNudge(managed)
     }
 
-    // Lazy import, same idiom as the send path's container-manager import.
-    const { interruptAgentSession } = await import('@shared/lib/container/interrupt-session')
-    await interruptAgentSession(integration.agentSlug, sessionId)
-    // Clear the stopped turn's working indicator immediately, not on the next 1s tick — a
-    // rapid stop-then-send would otherwise leave the stale indicator up to collide with the
-    // new turn's messages.
-    if (managed) clearIndicator(managed)
-    // A question card left open would look answerable, but the turn is dead and
-    // a tap after this fails silently - strip open cards best-effort.
-    await connector.dismissOpenCards(chatId).catch(() => {})
-    await connector.sendMessage(chatId, { text: '⏹ Stopped. Send a message to start again.' }).catch(() => {})
+    try {
+      // Lazy import, same idiom as the send path's container-manager import.
+      const { interruptAgentSession } = await import('@shared/lib/container/interrupt-session')
+      await interruptAgentSession(integration.agentSlug, sessionId)
+      // Clear the stopped turn's working indicator immediately, not on the next 1s tick — a
+      // rapid stop-then-send would otherwise leave the stale indicator up to collide with the
+      // new turn's messages.
+      if (managed) clearIndicator(managed)
+      // A question card left open would look answerable, but the turn is dead and
+      // a tap after this fails silently - strip open cards best-effort.
+      await connector.dismissOpenCards(chatId).catch(() => {})
+      await connector.sendMessage(chatId, { text: '⏹ Stopped. Send a message to start again.' }).catch(() => {})
+    } finally {
+      // Release the latch so a later /stop on a NEW turn isn't blocked; a throw here (a
+      // wedged interrupt past its 15s bound) must not strand the flag true forever.
+      if (managed) managed.stopInFlight = false
+    }
   }
 
   /** Clear a chat session by its DB row ID (called from API route). */
