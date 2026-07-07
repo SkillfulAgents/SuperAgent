@@ -6,6 +6,8 @@ import type { AnalyticsTarget } from '@shared/lib/config/settings'
 import { isElectron } from './env'
 
 function buildPlugins(shareAnalytics: boolean, targets?: AnalyticsTarget[]) {
+  if (__E2E_MOCK__) return []
+
   const plugins: ReturnType<typeof amplitudePlugin>[] = []
 
   // Datawizz sharing via hardcoded Amplitude key
@@ -74,6 +76,7 @@ export function createAnalyticsInstance(
 }
 
 export function hasActivePlugins(shareAnalytics: boolean, targets?: AnalyticsTarget[]): boolean {
+  if (__E2E_MOCK__) return false
   if (shareAnalytics && __AMPLITUDE_API_KEY__) return true
   if (targets?.some(t => t.enabled)) return true
   return false
