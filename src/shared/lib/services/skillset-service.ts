@@ -1735,9 +1735,14 @@ export const SKILL_MAX_COMPRESSED_SIZE = 100 * 1024 * 1024 // 100MB
 const SKILL_MAX_FILE_COUNT = 500
 
 /**
- * Export a single skill directory as a ZIP buffer.
+ * Export a single skill directory as a ZIP buffer, alongside the skill's
+ * display name from SKILL.md frontmatter (null when the frontmatter has none)
+ * so callers can name the download after the skill rather than its directory.
  */
-export async function exportSkill(agentSlug: string, skillDirName: string): Promise<Buffer> {
+export async function exportSkill(
+  agentSlug: string,
+  skillDirName: string,
+): Promise<{ zipBuffer: Buffer; skillName: string | null }> {
   sanitizeDirName(skillDirName)
   const skillDir = path.join(getAgentSkillsDir(agentSlug), skillDirName)
 
@@ -1758,7 +1763,10 @@ export async function exportSkill(agentSlug: string, skillDirName: string): Prom
   }
 
   const { createZipBuffer } = await import('@shared/lib/utils/zip')
-  return createZipBuffer(files)
+  return {
+    zipBuffer: await createZipBuffer(files),
+    skillName: parseSkillFrontmatter(skillContent).name || null,
+  }
 }
 
 /**

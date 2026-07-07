@@ -6,6 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import type { ApiAgent, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
+import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 
 // Alias preserves the prior export name for downstream consumers while we
 // route everything through the canonical `ApiItemStatus`.
@@ -69,7 +70,7 @@ export function useExportAgentTemplate() {
         throw new Error(data.error || 'Failed to export template')
       }
 
-      await downloadBlob(res, `${agentName || agentSlug}-template.zip`)
+      await downloadBlob(res, `${agentName || agentSlug}-template${AGENT_PACKAGE_EXTENSION}`)
     },
   })
 }
@@ -88,7 +89,7 @@ export function useExportAgentFull() {
         throw new Error(data.error || 'Failed to export agent')
       }
 
-      await downloadBlob(res, `${agentName || agentSlug}-full.zip`)
+      await downloadBlob(res, `${agentName || agentSlug}-full${AGENT_PACKAGE_EXTENSION}`)
     },
   })
 }

@@ -2305,8 +2305,9 @@ metadata:
       const skillDir = makeSkillDir(agentSlug, 'my-skill')
       fs.writeFileSync(path.join(skillDir, 'SKILL.md'), MINIMAL_SKILL_MD)
 
-      const zipBuffer = await exportSkill(agentSlug, 'my-skill')
+      const { zipBuffer, skillName } = await exportSkill(agentSlug, 'my-skill')
       expect(zipBuffer).toBeInstanceOf(Buffer)
+      expect(skillName).toBe('Test Skill')
 
       const reader = await openZipFromBuffer(zipBuffer)
       try {
@@ -2326,7 +2327,7 @@ metadata:
       fs.mkdirSync(path.join(skillDir, 'lib'))
       fs.writeFileSync(path.join(skillDir, 'lib', 'utils.py'), 'x = 1')
 
-      const zipBuffer = await exportSkill(agentSlug, 'multi-skill')
+      const { zipBuffer } = await exportSkill(agentSlug, 'multi-skill')
       const reader = await openZipFromBuffer(zipBuffer)
       try {
         const fileNames = reader.entries.map(e => e.fileName).sort()
@@ -2343,7 +2344,7 @@ metadata:
       fs.writeFileSync(path.join(skillDir, '.skillset-metadata.json'), '{}')
       fs.writeFileSync(path.join(skillDir, '.skillset-original.md'), '# original')
 
-      const zipBuffer = await exportSkill(agentSlug, 'meta-skill')
+      const { zipBuffer } = await exportSkill(agentSlug, 'meta-skill')
       const reader = await openZipFromBuffer(zipBuffer)
       try {
         const fileNames = reader.entries.map(e => e.fileName)
@@ -2578,7 +2579,7 @@ metadata:
       fs.writeFileSync(path.join(sourceDir, 'tool.py'), 'def run(): pass')
 
       // Export it
-      const zipBuffer = await exportSkill(agentSlug, 'source-skill')
+      const { zipBuffer } = await exportSkill(agentSlug, 'source-skill')
 
       // Import into a different agent
       const importAgentSlug = 'roundtrip-import'

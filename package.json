@@ -171,6 +171,24 @@
     "directories": {
       "output": "release"
     },
+    "fileAssociations": [
+      {
+        "ext": "agent",
+        "name": "Gamut Agent",
+        "description": "Gamut Agent Template",
+        "role": "Editor",
+        "rank": "Owner",
+        "icon": "file-icons/agent"
+      },
+      {
+        "ext": "skill",
+        "name": "Gamut Skill",
+        "description": "Gamut Skill",
+        "role": "Editor",
+        "rank": "Owner",
+        "icon": "file-icons/skill"
+      }
+    ],
     "files": [
       "dist/**/*"
     ],
