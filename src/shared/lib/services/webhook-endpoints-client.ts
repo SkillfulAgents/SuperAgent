@@ -43,11 +43,18 @@ async function endpointsFetch(
 
   if (!response.ok) {
     const text = await response.text().catch(() => '')
-    // Truncate: the proxy's error body could echo the submitted request
-    // (including the HMAC secret) and this message flows into logs + the agent
-    // transcript. Cap it so a full-body echo can't leak wholesale.
-    throw new Error(`Webhook endpoints API error ${response.status}: ${text.slice(0, 500)}`)
+    // The proxy's error body could echo the submitted request (including the
+    // HMAC secret) and this message flows into logs, Sentry, and the agent
+    // transcript. Mask any `"secret":"…"` value, then cap the length so a
+    // full-body echo can't leak wholesale.
+    const masked = text.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
+    throw new Error(`Webhook endpoints API error ${response.status}: ${masked.slice(0, 500)}`)
   }
+
+  // Disable responds with the updated row today, but a bodyless 204 must not
+  // read as failure — callers treat a throw here as "the endpoint is still
+  // live" and emit rollback/cleanup alarms.
+  if (response.status === 204) return null
 
   return response.json()
 }

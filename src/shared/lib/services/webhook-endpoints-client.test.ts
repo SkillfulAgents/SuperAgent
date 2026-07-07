@@ -116,6 +116,33 @@ describe('webhook-endpoints-client', () => {
     )
   })
 
+  it('masks a secret echoed in an error body before throwing', async () => {
+    // The thrown message flows into Sentry and the agent transcript — if the
+    // proxy ever echoes the submitted request in an error, the signing secret
+    // must not survive the trip.
+    mockFetch.mockResolvedValue(
+      new Response('{"error":"bad profile","request":{"verification":{"secret":"whsec_leaky_value"}}}', {
+        status: 400,
+      }),
+    )
+    const err = await createPlatformWebhookEndpoint('sub_member_1', { name: 'n' }).then(
+      () => {
+        throw new Error('expected rejection')
+      },
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('"secret":"***"')
+    expect((err as Error).message).not.toContain('whsec_leaky_value')
+  })
+
+  it('treats a bodyless 204 as success', async () => {
+    // The proxy responds 200+row today, but a 204 must not read as a disable
+    // failure — callers alarm on throw as "endpoint still live".
+    mockFetch.mockResolvedValue(new Response(null, { status: 204 }))
+    await expect(disablePlatformWebhookEndpoint('sub_member_1', ENDPOINT.id)).resolves.toBeUndefined()
+  })
+
   it('rejects a malformed proxy response at the Zod boundary', async () => {
     mockFetch.mockResolvedValue(new Response(JSON.stringify({ nope: true }), { status: 201 }))
     await expect(createPlatformWebhookEndpoint('sub_member_1', { name: 'n' })).rejects.toThrow()

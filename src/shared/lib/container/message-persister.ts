@@ -37,7 +37,7 @@ import {
   extractEndpointUrl,
   CUSTOM_WEBHOOK_TRIGGER_TYPE,
 } from '@shared/lib/services/webhook-endpoint-schema'
-import { getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 import {
   getAvailableTriggers,
   enableComposioTrigger,
@@ -163,7 +163,12 @@ const SECRET_BEARING_TOOL_NAMES = new Set([
  * far as it has arrived.
  */
 export function redactStreamedToolInput(toolName: string | undefined, partialInput: string): string {
-  if (!toolName || !SECRET_BEARING_TOOL_NAMES.has(toolName)) return partialInput
+  if (!toolName) return partialInput
+  // MCP tools stream under their qualified name (`mcp__<server>__<tool>`);
+  // match on the bare tool name so the allowlist can't silently miss the wire
+  // format.
+  const bareName = toolName.startsWith('mcp__') ? toolName.slice(toolName.lastIndexOf('__') + 2) : toolName
+  if (!SECRET_BEARING_TOOL_NAMES.has(bareName)) return partialInput
   // Replace the JSON string value after `"secret":"` with `***`, stopping at
   // the (unescaped) closing quote — which is left intact when present.
   return partialInput.replace(/("secret"\s*:\s*")(?:\\.|[^"\\])*/g, '$1***')
@@ -1811,7 +1816,10 @@ class MessagePersister {
             agentId: sub.agentId,
             toolId: sub.currentToolUse?.id,
             toolName: sub.currentToolUse?.name,
-            partialInput: sub.currentToolInput,
+            partialInput: redactStreamedToolInput(
+              sub.currentToolUse?.name,
+              sub.currentToolInput,
+            ),
           })
         }
         break
@@ -2902,7 +2910,11 @@ ${continuation}`
           return
         }
 
-        if (!isPlatformComposioActive()) {
+        // Gate on platform auth, not Composio mode: custom endpoints live on
+        // the platform proxy and must keep working when the user brings their
+        // own Composio key (mirrors the teardown gate in
+        // webhook-trigger-service).
+        if (!getPlatformAccessToken()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
           return
         }
@@ -3029,7 +3041,11 @@ ${continuation}`
           return
         }
 
-        if (!isPlatformComposioActive()) {
+        // Gate on platform auth, not Composio mode: custom endpoints live on
+        // the platform proxy and must keep working when the user brings their
+        // own Composio key (mirrors the teardown gate in
+        // webhook-trigger-service).
+        if (!getPlatformAccessToken()) {
           await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
           return
         }

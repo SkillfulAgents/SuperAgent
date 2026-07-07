@@ -107,8 +107,13 @@ vi.mock('@shared/lib/services/webhook-endpoints-client', () => ({
   disablePlatformWebhookEndpoint: (...args: unknown[]) => mockDisablePlatformWebhookEndpoint(...args),
 }))
 
+// Platform-authed by default: the create/update endpoint handlers gate on the
+// access token (NOT on Composio mode — custom endpoints must work with a
+// personal Composio key).
+const mockGetPlatformAccessToken = vi.fn(() => 'opaque_token' as string | null)
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getStoredPlatformMemberId: () => null,
+  getPlatformAccessToken: () => mockGetPlatformAccessToken(),
 }))
 
 const mockGetAvailableTriggers = vi.fn<MockFn>(() => Promise.resolve([]))
@@ -152,7 +157,14 @@ import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/
 describe('redactStreamedToolInput', () => {
   it('masks the secret in create/update_webhook_endpoint streamed input', () => {
     const input = '{"name":"gh","verification":{"algorithm":"hmac-sha256","secret":"whsec_supersecret","header":"x-sig"}}'
-    for (const tool of ['create_webhook_endpoint', 'update_webhook_endpoint']) {
+    // The stream carries the MCP-qualified name — that form MUST match, or
+    // the redaction never fires on the real path. Bare names also work.
+    for (const tool of [
+      'mcp__user-input__create_webhook_endpoint',
+      'mcp__user-input__update_webhook_endpoint',
+      'create_webhook_endpoint',
+      'update_webhook_endpoint',
+    ]) {
       const out = redactStreamedToolInput(tool, input)
       expect(out).not.toContain('whsec_supersecret')
       expect(out).toContain('"secret":"***"')
@@ -170,6 +182,7 @@ describe('redactStreamedToolInput', () => {
   it('leaves input for unrelated tools untouched', () => {
     const input = '{"secret":"not-a-webhook-secret"}'
     expect(redactStreamedToolInput('some_other_tool', input)).toBe(input)
+    expect(redactStreamedToolInput('mcp__user-input__request_secret', input)).toBe(input)
     expect(redactStreamedToolInput(undefined, input)).toBe(input)
   })
 })
@@ -3271,6 +3284,7 @@ describe('MessagePersister', () => {
       mockDbSelect.mockClear()
 
       mockIsPlatformComposioActive.mockReturnValue(true)
+      mockGetPlatformAccessToken.mockReturnValue('opaque_token')
       mockContainerClientFetch.mockResolvedValue({ ok: true })
       mockCreateWebhookTrigger.mockResolvedValue('trigger_new_id')
       mockCancelWebhookTriggerWithCleanup.mockResolvedValue(true)
@@ -3624,8 +3638,8 @@ describe('MessagePersister', () => {
         expect(mockDisablePlatformWebhookEndpoint).toHaveBeenCalledWith(expect.any(String), ENDPOINT.id)
       })
 
-      it('rejects when the platform is not active', async () => {
-        mockIsPlatformComposioActive.mockReturnValue(false)
+      it('rejects when there is no platform auth', async () => {
+        mockGetPlatformAccessToken.mockReturnValue(null)
 
         simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-5', {
           name: 'No platform',
@@ -3635,6 +3649,20 @@ describe('MessagePersister', () => {
         const rejectCall = await flushHandlers('/inputs/tool-mint-5/reject')
         expect(JSON.parse(rejectCall[1].body).reason).toContain('platform')
         expect(mockCreatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+      })
+
+      it('mints with a personal Composio key as long as platform auth exists', async () => {
+        // Custom endpoints live on the platform proxy, not Composio — a user
+        // who brings their own Composio key must still be able to mint.
+        mockIsPlatformComposioActive.mockReturnValue(false)
+
+        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-6', {
+          name: 'Own composio key',
+          prompt: 'Handle it',
+        })
+
+        await flushHandlers('/inputs/tool-mint-6/resolve')
+        expect(mockCreatePlatformWebhookEndpoint).toHaveBeenCalled()
       })
     })
 
