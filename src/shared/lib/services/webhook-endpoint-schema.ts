@@ -52,6 +52,14 @@ export const verificationProfileSchema = z
 export type VerificationProfile = z.infer<typeof verificationProfileSchema>
 
 /**
+ * CEL filter expression evaluated by the proxy against each delivery. Only
+ * shape-checked here (string, length cap mirroring the platform column
+ * constraint) — the platform compiles it at the write boundary and its parser
+ * error message is what the agent needs to see, so don't pre-empt it.
+ */
+export const filterExpressionSchema = z.string().trim().min(1).max(2048)
+
+/**
  * Container tool inputs, validated host-side before anything is minted or
  * stored (the container is not a trusted boundary). Unknown keys are dropped;
  * model/effort reuse the shared runtime-options shape.
@@ -60,6 +68,7 @@ export const createWebhookEndpointInputSchema = z.object({
   name: z.string().trim().min(1),
   prompt: z.string().trim().min(1),
   verification: verificationProfileSchema.nullish(),
+  filter_exp: filterExpressionSchema.nullish(),
   model: RuntimeOptionsSchema.shape.model,
   effort: RuntimeOptionsSchema.shape.effort,
 })
@@ -69,6 +78,16 @@ export const updateWebhookEndpointInputSchema = z.object({
   name: z.string().trim().min(1).optional(),
   // null explicitly clears the profile; absent leaves it untouched.
   verification: verificationProfileSchema.nullable().optional(),
+  // null explicitly clears the filter; absent leaves it untouched.
+  filter_exp: filterExpressionSchema.nullable().optional(),
+})
+
+export const inspectWebhookEventsInputSchema = z.object({
+  trigger_id: z.string().trim().min(1),
+  limit: z.number().int().min(1).max(50).optional(),
+  // When set, dry-run this candidate expression against the recent
+  // deliveries instead of just listing them.
+  test_filter_exp: filterExpressionSchema.optional(),
 })
 
 /**
@@ -83,6 +102,7 @@ export const webhookEndpointSchema = z
     name: z.string(),
     status: z.string(),
     verification: z.object({ has_secret: z.boolean().optional() }).loose().nullable().optional(),
+    filter_exp: z.string().nullable().optional(),
     receive_count: z.number().optional(),
     rejected_count: z.number().optional(),
     last_received_at: z.string().nullable().optional(),
@@ -106,6 +126,9 @@ export const webhookEnvelopeSchema = z
     kind: z.string(), // 'event' | 'handshake'
     handshake_type: z.string().optional(),
     verified: z.boolean(),
+    // Filter verdict stamped by ingest when the endpoint has a filter_exp
+    // ('passed' | 'filtered' | 'error'; filtered rows never reach dispatch).
+    filter: z.object({ outcome: z.string(), error: z.string().optional() }).loose().optional(),
     method: z.string().optional(),
     url: z.string().optional(),
     query: z.record(z.string(), z.string()).optional(),
@@ -118,6 +141,66 @@ export const webhookEnvelopeSchema = z
   .loose()
 
 export type WebhookEnvelope = z.infer<typeof webhookEnvelopeSchema>
+
+/**
+ * One stored delivery as the proxy's inspection route returns it
+ * (GET /v1/webhook-endpoints/{id}/events). Bodies are previews (capped
+ * proxy-side); lenient so proxy evolution never breaks inspection.
+ */
+export const webhookEndpointEventSchema = z
+  .object({
+    id: z.string(),
+    created_at: z.string(),
+    status: z.string(),
+    kind: z.string().nullable().optional(),
+    verified: z.boolean().optional(),
+    filter: z.object({ outcome: z.string(), error: z.string().optional() }).loose().nullable().optional(),
+    method: z.string().nullable().optional(),
+    content_type: z.string().nullable().optional(),
+    headers: z.record(z.string(), z.string()).nullable().optional(),
+    query: z.record(z.string(), z.string()).nullable().optional(),
+    body: z.string().nullable().optional(),
+    body_truncated: z.boolean().optional(),
+    body_encoding: z.string().nullable().optional(),
+  })
+  .loose()
+
+export type WebhookEndpointEvent = z.infer<typeof webhookEndpointEventSchema>
+
+export const webhookEndpointEventsSchema = z
+  .object({
+    endpoint_id: z.string().optional(),
+    filter_exp: z.string().nullable().optional(),
+    events: z.array(webhookEndpointEventSchema),
+  })
+  .loose()
+
+/** Dry-run result from POST /v1/webhook-endpoints/{id}/test-filter. */
+export const webhookFilterTestResultSchema = z
+  .object({
+    filter_exp: z.string(),
+    evaluated: z.number(),
+    summary: z.object({
+      passed: z.number(),
+      filtered: z.number(),
+      error: z.number(),
+      skipped: z.number(),
+    }),
+    results: z.array(
+      z
+        .object({
+          event_id: z.string(),
+          created_at: z.string(),
+          stored_status: z.string().optional(),
+          outcome: z.string(),
+          error: z.string().optional(),
+        })
+        .loose()
+    ),
+  })
+  .loose()
+
+export type WebhookFilterTestResult = z.infer<typeof webhookFilterTestResultSchema>
 
 /**
  * Local mirror of the endpoint's public URL stored in

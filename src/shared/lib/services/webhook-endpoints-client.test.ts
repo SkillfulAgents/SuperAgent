@@ -22,6 +22,8 @@ import {
   updatePlatformWebhookEndpoint,
   disablePlatformWebhookEndpoint,
   listPlatformWebhookEndpoints,
+  listPlatformWebhookEvents,
+  testPlatformWebhookFilter,
 } from './webhook-endpoints-client'
 
 const ENDPOINT = {
@@ -107,6 +109,96 @@ describe('webhook-endpoints-client', () => {
     const endpoints = await listPlatformWebhookEndpoints('sub_member_1')
     expect(endpoints).toHaveLength(1)
     expect(endpoints[0].id).toBe(ENDPOINT.id)
+  })
+
+  it('sends filter_exp on mint and PATCH (null clears)', async () => {
+    await createPlatformWebhookEndpoint('sub_member_1', {
+      name: 'n',
+      filter_exp: 'body.action == "update"',
+    })
+    expect(JSON.parse((mockFetch.mock.calls[0][1] as RequestInit).body as string).filter_exp).toBe(
+      'body.action == "update"',
+    )
+
+    mockFetch.mockResolvedValue(new Response(JSON.stringify(ENDPOINT), { status: 200 }))
+    await updatePlatformWebhookEndpoint('sub_member_1', ENDPOINT.id, { filter_exp: null })
+    expect(
+      JSON.parse((mockFetch.mock.calls[1][1] as RequestInit).body as string),
+    ).toEqual({ filter_exp: null })
+  })
+
+  it('lists recent events (filtered included) and surfaces the active filter', async () => {
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          endpoint_id: ENDPOINT.id,
+          filter_exp: 'verified',
+          events: [
+            {
+              id: 'whe_1',
+              created_at: '2026-07-07T20:45:19Z',
+              status: 'filtered',
+              kind: 'event',
+              verified: true,
+              filter: { outcome: 'filtered' },
+              method: 'POST',
+              content_type: 'application/json',
+              headers: { 'linear-event': 'Issue' },
+              query: {},
+              body: '{"action":"create"}',
+              body_truncated: false,
+              body_encoding: 'utf8',
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    )
+    const { filterExp, events } = await listPlatformWebhookEvents('sub_member_1', ENDPOINT.id, 5)
+    expect(filterExp).toBe('verified')
+    expect(events).toHaveLength(1)
+    expect(events[0].filter?.outcome).toBe('filtered')
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(String(url)).toBe(`https://proxy.test/v1/webhook-endpoints/${ENDPOINT.id}/events?limit=5`)
+    expect((init as RequestInit).method).toBe('GET')
+  })
+
+  it('dry-runs a candidate filter via test-filter', async () => {
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          endpoint_id: ENDPOINT.id,
+          filter_exp: 'body.action == "update"',
+          evaluated: 2,
+          summary: { passed: 1, filtered: 1, error: 0, skipped: 0 },
+          results: [
+            { event_id: 'whe_1', created_at: '2026-07-07T20:45:19Z', stored_status: 'consumed', outcome: 'passed' },
+            { event_id: 'whe_2', created_at: '2026-07-07T20:44:00Z', stored_status: 'filtered', outcome: 'filtered' },
+          ],
+        }),
+        { status: 200 },
+      ),
+    )
+    const result = await testPlatformWebhookFilter('sub_member_1', ENDPOINT.id, 'body.action == "update"')
+    expect(result.summary.passed).toBe(1)
+    expect(result.results[1].outcome).toBe('filtered')
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(String(url)).toBe(`https://proxy.test/v1/webhook-endpoints/${ENDPOINT.id}/test-filter`)
+    expect((init as RequestInit).method).toBe('POST')
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      filter_exp: 'body.action == "update"',
+    })
+  })
+
+  it('propagates the proxy 400 (with the CEL parser message) on an invalid dry-run expression', async () => {
+    mockFetch.mockResolvedValue(
+      new Response('{"message":"Invalid filter expression: invalid CEL expression: Unexpected token: EOF"}', {
+        status: 400,
+      }),
+    )
+    await expect(
+      testPlatformWebhookFilter('sub_member_1', ENDPOINT.id, 'body.action =='),
+    ).rejects.toThrow(/400.*Unexpected token/)
   })
 
   it('throws on non-OK responses with the status and body', async () => {

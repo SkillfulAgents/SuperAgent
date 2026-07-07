@@ -30,12 +30,16 @@ import {
   createPlatformWebhookEndpoint,
   updatePlatformWebhookEndpoint,
   disablePlatformWebhookEndpoint,
+  listPlatformWebhookEvents,
+  testPlatformWebhookFilter,
 } from '@shared/lib/services/webhook-endpoints-client'
 import {
   createWebhookEndpointInputSchema,
   updateWebhookEndpointInputSchema,
+  inspectWebhookEventsInputSchema,
   extractEndpointUrl,
   CUSTOM_WEBHOOK_TRIGGER_TYPE,
+  type WebhookEndpointEvent,
 } from '@shared/lib/services/webhook-endpoint-schema'
 import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 import {
@@ -155,6 +159,24 @@ const SECRET_BEARING_TOOL_NAMES = new Set([
   'create_webhook_endpoint',
   'update_webhook_endpoint',
 ])
+
+// One inspection line per stored delivery. Bodies are already previews
+// (proxy caps at 2KB); cap harder here — this text lands in the agent's
+// context and 50 events × 2KB would crowd out the actual work.
+const INSPECT_BODY_PREVIEW_CHARS = 200
+
+export function formatWebhookEventLine(event: WebhookEndpointEvent): string {
+  const filterNote = event.filter
+    ? ` · filter: ${event.filter.outcome}${event.filter.outcome === 'error' && event.filter.error ? ` (${event.filter.error})` : ''}`
+    : ''
+  const kindNote = event.kind === 'handshake' ? ' · handshake' : ''
+  const verifiedNote = event.kind === 'event' ? (event.verified ? ' · verified' : ' · unverified') : ''
+  const body = typeof event.body === 'string' && event.body
+    ? event.body.slice(0, INSPECT_BODY_PREVIEW_CHARS) +
+      (event.body.length > INSPECT_BODY_PREVIEW_CHARS || event.body_truncated ? '…' : '')
+    : '(empty body)'
+  return `- ${event.id} · ${event.created_at} · ${event.status}${kindNote}${verifiedNote}${filterNote}\n  ${event.method ?? 'POST'} ${event.content_type ?? ''} — ${body}`
+}
 
 /**
  * Mask the value of a `secret` field in (possibly still-streaming) tool-input
@@ -2066,6 +2088,11 @@ class MessagePersister {
               sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
             )
           }
+          if (state.currentToolUse.name === 'mcp__user-input__inspect_webhook_events') {
+            this.handleInspectWebhookEventsTool(
+              sessionId, state.currentToolUse.id, state.currentToolInput, state.agentSlug
+            )
+          }
 
           // Check if this is an AskUserQuestion tool
           if (state.currentToolUse.name === 'AskUserQuestion') {
@@ -2744,7 +2771,8 @@ ${continuation}`
             'You can still react to events from this service with a custom webhook endpoint:\n' +
             '1. Call create_webhook_endpoint to mint a public URL (with a prompt describing what to do per event).\n' +
             `2. Register that URL with the service — most expose webhook registration via their API (use the connected ${account.toolkitSlug} account) or a settings page.\n` +
-            '3. If the service provides a signing secret, attach it with update_webhook_endpoint so deliveries are verified.'
+            '3. If the service provides a signing secret, attach it with update_webhook_endpoint so deliveries are verified.\n' +
+            '4. If the service\'s webhook events are broader than what you need (most are), add a CEL filter_exp so only matching events start a session — dry-run candidates against real deliveries with inspect_webhook_events first.'
           : `Available triggers for ${account.toolkitSlug}:\n\n${triggers.map((t) =>
               `- **${t.slug}** (${t.name}): ${t.description}${t.type === 'poll' ? ' [poll-based]' : ''}`
             ).join('\n')}\n\nUse setup_trigger with the trigger slug to subscribe. ` +
@@ -2940,6 +2968,7 @@ ${continuation}`
         }
         const input = parsedInput.data
         const verification = input.verification ?? undefined
+        const filterExp = input.filter_exp ?? undefined
 
         const memberId = await this.resolvePlatformMemberForSession(agentSlug, sessionId)
 
@@ -2947,6 +2976,7 @@ ${continuation}`
         const endpoint = await createPlatformWebhookEndpoint(memberId, {
           name: input.name.trim(),
           ...(verification ? { verification } : {}),
+          ...(filterExp ? { filter_exp: filterExp } : {}),
         })
 
         // 2. Save the local trigger row (rollback the mint on failure)
@@ -3014,6 +3044,9 @@ ${continuation}`
           `${verification
             ? 'Signature verification is configured — events with bad signatures are rejected at the edge.'
             : 'No signature verification is configured yet — events will be marked UNVERIFIED. If the service provides a signing secret (many reveal it only after registration), attach it with update_webhook_endpoint.'}\n\n` +
+          `${filterExp
+            ? `Delivery filter active: only events matching \`${filterExp}\` start a session (filtered events are logged — inspect_webhook_events shows them). After real traffic arrives, verify the filter behaves with inspect_webhook_events.`
+            : 'No delivery filter is set — EVERY event this URL receives will start a session. After registering, decide whether you need one: compare the events the service will actually send against what your prompt handles. If the subscription is broader (it usually is — most services can\'t filter by assignee/status/type at registration), add a CEL filter_exp via update_webhook_endpoint so irrelevant events are dropped at the edge instead of waking you. Once real deliveries exist, dry-run candidates with inspect_webhook_events (test_filter_exp) before applying.'}\n\n` +
           `Every delivery to this URL starts a session with your prompt plus the request details.`)
 
         console.log(`[MessagePersister] Custom webhook endpoint ${endpoint.id} created (trigger: ${triggerId})`)
@@ -3084,11 +3117,16 @@ ${continuation}`
           return
         }
 
-        const patch: { name?: string; verification?: import('@shared/lib/services/webhook-endpoint-schema').VerificationProfile | null } = {}
+        const patch: {
+          name?: string
+          verification?: import('@shared/lib/services/webhook-endpoint-schema').VerificationProfile | null
+          filter_exp?: string | null
+        } = {}
         if (input.name) patch.name = input.name
         if (input.verification !== undefined) patch.verification = input.verification
+        if (input.filter_exp !== undefined) patch.filter_exp = input.filter_exp
         if (Object.keys(patch).length === 0) {
-          await this.rejectContainerInput(agentSlug, toolUseId, 'Nothing to update: pass name and/or verification')
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Nothing to update: pass name, verification, and/or filter_exp')
           return
         }
 
@@ -3107,11 +3145,16 @@ ${continuation}`
         const changed = [
           patch.name ? 'name' : null,
           patch.verification === null ? 'verification removed' : patch.verification ? 'verification attached' : null,
+          patch.filter_exp === null ? 'filter removed' : patch.filter_exp ? 'filter set' : null,
         ].filter(Boolean).join(', ')
         await this.resolveContainerInput(agentSlug, toolUseId,
           `Webhook endpoint updated (${changed}).${patch.verification
             ? ' Incoming requests are now signature-verified at the edge; events with bad signatures are rejected.'
-            : ''}`)
+            : ''}${patch.filter_exp
+            ? ` Only deliveries matching \`${patch.filter_exp}\` will start a session; non-matching ones are logged as filtered (inspect_webhook_events shows them, including any filter eval errors — errors fail open and still deliver).`
+            : patch.filter_exp === null
+              ? ' The delivery filter was removed — every event starts a session again.'
+              : ''}`)
 
         console.log(`[MessagePersister] Custom webhook endpoint ${trigger.composioTriggerId} updated (${changed})`)
       } catch (error) {
@@ -3124,6 +3167,95 @@ ${continuation}`
         if (agentSlug) {
           const msg = error instanceof Error ? error.message : String(error)
           await this.rejectContainerInput(agentSlug, toolUseId, `Failed to update webhook endpoint: ${msg}`).catch(console.error)
+        }
+      }
+    })()
+  }
+
+  // Handle inspect_webhook_events - blocking: read recent stored deliveries
+  // (including filter-withheld rows) from the platform, or dry-run a candidate
+  // filter expression against them. Read-only on both sides.
+  private handleInspectWebhookEventsTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      try {
+        if (!agentSlug) {
+          console.error('[MessagePersister] inspect_webhook_events missing agentSlug')
+          return
+        }
+
+        if (!getPlatformAccessToken()) {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Custom webhook endpoints are only available when connected to the platform')
+          return
+        }
+
+        let rawInput: unknown
+        try {
+          rawInput = JSON.parse(toolInput)
+        } catch {
+          await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input')
+          return
+        }
+
+        const parsedInput = inspectWebhookEventsInputSchema.safeParse(rawInput)
+        if (!parsedInput.success) {
+          await this.rejectContainerInput(agentSlug, toolUseId,
+            `Invalid tool input: ${parsedInput.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`)
+          return
+        }
+        const input = parsedInput.data
+
+        // Cancelled triggers stay inspectable on purpose: the stored events
+        // outlive the endpoint and post-mortems are a legitimate use.
+        const trigger = await getWebhookTrigger(input.trigger_id)
+        if (!trigger || trigger.agentSlug !== agentSlug || trigger.kind !== 'custom' || !trigger.composioTriggerId) {
+          await this.rejectContainerInput(agentSlug, toolUseId, `No custom webhook endpoint found for trigger ${input.trigger_id}`)
+          return
+        }
+
+        // Creator-first member resolution, same as update/teardown.
+        const memberId =
+          resolvePlatformMemberForCandidates([trigger.createdByUserId])?.memberId ??
+          (await this.resolvePlatformMemberForSession(agentSlug, sessionId))
+
+        if (input.test_filter_exp) {
+          const result = await testPlatformWebhookFilter(
+            memberId, trigger.composioTriggerId, input.test_filter_exp, input.limit)
+          const lines = result.results.map((r) => {
+            const stored = r.stored_status ? ` (stored: ${r.stored_status})` : ''
+            const detail = r.outcome === 'error' && r.error ? ` — ${r.error}` : ''
+            return `- ${r.event_id} · ${r.created_at}${stored}: ${r.outcome.toUpperCase()}${detail}`
+          })
+          await this.resolveContainerInput(agentSlug, toolUseId,
+            `Dry-run of \`${result.filter_exp}\` against the ${result.evaluated} most recent deliveries — ` +
+            `${result.summary.passed} would pass, ${result.summary.filtered} filtered out, ` +
+            `${result.summary.error} errored (errors fail open = delivered), ${result.summary.skipped} skipped (handshakes/scrubbed).\n\n` +
+            `${lines.length ? lines.join('\n') : 'No stored deliveries to evaluate yet — send a test event first.'}\n\n` +
+            `Nothing was changed. When the verdicts look right, apply it with update_webhook_endpoint (filter_exp).`)
+        } else {
+          const { filterExp, events } = await listPlatformWebhookEvents(
+            memberId, trigger.composioTriggerId, input.limit)
+          await this.resolveContainerInput(agentSlug, toolUseId,
+            `Active filter: ${filterExp ? `\`${filterExp}\`` : 'none (every event delivers)'}\n\n` +
+            `${events.length
+              ? `Recent deliveries (newest first):\n${events.map(formatWebhookEventLine).join('\n')}`
+              : 'No deliveries recorded yet for this endpoint.'}`)
+        }
+
+        console.log(`[MessagePersister] Inspected webhook events for ${trigger.composioTriggerId}`)
+      } catch (error) {
+        console.error('[MessagePersister] Error handling inspect_webhook_events:', error)
+        captureException(error, {
+          tags: { area: 'webhook-endpoints', op: 'inspect' },
+          extra: { agentSlug, sessionId, toolUseId },
+        })
+        if (agentSlug) {
+          const msg = error instanceof Error ? error.message : String(error)
+          await this.rejectContainerInput(agentSlug, toolUseId, `Failed to inspect webhook events: ${msg}`).catch(console.error)
         }
       }
     })()
