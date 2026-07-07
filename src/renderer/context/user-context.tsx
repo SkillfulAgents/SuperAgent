@@ -77,9 +77,12 @@ function useAuthSession() {
 const selectAgentIndex = (agents: ApiAgent[]): Pick<ApiAgent, 'slug' | 'displaySlug'>[] =>
   agents.map(({ slug, displaySlug }) => ({ slug, displaySlug }))
 
-function useResolverAgents(): { data: Pick<ApiAgent, 'slug' | 'displaySlug'>[] | undefined } {
+// Gated on `enabled` (isAuthenticated): while signed out, /api/agents 401s and the
+// apiFetch handler signs out again → get-session refetch → AuthGate flashes
+// Loading/AuthPage in a loop as React Query retries the failed query.
+function useResolverAgents(enabled: boolean): { data: Pick<ApiAgent, 'slug' | 'displaySlug'>[] | undefined } {
   // eslint-disable-next-line react-hooks/rules-of-hooks
-  if (__AUTH_MODE__) return useAgents({ select: selectAgentIndex })
+  if (__AUTH_MODE__) return useAgents({ select: selectAgentIndex, enabled })
   return { data: undefined }
 }
 
@@ -128,7 +131,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   // slug they have on hand — frequently the URL **display slug** (`{name}-{id}`),
   // which never matches an id-keyed entry. Resolve to the canonical id first so a
   // route-derived slug doesn't silently read as "no role" (false view-only).
-  const { data: agents } = useResolverAgents()
+  const { data: agents } = useResolverAgents(isAuthenticated)
   const agentRole = useCallback(
     (agentSlug: string): AgentRole | null => {
       if (!isAuthMode) return null
