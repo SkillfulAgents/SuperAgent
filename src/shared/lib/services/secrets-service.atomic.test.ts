@@ -133,6 +133,50 @@ describe('atomic .env writes', () => {
     expect(fs.readFileSync(envPath('agent'), 'utf-8')).toBe(before)
   })
 
+  it.runIf(process.platform !== 'win32')('getSecretEnvVars heals a poisoned 0o600 .env on session start', async () => {
+    const { setSecret, getSecretEnvVars } = await importService()
+    await setSecret('agent', { envVar: 'SUPABASE_URL', key: 'SUPABASE_URL', value: 'https://x' })
+    fs.chmodSync(envPath('agent'), 0o600)
+
+    const names = await getSecretEnvVars('agent')
+
+    expect(names).toEqual(['SUPABASE_URL'])
+    expect(fs.statSync(envPath('agent')).mode & 0o777).toBe(0o666)
+  })
+
+  it('getSecretEnvVars degrades to [] (never wedges session start) when the .env is unreadable', async () => {
+    // Models the container-owned poisoned file: this process can neither chmod
+    // (owner-only) nor read it. Session creation must proceed with no secret
+    // names — the container heals the file it owns on boot — instead of 500ing
+    // forever (an unstartable session means the heal never runs: a hard wedge).
+    const { setSecret, getSecretEnvVars } = await importService()
+    await setSecret('agent', { envVar: 'SUPABASE_URL', key: 'SUPABASE_URL', value: 'https://x' })
+    const before = fs.readFileSync(envPath('agent'), 'utf-8')
+
+    const eacces = () =>
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    const eperm = () => Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' })
+    const realReadFile = fs.promises.readFile.bind(fs.promises)
+    const readSpy = vi.spyOn(fs.promises, 'readFile').mockImplementation((async (
+      p: unknown,
+      ...args: unknown[]
+    ) => {
+      if (typeof p === 'string' && p.endsWith(path.join('workspace', '.env'))) throw eacces()
+      return (realReadFile as any)(p, ...args)
+    }) as typeof fs.promises.readFile)
+    const chmodSpy = vi.spyOn(fs.promises, 'chmod').mockRejectedValue(eperm())
+
+    try {
+      await expect(getSecretEnvVars('agent')).resolves.toEqual([])
+    } finally {
+      readSpy.mockRestore()
+      chmodSpy.mockRestore()
+    }
+
+    // Degradation is read-only: the file itself was never touched.
+    expect(fs.readFileSync(envPath('agent'), 'utf-8')).toBe(before)
+  })
+
   it('deleteSecret returns false (does NOT throw) when the workspace/.env is absent', async () => {
     // The agent's workspace dir doesn't exist, so opening the cross-process
     // lockfile would ENOENT. deleteSecret must short-circuit to false (→ route

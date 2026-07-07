@@ -15,7 +15,7 @@ import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
 import { runBrowserUpload } from './browser-upload';
-import { updateEnvFileEntry } from './env-file-store';
+import { updateEnvFileEntry, healEnvFilePermissions } from './env-file-store';
 
 import { getEditingCommands } from './cdp-editing-commands';
 
@@ -1623,6 +1623,13 @@ async function buildFileTree(
     return null;
   }
 }
+
+// Startup self-heal: older builds could leave /workspace/.env 0o600 and
+// owner-flipped, locking one writer out permanently. If WE own the poisoned
+// file, only we can fix it — do so before any session starts.
+void healEnvFilePermissions('/workspace/.env').then((healed) => {
+  if (healed) console.log('[ENV] Healed /workspace/.env permissions back to 0666');
+});
 
 // Start the server
 const port = parseInt(process.env.PORT || '3000');

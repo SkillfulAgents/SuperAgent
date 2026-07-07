@@ -13,6 +13,7 @@ import {
   readEnvFileOrNull,
   upsertEnvContent,
   updateEnvFileEntry,
+  healEnvFilePermissions,
 } from './env-file-store';
 
 let tmpDir: string;
@@ -294,5 +295,28 @@ describe('updateEnvFileEntry', () => {
     const content = fs.readFileSync(envPath, 'utf-8');
     expect(content).toContain('SEED=1');
     for (let i = 0; i < 10; i++) expect(content).toContain(`KEY_${i}="v${i}"`);
+  });
+});
+
+describe('healEnvFilePermissions (startup self-heal)', () => {
+  it.runIf(process.platform !== 'win32')('fixes a poisoned 0o600 file back to 0o666 without touching content', async () => {
+    fs.writeFileSync(envPath, 'SUPABASE_URL=https://x\n');
+    fs.chmodSync(envPath, 0o600);
+
+    expect(await healEnvFilePermissions(envPath)).toBe(true);
+
+    expect(fs.statSync(envPath).mode & 0o777).toBe(0o666);
+    expect(fs.readFileSync(envPath, 'utf-8')).toBe('SUPABASE_URL=https://x\n');
+  });
+
+  it.runIf(process.platform !== 'win32')('is a no-op on an already-correct file', async () => {
+    fs.writeFileSync(envPath, 'A=1\n');
+    fs.chmodSync(envPath, 0o666);
+    expect(await healEnvFilePermissions(envPath)).toBe(false);
+    expect(fs.statSync(envPath).mode & 0o777).toBe(0o666);
+  });
+
+  it('is a no-op (never throws) when the file is absent', async () => {
+    expect(await healEnvFilePermissions(envPath)).toBe(false);
   });
 });

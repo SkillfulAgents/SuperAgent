@@ -5,6 +5,7 @@
  * Secrets are stored in .env files in the agent workspace.
  */
 
+import * as fs from 'fs'
 import {
   getAgentEnvPath,
   getAgentWorkspaceDir,
@@ -268,9 +269,40 @@ export async function hasSecrets(agentSlug: string): Promise<boolean> {
 }
 
 /**
- * Get list of env var names (for passing to container session)
+ * Get list of env var names (for passing to container session).
+ *
+ * This runs on EVERY session start, which makes it the host's self-heal point
+ * for a .env poisoned by older builds (0o600 + owner flipped by an atomic
+ * rename): if this process owns the file, chmod it back to the 0o666 contract.
+ * If it can't even read the file (the container owns the poisoned copy),
+ * degrade to [] instead of failing session creation — this consumer only
+ * surfaces NAMES to the agent, and the booting container heals the file it
+ * owns on startup, so the next session recovers fully. Mutating paths
+ * (setSecret/deleteSecret) stay strictly fail-closed.
  */
 export async function getSecretEnvVars(agentSlug: string): Promise<string[]> {
-  const secrets = await listSecrets(agentSlug)
-  return secrets.map((s) => s.envVar)
+  const envPath = getAgentEnvPath(agentSlug)
+  try {
+    const st = await fs.promises.stat(envPath)
+    if ((st.mode & 0o777) !== 0o666) {
+      await fs.promises.chmod(envPath, 0o666)
+      console.warn(`[secrets] Healed ${envPath} permissions back to 0666`)
+    }
+  } catch {
+    // absent, or not ours to fix (chmod is owner-only) — the container heals its own
+  }
+  try {
+    const secrets = await listSecrets(agentSlug)
+    return secrets.map((s) => s.envVar)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code
+    if (code === 'EACCES' || code === 'EPERM') {
+      console.warn(
+        `[secrets] ${envPath} unreadable (${code}) — starting session without secret names; ` +
+          'the agent container heals the file permissions on boot'
+      )
+      return []
+    }
+    throw err
+  }
 }
