@@ -453,10 +453,11 @@ describe('secrets service integration', () => {
       )
       const stats = await fs.promises.stat(envPath)
 
-      // Mode 0o666 is requested so non-root agent containers can read secrets.
-      // Effective permissions depend on process umask.
-      const umask = process.umask()
-      expect(stats.mode & 0o777).toBe(0o666 & ~umask)
+      // Exact 0o666 is FORCED (not umask-reduced, not preserved-from-existing):
+      // the atomic rename transfers ownership to this process, and the
+      // container — a different uid — must still be able to read AND write the
+      // file. A carried-over restrictive mode locks it out (EACCES on POST /env).
+      expect(stats.mode & 0o777).toBe(0o666)
     })
   })
 

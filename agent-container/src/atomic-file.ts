@@ -10,10 +10,11 @@
  * data-loss bug-class for the container's own /workspace state files.
  *
  * `mode` (matching fs.writeFile) applies only when CREATING the target; an
- * existing file's permissions are preserved so the rename doesn't reset perms
- * the host relies on for cross-process access (e.g. the world-writable
- * /workspace/.env). The whole workspace dir is bind-mounted, so a temp file +
- * rename within it is on the same filesystem and propagates to the host.
+ * existing file's owner, group, and permissions are restored after the rename
+ * (ownership best-effort — only root can give a file away), so replacing a
+ * file doesn't silently re-own it to this process with fresh perms. The whole
+ * workspace dir is bind-mounted, so a temp file + rename within it is on the
+ * same filesystem and propagates to the host.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -73,17 +74,33 @@ function fsyncDirSync(dir: string): void {
  * dir). On ANY error the temp file is removed and the existing target is left
  * exactly as it was. The parent directory must already exist.
  */
-export async function writeFileAtomic(filePath: string, content: string, mode = 0o666): Promise<void> {
+export async function writeFileAtomic(
+  filePath: string,
+  content: string,
+  mode = 0o666,
+  opts: { forceMode?: boolean } = {}
+): Promise<void> {
   const dir = path.dirname(filePath);
   const tmpPath = tempPathFor(filePath);
-  let existingMode: number | undefined;
-  try {
-    existingMode = (await fs.promises.stat(filePath)).mode & 0o777;
-  } catch (err) {
-    // Only a confirmed-absent target is a create. Anything else (ESTALE from a
-    // cross-client NFS rename, EIO) must fail the write — treating it as a
-    // create would silently reset the file's permissions to `mode`.
-    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+  // The rename below replaces the inode, handing the file to this process's
+  // uid with the temp file's perms — so an existing target's owner, group, and
+  // mode are restored (ownership best-effort: only root can give a file away).
+  //
+  // `forceMode` skips preservation for files that must hold `mode` no matter
+  // what: the agent .env is a two-uid file and the non-root writer can never
+  // chown it back, so a preserved stray restrictive mode would lock the other
+  // writer out permanently — only a forced world-RW mode is uid-independent.
+  let existing: { mode: number; uid: number; gid: number } | undefined;
+  if (!opts.forceMode) {
+    try {
+      const st = await fs.promises.stat(filePath);
+      existing = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid };
+    } catch (err) {
+      // Only a confirmed-absent target is a create. Anything else (ESTALE from a
+      // cross-client NFS rename, EIO) must fail the write — treating it as a
+      // create would silently reset the file's permissions to `mode`.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+    }
   }
   try {
     // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
@@ -91,8 +108,14 @@ export async function writeFileAtomic(filePath: string, content: string, mode = 
     try {
       await handle.writeFile(content, 'utf-8');
       // Best-effort: a perms-less mount (e.g. an S3 FUSE driver) may reject
-      // chmod — never let a permission tweak fail the data write.
-      if (existingMode !== undefined) await handle.chmod(existingMode).catch(() => {});
+      // chown/chmod — never let a metadata tweak fail the data write.
+      // chown before chmod: chown can clear mode bits on some platforms.
+      if (opts.forceMode) {
+        await handle.chmod(mode).catch(() => {});
+      } else if (existing) {
+        await handle.chown(existing.uid, existing.gid).catch(() => {});
+        await handle.chmod(existing.mode).catch(() => {});
+      }
       await handle.sync();
     } finally {
       await handle.close();
@@ -109,9 +132,10 @@ export async function writeFileAtomic(filePath: string, content: string, mode = 
 export function writeFileAtomicSync(filePath: string, content: string, mode = 0o666): void {
   const dir = path.dirname(filePath);
   const tmpPath = tempPathFor(filePath);
-  let existingMode: number | undefined;
+  let existing: { mode: number; uid: number; gid: number } | undefined;
   try {
-    existingMode = fs.statSync(filePath).mode & 0o777;
+    const st = fs.statSync(filePath);
+    existing = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid };
   } catch (err) {
     // See writeFileAtomic: ENOENT-only, everything else fails the write.
     if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
@@ -120,11 +144,16 @@ export function writeFileAtomicSync(filePath: string, content: string, mode = 0o
     const fd = fs.openSync(tmpPath, 'wx', mode);
     try {
       fs.writeFileSync(fd, content, 'utf-8');
-      // Best-effort (see writeFileAtomic): a perms-less mount's chmod rejection
-      // must not fail the data write.
-      if (existingMode !== undefined) {
+      // Best-effort (see writeFileAtomic): a perms-less mount's chown/chmod
+      // rejection must not fail the data write. chown before chmod.
+      if (existing) {
         try {
-          fs.fchmodSync(fd, existingMode);
+          fs.fchownSync(fd, existing.uid, existing.gid);
+        } catch {
+          // ignore — only root can give a file away
+        }
+        try {
+          fs.fchmodSync(fd, existing.mode);
         } catch {
           // ignore — perms are advisory on object-storage mounts
         }

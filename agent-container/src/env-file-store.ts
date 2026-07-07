@@ -174,13 +174,16 @@ export function upsertEnvContent(content: string, key: string, value: string): s
  * Cross-process-safe upsert of a single `key=value` into the env file:
  * lock → fail-closed read → line-preserving merge → atomic write.
  *
- * Created with mode 0o666 (matching the host's setSecret) so whichever side
- * creates the file first, the other side — a different uid — can still write it.
+ * Mode 0o666 is FORCED (not umask'd, not preserved-from-existing): the file is
+ * written by two different uids (this container and the host app), and the
+ * atomic rename transfers ownership to whoever wrote last — carrying over a
+ * stray 0o600 would leave a file only the last writer can even read, locking
+ * the other side out on its next update.
  */
 export async function updateEnvFileEntry(filePath: string, key: string, value: string): Promise<void> {
   await withEnvFileLock(filePath, async () => {
     const existing = await readEnvFileOrNull(filePath);
     const next = upsertEnvContent(existing ?? '', key, value);
-    await writeFileAtomic(filePath, next, 0o666);
+    await writeFileAtomic(filePath, next, 0o666, { forceMode: true });
   });
 }

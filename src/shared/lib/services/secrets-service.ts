@@ -206,7 +206,9 @@ export async function setSecret(agentSlug: string, secret: AgentSecret): Promise
   // lock the container honors too, re-read FRESH under the lock, and write
   // atomically so an interleaved/interrupted write can't drop other
   // secrets or truncate the file (which doubles as the container runtime env).
-  // mode 0o666 is preserved so the container (different uid) can still write it.
+  // mode 0o666 is FORCED: the atomic rename transfers ownership to this
+  // process, so preserving a stray restrictive mode would leave a file the
+  // container (different uid) can no longer read or write.
   await withCrossProcessFileLock(envPath, async () => {
     const secrets = await listSecrets(agentSlug)
 
@@ -217,7 +219,7 @@ export async function setSecret(agentSlug: string, secret: AgentSecret): Promise
       secrets.push(secret)
     }
 
-    await writeFileAtomic(envPath, serializeEnvFile(secrets), { mode: 0o666 })
+    await writeFileAtomic(envPath, serializeEnvFile(secrets), { mode: 0o666, forceMode: true })
   })
 }
 
@@ -243,9 +245,9 @@ export async function deleteSecret(agentSlug: string, envVar: string): Promise<b
 
     if (filtered.length === 0) {
       // No secrets left — leave an empty (but valid) header file.
-      await writeFileAtomic(envPath, '# Superagent Secrets\n', { mode: 0o666 })
+      await writeFileAtomic(envPath, '# Superagent Secrets\n', { mode: 0o666, forceMode: true })
     } else {
-      await writeFileAtomic(envPath, serializeEnvFile(filtered), { mode: 0o666 })
+      await writeFileAtomic(envPath, serializeEnvFile(filtered), { mode: 0o666, forceMode: true })
     }
 
     return true
