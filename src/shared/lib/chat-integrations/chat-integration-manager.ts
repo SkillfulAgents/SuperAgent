@@ -724,7 +724,7 @@ class ChatIntegrationManager {
       return
     }
 
-    // Handle /stop command — interrupt the in-flight turn, keep the conversation
+    // Handle /stop command - interrupt the in-flight turn, keep the conversation
     if (message.text.trim().toLowerCase() === '/stop') {
       await this.stopChatTurn(integration, chatId, conn.connector)
       return
@@ -1060,7 +1060,7 @@ class ChatIntegrationManager {
   }
 
   /**
-   * /stop — interrupt the chat's in-flight turn via the app Stop button's shared
+   * /stop - interrupt the chat's in-flight turn via the app Stop button's shared
    * path (interruptAgentSession always settles locally, even on a wedged
    * container). Unlike /clear, the session mapping survives: the next message
    * runs as a fresh turn in the same conversation. The whole in-flight turn is
@@ -1712,7 +1712,7 @@ export function cancelIndicatorSleep(managed: ManagedConnector): void {
 // SSE event (synchronously, before the serialization queue), cancelled on terminal
 // events and teardown. After STALL_NUDGE_MS of total silence it sends ONE
 // informational message pointing at /stop. It never paints or clears the
-// indicator - that stays 100% tick-driven (PR B's invariant).
+// indicator - that stays 100% tick-driven.
 
 /** Silence threshold before the one-per-turn stall nudge. Generous so that most
  * legitimately-silent long tools (builds, installs, browser waits) finish first. */

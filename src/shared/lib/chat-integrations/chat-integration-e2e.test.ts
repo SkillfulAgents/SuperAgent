@@ -315,6 +315,84 @@ describe('Chat integration E2E', () => {
       expect(messagePersister.isSessionActive(sessionId)).toBe(false)
       // The conversation mapping survives un-archived (unlike /clear)
       expect(listChatIntegrationSessions(integrationId).find(s => s.sessionId === sessionId)!.archivedAt).toBeNull()
+
+      // And the next message runs as a fresh turn in the SAME conversation,
+      // dispatched immediately (not queued behind the killed turn)
+      const sendsBefore = MockContainerClient.sendMessageCalls.length
+      mockConnector.simulateIncomingMessage('again', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.sendMessageCalls.length > sendsBefore)
+      const followUp = MockContainerClient.sendMessageCalls.at(-1)!
+      expect(followUp.sessionId).toBe(sessionId)
+      expect(followUp.content).toContain('again')
+    })
+
+    it('acks "nothing running" after the previous turn completed', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      const sessionId = await startConversation(integrationId)
+      // The turn settled inside startConversation; nothing marks it active again
+      const interruptSpy = vi.spyOn(mockContainerClient, 'interruptSession')
+
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+      await waitForCondition(() =>
+        mockConnector.sentMessages.some(m => m.message.text === '⏹ Nothing is running right now.'))
+
+      expect(interruptSpy).not.toHaveBeenCalled()
+      expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+    })
+
+    it("leaves a sibling chat's running turn untouched", async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      // Two chats on one integration (and therefore one agent)
+      mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
+      await waitForCondition(() =>
+        listChatIntegrationSessions(integrationId).some(s => s.externalChatId === 'chat-1'))
+      mockConnector.simulateIncomingMessage('Hello', 'chat-2', 'user-2')
+      await waitForCondition(() =>
+        listChatIntegrationSessions(integrationId).some(s => s.externalChatId === 'chat-2'))
+      const s1 = listChatIntegrationSessions(integrationId).find(s => s.externalChatId === 'chat-1')!.sessionId
+      const s2 = listChatIntegrationSessions(integrationId).find(s => s.externalChatId === 'chat-2')!.sessionId
+      // Let BOTH mock turns respond AND settle before simulating the hangs, so a
+      // late scenario completion can't un-do a simulated active state
+      const responded = (chatId: string) =>
+        mockConnector.sentMessages.some(m => m.chatId === chatId) ||
+        mockConnector.finalizedMessages.some(m => m.chatId === chatId)
+      await waitForCondition(() =>
+        responded('chat-1') && responded('chat-2') &&
+        !messagePersister.isSessionActive(s1) && !messagePersister.isSessionActive(s2), 5000)
+
+      messagePersister.markSessionActive(s1, 'test-agent')
+      messagePersister.markSessionActive(s2, 'test-agent')
+
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+      await waitForCondition(() =>
+        mockConnector.sentMessages.some(m => m.chatId === 'chat-1' && m.message.text === '⏹ Stopped. Send a message to start again.'))
+
+      expect(messagePersister.isSessionActive(s1)).toBe(false)
+      expect(messagePersister.isSessionActive(s2)).toBe(true)
+      // The ack went only to chat-1
+      expect(mockConnector.sentMessages.some(m => m.chatId === 'chat-2' && m.message.text?.includes('Stopped'))).toBe(false)
+    })
+
+    it('suppresses a stale session_error notice racing the stop ack', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      const sessionId = await startConversation(integrationId)
+
+      messagePersister.markSessionActive(sessionId, 'test-agent')
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+      await waitForCondition(() =>
+        mockConnector.sentMessages.some(m => m.message.text === '⏹ Stopped. Send a message to start again.'))
+      const countAfterAck = mockConnector.sentMessages.length
+
+      // A stale error event that was already in flight when /stop landed: it must
+      // not produce a second, contradictory notice after the stop ack
+      ;(messagePersister as unknown as { broadcastToSSE(id: string, data: unknown): void })
+        .broadcastToSSE(sessionId, { type: 'session_error', apiErrorCode: null })
+      await new Promise(r => setTimeout(r, 100))
+
+      expect(mockConnector.sentMessages.length).toBe(countAfterAck)
     })
 
     it('acks gracefully when nothing is running', async () => {
@@ -378,14 +456,22 @@ describe('Chat integration E2E', () => {
       const sessionId = listChatIntegrationSessions(integrationId).find(s => s.externalChatId === 'chat-1')!.sessionId
 
       messagePersister.markSessionActive(sessionId, 'test-agent')
-      const interruptSpy = vi.spyOn(mockContainerClient, 'interruptSession')
+      // Capture archive state AT interrupt time to pin the ordering, not just
+      // that both happened
+      let archivedAtInterruptTime: unknown = 'interrupt-never-ran'
+      const interruptSpy = vi.spyOn(mockContainerClient, 'interruptSession').mockImplementation(async () => {
+        archivedAtInterruptTime = listChatIntegrationSessions(integrationId).find(s => s.sessionId === sessionId)!.archivedAt
+        return true
+      })
 
       mockConnector.simulateIncomingMessage('/clear', 'chat-1', 'user-1')
       await waitForCondition(() =>
         mockConnector.sentMessages.some(m => m.message.text?.includes('Session cleared')))
 
-      // Stop first: the turn must not keep running orphaned after the mapping is archived
+      // Stop FIRST: the turn must not keep running orphaned after the mapping is
+      // archived - at interrupt time the row was not yet archived
       expect(interruptSpy).toHaveBeenCalledWith(sessionId)
+      expect(archivedAtInterruptTime).toBeNull()
       expect(messagePersister.isSessionActive(sessionId)).toBe(false)
       // And the clear still archived the mapping (listChatIntegrationSessions
       // intentionally returns archived rows too, so assert the flag itself)
@@ -438,6 +524,61 @@ describe('Chat integration E2E', () => {
         expect(mockConnector.sentMessages.filter(m => m.message.text === STALL_NUDGE_TEXT)).toHaveLength(1)
       } finally {
         vi.useRealTimers()
+      }
+    })
+
+    it('never nudges a healthy long turn that emits periodic events', async () => {
+      // Pins the SYNCHRONOUS reset wiring in the addSSEClient callback: a turn
+      // that is LONG but never 7-min-silent must not nudge. Without the reset,
+      // the dispatch-time arm fires at 7 minutes and this test goes red.
+      MockContainerClient.scenarios.set('heartbeat work', {
+        execute(sessionId: string, client: MockContainerClient) {
+          // Same opening shape as SlowWorkScenario, then a heartbeat every
+          // minute for 16 minutes, then a clean finish.
+          setTimeout(() => {
+            client.emitStreamMessage(sessionId, {
+              type: 'stream_event',
+              content: { type: 'stream_event', event: { type: 'message_start' } },
+            })
+            client.emitStreamMessage(sessionId, {
+              type: 'stream_event',
+              content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+            })
+          }, 50)
+          for (let i = 1; i <= 16; i++) {
+            setTimeout(() => {
+              client.emitStreamMessage(sessionId, {
+                type: 'stream_event',
+                content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: `tick ${i} ` } } },
+              })
+            }, i * 60_000)
+          }
+          setTimeout(() => {
+            client.emitStreamMessage(sessionId, {
+              type: 'result',
+              content: { type: 'result', subtype: 'success' },
+            })
+          }, 17 * 60_000)
+        },
+      })
+      try {
+        const integrationId = createTestIntegration()
+        await chatIntegrationManager.addIntegration(integrationId)
+        await warmDispatchPath(integrationId)
+
+        vi.useFakeTimers()
+        try {
+          mockConnector.simulateIncomingMessage('heartbeat work', 'chat-1', 'user-1')
+          await vi.advanceTimersByTimeAsync(1000)
+
+          // 16 minutes - far past STALL_NUDGE_MS - with an event every minute
+          await vi.advanceTimersByTimeAsync(16 * 60_000)
+          expect(mockConnector.sentMessages.filter(m => m.message.text === STALL_NUDGE_TEXT)).toHaveLength(0)
+        } finally {
+          vi.useRealTimers()
+        }
+      } finally {
+        MockContainerClient.scenarios.delete('heartbeat work')
       }
     })
 
