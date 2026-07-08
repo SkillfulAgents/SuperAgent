@@ -60,26 +60,14 @@ describe('longContextWarningText', () => {
 })
 
 describe('webToolsWarning', () => {
-  it('warns about both and points to a provider when neither is available', () => {
-    const w = webToolsWarning(true, true)!
+  it('warns and points to a provider when web tools are unavailable', () => {
+    const w = webToolsWarning(true)!
     expect(w).toMatch(/Web search and fetch aren.t available on this model/)
     expect(w).toMatch(/Set a provider under Settings . Web to use them on any model/)
   })
 
-  it('names web search only (and a Search provider) when just search is unavailable', () => {
-    const w = webToolsWarning(true, false)!
-    expect(w).toMatch(/Web search isn.t available on this model/)
-    expect(w).toMatch(/Set a Search provider under Settings . Web to use it/)
-  })
-
-  it('names web fetch only (and a Fetch provider) when just fetch is unavailable', () => {
-    const w = webToolsWarning(false, true)!
-    expect(w).toMatch(/Web fetch isn.t available on this model/)
-    expect(w).toMatch(/Set a Fetch provider under Settings . Web to use it/)
-  })
-
-  it('returns null (no banner) when both are available', () => {
-    expect(webToolsWarning(false, false)).toBeNull()
+  it('returns null (no banner) when web tools are available', () => {
+    expect(webToolsWarning(false)).toBeNull()
   })
 })
 
@@ -164,35 +152,16 @@ describe('ModelFamilyList', () => {
     expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
   })
 
-  it('clears the warning on a non-Claude model when both web vendors are configured', () => {
+  it('clears the warning on a non-Claude model when a web vendor is configured', () => {
     render(
-      <ModelFamilyList
-        catalog={CATALOG}
-        value="openai/gpt-5.5"
-        onPick={vi.fn()}
-        webSearchProvider="exa"
-        webFetchProvider="exa"
-      />,
+      <ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} webProvider="exa" />,
     )
     expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
   })
 
-  it('narrows to a fetch-only warning when only the search vendor is configured', () => {
-    render(
-      <ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} webSearchProvider="exa" />,
-    )
-    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/Web fetch isn.t available/)
-  })
-
   it('treats a "native" provider id as no vendor (still warns)', () => {
     render(
-      <ModelFamilyList
-        catalog={CATALOG}
-        value="openai/gpt-5.5"
-        onPick={vi.fn()}
-        webSearchProvider="native"
-        webFetchProvider="native"
-      />,
+      <ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} webProvider="native" />,
     )
     expect(screen.getByTestId('model-no-websearch-warning')).toBeInTheDocument()
   })

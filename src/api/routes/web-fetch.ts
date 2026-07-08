@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
-import { getActiveWebFetchProvider } from '@shared/lib/web-provider'
+import { getActiveWebProvider } from '@shared/lib/web-provider'
 import { isUrlAllowed } from '@shared/lib/web-provider/allowed-sites'
 import { WebFetchRequestSchema } from '@shared/lib/web-provider/web-fetch-request-schema'
 import { getSettings } from '@shared/lib/config/settings'
@@ -40,8 +40,8 @@ webFetch.post('/fetch', async (c) => {
     return c.json({ error: 'Invalid request', detail: parsed.error.issues }, 400)
   }
 
-  const provider = getActiveWebFetchProvider()
-  if (!provider) {
+  const provider = getActiveWebProvider()
+  if (!provider?.fetch) {
     return c.json({ error: 'No web fetch vendor configured' }, 400)
   }
 

@@ -8,14 +8,14 @@ import {
 } from '@renderer/components/ui/select'
 import { Label } from '@renderer/components/ui/label'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
-import type { WebSearchProviderId } from '@shared/lib/config/settings'
+import type { WebProviderId } from '@shared/lib/config/settings'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 
-// One "Web" tab with a single user-facing Web Provider select. Search and fetch stay two separate
-// providers/routes under the hood (so platform can route each to its best vendor); the desktop app
-// keeps them in lockstep by writing both settings fields on change and reading search as canonical.
-// A `usesExaKey` flag marks vendors backed by the shared Exa key (settings.apiKeys.exaApiKey), so the
-// key input renders once and adding an Exa-backed vendor stays a data entry, not new JSX.
+// One "Web" tab with a single Web Provider select backing one `webProvider` setting. One vendor
+// backs both search and fetch; whether each tool is host-routed or native is derived host-side from
+// the vendor's capabilities. A `usesExaKey` flag marks vendors backed by the shared Exa key
+// (settings.apiKeys.exaApiKey), so the key input renders once and adding an Exa-backed vendor stays a
+// data entry, not new JSX.
 type ProviderOption<T extends string> = {
   value: T
   label: string
@@ -24,7 +24,7 @@ type ProviderOption<T extends string> = {
   usesExaKey?: boolean
 }
 
-const WEB_PROVIDERS: ProviderOption<WebSearchProviderId>[] = [
+const WEB_PROVIDERS: ProviderOption<WebProviderId>[] = [
   {
     value: 'native',
     label: 'Native',
@@ -106,8 +106,7 @@ export function WebTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
 
-  // Read search as canonical; the control writes both fields together so they never diverge here.
-  const selected: WebSearchProviderId = settings?.webSearchProvider ?? 'native'
+  const selected: WebProviderId = settings?.webProvider ?? 'native'
   const needsExaKey = WEB_PROVIDERS.find((p) => p.value === selected)?.usesExaKey ?? false
 
   return (
@@ -118,7 +117,7 @@ export function WebTab() {
         description="Choose what the agent uses for web search and reading pages in full. A configured vendor is used on every model; native is the default when none is set."
         options={WEB_PROVIDERS}
         value={selected}
-        onChange={(value) => updateSettings.mutate({ webSearchProvider: value, webFetchProvider: value })}
+        onChange={(value) => updateSettings.mutate({ webProvider: value })}
         disabled={isLoading}
       />
 
@@ -133,7 +132,7 @@ export function WebTab() {
             label="Exa API Key"
             apiKeySettingsField="exaApiKey"
             apiKeyStatusKey="exa"
-            validationEndpoint="/api/settings/validate-web-search-key"
+            validationEndpoint="/api/settings/validate-web-key"
             validationBody={(apiKey) => ({ provider: 'exa', apiKey })}
             envVarName="EXA_API_KEY"
             placeholder="Enter your Exa API key"

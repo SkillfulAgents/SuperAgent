@@ -2,14 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
 
 const mockValidateProxyToken = vi.fn()
-const mockGetActiveWebFetchProvider = vi.fn()
+const mockGetActiveWebProvider = vi.fn()
 const mockGetSettings = vi.fn()
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...a: unknown[]) => mockValidateProxyToken(...a),
 }))
 vi.mock('@shared/lib/web-provider', () => ({
-  getActiveWebFetchProvider: () => mockGetActiveWebFetchProvider(),
+  getActiveWebProvider: () => mockGetActiveWebProvider(),
 }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => mockGetSettings(),
@@ -59,26 +59,26 @@ describe('POST /api/web-fetch/fetch', () => {
   })
 
   it('400 when no web fetch vendor is configured', async () => {
-    mockGetActiveWebFetchProvider.mockReturnValue(null)
+    mockGetActiveWebProvider.mockReturnValue(null)
     const res = await fetchReq({ url: 'https://a.com' })
     expect(res.status).toBe(400)
   })
 
   it('400 when the body is missing a url', async () => {
-    mockGetActiveWebFetchProvider.mockReturnValue({ fetch: vi.fn() })
+    mockGetActiveWebProvider.mockReturnValue({ fetch: vi.fn() })
     const res = await fetchReq({})
     expect(res.status).toBe(400)
   })
 
   it('400 when the url is not a valid URL', async () => {
-    mockGetActiveWebFetchProvider.mockReturnValue({ fetch: vi.fn() })
+    mockGetActiveWebProvider.mockReturnValue({ fetch: vi.fn() })
     const res = await fetchReq({ url: 'not a url' })
     expect(res.status).toBe(400)
   })
 
   it('400 (and never dispatches) for a non-http(s) scheme', async () => {
     const fetchFn = vi.fn()
-    mockGetActiveWebFetchProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
+    mockGetActiveWebProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
     const res = await fetchReq({ url: 'file:///etc/passwd' })
     expect(res.status).toBe(400)
     expect(fetchFn).not.toHaveBeenCalled()
@@ -86,7 +86,7 @@ describe('POST /api/web-fetch/fetch', () => {
 
   it('returns the document on success and forwards options to the provider', async () => {
     const fetchFn = vi.fn().mockResolvedValue(doc())
-    mockGetActiveWebFetchProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
+    mockGetActiveWebProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
     const res = await fetchReq({ url: 'https://a.com', maxChars: 5000 })
     expect(res.status).toBe(200)
     const json = await res.json()
@@ -97,7 +97,7 @@ describe('POST /api/web-fetch/fetch', () => {
 
   it('rejects a target URL blocked by the allowed-sites policy BEFORE dispatch', async () => {
     const fetchFn = vi.fn()
-    mockGetActiveWebFetchProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
+    mockGetActiveWebProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
     mockGetSettings.mockReturnValue({ webBlockedSites: ['a.com'] })
     const res = await fetchReq({ url: 'https://a.com/x' })
     expect(res.status).toBe(403)
@@ -106,7 +106,7 @@ describe('POST /api/web-fetch/fetch', () => {
 
   it('rejects a target URL not on a non-empty allow list BEFORE dispatch', async () => {
     const fetchFn = vi.fn()
-    mockGetActiveWebFetchProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
+    mockGetActiveWebProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
     mockGetSettings.mockReturnValue({ webAllowedSites: ['nytimes.com'] })
     const res = await fetchReq({ url: 'https://a.com/x' })
     expect(res.status).toBe(403)
@@ -114,14 +114,14 @@ describe('POST /api/web-fetch/fetch', () => {
   })
 
   it('502 when the provider throws', async () => {
-    mockGetActiveWebFetchProvider.mockReturnValue({ id: 'exa', fetch: vi.fn().mockRejectedValue(new Error('vendor down')) })
+    mockGetActiveWebProvider.mockReturnValue({ id: 'exa', fetch: vi.fn().mockRejectedValue(new Error('vendor down')) })
     const res = await fetchReq({ url: 'https://a.com' })
     expect(res.status).toBe(502)
   })
 
   it('caps oversized content host-side and warns', async () => {
     const fetchFn = vi.fn().mockResolvedValue(doc({ content: 'x'.repeat(150_000) }))
-    mockGetActiveWebFetchProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
+    mockGetActiveWebProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
     const res = await fetchReq({ url: 'https://a.com' })
     const json = await res.json()
     expect(json.result.content.length).toBe(100_000)

@@ -273,12 +273,12 @@ describe('loadSettings', () => {
       expect(result.models?.agentEffort).toBe('high')
     })
 
-    it('preserves the web search provider selection', () => {
-      mockSettingsFile(JSON.stringify({ webSearchProvider: 'exa' }))
+    it('preserves the web provider selection', () => {
+      mockSettingsFile(JSON.stringify({ webProvider: 'exa' }))
 
       const result = loadSettings()
 
-      expect(result.webSearchProvider).toBe('exa')
+      expect(result.webProvider).toBe('exa')
     })
 
     it('preserves the web allow/deny site lists', () => {

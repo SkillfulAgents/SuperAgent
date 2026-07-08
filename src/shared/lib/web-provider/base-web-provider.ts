@@ -1,5 +1,12 @@
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 import { NonRetryableError, withRetry } from '../utils/retry'
+import type {
+  WebFetchOptions,
+  WebFetchResult,
+  WebProviderId,
+  WebSearchOptions,
+  WebSearchResponse,
+} from './types'
 
 // Shared host limits for every web vendor (search + fetch). Vendors bill per request and native
 // tools have implicit resilience that a vendor swap removes (§13), so all vendors get one retry on
@@ -8,6 +15,14 @@ const REQUEST_TIMEOUT_MS = 15_000
 const RETRY_ATTEMPTS = 2 // 1 retry
 const RETRY_BASE_DELAY_MS = 500
 
+// Shared result clamp (search): every vendor clamps to the same host cap (vendors bill per result).
+const DEFAULT_NUM_RESULTS = 10
+const MAX_NUM_RESULTS = 25
+
+// Shared content bound (fetch): when the caller requests a content-length cap, clamp it into a sane
+// range before handing it to the vendor (defense-in-depth; the host route also re-caps).
+const MAX_FETCH_CHARS = 100_000
+
 /**
  * Host-side base for a swappable web vendor. The credential plumbing
  * (settingsKeyField / envVarName / getApiKeyStatus / getEffectiveApiKey) is a verbatim copy of
@@ -15,13 +30,25 @@ const RETRY_BASE_DELAY_MS = 500
  * (timeout + retry + status classification) and key validation live here too; a concrete vendor
  * only builds its request and maps its response.
  *
- * BaseWebSearchProvider and BaseWebFetchProvider both extend this — the second-occurrence
- * extraction the search base's own comment named (systematize-on-2nd-occurrence).
+ * One provider class per vendor exposes both operations as optional methods (search / fetch),
+ * mirroring BaseLlmProvider's one-class-per-vendor / per-purpose-method shape. A vendor implements
+ * the side(s) it supports; method presence IS the capability — the MCP gate and each host route
+ * probe `provider.search` / `provider.fetch`. Exa implements both.
  */
 export abstract class BaseWebProvider {
   abstract readonly name: string
+  abstract readonly id: WebProviderId
   protected abstract readonly settingsKeyField: keyof ApiKeySettings
   protected abstract readonly envVarName: string
+
+  /** Run a ranked web search and return normalized hits. Throws on a whole-request failure. */
+  search?(query: string, opts: WebSearchOptions): Promise<WebSearchResponse>
+
+  /**
+   * Fetch a single URL's full content and return one normalized document. Throws on a whole-request
+   * failure (mirrors search's error model).
+   */
+  fetch?(url: string, opts: WebFetchOptions): Promise<WebFetchResult>
 
   /** Check whether an API key is configured and its source. */
   getApiKeyStatus(): ApiKeyStatus {
@@ -85,5 +112,17 @@ export abstract class BaseWebProvider {
       const message = err instanceof Error ? err.message : 'Unknown error'
       return { valid: false, error: `Network error: ${message}` }
     }
+  }
+
+  /** Clamp a requested search result count into [1, MAX_NUM_RESULTS], defaulting when unset. */
+  protected clampNumResults(n?: number): number {
+    if (n == null) return DEFAULT_NUM_RESULTS
+    return Math.max(1, Math.min(n, MAX_NUM_RESULTS))
+  }
+
+  /** Clamp a requested fetch content-char bound into [1, MAX_FETCH_CHARS]; undefined stays undefined. */
+  protected clampMaxChars(n?: number): number | undefined {
+    if (n == null) return undefined
+    return Math.max(1, Math.min(n, MAX_FETCH_CHARS))
   }
 }

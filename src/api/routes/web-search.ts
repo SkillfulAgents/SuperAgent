@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
-import { getActiveWebSearchProvider } from '@shared/lib/web-provider'
+import { getActiveWebProvider } from '@shared/lib/web-provider'
 import { applyAllowedSites } from '@shared/lib/web-provider/allowed-sites'
 import { WebSearchRequestSchema } from '@shared/lib/web-provider/web-search-request-schema'
 import { getSettings } from '@shared/lib/config/settings'
@@ -38,8 +38,8 @@ webSearch.post('/search', async (c) => {
     return c.json({ error: 'Invalid request', detail: parsed.error.issues }, 400)
   }
 
-  const provider = getActiveWebSearchProvider()
-  if (!provider) {
+  const provider = getActiveWebProvider()
+  if (!provider?.search) {
     return c.json({ error: 'No web search vendor configured' }, 400)
   }
 

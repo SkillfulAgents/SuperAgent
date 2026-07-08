@@ -185,10 +185,8 @@ export interface AnalyticsTarget {
 
 export type { LlmProviderId } from '../llm-provider/base-llm-provider'
 import type { LlmProviderId } from '../llm-provider/base-llm-provider'
-export type { WebSearchProviderId } from '../web-provider/types'
-import type { WebSearchProviderId } from '../web-provider/types'
-export type { WebFetchProviderId } from '../web-provider/types'
-import type { WebFetchProviderId } from '../web-provider/types'
+export type { WebProviderId } from '../web-provider/types'
+import type { WebProviderId } from '../web-provider/types'
 
 export interface PlatformAuthSettings {
   token: string
@@ -210,8 +208,7 @@ export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
   llmProvider?: LlmProviderId
-  webSearchProvider?: WebSearchProviderId // default 'native' (no host vendor; Anthropic server-side tools)
-  webFetchProvider?: WebFetchProviderId // default 'native' (no host vendor; Claude's built-in WebFetch)
+  webProvider?: WebProviderId // default 'native' (no host vendor; Claude's built-in web tools). One stored vendor backs both search + fetch.
   webAllowedSites?: string[] // operator allow list; empty = allow all (host-side must-enforce, §8)
   webBlockedSites?: string[] // operator deny list; wins over allow
   app?: AppPreferences
@@ -271,8 +268,7 @@ export interface GlobalSettingsResponse {
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
-  webSearchProvider: WebSearchProviderId
-  webFetchProvider: WebFetchProviderId
+  webProvider: WebProviderId
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus
@@ -432,8 +428,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     },
     apiKeys: loaded.apiKeys,
     llmProvider: loaded.llmProvider,
-    webSearchProvider: loaded.webSearchProvider,
-    webFetchProvider: loaded.webFetchProvider,
+    webProvider: loaded.webProvider,
     webAllowedSites: loaded.webAllowedSites,
     webBlockedSites: loaded.webBlockedSites,
     models: (() => {
