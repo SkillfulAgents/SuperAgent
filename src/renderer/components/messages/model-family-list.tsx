@@ -27,7 +27,11 @@ export function formatTokenThreshold(tokens: number): string {
  * Warning copy for a model that can't do web tools, or null when they work (no banner). Native web
  * tools are Claude-only; a configured host vendor exposes the `mcp__web__*` tools to ANY model, so
  * they are "unavailable" only when the model lacks native support AND no vendor is set - the caller
- * passes that one boolean. One vendor backs both search and fetch, so there is no per-tool split.
+ * passes that one boolean. INVARIANT: the single boolean assumes every registered vendor implements
+ * BOTH operations (Exa does). The backend seam is per-tool (optional search?()/fetch?(), the MCP
+ * gate, the container derivation), but the client only knows the vendor *id*, not its capabilities.
+ * If a search-only or fetch-only vendor is ever added, re-split this into per-tool booleans and
+ * plumb the vendor's capabilities to the client - else this banner would misreport the missing side.
  */
 export function webToolsWarning(unavailable: boolean): string | null {
   if (!unavailable) return null

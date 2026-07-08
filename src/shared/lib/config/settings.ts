@@ -428,7 +428,12 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     },
     apiKeys: loaded.apiKeys,
     llmProvider: loaded.llmProvider,
-    webProvider: loaded.webProvider,
+    // Recover a pre-collapse selection: webSearchProvider shipped (v0.4.5-0.4.7) and the single
+    // UI select wrote both old fields to the same value, so the legacy webSearchProvider is the
+    // user's choice. Read-fallback (not a boot-time migration) keeps this merge pure; the next
+    // PUT /settings persists it under webProvider and the stale key lingers harmlessly. An invalid
+    // stored value falls back to native at the factory's isVendorId narrow.
+    webProvider: loaded.webProvider ?? loaded.webSearchProvider,
     webAllowedSites: loaded.webAllowedSites,
     webBlockedSites: loaded.webBlockedSites,
     models: (() => {

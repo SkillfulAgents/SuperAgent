@@ -281,6 +281,14 @@ describe('loadSettings', () => {
       expect(result.webProvider).toBe('exa')
     })
 
+    it('recovers a legacy webSearchProvider selection on upgrade (pre-collapse installs)', () => {
+      mockSettingsFile(JSON.stringify({ webSearchProvider: 'exa' }))
+
+      const result = loadSettings()
+
+      expect(result.webProvider).toBe('exa')
+    })
+
     it('preserves the web allow/deny site lists', () => {
       mockSettingsFile(JSON.stringify({ webAllowedSites: ['nytimes.com'], webBlockedSites: ['evil.com'] }))
 

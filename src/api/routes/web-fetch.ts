@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { validateProxyToken } from '@shared/lib/proxy/token-store'
+import { RequireProxyToken } from '../middleware/require-proxy-token'
 import { getActiveWebProvider } from '@shared/lib/web-provider'
 import { isUrlAllowed } from '@shared/lib/web-provider/allowed-sites'
 import { WebFetchRequestSchema } from '@shared/lib/web-provider/web-fetch-request-schema'
@@ -16,12 +16,7 @@ const webFetch = new Hono()
 // Own proxy-token gate. The local-mode-auth bypass for this container-facing route only skips the
 // IP check; it does NOT authenticate, and nothing is inherited from sibling routers — so this
 // router must declare its own gate or it ships open (design §4 auth must-do).
-webFetch.use('*', async (c, next) => {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token) return c.json({ error: 'Unauthorized' }, 401)
-  if (!(await validateProxyToken(token))) return c.json({ error: 'Unauthorized' }, 401)
-  await next()
-})
+webFetch.use('*', RequireProxyToken())
 
 // POST /fetch — fetch one URL's content via the active vendor, enforcing the operator allow/deny
 // policy on the TARGET host BEFORE dispatch. The host's only egress is the fixed vendor host
@@ -53,6 +48,15 @@ webFetch.post('/fetch', async (c) => {
 
   try {
     const result = await provider.fetch(url, opts)
+    // Defense-in-depth re-check: the requested URL was allow-checked pre-dispatch, but a vendor can
+    // follow a redirect / canonicalize to a DIFFERENT host. Re-check the returned host so content
+    // from a blocked/non-allowed site can't be smuggled past the operator policy via a redirect.
+    if (
+      result.url !== url &&
+      !isUrlAllowed(result.url, { allowedSites: settings.webAllowedSites, blockedSites: settings.webBlockedSites })
+    ) {
+      return c.json({ error: 'The fetched URL redirected to a host blocked by your allowed-sites policy' }, 403)
+    }
     const warnings: string[] = []
     if (result.content.length > MAX_CONTENT_CHARS) {
       result.content = result.content.slice(0, MAX_CONTENT_CHARS)

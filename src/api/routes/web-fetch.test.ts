@@ -64,6 +64,22 @@ describe('POST /api/web-fetch/fetch', () => {
     expect(res.status).toBe(400)
   })
 
+  it('400 when the active vendor does not support fetch (search-only vendor)', async () => {
+    // Capability gate: a one-sided vendor has search but no fetch; the route probes provider.fetch.
+    mockGetActiveWebProvider.mockReturnValue({ id: 'x', search: vi.fn() })
+    const res = await fetchReq({ url: 'https://a.com' })
+    expect(res.status).toBe(400)
+  })
+
+  it('403 when the fetched result redirects to a host blocked by policy (post-fetch re-check)', async () => {
+    // Requested host is allowed, but the vendor returns content from a blocked host (redirect).
+    mockGetSettings.mockReturnValue({ webBlockedSites: ['evil.com'] })
+    const fetchFn = vi.fn().mockResolvedValue(doc({ url: 'https://evil.com/x' }))
+    mockGetActiveWebProvider.mockReturnValue({ id: 'exa', fetch: fetchFn })
+    const res = await fetchReq({ url: 'https://good.com/redirect' })
+    expect(res.status).toBe(403)
+  })
+
   it('400 when the body is missing a url', async () => {
     mockGetActiveWebProvider.mockReturnValue({ fetch: vi.fn() })
     const res = await fetchReq({})

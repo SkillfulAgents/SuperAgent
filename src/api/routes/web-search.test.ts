@@ -60,6 +60,13 @@ describe('POST /api/web-search/search', () => {
     expect(res.status).toBe(400)
   })
 
+  it('400 when the active vendor does not support search (fetch-only vendor)', async () => {
+    // Capability gate: a one-sided vendor has fetch but no search; the route probes provider.search.
+    mockGetActiveWebProvider.mockReturnValue({ id: 'x', fetch: vi.fn() })
+    const res = await search({ query: 'q' })
+    expect(res.status).toBe(400)
+  })
+
   it('400 when the body is missing a query', async () => {
     mockGetActiveWebProvider.mockReturnValue({ search: vi.fn() })
     const res = await search({})
