@@ -2,6 +2,9 @@
   "name": "superagent-container",
   "version": "1.0.0",
   "description": "Docker container running Claude Code with HTTP/WebSocket API",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc && cp src/*.md dist/",
@@ -30,7 +33,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
+    "@types/node": "^22.20.0",
     "@types/uuid": "^9.0.7",
     "@types/ws": "^8.5.10",
     "ts-node": "^10.9.2",

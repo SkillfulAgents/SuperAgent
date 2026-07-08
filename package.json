@@ -5,6 +5,9 @@
   "author": "Datawizz Inc.",
   "license": "MIT",
   "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "main": "dist/main/index.js",
   "scripts": {
     "dev": "npm rebuild better-sqlite3 && vite",
@@ -121,7 +124,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.1",
-    "@electron/rebuild": "^3.7.2",
+    "@electron/rebuild": "^4.0.6",
     "@hono/vite-dev-server": "^0.24.1",
     "@playwright/test": "^1.58.0",
     "@tailwindcss/typography": "^0.5.19",
@@ -132,7 +135,7 @@
     "@types/better-sqlite3": "^7.6.11",
     "@types/eventsource": "^1.1.15",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^24.0.0",
+    "@types/node": "^22.20.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@types/uuid": "^10.0.0",
