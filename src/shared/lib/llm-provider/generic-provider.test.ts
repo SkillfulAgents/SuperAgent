@@ -224,6 +224,12 @@ describe('GenericLlmProvider.searchModels', () => {
     await expect(provider.searchModels('')).rejects.toThrow('failed (500)')
   })
 
+  it('surfaces a timeout message when the request aborts', async () => {
+    const abort = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abort))
+    await expect(provider.searchModels('')).rejects.toThrow(/timed out after 15s/)
+  })
+
   it('throws when the base URL is missing', async () => {
     settingsMock.mockReturnValue({ apiKeys: { genericApiKey: 'k' } })
     await expect(provider.searchModels('')).rejects.toThrow('base URL not configured')
@@ -236,25 +242,68 @@ describe('GenericLlmProvider.searchModels', () => {
 })
 
 describe('GenericLlmProvider.validateKey', () => {
+  function stubFetch(init: { ok?: boolean; status?: number } = {}) {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: init.ok ?? true,
+      status: init.status ?? 200,
+      json: async () => ({}),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  afterEach(() => vi.unstubAllGlobals())
+
   it('requires a base URL', async () => {
     settingsMock.mockReturnValue({ apiKeys: {} })
     expect(await provider.validateKey('key')).toEqual({ valid: false, error: 'Base URL is required' })
   })
 
-  it('validates against the inline baseURL and reports success', async () => {
+  it('probes /v1/models on the inline baseURL and reports success without needing a real model id', async () => {
     settingsMock.mockReturnValue({ apiKeys: {} })
-    messagesCreate.mockResolvedValue({})
-    const result = await provider.validateKey('key', { baseUrl: 'https://inline.example' })
+    const fetchMock = stubFetch({ ok: true, status: 200 })
+    const result = await provider.validateKey('key', { baseUrl: 'http://localhost:11434' })
     expect(result).toEqual({ valid: true })
-    expect(anthropicCtor).toHaveBeenCalledWith({
-      apiKey: '',
-      baseURL: 'https://inline.example',
-      authToken: 'key',
-    })
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('http://localhost:11434/v1/models')
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer key' })
   })
 
-  it('reports the error message on failure', async () => {
-    messagesCreate.mockRejectedValue(new Error('401 unauthorized'))
-    expect(await provider.validateKey('bad')).toEqual({ valid: false, error: '401 unauthorized' })
+  it('reports an auth-specific error on 401', async () => {
+    stubFetch({ ok: false, status: 401 })
+    const result = await provider.validateKey('bad')
+    expect(result.valid).toBe(false)
+    expect(result.error).toMatch(/Auth rejected.*401/)
+  })
+
+  it('reports an auth-specific error on 403', async () => {
+    stubFetch({ ok: false, status: 403 })
+    const result = await provider.validateKey('bad')
+    expect(result.error).toMatch(/Auth rejected.*403/)
+  })
+
+  it('treats a 404 as reachable-but-not-listable (soft-passes so the user can proceed)', async () => {
+    stubFetch({ ok: false, status: 404 })
+    expect(await provider.validateKey('key')).toEqual({ valid: true })
+  })
+
+  it('reports the status code on other non-OK responses', async () => {
+    stubFetch({ ok: false, status: 502 })
+    expect(await provider.validateKey('key')).toEqual({ valid: false, error: 'Endpoint returned 502' })
+  })
+
+  it('surfaces a friendly message when the fetch fails outright', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
+    const result = await provider.validateKey('key')
+    expect(result.valid).toBe(false)
+    expect(result.error).toMatch(/Could not reach https:\/\/proxy\.example/)
+  })
+
+  it('surfaces a timeout message when the request aborts', async () => {
+    const abort = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abort))
+    const result = await provider.validateKey('key')
+    expect(result.valid).toBe(false)
+    expect(result.error).toMatch(/Timed out/)
   })
 })

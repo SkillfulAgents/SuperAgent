@@ -26,6 +26,26 @@ export const GENERIC_FALLBACK_MODEL = 'default'
  */
 const DISCOVERED_MODEL_LIMIT = 50
 const DISCOVERED_MODEL_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
+const REQUEST_TIMEOUT_MS = 15_000
+
+/**
+ * Fetch `<baseURL>/v1/models` with Bearer auth and a hard timeout. Returns
+ * the raw Response for the caller to interpret. Both Anthropic's `/v1/models`
+ * and OpenAI-compat endpoints (ollama, LiteLLM) speak this shape.
+ */
+async function fetchModelsList(baseURL: string, apiKey: string): Promise<Response> {
+  const url = `${baseURL.replace(/\/+$/, '')}/v1/models`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  try {
+    return await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    })
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 interface RemoteModelListing {
   id?: unknown
@@ -108,6 +128,14 @@ export class GenericLlmProvider extends BaseLlmProvider {
     }
   }
 
+  /**
+   * Validate credentials by probing `<baseURL>/v1/models` — the same endpoint
+   * search uses, so if validation passes, search works too. This avoids the
+   * chicken-and-egg problem of needing a real model id before any have been
+   * added: 200 means auth + connectivity both work, 401/403 pinpoints an auth
+   * failure, and a 404 is treated as a soft-warn (endpoint reachable but
+   * doesn't expose /v1/models — the user can still add models manually).
+   */
   async validateKey(
     apiKey: string,
     opts?: { baseUrl?: string },
@@ -115,17 +143,25 @@ export class GenericLlmProvider extends BaseLlmProvider {
     // baseURL may not be saved yet during first-time setup, so accept it inline.
     const baseURL = opts?.baseUrl?.trim() || this.getEffectiveBaseUrl()
     if (!baseURL) return { valid: false, error: 'Base URL is required' }
+    let response: Response
     try {
-      const client = new Anthropic({ apiKey: '', baseURL, authToken: apiKey })
-      await client.messages.create({
-        model: this.getDefaultModel('summarizer'),
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'Hi' }],
-      })
-      return { valid: true }
+      response = await fetchModelsList(baseURL, apiKey)
     } catch (error) {
-      return { valid: false, error: error instanceof Error ? error.message : 'Validation failed' }
+      const message = error instanceof Error && error.name === 'AbortError'
+        ? `Timed out after ${REQUEST_TIMEOUT_MS / 1000}s — check the base URL is reachable.`
+        : `Could not reach ${baseURL}: ${error instanceof Error ? error.message : String(error)}`
+      return { valid: false, error: message }
     }
+    if (response.ok) return { valid: true }
+    if (response.status === 401 || response.status === 403) {
+      return { valid: false, error: `Auth rejected (${response.status}) — check the API key.` }
+    }
+    if (response.status === 404) {
+      // Reachable but no /v1/models — key not verifiable this way. Allow save so
+      // the user can proceed to add models manually.
+      return { valid: true }
+    }
+    return { valid: false, error: `Endpoint returned ${response.status}` }
   }
 
   /**
@@ -141,11 +177,13 @@ export class GenericLlmProvider extends BaseLlmProvider {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Generic provider API key not configured')
 
-    const url = `${baseURL.replace(/\/+$/, '')}/v1/models`
     let response: Response
     try {
-      response = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } })
+      response = await fetchModelsList(baseURL, apiKey)
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Generic provider model listing timed out after ${REQUEST_TIMEOUT_MS / 1000}s`)
+      }
       throw new Error(
         `Generic provider model listing failed: ${error instanceof Error ? error.message : String(error)}`,
       )
@@ -153,7 +191,7 @@ export class GenericLlmProvider extends BaseLlmProvider {
     if (!response.ok) {
       if (response.status === 404) {
         throw new Error(
-          `Generic provider endpoint does not support model listing (${response.status} at ${url})`,
+          `Generic provider endpoint does not support model listing (404 at ${baseURL.replace(/\/+$/, '')}/v1/models)`,
         )
       }
       throw new Error(`Generic provider model listing failed (${response.status})`)
