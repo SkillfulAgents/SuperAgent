@@ -1,0 +1,30 @@
+{
+  "startedAt": "2026-07-08T20:04:38.612Z",
+  "finishedAt": "2026-07-08T20:04:38.715Z",
+  "totalDurationSec": 0.1,
+  "totalStories": 2,
+  "passedStories": 0,
+  "failedStories": 2,
+  "totalFeatures": 0,
+  "passedFeatures": 0,
+  "failedFeatures": 0,
+  "totalCostUsd": 0,
+  "results": [
+    {
+      "storyId": "agent-chat",
+      "storyName": "Create agent, send message, verify response",
+      "mode": "happy-path",
+      "passed": false,
+      "durationSec": 0,
+      "costUsd": 0
+    },
+    {
+      "storyId": "browser-test",
+      "storyName": "Agent opens browser and visits a page",
+      "mode": "happy-path",
+      "passed": false,
+      "durationSec": 0,
+      "costUsd": 0
+    }
+  ]
+}
