@@ -59,7 +59,7 @@ const FILTER_EXP_DESCRIPTION = `Optional CEL filter expression evaluated against
 
 Context variables: body (parsed JSON body; null when the body is not JSON), headers (lowercased header map), query (query-string map), method, verified (HMAC verification result), content_type.
 
-Rules: the expression must evaluate to a boolean. Guard fields that are not always present with has() — has(body.data.assignee) && body.data.assignee.email == "x" — and headers with in — "x-github-event" in headers && ... — because dereferencing a missing key is an ERROR, and errors FAIL OPEN (the event is delivered with the error recorded). matches() uses JavaScript regex syntax (no (?i) inline flags).
+Rules: the expression must evaluate to a boolean. Guard fields that are not always present with has() — has(body.data.assignee) && body.data.assignee.email == "x" — and headers with in — "x-github-event" in headers && ... — because dereferencing a missing key is an ERROR, and errors FAIL OPEN (the event is delivered with the error recorded). matches()/regex is NOT supported (rejected at validation) — use contains(), startsWith(), or endsWith() instead.
 
 Examples: Linear assignee changed: headers["linear-event"] == "Issue" && body.action == "update" && has(body.updatedFrom.assigneeId) · GitHub issues opened: headers["x-github-event"] == "issues" && body.action == "opened" · Stripe: body.type == "invoice.payment_failed" · Slack mention: body.event.type == "app_mention" · Shopify: headers["x-shopify-topic"] == "orders/create".
 
