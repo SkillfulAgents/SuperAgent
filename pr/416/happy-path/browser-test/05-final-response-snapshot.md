@@ -1,0 +1,145 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]:
+            - generic [ref=e10]: Gamut
+            - button "Search" [ref=e12] [cursor=pointer]:
+              - img [ref=e13]
+          - list [ref=e17]:
+            - listitem [ref=e18]:
+              - link "Home" [ref=e19] [cursor=pointer]:
+                - /url: /
+                - img [ref=e20]
+                - generic [ref=e25]: Home
+            - listitem [ref=e26]:
+              - link "Notifications" [ref=e27] [cursor=pointer]:
+                - /url: /notifications
+                - img [ref=e28]
+                - generic [ref=e31]: Notifications
+            - listitem [ref=e133]:
+              - button "Explore" [ref=e134] [cursor=pointer]:
+                - img [ref=e135]
+                - generic [ref=e138]: Explore
+            - listitem [ref=e32]:
+              - button "New Agent" [ref=e33] [cursor=pointer]:
+                - img [ref=e34]
+                - generic [ref=e35]: New Agent
+        - generic [ref=e36]:
+          - generic [ref=e37]: Your Agents
+          - list [ref=e39]:
+            - button "QA-20260708-164329-dt9h idle Collapse Browser Navigation and Page Title Check" [ref=e424] [cursor=pointer]:
+              - generic [ref=e41]:
+                - link "QA-20260708-164329-dt9h idle" [ref=e425]:
+                  - /url: /agents/qa-20260708-164329-dt9h-hyrcxk46lp
+                  - generic [ref=e44]: QA-20260708-164329-dt9h
+                  - img "idle" [ref=e426]:
+                    - img [ref=e427]
+                - button "Collapse" [expanded] [ref=e323]:
+                  - img [ref=e324]
+              - list [ref=e327]:
+                - listitem [ref=e328]:
+                  - link "Browser Navigation and Page Title Check" [ref=e436]:
+                    - /url: /agents/hyrcxk46lp/sessions/ab14acc1-117a-4b38-8382-a3870859791a
+                    - generic [ref=e330]: Browser Navigation and Page Title Check
+            - status [ref=e139]
+      - generic [ref=e71]:
+        - button "Settings" [ref=e72] [cursor=pointer]:
+          - img [ref=e73]
+          - generic [ref=e76]: Settings
+        - button "v0.4.7" [ref=e77] [cursor=pointer]:
+          - generic [ref=e78]: v0.4.7
+      - button "Toggle Sidebar" [ref=e79]
+    - main [ref=e80]:
+      - generic [ref=e140]:
+        - generic [ref=e141]:
+          - button "Toggle Sidebar" [ref=e142] [cursor=pointer]:
+            - img
+            - generic [ref=e143]: Toggle Sidebar
+          - generic [ref=e144]:
+            - link "QA-20260708-164329-dt9h" [ref=e146] [cursor=pointer]:
+              - /url: /agents/qa-20260708-164329-dt9h-hyrcxk46lp
+            - generic [ref=e351]:
+              - generic [ref=e352]: /
+              - generic [ref=e353]: Browser Navigation and Page Title Check
+          - generic [ref=e147]:
+            - generic [ref=e148]:
+              - img [ref=e437]
+              - generic [ref=e158]: idle
+            - button "Stop Agent" [ref=e160] [cursor=pointer]:
+              - img
+        - generic [ref=e360]:
+          - generic [ref=e363]:
+            - paragraph [ref=e368]:
+              - text: Open a browser and go to
+              - link "https://example.com" [ref=e369] [cursor=pointer]:
+                - /url: https://example.com
+              - text: . Tell me the page title.
+            - generic [ref=e447]:
+              - paragraph [ref=e450]: I'll open the browser and navigate to that URL.
+              - button "Expand ToolSearch tool call" [ref=e454] [cursor=pointer]:
+                - img [ref=e455]
+                - generic [ref=e458]: ToolSearch
+                - generic [ref=e459]:
+                  - img [ref=e462]
+                  - img [ref=e465]
+            - button "Expand mcp__browser__browser_open tool call" [ref=e472] [cursor=pointer]:
+              - img [ref=e473]
+              - generic [ref=e476]: Open Browser
+              - generic [ref=e477]: →
+              - generic [ref=e478]: https://example.com
+              - generic [ref=e479]:
+                - img [ref=e482]
+                - img [ref=e485]
+            - button "Expand mcp__browser__browser_get_state tool call" [ref=e492] [cursor=pointer]:
+              - img [ref=e493]
+              - generic [ref=e496]: "Browser MCP: Browser Get State"
+              - generic [ref=e497]:
+                - img [ref=e500]
+                - img [ref=e503]
+            - generic [ref=e506]:
+              - paragraph [ref=e509]:
+                - text: The page title is
+                - strong [ref=e510]: "\"Example Domain\""
+                - text: .
+              - button "Expand mcp__browser__browser_close tool call" [ref=e514] [cursor=pointer]:
+                - img [ref=e515]
+                - generic [ref=e518]: Close Browser
+                - generic [ref=e519]:
+                  - img [ref=e522]
+                  - img [ref=e525]
+            - paragraph [ref=e531]:
+              - text: The page loaded successfully — its title is
+              - strong [ref=e532]: "\"Example Domain\""
+              - text: . Browser is now closed.
+            - generic [ref=e534]: Worked for 14s
+          - generic [ref=e370]:
+            - generic [ref=e380]:
+              - textbox "Type a message..." [ref=e536]
+              - generic [ref=e383]:
+                - generic [ref=e384]:
+                  - button "Add files" [ref=e385] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 4.8 · Medium. Click to change." [ref=e537] [cursor=pointer]':
+                    - img [ref=e538]
+                    - generic [ref=e539]:
+                      - text: Opus 4.8
+                      - generic [ref=e540]: · Medium
+                    - img
+                - generic [ref=e386]:
+                  - button "Set up voice input" [ref=e387] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e391]:
+              - generic [ref=e418]:
+                - generic [ref=e419]: Context Usage
+                - img [ref=e421]
+              - generic [ref=e392]:
+                - generic [ref=e393]: ↵
+                - generic [ref=e394]: Send
+                - generic [ref=e395]: ·
+                - generic [ref=e396]: ⇧↵
+                - generic [ref=e397]: New line
+  - region "Notifications alt+T"

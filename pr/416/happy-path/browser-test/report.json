@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully executed browser navigation and page title verification through the agent interface",
+  "reason": "Verified that agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report it back correctly.",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded with title \"Gamut\"",
-    "Found and clicked agent \"QA-20260708-024603-76t8\" in sidebar — navigated to agent page at /agents/qa-20260708-024603-76t8-gqmce4zf4k",
-    "Clicked message input field and typed message: \"Open a browser and go to https://example.com. Tell me the page title.\" — message displayed in input field",
-    "Clicked send button — message sent, session created with title \"Browser Navigation and Page Title Check\"",
-    "Waited for agent to finish processing — agent completed in ~10 seconds",
-    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\". Closing the browser.\" with three successful tool calls (Open Browser, Browser Get State, Close Browser)"
+    "Step 1 - Navigate to http://localhost:47891 — Page loaded successfully with agent list visible in sidebar showing \"QA-20260708-164329-dt9h\" agent.",
+    "Step 2 - Click on \"QA-20260708-164329-dt9h\" agent in the sidebar — Agent page loaded successfully, displaying chat interface with empty conversation and input field.",
+    "Step 3 - Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully sent, agent began processing (page navigated to session URL and status changed to \"working\").",
+    "Step 4 - Wait for response (up to 3 minutes) — Agent completed processing in 14 seconds. All tool calls executed successfully with checkmarks: ToolSearch, Open Browser, Browser MCP: Browser Get State, and Close Browser.",
+    "Step 5 - Verify response mentions \"Example Domain\" — VERIFIED. The response contains multiple confirmations:"
   ],
   "bugs": [],
-  "durationMs": 190800,
-  "sessionId": "a029fdf1-849e-4a0c-8321-7698036d190d",
+  "durationMs": 90729,
+  "sessionId": "7ed6b48c-9aed-4473-9955-5eb339b6ed3d",
   "cost": {
-    "inputTokens": 357,
-    "outputTokens": 10842,
-    "cacheCreationTokens": 51937,
-    "cacheReadTokens": 999077,
+    "inputTokens": 374,
+    "outputTokens": 13840,
+    "cacheCreationTokens": 64928,
+    "cacheReadTokens": 1054066,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.219396
+    "totalCostUsd": 0.256141
   }
 }
