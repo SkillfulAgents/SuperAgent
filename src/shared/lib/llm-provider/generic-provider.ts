@@ -197,7 +197,14 @@ export class GenericLlmProvider extends BaseLlmProvider {
       throw new Error(`Generic provider model listing failed (${response.status})`)
     }
 
-    const body = (await response.json()) as RemoteModelsResponse
+    let body: RemoteModelsResponse
+    try {
+      body = (await response.json()) as RemoteModelsResponse
+    } catch (error) {
+      throw new Error(
+        `Generic provider returned a non-JSON response: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
     const data = Array.isArray(body.data) ? body.data : []
     const mapped = data
       .map((entry) => mapRemoteModel(entry as RemoteModelListing))

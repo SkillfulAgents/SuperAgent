@@ -232,7 +232,8 @@ settings.get('/llm-providers/:providerId/models/search', async (c) => {
       return c.json({ error: error.message }, 400)
     }
     console.error('Failed to search provider models:', error)
-    return c.json({ error: 'Failed to search provider models' }, 500)
+    const message = error instanceof Error ? error.message : 'Failed to search provider models'
+    return c.json({ error: message }, 500)
   }
 })
 
