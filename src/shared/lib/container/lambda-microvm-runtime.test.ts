@@ -72,6 +72,7 @@ const TOUCHED = [
   'AWS_REGION', 'AWS_DEFAULT_REGION', 'MICROVM_AGENT_IMAGE_VERSION', 'MICROVM_INGRESS_CONNECTOR_ARN',
   'MICROVM_AGENT_PORT', 'MICROVM_MAX_DURATION_SECONDS', 'MICROVM_SUSPENDED_SECONDS', 'MICROVM_LOG_GROUP',
   'MICROVM_FS_ID', 'MICROVM_ACCESS_POINT', 'MICROVM_MOUNT_TARGET_IP', 'ECS_CONTAINER_METADATA_URI_V4', 'PORT',
+  'MICROVM_PROXY_URL', 'MICROVM_PROXY_TOKEN',
 ]
 
 beforeEach(() => {
@@ -267,6 +268,57 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(payload.mount).toBeUndefined() // no mount configured here
     // The full env is stashed host-side for the VM to fetch at boot.
     expect(readBootstrapEnv('agent-xyz')).toMatchObject({ FOO: 'bar' })
+  })
+
+  it('routes MicroVM ops through the security service (not the SDK) when MICROVM_PROXY_URL + TOKEN are set', async () => {
+    process.env.MICROVM_PROXY_URL = 'https://mvm.internal'
+    process.env.MICROVM_PROXY_TOKEN = 'org-a-token'
+    resetMicrovmRuntimeForTests()
+
+    const runBodies: Array<Record<string, unknown>> = []
+    vi.mocked(fetch).mockImplementation(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = String(input)
+      if (url === 'https://mvm.internal/microvm/run') {
+        runBodies.push(JSON.parse(String(init?.body ?? '{}')))
+        return { ok: true, status: 201, json: async () => ({ microvmId: 'mvm-svc', endpoint: 'ep.svc' }) } as unknown as Response
+      }
+      if (url.startsWith('https://mvm.internal/microvm/mvm-svc')) {
+        return { ok: true, status: 200, json: async () => ({ state: 'RUNNING', endpoint: 'ep.svc' }) } as unknown as Response
+      }
+      return { ok: true } as Response // waitForHealthy /health + host talk-back
+    })
+
+    await newClient().start()
+
+    // Went through the service, never the SDK.
+    expect(sendMock.mock.calls.find((c) => c[0].type === 'Run')).toBeFalsy()
+    expect(runBodies).toHaveLength(1)
+    // Injected-by-service fields are never sent; egressConnectorArn goes as a
+    // hint the service verifies against this org's connector name.
+    expect(runBodies[0].egressNetworkConnectors).toBeUndefined()
+    expect(runBodies[0].executionRoleArn).toBeUndefined()
+    expect(runBodies[0].imageIdentifier).toBeUndefined()
+    expect(runBodies[0].egressConnectorArn).toBe('arn:egress')
+    const runCall = vi.mocked(fetch).mock.calls.find((c) => String(c[0]) === 'https://mvm.internal/microvm/run')!
+    const headers = (runCall[1]?.headers ?? {}) as Record<string, string>
+    expect(headers.authorization).toBe('Bearer org-a-token')
+  })
+
+  it('talks to AWS directly (SDK path) when MICROVM_PROXY_URL is unset — the default/OSS mode', async () => {
+    // FULL_ENV sets no proxy vars, so this is the backward-compatible default.
+    await newClient().start()
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(true)
+    expect(vi.mocked(fetch).mock.calls.some((c) => String(c[0]).includes('/microvm/'))).toBe(false)
+  })
+
+  it('fails loudly when MICROVM_PROXY_URL is set but MICROVM_PROXY_TOKEN is missing (no silent SDK fallback)', async () => {
+    process.env.MICROVM_PROXY_URL = 'https://mvm.internal'
+    delete process.env.MICROVM_PROXY_TOKEN
+    resetMicrovmRuntimeForTests()
+
+    await expect(newClient().start()).rejects.toThrow(/MICROVM_PROXY_TOKEN/)
+    // Must never have silently fallen back to the SDK (an opaque AccessDenied in prod).
+    expect(sendMock.mock.calls.find((c) => c[0].type === 'Run')).toBeFalsy()
   })
 
   it('puts the direct private host-app URL in the bootstrap payload when ECS metadata is available', async () => {
