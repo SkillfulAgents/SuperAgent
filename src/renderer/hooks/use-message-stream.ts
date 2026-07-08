@@ -871,6 +871,13 @@ function getOrCreateEventSource(
             isStreaming: false,
           })
         }
+        // A tool_result for a pending user-input request means it was resolved —
+        // possibly by another tab/window viewing the same session. The resolving
+        // tab removes its card optimistically; every other tab relies on this
+        // broadcast to drop the stale card instead of waiting for session_idle.
+        if (data.type === 'tool_result' && typeof data.toolUseId === 'string') {
+          removePendingRequestsByToolUseId(sessionId, data.toolUseId)
+        }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
       else if (data.type === 'context_usage') {
@@ -1367,6 +1374,40 @@ function releaseEventSource(sessionId: string): void {
       eventSources.delete(key)
     }
     refCounts.delete(key)
+  }
+}
+
+// Drop any pending user-input request matching a resolved tool call. Driven by
+// the server's `tool_result` broadcast, which fires for every tool — for ids
+// that never had a request card this is a no-op (no state write, no re-render).
+function removePendingRequestsByToolUseId(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (!current) return
+  const strip = <T extends { toolUseId: string }>(list: T[]): T[] =>
+    list.some((r) => r.toolUseId === toolUseId) ? list.filter((r) => r.toolUseId !== toolUseId) : list
+  const next: StreamState = {
+    ...current,
+    pendingSecretRequests: strip(current.pendingSecretRequests),
+    pendingConnectedAccountRequests: strip(current.pendingConnectedAccountRequests),
+    pendingQuestionRequests: strip(current.pendingQuestionRequests),
+    pendingFileRequests: strip(current.pendingFileRequests),
+    pendingRemoteMcpRequests: strip(current.pendingRemoteMcpRequests),
+    pendingBrowserInputRequests: strip(current.pendingBrowserInputRequests),
+    pendingScriptRunRequests: strip(current.pendingScriptRunRequests),
+    pendingComputerUseRequests: strip(current.pendingComputerUseRequests),
+  }
+  const changed =
+    next.pendingSecretRequests !== current.pendingSecretRequests ||
+    next.pendingConnectedAccountRequests !== current.pendingConnectedAccountRequests ||
+    next.pendingQuestionRequests !== current.pendingQuestionRequests ||
+    next.pendingFileRequests !== current.pendingFileRequests ||
+    next.pendingRemoteMcpRequests !== current.pendingRemoteMcpRequests ||
+    next.pendingBrowserInputRequests !== current.pendingBrowserInputRequests ||
+    next.pendingScriptRunRequests !== current.pendingScriptRunRequests ||
+    next.pendingComputerUseRequests !== current.pendingComputerUseRequests
+  if (changed) {
+    streamStates.set(sessionId, next)
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
   }
 }
 
