@@ -187,11 +187,17 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
 
   // Cold-start fix: a host that booted with 0 active triggers never
   // subscribed Realtime. Lazy import avoids the circular dep.
-  void import('@shared/lib/scheduler/trigger-manager').then(({ triggerManager }) => {
-    if (!triggerManager.isRealtimeActive()) {
-      void triggerManager.pollAndProcess()
-    }
-  })
+  // Best-effort: catch so a late rejection can't reach the process-level
+  // unhandledRejection handler (fatal in Electron main) or outlive a test.
+  void import('@shared/lib/scheduler/trigger-manager')
+    .then(({ triggerManager }) => {
+      if (!triggerManager.isRealtimeActive()) {
+        return triggerManager.pollAndProcess()
+      }
+    })
+    .catch((err) => {
+      console.warn('[webhook-triggers] cold-start poll skipped:', err)
+    })
 
   return id
 }
