@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ponse clearly states \"The page title is \"Example Domain\".\" and conclusion \"Done — the page title at https://example.com is \"Example Domain\".\"\n\n**No bugs found.** The browser use feature is working correctly. The agent successfully executed all browser operations and returned the correct page title.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 91063,
+  "sessionId": "99ee7c86-a8fd-4359-a516-a61d942e5404",
+  "cost": {
+    "inputTokens": 494,
+    "outputTokens": 12847,
+    "cacheCreationTokens": 91166,
+    "cacheReadTokens": 1544666,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.333153
+  }
+}
