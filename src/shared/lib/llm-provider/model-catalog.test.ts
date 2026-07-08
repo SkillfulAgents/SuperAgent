@@ -411,6 +411,35 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-4-9-custom')
   })
 
+  it('handles the generic provider empty built-in catalog: resolves user-added ids, passes versioned pins, else falls back to the default', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'generic',
+      modelCatalog: {
+        generic: {
+          overrides: [
+            {
+              id: 'llama3.1',
+              label: 'Llama 3.1',
+              supportedEfforts: ['low', 'medium', 'high'],
+            },
+          ],
+        },
+      },
+    })
+
+    // 1. A user-added id resolves exactly (it lives in the effective catalog).
+    expect(resolveModelForProvider('llama3.1', 'generic', 'agent')).toBe('llama3.1')
+    // 2. An unknown but versioned selection passes straight through to the SDK.
+    expect(resolveModelForProvider('mixtral-8x7b', 'generic', 'agent')).toBe('mixtral-8x7b')
+    // 3. An unknown alias falls back to the default — the first user-added model.
+    expect(resolveModelForProvider('mystery', 'generic', 'agent')).toBe('llama3.1')
+  })
+
+  it('falls back to the generic placeholder default when no user models are configured', () => {
+    settingsMock.mockReturnValue({ llmProvider: 'generic' })
+    expect(resolveModelForProvider('mystery', 'generic', 'agent')).toBe('default')
+  })
+
   it('falls back cleanly when the only latest member of a family is disabled', () => {
     settingsMock.mockReturnValue({
       llmProvider: 'anthropic',

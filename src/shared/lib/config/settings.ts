@@ -37,6 +37,10 @@ export interface ContainerSettings {
 export interface ApiKeySettings {
   anthropicApiKey?: string
   openrouterApiKey?: string
+  /** Generic (custom baseURL) provider key, sent as ANTHROPIC_AUTH_TOKEN. */
+  genericApiKey?: string
+  /** Generic provider endpoint (Anthropic-wire-compatible), e.g. a LiteLLM proxy. */
+  genericBaseUrl?: string
   bedrockApiKey?: string
   bedrockAccessKeyId?: string
   bedrockSecretAccessKey?: string
@@ -274,6 +278,7 @@ export interface GlobalSettingsResponse {
     openrouter: ApiKeyStatus
     bedrock: ApiKeyStatus
     platform: ApiKeyStatus
+    generic: ApiKeyStatus
     composio: ApiKeyStatus
     nango: ApiKeyStatus
     browserbase: ApiKeyStatus

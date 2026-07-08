@@ -191,6 +191,8 @@ settings.use('*', Authenticated(), IsAdmin())
 const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
   'anthropicApiKey',
   'openrouterApiKey',
+  'genericApiKey',
+  'genericBaseUrl',
   'bedrockApiKey',
   'bedrockAccessKeyId',
   'bedrockSecretAccessKey',
@@ -299,6 +301,7 @@ function buildSettingsResponse(
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
       bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
       platform: getLlmProvider('platform').getApiKeyStatus(),
+      generic: getLlmProvider('generic').getApiKeyStatus(),
       browserbase: getBrowserbaseApiKeyStatus(),
       composio: getComposioApiKeyStatus(),
       nango: getNangoApiKeyStatus(),
@@ -687,19 +690,27 @@ settings.post('/validate-anthropic-key', async (c) => {
 // POST /api/settings/validate-llm-key - Validate an API key for any LLM provider
 settings.post('/validate-llm-key', async (c) => {
   try {
-    const { provider, apiKey } = await c.req.json()
+    const { provider, apiKey, baseUrl } = await c.req.json()
     if (!apiKey || typeof apiKey !== 'string') {
       return c.json({ valid: false, error: 'API key is required' }, 400)
     }
     if (!provider || typeof provider !== 'string') {
       return c.json({ valid: false, error: 'Provider is required' }, 400)
     }
-    if (provider !== 'anthropic' && provider !== 'openrouter' && provider !== 'bedrock') {
+    if (
+      provider !== 'anthropic' &&
+      provider !== 'openrouter' &&
+      provider !== 'bedrock' &&
+      provider !== 'generic'
+    ) {
       return c.json({ valid: false, error: `Unknown provider: ${provider}` }, 400)
     }
 
     const llmProvider = getLlmProvider(provider)
-    const result = await llmProvider.validateKey(apiKey)
+    const result = await llmProvider.validateKey(
+      apiKey,
+      typeof baseUrl === 'string' ? { baseUrl } : undefined,
+    )
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Invalid API key'
