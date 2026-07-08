@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified browser use feature by sending a message to open a browser, navigate to https://example.com, and report the page title. Agent successfully opened browser, navigated to the URL, extracted the page title \"Example Domain\", and reported it in the response.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing available agents.",
+    "Step 2: Clicked on \"QA-20260708-185638-75os\" agent in the sidebar — Successfully opened the agent chat interface with the URL changing to /agents/qa-20260708-185638-75os-t970q7i6kh.",
+    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed and sent using Ctrl+Enter. The message appeared in the chat interface and the agent acknowledged it.",
+    "Step 4: Waited for response (up to 3 minutes) — Response was received within ~14 seconds. The \"Working...\" indicator completed and the agent provided a full response with tool execution details.",
+    "Step 5: Verified response mentions \"Example Domain\" — The agent's response clearly states \"The page title is \"Example Domain\"\" and \"The page at https://example.com has the title \"Example Domain\". Browser closed.\" The response confirms successful browser navigation and page title extraction."
+  ],
+  "bugs": [],
+  "durationMs": 137709,
+  "sessionId": "931f0515-deab-46e8-8fd9-df1effcfecd4",
+  "cost": {
+    "inputTokens": 770,
+    "outputTokens": 17243,
+    "cacheCreationTokens": 84165,
+    "cacheReadTokens": 2419193,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.434111
+  }
+}
