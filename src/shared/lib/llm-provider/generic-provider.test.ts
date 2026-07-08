@@ -46,9 +46,9 @@ afterEach(() => {
 })
 
 describe('GenericLlmProvider — catalog and capabilities', () => {
-  it('ships an empty built-in catalog and no model search', () => {
+  it('ships an empty built-in catalog and opts into model search', () => {
     expect(provider.getBuiltinCatalog()).toEqual([])
-    expect(provider.supportsModelSearch).toBe(false)
+    expect(provider.supportsModelSearch).toBe(true)
   })
 })
 
@@ -130,6 +130,108 @@ describe('GenericLlmProvider.createClient', () => {
   it('throws when the API key is missing', () => {
     settingsMock.mockReturnValue({ apiKeys: { genericBaseUrl: 'https://proxy.example' } })
     expect(() => provider.createClient()).toThrow('API key not configured')
+  })
+})
+
+describe('GenericLlmProvider.searchModels', () => {
+  function stubFetch(body: unknown, init?: { ok?: boolean; status?: number }) {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: init?.ok ?? true,
+      status: init?.status ?? 200,
+      json: async () => body,
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('lists ollama-shape entries and passes the Bearer key', async () => {
+    const fetchMock = stubFetch({
+      object: 'list',
+      data: [
+        { id: 'qwen3.6:27b-mlx', object: 'model' },
+        { id: 'gemma3:270m', object: 'model' },
+      ],
+    })
+
+    const results = await provider.searchModels('')
+
+    expect(results).toEqual([
+      { id: 'qwen3.6:27b-mlx', label: 'qwen3.6:27b-mlx', supportedEfforts: ['low', 'medium', 'high'], supportsWebSearch: false },
+      { id: 'gemma3:270m', label: 'gemma3:270m', supportedEfforts: ['low', 'medium', 'high'], supportsWebSearch: false },
+    ])
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://proxy.example/v1/models')
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer test-key' })
+  })
+
+  it('uses display_name as the label when present (Anthropic /v1/models shape)', async () => {
+    stubFetch({
+      data: [{ id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8' }],
+    })
+
+    const [model] = await provider.searchModels('')
+    expect(model).toMatchObject({ id: 'claude-opus-4-8', label: 'Claude Opus 4.8' })
+  })
+
+  it('filters by substring against both id and label, case-insensitive', async () => {
+    stubFetch({
+      data: [
+        { id: 'qwen3.6:27b-mlx' },
+        { id: 'gemma3:270m' },
+        { id: 'llama3.1', display_name: 'Meta Llama 3.1' },
+      ],
+    })
+
+    const qwen = await provider.searchModels('QWEN')
+    expect(qwen.map((m) => m.id)).toEqual(['qwen3.6:27b-mlx'])
+
+    const meta = await provider.searchModels('meta')
+    expect(meta.map((m) => m.id)).toEqual(['llama3.1'])
+  })
+
+  it('drops entries without an id and caps the result at 50', async () => {
+    const data = [
+      { object: 'model' },
+      ...Array.from({ length: 60 }, (_, i) => ({ id: `model-${i}` })),
+    ]
+    stubFetch({ data })
+
+    const results = await provider.searchModels('')
+    expect(results).toHaveLength(50)
+    expect(results.every((m) => m.id.startsWith('model-'))).toBe(true)
+  })
+
+  it('strips a trailing slash on the base URL before appending /v1/models', async () => {
+    settingsMock.mockReturnValue({
+      apiKeys: { genericApiKey: 'k', genericBaseUrl: 'https://proxy.example///' },
+    })
+    const fetchMock = stubFetch({ data: [] })
+
+    await provider.searchModels('')
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toBe('https://proxy.example/v1/models')
+  })
+
+  it('throws a friendly message when the endpoint has no /v1/models (404)', async () => {
+    stubFetch({}, { ok: false, status: 404 })
+    await expect(provider.searchModels('')).rejects.toThrow('does not support model listing')
+  })
+
+  it('throws with the status code on other non-OK responses', async () => {
+    stubFetch({}, { ok: false, status: 500 })
+    await expect(provider.searchModels('')).rejects.toThrow('failed (500)')
+  })
+
+  it('throws when the base URL is missing', async () => {
+    settingsMock.mockReturnValue({ apiKeys: { genericApiKey: 'k' } })
+    await expect(provider.searchModels('')).rejects.toThrow('base URL not configured')
+  })
+
+  it('throws when the API key is missing', async () => {
+    settingsMock.mockReturnValue({ apiKeys: { genericBaseUrl: 'https://proxy.example' } })
+    await expect(provider.searchModels('')).rejects.toThrow('API key not configured')
   })
 })
 
