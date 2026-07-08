@@ -28,12 +28,12 @@ const WEB_PROVIDERS: ProviderOption<WebProviderId>[] = [
   {
     value: 'native',
     label: 'Native',
-    note: "Anthropic's built-in web search and Claude's WebFetch. Works only on Claude models, no API key required.",
+    note: "The model's own built-in web tools - works on any model with native web search/fetch (Claude, and GPT over the Platform). No API key required.",
   },
   {
     value: 'exa',
     label: 'Exa',
-    note: 'Neural web search plus full-page reads via Exa Contents. Works on any model. Requires an Exa API key.',
+    note: 'Exa for both web search and fetch - neural search plus full-page reads (Exa Contents). Works on any model. Requires an Exa API key.',
     docsUrl: 'https://docs.exa.ai',
     usesExaKey: true,
   },

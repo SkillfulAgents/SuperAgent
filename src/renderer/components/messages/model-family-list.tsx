@@ -25,7 +25,7 @@ export function formatTokenThreshold(tokens: number): string {
 
 /**
  * Warning copy for a model that can't do web tools, or null when they work (no banner). Native web
- * tools are Claude-only; a configured host vendor exposes the `mcp__web__*` tools to ANY model, so
+ * tools depend on the model's own support (Claude, and GPT over the Platform); a configured host vendor exposes the `mcp__web__*` tools to ANY model, so
  * they are "unavailable" only when the model lacks native support AND no vendor is set - the caller
  * passes that one boolean. INVARIANT: the single boolean assumes every registered vendor implements
  * BOTH operations (Exa does). The backend seam is per-tool (optional search?()/fetch?(), the MCP
@@ -92,8 +92,9 @@ interface ModelFamilyListProps {
    */
   onSelectFamilyLatest?: (value: string) => void
   /**
-   * Active host web-provider id from global settings. Native web search/fetch are Claude-only
-   * (supportsWebSearch); a configured vendor exposes the `mcp__web__*` tools to ANY model, so the
+   * Active host web-provider id from global settings. Native web search/fetch depend on the model
+   * (the `supportsWebSearch` flag; Claude and GPT-over-Platform have them); a configured vendor
+   * exposes the `mcp__web__*` tools to ANY model, so the
    * "not available" warning clears once a vendor is set. Undefined / 'native' = no host vendor.
    */
   webProvider?: string
@@ -184,7 +185,7 @@ export function ModelFamilyList({
   const [expanded, setExpanded] = useState<string | null | undefined>(undefined)
   const openFamily = expanded === undefined ? selectedFamily : expanded
 
-  // Native web tools are Claude-only; a configured host vendor makes them work on ANY model, so web
+  // Native web tools depend on the model's own support (Claude, GPT-over-Platform); a configured host vendor makes them work on ANY model, so web
   // tools are unavailable only when the model lacks native support AND no vendor is set.
   // `native`/undefined means no host vendor.
   const nativeWebUnavailable = resolved?.supportsWebSearch === false
