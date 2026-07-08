@@ -126,6 +126,7 @@ import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
+import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -3528,21 +3529,33 @@ agents.post('/:id/skills/:dir/publish', AgentAdmin(), async (c) => {
 // Agent Template endpoints
 // ============================================================
 
+/**
+ * Download response for a branded .agent/.skill package. octet-stream (not
+ * application/zip) so browsers keep the branded extension instead of
+ * "correcting" the filename to .zip; the filename carries the human-readable
+ * display name (slugs are opaque minted ids), encoded per the same quoted +
+ * RFC 5987 `filename*` convention as workspace-file downloads.
+ */
+function packageDownloadResponse(zipBuffer: Buffer, filename: string): Response {
+  const encoded = encodeURIComponent(filename)
+  return new Response(new Uint8Array(zipBuffer), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
+      'Content-Length': zipBuffer.byteLength.toString(),
+    },
+  })
+}
+
 // POST /api/agents/:id/export-template - Export agent as ZIP download
 agents.post('/:id/export-template', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const zipBuffer = await exportAgentTemplate(slug)
+    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentTemplate(slug)])
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
-    return new Response(new Uint8Array(zipBuffer), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': `attachment; filename="${slug}-template.zip"`,
-        'Content-Length': zipBuffer.byteLength.toString(),
-      },
-    })
+    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export template'
     console.error('Failed to export template:', error)
@@ -3554,17 +3567,10 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
 agents.post('/:id/export-full', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const zipBuffer = await exportAgentFull(slug)
+    const [agent, zipBuffer] = await Promise.all([getAgent(slug), exportAgentFull(slug)])
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
-    return new Response(new Uint8Array(zipBuffer), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': `attachment; filename="${slug}-full.zip"`,
-        'Content-Length': zipBuffer.byteLength.toString(),
-      },
-    })
+    return packageDownloadResponse(zipBuffer, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export agent'
     console.error('Failed to export full agent:', error)
@@ -3712,17 +3718,10 @@ agents.post('/:id/skills/:dir/export', AgentAdmin(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
     const dir = c.req.param('dir')
-    const zipBuffer = await exportSkill(agentSlug, dir)
+    const { zipBuffer, skillName } = await exportSkill(agentSlug, dir)
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'skill', objectId: `${agentSlug}/${dir}`, action: 'exported', details: { type: 'zip' } })
-    return new Response(new Uint8Array(zipBuffer), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': `attachment; filename="${dir}.zip"`,
-        'Content-Length': zipBuffer.byteLength.toString(),
-      },
-    })
+    return packageDownloadResponse(zipBuffer, `${skillName || dir}${SKILL_PACKAGE_EXTENSION}`)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to export skill'
     console.error('Failed to export skill:', error)

@@ -101,7 +101,7 @@ export function BrowserInputRequestItem({
           loading={submittingAction === 'completing'}
           disabled={status === 'submitting'}
           size="xs"
-          className="h-8 min-w-24 bg-blue-600 text-white hover:bg-blue-700"
+          className="min-w-24 bg-blue-600 text-white hover:bg-blue-700"
           data-testid="browser-input-complete-btn"
         >
           Done

@@ -101,10 +101,14 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
 const mockCreatePlatformWebhookEndpoint = vi.fn<MockFn>()
 const mockUpdatePlatformWebhookEndpoint = vi.fn<MockFn>(() => Promise.resolve({}))
 const mockDisablePlatformWebhookEndpoint = vi.fn<MockFn>(() => Promise.resolve())
+const mockListPlatformWebhookEvents = vi.fn<MockFn>(() => Promise.resolve({ filterExp: null, events: [] }))
+const mockTestPlatformWebhookFilter = vi.fn<MockFn>()
 vi.mock('@shared/lib/services/webhook-endpoints-client', () => ({
   createPlatformWebhookEndpoint: (...args: unknown[]) => mockCreatePlatformWebhookEndpoint(...args),
   updatePlatformWebhookEndpoint: (...args: unknown[]) => mockUpdatePlatformWebhookEndpoint(...args),
   disablePlatformWebhookEndpoint: (...args: unknown[]) => mockDisablePlatformWebhookEndpoint(...args),
+  listPlatformWebhookEvents: (...args: unknown[]) => mockListPlatformWebhookEvents(...args),
+  testPlatformWebhookFilter: (...args: unknown[]) => mockTestPlatformWebhookFilter(...args),
 }))
 
 // Platform-authed by default: the create/update endpoint handlers gate on the
@@ -3669,6 +3673,52 @@ describe('MessagePersister', () => {
         await flushHandlers('/inputs/tool-mint-6/resolve')
         expect(mockCreatePlatformWebhookEndpoint).toHaveBeenCalled()
       })
+
+      it('passes filter_exp through to the platform and confirms it in the result', async () => {
+        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-7', {
+          name: 'Filtered hook',
+          prompt: 'Handle assigned issues',
+          filter_exp: 'headers["linear-event"] == "Issue" && has(body.updatedFrom.assigneeId)',
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-mint-7/resolve')
+        expect(mockCreatePlatformWebhookEndpoint.mock.calls[0][1].filter_exp).toBe(
+          'headers["linear-event"] == "Issue" && has(body.updatedFrom.assigneeId)',
+        )
+        const body = JSON.parse(resolveCall[1].body)
+        expect(body.value).toContain('Delivery filter active')
+        expect(body.value).toContain('inspect_webhook_events')
+      })
+
+      it('teaches the filter loop when minting WITHOUT a filter', async () => {
+        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-8', {
+          name: 'Unfiltered hook',
+          prompt: 'Handle it',
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-mint-8/resolve')
+        expect(mockCreatePlatformWebhookEndpoint.mock.calls[0][1].filter_exp).toBeUndefined()
+        const body = JSON.parse(resolveCall[1].body)
+        // No filter → the result must make filtering an explicit decision
+        // (compare subscription breadth vs the prompt) and point at
+        // filter_exp + the dry-run tool.
+        expect(body.value).toContain('decide whether you need one')
+        expect(body.value).toContain('filter_exp')
+        expect(body.value).toContain('update_webhook_endpoint')
+        expect(body.value).toContain('test_filter_exp')
+      })
+
+      it('rejects an over-length filter_exp before any platform call', async () => {
+        simulateToolUse('mcp__user-input__create_webhook_endpoint', 'tool-mint-9', {
+          name: 'Too long',
+          prompt: 'Handle it',
+          filter_exp: `body.a == "${'x'.repeat(2100)}"`,
+        })
+
+        const rejectCall = await flushHandlers('/inputs/tool-mint-9/reject')
+        expect(JSON.parse(rejectCall[1].body).reason).toContain('filter_exp')
+        expect(mockCreatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+      })
     })
 
     describe('update_webhook_endpoint', () => {
@@ -3731,6 +3781,189 @@ describe('MessagePersister', () => {
 
         await flushHandlers('/inputs/tool-upd-3/reject')
         expect(mockUpdatePlatformWebhookEndpoint).not.toHaveBeenCalled()
+      })
+
+      it('sets a filter_exp and explains the filtered-events semantics', async () => {
+        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-4', {
+          trigger_id: 'trigger_custom_1',
+          filter_exp: 'body.action == "update"',
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-upd-4/resolve')
+        expect(mockUpdatePlatformWebhookEndpoint).toHaveBeenCalledWith(
+          expect.any(String),
+          customTrigger.composioTriggerId,
+          { filter_exp: 'body.action == "update"' },
+        )
+        const value = JSON.parse(resolveCall[1].body).value
+        expect(value).toContain('filter set')
+        expect(value).toContain('fail open')
+      })
+
+      it('clears the filter with filter_exp: null', async () => {
+        simulateToolUse('mcp__user-input__update_webhook_endpoint', 'tool-upd-5', {
+          trigger_id: 'trigger_custom_1',
+          filter_exp: null,
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-upd-5/resolve')
+        expect(mockUpdatePlatformWebhookEndpoint).toHaveBeenCalledWith(
+          expect.any(String),
+          customTrigger.composioTriggerId,
+          { filter_exp: null },
+        )
+        const value = JSON.parse(resolveCall[1].body).value
+        expect(value).toContain('filter removed')
+      })
+    })
+
+    describe('inspect_webhook_events', () => {
+      const customTrigger = {
+        id: 'trigger_custom_1',
+        agentSlug: 'test-agent',
+        kind: 'custom',
+        composioTriggerId: 'whep_11111111-2222-4333-8444-555555555555',
+        status: 'active',
+      }
+
+      beforeEach(() => {
+        mockListPlatformWebhookEvents.mockClear()
+        mockTestPlatformWebhookFilter.mockClear()
+        mockGetWebhookTrigger.mockResolvedValue(customTrigger)
+        mockListPlatformWebhookEvents.mockResolvedValue({ filterExp: null, events: [] })
+      })
+
+      it('lists recent deliveries with filter verdicts and body previews', async () => {
+        mockListPlatformWebhookEvents.mockResolvedValue({
+          filterExp: 'body.action == "update"',
+          events: [
+            {
+              id: 'whe_1',
+              created_at: '2026-07-07T20:45:19Z',
+              status: 'consumed',
+              kind: 'event',
+              verified: true,
+              filter: { outcome: 'passed' },
+              method: 'POST',
+              content_type: 'application/json',
+              body: '{"action":"update"}',
+            },
+            {
+              id: 'whe_2',
+              created_at: '2026-07-07T20:44:00Z',
+              status: 'filtered',
+              kind: 'event',
+              verified: true,
+              filter: { outcome: 'filtered' },
+              method: 'POST',
+              content_type: 'application/json',
+              body: `{"action":"create","pad":"${'x'.repeat(500)}"}`,
+            },
+            {
+              id: 'whe_3',
+              created_at: '2026-07-07T20:43:00Z',
+              status: 'pending',
+              kind: 'event',
+              verified: false,
+              filter: { outcome: 'error', error: 'No such key: parent' },
+              method: 'POST',
+              content_type: 'application/json',
+              body: '{"other":1}',
+            },
+          ],
+        })
+
+        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-1', {
+          trigger_id: 'trigger_custom_1',
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-insp-1/resolve')
+        expect(mockListPlatformWebhookEvents).toHaveBeenCalledWith(
+          expect.any(String),
+          customTrigger.composioTriggerId,
+          undefined,
+        )
+        const value = JSON.parse(resolveCall[1].body).value as string
+        expect(value).toContain('body.action == "update"')
+        expect(value).toContain('whe_1')
+        expect(value).toContain('filter: passed')
+        expect(value).toContain('filter: filtered')
+        expect(value).toContain('No such key: parent')
+        // Body previews are capped so 50 events can't crowd the context.
+        expect(value.length).toBeLessThan(2000)
+      })
+
+      it('reports when no deliveries exist yet', async () => {
+        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-2', {
+          trigger_id: 'trigger_custom_1',
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-insp-2/resolve')
+        const value = JSON.parse(resolveCall[1].body).value as string
+        expect(value).toContain('No deliveries recorded yet')
+      })
+
+      it('dry-runs a candidate filter and summarizes the verdicts', async () => {
+        mockTestPlatformWebhookFilter.mockResolvedValue({
+          filter_exp: 'body.action == "update"',
+          evaluated: 3,
+          summary: { passed: 1, filtered: 1, error: 1, skipped: 0 },
+          results: [
+            { event_id: 'whe_1', created_at: '2026-07-07T20:45:19Z', stored_status: 'consumed', outcome: 'passed' },
+            { event_id: 'whe_2', created_at: '2026-07-07T20:44:00Z', stored_status: 'filtered', outcome: 'filtered' },
+            { event_id: 'whe_3', created_at: '2026-07-07T20:43:00Z', stored_status: 'pending', outcome: 'error', error: 'No such key: action' },
+          ],
+        })
+
+        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-3', {
+          trigger_id: 'trigger_custom_1',
+          test_filter_exp: 'body.action == "update"',
+          limit: 10,
+        })
+
+        const resolveCall = await flushHandlers('/inputs/tool-insp-3/resolve')
+        expect(mockTestPlatformWebhookFilter).toHaveBeenCalledWith(
+          expect.any(String),
+          customTrigger.composioTriggerId,
+          'body.action == "update"',
+          10,
+        )
+        expect(mockListPlatformWebhookEvents).not.toHaveBeenCalled()
+        const value = JSON.parse(resolveCall[1].body).value as string
+        expect(value).toContain('1 would pass')
+        expect(value).toContain('No such key: action')
+        expect(value).toContain('Nothing was changed')
+        expect(value).toContain('update_webhook_endpoint')
+      })
+
+      it('surfaces the platform 400 (CEL parser message) for an invalid candidate', async () => {
+        mockTestPlatformWebhookFilter.mockRejectedValue(
+          new Error('Webhook endpoints API error 400: Invalid filter expression: invalid CEL expression: Unexpected token: EOF'),
+        )
+
+        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-4', {
+          trigger_id: 'trigger_custom_1',
+          test_filter_exp: 'has(body.x) &&',
+        })
+
+        const rejectCall = await flushHandlers('/inputs/tool-insp-4/reject')
+        expect(JSON.parse(rejectCall[1].body).reason).toContain('Unexpected token')
+      })
+
+      it('rejects non-custom triggers and missing platform auth', async () => {
+        mockGetWebhookTrigger.mockResolvedValue({ ...customTrigger, kind: 'composio' })
+        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-5', {
+          trigger_id: 'trigger_custom_1',
+        })
+        await flushHandlers('/inputs/tool-insp-5/reject')
+        expect(mockListPlatformWebhookEvents).not.toHaveBeenCalled()
+
+        mockGetPlatformAccessToken.mockReturnValue(null)
+        simulateToolUse('mcp__user-input__inspect_webhook_events', 'tool-insp-6', {
+          trigger_id: 'trigger_custom_1',
+        })
+        const rejectCall = await flushHandlers('/inputs/tool-insp-6/reject')
+        expect(JSON.parse(rejectCall[1].body).reason).toContain('platform')
       })
     })
 
@@ -3809,6 +4042,9 @@ describe('MessagePersister', () => {
         // Dead end must redirect to the custom-endpoint path.
         expect(body.value).toContain('create_webhook_endpoint')
         expect(body.value).toContain('update_webhook_endpoint')
+        // ...including the filter step for over-broad vendor webhooks.
+        expect(body.value).toContain('filter_exp')
+        expect(body.value).toContain('inspect_webhook_events')
       })
     })
   })

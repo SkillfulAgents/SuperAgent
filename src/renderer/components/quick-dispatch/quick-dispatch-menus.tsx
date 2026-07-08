@@ -6,6 +6,7 @@ import { findCatalogModel, type ComposerOptionsState } from '@renderer/component
 import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
 
 // Inline, full-width menus for the quick-dispatch launcher. Unlike the main
 // app's floating popovers, these render INSIDE the panel's flex column so the
@@ -174,12 +175,10 @@ export function AttachMenu({
 
   const handleRecent = useCallback(
     async (filePath: string) => {
-      const api = window.electronAPI
-      if (!api?.readLocalFile) return
       setLoadingPath(filePath)
       try {
-        const result = await api.readLocalFile(filePath)
-        if (result) onRecentFileAttach(new File([result.buffer], result.name, { type: result.type }))
+        const file = await readLocalFileAsFile(filePath)
+        if (file) onRecentFileAttach(file)
       } finally {
         setLoadingPath(null)
       }

@@ -51,6 +51,20 @@ const verificationProfileSchema = z.object({
     .describe('Set "base64" for Standard-Webhooks/svix secrets (whsec_...); default utf8'),
 })
 
+/**
+ * CEL filter expression — evaluated platform-side per delivery. The teaching
+ * text lives in one place so create/update stay in sync.
+ */
+const FILTER_EXP_DESCRIPTION = `Optional CEL filter expression evaluated against every delivery at the edge; only events where it returns true start a session. Use it whenever the service's webhook subscription is coarser than the actual trigger condition (e.g. Linear sends ALL Issue events — filter to "assigned to me changed") so irrelevant events never wake you. Filtered events are still logged (see inspect_webhook_events), never lost silently.
+
+Context variables: body (parsed JSON body; null when the body is not JSON), headers (lowercased header map), query (query-string map), method, verified (HMAC verification result), content_type.
+
+Rules: the expression must evaluate to a boolean. Guard fields that are not always present with has() — has(body.data.assignee) && body.data.assignee.email == "x" — and headers with in — "x-github-event" in headers && ... — because dereferencing a missing key is an ERROR, and errors FAIL OPEN (the event is delivered with the error recorded). matches()/regex is NOT supported (rejected at validation) — use contains(), startsWith(), or endsWith() instead.
+
+Examples: Linear assignee changed: headers["linear-event"] == "Issue" && body.action == "update" && has(body.updatedFrom.assigneeId) · GitHub issues opened: headers["x-github-event"] == "issues" && body.action == "opened" · Stripe: body.type == "invoice.payment_failed" · Slack mention: body.event.type == "app_mention" · Shopify: headers["x-shopify-topic"] == "orders/create".
+
+Before setting or changing a filter on an endpoint that has already received traffic, dry-run the candidate with inspect_webhook_events (test_filter_exp) against real deliveries.`
+
 export const getAvailableTriggersTool = tool(
   'get_available_triggers',
   `List available webhook triggers for a connected account. Returns trigger types that can fire webhooks (e.g., "new email received", "new GitHub push").
@@ -220,6 +234,7 @@ If the service reveals a signing secret only AFTER registration, attach it after
     verification: verificationProfileSchema
       .optional()
       .describe('Optional HMAC signature verification profile, if you already know the signing secret'),
+    filter_exp: z.string().optional().describe(FILTER_EXP_DESCRIPTION),
     model: z
       .enum(['opus', 'sonnet', 'haiku'])
       .optional()
@@ -255,6 +270,7 @@ If the service reveals a signing secret only AFTER registration, attach it after
           name: args.name,
           prompt: args.prompt,
           verification: args.verification,
+          filter_exp: args.filter_exp,
           model: args.model,
           effort: args.effort,
         },
@@ -275,7 +291,7 @@ If the service reveals a signing secret only AFTER registration, attach it after
 
 export const updateWebhookEndpointTool = tool(
   'update_webhook_endpoint',
-  `Update a custom webhook endpoint: attach or change its HMAC signature verification (many services only reveal the signing secret after you register the URL), or rename it. Pass the trigger ID from list_triggers or create_webhook_endpoint.
+  `Update a custom webhook endpoint: attach or change its HMAC signature verification (many services only reveal the signing secret after you register the URL), set or change its delivery filter expression, or rename it. Pass the trigger ID from list_triggers or create_webhook_endpoint.
 
 Once verification is attached, incoming requests with bad signatures are rejected at the edge and valid events are marked verified.`,
   {
@@ -285,6 +301,11 @@ Once verification is attached, incoming requests with bad signatures are rejecte
       .nullable()
       .optional()
       .describe('HMAC verification profile to attach; pass null to remove verification'),
+    filter_exp: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(`Pass null to remove the filter (deliver everything). ${FILTER_EXP_DESCRIPTION}`),
   },
   async (args) => {
     console.log(`[update_webhook_endpoint] Updating endpoint for trigger ${args.trigger_id}`)
@@ -305,6 +326,7 @@ Once verification is attached, incoming requests with bad signatures are rejecte
           trigger_id: args.trigger_id,
           name: args.name,
           verification: args.verification,
+          filter_exp: args.filter_exp,
         },
       )
 
@@ -315,6 +337,60 @@ Once verification is attached, incoming requests with bad signatures are rejecte
       const msg = error instanceof Error ? error.message : 'Unknown error'
       return {
         content: [{ type: 'text' as const, text: `Failed to update webhook endpoint: ${msg}` }],
+        isError: true,
+      }
+    }
+  },
+)
+
+export const inspectWebhookEventsTool = tool(
+  'inspect_webhook_events',
+  `Inspect recent deliveries to a custom webhook endpoint — INCLUDING events the filter expression withheld — and optionally dry-run a candidate filter expression against them.
+
+Use it to answer "why didn't my trigger fire?" (check the stored filter verdicts and any eval errors) and to iterate on a filter safely: pass test_filter_exp to see which of the recent real deliveries a candidate expression would pass/filter/error on, using the exact evaluator that runs at delivery time. The dry run never changes the endpoint; apply the winning expression with update_webhook_endpoint.`,
+  {
+    trigger_id: z.string().describe('The trigger ID of the custom webhook endpoint (from list_triggers)'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe('How many recent deliveries to inspect (default 20, max 50)'),
+    test_filter_exp: z
+      .string()
+      .optional()
+      .describe('Candidate CEL filter expression to dry-run against the recent deliveries'),
+  },
+  async (args) => {
+    console.log(`[inspect_webhook_events] Inspecting trigger ${args.trigger_id}`)
+
+    const toolUseId = inputManager.consumeCurrentToolUseId()
+    if (!toolUseId) {
+      return {
+        content: [{ type: 'text' as const, text: 'Unable to process request — no tool use ID available.' }],
+        isError: true,
+      }
+    }
+
+    try {
+      const result = await inputManager.createPendingWithType<string>(
+        toolUseId,
+        'inspect_webhook_events',
+        {
+          trigger_id: args.trigger_id,
+          limit: args.limit,
+          test_filter_exp: args.test_filter_exp,
+        },
+      )
+
+      return {
+        content: [{ type: 'text' as const, text: result }],
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : 'Unknown error'
+      return {
+        content: [{ type: 'text' as const, text: `Failed to inspect webhook events: ${msg}` }],
         isError: true,
       }
     }

@@ -53,6 +53,8 @@ import {
 } from './quick-dispatch-window'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
+import { classifyImportPackage } from './import-packages'
+import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
 
 // In dev mode, use a separate data directory to avoid mixing with production data.
@@ -1519,12 +1521,41 @@ function handleOpenedFile(filePath: string): void {
   // allowed to read it. Kept in a dedicated set that get-recent-files never
   // clears, so opening the Attach menu can't evict it before the drain reads it.
   explicitlyOpenedPaths.add(filePath)
+  // Branded .agent/.skill packages import into the main window rather than
+  // attaching to a quick-dispatch message.
+  if (isImportPackagePath(filePath)) {
+    handleOpenedImportPackage(filePath)
+    return
+  }
   if (!quickDispatchReadyForFiles) {
     pendingOpenedFiles.push(filePath)
     return
   }
   openQuickDispatchWithFile(filePath)
 }
+
+// Opened .agent/.skill packages use the same race-free pull model as
+// quick-dispatch attach: paths queue here, the main-window renderer drains on
+// mount, and the `import-package-pending` ping tells an already-mounted
+// renderer to drain again. Double drains are harmless (splice empties the
+// queue), so cold start / window-recreate races can't drop or duplicate files.
+const pendingImportPackages: string[] = []
+
+function handleOpenedImportPackage(filePath: string): void {
+  pendingImportPackages.push(filePath)
+  // No-ops before app.ready (cold start): startApp() creates the window and
+  // the renderer's mount-time drain picks the queue up.
+  showOrCreateMainWindow()
+  sendToMainWindowWhenReady((win) => win.webContents.send('import-package-pending'))
+}
+
+// Classification (agent template vs skill, by zip content) happens HERE, from
+// the path on disk — the renderer only ever receives the verdict, and package
+// bytes cross to it exactly once, at import-upload time via read-local-file.
+ipcMain.handle('import-package:drain', async () => {
+  const paths = pendingImportPackages.splice(0, pendingImportPackages.length)
+  return Promise.all(paths.map((filePath) => classifyImportPackage(filePath)))
+})
 
 // Renderer drains queued dock-drop / "Open With" files (pull, race-free).
 ipcMain.handle('quick-dispatch:drain-attach', () => drainQuickDispatchAttachPaths())

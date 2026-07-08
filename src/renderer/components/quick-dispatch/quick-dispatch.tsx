@@ -5,6 +5,7 @@ import { Button } from '@renderer/components/ui/button'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { apiFetch } from '@renderer/lib/api'
 import { uploadFileChunked } from '@renderer/lib/upload'
+import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
@@ -189,10 +190,9 @@ export function QuickDispatch() {
     const api = window.electronAPI
     if (!api) return
     const attachPath = async (filePath: string) => {
-      if (!api.readLocalFile) return
-      const result = await api.readLocalFile(filePath)
-      if (result) {
-        addFilesRef.current([{ file: new File([result.buffer], result.name, { type: result.type }) }])
+      const file = await readLocalFileAsFile(filePath)
+      if (file) {
+        addFilesRef.current([{ file }])
       }
     }
     const drain = async () => {

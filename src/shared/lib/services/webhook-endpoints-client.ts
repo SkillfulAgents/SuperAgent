@@ -13,8 +13,12 @@ import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-servi
 import {
   webhookEndpointSchema,
   webhookEndpointListSchema,
+  webhookEndpointEventsSchema,
+  webhookFilterTestResultSchema,
   type VerificationProfile,
   type WebhookEndpoint,
+  type WebhookEndpointEvent,
+  type WebhookFilterTestResult,
 } from './webhook-endpoint-schema'
 
 // Org JWTs encode the acting member as `<token>::<memberId>`; opaque keys ignore it.
@@ -62,7 +66,7 @@ async function endpointsFetch(
 /** Mint a new public webhook endpoint; returns it including the public URL. */
 export async function createPlatformWebhookEndpoint(
   memberId: string,
-  params: { name: string; verification?: VerificationProfile },
+  params: { name: string; verification?: VerificationProfile; filter_exp?: string },
 ): Promise<WebhookEndpoint> {
   const data = await endpointsFetch('', memberId, {
     method: 'POST',
@@ -116,13 +120,55 @@ export async function getPlatformWebhookEndpoint(
 export async function updatePlatformWebhookEndpoint(
   memberId: string,
   endpointId: string,
-  params: { name?: string; verification?: VerificationProfile | null },
+  params: { name?: string; verification?: VerificationProfile | null; filter_exp?: string | null },
 ): Promise<WebhookEndpoint> {
   const data = await endpointsFetch(`/${encodeURIComponent(endpointId)}`, memberId, {
     method: 'PATCH',
     body: JSON.stringify(params),
   })
   return webhookEndpointSchema.parse(data)
+}
+
+/**
+ * Recent stored deliveries for an endpoint, newest first — INCLUDING rows the
+ * filter withheld (status 'filtered'). The filter-debugging surface: "why
+ * didn't my trigger fire?" is answered here.
+ */
+export async function listPlatformWebhookEvents(
+  memberId: string,
+  endpointId: string,
+  limit?: number,
+): Promise<{ filterExp: string | null; events: WebhookEndpointEvent[] }> {
+  const search = limit !== undefined ? `?limit=${encodeURIComponent(limit)}` : ''
+  const data = await endpointsFetch(
+    `/${encodeURIComponent(endpointId)}/events${search}`,
+    memberId,
+    { method: 'GET' },
+  )
+  const parsed = webhookEndpointEventsSchema.parse(data)
+  return { filterExp: parsed.filter_exp ?? null, events: parsed.events }
+}
+
+/**
+ * Dry-run a candidate filter expression against the endpoint's recent stored
+ * deliveries using the platform's live evaluator (never touches the stored
+ * filter). 400s with the parser message on an invalid expression.
+ */
+export async function testPlatformWebhookFilter(
+  memberId: string,
+  endpointId: string,
+  filterExp: string,
+  limit?: number,
+): Promise<WebhookFilterTestResult> {
+  const data = await endpointsFetch(
+    `/${encodeURIComponent(endpointId)}/test-filter`,
+    memberId,
+    {
+      method: 'POST',
+      body: JSON.stringify({ filter_exp: filterExp, ...(limit !== undefined ? { limit } : {}) }),
+    },
+  )
+  return webhookFilterTestResultSchema.parse(data)
 }
 
 /** Disable (soft-delete): ingest starts returning 404 for the URL. */

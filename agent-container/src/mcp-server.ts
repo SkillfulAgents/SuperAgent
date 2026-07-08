@@ -27,6 +27,7 @@ import {
   cancelTriggerTool,
   createWebhookEndpointTool,
   updateWebhookEndpointTool,
+  inspectWebhookEventsTool,
 } from './tools/webhook-triggers'
 import { deliverFileTool } from './tools/deliver-file'
 import { deliverSessionTool } from './tools/deliver-session'
@@ -83,7 +84,9 @@ export function createUserInputMcpServer() {
       ...(includeComposioTriggers || includeWebhookEndpoints
         ? [listTriggersTool, cancelTriggerTool]
         : []),
-      ...(includeWebhookEndpoints ? [createWebhookEndpointTool, updateWebhookEndpointTool] : []),
+      ...(includeWebhookEndpoints
+        ? [createWebhookEndpointTool, updateWebhookEndpointTool, inspectWebhookEventsTool]
+        : []),
     ],
   })
 }

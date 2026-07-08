@@ -16,6 +16,7 @@ import { VoiceAgent } from '@renderer/components/ui/voice-agent'
 import { AgentTemplateBrowseDialog } from '@renderer/components/agents/agent-template-browse-dialog'
 import { apiFetch } from '@renderer/lib/api'
 import { useImportAgentTemplate, useDiscoverableAgents, type ImportProgress } from '@renderer/hooks/use-agent-templates'
+import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import type { VoiceAgentConfig } from '@renderer/lib/voice-agent'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -110,8 +111,9 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
 
   const acceptFile = useCallback((file: File | null | undefined) => {
     if (!file) return
-    if (!file.name.toLowerCase().endsWith('.zip')) {
-      toast.error('Only .zip template files are supported')
+    const name = file.name.toLowerCase()
+    if (!name.endsWith(AGENT_PACKAGE_EXTENSION) && !name.endsWith('.zip')) {
+      toast.error(`Only ${AGENT_PACKAGE_EXTENSION} or .zip template files are supported`)
       return
     }
     setImportFile(file)
@@ -191,7 +193,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
         <OptionCard
           title="Import an Agent"
           icon={<ArrowDownToLine className="h-4 w-4" />}
-          ariaDescription="Import an agent from a .zip template file"
+          ariaDescription="Import an agent from a .agent or .zip template file"
           onClick={() => setShowImportDialog(true)}
         />
       </div>
@@ -222,7 +224,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
           <DialogHeader>
             <DialogTitle className="font-medium">Import an Agent</DialogTitle>
             <DialogDescription className="sr-only">
-              Upload a .zip template to create a new agent.
+              Upload a .agent or .zip template to create a new agent.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleImport}>
@@ -248,7 +250,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".zip"
+                  accept={`${AGENT_PACKAGE_EXTENSION},.zip`}
                   className="hidden"
                   disabled={importTemplate.isPending}
                   onChange={(e) => {
@@ -279,7 +281,7 @@ export function AgentCreationAids({ onVoiceResult, onImportComplete, className }
                   <>
                     <Upload className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
                     <p className="text-sm text-muted-foreground">
-                      Drop a .zip template file here<br />
+                      Drop a .agent or .zip template file here<br />
                       or click to browse
                     </p>
                   </>

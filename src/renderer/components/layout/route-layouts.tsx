@@ -8,6 +8,7 @@ import { WindowControls } from '@renderer/components/layout/window-controls'
 import { ContainerSetupHandler } from '@renderer/components/settings/container-setup-handler'
 import { SidebarProvider, SidebarInset, useSidebar } from '@renderer/components/ui/sidebar'
 import { MenuCommandHandler } from '@renderer/components/menu-command-handler'
+import { PackageImportHandler } from '@renderer/components/package-import-handler'
 import { HistoryNavigationHandler } from '@renderer/components/history-navigation-handler'
 import { GlobalNotificationHandler } from '@renderer/components/notifications/global-notification-handler'
 import { OnboardingProvider } from '@renderer/context/onboarding-context'
@@ -98,6 +99,7 @@ export function RootLayout() {
               useNavigate / useDialogs / useUser / useUserSettings — available at
               the root route. */}
           <MenuCommandHandler />
+          <PackageImportHandler />
           <HistoryNavigationHandler />
           <GlobalNotificationHandler />
           <ContainerSetupHandler />
