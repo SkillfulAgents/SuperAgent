@@ -82,7 +82,7 @@
     "@types/react-file-icon": "^1.0.4",
     "analytics": "^0.8.19",
     "archiver": "^7.0.1",
-    "better-auth": "^1.4.19",
+    "better-auth": "^1.6.23",
     "better-sqlite3": "^12.8.0",
     "ccusage": "^15.2.0",
     "chrono-node": "^2.9.0",
