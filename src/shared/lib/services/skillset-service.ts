@@ -1738,6 +1738,12 @@ const SKILL_MAX_FILE_COUNT = 500
  * Export a single skill directory as a ZIP buffer, alongside the skill's
  * display name from SKILL.md frontmatter (null when the frontmatter has none)
  * so callers can name the download after the skill rather than its directory.
+ *
+ * Entries are wrapped in a top-level `<skillDirName>/` folder (the same
+ * convention Anthropic skill exports use, and what import strips via
+ * detectZipPrefix). That folder carries the skill's name INSIDE the package
+ * content, so a skill without frontmatter still round-trips with its name —
+ * the download filename is never trusted on import.
  */
 export async function exportSkill(
   agentSlug: string,
@@ -1759,7 +1765,7 @@ export async function exportSkill(
   const packageFiles = await readSkillPackageFiles(skillDir)
   const files: Record<string, string> = {}
   for (const f of packageFiles) {
-    files[f.relativePath] = f.content
+    files[`${skillDirName}/${f.relativePath}`] = f.content
   }
 
   const { createZipBuffer } = await import('@shared/lib/utils/zip')
@@ -1789,6 +1795,11 @@ export interface SkillValidationResult {
   skillName?: string
   fileCount: number
   stripPrefix: string
+}
+
+/** `my-skill/` → `my-skill`; '' when the package has no single wrapper folder. */
+function wrapperDirName(stripPrefix: string): string {
+  return stripPrefix.replace(/\/$/, '')
 }
 
 /**
@@ -1834,7 +1845,9 @@ export async function validateSkillZip(zipBuffer: Buffer): Promise<SkillValidati
 
     const skillMdBuf = await reader.readEntry(skillMdEntry.fileName)
     const frontmatter = parseSkillFrontmatter(skillMdBuf.toString('utf-8'))
-    const skillName = frontmatter.name || undefined
+    // Frontmatter name first; a wrapper folder (how our own exports and
+    // Anthropic-convention packages are laid out) is the in-content fallback.
+    const skillName = frontmatter.name || wrapperDirName(stripPrefix) || undefined
 
     return { valid: true, skillName, fileCount: realEntries.length, stripPrefix }
   } catch (error) {
@@ -1877,7 +1890,9 @@ export async function importSkillFromZip(
     const skillMdBuf = await reader.readEntry(skillMdEntry.fileName)
     const skillMdContent = skillMdBuf.toString('utf-8')
     const frontmatter = parseSkillFrontmatter(skillMdContent)
-    const skillName = frontmatter.name || 'imported-skill'
+    // Same fallback chain as validateSkillZip: frontmatter name, then the
+    // wrapper folder name baked into the package, then the generic last resort.
+    const skillName = frontmatter.name || wrapperDirName(stripPrefix) || 'imported-skill'
 
     // Derive a safe directory name from the skill name
     const baseDirName = skillName

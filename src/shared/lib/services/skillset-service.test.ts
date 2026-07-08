@@ -2300,7 +2300,7 @@ metadata:
   }
 
   describe('exportSkill', () => {
-    it('exports a single-file skill', async () => {
+    it('exports a single-file skill wrapped in its directory folder', async () => {
       const agentSlug = 'test-agent'
       const skillDir = makeSkillDir(agentSlug, 'my-skill')
       fs.writeFileSync(path.join(skillDir, 'SKILL.md'), MINIMAL_SKILL_MD)
@@ -2312,14 +2312,15 @@ metadata:
       const reader = await openZipFromBuffer(zipBuffer)
       try {
         const fileNames = reader.entries.map(e => e.fileName)
-        expect(fileNames).toContain('SKILL.md')
+        // Wrapper folder carries the skill's directory name inside the package.
+        expect(fileNames).toContain('my-skill/SKILL.md')
         expect(reader.entries.length).toBe(1)
       } finally {
         reader.close()
       }
     })
 
-    it('exports a multi-file skill', async () => {
+    it('exports a multi-file skill under a single wrapper the importer strips', async () => {
       const agentSlug = 'test-agent'
       const skillDir = makeSkillDir(agentSlug, 'multi-skill')
       fs.writeFileSync(path.join(skillDir, 'SKILL.md'), MINIMAL_SKILL_MD)
@@ -2331,10 +2332,18 @@ metadata:
       const reader = await openZipFromBuffer(zipBuffer)
       try {
         const fileNames = reader.entries.map(e => e.fileName).sort()
-        expect(fileNames).toEqual(['SKILL.md', 'helper.py', expect.stringContaining('utils.py')])
+        expect(fileNames).toEqual([
+          'multi-skill/SKILL.md',
+          'multi-skill/helper.py',
+          expect.stringContaining('utils.py'),
+        ])
       } finally {
         reader.close()
       }
+      // The wrapper is exactly what validateSkillZip detects and strips.
+      const validation = await validateSkillZip(zipBuffer)
+      expect(validation.valid).toBe(true)
+      expect(validation.stripPrefix).toBe('multi-skill/')
     })
 
     it('excludes .skillset-metadata.json and .skillset-original.md', async () => {
@@ -2348,9 +2357,9 @@ metadata:
       const reader = await openZipFromBuffer(zipBuffer)
       try {
         const fileNames = reader.entries.map(e => e.fileName)
-        expect(fileNames).toContain('SKILL.md')
-        expect(fileNames).not.toContain('.skillset-metadata.json')
-        expect(fileNames).not.toContain('.skillset-original.md')
+        expect(fileNames).toContain('meta-skill/SKILL.md')
+        expect(fileNames.some(f => f.endsWith('.skillset-metadata.json'))).toBe(false)
+        expect(fileNames.some(f => f.endsWith('.skillset-original.md'))).toBe(false)
       } finally {
         reader.close()
       }
@@ -2405,11 +2414,27 @@ metadata:
       expect(result.stripPrefix).toBe('')
     })
 
-    it('returns skillName undefined when frontmatter has no name', async () => {
+    it('returns skillName undefined when frontmatter has no name and there is no wrapper', async () => {
       const buf = await makeSkillZip({ 'SKILL.md': SKILL_MD_NO_NAME })
       const result = await validateSkillZip(buf)
       expect(result.valid).toBe(true)
       expect(result.skillName).toBeUndefined()
+    })
+
+    it('falls back to the wrapper directory name when frontmatter has no name', async () => {
+      const buf = await makeSkillZip({
+        'reporting-tools/SKILL.md': SKILL_MD_NO_NAME,
+        'reporting-tools/helper.py': 'x = 1',
+      })
+      const result = await validateSkillZip(buf)
+      expect(result.valid).toBe(true)
+      expect(result.skillName).toBe('reporting-tools')
+    })
+
+    it('prefers the frontmatter name over the wrapper directory name', async () => {
+      const buf = await makeSkillZip({ 'some-wrapper/SKILL.md': MINIMAL_SKILL_MD })
+      const result = await validateSkillZip(buf)
+      expect(result.skillName).toBe('Test Skill')
     })
 
     it('rejects zip without SKILL.md', async () => {
@@ -2527,6 +2552,32 @@ metadata:
       expect(fs.existsSync(path.join(skillDir, 'helper.py'))).toBe(true)
     })
 
+    it('names a frontmatter-less skill after its wrapper directory', async () => {
+      const agentSlug = 'wrapper-name-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+
+      const buf = await makeSkillZip({
+        'reporting-tools/SKILL.md': SKILL_MD_NO_NAME,
+        'reporting-tools/helper.py': 'x = 1',
+      })
+      const result = await importSkillFromZip(agentSlug, buf)
+
+      // skillName is the prettified display form of the wrapper-derived dir.
+      expect(result.skillName).toBe('Reporting Tools')
+      expect(result.skillDir).toBe('reporting-tools')
+    })
+
+    it('falls back to imported-skill only when neither frontmatter name nor wrapper exist', async () => {
+      const agentSlug = 'no-name-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+
+      const buf = await makeSkillZip({ 'SKILL.md': SKILL_MD_NO_NAME })
+      const result = await importSkillFromZip(agentSlug, buf)
+
+      expect(result.skillName).toBe('Imported Skill')
+      expect(result.skillDir).toBe('imported-skill')
+    })
+
     it('skips .skillset-metadata.json and .skillset-original.md from source', async () => {
       const agentSlug = 'skip-meta-agent'
       fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
@@ -2590,6 +2641,27 @@ metadata:
       const importedDir = path.join(testDir, 'agents', importAgentSlug, 'workspace', '.claude', 'skills', result.skillDir)
       expect(fs.readFileSync(path.join(importedDir, 'SKILL.md'), 'utf-8')).toBe(MINIMAL_SKILL_MD)
       expect(fs.readFileSync(path.join(importedDir, 'tool.py'), 'utf-8')).toBe('def run(): pass')
+    })
+
+    it('export then import preserves the name of a skill with no frontmatter', async () => {
+      // Without a frontmatter name, the only carrier of the skill's identity
+      // is the wrapper folder the export bakes into the zip — the download
+      // filename is deliberately never trusted on import.
+      const agentSlug = 'roundtrip-noname-agent'
+      fs.mkdirSync(path.join(testDir, 'agents', agentSlug, 'workspace'), { recursive: true })
+      const sourceDir = makeSkillDir(agentSlug, 'quarterly-report')
+      fs.writeFileSync(path.join(sourceDir, 'SKILL.md'), '# No frontmatter here\n\nJust instructions.\n')
+
+      const { zipBuffer, skillName } = await exportSkill(agentSlug, 'quarterly-report')
+      expect(skillName).toBeNull()
+
+      const importAgentSlug = 'roundtrip-noname-import'
+      fs.mkdirSync(path.join(testDir, 'agents', importAgentSlug, 'workspace'), { recursive: true })
+      const result = await importSkillFromZip(importAgentSlug, zipBuffer)
+
+      // Display name derives from the wrapper folder, not 'Imported Skill'.
+      expect(result.skillName).toBe('Quarterly Report')
+      expect(result.skillDir).toBe('quarterly-report')
     })
   })
 })
