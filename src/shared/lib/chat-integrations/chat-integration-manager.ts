@@ -177,6 +177,13 @@ class ChatIntegrationManager {
   // chain settles (see scheduleQueueEviction), so the map stays bounded.
   private messageQueues: Map<string, Promise<void>> = new Map()
   private lastSessionTouch: Map<string, number> = new Map()
+  // Per-(integration,chat) monotonic interrupt counter, bumped each time /stop actually
+  // interrupts a turn. A normal-message send captures it before its awaits and abandons
+  // itself if a concurrent /stop bumped it mid-flight — otherwise the send would resurrect
+  // a turn the user just stopped (the priority lane lets /stop interleave a suspended send).
+  // Keyed by the stable chat key (not the mutable ManagedConnector, which may not exist yet
+  // on a cold/reconnect path); evicted with the session in teardownManagedSession.
+  private stopEpochs: Map<string, number> = new Map()
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -834,6 +841,12 @@ class ChatIntegrationManager {
     }
 
     const sessionId = chatSession.sessionId
+    // Capture the interrupt epoch before the awaits below. A /stop can run concurrently
+    // (priority lane) and settle this session inactive while we're suspended; if it bumps
+    // the epoch we must abandon this send rather than resurrect the stopped turn (guarded
+    // before and after the container send below). Keyed by the stable chat key.
+    const stopKey = this.getChatSessionKey(integrationId, chatId)
+    const stopEpochAtEntry = this.stopEpochs.get(stopKey) ?? 0
 
     // Hoisted so the catch can reuse it for self-heal without re-downloading.
     let messageText = ''
@@ -884,7 +897,15 @@ class ChatIntegrationManager {
       })
       if (consumed) return
 
+      // A concurrent /stop (priority lane) settled this session while we were suspended in
+      // the awaits above. Re-check the interrupt epoch before submitting to the container:
+      // if the user stopped, abandon the message entirely — don't send it, don't activate.
+      // Mirrors the mid-flight revoke re-check above.
+      if ((this.stopEpochs.get(stopKey) ?? 0) !== stopEpochAtEntry) return
       await client.sendMessage(sessionId, messageText)
+      // Check again after the send: a /stop landing while it was in flight must not be
+      // re-activated here (the container-side interrupt discards the just-queued message).
+      if ((this.stopEpochs.get(stopKey) ?? 0) !== stopEpochAtEntry) return
       messagePersister.markSessionActive(sessionId, integration.agentSlug)
       const now = Date.now()
       const lastTouch = this.lastSessionTouch.get(chatSession.id) ?? 0
@@ -900,6 +921,11 @@ class ChatIntegrationManager {
       // with the same message. Transient failures (dead container, network) are
       // NOT session-gone, so they keep the retry prompt below.
       if (this.isSessionGoneError(err)) {
+        // A concurrent /stop abandoned this turn while we were mid-send (it bumped the epoch
+        // and settled the session). Do NOT self-heal it into a fresh session — that would
+        // recreate the exact turn the user just stopped. Checked BEFORE teardown deletes the
+        // epoch; /stop already acked, and the next genuine message self-heals normally.
+        if ((this.stopEpochs.get(stopKey) ?? 0) !== stopEpochAtEntry) return
         console.warn(`[ChatIntegrationManager] Agent session ${sessionId} gone in container; rotating chat ${chatId} to a fresh session`)
         breadcrumb('Chat agent session gone, self-healing', { integrationId, chatId, sessionId })
         this.teardownManagedSession(integrationId, chatId, { archive: chatSession.id })
@@ -1039,6 +1065,7 @@ class ChatIntegrationManager {
     const managed = this.chatSessions.get(key)
     if (managed) this.stopSession(managed)
     this.chatSessions.delete(key)
+    this.stopEpochs.delete(key)
     if (opts?.archive) {
       this.lastSessionTouch.delete(opts.archive)
       try { archiveChatIntegrationSession(opts.archive) } catch { /* best-effort */ }
@@ -1097,7 +1124,8 @@ class ChatIntegrationManager {
     chatId: string,
     connector: ChatClientConnector,
   ): Promise<void> {
-    const managed = this.chatSessions.get(this.getChatSessionKey(integration.id, chatId))
+    const chatKey = this.getChatSessionKey(integration.id, chatId)
+    const managed = this.chatSessions.get(chatKey)
     // A concurrent /stop (double-tap, or a tap racing a typed /stop) bypasses the serial
     // queue via the priority lane, so two can reach here at once. The first stop's
     // interrupt + "⏹ Stopped" ack is the turn's terminal notice; a second racing it must
@@ -1117,6 +1145,11 @@ class ChatIntegrationManager {
       await connector.sendMessage(chatId, { text: '⏹ Nothing is running right now.' }).catch(() => {})
       return
     }
+
+    // Bump the interrupt epoch (keyed by the stable chat key, NOT the mutable managed
+    // connector which may be absent on a cold/reconnect path) so a concurrent normal-message
+    // send abandons itself instead of resurrecting this stopped turn.
+    this.stopEpochs.set(chatKey, (this.stopEpochs.get(chatKey) ?? 0) + 1)
 
     if (managed) {
       // The stop ack is this turn's terminal notice: a stale session_error may

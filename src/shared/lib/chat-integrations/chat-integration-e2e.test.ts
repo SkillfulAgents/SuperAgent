@@ -496,6 +496,76 @@ describe('Chat integration E2E', () => {
       expect(mockConnector.sentMessages.some(m =>
         m.message.text === '⏹ Nothing is running right now.')).toBe(false)
     })
+
+    it('a /stop during a suspended follow-up send does not resurrect the stopped session', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      const sessionId = await startConversation(integrationId)
+      messagePersister.markSessionActive(sessionId, 'test-agent')
+
+      // Park the follow-up's delivery so /stop interleaves while the send is suspended at
+      // client.sendMessage — the exact window the priority lane opens. Without the epoch
+      // guard, the send's markSessionActive on resume would re-activate the stopped turn.
+      let releaseSend: () => void = () => {}
+      const sendGate = new Promise<void>((r) => { releaseSend = r })
+      const sendSpy = vi.spyOn(mockContainerClient, 'sendMessage').mockImplementation(async () => {
+        await sendGate
+      })
+
+      // A normal follow-up enters the send path and parks at the gated send.
+      mockConnector.simulateIncomingMessage('a follow-up while busy', 'chat-1', 'user-1')
+      await waitForCondition(() => sendSpy.mock.calls.length >= 1)
+
+      // /stop interrupts the active turn while the follow-up is still parked.
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+      await waitForCondition(() =>
+        mockConnector.sentMessages.some(m => m.message.text === '⏹ Stopped. Send a message to start again.'))
+      expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+
+      // Release the parked send: its markSessionActive must be skipped, so the session
+      // stays stopped rather than snapping back to active.
+      releaseSend()
+      for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0))
+      expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+    })
+
+    it('a /stop before the follow-up is submitted abandons it (never reaches the container)', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+      const sessionId = await startConversation(integrationId)
+      messagePersister.markSessionActive(sessionId, 'test-agent')
+
+      // Park the follow-up in buildMessageContent — BEFORE the container send — so /stop
+      // lands while the message has not yet been submitted. The pre-send epoch guard must
+      // then abandon it: never call client.sendMessage, never re-activate.
+      let releaseBuild: () => void = () => {}
+      const buildGate = new Promise<void>((r) => { releaseBuild = r })
+      // buildMessageContent lives on the manager SINGLETON (not recreated per test like
+      // mockContainerClient), so this spy MUST be restored in the finally or it leaks into
+      // later tests.
+      const buildSpy = vi.spyOn(chatIntegrationManager as unknown as { buildMessageContent: () => Promise<unknown> }, 'buildMessageContent')
+        .mockImplementation(async () => { await buildGate; return { text: 'a follow-up while busy', failedFiles: [] } })
+      const sendSpy = vi.spyOn(mockContainerClient, 'sendMessage')
+      try {
+        mockConnector.simulateIncomingMessage('a follow-up while busy', 'chat-1', 'user-1')
+        await waitForCondition(() => buildSpy.mock.calls.length >= 1)
+
+        // /stop while the follow-up is parked before the send.
+        mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+        await waitForCondition(() =>
+          mockConnector.sentMessages.some(m => m.message.text === '⏹ Stopped. Send a message to start again.'))
+
+        // Release the parked build: the message must be abandoned, not submitted, and the
+        // session stays stopped.
+        releaseBuild()
+        for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0))
+        expect(sendSpy).not.toHaveBeenCalled()
+        expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+      } finally {
+        releaseBuild()
+        buildSpy.mockRestore()
+      }
+    })
   })
 
   describe('/clear on a busy session', () => {
@@ -727,6 +797,47 @@ describe('Chat integration E2E', () => {
       const fresh = rows.find((r) => r.sessionId !== deadSessionId && !r.archivedAt)
       expect(dead?.archivedAt).toBeTruthy()
       expect(fresh).toBeDefined()
+    })
+
+    it('does NOT self-heal a stopped turn back into a fresh session', async () => {
+      const integrationId = createTestIntegration()
+      await chatIntegrationManager.addIntegration(integrationId)
+
+      mockConnector.simulateIncomingMessage('Hello', 'chat-1', 'user-1')
+      await waitForCondition(() => MockContainerClient.createSessionCalls.length === 1)
+      await waitForCondition(
+        () => mockConnector.sentMessages.length > 0 || mockConnector.finalizedMessages.length > 0,
+        3000,
+      )
+      const sessionId = listChatIntegrationSessions(integrationId).find(s => s.externalChatId === 'chat-1')!.sessionId
+      messagePersister.markSessionActive(sessionId, 'test-agent')
+
+      // The follow-up's send parks, then fails session-gone (which normally triggers
+      // self-heal → a fresh session with the same message). A /stop lands while it's parked:
+      // the self-heal epoch guard must then ABANDON it, not recreate the stopped turn.
+      let releaseSend: () => void = () => {}
+      const sendGate = new Promise<void>((r) => { releaseSend = r })
+      const sendSpy = vi.spyOn(mockContainerClient, 'sendMessage').mockImplementation(async () => {
+        await sendGate
+        throw new Error('Session not found')
+      })
+      const createBefore = MockContainerClient.createSessionCalls.length
+
+      mockConnector.simulateIncomingMessage('a follow-up while busy', 'chat-1', 'user-1')
+      await waitForCondition(() => sendSpy.mock.calls.length >= 1)
+
+      mockConnector.simulateIncomingMessage('/stop', 'chat-1', 'user-1')
+      await waitForCondition(() =>
+        mockConnector.sentMessages.some(m => m.message.text === '⏹ Stopped. Send a message to start again.'))
+
+      // Release the parked send → it rejects session-gone → self-heal path → the epoch guard
+      // abandons it: NO fresh session is created for the message the user stopped.
+      releaseSend()
+      for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0))
+      expect(MockContainerClient.createSessionCalls.length).toBe(createBefore)
+      expect(messagePersister.isSessionActive(sessionId)).toBe(false)
+
+      sendSpy.mockRestore()
     })
 
     it('does NOT rotate the session on a transient (non-session-gone) error', async () => {
