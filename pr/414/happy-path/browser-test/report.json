@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the correct response in the chat.",
+  "reason": "Browser-use feature successfully executed: agent opened browser, navigated to example.com, retrieved page title \"Example Domain\", and reported results correctly.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut application with agent sidebar listing \"QA-20260707-235640-v88h\" in idle status.",
-    "Clicked on \"QA-20260707-235640-v88h\" agent in the sidebar — Agent page opened successfully with session URL /agents/qa-20260707-235640-v88h-1yzop84vc2, displaying the chat interface and empty conversation.",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message textbox — Message was successfully entered in the input field as confirmed by the snapshot showing the full text.",
-    "Clicked the \"Send message\" button — Message was sent successfully, a new session was created at /agents/qa-20260707-235640-v88h-1yzop84vc2/sessions/9af43838-364b-4b3b-adab-368a89f35b24, and the agent status changed to \"working\".",
-    "Waited for agent response (up to 3 minutes) — Agent completed processing in 11 seconds and returned the response showing successful browser navigation and page title retrieval.",
-    "Verified response mentions \"Example Domain\" — Response confirmed with multiple mentions: \"The page title is \\\"Example Domain\\\".\" and \"Done. The page at https://example.com has the title \\\"Example Domain\\\".\" Tool calls show Open Browser (https://example.com), Browser Get State, and Close Browser all completed successfully with green checkmarks.",
-    "Took screenshot of the complete conversation — Screenshot captured showing the full agent response with \"Example Domain\" clearly visible in the chat history and all browser tool activities."
+    "Navigated to http://localhost:47891 — Page loaded successfully with Gamut home page showing available agents",
+    "Found and clicked \"QA-20260708-000927-win8\" agent in sidebar — Agent page opened, showing new session with message input textbox",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into input textbox — Message appeared in the textbox ready to send",
+    "Pressed Control+Enter to send message — Message was sent and new session started with URL changing to /agents/qa-20260708-000927-win8-nsoke5y61m/sessions/61992f1d-e2a3-4a9f-b438-d07dcc1fed66",
+    "Waited for agent response (up to 3 minutes) — Response received within 10 seconds containing the required \"Example Domain\" text",
+    "Verified response mentions \"Example Domain\" — Response clearly shows:"
   ],
   "bugs": [],
-  "durationMs": 68593,
-  "sessionId": "02560924-ee11-4797-bd09-d2453b9633b8",
+  "durationMs": 85292,
+  "sessionId": "ee735f93-e258-45bd-b82a-081e20ff14dd",
   "cost": {
-    "inputTokens": 288,
-    "outputTokens": 10412,
-    "cacheCreationTokens": 103702,
-    "cacheReadTokens": 753723,
+    "inputTokens": 417,
+    "outputTokens": 14193,
+    "cacheCreationTokens": 65210,
+    "cacheReadTokens": 1253860,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.257348
+    "totalCostUsd": 0.278281
   }
 }
