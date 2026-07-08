@@ -19,6 +19,9 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      - name: Upgrade npm (min-release-age support)
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         run: npm ci
 
@@ -50,6 +53,9 @@ jobs:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: agent-container/package-lock.json
+
+      - name: Upgrade npm (min-release-age support)
+        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: npm ci
@@ -96,6 +102,9 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+
+      - name: Upgrade npm (min-release-age support)
+        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: npm ci
@@ -148,6 +157,9 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      - name: Upgrade npm (min-release-age support)
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         run: npm ci
 
@@ -187,6 +199,9 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+
+      - name: Upgrade npm (min-release-age support)
+        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: npm ci

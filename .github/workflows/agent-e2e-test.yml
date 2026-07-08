@@ -67,6 +67,9 @@ jobs:
           node-version: "20"
           cache: "npm"
 
+      - name: Upgrade npm (min-release-age support)
+        run: npm install -g npm@latest
+
       - name: Resolve agent image tag
         id: agent-image
         run: |
