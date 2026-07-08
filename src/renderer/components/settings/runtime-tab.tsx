@@ -132,17 +132,23 @@ export function RuntimeTab() {
 
   // Compute runner availability map with detailed status
   const runnerAvailabilityMap = useMemo(() => {
-    const map = new Map<string, { installed: boolean; running: boolean; available: boolean; canStart: boolean }>()
+    const map = new Map<string, { installed: boolean; running: boolean; available: boolean; canStart: boolean; supportsCustomAgentImage: boolean }>()
     settings?.runnerAvailability?.forEach((r) => {
       map.set(r.runner, {
         installed: r.installed,
         running: r.running,
         available: r.available,
         canStart: r.canStart,
+        supportsCustomAgentImage: r.supportsCustomAgentImage ?? true,
       })
     })
     return map
   }, [settings?.runnerAvailability])
+
+  // Runners whose image is fixed by the deployment (e.g. lambda-microvm) ignore
+  // settings.container.agentImage — lock the field so edits aren't misleading.
+  const agentImageLocked =
+    runnerAvailabilityMap.get(containerRunner)?.supportsCustomAgentImage === false
 
   const noRunnersAvailable = useMemo(() => {
     if (!settings?.runnerAvailability) return false
@@ -207,16 +213,16 @@ export function RuntimeTab() {
 
     const changed =
       containerRunner !== settings.container.containerRunner ||
-      agentImage !== settings.container.agentImage ||
+      (!agentImageLocked && agentImage !== settings.container.agentImage) ||
       cpuLimit !== settings.container.resourceLimits.cpu.toString() ||
       memoryLimit !== settings.container.resourceLimits.memory
 
     setHasChanges(changed)
-  }, [containerRunner, agentImage, cpuLimit, memoryLimit, settings])
+  }, [containerRunner, agentImage, cpuLimit, memoryLimit, settings, agentImageLocked])
 
   const latestAgentImage = getDefaultAgentImage()
   const trimmedAgentImage = agentImage.trim()
-  const agentImageMissing = trimmedAgentImage.length === 0
+  const agentImageMissing = !agentImageLocked && trimmedAgentImage.length === 0
   const isLatestAgentImage = trimmedAgentImage === latestAgentImage
 
   const handleSave = async () => {
@@ -225,7 +231,10 @@ export function RuntimeTab() {
       await updateSettings.mutateAsync({
         container: {
           containerRunner,
-          agentImage: trimmedAgentImage,
+          // A locked field never submits edits — keep whatever is persisted.
+          agentImage: agentImageLocked
+            ? (settings?.container.agentImage ?? trimmedAgentImage)
+            : trimmedAgentImage,
           resourceLimits: {
             cpu: parseInt(cpuLimit, 10) || 1,
             memory: memoryLimit,
@@ -608,21 +617,26 @@ export function RuntimeTab() {
           value={agentImage}
           onChange={(e) => setAgentImage(e.target.value)}
           placeholder="ghcr.io/skillfulagents/superagent-agent-container-base:latest"
-          disabled={isLoading}
+          disabled={isLoading || agentImageLocked}
+          className={agentImageLocked ? 'bg-muted' : ''}
         />
         <p className="text-xs text-muted-foreground">
-          Docker image to use for agent containers.
+          {agentImageLocked
+            ? 'Agent image is managed by the deployment for this runner and cannot be changed here.'
+            : 'Docker image to use for agent containers.'}
         </p>
-        <Button
-          type="button"
-          variant="link"
-          size="sm"
-          className="h-auto px-0 text-xs"
-          onClick={() => setAgentImage(latestAgentImage)}
-          disabled={isLoading || isLatestAgentImage}
-        >
-          Use default
-        </Button>
+        {!agentImageLocked && (
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto px-0 text-xs"
+            onClick={() => setAgentImage(latestAgentImage)}
+            disabled={isLoading || isLatestAgentImage}
+          >
+            Use default
+          </Button>
+        )}
         {agentImageMissing && (
           <p className="text-xs text-destructive">Agent image is required.</p>
         )}

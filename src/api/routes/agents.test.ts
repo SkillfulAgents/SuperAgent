@@ -3152,18 +3152,31 @@ describe('POST /api/agents/:id/skills/:dir/export', () => {
     app = createApp()
   })
 
-  it('returns zip binary with correct headers', async () => {
+  it('returns zip binary with correct headers, named after the skill display name', async () => {
     const fakeZip = Buffer.from('PK\x03\x04fake-zip-content')
-    vi.mocked(exportSkill).mockResolvedValue(fakeZip)
+    vi.mocked(exportSkill).mockResolvedValue({ zipBuffer: fakeZip, skillName: 'PDF Tools' })
 
     const res = await app.request('http://localhost/api/agents/my-agent/skills/my-skill/export', {
       method: 'POST',
     })
 
     expect(res.status).toBe(200)
-    expect(res.headers.get('Content-Type')).toBe('application/zip')
-    expect(res.headers.get('Content-Disposition')).toContain('my-skill.zip')
+    expect(res.headers.get('Content-Type')).toBe('application/octet-stream')
+    // Display name (percent-encoded, quoted + RFC 5987), not the directory name.
+    expect(res.headers.get('Content-Disposition')).toContain('PDF%20Tools.skill')
+    expect(res.headers.get('Content-Disposition')).toContain("filename*=UTF-8''")
     expect(exportSkill).toHaveBeenCalledWith('my-agent', 'my-skill')
+  })
+
+  it('falls back to the directory name when the skill has no frontmatter name', async () => {
+    vi.mocked(exportSkill).mockResolvedValue({ zipBuffer: Buffer.from('PK\x03\x04'), skillName: null })
+
+    const res = await app.request('http://localhost/api/agents/my-agent/skills/my-skill/export', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Disposition')).toContain('my-skill.skill')
   })
 
   it('returns 500 when service throws', async () => {

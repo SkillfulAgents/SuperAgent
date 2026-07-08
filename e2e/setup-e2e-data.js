@@ -148,6 +148,8 @@ const settings = {
     resourceLimits: { cpu: 1, memory: '512m' },
   },
   app: { setupCompleted: true },
+  // E2E runs must never emit real analytics events.
+  shareAnalytics: false,
   skillsets: [
     {
       id: SKILLSET_ID,

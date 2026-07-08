@@ -19,6 +19,7 @@ import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/li
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
@@ -602,9 +603,17 @@ class ContainerManager {
       // Tell the agent container which host OS is running (for script type selection)
       envVars['HOST_PLATFORM'] = process.platform
 
-      // Enable webhook trigger tools when platform Composio is active
+      // Enable Composio webhook trigger tools when platform Composio is active
       if (isPlatformComposioActive()) {
         envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
+      }
+
+      // Custom webhook endpoints live on the platform proxy, not Composio: a
+      // user with platform auth plus a personal Composio key must still get
+      // the endpoint tools (mirrors the teardown gate in
+      // webhook-trigger-service).
+      if (getPlatformAccessToken()) {
+        envVars['PLATFORM_AUTH_ACTIVE'] = 'true'
       }
 
       // Inject user-defined custom env vars (set in global settings). Reserved

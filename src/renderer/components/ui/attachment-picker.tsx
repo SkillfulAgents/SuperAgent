@@ -3,6 +3,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Paperclip, FileIcon, FolderOpen, Loader2 } from 'lucide-react'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
+import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
 
 interface RecentFile {
   name: string
@@ -62,13 +63,12 @@ export function AttachmentPicker({
     // Show loading state instead of closing immediately (#8)
     setLoadingPath(filePath)
     try {
-      const result = await api.readLocalFile(filePath)
-      if (!result) {
+      const file = await readLocalFileAsFile(filePath)
+      if (!file) {
         // File may have been deleted since the list was fetched
         console.warn('Failed to read recent file:', filePath)
         return
       }
-      const file = new File([result.buffer], result.name, { type: result.type })
       onRecentFileAttach(file)
     } catch (err) {
       console.error('Failed to attach recent file:', err)

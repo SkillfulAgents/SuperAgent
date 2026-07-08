@@ -74,6 +74,20 @@ describe('BrowserInputRequestItem', () => {
     expect(screen.getByTestId('browser-input-complete-btn')).toBeInTheDocument()
   })
 
+  // Regression for SUP-366: the Done button carried an `h-8` override while the
+  // Decline button uses the shared `xs` size (`h-7`), so the two ends of the
+  // action row were different heights. Every other request card (connected
+  // account, secret, file, etc.) renders both buttons at the `xs` height with
+  // no override; the browser-input card must match that.
+  it('renders Done and Decline at the same height (xs / h-7, no h-8 override)', () => {
+    render(<BrowserInputRequestItem {...defaultProps} />)
+    const done = screen.getByTestId('browser-input-complete-btn')
+    const decline = screen.getByTestId('browser-input-decline-btn')
+    expect(done.className).toContain('h-7')
+    expect(done.className).not.toContain('h-8')
+    expect(decline.className).toContain('h-7')
+  })
+
   it('decline with no reason → posts only the decline, shows Declined, touches no draft or error', async () => {
     const user = userEvent.setup()
     mockApiFetch.mockResolvedValueOnce(ok())

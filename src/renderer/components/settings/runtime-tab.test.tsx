@@ -29,6 +29,7 @@ const mockSettings = {
         running: true,
         available: true,
         canStart: false,
+        supportsCustomAgentImage: true,
       },
     ],
     runtimeReadiness: { status: 'READY', message: 'Ready' },
@@ -80,8 +81,19 @@ vi.mock('@renderer/hooks/use-settings', () => ({
 describe('RuntimeTab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockSettings.data.container.containerRunner = 'docker'
     mockSettings.data.container.agentImage = 'ghcr.io/skillfulagents/superagent-agent-container-base:latest'
     mockSettings.data.customEnvVars = {}
+    mockSettings.data.runnerAvailability = [
+      {
+        runner: 'docker',
+        installed: true,
+        running: true,
+        available: true,
+        canStart: false,
+        supportsCustomAgentImage: true,
+      },
+    ]
     mockUpdateSettings.isPending = false
     mockUpdateSettings.error = null
   })
@@ -126,6 +138,40 @@ describe('RuntimeTab', () => {
     await user.click(screen.getByRole('button', { name: 'Use default' }))
 
     expect(screen.getByLabelText('Agent Image')).toHaveValue(getDefaultAgentImage())
+  })
+
+  describe('runner without custom agent image support (e.g. lambda-microvm)', () => {
+    beforeEach(() => {
+      mockSettings.data.container.containerRunner = 'lambda-microvm'
+      mockSettings.data.runnerAvailability = [
+        {
+          runner: 'lambda-microvm',
+          installed: true,
+          running: true,
+          available: true,
+          canStart: false,
+          supportsCustomAgentImage: false,
+        },
+      ]
+    })
+
+    it('disables the Agent Image input and hides Use default', () => {
+      renderWithProviders(<RuntimeTab />)
+
+      expect(screen.getByLabelText('Agent Image')).toBeDisabled()
+      expect(screen.queryByRole('button', { name: 'Use default' })).not.toBeInTheDocument()
+      expect(
+        screen.getByText('Agent image is managed by the deployment for this runner and cannot be changed here.')
+      ).toBeInTheDocument()
+    })
+
+    it('does not treat a blank persisted agent image as a validation error', () => {
+      mockSettings.data.container.agentImage = ''
+
+      renderWithProviders(<RuntimeTab />)
+
+      expect(screen.queryByText('Agent image is required.')).not.toBeInTheDocument()
+    })
   })
 
   it('adds a custom environment variable through the dialog', async () => {

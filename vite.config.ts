@@ -13,6 +13,7 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __AUTH_MODE__: JSON.stringify(process.env.AUTH_MODE === 'true'),
+    __E2E_MOCK__: JSON.stringify(process.env.E2E_MOCK === 'true'),
     __WEB__: JSON.stringify(true), // web bundle → browser/path history (Hono SPA fallback)
     __AMPLITUDE_API_KEY__: JSON.stringify(process.env.AMPLITUDE_API_KEY || analyticsConfig.defaultAmplitudeKey),
     __RENDER_TRACKING__: JSON.stringify(process.env.RENDER_TRACKING === 'true'),

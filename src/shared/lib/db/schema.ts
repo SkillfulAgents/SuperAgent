@@ -361,15 +361,24 @@ export const mcpToolPolicies = sqliteTable('mcp_tool_policies', {
   mcpToolUnique: uniqueIndex('mcp_tool_policies_unique').on(table.mcpId, table.toolName),
 }))
 
-// Webhook triggers - Composio trigger subscriptions for agents
+// Webhook triggers - Composio trigger subscriptions and custom webhook
+// endpoints (agent-minted public URLs on the platform proxy) for agents
 export const webhookTriggers = sqliteTable('webhook_triggers', {
   id: text('id').primaryKey(),
   agentSlug: text('agent_slug').notNull(),
 
-  // Composio details
+  // 'composio' = Composio trigger subscription; 'custom' = agent-minted public
+  // webhook endpoint. Explicit column instead of inferring from the id prefix.
+  kind: text('kind', { enum: ['composio', 'custom'] })
+    .notNull()
+    .default('composio'),
+
+  // Composio details. For kind='custom', composioTriggerId carries the platform
+  // webhook endpoint id ("whep_...") — events ride the same column both ways —
+  // and connectedAccountId is null (no connected account involved).
   composioTriggerId: text('composio_trigger_id'), // set after Composio confirms (e.g. "ti_...")
-  connectedAccountId: text('connected_account_id').notNull(),
-  triggerType: text('trigger_type').notNull(), // slug e.g. 'GMAIL_NEW_EMAIL'
+  connectedAccountId: text('connected_account_id'),
+  triggerType: text('trigger_type').notNull(), // slug e.g. 'GMAIL_NEW_EMAIL' or 'CUSTOM_WEBHOOK'
   triggerConfig: text('trigger_config'), // JSON string
 
   // What to do when triggered

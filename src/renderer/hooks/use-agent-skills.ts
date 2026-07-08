@@ -3,6 +3,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { downloadBlob } from '@renderer/lib/download'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiSkillWithStatus, ApiDiscoverableSkill } from '@shared/lib/types/api'
+import { SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 
 const AUTO_REFRESH_DEBOUNCE_MS = 10_000
 const agentSkillAutoRefreshAt = new Map<string, number>()
@@ -254,7 +255,7 @@ export function useExportSkill() {
         const data = await res.json()
         throw new Error(data.error || 'Failed to export skill')
       }
-      await downloadBlob(res, `${skillName || skillDir}.zip`)
+      await downloadBlob(res, `${skillName || skillDir}${SKILL_PACKAGE_EXTENSION}`)
     },
   })
 }

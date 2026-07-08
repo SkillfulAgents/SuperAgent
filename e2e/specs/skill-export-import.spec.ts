@@ -112,7 +112,7 @@ test.describe('Skill Export & Import', () => {
 
     const download = await downloadPromise
     expect(download.suggestedFilename()).toContain('e2e-plain-skill')
-    expect(download.suggestedFilename()).toMatch(/\.zip$/)
+    expect(download.suggestedFilename()).toMatch(/\.skill$/)
   })
 
   test('round-trip: export from one agent, import into another', async ({ page }) => {
@@ -137,7 +137,8 @@ test.describe('Skill Export & Import', () => {
     await page.getByText('Export Skill', { exact: true }).click()
     const download = await downloadPromise
 
-    const downloadPath = path.join(tmpDir, 'exported-skill.zip')
+    // Keep the branded .skill extension — the import dialog must accept it.
+    const downloadPath = path.join(tmpDir, 'exported-skill.skill')
     await download.saveAs(downloadPath)
 
     // Agent 2: import the exported skill

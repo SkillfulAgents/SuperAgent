@@ -6,7 +6,6 @@ import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
 import { chatIntegrationManager } from './chat-integrations/chat-integration-manager'
 import { captureException } from './error-reporting'
-import { isPlatformComposioActive } from './composio/client'
 import { registerAllAccountProviders } from './account-providers/register'
 import { autoSleepMonitor } from './scheduler/auto-sleep-monitor'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
@@ -117,8 +116,12 @@ export async function initializeServices() {
     console.error('Failed to start task scheduler:', error)
   })
 
-  // Start trigger manager (only when platform Composio is connected)
-  if (isPlatformComposioActive()) {
+  // Start trigger manager whenever platform auth exists: webhook events
+  // (Composio-brokered AND custom endpoints) are claimed from the platform
+  // with the platform token, so a personal Composio key must not disable
+  // delivery — same trap as the endpoint tool/teardown gating. The manager
+  // itself no-ops per-poll when the token is missing.
+  if (getPlatformAccessToken()) {
     triggerManager.start().catch((error) => {
       console.error('Failed to start trigger manager:', error)
     })

@@ -22,6 +22,7 @@ import { useAgentSkills, useDiscoverableSkills, useUpdateSkill, useExportSkill, 
 import { useSkillsetPublishMode } from '@renderer/hooks/use-skillsets'
 import { getReviewActionLabel, isPullRequestPublishMode } from '@renderer/lib/skillset-publish-ui'
 import type { ApiSkillWithStatus } from '@shared/lib/types/api'
+import { SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 
 interface HomeSkillsProps {
   agentSlug: string
@@ -258,8 +259,9 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
 
   const acceptFile = useCallback((file: File | null | undefined) => {
     if (!file) return
-    if (!file.name.toLowerCase().endsWith('.zip')) {
-      toast.error('Only .zip files are supported')
+    const name = file.name.toLowerCase()
+    if (!name.endsWith(SKILL_PACKAGE_EXTENSION) && !name.endsWith('.zip')) {
+      toast.error(`Only ${SKILL_PACKAGE_EXTENSION} or .zip files are supported`)
       return
     }
     setImportFile(file)
@@ -300,7 +302,7 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
           <DialogHeader>
             <DialogTitle className="font-medium">Import a Skill</DialogTitle>
             <DialogDescription className="sr-only">
-              Upload a .zip file to import a skill.
+              Upload a .skill or .zip file to import a skill.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleImport}>
@@ -324,7 +326,7 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".zip"
+                  accept={`${SKILL_PACKAGE_EXTENSION},.zip`}
                   className="hidden"
                   disabled={importSkill.isPending}
                   onChange={(e) => {
@@ -355,7 +357,7 @@ function SkillImportDialog({ open, onOpenChange, agentSlug }: { open: boolean; o
                   <>
                     <Download className="h-5 w-5 mx-auto text-muted-foreground mb-2" />
                     <p className="text-sm text-muted-foreground">
-                      Drop a .zip skill file here<br />
+                      Drop a .skill or .zip file here<br />
                       or click to browse
                     </p>
                   </>

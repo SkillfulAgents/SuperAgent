@@ -36,7 +36,7 @@ import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
 import { findWebSearchProvider, getWebSearchProvider } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
 import { customEnvVarsSchema } from '@shared/lib/container/reserved-env-vars'
 import { detectAllProviders } from '../../main/host-browser'
@@ -369,6 +369,23 @@ settings.put('/', async (c) => {
             runningAgents: await containerManager.getRunningAgentIds(),
           },
           409
+        )
+      }
+    }
+
+    // Reject agentImage changes for runners whose image is fixed by the
+    // deployment (e.g. lambda-microvm reads only MICROVM_AGENT_IMAGE_ARN).
+    if (body.container?.agentImage !== undefined) {
+      const newContainer = body.container as Partial<ContainerSettings>
+      const effectiveRunner = (newContainer.containerRunner ??
+        currentSettings.container.containerRunner) as ContainerRunner
+      if (
+        newContainer.agentImage !== currentSettings.container.agentImage &&
+        !getContainerClientClass(effectiveRunner).supportsCustomAgentImage
+      ) {
+        return c.json(
+          { error: `Agent image is managed by the deployment for the ${effectiveRunner} runner and cannot be changed here.` },
+          400
         )
       }
     }

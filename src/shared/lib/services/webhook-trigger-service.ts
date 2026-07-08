@@ -14,9 +14,12 @@ import {
   type NewWebhookTrigger,
 } from '@shared/lib/db/schema'
 import { eq, and, inArray, isNotNull, sql, count, desc } from 'drizzle-orm'
+import { captureException } from '@shared/lib/error-reporting'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { disablePlatformWebhookEndpoint } from '@shared/lib/services/webhook-endpoints-client'
+import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
 const PLATFORM_PROVIDER_ID = 'platform'
 
@@ -73,7 +76,16 @@ export function getDistinctPlatformMemberIdsForActiveTriggers(): string[] {
     // creator has no platform member — otherwise the trigger is silently dropped
     // from the poll set even though the owner could claim its events (SUP-226).
     const resolved = resolvePlatformMemberForCandidates([row.createdByUserId, row.ownerUserId])
-    if (resolved) ids.add(resolved.memberId)
+    if (resolved) {
+      ids.add(resolved.memberId)
+      continue
+    }
+    // Triggers minted from automated sessions have no creator, and custom
+    // endpoints have no connected account. The mint fell back to the stored
+    // member, so poll as that member too — otherwise the trigger never fires
+    // in acting-member mode.
+    const stored = getStoredPlatformMemberId()
+    if (stored) ids.add(stored)
   }
   return [...ids]
 }
@@ -124,8 +136,12 @@ export type { WebhookTrigger, NewWebhookTrigger }
 
 export interface CreateWebhookTriggerParams {
   agentSlug: string
+  /** 'composio' (default) or 'custom' (agent-minted platform webhook endpoint). */
+  kind?: 'composio' | 'custom'
+  /** For kind='custom' this carries the platform endpoint id ("whep_..."). */
   composioTriggerId?: string
-  connectedAccountId: string
+  /** Required for Composio triggers; absent for custom endpoints. */
+  connectedAccountId?: string
   triggerType: string
   triggerConfig?: string
   prompt: string
@@ -146,8 +162,9 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
   const newTrigger: NewWebhookTrigger = {
     id,
     agentSlug: params.agentSlug,
+    kind: params.kind ?? 'composio',
     composioTriggerId: params.composioTriggerId ?? null,
-    connectedAccountId: params.connectedAccountId,
+    connectedAccountId: params.connectedAccountId ?? null,
     triggerType: params.triggerType,
     triggerConfig: params.triggerConfig ?? null,
     prompt: params.prompt,
@@ -244,7 +261,7 @@ export async function countActiveTriggersPerAccount(accountIds?: string[]): Prom
 
   const counts: Record<string, number> = {}
   for (const row of rows) {
-    counts[row.connectedAccountId] = row.count
+    if (row.connectedAccountId) counts[row.connectedAccountId] = row.count
   }
   return counts
 }
@@ -402,29 +419,75 @@ export async function markTriggerFailed(triggerId: string, _error: string): Prom
 }
 
 /**
- * Cancel a webhook trigger locally and clean up the Composio subscription
- * if no other local triggers share the same Composio trigger ID.
+ * Cancel a webhook trigger locally and clean up the upstream subscription if
+ * no other local triggers share the same upstream id ("last one out"):
+ * Composio triggers delete the Composio subscription; custom triggers disable
+ * the platform webhook endpoint (ingest starts 404ing at the edge).
  * Returns true if the trigger was cancelled, false if already cancelled/not found.
  */
-export async function cancelWebhookTriggerWithCleanup(triggerId: string): Promise<boolean> {
+export async function cancelWebhookTriggerWithCleanup(
+  triggerId: string,
+  // When set, the trigger must belong to this agent or the cancel is refused.
+  // The agent-facing cancel_trigger tool passes it so agent A can't tear down
+  // (and disable the public endpoint of) agent B's trigger by id; internal
+  // cleanup callers (account/agent deletion) omit it.
+  expectedAgentSlug?: string,
+): Promise<boolean> {
   const trigger = await getWebhookTrigger(triggerId)
   if (!trigger) return false
+  if (expectedAgentSlug !== undefined && trigger.agentSlug !== expectedAgentSlug) return false
 
   const cancelled = await cancelWebhookTrigger(triggerId)
   if (!cancelled) return false
 
-  if (trigger.composioTriggerId && isPlatformComposioActive()) {
+  // Custom endpoints live on the platform proxy regardless of which Composio
+  // key mode is active — gate their teardown on platform auth, not the
+  // Composio condition, or a user-supplied Composio key would silently leave
+  // the public URL live.
+  const canReachUpstream =
+    trigger.kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
+  if (trigger.composioTriggerId && canReachUpstream) {
     const remaining = await countActiveTriggersForComposioId(trigger.composioTriggerId)
     if (remaining === 0) {
       try {
-        await deleteComposioTrigger(trigger.composioTriggerId)
+        if (trigger.kind === 'custom') {
+          await disablePlatformWebhookEndpoint(
+            resolveCleanupMemberId(trigger),
+            trigger.composioTriggerId,
+          )
+        } else {
+          await deleteComposioTrigger(trigger.composioTriggerId)
+        }
       } catch (error) {
-        console.error('[webhook-trigger-service] Failed to delete Composio trigger:', error)
+        console.error('[webhook-trigger-service] Failed to tear down upstream subscription:', error)
+        // Silent to the user: the trigger row is already cancelled, but the
+        // upstream (a live PUBLIC webhook URL for custom kind) is still up.
+        // Capture so an orphaned endpoint is diagnosable. Never attach the
+        // secret/URL — the upstream id is enough to reconcile.
+        captureException(error, {
+          tags: { area: 'webhook-endpoints', op: 'disable' },
+          extra: {
+            triggerId,
+            agentSlug: trigger.agentSlug,
+            upstreamId: trigger.composioTriggerId,
+            kind: trigger.kind,
+          },
+        })
       }
     }
   }
 
   return true
+}
+
+/**
+ * Member context for platform-endpoint teardown calls. Org JWTs need a real
+ * member suffix; opaque platform keys ignore it, so the 'local' placeholder is
+ * safe as the final fallback.
+ */
+function resolveCleanupMemberId(trigger: WebhookTrigger): string {
+  const resolved = resolvePlatformMemberForCandidates([trigger.createdByUserId])
+  return resolved?.memberId ?? getStoredPlatformMemberId() ?? 'local'
 }
 
 /**
@@ -481,6 +544,21 @@ export async function updateWebhookTriggerPrompt(
   const result = await db
     .update(webhookTriggers)
     .set({ prompt })
+    .where(eq(webhookTriggers.id, triggerId))
+
+  return (result.changes ?? 0) > 0
+}
+
+export async function updateWebhookTriggerName(
+  triggerId: string,
+  name: string,
+): Promise<boolean> {
+  const trigger = await getWebhookTrigger(triggerId)
+  if (!trigger || trigger.status === 'cancelled') return false
+
+  const result = await db
+    .update(webhookTriggers)
+    .set({ name })
     .where(eq(webhookTriggers.id, triggerId))
 
   return (result.changes ?? 0) > 0

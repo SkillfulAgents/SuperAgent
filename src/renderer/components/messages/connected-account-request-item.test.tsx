@@ -4,7 +4,7 @@ import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ConnectedAccountRequestItem } from './connected-account-request-item'
 import { renderWithProviders } from '@renderer/test/test-utils'
-import { useConnectedAccountsByToolkit } from '@renderer/hooks/use-connected-accounts'
+import { useConnectedAccountsByToolkit, useDeleteConnectedAccount } from '@renderer/hooks/use-connected-accounts'
 
 const mockApiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({
@@ -31,6 +31,10 @@ vi.mock('@renderer/hooks/use-connected-accounts', () => ({
   })),
   useInvalidateConnectedAccounts: vi.fn(() => vi.fn()),
   useRenameConnectedAccount: vi.fn(() => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+  })),
+  useDeleteConnectedAccount: vi.fn(() => ({
     mutateAsync: vi.fn(),
     isPending: false,
   })),
@@ -255,6 +259,48 @@ describe('ConnectedAccountRequestItem', () => {
     const checkboxes = screen.getAllByRole('checkbox')
     expect(checkboxes).toHaveLength(1)
     expect(screen.getAllByText('Reconnect').length).toBeGreaterThan(0)
+  })
+
+  it('deletes an account after confirming in the dialog', async () => {
+    const user = userEvent.setup()
+    const deleteMutate = vi.fn().mockResolvedValue(undefined)
+    vi.mocked(useDeleteConnectedAccount).mockReturnValue({
+      mutateAsync: deleteMutate,
+      isPending: false,
+    } as any)
+
+    renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
+
+    // Open the per-account action menu and choose Delete
+    await user.click(screen.getByTestId('account-option-menu-acc-1'))
+    await user.click(screen.getByTestId('account-option-delete-acc-1'))
+
+    // A confirmation dialog appears; delete only fires after confirming
+    expect(deleteMutate).not.toHaveBeenCalled()
+    const confirmButtons = await screen.findAllByRole('button', { name: /^delete$/i })
+    await user.click(confirmButtons[confirmButtons.length - 1])
+
+    await waitFor(() => {
+      expect(deleteMutate).toHaveBeenCalledWith('acc-1')
+    })
+  })
+
+  it('does not delete when the confirmation is cancelled', async () => {
+    const user = userEvent.setup()
+    const deleteMutate = vi.fn().mockResolvedValue(undefined)
+    vi.mocked(useDeleteConnectedAccount).mockReturnValue({
+      mutateAsync: deleteMutate,
+      isPending: false,
+    } as any)
+
+    renderWithProviders(<ConnectedAccountRequestItem {...defaultProps} />)
+
+    await user.click(screen.getByTestId('account-option-menu-acc-1'))
+    await user.click(screen.getByTestId('account-option-delete-acc-1'))
+
+    await user.click(await screen.findByRole('button', { name: /^cancel$/i }))
+
+    expect(deleteMutate).not.toHaveBeenCalled()
   })
 
   it('shows error on API failure', async () => {

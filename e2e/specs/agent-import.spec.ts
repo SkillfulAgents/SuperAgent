@@ -127,4 +127,30 @@ test.describe('Agent Import Onboarding', () => {
     await expect(sessionPage.getMessageList()).not.toBeVisible()
     await expect(agentPage.getAgentItem(agentName)).toBeVisible()
   })
+
+  test('importing a branded .agent package file works like a .zip', async ({ page }) => {
+    const agentName = `Imported Branded ${Date.now()}`
+    // Same zip bytes exports now produce — only the extension differs.
+    const packagePath = await buildAgentTemplateZip(
+      path.join(tmpDir, 'branded.agent'),
+      { name: agentName, withOnboardingSkill: false },
+    )
+
+    await agentPage.clickCreateAgent()
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
+
+    await page.getByRole('button', { name: 'Import an Agent — Import' }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+
+    // The relaxed extension guard must accept the file (no "Only .agent or
+    // .zip" toast) and show it as ready to import.
+    await dialog.locator('input[type="file"]').setInputFiles(packagePath)
+    await expect(dialog.getByText('branded.agent')).toBeVisible()
+    await dialog.locator('button[type="submit"]').click()
+    await expect(dialog).not.toBeVisible({ timeout: 15000 })
+
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName, { timeout: 15000 })
+    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
+  })
 })

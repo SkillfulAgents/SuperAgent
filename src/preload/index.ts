@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+// Type-only (erased at build — the preload bundle has no @shared alias).
+import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -409,6 +411,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setGlobalDispatchShortcut: (accelerator: string): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke('set-global-dispatch-shortcut', accelerator)
   },
+
+  // --- Opened .agent/.skill packages (double-click / "Open With") ---
+
+  // Pull the queued packages, already classified by content in the main
+  // process (race-free: the renderer drains on mount and on the `pending`
+  // ping below). Read the bytes with readLocalFile only when importing.
+  importPackagesDrain: (): Promise<ClassifiedImportPackage[]> => ipcRenderer.invoke('import-package:drain'),
+  // Main → renderer: package paths are queued — drain them now.
+  onImportPackagePending: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('import-package-pending', handler)
+    return () => {
+      ipcRenderer.removeListener('import-package-pending', handler)
+    }
+  },
 })
 
 // OAuth callback params from main process
@@ -506,6 +523,8 @@ declare global {
       onQuickDispatchAttachPending: (callback: () => void) => () => void
       onQuickDispatchReset: (callback: () => void) => () => void
       setGlobalDispatchShortcut: (accelerator: string) => Promise<{ success: boolean; error?: string }>
+      importPackagesDrain: () => Promise<ClassifiedImportPackage[]>
+      onImportPackagePending: (callback: () => void) => () => void
     }
   }
 }

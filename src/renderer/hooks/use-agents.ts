@@ -47,6 +47,7 @@ export function useRouteAgentId(): string | undefined {
 
 export function useAgents<TData = ApiAgent[]>(options?: {
   select?: (agents: ApiAgent[]) => TData
+  enabled?: boolean
 }) {
   return useQuery<ApiAgent[], Error, TData>({
     queryKey: ['agents'],
@@ -55,6 +56,7 @@ export function useAgents<TData = ApiAgent[]>(options?: {
       if (!res.ok) throw new Error('Failed to fetch agents')
       return res.json()
     },
+    enabled: options?.enabled,
     // React Query structurally shares the `select` result, so a narrow projection
     // (e.g. just {slug, displaySlug} for UserProvider's slug→id resolver) keeps a
     // STABLE reference across the frequent status-only `['agents']` refetches. Without

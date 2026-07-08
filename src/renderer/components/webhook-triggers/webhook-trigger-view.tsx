@@ -6,7 +6,8 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import { Trash2, Loader2, AlertTriangle, Settings as SettingsIcon, Pencil } from 'lucide-react'
+import { Trash2, Loader2, AlertTriangle, Settings as SettingsIcon, Pencil, Copy, Check } from 'lucide-react'
+import { extractEndpointUrl } from '@shared/lib/services/webhook-endpoint-schema'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -103,8 +104,30 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
     )
   }
 
+  const isCustom = trigger?.kind === 'custom'
+  const endpointUrl = useMemo(
+    () => (isCustom ? extractEndpointUrl(trigger?.triggerConfig) : null),
+    [isCustom, trigger?.triggerConfig],
+  )
+  const [urlCopied, setUrlCopied] = useState(false)
+  const handleCopyUrl = async () => {
+    if (!endpointUrl) return
+    // clipboard.writeText rejects in hosted-web contexts (unfocused document /
+    // denied permission); swallow so it doesn't surface as an unhandled
+    // rejection — the button simply won't flip to the copied state.
+    try {
+      await navigator.clipboard.writeText(endpointUrl)
+      setUrlCopied(true)
+      setTimeout(() => setUrlCopied(false), 2000)
+    } catch {
+      // no-op: copy unavailable in this context
+    }
+  }
+
   const parsedConfigEntries = useMemo<[string, unknown][]>(() => {
-    if (!trigger?.triggerConfig) return []
+    // For custom endpoints the config IS the endpoint mirror (url/endpointId),
+    // which gets its own card — no generic Configuration card to show.
+    if (!trigger?.triggerConfig || isCustom) return []
     try {
       const config = JSON.parse(trigger.triggerConfig) as Record<string, unknown>
       return Object.entries(config).filter(
@@ -113,7 +136,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
     } catch {
       return []
     }
-  }, [trigger?.triggerConfig])
+  }, [trigger?.triggerConfig, isCustom])
 
   const handleCancel = async () => {
     try {
@@ -307,7 +330,9 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
             <dl className="space-y-4">
               <div>
                 <dt className="text-xs text-muted-foreground">Webhook Trigger</dt>
-                <dd className="text-xs font-normal lowercase">{trigger.triggerType}</dd>
+                <dd className="text-xs font-normal lowercase">
+                  {isCustom ? 'custom webhook endpoint' : trigger.triggerType}
+                </dd>
               </div>
               {(trigger.fireCount > 0 || trigger.lastFiredAt) && (
                 <div className="flex gap-8">
@@ -325,10 +350,30 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
                   )}
                 </div>
               )}
-              <div>
-                <dt className="text-xs text-muted-foreground">Connected Account</dt>
-                <dd className="text-xs font-normal break-all">{trigger.connectedAccountId}</dd>
-              </div>
+              {isCustom ? (
+                endpointUrl && (
+                  <div>
+                    <dt className="text-xs text-muted-foreground">Endpoint URL</dt>
+                    <dd className="flex items-start gap-1.5 text-xs font-normal">
+                      <span className="break-all font-mono">{endpointUrl}</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="Copy endpoint URL"
+                        className="h-5 w-5 shrink-0 text-muted-foreground"
+                        onClick={handleCopyUrl}
+                      >
+                        {urlCopied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                      </Button>
+                    </dd>
+                  </div>
+                )
+              ) : (
+                <div>
+                  <dt className="text-xs text-muted-foreground">Connected Account</dt>
+                  <dd className="text-xs font-normal break-all">{trigger.connectedAccountId}</dd>
+                </div>
+              )}
             </dl>
           </DetailCard>
 

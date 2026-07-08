@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -55,7 +55,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@hono/node-server": "^1.13.7",
-    "@hono/zod-validator": "^0.7.6",
+    "@hono/zod-validator": "^0.8.0",
     "@hookform/resolvers": "^5.2.2",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -171,6 +171,24 @@
     "directories": {
       "output": "release"
     },
+    "fileAssociations": [
+      {
+        "ext": "agent",
+        "name": "Gamut Agent",
+        "description": "Gamut Agent Template",
+        "role": "Editor",
+        "rank": "Owner",
+        "icon": "file-icons/agent"
+      },
+      {
+        "ext": "skill",
+        "name": "Gamut Skill",
+        "description": "Gamut Skill",
+        "role": "Editor",
+        "rank": "Owner",
+        "icon": "file-icons/skill"
+      }
+    ],
     "files": [
       "dist/**/*"
     ],
