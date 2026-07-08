@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the response.",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the chat interface.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage with agent list visible.",
-    "Found and clicked the \"QA-20260707-233304-m0hk\" agent in the sidebar — Successfully opened the agent detail page with message input interface ready.",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed in the input field and visible in the chat.",
-    "Sent the message using Ctrl+Enter — Message was successfully sent to the agent, agent status changed to \"working\".",
-    "Waited for agent response (up to 3 minutes) — Agent completed processing in approximately 12 seconds and returned to idle state.",
-    "Verified response contains \"Example Domain\" — Response clearly shows \"The page title is \"Example Domain\"\" and \"The page at https://example.com has the title \"Example Domain\". Browser closed.\"",
-    "Took screenshot of the chat conversation — Screenshot successfully captured showing the complete interaction flow with all browser tool calls (Open Browser, Browser Get State, Close Browser) and the final response confirming the page title."
+    "Navigated to http://localhost:47891 - Successfully loaded the Gamut homepage with the agent list visible in the sidebar.",
+    "Found and clicked the \"QA-20260708-015143-wcbq\" agent in the sidebar - Successfully opened the agent chat interface at /agents/qa-20260708-015143-wcbq-15gmoqgs5z.",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Successfully submitted the message using Cmd+Enter. The page transitioned to a new session with URL /sessions/5a3f506f-2e74-4f82-b9c9-ef2e75265feb and title \"New Session — QA-20260708-015143-wcbq\".",
+    "Waited for agent response - Agent completed the task in 12 seconds, showing status \"Worked for 12s\". All tool calls completed successfully:",
+    "Verified response mentions \"Example Domain\" - SUCCESS. Agent response explicitly states: \"The page title is \"Example Domain\". I've closed the browser.\" The response contains the exact text required by the test specification. Session title also updated to \"Browser Page Title Inspection — QA-20260708-015143-wcbq\" confirming correct task execution."
   ],
   "bugs": [],
-  "durationMs": 72431,
-  "sessionId": "4425542e-df2b-4906-8e1b-55c01a34056c",
+  "durationMs": 86112,
+  "sessionId": "12eaf992-045f-46cd-9f35-34922b5db03a",
   "cost": {
-    "inputTokens": 309,
-    "outputTokens": 9562,
-    "cacheCreationTokens": 59051,
-    "cacheReadTokens": 907163,
+    "inputTokens": 423,
+    "outputTokens": 14088,
+    "cacheCreationTokens": 72690,
+    "cacheReadTokens": 1371254,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.212649
+    "totalCostUsd": 0.298851
   }
 }
