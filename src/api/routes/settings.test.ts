@@ -60,6 +60,7 @@ const mockGetRunningAgentIds = vi.fn()
 const mockClearClients = vi.fn()
 const mockEnsureImageReady = vi.fn()
 const mockGetReadiness = vi.fn()
+const mockStopAll = vi.fn()
 
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
@@ -68,7 +69,15 @@ vi.mock('@shared/lib/container/container-manager', () => ({
     clearClients: (...args: unknown[]) => mockClearClients(...args),
     ensureImageReady: (...args: unknown[]) => mockEnsureImageReady(...args),
     getReadiness: (...args: unknown[]) => mockGetReadiness(...args),
-    stopAll: vi.fn(),
+    stopAll: (...args: unknown[]) => mockStopAll(...args),
+  },
+}))
+
+const mockHasActiveSessionsForAgent = vi.fn()
+
+vi.mock('@shared/lib/container/message-persister', () => ({
+  messagePersister: {
+    hasActiveSessionsForAgent: (...args: unknown[]) => mockHasActiveSessionsForAgent(...args),
   },
 }))
 
@@ -207,7 +216,9 @@ function defaultSettings() {
 function setupDefaults() {
   mockGetSettings.mockReturnValue(defaultSettings())
   mockHasRunningAgents.mockReturnValue(false)
-  mockGetRunningAgentIds.mockResolvedValue([])
+  mockGetRunningAgentIds.mockReturnValue([])
+  mockHasActiveSessionsForAgent.mockReturnValue(false)
+  mockStopAll.mockResolvedValue(undefined)
   mockCheckAllRunnersAvailability.mockResolvedValue([])
   mockGetAnthropicApiKeyStatus.mockReturnValue({ isConfigured: true, source: 'settings' })
   mockGetComposioApiKeyStatus.mockReturnValue({ isConfigured: false, source: 'none' })
@@ -515,7 +526,7 @@ describe('settings route', () => {
   describe('cannot change runner while agents running', () => {
     it('returns 409 when changing containerRunner while agents are running', async () => {
       mockHasRunningAgents.mockReturnValue(true)
-      mockGetRunningAgentIds.mockResolvedValue(['agent-1', 'agent-2'])
+      mockGetRunningAgentIds.mockReturnValue(['agent-1', 'agent-2'])
 
       const res = await putSettings({
         container: { containerRunner: 'podman' },
@@ -531,7 +542,7 @@ describe('settings route', () => {
 
     it('returns 409 when changing resourceLimits while agents are running', async () => {
       mockHasRunningAgents.mockReturnValue(true)
-      mockGetRunningAgentIds.mockResolvedValue(['agent-1'])
+      mockGetRunningAgentIds.mockReturnValue(['agent-1'])
 
       const res = await putSettings({
         container: { resourceLimits: { cpu: 8, memory: '16g' } },
@@ -573,6 +584,48 @@ describe('settings route', () => {
 
       expect(res.status).toBe(200)
       expect(mockUpdateSettings).toHaveBeenCalledOnce()
+    })
+  })
+
+  // =========================================================================
+  // Settings changes: busy session gate + stop running agents
+  // =========================================================================
+  describe('settings changes require idle agents and stop running ones', () => {
+    it('returns 409 when any agent has active sessions', async () => {
+      mockHasRunningAgents.mockReturnValue(true)
+      mockGetRunningAgentIds.mockReturnValue(['busy-agent'])
+      mockHasActiveSessionsForAgent.mockImplementation((id: string) => id === 'busy-agent')
+
+      const res = await putSettings({ llmProvider: 'openrouter' })
+
+      expect(res.status).toBe(409)
+      const body = await res.json()
+      expect(body.busyAgents).toEqual(['busy-agent'])
+      expect(body.error).toContain('still working')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+      expect(mockStopAll).not.toHaveBeenCalled()
+    })
+
+    it('persists settings and stops running agents when sessions are idle', async () => {
+      mockHasRunningAgents.mockReturnValue(true)
+      mockGetRunningAgentIds.mockReturnValue(['idle-agent'])
+      mockHasActiveSessionsForAgent.mockReturnValue(false)
+
+      const res = await putSettings({ app: { showMenuBarIcon: false } })
+
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings).toHaveBeenCalledOnce()
+      expect(mockStopAll).toHaveBeenCalledOnce()
+    })
+
+    it('does not stop agents when none are running', async () => {
+      mockHasRunningAgents.mockReturnValue(false)
+      mockGetRunningAgentIds.mockReturnValue([])
+
+      const res = await putSettings({ llmProvider: 'openrouter' })
+
+      expect(res.status).toBe(200)
+      expect(mockStopAll).not.toHaveBeenCalled()
     })
   })
 

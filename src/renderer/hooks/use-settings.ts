@@ -91,6 +91,7 @@ export interface UpdateSettingsParams {
 export interface UpdateSettingsError {
   error: string
   runningAgents?: string[]
+  busyAgents?: string[]
 }
 
 export function useUpdateSettings() {
@@ -113,6 +114,7 @@ export function useUpdateSettings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
     },
   })
 }
