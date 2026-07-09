@@ -13,17 +13,85 @@ interface SessionData {
   process: ClaudeCodeProcess;
   messages: SDKMessage[];
   subscribers: Set<(message: SDKMessage) => void>;
+  runtimeState: 'idle' | 'busy';
+  stateEventsSeen: boolean;
+  // Cleared on sendMessage; set on result. Mirrors message-persister: bare
+  // session_state_changed:idle without a result for this turn is ignored
+  // (stale idle racing a fresh message).
+  lastResultSubtype: string | null;
+  activeBackgroundTaskIds: Set<string>;
+  eviction: Promise<void> | null;
+}
+
+const DEFAULT_INTERACTIVE_IDLE_EVICTION_MINUTES = 5;
+const DEFAULT_AUTOMATED_IDLE_EVICTION_MINUTES = 0;
+const IDLE_EVICTION_POLL_MS = 30_000;
+
+// Minutes → ms. < 0 disables that class; 0 = evict as soon as idle.
+// Parsed once at startup so misconfiguration is loud.
+function idleEvictionMsFromEnv(
+  envName: string,
+  defaultMinutes: number
+): number {
+  const raw = process.env[envName];
+  if (raw === undefined || raw.trim() === '') {
+    return defaultMinutes * 60_000;
+  }
+  const minutes = Number(raw);
+  if (!Number.isFinite(minutes)) {
+    console.error(
+      `Invalid ${envName} "${raw}" — using default ${defaultMinutes}`
+    );
+    return defaultMinutes * 60_000;
+  }
+  return minutes * 60_000;
+}
+
+function formatIdleThreshold(ms: number): string {
+  if (ms < 0) return 'disabled';
+  if (ms === 0) return 'immediate';
+  return `${Math.round(ms / 60_000)}m`;
 }
 
 export class SessionManager extends EventEmitter {
   private sessions: Map<string, SessionData> = new Map();
   private baseWorkingDirectory: string;
   private persistence: SessionPersistence;
+  private readonly idleEvictionMs: number;
+  private readonly automatedIdleEvictionMs: number;
+  private evictionTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(baseWorkingDirectory: string = '/workspace') {
+  constructor(
+    baseWorkingDirectory: string = '/workspace',
+    options?: { idleEvictionMs?: number; automatedIdleEvictionMs?: number }
+  ) {
     super();
     this.baseWorkingDirectory = baseWorkingDirectory;
     this.persistence = new SessionPersistence();
+    this.idleEvictionMs =
+      options?.idleEvictionMs ??
+      idleEvictionMsFromEnv(
+        'SESSION_IDLE_EVICTION_MINUTES',
+        DEFAULT_INTERACTIVE_IDLE_EVICTION_MINUTES
+      );
+    this.automatedIdleEvictionMs =
+      options?.automatedIdleEvictionMs ??
+      idleEvictionMsFromEnv(
+        'SESSION_AUTOMATED_IDLE_EVICTION_MINUTES',
+        DEFAULT_AUTOMATED_IDLE_EVICTION_MINUTES
+      );
+    if (this.idleEvictionMs >= 0 || this.automatedIdleEvictionMs >= 0) {
+      console.log(
+        `[SessionManager] Idle session eviction enabled: interactive=${formatIdleThreshold(this.idleEvictionMs)}, automated=${formatIdleThreshold(this.automatedIdleEvictionMs)}`
+      );
+      this.evictionTimer = setInterval(() => {
+        this.evictIdleSessions().catch((error) => {
+          console.error('[SessionManager] Idle eviction sweep failed:', error);
+        });
+      }, IDLE_EVICTION_POLL_MS);
+      // Never keep the process alive just for the reaper.
+      this.evictionTimer.unref?.();
+    }
 
     // Ensure base directory exists
     if (!fs.existsSync(this.baseWorkingDirectory)) {
@@ -174,6 +242,11 @@ export class SessionManager extends EventEmitter {
       process,
       messages: [],
       subscribers: new Set(),
+      runtimeState: 'busy',
+      stateEventsSeen: false,
+      lastResultSubtype: null,
+      activeBackgroundTaskIds: new Set(),
+      eviction: null,
     };
 
     // Set up event listeners
@@ -262,6 +335,14 @@ export class SessionManager extends EventEmitter {
         process,
         messages: [],
         subscribers: new Set(),
+        // Born-idle: a bare getSession() resume gets no turn (no result, never
+        // idle), so born-busy would park the process beyond the reaper forever.
+        // sendMessage sets busy itself right after resuming.
+        runtimeState: 'idle',
+        stateEventsSeen: false,
+        lastResultSubtype: null,
+        activeBackgroundTaskIds: new Set(),
+        eviction: null,
       };
 
       // Set up event listeners (same as createSession)
@@ -357,6 +438,14 @@ export class SessionManager extends EventEmitter {
       }
     }
 
+    // A racing idle eviction may be closing the message queue right now; wait it
+    // out, then process.sendMessage's cold-session path restarts with --resume.
+    if (sessionData.eviction) {
+      await sessionData.eviction;
+    }
+    sessionData.runtimeState = 'busy';
+    sessionData.lastResultSubtype = null;
+
     // Update last activity
     sessionData.session.lastActivity = new Date();
     this.persistence.updateLastActivity(sessionId);
@@ -425,6 +514,8 @@ export class SessionManager extends EventEmitter {
     // Store the message
     sessionData.messages.push(message);
 
+    this.trackRuntimeState(sessionData, message);
+
     // Release browser lock when an automated session's turn completes.
     // The SDK query keeps the for-await loop alive waiting for the next user
     // message, so the 'exit' event never fires for idle sessions. Releasing
@@ -447,6 +538,98 @@ export class SessionManager extends EventEmitter {
 
     // Update last activity
     sessionData.session.lastActivity = new Date();
+  }
+
+  // Track whether the session is settled (safe to evict) from the SDK stream.
+  // session_state_changed is authoritative when present; idle is only accepted
+  // after a result for this turn (same gate as message-persister). 'result' is
+  // the idle fallback when no state events exist. Background tasks block eviction.
+  private trackRuntimeState(sessionData: SessionData, message: SDKMessage): void {
+    const msg = message as {
+      type?: string;
+      subtype?: string;
+      state?: string;
+      task_id?: string;
+      status?: string;
+      patch?: { status?: string };
+    };
+
+    if (msg.type === 'result') {
+      sessionData.lastResultSubtype = msg.subtype ?? 'unknown';
+      if (!sessionData.stateEventsSeen) {
+        sessionData.runtimeState = 'idle';
+      }
+      return;
+    }
+
+    if (msg.type === 'system') {
+      if (msg.subtype === 'session_state_changed') {
+        sessionData.stateEventsSeen = true;
+        if (msg.state === 'idle') {
+          // Ignore stale idle with no result for this turn (race with sendMessage).
+          if (sessionData.lastResultSubtype !== null) {
+            sessionData.runtimeState = 'idle';
+          }
+        } else {
+          sessionData.runtimeState = 'busy';
+        }
+      } else if (msg.subtype === 'task_started' && msg.task_id) {
+        sessionData.activeBackgroundTaskIds.add(msg.task_id);
+      } else if (msg.subtype === 'task_updated' && msg.task_id) {
+        const status = msg.patch?.status;
+        if (status === 'completed' || status === 'failed' || status === 'killed') {
+          sessionData.activeBackgroundTaskIds.delete(msg.task_id);
+        }
+      } else if (msg.subtype === 'task_notification' && msg.task_id) {
+        if (msg.status === 'completed' || msg.status === 'failed' || msg.status === 'killed') {
+          sessionData.activeBackgroundTaskIds.delete(msg.task_id);
+        }
+      }
+    } else if (msg.type === 'user' || msg.type === 'assistant') {
+      // Any turn traffic means the session is working again.
+      sessionData.runtimeState = 'busy';
+    }
+  }
+
+  private idleThresholdMs(data: SessionData): number {
+    return data.session.metadata?.isAutomated
+      ? this.automatedIdleEvictionMs
+      : this.idleEvictionMs;
+  }
+
+  // Stop the claude subprocess of sessions idle past their class threshold.
+  // Interactive default 5m; automated (cron/webhook) default 0 = next sweep.
+  // Eviction only stops the process — SessionData + claudeSessionId survive so
+  // the next sendMessage restarts with --resume. Public for tests.
+  async evictIdleSessions(): Promise<void> {
+    const now = Date.now();
+    for (const [sessionId, data] of this.sessions) {
+      if (data.eviction) continue; // already evicting
+      if (data.runtimeState !== 'idle') continue;
+      if (data.activeBackgroundTaskIds.size > 0) continue;
+      if (!data.process.isRunning()) continue; // already cold
+      const thresholdMs = this.idleThresholdMs(data);
+      if (thresholdMs < 0) continue; // disabled for this class
+      if (now - data.session.lastActivity.getTime() < thresholdMs) continue;
+
+      data.eviction = (async () => {
+        try {
+          // An idle session has no business holding the shared browser.
+          if (releaseBrowserLock(sessionId)) {
+            console.log(`[Session ${sessionId}] Released browser lock (idle eviction)`);
+          }
+          await data.process.stop();
+          console.log(
+            `[Session ${sessionId}] Evicted idle session process (idle ${Math.round((now - data.session.lastActivity.getTime()) / 60_000)}m)`
+          );
+        } catch (error) {
+          console.error(`[Session ${sessionId}] Idle eviction failed:`, error);
+        } finally {
+          data.eviction = null;
+        }
+      })();
+      await data.eviction;
+    }
   }
 
   getAllSessions(): Session[] {
@@ -473,6 +656,10 @@ export class SessionManager extends EventEmitter {
    * Stop all active sessions. Used for graceful shutdown.
    */
   async stopAll(): Promise<void> {
+    if (this.evictionTimer) {
+      clearInterval(this.evictionTimer);
+      this.evictionTimer = null;
+    }
     const sessionIds = Array.from(this.sessions.keys());
     console.log(`Stopping ${sessionIds.length} active session(s)...`);
 
