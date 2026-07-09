@@ -935,8 +935,8 @@ settings.post('/validate-web-key', async (c) => {
     if (!provider || typeof provider !== 'string' || provider === 'native') {
       return c.json({ valid: false, error: 'A web vendor is required' }, 400)
     }
-    // Platform is login-based (no user-supplied key); it would ignore the submitted key and make a
-    // billable proxy call, so reject it here rather than dispatch through the registry.
+    // Platform is login-based, so there is no key to validate. Answer 400 here rather than dispatch
+    // into the registry, where the provider would have to report a client error as a 200 body.
     if (provider === 'platform') {
       return c.json({ valid: false, error: 'Platform uses your Gamut login, not an API key.' }, 400)
     }

@@ -10,6 +10,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...a: unknown[]) => mockValidateProxyToken(...a),
 }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => mockIsAuthMode() }))
+vi.mock('@shared/lib/auth/index', () => ({ getAuth: () => ({ api: {} }) }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => mockGetPlatformAccessToken(),
   getStoredPlatformMemberId: () => null,
@@ -27,6 +28,7 @@ vi.mock('@shared/lib/db', () => {
 })
 vi.mock('@shared/lib/db/schema', () => ({
   agentAcl: { userId: 'acl.user_id', agentSlug: 'acl.agent_slug', role: 'acl.role' },
+  connectedAccounts: {}, remoteMcpServers: {}, notifications: {},
   authAccount: {
     userId: 'account.user_id',
     providerId: 'account.provider_id',
@@ -41,7 +43,7 @@ vi.mock('drizzle-orm', () => ({
 }))
 
 import { attribution } from '@shared/lib/platform-attribution'
-import { RequireProxyToken } from './require-proxy-token'
+import { IsAgent } from './auth'
 
 // An org-scoped runtime JWT: three segments with an `orgId` claim. Only this shape makes the proxy
 // require an acting member, so it is the only shape that can expose a missing attribution scope.
@@ -55,7 +57,7 @@ function orgJwt(orgId: string): string {
 async function bearerSeenByHandler(): Promise<string | undefined> {
   let seen: string | undefined
   const app = new Hono()
-  app.use('*', RequireProxyToken())
+  app.use('*', IsAgent())
   app.get('/x', (c) => {
     seen = attribution.current()?.bearerToken()
     return c.json({ ok: true })
@@ -72,25 +74,7 @@ beforeEach(() => {
   mockValidateProxyToken.mockResolvedValue('my-agent')
 })
 
-describe('RequireProxyToken', () => {
-  it('rejects a request with no Authorization header', async () => {
-    const app = new Hono()
-    app.use('*', RequireProxyToken())
-    app.get('/x', (c) => c.json({ ok: true }))
-    expect((await app.request('http://localhost/x')).status).toBe(401)
-  })
-
-  it('rejects an unknown proxy token', async () => {
-    mockValidateProxyToken.mockResolvedValue(null)
-    const app = new Hono()
-    app.use('*', RequireProxyToken())
-    app.get('/x', (c) => c.json({ ok: true }))
-    const res = await app.request('http://localhost/x', {
-      headers: { Authorization: 'Bearer nope' },
-    })
-    expect(res.status).toBe(401)
-  })
-
+describe('IsAgent attribution scope', () => {
   // The proxy bills an org-scoped bearer against the acting member encoded as `<token>::<memberId>`.
   // A container-facing route has no session, so the gate has to supply that member from the agent's
   // owner; without it the platform proxy sees an org token with no seat.

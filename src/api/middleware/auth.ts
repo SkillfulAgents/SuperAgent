@@ -356,8 +356,9 @@ export function HasNotificationAccess(): MiddlewareHandler {
 // ---------------------------------------------------------------------------
 
 /**
- * IsAgent — validates synthetic bearer token from a container.
- * Works in both auth and non-auth modes (containers always use proxy tokens).
+ * IsAgent — the gate for every container→host route. Validates the synthetic bearer token a
+ * container carries, in both auth and non-auth modes. Nothing is inherited from sibling routers, so
+ * each such router must apply it or it ships open.
  *
  * Stashes the resolved agent slug on the context as `agentSlug` so route
  * handlers can bind their action to the token's agent instead of trusting an
@@ -365,10 +366,11 @@ export function HasNotificationAccess(): MiddlewareHandler {
  * proxy token, so the token uniquely identifies the agent.
  *
  * The token names an agent, not a user, so the handler runs under the agent OWNER's attribution
- * scope, exactly as RequireProxyToken() does for the other container-facing routes. The host browser
- * reaches the billed `/v1/browserbase` proxy route from here; without a scope its org-scoped bearer
- * carries no acting member, so the proxy bills the org with no seat. Single-user installs have no
- * agent_acl row, resolve to null, and open no scope.
+ * scope, the same way Authenticated() runs a browser request under its session user. Routes behind
+ * this gate reach billed platform-proxy routes (`/v1/browserbase` from the host browser,
+ * `/v1/exa` from the web vendor); without a scope, an org-scoped bearer names no acting member and
+ * the proxy bills the org with no seat, denying a seat-subscribed org outright. Single-user installs
+ * have no agent_acl row, resolve to null, and open no scope.
  */
 export function IsAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {

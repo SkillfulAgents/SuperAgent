@@ -44,25 +44,14 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (token: string) => mockValidateProxyToken(token),
 }))
 
-// Capture the user id each middleware opens an attribution scope for. The scope's real effect (an
-// org bearer gaining its `::memberId` acting member) is proven end to end in
-// require-proxy-token.test.ts; here we only need to know IsAgent is wired to the same mechanism.
-const scopedUserIds: Array<string | null | undefined> = []
+// IsAgent opens an attribution scope for the agent's owner; that behavior is proven end to end,
+// against the real AsyncLocalStorage, in is-agent-attribution.test.ts. These stubs only keep the
+// import graph light for the authorization tests below.
 vi.mock('@shared/lib/platform-attribution', () => ({
-  runWithRequestUser: (userId: string, fn: () => unknown) => {
-    scopedUserIds.push(userId)
-    return fn()
-  },
-  runWithOptionalUser: (userId: string | null | undefined, fn: () => unknown) => {
-    scopedUserIds.push(userId)
-    return fn()
-  },
+  runWithRequestUser: (_userId: string, fn: () => unknown) => fn(),
+  runWithOptionalUser: (_userId: string | null | undefined, fn: () => unknown) => fn(),
 }))
-
-const mockGetAgentOwnerUserId = vi.fn<() => string | null>(() => null)
-vi.mock('@shared/lib/services/agent-owner', () => ({
-  getAgentOwnerUserId: () => mockGetAgentOwnerUserId(),
-}))
+vi.mock('@shared/lib/services/agent-owner', () => ({ getAgentOwnerUserId: () => null }))
 
 // Import after mocks
 import {
@@ -486,36 +475,6 @@ describe('Auth Middleware', () => {
       expect(await res.json()).toEqual({ error: 'Unauthorized' })
     })
 
-    // The host browser calls the billed /v1/browserbase proxy route from behind this gate. Without an
-    // acting member an org-scoped bearer is billed to the org with no seat, so the gate has to name
-    // the agent's owner the way a logged-in request names its user.
-    it('runs the handler under the agent owner attribution scope', async () => {
-      scopedUserIds.length = 0
-      mockValidateProxyToken.mockResolvedValue(true)
-      mockGetAgentOwnerUserId.mockReturnValue('user_alice')
-      const app = new Hono()
-      app.get('/test', IsAgent(), (c) => c.json({ ok: true }))
-
-      const res = await app.request('http://localhost/test', {
-        headers: { Authorization: 'Bearer valid-token' },
-      })
-      expect(res.status).toBe(200)
-      expect(scopedUserIds).toEqual(['user_alice'])
-    })
-
-    it('opens no scope when the agent has no owner (single-user install)', async () => {
-      scopedUserIds.length = 0
-      mockValidateProxyToken.mockResolvedValue(true)
-      mockGetAgentOwnerUserId.mockReturnValue(null)
-      const app = new Hono()
-      app.get('/test', IsAgent(), (c) => c.json({ ok: true }))
-
-      const res = await app.request('http://localhost/test', {
-        headers: { Authorization: 'Bearer valid-token' },
-      })
-      expect(res.status).toBe(200)
-      expect(scopedUserIds).toEqual([null])
-    })
 
     it('returns 401 when Authorization header is missing', async () => {
       const app = new Hono()

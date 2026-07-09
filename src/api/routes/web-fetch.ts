@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { RequireProxyToken } from '../middleware/require-proxy-token'
+import { IsAgent } from '../middleware/auth'
 import { getActiveWebProvider } from '@shared/lib/web-provider'
 import { isUrlAllowed } from '@shared/lib/web-provider/allowed-sites'
 import { WebFetchRequestSchema } from '@shared/lib/web-provider/web-fetch-request-schema'
@@ -15,8 +15,9 @@ const webFetch = new Hono()
 
 // Own proxy-token gate. The local-mode-auth bypass for this container-facing route only skips the
 // IP check; it does NOT authenticate, and nothing is inherited from sibling routers — so this
-// router must declare its own gate or it ships open (design §4 auth must-do).
-webFetch.use('*', RequireProxyToken())
+// router must declare its own gate or it ships open (design §4 auth must-do). IsAgent also opens the
+// agent owner's attribution scope, which the platform vendor's proxy calls are billed under.
+webFetch.use('*', IsAgent())
 
 // POST /fetch — fetch one URL's content via the active vendor, enforcing the operator allow/deny
 // policy on the TARGET host BEFORE dispatch. The host's only egress is the fixed vendor host
