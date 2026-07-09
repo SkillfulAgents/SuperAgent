@@ -423,6 +423,39 @@ describe('NotificationsView', () => {
     expect(screen.getByText('30 total')).toBeTruthy()
   })
 
+  it('clamps pagination to the platform fetch cap so every advertised page has content', async () => {
+    const user = userEvent.setup()
+    // 120 platform rows exist but only 100 are fetchable: the view must
+    // advertise 7 pages (100 rows), not 8, and the last page must render
+    // rows — not strand the user on an empty state with no pagination.
+    mockNotificationsData = { items: [], total: 0 }
+    mockPlatformData = {
+      notifications: Array.from({ length: 120 }, (_, i) =>
+        makePlatformNotification({ id: `ntf_${i + 1}` }),
+      ),
+      total: 120,
+      unread_count: 0,
+      connected: true,
+    }
+    renderWithProviders(<NotificationsView />)
+
+    expect(screen.getByText('1 / 7')).toBeTruthy()
+    expect(screen.getByText('100 total')).toBeTruthy()
+
+    const nextButton = screen.getAllByRole('button').find((b) =>
+      b.querySelector('.lucide-chevron-right'),
+    )
+    for (let i = 0; i < 6; i++) {
+      await user.click(nextButton!)
+    }
+
+    expect(screen.getByText('7 / 7')).toBeTruthy()
+    // Last page: the tail 10 of the 100 fetchable rows, and next is disabled.
+    expect(screen.getAllByTestId('platform-notification-row')).toHaveLength(10)
+    expect(nextButton!).toBeDisabled()
+    expect(screen.queryByText('No notifications yet.')).toBeNull()
+  })
+
   it('walks to page 2 of a mixed merged list without dropping or duplicating rows', async () => {
     const user = userEvent.setup()
     // 20 agent rows (newer, 10:00) + 10 platform rows (older, 09:00): page 1

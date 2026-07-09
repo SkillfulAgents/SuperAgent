@@ -262,7 +262,10 @@ export function NotificationsView() {
     return [...agentItems, ...platformItems].sort((a, b) => b.sortKey - a.sortKey)
   }, [data?.items, platformData?.notifications])
 
-  const total = (data?.total ?? 0) + (platformData?.total ?? 0)
+  // Clamp the platform contribution to what the capped fetch can actually
+  // supply — otherwise >100 platform rows advertise pages whose slice of
+  // `merged` is empty, stranding the user past the last real page.
+  const total = (data?.total ?? 0) + Math.min(platformData?.total ?? 0, PLATFORM_FETCH_CAP)
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const currentPage = Math.min(page, totalPages - 1)
   const pageItems = merged.slice(currentPage * PAGE_SIZE, currentPage * PAGE_SIZE + PAGE_SIZE)
