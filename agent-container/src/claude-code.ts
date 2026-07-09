@@ -42,27 +42,21 @@ function mcpToolNames(
 }
 import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
-import { resolveWebSearchToolInPrompt } from './web-search-prompt';
-import { resolveWebFetchToolInPrompt } from './web-fetch-prompt';
+import { renderPrompt } from './render-prompt';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
-// Defaults for `${VAR}` placeholders in prompt files. Mirror values the host
-// (base-container-client.ts) sets, so out-of-host runs render sensibly.
+// Default values for system-prompt template vars when the host env is unset.
+// Mirror values the host (base-container-client.ts) sets, so out-of-host runs
+// render sensibly.
 const PROMPT_ENV_DEFAULTS: Record<string, string> = {
   CLAUDE_CONFIG_DIR: '/workspace/.claude',
 };
 
-function interpolateEnv(template: string): string {
-  return template.replace(/\$\{(\w+)\}/g, (match, name) => {
-    return process.env[name] || PROMPT_ENV_DEFAULTS[name] || match;
-  });
-}
-
 function loadPrompt(filename: string): string {
-  return interpolateEnv(fs.readFileSync(path.join(__dirname, filename), 'utf-8'));
+  return fs.readFileSync(path.join(__dirname, filename), 'utf-8');
 }
 
 const SYSTEM_PROMPT = loadPrompt('system-prompt.md');
@@ -113,128 +107,134 @@ function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string 
   return accounts;
 }
 
+/** One toolkit's connected accounts, as the template's `connectedAccounts` list. */
+interface ConnectedAccountGroup {
+  displayName: string;
+  entries: Array<{ name: string; id: string }>;
+}
+
+/** One remote MCP server, as the template's `remoteMcps` list. */
+interface RemoteMcpView {
+  name: string;
+  tools: string;
+  sanitizedName: string;
+}
+
+function connectedAccountGroups(): ConnectedAccountGroup[] {
+  return [...parseConnectedAccounts()].map(([toolkit, entries]) => ({
+    displayName: toolkit.charAt(0).toUpperCase() + toolkit.slice(1),
+    entries,
+  }));
+}
+
+function remoteMcpViews(): RemoteMcpView[] {
+  return parseRemoteMcps().map(mcp => ({
+    name: mcp.name,
+    tools: mcp.tools.map(t => t.name).join(', '),
+    sanitizedName: sanitizeMcpName(mcp.name),
+  }));
+}
+
+/** Env vars the agent may read directly — the proxy's own vars are documented separately. */
+function agentEnvVars(availableEnvVars?: string[]): string[] {
+  const proxyEnvVars = new Set(['PROXY_BASE_URL', 'PROXY_TOKEN', 'CONNECTED_ACCOUNTS']);
+  return (availableEnvVars || []).filter(
+    name => !name.startsWith('CONNECTED_ACCOUNT_') && !proxyEnvVars.has(name)
+  );
+}
+
+/** Computer-use tools and the request_script_run tool only exist on desktop hosts. */
+export function isComputerUseHost(): boolean {
+  return ['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '');
+}
+
 /**
- * Generates the full system prompt from the SuperAgent prompt plus dynamic
- * sections (connected accounts, env vars, user instructions).
+ * The template renders every section itself; this bag carries only data. Each
+ * list is paired with a `has*` boolean because a Mustache list section repeats
+ * its body per item and so cannot host the section's heading.
  */
-function generateSystemPrompt(
+export interface SystemPromptVars {
+  CLAUDE_CONFIG_DIR: string;
+  webSearchToolName: string;
+  webFetchToolName: string;
+  composioTriggers: boolean;
+  webhookEndpoints: boolean;
+  anyTriggers: boolean;
+  computerUse: boolean;
+  hasDynamicSections: boolean;
+  hasModelHints: boolean;
+  modelHints: string[];
+  hasConnectedAccounts: boolean;
+  connectedAccounts: ConnectedAccountGroup[];
+  hasRemoteMcps: boolean;
+  remoteMcps: RemoteMcpView[];
+  hasEnvVars: boolean;
+  envVars: string[];
+  hasUserInstructions: boolean;
+  userInstructions: string;
+}
+
+/**
+ * Builds the variable bag consumed by the system-prompt template: the two
+ * trigger-availability gates and the computer-use host gate read from the
+ * environment, the labels of whichever native web tools a vendor replaced, the
+ * config dir, and the data behind the sections that only render for some agents.
+ */
+export function buildSystemPromptVars(
+  availableEnvVars?: string[],
+  userSystemPrompt?: string,
+  modelPromptHints?: string[],
+  webSearchProvider?: string,
+  webFetchProvider?: string,
+): SystemPromptVars {
+  const composioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true';
+  const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
+  const modelHints = modelPromptHints || [];
+  const connectedAccounts = connectedAccountGroups();
+  const remoteMcps = remoteMcpViews();
+  const envVars = agentEnvVars(availableEnvVars);
+  const userInstructions = userSystemPrompt?.trim() || '';
+  // The `---` rule separates the static prompt from the per-agent sections; with
+  // no sections it would trail off the end of the prompt on its own.
+  const hasDynamicSections =
+    modelHints.length > 0 || connectedAccounts.length > 0 || remoteMcps.length > 0 ||
+    envVars.length > 0 || userInstructions.length > 0;
+  return {
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
+    webSearchToolName: webSearchProvider ? 'mcp__web__web_search' : 'WebSearch',
+    webFetchToolName: webFetchProvider ? 'mcp__web__web_fetch' : 'WebFetch',
+    composioTriggers,
+    webhookEndpoints,
+    anyTriggers: composioTriggers || webhookEndpoints,
+    computerUse: isComputerUseHost(),
+    hasDynamicSections,
+    hasModelHints: modelHints.length > 0,
+    modelHints,
+    hasConnectedAccounts: connectedAccounts.length > 0,
+    connectedAccounts,
+    hasRemoteMcps: remoteMcps.length > 0,
+    remoteMcps,
+    hasEnvVars: envVars.length > 0,
+    envVars,
+    hasUserInstructions: userInstructions.length > 0,
+    userInstructions,
+  };
+}
+
+/**
+ * Generates the full system prompt by rendering the SuperAgent prompt template
+ * against the variable bag (env-gated triggers, web-search label, config dir)
+ * plus dynamic sections (connected accounts, env vars, user instructions).
+ */
+export function generateSystemPrompt(
   availableEnvVars?: string[],
   userSystemPrompt?: string,
   modelPromptHints?: string[],
   webSearchProvider?: string,
   webFetchProvider?: string,
 ): string {
-  const sections: string[] = [];
-
-  // Relabel each native web tool the model no longer has to the vendor MCP tool that replaced it.
-  sections.push(
-    resolveWebFetchToolInPrompt(
-      resolveWebSearchToolInPrompt(SYSTEM_PROMPT, webSearchProvider),
-      webFetchProvider,
-    ),
-  );
-
-  if (modelPromptHints?.length) {
-    sections.push(`## Model-Specific Instructions
-
-${modelPromptHints.map(hint => `- ${hint}`).join('\n')}`);
-  }
-
-  // Parse connected accounts metadata
-  const connectedAccounts = parseConnectedAccounts();
-
-  // Filter out proxy/connected-account env vars from regular secrets
-  const proxyEnvVars = new Set(['PROXY_BASE_URL', 'PROXY_TOKEN', 'CONNECTED_ACCOUNTS']);
-  const regularEnvVars = (availableEnvVars || []).filter(
-    name => !name.startsWith('CONNECTED_ACCOUNT_') && !proxyEnvVars.has(name)
-  );
-
-  // Connected accounts section with proxy usage instructions
-  if (connectedAccounts.size > 0) {
-    const accountSections: string[] = [];
-
-    for (const [toolkit, entries] of connectedAccounts) {
-      const displayName = toolkit.charAt(0).toUpperCase() + toolkit.slice(1);
-      accountSections.push(
-        `### ${displayName}\n${entries.map(e => `- ${e.name} (ID: \`${e.id}\`)`).join('\n')}`
-      );
-    }
-
-    sections.push(`## Connected Accounts (Already Available)
-
-**IMPORTANT: You already have access to the following connected accounts via the proxy. Do NOT request access to these - you already have it!**
-
-${accountSections.join('\n\n')}
-
-### How to Make API Calls
-
-All API calls to external services go through a proxy that handles authentication automatically. Use the proxy URL with the account ID and target API host:
-
-\`\`\`
-URL: $PROXY_BASE_URL/<account_id>/<target_host>/<api_path>
-Header: Authorization: Bearer $PROXY_TOKEN
-\`\`\`
-
-**Example (curl):**
-\`\`\`bash
-curl "$PROXY_BASE_URL/<account_id>/api.gmail.com/gmail/v1/users/me/messages" \\
-  -H "Authorization: Bearer $PROXY_TOKEN"
-\`\`\`
-
-**Example (Python):**
-\`\`\`python
-import os, requests
-proxy_url = os.environ["PROXY_BASE_URL"]
-proxy_token = os.environ["PROXY_TOKEN"]
-resp = requests.get(
-    f"{proxy_url}/<account_id>/api.gmail.com/gmail/v1/users/me/messages",
-    headers={"Authorization": f"Bearer {proxy_token}"}
-)
-\`\`\`
-
-**Important notes:**
-- Replace \`<account_id>\` with the ID shown above for the account you want to use
-- The proxy handles token refresh automatically
-- The \`CONNECTED_ACCOUNTS\` env var contains the full account metadata as JSON`);
-  }
-
-  // Remote MCP servers section
-  const remoteMcps = parseRemoteMcps();
-  if (remoteMcps.length > 0) {
-    const mcpSections: string[] = [];
-    for (const mcp of remoteMcps) {
-      const toolNames = mcp.tools.map(t => t.name);
-      const sanitizedName = sanitizeMcpName(mcp.name);
-      mcpSections.push(
-        `### ${mcp.name}\nTools: ${toolNames.join(', ')}\nUse these tools via mcp__${sanitizedName}__<tool_name>`
-      );
-    }
-    sections.push(`## Remote MCP Servers (Available)
-
-The following remote MCP servers are connected and their tools are available for use:
-
-${mcpSections.join('\n\n')}`);
-  }
-
-  // Available environment variables (regular secrets)
-  if (regularEnvVars.length > 0) {
-    sections.push(`## Available Environment Variables
-
-The following environment variables have been configured for this agent and are available in your environment:
-
-${regularEnvVars.map(name => `- \`${name}\``).join('\n')}
-
-You can access these using standard environment variable methods (e.g., \`process.env.VAR_NAME\` in Node.js, \`os.environ['VAR_NAME']\` in Python, \`$VAR_NAME\` in shell scripts).`);
-  }
-
-  // User's custom system prompt
-  if (userSystemPrompt?.trim()) {
-    sections.push(`## Agent-Specific Instructions
-
-${userSystemPrompt.trim()}`);
-  }
-
-  return sections.join('\n\n');
+  const vars = buildSystemPromptVars(availableEnvVars, userSystemPrompt, modelPromptHints, webSearchProvider, webFetchProvider);
+  return renderPrompt(SYSTEM_PROMPT, vars);
 }
 
 /**
@@ -508,7 +508,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           ...((this.webSearchProvider || this.webFetchProvider)
             ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
             : {}),
-          ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? { 'computer-use': createComputerUseMcpServer() } : {}),
+          ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
           ...remoteMcpConfigs,
         },
         agents: {
@@ -549,9 +549,9 @@ export class ClaudeCodeProcess extends EventEmitter {
             prompt: DASHBOARD_BUILDER_AGENT_PROMPT,
             maxTurns: 200,
           },
-          ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? {
+          ...(isComputerUseHost() ? {
             'computer-use': {
-              description: 'Desktop automation specialist for macOS. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. The app should already be launched and grabbed (use computer_launch first). This agent runs on a cheaper model and handles all app interactions autonomously.',
+              description: 'Desktop automation specialist for macOS and Windows. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. The app should already be launched and grabbed (use computer_launch first). This agent runs on a cheaper model and handles all app interactions autonomously.',
               // Cheap tier (browser model); falls back to the main model — never a
               // hardcoded Claude alias.
               model: this.browserModel || this.model,
