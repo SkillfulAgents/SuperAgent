@@ -2,7 +2,7 @@ import { getSettings } from '../config/settings'
 import type { BaseWebProvider } from './base-web-provider'
 import { ExaWebProvider } from './exa-web-provider'
 import { PlatformWebProvider } from './platform-web-provider'
-import type { WebProviderId } from './types'
+import type { WebProviderId, WebVendorTier } from './types'
 
 // Every non-native vendor id maps to its one provider (both search + fetch). A Record (not a Map)
 // so adding a vendor to the union without wiring it here is a COMPILE error — the same compile-time
@@ -34,22 +34,42 @@ export function findWebProvider(id: string): BaseWebProvider | null {
   return isVendorId(id) ? WEB_PROVIDERS[id] : null
 }
 
-// Priority order for the automatic default. Extend by APPENDING a vendor id (open-to-extension).
-const DEFAULT_VENDOR_PRIORITY: WebVendorId[] = ['platform', 'exa']
+// Cheapest tier first. This is the WHOLE precedence rule: never spend a credential the user supplied
+// when a vendor already covered by their plan can do the job. A new vendor ranks itself by declaring
+// its `tier` — this array never grows, and no one has to guess where in a list their vendor belongs.
+const TIER_ORDER: WebVendorTier[] = ['included', 'byok']
+
+// Declaration order in WEB_PROVIDERS breaks a within-tier tie. Reaching a tie takes two vendors of
+// the same tier configured at once with no pin — and since a settings-stored key implies a pin (the
+// key input only renders once its vendor is selected), that means two env vars set simultaneously.
+const VENDOR_IDS = Object.keys(WEB_PROVIDERS) as WebVendorId[]
 
 /**
- * The automatic default when the user has not chosen a vendor: the first one whose provider reports
- * a configured credential — reusing each provider's own detection, so 'platform' means signed into
- * Gamut and 'exa' means a key in settings or EXA_API_KEY in the environment — else 'native'.
+ * Eligible for AUTOMATIC selection: usable right now, and covers both web operations.
  *
- * This diverges from the opt-in llm/stt siblings on purpose. The Exa key input only renders once Exa
- * is selected, so a settings-stored key already implies an explicit choice; the branch that actually
- * fires here is an operator's EXA_API_KEY, which is itself an explicit act. Platform costs the user
- * nothing beyond the login they already have, so it leads.
+ * Full coverage is required because the resolver picks one vendor for both tools, and the container
+ * derives each tool from the vendor's method presence. A search-only vendor auto-selected over a
+ * configured full-coverage one would silently drop web fetch to native. A user may still PIN a
+ * partial vendor — that is a choice made with eyes open, not one made on their behalf.
+ */
+function isAutoEligible(provider: BaseWebProvider): boolean {
+  return !!provider.search && !!provider.fetch && provider.getApiKeyStatus().isConfigured
+}
+
+/**
+ * The automatic default when the user has not pinned a vendor: the cheapest-tier eligible vendor,
+ * else 'native'. Credential detection is each provider's own (`getApiKeyStatus`), so 'platform'
+ * means signed into Gamut and 'exa' means a key in settings or EXA_API_KEY in the environment.
+ *
+ * This diverges from the opt-in llm/stt siblings on purpose: web has a free tier that is strictly
+ * better than the floor, so leaving a signed-in user on native would be a worse product for no gain.
  */
 export function resolveDefaultWebVendor(): WebProviderId {
-  for (const id of DEFAULT_VENDOR_PRIORITY) {
-    if (WEB_PROVIDERS[id].getApiKeyStatus().isConfigured) return id
+  for (const tier of TIER_ORDER) {
+    for (const id of VENDOR_IDS) {
+      const provider = WEB_PROVIDERS[id]
+      if (provider.tier === tier && isAutoEligible(provider)) return id
+    }
   }
   return 'native'
 }

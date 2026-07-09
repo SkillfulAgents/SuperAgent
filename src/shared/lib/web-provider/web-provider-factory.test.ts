@@ -141,13 +141,45 @@ describe('resolveDefaultWebVendor', () => {
     expect(resolveDefaultWebVendor()).toBe('exa')
   })
 
-  it('prefers platform over exa when BOTH are configured (precedence tie-break)', () => {
+  it('falls back to native when nothing is configured', () => {
+    expect(resolveDefaultWebVendor()).toBe('native')
+  })
+
+  // The precedence rule: never spend a user-supplied credential when a vendor covered by their plan
+  // can do the job. Ranking is by declared tier, not by position in a hand-maintained list.
+  it("prefers the 'included' tier over 'byok' when both are configured", () => {
     process.env.PLATFORM_TOKEN = 't'
     process.env.EXA_API_KEY = 'k'
+    expect(getWebProvider('platform').tier).toBe('included')
+    expect(getWebProvider('exa').tier).toBe('byok')
     expect(resolveDefaultWebVendor()).toBe('platform')
   })
 
-  it('falls back to native when nothing is configured', () => {
-    expect(resolveDefaultWebVendor()).toBe('native')
+  // A vendor must cover BOTH operations to be auto-selected, or it would silently drop the operation
+  // it lacks to native while a configured full-coverage vendor sat unused. Simulated by hiding one
+  // method on the singleton (an instance property shadows the prototype).
+  it('skips a partial-coverage vendor when auto-selecting, even at a cheaper tier', () => {
+    process.env.PLATFORM_TOKEN = 't'
+    process.env.EXA_API_KEY = 'k'
+    const platform = getWebProvider('platform')
+    Object.defineProperty(platform, 'fetch', { value: undefined, configurable: true })
+    try {
+      expect(resolveDefaultWebVendor()).toBe('exa') // full coverage beats a cheaper partial vendor
+    } finally {
+      Reflect.deleteProperty(platform, 'fetch')
+    }
+    expect(resolveDefaultWebVendor()).toBe('platform') // restored
+  })
+
+  it('still honors an explicit pin of a partial-coverage vendor (a choice made with eyes open)', () => {
+    process.env.PLATFORM_TOKEN = 't'
+    const platform = getWebProvider('platform')
+    Object.defineProperty(platform, 'fetch', { value: undefined, configurable: true })
+    try {
+      setActive('platform')
+      expect(resolveEffectiveWebVendor()).toBe('platform')
+    } finally {
+      Reflect.deleteProperty(platform, 'fetch')
+    }
   })
 })

@@ -10,6 +10,14 @@
 // search()/fetch() methods. Other vendors join the union as they are built.
 export type WebProviderId = 'native' | 'exa' | 'platform'
 
+// What a vendor costs the user, and the ONLY input to automatic precedence. The rule: never spend a
+// credential the user supplied when something already covered by their plan can do the job. 'native'
+// has no tier because it is not a provider — it is the floor the ladder falls back to.
+//   'included' — comes with the Gamut plan; the user pays nothing beyond the login they already have
+//   'byok'     — runs on a key the user or operator supplied, and spends it
+// A new vendor ranks itself by answering this one question. Nothing else needs to change.
+export type WebVendorTier = 'included' | 'byok'
+
 export interface WebSearchOptions {
   numResults?: number // host applies a default + hard max (Exa bills per result)
   includeDomains?: string[] // model intent; the same field feeds the allowed-sites host filter
