@@ -1846,6 +1846,37 @@ describe('settings route', () => {
       expect(body).toHaveProperty('voice')
       expect(body).toHaveProperty('tenantId')
       expect(body).toHaveProperty('shareAnalytics')
+      expect(body).toHaveProperty('effectiveWebProvider')
+    })
+
+    // The raw id is what the user pinned; the effective id is what the agent will actually run.
+    // The UI reads both (pre-select + "(default)" marker + the fell-back notice), so a GET that
+    // stops returning one of them, or conflates the two, breaks that contract silently.
+    describe('webProvider: raw vs effective', () => {
+      it('unset -> raw is absent and effective is the auto-resolved vendor', async () => {
+        mockGetSettings.mockReturnValue({ ...defaultSettings(), webProvider: undefined })
+        const body = await (await app.request('http://localhost/api/settings')).json()
+        expect(body.webProvider).toBeUndefined()
+        expect(body.effectiveWebProvider).toBe('platform')
+      })
+
+      it('pinned native -> both are native (native needs no credential)', async () => {
+        mockGetSettings.mockReturnValue({ ...defaultSettings(), webProvider: 'native' })
+        const body = await (await app.request('http://localhost/api/settings')).json()
+        expect(body.webProvider).toBe('native')
+        expect(body.effectiveWebProvider).toBe('native')
+      })
+
+      it('pinned vendor whose credential is gone -> raw keeps the pin, effective falls back', async () => {
+        mockGetSettings.mockReturnValue({
+          ...defaultSettings(),
+          webProvider: 'exa',
+          apiKeys: { anthropicApiKey: 'sk-existing' }, // no exaApiKey
+        })
+        const body = await (await app.request('http://localhost/api/settings')).json()
+        expect(body.webProvider).toBe('exa')
+        expect(body.effectiveWebProvider).toBe('platform')
+      })
     })
   })
 })

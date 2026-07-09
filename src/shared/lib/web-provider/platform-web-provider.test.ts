@@ -60,18 +60,8 @@ describe('PlatformWebProvider', () => {
       expect(fetchMock).not.toHaveBeenCalled()
     })
 
-    it('maps a 402 to an actionable billing message', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
-      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('blocked', { status: 402 }))
-      await expect(provider.search('x', {})).rejects.toThrow(/billing issue/i)
-    })
-
-    it('maps a 401 (revoked/expired token) to a sign-in-again message', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
-      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 401 }))
-      await expect(provider.search('x', {})).rejects.toThrow(/session has expired or is invalid.*sign in again/i)
-    })
-
+    // Exhaustive status->message coverage lives in platform-web-error.test.ts. What these two prove
+    // is the wiring: search's catch runs the mapper, and a status it does not map is not rewritten.
     it('maps a 403 (trial ended / inactive member) to account copy, not sign-in-again', async () => {
       vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
       vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 403 }))
@@ -96,10 +86,13 @@ describe('PlatformWebProvider', () => {
       const [url, init] = fetchMock.mock.calls[0]
       expect(url).toBe('https://proxy.gamut.test/v1/exa/contents')
       expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer tok-123')
-      expect(JSON.parse(init!.body as string)).toMatchObject({
+      const body = JSON.parse(init!.body as string)
+      expect(body).toMatchObject({
         urls: ['https://a.com'],
         filterEmptyResults: false,
       })
+      // No maxChars asked for: `text` must be a bare `true` (full text), not a cap object.
+      expect(body.text).toBe(true)
       expect(res).toMatchObject({ url: 'https://a.com', title: 'A', content: 'full page' })
       expect(typeof res.fetchedAt).toBe('string')
     })
@@ -120,18 +113,7 @@ describe('PlatformWebProvider', () => {
       expect(fetchMock).not.toHaveBeenCalled()
     })
 
-    it('maps a 402 to a billing message', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
-      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('blocked', { status: 402 }))
-      await expect(provider.fetch('https://a.com', {})).rejects.toThrow(/billing issue/i)
-    })
-
-    it('maps a 401 (revoked/expired token) to a sign-in-again message', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
-      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 401 }))
-      await expect(provider.fetch('https://a.com', {})).rejects.toThrow(/session has expired or is invalid.*sign in again/i)
-    })
-
+    // Same as search above: wiring only, not an exhaustive status table.
     it('maps a 403 (trial ended / inactive member) to account copy, not sign-in-again', async () => {
       vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
       vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 403 }))

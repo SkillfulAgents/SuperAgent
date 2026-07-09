@@ -18,7 +18,27 @@ const CATALOG = [
   { id: 'claude-opus-4-6', label: 'Opus 4.6', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
   { id: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL },
+  // A model with no native web tools: the only shape that surfaces the web-tools warning.
+  { id: 'glm-4-6', label: 'GLM 4.6', family: 'glm', icon: 'anthropic', supportedEfforts: STD, supportsWebSearch: false },
 ]
+
+function settingsWith(web: { webProvider?: string; effectiveWebProvider: string }) {
+  return {
+    data: {
+      llmProvider: 'anthropic',
+      llmProviderStatus: [
+        {
+          id: 'anthropic',
+          name: 'Anthropic',
+          isConfigured: true,
+          catalog: CATALOG,
+          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+        },
+      ],
+      ...web,
+    },
+  }
+}
 
 beforeEach(() => {
   useSettingsMock.mockReturnValue({
@@ -93,5 +113,28 @@ describe('SettingsModelSelect (flat picker)', () => {
     expect(screen.getByTestId('effort-option-high')).toBeInTheDocument()
     expect(screen.queryByTestId('effort-option-xhigh')).not.toBeInTheDocument()
     expect(screen.queryByTestId('effort-option-max')).not.toBeInTheDocument()
+  })
+
+  // The picker must warn based on the vendor the agent will actually run, not the raw stored pin.
+  // A user who never chose a vendor has webProvider unset but resolves to a real one host-side, so
+  // reading the raw id here would warn them that web tools are missing while the agent has them.
+  describe('web-tools warning reads the effective vendor', () => {
+    it('stays hidden when no vendor is pinned but one is resolved', async () => {
+      useSettingsMock.mockReturnValue(settingsWith({ effectiveWebProvider: 'platform' }))
+      const user = userEvent.setup()
+      render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
+
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+    })
+
+    it('shows when the resolved vendor is native and the model has no web tools', async () => {
+      useSettingsMock.mockReturnValue(settingsWith({ effectiveWebProvider: 'native' }))
+      const user = userEvent.setup()
+      render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
+
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      expect(await screen.findByTestId('model-no-websearch-warning')).toBeInTheDocument()
+    })
   })
 })

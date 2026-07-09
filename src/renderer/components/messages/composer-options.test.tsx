@@ -170,3 +170,17 @@ describe('useComposerOptions default adoption', () => {
     expect(result.current.effort).toBe('xhigh')
   })
 })
+
+// The composer surfaces the picker's "no web tools on this model" warning. It must key off the
+// vendor the agent will actually run (the resolved effective id), not the raw stored pin: a user
+// who never chose a vendor has webProvider unset yet resolves to a real one host-side, and reading
+// the raw id would warn them their web tools are missing while the agent has them.
+describe('useComposerOptions web provider', () => {
+  // Raw and effective deliberately disagree: this fails both if the hook reads the raw pin and if it
+  // stops reading the effective id at all.
+  it('exposes the effective vendor, not the raw stored pin', () => {
+    state.settings = { ...LOADED_SETTINGS, webProvider: 'exa', effectiveWebProvider: 'native' }
+    const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
+    expect(result.current.webProvider).toBe('native')
+  })
+})

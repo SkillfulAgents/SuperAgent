@@ -467,7 +467,8 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     // UI select wrote both old fields to the same value, so the legacy webSearchProvider is the
     // user's choice. Read-fallback (not a boot-time migration) keeps this merge pure; the next
     // PUT /settings persists it under webProvider and the stale key lingers harmlessly. An invalid
-    // stored value falls back to native at the factory's isVendorId narrow.
+    // stored value fails the factory's isVendorId narrow and resolves to the automatic default
+    // (which may be a vendor, not native).
     webProvider: loaded.webProvider ?? loaded.webSearchProvider,
     webAllowedSites: loaded.webAllowedSites,
     webBlockedSites: loaded.webBlockedSites,
