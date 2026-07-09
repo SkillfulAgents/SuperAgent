@@ -248,6 +248,49 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   {
     id: 'gpt-5.5',
     label: 'GPT-5.5',
+    blurb: 'OpenAI, served via Platform',
+    family: 'gpt',
+    icon: 'openai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: true,
+    pricing: { inputPerMtok: 5, outputPerMtok: 30 },
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-5.6-luna',
+    label: 'GPT-5.6 Luna',
+    blurb: 'OpenAI fastest tier, served via Platform',
+    family: 'gpt',
+    icon: 'openai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: true,
+    pricing: { inputPerMtok: 1, outputPerMtok: 6 },
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-luna).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-5.6-terra',
+    label: 'GPT-5.6 Terra',
+    blurb: 'OpenAI balanced tier, served via Platform',
+    family: 'gpt',
+    icon: 'openai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: true,
+    pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-terra).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    // OpenAI's `gpt-5.6` alias routes here; the bare `gpt` family alias follows suit.
+    id: 'gpt-5.6-sol',
+    label: 'GPT-5.6 Sol',
     blurb: 'OpenAI flagship, served via Platform',
     family: 'gpt',
     isLatest: true,
@@ -255,7 +298,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     supportedEfforts: NON_CLAUDE_EFFORTS,
     supportsWebSearch: true,
     pricing: { inputPerMtok: 5, outputPerMtok: 30 },
-    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-sol).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
