@@ -92,11 +92,30 @@ describe('getProviderCatalog', () => {
     // gpt rides the OpenAI Responses wire, which maps native web_search.
     expect(gpt).toMatchObject({
       family: 'gpt',
-      isLatest: true,
       icon: 'openai',
       supportsWebSearch: true,
       pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     })
+    expect(gpt.isLatest).toBeFalsy()
+    // The 5.6 tiers: Sol is the flagship the bare `gpt` alias tracks.
+    expect(catalog.find((m) => m.id === 'gpt-5.6-luna')).toMatchObject({
+      family: 'gpt',
+      supportsWebSearch: true,
+      pricing: { inputPerMtok: 1, outputPerMtok: 6 },
+    })
+    expect(catalog.find((m) => m.id === 'gpt-5.6-terra')).toMatchObject({
+      family: 'gpt',
+      supportsWebSearch: true,
+      pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
+    })
+    expect(catalog.find((m) => m.id === 'gpt-5.6-sol')).toMatchObject({
+      family: 'gpt',
+      isLatest: true,
+      supportsWebSearch: true,
+      pricing: { inputPerMtok: 5, outputPerMtok: 30 },
+    })
+    const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
+    expect(gptLatest.map((m) => m.id)).toEqual(['gpt-5.6-sol'])
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
@@ -290,6 +309,7 @@ describe('getModelContextWindow', () => {
   it('returns the catalog window for Platform GPT models', () => {
     expect(getModelContextWindow('gpt-5.5', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-5.4', 'platform')).toBe(1_050_000)
+    expect(getModelContextWindow('gpt-5.6-sol', 'platform')).toBe(1_050_000)
   })
 
   it('returns the catalog window for OpenRouter GPT models', () => {
@@ -372,8 +392,9 @@ describe('resolveModelForProvider', () => {
   })
 
   it('resolves Platform GPT models to bare ids and falls back for unsupported glm', () => {
-    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.5')
+    expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
+    expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
     expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('claude-opus-4-8')
   })
 
