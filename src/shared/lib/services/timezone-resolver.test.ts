@@ -18,6 +18,7 @@ vi.mock('@shared/lib/db', () => {
     select: () => chainable,
     from: () => chainable,
     where: () => chainable,
+    orderBy: () => chainable,
     limit: () => chainable,
     all: () => mockDbAll(),
   }
@@ -29,12 +30,14 @@ vi.mock('@shared/lib/db/schema', () => ({
     userId: 'user_id',
     agentSlug: 'agent_slug',
     role: 'role',
+    createdAt: 'created_at',
   },
 }))
 
 vi.mock('drizzle-orm', () => ({
   eq: (a: string, b: string) => `${a}=${b}`,
   and: (...args: string[]) => args.join(' AND '),
+  asc: (col: string) => `asc(${col})`,
 }))
 
 import { resolveTimezoneForAgent } from './timezone-resolver'

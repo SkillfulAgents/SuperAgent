@@ -39,6 +39,7 @@ vi.mock('@shared/lib/db/schema', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: (a: string, b: string) => `${a}=${b}`,
   and: (...args: string[]) => args.join(' AND '),
+  asc: (col: string) => `asc(${col})`,
   desc: (col: string) => `DESC(${col})`,
 }))
 
