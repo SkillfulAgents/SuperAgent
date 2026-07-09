@@ -205,6 +205,10 @@ class ChatIntegrationManager {
         reportError(err, 'global-notification')
       })
     })
+
+    // Positive start signal: startup.ts only logs start() FAILURES, so without
+    // this a dead manager is indistinguishable from a healthy idle one.
+    console.log(`[ChatIntegrationManager] Started (${integrations.length} startup integration(s))`)
   }
 
   stop(): void {

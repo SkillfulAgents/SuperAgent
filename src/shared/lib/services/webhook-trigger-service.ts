@@ -189,11 +189,14 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
   // subscribed Realtime. Lazy import avoids the circular dep.
   // Best-effort: catch so a late rejection can't reach the process-level
   // unhandledRejection handler (fatal in Electron main) or outlive a test.
+  // The success log is the only positive signal this fire-and-forget path ran;
+  // webhook-trigger-service.coldstart.test.ts asserts on it.
   void import('@shared/lib/scheduler/trigger-manager')
-    .then(({ triggerManager }) => {
+    .then(async ({ triggerManager }) => {
       if (!triggerManager.isRealtimeActive()) {
-        return triggerManager.pollAndProcess()
+        await triggerManager.pollAndProcess()
       }
+      console.log(`[webhook-triggers] cold-start nudge completed for trigger ${id}`)
     })
     .catch((err) => {
       console.warn('[webhook-triggers] cold-start poll skipped:', err)
