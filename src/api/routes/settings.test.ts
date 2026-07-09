@@ -1045,6 +1045,14 @@ describe('settings route', () => {
       expect(res.status).toBe(400)
       expect((await res.json()).error).toContain('Unknown web provider')
     })
+
+    // Platform is a registered vendor, so it would otherwise dispatch into the registry and fire a
+    // billable proxy call with a key it does not use.
+    it('rejects platform without dispatching (login-based, not key-based)', async () => {
+      const res = await validate({ apiKey: 'k', provider: 'platform' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('Gamut login')
+    })
   })
 
   // =========================================================================
@@ -1441,6 +1449,26 @@ describe('settings route', () => {
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.webProvider).toBe('exa')
+    })
+
+    it('stores platform as an explicit webProvider choice', async () => {
+      const res = await putSettings({ webProvider: 'platform' })
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings.mock.calls[0][0].webProvider).toBe('platform')
+    })
+
+    it('clears webProvider to automatic (stored undefined) when sent null', async () => {
+      mockGetSettings.mockReturnValue({ ...defaultSettings(), webProvider: 'exa' })
+      const res = await putSettings({ webProvider: null })
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings.mock.calls[0][0].webProvider).toBeUndefined()
+    })
+
+    it('rejects an unknown webProvider id at the boundary without writing', async () => {
+      const res = await putSettings({ webProvider: 'bogus' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('Invalid webProvider')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
     })
 
     it('allows setting llmProvider to undefined explicitly', async () => {

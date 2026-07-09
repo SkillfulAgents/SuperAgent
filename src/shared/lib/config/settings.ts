@@ -220,7 +220,7 @@ export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
   llmProvider?: LlmProviderId
-  webProvider?: WebProviderId // default 'native' (no host vendor; Claude's built-in web tools). One stored vendor backs both search + fetch.
+  webProvider?: WebProviderId // unset = automatic (resolveDefaultWebVendor: first configured of platform > exa, else native). One stored vendor backs both search + fetch.
   webAllowedSites?: string[] // operator allow list; empty = allow all (host-side must-enforce, §8)
   webBlockedSites?: string[] // operator deny list; wins over allow
   app?: AppPreferences
@@ -294,7 +294,11 @@ export interface GlobalSettingsResponse {
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
-  webProvider: WebProviderId
+  // Raw stored id: undefined = unset. `effectiveWebProvider` is the vendor the agent will actually
+  // use when the raw id is unset (see resolveDefaultWebVendor); the UI pre-selects that effective
+  // vendor and marks it "(default)", and the model-picker web-tools warning reads it.
+  webProvider?: WebProviderId
+  effectiveWebProvider: WebProviderId
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus

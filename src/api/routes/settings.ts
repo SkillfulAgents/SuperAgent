@@ -36,7 +36,12 @@ import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
 import { isValidAccelerator } from '@shared/lib/config/shortcuts'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
-import { findWebProvider, getWebProvider } from '@shared/lib/web-provider'
+import {
+  findWebProvider,
+  getWebProvider,
+  resolveDefaultWebVendor,
+  WebProviderIdSchema,
+} from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
@@ -306,7 +311,10 @@ function buildSettingsResponse(
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
-    webProvider: appSettings.webProvider ?? 'native',
+    // Raw stored value (undefined = unset); the effective id is the resolved vendor the agent will
+    // actually use - the UI pre-selects it (marked "(default)") and the model-picker warning reads it.
+    webProvider: appSettings.webProvider,
+    effectiveWebProvider: appSettings.webProvider ?? resolveDefaultWebVendor(),
     apiKeyStatus: {
       anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
@@ -358,6 +366,18 @@ settings.get('/', async (c) => {
 settings.put('/', async (c) => {
   try {
     const body = await c.req.json()
+
+    // Validate the web provider id at the boundary (repo Zod-at-boundary rule): reject an unknown
+    // id. `null` (clear to automatic) and `undefined` (field omitted) are both allowed and handled
+    // when building newSettings below.
+    if (
+      body.webProvider !== undefined &&
+      body.webProvider !== null &&
+      !WebProviderIdSchema.safeParse(body.webProvider).success
+    ) {
+      return c.json({ error: `Invalid webProvider: ${String(body.webProvider)}` }, 400)
+    }
+
     // Read FRESH and fail-closed: never merge onto the possibly-
     // corruption-defaulted cache (that is what overwrote real API keys/auth). A
     // corrupt settings.json throws here → caught below → 500, instead of being
@@ -529,7 +549,9 @@ settings.put('/', async (c) => {
       },
       apiKeys: currentSettings.apiKeys,
       llmProvider: body.llmProvider !== undefined ? body.llmProvider : currentSettings.llmProvider,
-      webProvider: body.webProvider !== undefined ? body.webProvider : currentSettings.webProvider,
+      // null = clear to automatic (stored as undefined); a concrete id sets it; omitted preserves.
+      webProvider: body.webProvider === null ? undefined
+        : body.webProvider !== undefined ? body.webProvider : currentSettings.webProvider,
       webAllowedSites: body.webAllowedSites !== undefined ? body.webAllowedSites : currentSettings.webAllowedSites,
       webBlockedSites: body.webBlockedSites !== undefined ? body.webBlockedSites : currentSettings.webBlockedSites,
       models: body.models
@@ -910,6 +932,11 @@ settings.post('/validate-web-key', async (c) => {
     }
     if (!provider || typeof provider !== 'string' || provider === 'native') {
       return c.json({ valid: false, error: 'A web vendor is required' }, 400)
+    }
+    // Platform is login-based (no user-supplied key); it would ignore the submitted key and make a
+    // billable proxy call, so reject it here rather than dispatch through the registry.
+    if (provider === 'platform') {
+      return c.json({ valid: false, error: 'Platform uses your Gamut login, not an API key.' }, 400)
     }
     const webProvider = findWebProvider(provider)
     if (!webProvider) {
