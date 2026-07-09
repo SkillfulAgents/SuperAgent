@@ -141,6 +141,13 @@ export function WebTab() {
   // No explicit choice stored -> the shown vendor is the auto-resolved default (adaptive, not pinned).
   const isDefault = settings?.webProvider == null
 
+  // A pinned vendor whose credential has gone (Exa key deleted, signed out of Gamut) falls back
+  // host-side. The raw and effective ids disagreeing IS that condition, for every vendor - so this
+  // one gate replaces a per-vendor warning.
+  const effective = settings?.effectiveWebProvider
+  const fellBack = !isDefault && effective != null && effective !== selected
+  const label = (id: WebProviderId) => WEB_PROVIDERS.find((p) => p.value === id)?.label ?? id
+
   // The Exa key field shows only when Exa is the active vendor (explicit or resolved-default).
   const needsExaKey = WEB_PROVIDERS.find((p) => p.value === selected)?.usesExaKey ?? false
 
@@ -162,10 +169,10 @@ export function WebTab() {
         disabled={isLoading}
       />
 
-      {settings?.webProvider === 'platform' && !isPlatformConnected && (
-        <p className="text-xs text-destructive">
-          Platform is selected but you are not signed into Gamut. Web search and fetch will fail until
-          you sign in or pick another provider.
+      {fellBack && (
+        <p className="text-xs text-muted-foreground">
+          {label(selected)} is selected but not available right now. Using {label(effective)} until it
+          is set up again.
         </p>
       )}
 

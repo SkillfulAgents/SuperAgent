@@ -39,7 +39,7 @@ import { getSttProvider } from '@shared/lib/stt'
 import {
   findWebProvider,
   getWebProvider,
-  resolveDefaultWebVendor,
+  resolveEffectiveWebVendor,
   WebProviderIdSchema,
 } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
@@ -311,10 +311,12 @@ function buildSettingsResponse(
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
-    // Raw stored value (undefined = unset); the effective id is the resolved vendor the agent will
-    // actually use - the UI pre-selects it (marked "(default)") and the model-picker warning reads it.
+    // Raw stored value (undefined = unset, or a pin); the effective id is the vendor the agent will
+    // actually use - it differs from the raw id when the pinned vendor's credential is gone. The UI
+    // pre-selects it (marked "(default)"), warns when the two disagree, and the model-picker warning
+    // reads it.
     webProvider: appSettings.webProvider,
-    effectiveWebProvider: appSettings.webProvider ?? resolveDefaultWebVendor(),
+    effectiveWebProvider: resolveEffectiveWebVendor(),
     apiKeyStatus: {
       anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),

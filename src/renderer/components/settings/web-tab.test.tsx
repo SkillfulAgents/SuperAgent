@@ -119,15 +119,30 @@ describe('WebTab', () => {
     expect(screen.getByText('Exa API Key')).toBeInTheDocument()
   })
 
-  it('warns when Platform is explicitly selected but signed out of Gamut', () => {
-    setup({ webProvider: 'platform', effectiveWebProvider: 'platform', connected: false })
+  // The raw and effective ids disagreeing is the host-side "pinned vendor fell back" condition. One
+  // gate covers every vendor, so a new vendor needs no new warning.
+  it('says which vendor is standing in when a pinned Platform has fallen back', () => {
+    setup({ webProvider: 'platform', effectiveWebProvider: 'native', connected: false })
     render(<WebTab />)
-    expect(screen.getByText(/Platform is selected but you are not signed into Gamut/i)).toBeInTheDocument()
+    expect(screen.getByText(/Platform is selected but not available right now\. Using Native/i)).toBeInTheDocument()
   })
 
-  it('shows no such warning when Platform is selected and signed in', () => {
+  it('names the fallback for a pinned Exa whose key is gone (not a platform-only warning)', () => {
+    setup({ webProvider: 'exa', effectiveWebProvider: 'platform', connected: true })
+    render(<WebTab />)
+    expect(screen.getByText(/Exa is selected but not available right now\. Using Platform/i)).toBeInTheDocument()
+  })
+
+  it('shows no fallback notice when the pinned vendor is the one actually serving', () => {
     setup({ webProvider: 'platform', effectiveWebProvider: 'platform', connected: true })
     render(<WebTab />)
-    expect(screen.queryByText(/Platform is selected but you are not signed into Gamut/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/not available right now/i)).not.toBeInTheDocument()
+  })
+
+  // The adaptive default is not a pin, so it can never "fall back" - it simply resolves.
+  it('shows no fallback notice for an unpinned user on the auto-resolved default', () => {
+    setup({ webProvider: undefined, effectiveWebProvider: 'native', connected: false })
+    render(<WebTab />)
+    expect(screen.queryByText(/not available right now/i)).not.toBeInTheDocument()
   })
 })

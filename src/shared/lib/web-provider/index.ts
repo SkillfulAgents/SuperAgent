@@ -7,6 +7,7 @@ export {
   getActiveWebProvider,
   getWebProvider,
   resolveDefaultWebVendor,
+  resolveEffectiveWebVendor,
 } from './web-provider-factory'
 export type {
   WebFetchOptions,

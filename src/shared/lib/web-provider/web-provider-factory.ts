@@ -55,14 +55,34 @@ export function resolveDefaultWebVendor(): WebProviderId {
 }
 
 /**
- * The active host-side web provider, or null when native is selected, nothing is configured, or the
- * configured id isn't a known vendor — native (no host provider) is the fallback in each case. Which
- * operations it backs is a per-tool question answered by the provider's optional search()/fetch()
- * methods, not by a separate registry: callers probe `provider.search` / `provider.fetch`.
+ * The vendor that will actually serve web calls right now — the single source of truth for both the
+ * runtime (getActiveWebProvider) and the settings response's `effectiveWebProvider`, so the UI can
+ * never claim a vendor the agent isn't using.
  *
- * With no stored choice the automatic default resolves the vendor; an explicit stored id still wins.
+ * A stored id is a PREFERENCE, not a contract: "use Exa when Exa is usable", not "fail if it isn't".
+ * A pin whose credential has since disappeared (key deleted, signed out of Gamut) therefore behaves
+ * exactly like no pin and falls through to the automatic default, rather than handing the agent a
+ * vendor that can only throw. Nothing is persisted, so this heals in both directions — restore the
+ * credential and the pin takes effect again on the next call.
+ *
+ * 'native' is the one id that needs no credential, so an explicit native choice always stands.
+ */
+export function resolveEffectiveWebVendor(): WebProviderId {
+  const stored = getSettings().webProvider
+  if (stored === 'native') return 'native'
+  if (stored && isVendorId(stored) && WEB_PROVIDERS[stored].getApiKeyStatus().isConfigured) {
+    return stored
+  }
+  return resolveDefaultWebVendor()
+}
+
+/**
+ * The active host-side web provider, or null when the effective vendor is native (no host provider;
+ * the container keeps the model's built-in web tools). Which operations it backs is a per-tool
+ * question answered by the provider's optional search()/fetch() methods, not by a separate registry:
+ * callers probe `provider.search` / `provider.fetch`.
  */
 export function getActiveWebProvider(): BaseWebProvider | null {
-  const id = getSettings().webProvider ?? resolveDefaultWebVendor()
+  const id = resolveEffectiveWebVendor()
   return isVendorId(id) ? WEB_PROVIDERS[id] : null
 }
