@@ -40,12 +40,12 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('platform-dependent')).toBe(!composio && !webhook)    // disconnected fallback
   })
 
-  // The bug Iddo caught: gating a section's body empties its heading, leaving a
-  // title with the next heading directly beneath it. A few headings (e.g.
-  // `## File Handling`) are static containers of subheadings and are bodyless in
-  // every render -- those are fine. What must never happen is a render in which
-  // *gating* strips a body and orphans its heading, so assert the set of bodyless
-  // headings is invariant across every gate combination.
+  // A heading whose body is entirely gated renders as a title with the next
+  // heading directly beneath it. Some headings (`## File Handling`) are static
+  // containers of subheadings and are bodyless in every render, which is fine --
+  // what must never happen is gating stripping a body and orphaning its heading.
+  // Hence the invariant: the set of bodyless headings is the same under every
+  // combination of gates.
   const bodylessHeadings = (prompt: string) => {
     const lines = prompt.split('\n')
     return lines.filter((line, i) => {
@@ -159,7 +159,9 @@ describe('generateSystemPrompt rendering', () => {
       expect(referenced.has(key), `SystemPromptVars.${key} is never referenced in system-prompt.md (dead var)`).toBe(true)
     }
   })
-  it('the template no longer uses the retired ${VAR} interpolation syntax', () => {
+  // Source-level, not render-level: a `${VAR}` inside a gated-off section never
+  // appears in any rendered output, so the combos table above cannot see it.
+  it('the template interpolates only through <% %>, never ${VAR}', () => {
     const template = readFileSync(__dirname + '/system-prompt.md', 'utf-8')
     expect(template).not.toMatch(/\$\{[A-Za-z_]+\}/)
   })
