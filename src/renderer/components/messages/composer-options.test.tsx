@@ -123,6 +123,40 @@ describe('useComposerOptions default adoption', () => {
     expect(result.current.effort).toBe('low')
   })
 
+  it('omits untouched knobs from runtime options so the server resolves the defaults', () => {
+    const { result } = render({
+      agentKey: 'a',
+      agentDefaultModel: 'haiku',
+      agentDefaultEffort: 'high',
+      agentDefaultsReady: true,
+    })
+    // Adopted for display, but nothing was explicitly chosen — the wire bag
+    // stays empty so a still-loading or later-edited default can't be beaten
+    // by its own stale echo.
+    expect(result.current.model).toBe('haiku')
+    expect(result.current.toRuntimeOptions()).toEqual({})
+  })
+
+  it('serializes explicitly picked and session-seeded values', () => {
+    const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
+    act(() => {
+      result.current.setModel('claude-opus-4-7')
+    })
+    // Model picked, effort untouched: only the pick goes on the wire.
+    expect(result.current.toRuntimeOptions()).toEqual({ model: 'claude-opus-4-7' })
+
+    const seeded = render({
+      initialModel: 'claude-opus-4-6',
+      initialEffort: 'xhigh',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(seeded.result.current.toRuntimeOptions()).toEqual({
+      model: 'claude-opus-4-6',
+      effort: 'xhigh',
+    })
+  })
+
   it('session-seeded initial values win over defaults', () => {
     const { result } = render({
       initialModel: 'claude-opus-4-6',

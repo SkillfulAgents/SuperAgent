@@ -31,8 +31,15 @@ export interface ComposerOptionsState {
   /** Active host web-provider id (settings-derived), so the model picker's web-tools availability
    *  warning knows a configured vendor makes those tools work on any model. Undefined = native. */
   webProvider?: string
-  /** Pluck the runtime-options bag for an API payload. Drops `model` when undefined. */
-  toRuntimeOptions(): { effort: EffortLevel; model?: string }
+  /**
+   * Pluck the runtime-options bag for an API payload. UNTOUCHED knobs (no
+   * explicit user pick, no session-seeded value) are OMITTED, not serialized:
+   * an adopted default sent as an explicit value would beat the server's own
+   * agent-default > global resolution — wrong whenever the display is racing
+   * a still-loading preferences query — and would override the actual model of
+   * a session that carries none in its metadata (e.g. trigger-created).
+   */
+  toRuntimeOptions(): { effort?: EffortLevel; model?: string }
 }
 
 /**
@@ -194,8 +201,13 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     followDefaults,
   ])
 
+  // Seeded refs are read at submit time: only a user pick or a session-seeded
+  // value counts as an explicit choice worth putting on the wire.
   const toRuntimeOptions = useCallback(
-    () => ({ effort, ...(model ? { model } : {}) }),
+    () => ({
+      ...(effortSeededRef.current ? { effort } : {}),
+      ...(modelSeededRef.current && model ? { model } : {}),
+    }),
     [effort, model],
   )
 
