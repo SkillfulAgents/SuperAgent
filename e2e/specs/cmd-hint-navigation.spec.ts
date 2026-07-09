@@ -72,7 +72,11 @@ test.describe('Cmd-hold sidebar navigation hints', () => {
 
     await expect(page.locator(HINT_BADGES)).toHaveCount(0)
 
-    await holdModifierForHints(page)
+    // The reveal is hold-gated: immediately after keydown (well inside the
+    // hold threshold) no hints exist yet.
+    await page.keyboard.down('ControlOrMeta')
+    await expect(page.locator(HINT_BADGES)).toHaveCount(0)
+    await expect(page.locator('[data-testid="cmd-hint-1"]')).toBeVisible({ timeout: 5000 })
     try {
       // Badges are numbered 1..N (N <= 9) in document order.
       const numbers = (await page.locator(HINT_BADGES).evaluateAll(
@@ -88,17 +92,20 @@ test.describe('Cmd-hold sidebar navigation hints', () => {
     await expect(page.locator(HINT_BADGES)).toHaveCount(0)
   })
 
-  test('a quick modifier tap does not reveal hints', async ({ page, request }, testInfo) => {
-    const agent = await createAgent(request, uniqueName(testInfo, 'CmdHint Tap'))
+  test('pressing another key while holding dismisses the hints', async ({ page, request }, testInfo) => {
+    const agent = await createAgent(request, uniqueName(testInfo, 'CmdHint Dismiss'))
     await pinAgentsFirst(request, [agent])
     await loadApp()
 
-    await page.keyboard.down('ControlOrMeta')
-    await page.keyboard.up('ControlOrMeta')
-
-    // Wait past the hold threshold to prove the released tap cancelled the reveal.
-    await page.waitForTimeout(900)
-    await expect(page.locator(HINT_BADGES)).toHaveCount(0)
+    await holdModifierForHints(page)
+    try {
+      // A non-digit key while the modifier is down is some other shortcut —
+      // the overlay must get out of the way.
+      await page.keyboard.press('ArrowDown')
+      await expect(page.locator(HINT_BADGES)).toHaveCount(0)
+    } finally {
+      await page.keyboard.up('ControlOrMeta')
+    }
   })
 
   test('modifier+digit while hints are shown navigates to the hinted agent', async ({ page, request }, testInfo) => {
