@@ -161,11 +161,7 @@ export function WebTab() {
         value={selected}
         isDefault={isDefault}
         isPlatformConnected={isPlatformConnected}
-        onChange={(value) => {
-          // Guard against pinning a vendor that can't run.
-          if (value === 'platform' && !isPlatformConnected) return
-          updateSettings.mutate({ webProvider: value })
-        }}
+        onChange={(value) => updateSettings.mutate({ webProvider: value })}
         disabled={isLoading}
       />
 
