@@ -14,12 +14,12 @@ export function useCreateUntitledAgent() {
   // AgentHome's first-mount initializer reads it and plays the intro once.
   const { setJustCreatedSlug } = useNavTransient()
   const navigate = useNavigate()
-  const { track } = useAnalyticsTracking()
+  const { trackAgentCreated } = useAnalyticsTracking()
 
   const createUntitledAgent = useCallback(async () => {
     try {
       const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
-      track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
+      trackAgentCreated({ source: 'new', num_skills_added_at_creation: 0 })
 
       // Morph tag keys on the canonical id (AgentHome compares against agent.slug);
       // navigate with the pretty display slug so the URL reflects the name.
@@ -40,7 +40,7 @@ export function useCreateUntitledAgent() {
       })
       return null
     }
-  }, [createAgent, setJustCreatedSlug, navigate, track])
+  }, [createAgent, setJustCreatedSlug, navigate, trackAgentCreated])
 
   return {
     createUntitledAgent,

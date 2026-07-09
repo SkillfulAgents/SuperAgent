@@ -52,19 +52,19 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
   const createAgent = useCreateAgent()
   const createSession = useCreateSession()
   const navigate = useNavigate()
-  const { track } = useAnalyticsTracking()
+  const { trackAgentCreated } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
 
   const finishCreatedAgent = useCallback(
     async (agent: ApiAgent, source: 'new' | 'import' | 'skillset', hasOnboarding?: boolean) => {
-      track('agent_created', { source, num_skills_added_at_creation: 0 })
+      trackAgentCreated({ source, num_skills_added_at_creation: 0 })
       void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
       if (hasOnboarding) {
         await startOnboardingSession(agent.slug)
       }
       await onAgentCreated?.()
     },
-    [track, navigate, startOnboardingSession, onAgentCreated],
+    [trackAgentCreated, navigate, startOnboardingSession, onAgentCreated],
   )
 
   const composer = useMessageComposer({
@@ -86,7 +86,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
           // family alias to the active provider's specific model.
           model: 'opus',
         })
-        track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
+        trackAgentCreated({ source: 'new', num_skills_added_at_creation: 0 })
         void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: newAgent.displaySlug, sessionId: session.id } })
         await onAgentCreated?.()
       } catch (error) {
@@ -95,7 +95,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
           description: error instanceof Error ? error.message : 'Please try again.',
         })
       }
-    }, [createAgent, createSession, navigate, track, onAgentCreated]),
+    }, [createAgent, createSession, navigate, trackAgentCreated, onAgentCreated]),
   })
 
   useEffect(() => {

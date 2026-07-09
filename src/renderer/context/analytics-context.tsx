@@ -4,9 +4,12 @@ import { useSettings } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { createAnalyticsInstance, getAnalyticsMetadata, hasActivePlugins } from '@renderer/lib/analytics'
+import { claimFirstAgentCreated } from '@renderer/lib/first-agent-created'
 
 interface AnalyticsContextValue {
   track: (event: string, properties?: Record<string, unknown>) => void
+  /** Tracks agent_created, plus a once-per-user first_agent_created (ad-conversion dedup). */
+  trackAgentCreated: (properties?: Record<string, unknown>) => void
   identify: () => void
 }
 
@@ -91,6 +94,15 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
     })
   }, [instance, tenantId])
 
+  // Best-effort once-per-user conversion signal: the Amplitude → Meta sync
+  // subscribes to first_agent_created only, so Meta counts one conversion per user.
+  const trackAgentCreated = useCallback((properties?: Record<string, unknown>) => {
+    track('agent_created', properties)
+    if (userId && claimFirstAgentCreated(userId)) {
+      track('first_agent_created', properties)
+    }
+  }, [track, userId])
+
   const identify = useCallback(() => {
     if (!instance || !userId) return
     const metadata = getAnalyticsMetadata()
@@ -100,7 +112,10 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
     })
   }, [instance, userId, tenantId])
 
-  const value = useMemo<AnalyticsContextValue>(() => ({ track, identify }), [track, identify])
+  const value = useMemo<AnalyticsContextValue>(
+    () => ({ track, trackAgentCreated, identify }),
+    [track, trackAgentCreated, identify],
+  )
 
   return <AnalyticsContext.Provider value={value}>{children}</AnalyticsContext.Provider>
 }

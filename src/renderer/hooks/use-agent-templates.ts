@@ -98,7 +98,7 @@ export type ImportProgress = UploadProgress
 
 export function useImportAgentTemplate() {
   const queryClient = useQueryClient()
-  const { track } = useAnalyticsTracking()
+  const { trackAgentCreated } = useAnalyticsTracking()
 
   return useMutation<
     ApiAgent & { hasOnboarding?: boolean },
@@ -115,7 +115,7 @@ export function useImportAgentTemplate() {
       })
     },
     onSuccess: () => {
-      track('agent_created', { source: 'file_import' })
+      trackAgentCreated({ source: 'file_import' })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
@@ -124,7 +124,7 @@ export function useImportAgentTemplate() {
 
 export function useInstallAgentFromSkillset() {
   const queryClient = useQueryClient()
-  const { track } = useAnalyticsTracking()
+  const { trackAgentCreated } = useAnalyticsTracking()
 
   return useMutation<
     ApiAgent & { hasOnboarding?: boolean },
@@ -150,7 +150,7 @@ export function useInstallAgentFromSkillset() {
       return res.json()
     },
     onSuccess: () => {
-      track('agent_created', { source: 'skillset' })
+      trackAgentCreated({ source: 'skillset' })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })

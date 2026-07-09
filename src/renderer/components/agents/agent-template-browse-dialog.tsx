@@ -26,7 +26,7 @@ export function AgentTemplateBrowseDialog({
 }: AgentTemplateBrowseDialogProps) {
   const { data: discoverableAgents } = useDiscoverableAgents()
   const navigate = useNavigate()
-  const { track } = useAnalyticsTracking()
+  const { trackAgentCreated } = useAnalyticsTracking()
   const startOnboardingSession = useStartOnboardingSession()
   const queryClient = useQueryClient()
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
@@ -37,7 +37,7 @@ export function AgentTemplateBrowseDialog({
 
   const handleInstalled = useCallback(
     async (agent: ApiAgent, meta: { hasOnboarding?: boolean }) => {
-      track('agent_created', { source: 'skillset', num_skills_added_at_creation: 0 })
+      trackAgentCreated({ source: 'skillset', num_skills_added_at_creation: 0 })
       await queryClient.refetchQueries({ queryKey: ['agents'] })
       void navigate({ to: '/agents/$slug', params: { slug: agent.slug } })
       if (meta.hasOnboarding) {
@@ -45,7 +45,7 @@ export function AgentTemplateBrowseDialog({
       }
       onOpenChange(false)
     },
-    [track, queryClient, navigate, startOnboardingSession, onOpenChange],
+    [trackAgentCreated, queryClient, navigate, startOnboardingSession, onOpenChange],
   )
 
   const hasTemplates = discoverableAgents && discoverableAgents.length > 0
