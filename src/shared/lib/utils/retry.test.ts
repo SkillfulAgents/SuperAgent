@@ -163,6 +163,16 @@ describe('withRetry', () => {
     expect(fn).toHaveBeenCalledTimes(1)
   })
 
+  it('carries the HTTP status through withRetry so a caller can map it to actionable copy', async () => {
+    const fn = vi.fn().mockRejectedValue(new NonRetryableError('blocked', 402))
+
+    await expect(withRetry(fn, 3, 5)).rejects.toMatchObject({ status: 402 })
+  })
+
+  it('leaves status undefined when the thrower did not supply one', () => {
+    expect(new NonRetryableError('no status').status).toBeUndefined()
+  })
+
   it('retries regular errors but bails out on NonRetryableError mid-loop', async () => {
     const fn = vi
       .fn()

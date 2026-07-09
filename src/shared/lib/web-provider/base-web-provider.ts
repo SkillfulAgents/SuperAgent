@@ -86,7 +86,7 @@ export abstract class BaseWebProvider {
         if (!res.ok) {
           const message = `${this.name} request failed: ${res.status}`
           if (res.status === 429 || res.status >= 500) throw new Error(message)
-          throw new NonRetryableError(message)
+          throw new NonRetryableError(message, res.status)
         }
         return res.json()
       },
