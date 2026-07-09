@@ -55,7 +55,7 @@ function SecretRow({ secret, agentSlug, onDelete }: SecretRowProps) {
     <div className="flex items-center gap-3 p-3 border rounded-lg">
       <div className="flex-1 min-w-0">
         <div className="font-medium truncate">{secret.key}</div>
-        <div className="text-xs text-muted-foreground font-mono">{secret.envVar}</div>
+        <div className="text-xs text-muted-foreground font-mono truncate">{secret.envVar}</div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
         {isEditing ? (
