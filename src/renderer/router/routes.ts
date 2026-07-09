@@ -10,6 +10,7 @@ import { chatSearchSchema, connectionsSearchSchema, rootSearchSchema, settingsSe
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 import { NotificationsRoute } from '@renderer/components/layout/notifications-route'
+import { NotificationDetailRoute } from '@renderer/components/layout/notification-detail-route'
 import { AgentShell } from '@renderer/components/layout/agent-shell'
 import {
   AgentHomeRoute,
@@ -62,6 +63,13 @@ export const notificationsRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'notifications',
   component: NotificationsRoute,
+})
+
+export const notificationDetailRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'notifications/$id',
+  params: { parse: (raw) => ({ id: z.string().min(1).parse(raw.id) }) },
+  component: NotificationDetailRoute,
 })
 
 // ── AGENT LAYOUT: /agents/$slug — mount-survival anchor #2 (chat/SSE shell) ────
@@ -181,6 +189,7 @@ export const routeTree = rootRoute.addChildren([
   appShellRoute.addChildren([
     homeRoute,
     notificationsRoute,
+    notificationDetailRoute,
     agentLayoutRoute.addChildren([
       agentHomeRoute,
       sessionRoute,

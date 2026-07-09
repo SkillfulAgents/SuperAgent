@@ -51,6 +51,18 @@ vi.mock('@renderer/hooks/use-notifications', () => ({
   useUnreadNotificationCount: () => ({ data: { count: 0 } }),
 }))
 
+vi.mock('@renderer/hooks/use-platform-notifications', () => ({
+  usePlatformUnreadCount: () => ({ data: { count: 0 } }),
+}))
+
+// The global setup mocks useNavigate as an unobservable no-op; the platform
+// notification click path needs an assertable spy.
+const mockNavigate = vi.hoisted(() => vi.fn())
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return { ...actual, useNavigate: () => mockNavigate }
+})
+
 vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUserSettings: vi.fn(() => ({ data: undefined })),
 }))
@@ -430,5 +442,85 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     )
     expect(sessionCalls.length).toBe(1)
     expect((sessionCalls[0][0] as { queryKey: unknown[] }).queryKey).toEqual(['sessions', 'my-agent'])
+  })
+
+  it('platform_notifications_changed refreshes the proxy-live inbox queries', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'platform_notifications_changed' })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['platform-notifications'] })
+  })
+
+  it('platform_notification pops an OS notification whose click opens the detail route', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+    mockNavigate.mockClear()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const platformNotificationId = 'ntf_00000001-1111-1111-1111-111111111111'
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'platform_notification',
+      platformNotificationId,
+      title: 'Welcome',
+      body: 'markdown body',
+      actionContext: { kind: 'platform_notification', platformNotificationId },
+    })
+
+    // The proxy-live inbox/badge refresh fires alongside the popup.
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['platform-notifications'] })
+
+    expect(showOSNotification).toHaveBeenCalledTimes(1)
+    const [title, body, onClick] = vi.mocked(showOSNotification).mock.calls[0]
+    expect(title).toBe('Welcome')
+    expect(body).toBe('markdown body')
+
+    // Web Notifications wire the click straight to the detail route (the
+    // write-through mark-read happens there on open).
+    expect(onClick).toBeTypeOf('function')
+    onClick!()
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/notifications/$id',
+      params: { id: platformNotificationId },
+    })
+  })
+
+  it('platform_notification popup respects the settings toggle', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+
+    const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
+    vi.mocked(useUserSettings).mockReturnValue({
+      data: { notifications: { enabled: true, platformNotification: false } },
+    } as unknown as ReturnType<typeof useUserSettings>)
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'platform_notification',
+      platformNotificationId: 'ntf_00000001-1111-1111-1111-111111111111',
+      title: 'Welcome',
+      body: 'markdown body',
+    })
+
+    expect(showOSNotification).not.toHaveBeenCalled()
   })
 })

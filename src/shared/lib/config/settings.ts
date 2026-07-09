@@ -63,6 +63,7 @@ export interface NotificationSettings {
   sessionComplete: boolean
   sessionWaiting: boolean
   sessionScheduled: boolean
+  platformNotification?: boolean
   notifyWhenUnfocused?: boolean
 }
 
@@ -224,8 +225,18 @@ export interface AppSettings {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports?: boolean
   platformAuth?: PlatformAuthSettings
+  /**
+   * Desktop platform-notifications state: the OS-notification dedup watermark
+   * (newest created_at already OS-notified). Content is never mirrored locally
+   * — the inbox reads live from the platform.
+   */
+  platformNotifications?: PlatformNotificationsSettings
   /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
   enableToolSearch?: boolean
+}
+
+export interface PlatformNotificationsSettings {
+  lastNotifiedAt?: string
 }
 
 // API key source types
@@ -462,6 +473,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     analyticsTargets: loaded.analyticsTargets,
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
+    platformNotifications: loaded.platformNotifications,
     enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
   }
 }

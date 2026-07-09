@@ -218,6 +218,8 @@ function isNotificationTypeAllowedLocally(notificationType: string | undefined):
         return n.sessionWaiting !== false
       case 'session_scheduled':
         return n.sessionScheduled !== false
+      case 'platform_notification':
+        return n.platformNotification !== false
       default:
         return true
     }

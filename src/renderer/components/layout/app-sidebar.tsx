@@ -63,6 +63,7 @@ import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useUser } from '@renderer/context/user-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
+import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import {
   DndContext,
@@ -536,7 +537,8 @@ if (__RENDER_TRACKING__) {
 
 function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
-  const unreadCount = countData?.count ?? 0
+  const { data: platformCountData } = usePlatformUnreadCount()
+  const unreadCount = (countData?.count ?? 0) + (platformCountData?.count ?? 0)
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isActive = pathname === '/notifications'
 

@@ -27,6 +27,13 @@ export interface RealtimeConfig {
   apikey: string
   jwt: string
   channel: string
+  /**
+   * Postgres table to subscribe to. Optional for backwards compatibility with
+   * the webhook-events poll response, which predates the field — the realtime
+   * client defaults to `webhook_events`. Row scoping is enforced by RLS via
+   * the JWT's claims (whole-channel subscribe), so no filter param is needed.
+   */
+  table?: string
 }
 
 export interface PollResult {
