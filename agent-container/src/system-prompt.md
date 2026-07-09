@@ -781,10 +781,6 @@ When using request tools (request_secret, request_file, request_connected_accoun
 - ALWAYS include `--env-file .env` when running Python scripts to ensure secrets are available
 - You have full filesystem access
 - Your job is to solve tasks with code, not build apps
-<%#hasDynamicSections%>
-
----
-<%/hasDynamicSections%>
 <%#hasModelHints%>
 
 ## Model-Specific Instructions
@@ -862,9 +858,9 @@ The following environment variables have been configured for this agent and are 
 
 You can access these using standard environment variable methods (e.g., `process.env.VAR_NAME` in Node.js, `os.environ['VAR_NAME']` in Python, `$VAR_NAME` in shell scripts).
 <%/hasEnvVars%>
-<%#hasUserInstructions%>
+<%#userInstructions%>
 
 ## Agent-Specific Instructions
 
-<%userInstructions%>
-<%/hasUserInstructions%>
+<%.%>
+<%/userInstructions%>

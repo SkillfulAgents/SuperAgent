@@ -151,7 +151,8 @@ export function isComputerUseHost(): boolean {
 /**
  * The template renders every section itself; this bag carries only data. Each
  * list is paired with a `has*` boolean because a Mustache list section repeats
- * its body per item and so cannot host the section's heading.
+ * its body per item and so cannot host the section's heading. A string needs no
+ * such pair: a non-empty string renders its section body exactly once.
  */
 export interface SystemPromptVars {
   CLAUDE_CONFIG_DIR: string;
@@ -161,7 +162,6 @@ export interface SystemPromptVars {
   webhookEndpoints: boolean;
   anyTriggers: boolean;
   computerUse: boolean;
-  hasDynamicSections: boolean;
   hasModelHints: boolean;
   modelHints: string[];
   hasConnectedAccounts: boolean;
@@ -170,7 +170,6 @@ export interface SystemPromptVars {
   remoteMcps: RemoteMcpView[];
   hasEnvVars: boolean;
   envVars: string[];
-  hasUserInstructions: boolean;
   userInstructions: string;
 }
 
@@ -194,11 +193,6 @@ export function buildSystemPromptVars(
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
-  // The `---` rule separates the static prompt from the per-agent sections; with
-  // no sections it would trail off the end of the prompt on its own.
-  const hasDynamicSections =
-    modelHints.length > 0 || connectedAccounts.length > 0 || remoteMcps.length > 0 ||
-    envVars.length > 0 || userInstructions.length > 0;
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
     webSearchToolName: webSearchProvider ? 'mcp__web__web_search' : 'WebSearch',
@@ -207,7 +201,6 @@ export function buildSystemPromptVars(
     webhookEndpoints,
     anyTriggers: composioTriggers || webhookEndpoints,
     computerUse: isComputerUseHost(),
-    hasDynamicSections,
     hasModelHints: modelHints.length > 0,
     modelHints,
     hasConnectedAccounts: connectedAccounts.length > 0,
@@ -216,7 +209,6 @@ export function buildSystemPromptVars(
     remoteMcps,
     hasEnvVars: envVars.length > 0,
     envVars,
-    hasUserInstructions: userInstructions.length > 0,
     userInstructions,
   };
 }

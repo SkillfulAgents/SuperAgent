@@ -8,22 +8,6 @@ beforeEach(() => { saved = Object.fromEntries(KEYS.map(k => [k, process.env[k]])
 afterEach(() => { for (const k of KEYS) { saved[k] === undefined ? delete process.env[k] : process.env[k] = saved[k]! } })
 
 describe('buildSystemPromptVars', () => {
-  it('maps webSearchProvider to the tool name', () => {
-    expect(buildSystemPromptVars(undefined, undefined, undefined, undefined).webSearchToolName).toBe('WebSearch')
-    expect(buildSystemPromptVars(undefined, undefined, undefined, 'exa').webSearchToolName).toBe('mcp__web__web_search')
-  })
-  // A vendor disables the native tool, so the catalog must name whichever tool the
-  // model actually has. The two labels are independent: either vendor can be active alone.
-  it('maps webFetchProvider to the tool name, independently of search', () => {
-    expect(buildSystemPromptVars(undefined, undefined, undefined, undefined, undefined).webFetchToolName).toBe('WebFetch')
-    expect(buildSystemPromptVars(undefined, undefined, undefined, undefined, 'exa').webFetchToolName).toBe('mcp__web__web_fetch')
-    expect(buildSystemPromptVars(undefined, undefined, undefined, undefined, 'exa').webSearchToolName).toBe('WebSearch')
-    expect(buildSystemPromptVars(undefined, undefined, undefined, 'exa', undefined).webFetchToolName).toBe('WebFetch')
-  })
-  it('renders each web tool label into the prompt catalog', () => {
-    expect(generateSystemPrompt(undefined, undefined, undefined, undefined, 'exa')).toContain('`mcp__web__web_fetch`')
-    expect(generateSystemPrompt()).toContain('`WebFetch`')
-  })
   it('defaults CLAUDE_CONFIG_DIR when the host env is unset', () => {
     expect(buildSystemPromptVars(undefined, undefined, undefined, undefined).CLAUDE_CONFIG_DIR).toBe('/workspace/.claude')
   })
@@ -118,8 +102,21 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('request_script_run')).toBe(present)
   })
 
-  it('swaps the WebSearch tool name in the rendered prompt for a vendor', () => {
-    expect(generateSystemPrompt(undefined, undefined, undefined, 'exa')).toContain('`mcp__web__web_search`')
+  // A vendor disables the native tool, so the catalog must name whichever tool the
+  // model actually has -- and must NOT still name the one it replaced. Either vendor
+  // can be active alone, so assert the full cross product.
+  it.each([
+    { search: undefined, fetch: undefined, want: ['`WebFetch`', '`WebSearch`'] },
+    { search: 'exa', fetch: undefined, want: ['`WebFetch`', '`mcp__web__web_search`'] },
+    { search: undefined, fetch: 'exa', want: ['`mcp__web__web_fetch`', '`WebSearch`'] },
+    { search: 'exa', fetch: 'exa', want: ['`mcp__web__web_fetch`', '`mcp__web__web_search`'] },
+  ])('web tool catalog: search=$search fetch=$fetch', ({ search, fetch, want }) => {
+    const catalog = generateSystemPrompt(undefined, undefined, undefined, search, fetch)
+      .split('\n').find(l => l.startsWith('- **File system, shell, web**'))
+    expect(catalog).toBeDefined()
+    for (const label of want) expect(catalog).toContain(label)
+    if (search) expect(catalog).not.toContain('`WebSearch`')
+    if (fetch) expect(catalog).not.toContain('`WebFetch`')
   })
 
   // Future-proofing the template <-> code seam: the template is edited often,
