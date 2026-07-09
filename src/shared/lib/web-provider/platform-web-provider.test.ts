@@ -66,10 +66,16 @@ describe('PlatformWebProvider', () => {
       await expect(provider.search('x', {})).rejects.toThrow(/billing issue/i)
     })
 
-    it.each([401, 403])('maps a %i (revoked/expired token) to a sign-in-again message', async (status) => {
+    it('maps a 401 (revoked/expired token) to a sign-in-again message', async () => {
       vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
-      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status }))
+      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 401 }))
       await expect(provider.search('x', {})).rejects.toThrow(/session has expired or is invalid.*sign in again/i)
+    })
+
+    it('maps a 403 (trial ended / inactive member) to account copy, not sign-in-again', async () => {
+      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
+      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 403 }))
+      await expect(provider.search('x', {})).rejects.toThrow(/does not have access.*Check your account/i)
     })
 
     it('passes a non-mapped proxy error through unchanged (not the billing message)', async () => {
@@ -120,10 +126,16 @@ describe('PlatformWebProvider', () => {
       await expect(provider.fetch('https://a.com', {})).rejects.toThrow(/billing issue/i)
     })
 
-    it.each([401, 403])('maps a %i (revoked/expired token) to a sign-in-again message', async (status) => {
+    it('maps a 401 (revoked/expired token) to a sign-in-again message', async () => {
       vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
-      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status }))
+      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 401 }))
       await expect(provider.fetch('https://a.com', {})).rejects.toThrow(/session has expired or is invalid.*sign in again/i)
+    })
+
+    it('maps a 403 (trial ended / inactive member) to account copy, not sign-in-again', async () => {
+      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
+      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 403 }))
+      await expect(provider.fetch('https://a.com', {})).rejects.toThrow(/does not have access.*Check your account/i)
     })
 
     it('passes a non-mapped proxy error through unchanged', async () => {
