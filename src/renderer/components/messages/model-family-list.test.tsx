@@ -122,8 +122,9 @@ describe('ModelFamilyList', () => {
     )
     expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
     await user.click(screen.getByTestId('model-family-opus'))
-    // selects the family's latest concrete id, and does NOT take the close path
-    expect(onSelectFamilyLatest).toHaveBeenCalledWith('claude-opus-4-8')
+    // selects the family's latest concrete id (family alias alongside, for
+    // callers that store "latest" as the bare alias), and does NOT take the close path
+    expect(onSelectFamilyLatest).toHaveBeenCalledWith('claude-opus-4-8', 'opus')
     expect(onPick).not.toHaveBeenCalled()
     // and expands so the rest are one tap away
     expect(await screen.findByTestId('model-pinned-claude-opus-4-7')).toBeInTheDocument()

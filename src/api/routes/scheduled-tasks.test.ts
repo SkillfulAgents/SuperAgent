@@ -74,6 +74,12 @@ vi.mock('@shared/lib/config/settings', () => ({
   getModelCatalogSettings: () => ({}),
 }))
 
+const mockReadAgentPreferences = vi.fn()
+
+vi.mock('@shared/lib/services/agent-preferences-service', () => ({
+  readAgentPreferences: (...args: unknown[]) => mockReadAgentPreferences(...args),
+}))
+
 const mockValidateCronExpression = vi.fn()
 const mockGetFrequencyWarning = vi.fn()
 
@@ -178,6 +184,7 @@ describe('scheduled-tasks route', () => {
       browserModel: 'claude-browser',
       summarizerModel: 'claude-haiku-4-5',
     })
+    mockReadAgentPreferences.mockResolvedValue({})
     mockValidateCronExpression.mockReturnValue({ valid: true })
     mockGetFrequencyWarning.mockReturnValue(null)
     mockMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Every weekday at 9:00 AM' }] })
@@ -249,6 +256,40 @@ describe('scheduled-tasks route', () => {
     expect(mockRegisterSession).toHaveBeenCalledWith('agent-one', 'container-session-1', 'Scheduled Task (Run Now)')
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('task-1', 'container-session-1')
     expect(mockRecordManualExecution).not.toHaveBeenCalled()
+  })
+
+  describe('run-now model and effort resolution', () => {
+    // Preference order: task override > agent default > global default.
+    async function runNow(overrides: Record<string, unknown> = {}) {
+      task = createTask(overrides)
+      const res = await app.request('http://localhost/api/scheduled-tasks/task-1/run-now', {
+        method: 'POST',
+      })
+      expect(res.status).toBe(201)
+      expect(mockCreateSession).toHaveBeenCalledTimes(1)
+      return mockCreateSession.mock.calls[0][0]
+    }
+
+    it('uses the global default when neither task nor agent set one', async () => {
+      const args = await runNow()
+      expect(args.model).toBe('claude-agent')
+      expect(args.effort).toBeUndefined()
+    })
+
+    it('falls back to the agent default over the global default', async () => {
+      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
+      const args = await runNow()
+      expect(mockReadAgentPreferences).toHaveBeenCalledWith('agent-one')
+      expect(args.model).toBe('opus')
+      expect(args.effort).toBe('high')
+    })
+
+    it('prefers the task override over the agent default', async () => {
+      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
+      const args = await runNow({ model: 'claude-haiku-4-5-20251001', effort: 'low' })
+      expect(args.model).toBe('claude-haiku-4-5-20251001')
+      expect(args.effort).toBe('low')
+    })
   })
 
   it('does not start a container for non-runnable task statuses', async () => {

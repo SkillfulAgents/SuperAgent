@@ -56,10 +56,43 @@ export interface UseComposerOptionsArgs {
   initialEffort?: EffortLevel
   /** Model last used on this session, seeds the selector once if provided. */
   initialModel?: string
+  /** The agent's own default model, if set. Slots between a session's initial model and the app-wide default. */
+  agentDefaultModel?: string
+  /** The agent's own default effort, if set. Slots between a session's initial effort and the app-wide default. */
+  agentDefaultEffort?: EffortLevel
+  /**
+   * Identity of the agent the defaults belong to. When it changes (quick-dispatch
+   * switching agents) a locked, untouched selection unlocks and re-adopts the new
+   * agent's effective defaults.
+   */
+  agentKey?: string
+  /**
+   * Whether the agent-defaults source has answered (its query settled). Until
+   * settings AND this are true, an untouched selection keeps adopting the
+   * effective default as the sources stream in; after both, adoption locks so a
+   * background change (another window editing a default, a focus refetch) can't
+   * swap a selection out from under a mid-compose user. Defaults to true for
+   * callers with no agent-defaults source.
+   */
+  agentDefaultsReady?: boolean
+  /**
+   * Never lock: an untouched selection live-follows the effective default. For
+   * surfaces that edit the default right next to the composer (agent home),
+   * where the two must visibly stay in sync.
+   */
+  followDefaults?: boolean
 }
 
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsState {
-  const { initialEffort, initialModel } = args
+  const {
+    initialEffort,
+    initialModel,
+    agentDefaultModel,
+    agentDefaultEffort,
+    agentKey,
+    agentDefaultsReady = true,
+    followDefaults = false,
+  } = args
 
   const { data: settings } = useSettings()
 
@@ -72,15 +105,6 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       effortSeededRef.current = true
     }
   }, [initialEffort])
-  // For brand-new sessions (no `initialEffort`), adopt the user's configured
-  // default effort once settings load. Doesn't flip the seeded ref, so a
-  // late-arriving session effort can still win, and stops once the user picks.
-  const defaultEffort = settings?.models?.agentEffort
-  useEffect(() => {
-    if (!effortSeededRef.current && initialEffort === undefined && defaultEffort) {
-      setEffortState(defaultEffort)
-    }
-  }, [defaultEffort, initialEffort])
   // Wrap the setter so an explicit user pick locks out the late-arriving
   // initial-seed effect — otherwise a slow `useSession` resolution can clobber
   // the user's choice if they pick before session data lands.
@@ -96,17 +120,18 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     [settings, activeProvider],
   )
   const catalog = useMemo(() => providerInfo?.catalog ?? [], [providerInfo])
-  // Fallback hierarchy: user's "Default Model" → provider's agent default → the
-  // catalog's latest Sonnet → first catalog entry. The first non-empty wins.
-  // Aliases and concrete ids are both valid wire values, so any of these is a
-  // usable selection string.
+  // Fallback hierarchy: the agent's own default → user's "Default Model" →
+  // provider's agent default → the catalog's latest Sonnet → first catalog
+  // entry. The first non-empty wins. Aliases and concrete ids are both valid
+  // wire values, so any of these is a usable selection string.
   const fallbackModel = useMemo(
     () =>
+      agentDefaultModel ??
       settings?.models?.agentModel ??
       providerInfo?.defaultModels?.agent ??
       catalog.find((m) => m.family === 'sonnet' && m.isLatest)?.id ??
       catalog[0]?.id,
-    [settings, providerInfo, catalog],
+    [agentDefaultModel, settings, providerInfo, catalog],
   )
 
   // ---- Model ----
@@ -119,16 +144,55 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       modelSeededRef.current = true
     }
   }, [initialModel])
-  // Adopt provider default if the selector is still empty by the time settings load.
-  useEffect(() => {
-    if (!modelSeededRef.current && model === undefined && fallbackModel) {
-      setModelState(fallbackModel)
-    }
-  }, [model, fallbackModel])
   const setModel = useCallback((m: string) => {
     modelSeededRef.current = true
     setModelState(m)
   }, [])
+
+  // ---- Default adoption ----
+  // An untouched knob follows the effective default (agent default → user
+  // setting → built-in) while the sources stream in: settings and agent
+  // preferences resolve at different times, and quick-dispatch switches agents.
+  // Once both sources have answered, adoption LOCKS (unless `followDefaults`),
+  // so a later background change — another window editing a default, a focus
+  // refetch — can't swap a selection out from under a mid-compose user. An
+  // `agentKey` change unlocks and re-adopts for the new agent. Session-seeded
+  // values and explicit user picks always win via the seeded refs.
+  const adoptionLockedRef = useRef(false)
+  const adoptionKeyRef = useRef(agentKey)
+  const fallbackEffort =
+    agentDefaultEffort ?? settings?.models?.agentEffort ?? (settings ? DEFAULT_EFFORT : undefined)
+  useEffect(() => {
+    if (adoptionKeyRef.current !== agentKey) {
+      adoptionKeyRef.current = agentKey
+      adoptionLockedRef.current = false
+    }
+    if (adoptionLockedRef.current) return
+    if (!modelSeededRef.current && fallbackModel && model !== fallbackModel) {
+      setModelState(fallbackModel)
+    }
+    if (
+      !effortSeededRef.current &&
+      initialEffort === undefined &&
+      fallbackEffort &&
+      effort !== fallbackEffort
+    ) {
+      setEffortState(fallbackEffort)
+    }
+    if (!followDefaults && settings && agentDefaultsReady) {
+      adoptionLockedRef.current = true
+    }
+  }, [
+    agentKey,
+    model,
+    fallbackModel,
+    effort,
+    fallbackEffort,
+    initialEffort,
+    settings,
+    agentDefaultsReady,
+    followDefaults,
+  ])
 
   const toRuntimeOptions = useCallback(
     () => ({ effort, ...(model ? { model } : {}) }),

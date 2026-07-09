@@ -128,6 +128,7 @@ import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
 import { isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { captureException } from '@shared/lib/error-reporting'
@@ -895,21 +896,14 @@ agents.put('/:id/preferences', AgentAdmin(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const body = await c.req.json()
-
-    if ('autoDeleteInactiveDays' in body) {
-      const val = body.autoDeleteInactiveDays
-      if (val !== null && val !== undefined) {
-        if (typeof val !== 'number' || !Number.isInteger(val) || val <= 0) {
-          return c.json(
-            { error: 'autoDeleteInactiveDays must be a positive integer or null' },
-            400
-          )
-        }
-      }
+    const parsed = agentPreferencesUpdateSchema.safeParse(await c.req.json())
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0]
+      const field = issue?.path.join('.') || 'body'
+      return c.json({ error: `Invalid preferences: ${field}: ${issue?.message ?? 'invalid value'}` }, 400)
     }
 
-    const merged = await updateAgentPreferences(slug, body)
+    const merged = await updateAgentPreferences(slug, parsed.data)
     return c.json(merged)
   } catch (error) {
     console.error('Failed to update agent preferences:', error)
@@ -1327,7 +1321,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // the client can materialize its optimistic copy by exact id match.
     const initialMessageUuid = randomUUID()
 
-    const sessionModel = runtimeOptions.model ?? getEffectiveModels().agentModel
+    // Model/effort preference order: explicit per-session pick > agent default > global default.
+    const agentPrefs = await readAgentPreferences(slug)
+    const sessionModel = runtimeOptions.model ?? agentPrefs.defaultModel ?? getEffectiveModels().agentModel
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
@@ -1342,7 +1338,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       maxBudgetUsd: agentLimits.maxBudgetUsd,
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-      effort: runtimeOptions.effort,
+      effort: runtimeOptions.effort ?? agentPrefs.defaultEffort,
     })
     const sessionId = containerSession.id
 

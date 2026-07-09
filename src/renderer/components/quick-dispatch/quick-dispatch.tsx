@@ -8,6 +8,7 @@ import { uploadFileChunked } from '@renderer/lib/upload'
 import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
+import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { AttachmentPreview } from '@renderer/components/messages/attachment-preview'
 import { findCatalogModel, useComposerOptions } from '@renderer/components/messages/composer-options'
@@ -82,7 +83,16 @@ export function QuickDispatch() {
 
   const selectedAgent = agentList.find((a) => a.slug === selectedSlug)
   const agentSlug = selectedSlug ?? ''
-  const composerOptions = useComposerOptions()
+  // An untouched model/effort selection follows the selected agent's defaults:
+  // agentKey re-adopts on switch, then adoption locks so background preference
+  // edits can't swap the selection while the user types.
+  const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
+  const composerOptions = useComposerOptions({
+    agentDefaultModel: agentPrefs?.defaultModel,
+    agentDefaultEffort: agentPrefs?.defaultEffort,
+    agentKey: agentSlug,
+    agentDefaultsReady: agentPrefsFetched,
+  })
   const createSession = useCreateSession()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 

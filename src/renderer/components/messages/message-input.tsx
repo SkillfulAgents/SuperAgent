@@ -16,6 +16,7 @@ import { useMessageComposer } from '@renderer/hooks/use-message-composer'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
+import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel } from '@shared/lib/container/types'
 
@@ -41,7 +42,15 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const lastTypingNotification = useRef(0)
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
-  const composerOptions = useComposerOptions({ initialEffort, initialModel })
+  const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
+  const composerOptions = useComposerOptions({
+    initialEffort,
+    initialModel,
+    agentDefaultModel: agentPrefs?.defaultModel,
+    agentDefaultEffort: agentPrefs?.defaultEffort,
+    agentKey: agentSlug,
+    agentDefaultsReady: agentPrefsFetched,
+  })
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()

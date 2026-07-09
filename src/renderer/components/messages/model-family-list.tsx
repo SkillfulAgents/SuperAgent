@@ -85,12 +85,13 @@ interface ModelFamilyListProps {
    */
   offerLatest?: boolean
   /**
-   * When set, clicking a family header also selects that family's latest concrete
-   * version (without closing) and expands it — one click gets the latest, the rest
-   * stay visible for refinement. Used by the composer (the common "just give me the
-   * latest" case); omitted by the settings picker, where the family is just a toggle.
+   * When set, clicking a family header also selects that family's latest (without
+   * closing) and expands it — one click gets the latest, the rest stay visible for
+   * refinement. Called with the latest concrete version id and the bare family
+   * alias: the composer stores the concrete id (per-message picks are concrete);
+   * the settings picker stores the alias (a saved "latest" rides upgrades).
    */
-  onSelectFamilyLatest?: (value: string) => void
+  onSelectFamilyLatest?: (latestId: string, family: string) => void
   /**
    * Active host web-provider id from global settings. Native web search/fetch depend on the model
    * (the `supportsWebSearch` flag; Claude and GPT-over-Platform have them); a configured vendor
@@ -226,7 +227,7 @@ export function ModelFamilyList({
                   // One-click latest: expand and select the family's newest
                   // version without closing, so refinement stays one tap away.
                   setExpanded(group.family)
-                  onSelectFamilyLatest(latestVersion.id)
+                  onSelectFamilyLatest(latestVersion.id, group.family)
                 } else {
                   setExpanded(isOpen ? null : group.family)
                 }
