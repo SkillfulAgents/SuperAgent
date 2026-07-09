@@ -67,15 +67,19 @@ describe('WebTab', () => {
     expect(screen.queryByText('(default)')).not.toBeInTheDocument()
   })
 
-  it('offers only concrete vendors - there is no "Default (automatic)" option', async () => {
+  it('offers only concrete vendors, best-first - there is no "Default (automatic)" option', async () => {
     setup({ webProvider: undefined, effectiveWebProvider: 'platform', connected: true })
     const user = userEvent.setup()
     render(<WebTab />)
 
     await user.click(screen.getByRole('combobox'))
-    expect(await screen.findByRole('option', { name: /^Native$/i })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: /Exa/i })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: /Platform/i })).toBeInTheDocument()
+    await screen.findByRole('option', { name: /^Native$/i })
+    // Listed in the order the resolver would pick them: included tier, then byok, then the floor.
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'Platform',
+      'Exa',
+      'Native',
+    ])
     expect(screen.queryByRole('option', { name: /Default \(automatic\)/i })).not.toBeInTheDocument()
   })
 

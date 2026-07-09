@@ -31,24 +31,26 @@ type ProviderOption<T extends string> = {
   platformOnly?: boolean
 }
 
+// Listed best-first, matching the order the server would pick them in: the vendor included with the
+// plan, then the one the user pays for, then the model's own tools as the floor.
 const WEB_PROVIDERS: ProviderOption<WebProviderId>[] = [
   {
-    value: 'native',
-    label: 'Native',
-    note: "The model's own built-in web tools - works on any model with native web search/fetch (Claude, and GPT over the Platform). No API key required.",
+    value: 'platform',
+    label: 'Platform',
+    note: 'Web search and full page reading, included with your Gamut plan. Works with every model, and there is nothing to set up.',
+    platformOnly: true,
   },
   {
     value: 'exa',
     label: 'Exa',
-    note: 'Exa for both web search and fetch - neural search plus full-page reads (Exa Contents). Works on any model. Requires an Exa API key.',
+    note: 'Web search and full page reading through Exa. Works with every model. You bring your own Exa API key and are billed by Exa.',
     docsUrl: 'https://docs.exa.ai',
     usesExaKey: true,
   },
   {
-    value: 'platform',
-    label: 'Platform',
-    note: 'Gamut-provided web search and full-page reads. Works on any model, no key needed - requires an active Gamut plan.',
-    platformOnly: true,
+    value: 'native',
+    label: 'Native',
+    note: 'Uses whatever web tools the model already has built in. Nothing to set up, but not every model has them.',
   },
 ]
 
@@ -156,7 +158,7 @@ export function WebTab() {
       <ProviderSelect
         id="web-provider"
         heading="Web Provider"
-        description="Choose what the agent uses for web search and reading pages in full. A configured vendor is used on every model; when you haven't chosen one, the best available is selected automatically."
+        description="How your agents search the web and read pages. If you don't pick one, the best option available to you is used automatically."
         options={WEB_PROVIDERS}
         value={selected}
         isDefault={isDefault}
@@ -176,7 +178,7 @@ export function WebTab() {
         <div className="pt-4 border-t space-y-4">
           <h3 className="text-sm font-medium">Exa API Key</h3>
           <p className="text-xs text-muted-foreground">
-            Used by Exa web search and web fetch.
+            Used to search the web and read pages.
           </p>
           <ProviderApiKeyInput
             providerId="exa"
