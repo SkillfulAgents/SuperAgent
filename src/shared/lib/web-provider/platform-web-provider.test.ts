@@ -6,10 +6,46 @@ vi.mock('@shared/lib/platform-auth/config', () => ({
 }))
 
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { PlatformWebProvider } from './platform-web-provider'
+import { NonRetryableError } from '../utils/retry'
+import { mapPlatformWebError, PlatformWebProvider } from './platform-web-provider'
 
 const searchBody = { results: [{ url: 'https://a.com', title: 'A', highlights: ['hi'] }] }
 const contentsBody = { results: [{ url: 'https://a.com', title: 'A', text: 'full page' }] }
+
+// Each status the proxy returns carries a different remedy, so each gets its own copy. The
+// provider's own tests below prove only that its catch block runs this mapper.
+describe('mapPlatformWebError', () => {
+  it('maps 401 (expired/revoked token) to a sign-in-again message naming the surface', () => {
+    const out = mapPlatformWebError(new NonRetryableError('x', 401), 'search')
+    expect(out).toBeInstanceOf(Error)
+    expect((out as Error).message).toMatch(/web search is unavailable.*session has expired or is invalid.*Sign in again/i)
+  })
+
+  // The proxy returns 403 for trial-ended / inactive-member / wrong-org, none of which signing in
+  // again resolves. Telling the user to sign in there is worse than saying nothing.
+  it('maps 403 (no account access) to account copy, NOT sign-in-again', () => {
+    const out = mapPlatformWebError(new NonRetryableError('x', 403), 'search')
+    const message = (out as Error).message
+    expect(message).toMatch(/does not have access.*trial may have ended.*membership is inactive/i)
+    expect(message).toMatch(/Check your account/i)
+    expect(message).not.toMatch(/sign in again/i)
+  })
+
+  it('maps 402 to a billing message naming the surface', () => {
+    const out = mapPlatformWebError(new NonRetryableError('x', 402), 'fetch')
+    expect((out as Error).message).toMatch(/web fetch is unavailable.*billing issue/i)
+  })
+
+  it('passes a non-mapped NonRetryableError through unchanged', () => {
+    const err = new NonRetryableError('Platform request failed: 404', 404)
+    expect(mapPlatformWebError(err, 'search')).toBe(err)
+  })
+
+  it('passes a non-NonRetryableError (e.g. a network Error) through unchanged', () => {
+    const err = new Error('network down')
+    expect(mapPlatformWebError(err, 'fetch')).toBe(err)
+  })
+})
 
 describe('PlatformWebProvider', () => {
   const provider = new PlatformWebProvider()
@@ -60,8 +96,8 @@ describe('PlatformWebProvider', () => {
       expect(fetchMock).not.toHaveBeenCalled()
     })
 
-    // Exhaustive status->message coverage lives in platform-web-error.test.ts. What these two prove
-    // is the wiring: search's catch runs the mapper, and a status it does not map is not rewritten.
+    // Exhaustive status->message coverage lives in the mapPlatformWebError block above. What these
+    // two prove is the wiring: search's catch runs the mapper, and an unmapped status is not rewritten.
     it('maps a 403 (trial ended / inactive member) to account copy, not sign-in-again', async () => {
       vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
       vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 403 }))
