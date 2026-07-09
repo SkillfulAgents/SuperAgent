@@ -4,10 +4,11 @@
 // consumer needs it — each is a pure, non-breaking widening.
 
 // 'native' is the default sentinel (Anthropic server-side tools / Claude's built-in tools, no host
-// provider); 'exa' is the reference vendor. One id union for the whole web seam — the same vendor
-// backs both search and fetch, and advertises which it supports via its optional search()/fetch()
-// methods. Other vendors join the union as they are built.
-export type WebProviderId = 'native' | 'exa'
+// provider); 'exa' is the reference vendor; 'platform' is the Gamut-provided vendor (same Exa shape,
+// routed through the platform proxy on the user's login). One id union for the whole web seam — the
+// same vendor backs both search and fetch, and advertises which it supports via its optional
+// search()/fetch() methods. Other vendors join the union as they are built.
+export type WebProviderId = 'native' | 'exa' | 'platform'
 
 export interface WebSearchOptions {
   numResults?: number // host applies a default + hard max (Exa bills per result)

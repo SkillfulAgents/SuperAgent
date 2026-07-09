@@ -1,6 +1,7 @@
 import { getSettings } from '../config/settings'
 import type { BaseWebProvider } from './base-web-provider'
 import { ExaWebProvider } from './exa-web-provider'
+import { PlatformWebProvider } from './platform-web-provider'
 import type { WebProviderId } from './types'
 
 // Every non-native vendor id maps to its one provider (both search + fetch). A Record (not a Map)
@@ -12,6 +13,7 @@ type WebVendorId = Exclude<WebProviderId, 'native'>
 
 const WEB_PROVIDERS: Record<WebVendorId, BaseWebProvider> = {
   exa: new ExaWebProvider(),
+  platform: new PlatformWebProvider(),
 }
 
 /** Runtime narrow (not a cast) of an arbitrary id string to a registered vendor id. */
@@ -32,13 +34,35 @@ export function findWebProvider(id: string): BaseWebProvider | null {
   return isVendorId(id) ? WEB_PROVIDERS[id] : null
 }
 
+// Priority order for the automatic default. Extend by APPENDING a vendor id (open-to-extension).
+const DEFAULT_VENDOR_PRIORITY: WebVendorId[] = ['platform', 'exa']
+
+/**
+ * The automatic default when the user has not chosen a vendor: the first one whose provider reports
+ * a configured credential — reusing each provider's own detection, so 'platform' means signed into
+ * Gamut and 'exa' means a key in settings or EXA_API_KEY in the environment — else 'native'.
+ *
+ * This diverges from the opt-in llm/stt siblings on purpose. The Exa key input only renders once Exa
+ * is selected, so a settings-stored key already implies an explicit choice; the branch that actually
+ * fires here is an operator's EXA_API_KEY, which is itself an explicit act. Platform costs the user
+ * nothing beyond the login they already have, so it leads.
+ */
+export function resolveDefaultWebVendor(): WebProviderId {
+  for (const id of DEFAULT_VENDOR_PRIORITY) {
+    if (WEB_PROVIDERS[id].getApiKeyStatus().isConfigured) return id
+  }
+  return 'native'
+}
+
 /**
  * The active host-side web provider, or null when native is selected, nothing is configured, or the
  * configured id isn't a known vendor — native (no host provider) is the fallback in each case. Which
  * operations it backs is a per-tool question answered by the provider's optional search()/fetch()
  * methods, not by a separate registry: callers probe `provider.search` / `provider.fetch`.
+ *
+ * With no stored choice the automatic default resolves the vendor; an explicit stored id still wins.
  */
 export function getActiveWebProvider(): BaseWebProvider | null {
-  const id = getSettings().webProvider ?? 'native'
+  const id = getSettings().webProvider ?? resolveDefaultWebVendor()
   return isVendorId(id) ? WEB_PROVIDERS[id] : null
 }
