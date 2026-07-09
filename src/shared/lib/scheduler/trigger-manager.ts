@@ -134,6 +134,10 @@ class TriggerManager {
     } catch (error) {
       console.error('[TriggerManager] Initial poll failed:', error)
     }
+
+    // Positive completion signal — "Starting..." above fires before the
+    // initial poll, so it cannot vouch that start() actually finished.
+    console.log('[TriggerManager] Started')
   }
 
   stop(): void {
