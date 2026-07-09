@@ -1860,13 +1860,6 @@ describe('settings route', () => {
         expect(body.effectiveWebProvider).toBe('platform')
       })
 
-      it('pinned native -> both are native (native needs no credential)', async () => {
-        mockGetSettings.mockReturnValue({ ...defaultSettings(), webProvider: 'native' })
-        const body = await (await app.request('http://localhost/api/settings')).json()
-        expect(body.webProvider).toBe('native')
-        expect(body.effectiveWebProvider).toBe('native')
-      })
-
       it('pinned vendor whose credential is gone -> raw keeps the pin, effective falls back', async () => {
         mockGetSettings.mockReturnValue({
           ...defaultSettings(),

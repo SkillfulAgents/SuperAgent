@@ -120,17 +120,23 @@ describe('WebTab', () => {
   })
 
   // The raw and effective ids disagreeing is the host-side "pinned vendor fell back" condition. One
-  // gate covers every vendor, so a new vendor needs no new warning.
+  // gate covers every vendor, so a new vendor needs no new warning. These assert that the notice
+  // names BOTH vendors (i.e. the labels are interpolated, not hardcoded) rather than pinning its
+  // exact sentence, which would break on any copy edit that kept the behavior.
   it('says which vendor is standing in when a pinned Platform has fallen back', () => {
     setup({ webProvider: 'platform', effectiveWebProvider: 'native', connected: false })
     render(<WebTab />)
-    expect(screen.getByText(/Platform is selected but not available right now\. Using Native/i)).toBeInTheDocument()
+    const notice = screen.getByText(/not available/i)
+    expect(notice).toHaveTextContent('Platform')
+    expect(notice).toHaveTextContent('Native')
   })
 
   it('names the fallback for a pinned Exa whose key is gone (not a platform-only warning)', () => {
     setup({ webProvider: 'exa', effectiveWebProvider: 'platform', connected: true })
     render(<WebTab />)
-    expect(screen.getByText(/Exa is selected but not available right now\. Using Platform/i)).toBeInTheDocument()
+    const notice = screen.getByText(/not available/i)
+    expect(notice).toHaveTextContent('Exa')
+    expect(notice).toHaveTextContent('Platform')
   })
 
   it('shows no fallback notice when the pinned vendor is the one actually serving', () => {

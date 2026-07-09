@@ -34,13 +34,6 @@ afterEach(() => {
   setActive(undefined)
 })
 
-describe('getWebProvider', () => {
-  it('returns the singleton provider for the vendor id', () => {
-    expect(getWebProvider('exa')).toBeInstanceOf(ExaWebProvider)
-    expect(getWebProvider('platform')).toBeInstanceOf(PlatformWebProvider)
-  })
-})
-
 describe('findWebProvider', () => {
   it('returns the provider for a known vendor id string', () => {
     expect(findWebProvider('exa')).toBeInstanceOf(ExaWebProvider)
@@ -54,23 +47,10 @@ describe('findWebProvider', () => {
 })
 
 describe('getActiveWebProvider', () => {
-  it('returns null when the setting is native', () => {
-    setActive('native')
-    expect(getActiveWebProvider()).toBeNull()
-  })
-
-  it('returns null when nothing is configured (defaults to native)', () => {
-    setActive(undefined)
-    expect(getActiveWebProvider()).toBeNull()
-  })
-
-  it('returns the exa provider when it is pinned and its key is configured', () => {
-    process.env.EXA_API_KEY = 'k'
-    setActive('exa')
-    expect(getActiveWebProvider()?.id).toBe('exa')
-  })
-
-  it('resolves the automatic default only when the setting is unset', () => {
+  // It is `resolveEffectiveWebVendor` mapped to an instance, so the resolver's own block owns the
+  // ladder. What is unique here is the mapping contract: a vendor id becomes its provider, and
+  // native becomes null (no host provider - the container keeps the model's built-in tools).
+  it('maps the effective vendor to its provider, and native to null', () => {
     process.env.PLATFORM_TOKEN = 't'
     setActive(undefined)
     expect(getActiveWebProvider()?.id).toBe('platform')

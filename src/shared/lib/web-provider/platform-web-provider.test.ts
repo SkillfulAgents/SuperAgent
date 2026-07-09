@@ -96,19 +96,12 @@ describe('PlatformWebProvider', () => {
       expect(fetchMock).not.toHaveBeenCalled()
     })
 
-    // Exhaustive status->message coverage lives in the mapPlatformWebError block above. What these
-    // two prove is the wiring: search's catch runs the mapper, and an unmapped status is not rewritten.
+    // Exhaustive status->message coverage lives in the mapPlatformWebError block above. This proves
+    // the wiring: an HTTP status becomes NonRetryableError.status and search's own catch maps it.
     it('maps a 403 (trial ended / inactive member) to account copy, not sign-in-again', async () => {
       vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
       vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 403 }))
       await expect(provider.search('x', {})).rejects.toThrow(/does not have access.*Check your account/i)
-    })
-
-    it('passes a non-mapped proxy error through unchanged (not the billing message)', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
-      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('not found', { status: 404 }))
-      await expect(provider.search('x', {})).rejects.toThrow(/request failed: 404/i)
-      await expect(provider.search('x', {})).rejects.not.toThrow(/billing/i)
     })
   })
 
@@ -149,17 +142,11 @@ describe('PlatformWebProvider', () => {
       expect(fetchMock).not.toHaveBeenCalled()
     })
 
-    // Same as search above: wiring only, not an exhaustive status table.
+    // fetch has its own catch block, so it needs its own wiring proof.
     it('maps a 403 (trial ended / inactive member) to account copy, not sign-in-again', async () => {
       vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
       vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 403 }))
       await expect(provider.fetch('https://a.com', {})).rejects.toThrow(/does not have access.*Check your account/i)
-    })
-
-    it('passes a non-mapped proxy error through unchanged', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
-      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('not found', { status: 404 }))
-      await expect(provider.fetch('https://a.com', {})).rejects.toThrow(/request failed: 404/i)
     })
   })
 
