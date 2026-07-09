@@ -32,6 +32,7 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
+import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
 import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
 import type { EffortLevel } from '@shared/lib/container/types'
@@ -272,15 +273,18 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
 
     const client = await containerManager.ensureRunning(task.agentSlug)
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
+    // Model/effort preference order: task override > agent default > global default.
     const models = getEffectiveModels()
+    const agentPrefs = await readAgentPreferences(task.agentSlug)
+    const effort = task.effort ?? agentPrefs.defaultEffort
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
-      model: task.model || models.agentModel,
+      model: task.model || agentPrefs.defaultModel || models.agentModel,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
-      ...(task.effort ? { effort: task.effort as EffortLevel } : {}),
+      ...(effort ? { effort: effort as EffortLevel } : {}),
     })
 
     const sessionId = containerSession.id

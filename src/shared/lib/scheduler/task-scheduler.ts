@@ -7,6 +7,7 @@
 
 import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
+import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -197,17 +198,20 @@ class TaskScheduler {
     // Get available env vars for the agent
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
 
-    // Create a new session with the scheduled prompt
+    // Create a new session with the scheduled prompt.
+    // Model/effort preference order: task override > agent default > global default.
     const models = getEffectiveModels()
+    const agentPrefs = await readAgentPreferences(task.agentSlug)
+    const effort = task.effort ?? agentPrefs.defaultEffort
     const containerSession = await client.createSession({
       availableEnvVars:
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: task.prompt,
-      model: task.model || models.agentModel,
+      model: task.model || agentPrefs.defaultModel || models.agentModel,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },
-      ...(task.effort ? { effort: task.effort as EffortLevel } : {}),
+      ...(effort ? { effort: effort as EffortLevel } : {}),
     })
 
     const sessionId = containerSession.id

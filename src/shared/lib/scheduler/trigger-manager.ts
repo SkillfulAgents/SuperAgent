@@ -11,6 +11,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { getEffectiveModels } from '@shared/lib/config/settings'
+import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { runWithOptionalUser, attribution } from '@shared/lib/platform-attribution'
@@ -358,15 +359,18 @@ class TriggerManager {
     const client = await containerManager.ensureRunning(trigger.agentSlug)
     const availableEnvVars = await getSecretEnvVars(trigger.agentSlug)
 
+    // Model/effort preference order: trigger override > agent default > global default.
     const models = getEffectiveModels()
+    const agentPrefs = await readAgentPreferences(trigger.agentSlug)
+    const effort = trigger.effort ?? agentPrefs.defaultEffort
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: prompt,
-      model: trigger.model || models.agentModel,
+      model: trigger.model || agentPrefs.defaultModel || models.agentModel,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },
-      ...(trigger.effort ? { effort: trigger.effort as EffortLevel } : {}),
+      ...(effort ? { effort: effort as EffortLevel } : {}),
     })
 
     const sessionId = containerSession.id

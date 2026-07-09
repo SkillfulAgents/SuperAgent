@@ -348,9 +348,12 @@ vi.mock('@shared/lib/utils/message-transform', () => ({
   resolveInterruptedSubagents: vi.fn(),
 }))
 
+const mockGetEffectiveModels = vi.fn(
+  (): Record<string, string | undefined> => ({ summarizerModel: 'claude-3-haiku' })
+)
 vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAnthropicApiKey: () => 'test-key',
-  getEffectiveModels: () => ({ summarizerModel: 'claude-3-haiku' }),
+  getEffectiveModels: () => mockGetEffectiveModels(),
   getEffectiveAgentLimits: () => ({}),
   getCustomEnvVars: () => ({}),
   getSettings: () => ({ container: {}, skillsets: [] }),
@@ -412,7 +415,9 @@ import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@s
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
 import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
-import { listUserSecrets, setSecret, getSecret, keyToEnvVar } from '@shared/lib/services/secrets-service'
+import { containerManager } from '@shared/lib/container/container-manager'
+import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
 
 // ============================================================================
 // Test Helpers
@@ -3366,5 +3371,206 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
       expect(body.error).toContain('REMOTE_MCPS')
       expect(setSecret).not.toHaveBeenCalled()
     })
+  })
+})
+
+// ============================================================================
+// Agent preferences — PUT /:id/preferences
+// ============================================================================
+
+describe('agent preferences — PUT /:id/preferences', () => {
+  let app: ReturnType<typeof createApp>
+
+  const PREFS_URL = '/api/agents/test-agent/preferences'
+  const PREFS_PATH = '/mock/workspace/test-agent/agent-preferences.json'
+
+  async function putJson(url: string, body: unknown): Promise<Response> {
+    return app.request(`http://localhost${url}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    // The real agent-preferences-service runs against the file-storage mocks:
+    // readJsonFileStrict supplies the stored prefs (default: no file yet) and
+    // writeJsonFileAtomic captures what gets persisted.
+    vi.mocked(readJsonFileStrict).mockResolvedValue({} as never)
+  })
+
+  it('sets defaultModel and defaultEffort and persists them', async () => {
+    const res = await putJson(PREFS_URL, { defaultModel: 'claude-opus-4', defaultEffort: 'high' })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ defaultModel: 'claude-opus-4', defaultEffort: 'high' })
+    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, {
+      defaultModel: 'claude-opus-4',
+      defaultEffort: 'high',
+    })
+  })
+
+  it('rejects an unknown defaultEffort with 400 and never writes', async () => {
+    const res = await putJson(PREFS_URL, { defaultEffort: 'turbo' })
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toContain('defaultEffort')
+    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+  })
+
+  it('rejects an empty defaultModel with 400', async () => {
+    const res = await putJson(PREFS_URL, { defaultModel: '' })
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toContain('defaultModel')
+    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+  })
+
+  it('rejects a whitespace-only defaultModel with 400', async () => {
+    const res = await putJson(PREFS_URL, { defaultModel: '   ' })
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toContain('defaultModel')
+    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 (not 500) for a null body', async () => {
+    const res = await putJson(PREFS_URL, null)
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toContain('Invalid preferences')
+    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 (not 500) for a string body', async () => {
+    const res = await putJson(PREFS_URL, 'just a string')
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toContain('Invalid preferences')
+    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 (not 500) for an array body', async () => {
+    const res = await putJson(PREFS_URL, [{ defaultModel: 'opus' }])
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error).toContain('Invalid preferences')
+    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+  })
+
+  it('null clears a previously-set field back to the app-wide default', async () => {
+    vi.mocked(readJsonFileStrict).mockResolvedValue({
+      defaultModel: 'claude-sonnet-4',
+      defaultEffort: 'high',
+    } as never)
+
+    const res = await putJson(PREFS_URL, { defaultModel: null })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ defaultEffort: 'high' })
+    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { defaultEffort: 'high' })
+  })
+
+  it('trims surrounding whitespace before storing defaultModel', async () => {
+    const res = await putJson(PREFS_URL, { defaultModel: ' opus ' })
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.defaultModel).toBe('opus')
+    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { defaultModel: 'opus' })
+  })
+
+  it('strips unknown keys from the stored prefs and the response', async () => {
+    const res = await putJson(PREFS_URL, { defaultModel: 'opus', favoriteColor: 'blue' })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ defaultModel: 'opus' })
+    expect(writeJsonFileAtomic).toHaveBeenCalledWith(PREFS_PATH, { defaultModel: 'opus' })
+  })
+})
+
+// ============================================================================
+// Session model/effort resolution — POST /:id/sessions
+// ============================================================================
+
+describe('session model/effort resolution — POST /:id/sessions', () => {
+  let app: ReturnType<typeof createApp>
+
+  const SESSIONS_URL = '/api/agents/test-agent/sessions'
+  const mockCreateSession = vi.fn()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    // Agent prefs come from the real service reading through the file-storage
+    // mock; default = no prefs file.
+    vi.mocked(readJsonFileStrict).mockResolvedValue({} as never)
+    vi.mocked(getAgent).mockResolvedValue({
+      slug: 'test-agent',
+      frontmatter: { name: 'Test Agent' },
+    } as never)
+    vi.mocked(getSecretEnvVars).mockResolvedValue([])
+    mockCreateSession.mockResolvedValue({ id: 'session-123' })
+    vi.mocked(containerManager.ensureRunning).mockResolvedValue({
+      createSession: mockCreateSession,
+    } as never)
+    mockGetEffectiveModels.mockReturnValue({
+      summarizerModel: 'claude-3-haiku',
+      agentModel: 'global-agent-model',
+      browserModel: 'browser-model',
+      dashboardBuilderModel: 'dashboard-model',
+    })
+  })
+
+  it('falls back to agent preference defaults when the request has no model/effort', async () => {
+    vi.mocked(readJsonFileStrict).mockResolvedValue({
+      defaultModel: 'haiku',
+      defaultEffort: 'high',
+    } as never)
+
+    const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
+
+    expect(res.status).toBe(201)
+    expect(mockCreateSession).toHaveBeenCalledTimes(1)
+    const args = mockCreateSession.mock.calls[0][0]
+    expect(args.model).toBe('haiku')
+    expect(args.effort).toBe('high')
+  })
+
+  it('explicit per-session model/effort win over agent preference defaults', async () => {
+    vi.mocked(readJsonFileStrict).mockResolvedValue({
+      defaultModel: 'haiku',
+      defaultEffort: 'high',
+    } as never)
+
+    const res = await postJson(app, SESSIONS_URL, {
+      message: 'hello',
+      model: 'claude-opus-4',
+      effort: 'low',
+    })
+
+    expect(res.status).toBe(201)
+    expect(mockCreateSession).toHaveBeenCalledTimes(1)
+    const args = mockCreateSession.mock.calls[0][0]
+    expect(args.model).toBe('claude-opus-4')
+    expect(args.effort).toBe('low')
+  })
+
+  it('uses the global default model when the agent has no preferences', async () => {
+    const res = await postJson(app, SESSIONS_URL, { message: 'hello' })
+
+    expect(res.status).toBe(201)
+    expect(mockCreateSession).toHaveBeenCalledTimes(1)
+    const args = mockCreateSession.mock.calls[0][0]
+    expect(args.model).toBe('global-agent-model')
+    expect(args.effort).toBeUndefined()
   })
 })

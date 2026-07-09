@@ -50,6 +50,9 @@ const composerOptionsSpy = vi.hoisted(() => ({ value: null as Record<string, unk
 
 vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: state.agents }) }))
 vi.mock('@renderer/hooks/use-sessions', () => ({ useCreateSession: () => createSessionMock }))
+vi.mock('@renderer/hooks/use-agent-preferences', () => ({
+  useAgentPreferences: () => ({ data: undefined, isFetched: true }),
+}))
 vi.mock('@renderer/hooks/use-message-composer', () => ({
   useMessageComposer: (options: Record<string, unknown>) => {
     composerOptionsSpy.value = options

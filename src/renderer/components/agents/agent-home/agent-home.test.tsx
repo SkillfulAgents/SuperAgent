@@ -515,9 +515,12 @@ describe('AgentHome', () => {
       expect.objectContaining({
         agentSlug: 'test-agent',
         message: 'Hello agent',
-        effort: 'medium',
       })
     )
+    // Untouched composer: model/effort omitted so the server resolves
+    // agent-default > global instead of receiving the display echo as a pick.
+    expect(mockCreateSession.mutateAsync.mock.calls[0][0]).not.toHaveProperty('effort')
+    expect(mockCreateSession.mutateAsync.mock.calls[0][0]).not.toHaveProperty('model')
     // The uuid is server-assigned: never sent in the request, and the one
     // from the response is forwarded to onSessionCreated.
     expect(mockCreateSession.mutateAsync.mock.calls[0][0]).not.toHaveProperty('messageUuid')
