@@ -2,7 +2,12 @@ import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import type { ApiKeySettings, ApiKeyStatus } from '../config/settings'
 import { BaseWebProvider } from './base-web-provider'
-import { mapExaContentsResponse, mapExaSearchResponse } from './exa-web-provider'
+import {
+  buildExaContentsBody,
+  buildExaSearchBody,
+  mapExaContentsResponse,
+  mapExaSearchResponse,
+} from './exa-web-provider'
 import { mapPlatformWebError } from './platform-web-error'
 import type {
   WebFetchOptions,
@@ -65,15 +70,7 @@ export class PlatformWebProvider extends BaseWebProvider {
 
   async search(query: string, opts: WebSearchOptions): Promise<WebSearchResponse> {
     const token = this.requireToken('search')
-    const body = JSON.stringify({
-      query,
-      numResults: this.clampNumResults(opts.numResults),
-      includeDomains: opts.includeDomains,
-      excludeDomains: opts.excludeDomains,
-      startPublishedDate: opts.startPublishedDate,
-      endPublishedDate: opts.endPublishedDate,
-      contents: { highlights: true, text: { maxCharacters: 800 } },
-    })
+    const body = buildExaSearchBody(query, opts, this.clampNumResults(opts.numResults))
     try {
       return mapExaSearchResponse(await this.postToProxy(PROXY_SEARCH_PATH, token, body))
     } catch (err) {
@@ -83,13 +80,7 @@ export class PlatformWebProvider extends BaseWebProvider {
 
   async fetch(url: string, opts: WebFetchOptions): Promise<WebFetchResult> {
     const token = this.requireToken('fetch')
-    const maxChars = this.clampMaxChars(opts.maxChars)
-    const body = JSON.stringify({
-      urls: [url],
-      text: maxChars != null ? { maxCharacters: maxChars } : true,
-      // ALWAYS false, as in ExaWebProvider: Exa's default drops a failed URL from results[].
-      filterEmptyResults: false,
-    })
+    const body = buildExaContentsBody(url, this.clampMaxChars(opts.maxChars))
     try {
       const json = await this.postToProxy(PROXY_CONTENTS_PATH, token, body)
       return mapExaContentsResponse(json, new Date().toISOString())
