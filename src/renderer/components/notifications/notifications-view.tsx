@@ -12,7 +12,6 @@ import {
 import {
   usePlatformNotifications,
   usePlatformUnreadCount,
-  useMarkPlatformNotificationsRead,
   useMarkAllPlatformNotificationsRead,
   type ApiPlatformNotification,
 } from '@renderer/hooks/use-platform-notifications'
@@ -23,7 +22,7 @@ import { useAgents } from '@renderer/hooks/use-agents'
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { cn } from '@shared/lib/utils'
 import { useRenderTracker } from '@renderer/lib/perf'
-import { stripMarkdownPreview } from '@renderer/lib/markdown-preview'
+import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
 
 function formatNotificationDate(date: Date): string {
   if (isToday(date)) return format(date, 'h:mm a').toLowerCase()

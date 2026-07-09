@@ -289,7 +289,11 @@ describe('PlatformNotificationsManager', () => {
   it('fires one OS notification per INSERT and always signals the inbox', async () => {
     const onEvent = await startWithDefaults()
 
-    onEvent(record('ntf_new', '2026-07-02T00:00:00Z'))
+    onEvent(
+      record('ntf_new', '2026-07-02T00:00:00Z', {
+        body: 'This is **markdown** with a [link](https://example.com).\n\n- bullet',
+      }),
+    )
 
     expect(changedBroadcasts()).toHaveLength(1)
     const osNotifs = osNotificationBroadcasts()
@@ -299,7 +303,8 @@ describe('PlatformNotificationsManager', () => {
       notificationType: 'platform_notification',
       platformNotificationId: 'ntf_new',
       title: 'Title ntf_new',
-      body: 'markdown body',
+      // OS notifications render plain text: markdown syntax must be stripped.
+      body: 'This is markdown with a link. bullet',
       actionContext: {
         kind: 'platform_notification',
         platformNotificationId: 'ntf_new',

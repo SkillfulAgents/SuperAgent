@@ -1,8 +1,9 @@
 /**
- * Flatten a markdown body into single-line plain text for truncated list
- * previews (e.g. the notification inbox row). This is presentational-only —
- * the full body is always rendered through ReactMarkdown with the URL-scheme
- * allowlist; nothing security-relevant happens here.
+ * Flatten a markdown body into single-line plain text for truncated
+ * plain-text surfaces (the notification inbox row preview, OS notification
+ * bodies). This is presentational-only — the full body is always rendered
+ * through ReactMarkdown with the URL-scheme allowlist; nothing
+ * security-relevant happens here.
  */
 export function stripMarkdownPreview(markdown: string): string {
   return (

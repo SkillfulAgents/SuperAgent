@@ -21,6 +21,7 @@ import {
   getNotificationsRealtimeConfig,
   listPlatformNotifications,
 } from '@shared/lib/services/platform-notifications-client'
+import { stripMarkdownPreview } from '@shared/lib/markdown-preview'
 import { platformNotificationRealtimeRecordSchema } from '@shared/lib/services/platform-notifications-schema'
 import { SupabaseRealtimeClient } from '@shared/lib/services/supabase-realtime-client'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
@@ -208,7 +209,9 @@ class PlatformNotificationsManager {
       notificationType: 'platform_notification',
       platformNotificationId: record.id,
       title: record.title,
-      body: record.body,
+      // OS notifications render plain text — flatten the markdown body the
+      // same way the inbox row preview does.
+      body: stripMarkdownPreview(record.body),
       actionContext: {
         kind: 'platform_notification',
         platformNotificationId: record.id,
