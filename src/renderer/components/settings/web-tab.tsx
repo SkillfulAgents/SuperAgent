@@ -8,20 +8,27 @@ import {
 } from '@renderer/components/ui/select'
 import { Label } from '@renderer/components/ui/label'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { WebProviderId } from '@shared/lib/config/settings'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 
 // One "Web" tab with a single Web Provider select backing one `webProvider` setting. One vendor
 // backs both search and fetch; whether each tool is host-routed or native is derived host-side from
-// the vendor's capabilities. A `usesExaKey` flag marks vendors backed by the shared Exa key
-// (settings.apiKeys.exaApiKey), so the key input renders once and adding an Exa-backed vendor stays a
-// data entry, not new JSX.
+// the vendor's capabilities. The select always shows a concrete vendor: an explicit choice if the
+// user made one, otherwise the server's resolved best-available vendor (`effectiveWebProvider`)
+// marked "(default)". Leaving it on the default keeps the stored field unset, so the server keeps
+// resolving the best vendor as the user's Gamut/key state changes; picking a vendor pins it.
+// A `usesExaKey` flag marks vendors backed by the shared Exa key (settings.apiKeys.exaApiKey), so the
+// key input renders once and adding an Exa-backed vendor stays a data entry, not new JSX.
+// `platformOnly` marks the Gamut-provided vendor, which is login-gated (selectable only when signed
+// into Gamut).
 type ProviderOption<T extends string> = {
   value: T
   label: string
   note: string
   docsUrl?: string
   usesExaKey?: boolean
+  platformOnly?: boolean
 }
 
 const WEB_PROVIDERS: ProviderOption<WebProviderId>[] = [
@@ -37,6 +44,12 @@ const WEB_PROVIDERS: ProviderOption<WebProviderId>[] = [
     docsUrl: 'https://docs.exa.ai',
     usesExaKey: true,
   },
+  {
+    value: 'platform',
+    label: 'Platform',
+    note: 'Gamut-provided web search and full-page reads. Works on any model, no key needed - requires an active Gamut plan.',
+    platformOnly: true,
+  },
 ]
 
 function ProviderSelect<T extends string>({
@@ -45,16 +58,21 @@ function ProviderSelect<T extends string>({
   description,
   options,
   value,
+  isDefault,
   onChange,
   disabled,
+  isPlatformConnected,
 }: {
   id: string
   heading: string
   description: string
   options: ProviderOption<T>[]
   value: T
+  // The shown vendor is the auto-resolved default, not an explicit choice: mark it "(default)".
+  isDefault?: boolean
   onChange: (value: T) => void
   disabled?: boolean
+  isPlatformConnected?: boolean
 }) {
   const selectedInfo = options.find((p) => p.value === value)
   return (
@@ -64,17 +82,26 @@ function ProviderSelect<T extends string>({
         <p className="text-xs text-muted-foreground mt-1">{description}</p>
       </div>
       <div className="space-y-2">
-        <Label htmlFor={id}>Provider</Label>
+        <div className="flex items-center gap-1.5">
+          <Label htmlFor={id}>Provider</Label>
+          {isDefault && <span className="text-xs text-muted-foreground">(default)</span>}
+        </div>
         <Select value={value} onValueChange={(v) => onChange(v as T)} disabled={disabled}>
           <SelectTrigger id={id}>
             <SelectValue placeholder="Select a provider" />
           </SelectTrigger>
           <SelectContent>
-            {options.map((p) => (
-              <SelectItem key={p.value} value={p.value}>
-                {p.label}
-              </SelectItem>
-            ))}
+            {options.map((p) => {
+              const gated = !!p.platformOnly && !isPlatformConnected
+              return (
+                <SelectItem key={p.value} value={p.value} disabled={gated}>
+                  {p.label}
+                  {gated && (
+                    <span className="text-muted-foreground ml-2">(requires Gamut login)</span>
+                  )}
+                </SelectItem>
+              )
+            })}
           </SelectContent>
         </Select>
 
@@ -105,8 +132,16 @@ function ProviderSelect<T extends string>({
 export function WebTab() {
   const { data: settings, isLoading } = useSettings()
   const updateSettings = useUpdateSettings()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const isPlatformConnected = platformAuth?.connected ?? false
 
-  const selected: WebProviderId = settings?.webProvider ?? 'native'
+  // Always show a concrete vendor: the explicit choice if one is stored, else the server's resolved
+  // best-available vendor (effective id). Never an abstract "automatic" row.
+  const selected: WebProviderId = settings?.webProvider ?? settings?.effectiveWebProvider ?? 'native'
+  // No explicit choice stored -> the shown vendor is the auto-resolved default (adaptive, not pinned).
+  const isDefault = settings?.webProvider == null
+
+  // The Exa key field shows only when Exa is the active vendor (explicit or resolved-default).
   const needsExaKey = WEB_PROVIDERS.find((p) => p.value === selected)?.usesExaKey ?? false
 
   return (
@@ -114,12 +149,25 @@ export function WebTab() {
       <ProviderSelect
         id="web-provider"
         heading="Web Provider"
-        description="Choose what the agent uses for web search and reading pages in full. A configured vendor is used on every model; native is the default when none is set."
+        description="Choose what the agent uses for web search and reading pages in full. A configured vendor is used on every model; when you haven't chosen one, the best available is selected automatically."
         options={WEB_PROVIDERS}
         value={selected}
-        onChange={(value) => updateSettings.mutate({ webProvider: value })}
+        isDefault={isDefault}
+        isPlatformConnected={isPlatformConnected}
+        onChange={(value) => {
+          // Guard against pinning a vendor that can't run.
+          if (value === 'platform' && !isPlatformConnected) return
+          updateSettings.mutate({ webProvider: value })
+        }}
         disabled={isLoading}
       />
+
+      {settings?.webProvider === 'platform' && !isPlatformConnected && (
+        <p className="text-xs text-destructive">
+          Platform is selected but you are not signed into Gamut. Web search and fetch will fail until
+          you sign in or pick another provider.
+        </p>
+      )}
 
       {needsExaKey && (
         <div className="pt-4 border-t space-y-4">

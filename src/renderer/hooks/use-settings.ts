@@ -58,7 +58,9 @@ export interface UpdateSettingsParams {
   container?: Partial<ContainerSettings>
   app?: Omit<Partial<AppPreferences>, 'faviconDataUrl'> & { faviconDataUrl?: string | null }
   llmProvider?: LlmProviderId
-  webProvider?: WebProviderId
+  // null clears the field to auto-resolve (server stores undefined). API capability only now - the
+  // Web tab pre-selects the resolved vendor instead of offering an explicit clear-to-auto control.
+  webProvider?: WebProviderId | null
   apiKeys?: {
     anthropicApiKey?: string
     openrouterApiKey?: string
