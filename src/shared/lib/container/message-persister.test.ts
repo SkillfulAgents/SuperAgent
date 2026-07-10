@@ -2829,6 +2829,101 @@ describe('MessagePersister', () => {
     })
   })
 
+  describe('automation outcome metadata', () => {
+    it('marks a scheduled session succeeded when its result completes', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-1',
+        automationStatus: 'running',
+      })
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        duration_ms: 100,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      await vi.waitFor(() => {
+        expect(updateSessionMetadata).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          { automationStatus: 'succeeded' },
+        )
+      })
+    })
+
+    it('marks a webhook session failed when its result errors', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isWebhookExecution: true,
+        webhookTriggerId: 'trigger-1',
+        webhookInvocationCount: 3,
+        automationStatus: 'running',
+      })
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'error_during_execution',
+        error: 'Webhook execution failed',
+        is_error: true,
+        duration_ms: 100,
+        num_turns: 0,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      })
+
+      await vi.waitFor(() => {
+        expect(updateSessionMetadata).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          { automationStatus: 'failed' },
+        )
+      })
+    })
+
+    it('does not add automation status to a regular session', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({ name: 'Regular session' })
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        duration_ms: 100,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      await vi.waitFor(() => {
+        expect(getSessionMetadata).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID)
+      })
+      expect(updateSessionMetadata).not.toHaveBeenCalled()
+    })
+
+    it('does not overwrite a finalized automation outcome on a later turn', async () => {
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-1',
+        promotedToInteractive: true,
+        automationStatus: 'failed',
+      })
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        duration_ms: 100,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      })
+
+      await vi.waitFor(() => {
+        expect(getSessionMetadata).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID)
+      })
+      expect(updateSessionMetadata).not.toHaveBeenCalled()
+    })
+  })
+
   // ============================================================================
   // Script run request detection
   // ============================================================================

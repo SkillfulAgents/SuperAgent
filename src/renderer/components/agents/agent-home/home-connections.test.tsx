@@ -55,6 +55,19 @@ describe('HomeConnections — row navigation', () => {
       if (path === '/api/agents/test-agent/remote-mcps' && method === 'GET') {
         return Promise.resolve(jsonResponse({ mcps: [] }))
       }
+      if (path === '/api/activity/agents/test-agent?days=14' && method === 'GET') {
+        return Promise.resolve(jsonResponse({
+          days: 2,
+          cronByTaskId: {},
+          webhookByTriggerId: {},
+          connectionById: {
+            'account-acc-1': [
+              { date: '2026-07-08', succeeded: 2, failed: 1 },
+              { date: '2026-07-09', succeeded: 1, failed: 0 },
+            ],
+          },
+        }))
+      }
       throw new Error(`Unexpected request: ${method} ${path}`)
     })
   })
@@ -86,5 +99,14 @@ describe('HomeConnections — row navigation', () => {
     await user.click(screen.getByTestId('home-connections-open-page'))
 
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/agents/$slug/connections', params: { slug: 'test-agent' } })
+  })
+
+  it('shows only this agent\'s activity for the matching connection', async () => {
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+
+    expect(await screen.findByRole('img', {
+      name: 'GitHub activity: 4 calls over 2 days, 3 succeeded and 1 failed.',
+    })).toBeInTheDocument()
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/activity/agents/test-agent?days=14')
   })
 })

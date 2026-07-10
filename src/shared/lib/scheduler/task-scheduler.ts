@@ -28,7 +28,6 @@ import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
 
-
 class TaskScheduler {
   private intervalId: NodeJS.Timeout | null = null
   private isRunning = false
@@ -168,7 +167,6 @@ class TaskScheduler {
     console.log(
       `[TaskScheduler] Executing task ${task.id} for agent ${task.agentSlug}`
     )
-
     const existingSession = await getSessionForScheduledExecution(
       task.agentSlug,
       task.id,
@@ -222,6 +220,7 @@ class TaskScheduler {
       scheduledTaskId: task.id,
       scheduledTaskName: task.name || undefined,
       scheduledExecutionAt: task.nextExecutionAt.toISOString(),
+      automationStatus: 'running',
     })
 
     // Subscribe to the session for SSE updates

@@ -201,6 +201,7 @@ describe('TaskScheduler duplicate execution guard (SUP-243)', () => {
         scheduledTaskId: 'task-1',
         scheduledTaskName: 'Daily report',
         scheduledExecutionAt: scheduledExecutionAt.toISOString(),
+        automationStatus: 'running',
       }),
     )
     expect(mockUpdateSessionMetadata).not.toHaveBeenCalled()

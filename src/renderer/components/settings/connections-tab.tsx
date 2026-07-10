@@ -16,6 +16,8 @@ import { ConnectionAgentCount } from '@renderer/components/connections/connectio
 import { ConnectionDetailPage } from '@renderer/components/connections/connection-detail-page'
 import { buildUnifiedRows, type UnifiedRow } from '@renderer/components/connections/unified-rows'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
+import { useConnectionActivityStats } from '@renderer/hooks/use-activity-stats'
+import { ActivitySparkChart } from '@renderer/components/activity/activity-spark-chart'
 
 export function ConnectionsTab() {
   const { data: settings } = useUserSettings()
@@ -23,6 +25,7 @@ export function ConnectionsTab() {
   const { data: accountsData, isLoading: isLoadingAccounts } = useConnectedAccounts()
   const { data: mcpsData, isLoading: isLoadingMcps } = useRemoteMcps()
   const { data: triggerCounts } = useTriggerCountsPerAccount()
+  const { data: activityStats } = useConnectionActivityStats()
   const {
     reconnect: oauthReconnect,
     pendingAccountId,
@@ -113,12 +116,20 @@ export function ConnectionsTab() {
           </>
         }
         right={
-          <span
-            aria-hidden="true"
-            className="flex justify-center overflow-hidden w-0 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:opacity-100"
-          >
-            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-          </span>
+          <>
+            {activityStats?.connectionById[row.key] !== undefined && (
+              <ActivitySparkChart
+                label={`${row.name} activity`}
+                data={activityStats.connectionById[row.key]}
+              />
+            )}
+            <span
+              aria-hidden="true"
+              className="flex justify-center overflow-hidden w-0 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:opacity-100"
+            >
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+            </span>
+          </>
         }
       />
     )

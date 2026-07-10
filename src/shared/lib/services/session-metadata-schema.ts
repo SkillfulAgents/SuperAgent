@@ -46,6 +46,8 @@ export const sessionMetadataSchema = z
     isWebhookExecution: z.boolean().optional(),
     webhookTriggerId: z.string().optional(),
     webhookTriggerName: z.string().optional(),
+    automationStatus: z.enum(['running', 'succeeded', 'failed']).optional(),
+    webhookInvocationCount: z.number().int().positive().optional(),
     isChatIntegrationSession: z.boolean().optional(),
     chatIntegrationId: z.string().optional(),
     promotedToInteractive: z.boolean().optional(),

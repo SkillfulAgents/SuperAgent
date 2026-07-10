@@ -811,6 +811,23 @@ class MessagePersister {
     })
   }
 
+  private persistAutomationStatus(
+    sessionId: string,
+    agentSlug: string,
+    automationStatus: 'succeeded' | 'failed',
+  ): void {
+    void Promise.resolve()
+      .then(() => getSessionMetadata(agentSlug, sessionId))
+      .then((meta) => {
+        if (!meta?.isScheduledExecution && !meta?.isWebhookExecution) return
+        if (meta.automationStatus && meta.automationStatus !== 'running') return
+        return updateSessionMetadata(agentSlug, sessionId, { automationStatus })
+      })
+      .catch((err) => {
+        console.error('[MessagePersister] Failed to persist automation status:', err)
+      })
+  }
+
   // Broadcast an arbitrary event to all SSE clients for a session (public)
   broadcastSessionEvent(sessionId: string, data: unknown): void {
     this.broadcastToSSE(sessionId, data)
@@ -1341,6 +1358,13 @@ class MessagePersister {
 
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)
+        if (state.agentSlug) {
+          this.persistAutomationStatus(
+            sessionId,
+            state.agentSlug,
+            isError ? 'failed' : 'succeeded',
+          )
+        }
 
         // Check if this is an error result. Errors end the user-visible work
         // immediately in both lifecycle modes. (isActive + the working emit were
