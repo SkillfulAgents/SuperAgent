@@ -69,6 +69,38 @@ describe('buildWorkflowTree — real capture-probe fixture', () => {
   })
 })
 
+// Same contract against the newer capture taken on claude-agent-sdk 0.3.206 /
+// CLI 2.1.206 (the CLI that backgrounds subagents by default) — guards the
+// disk formats (journal, transcripts, script sidecar) against CLI drift.
+describe('buildWorkflowTree — sdk 0.3.206 capture fixture', () => {
+  const root = path.join(__dirname, '..', 'container', '__fixtures__', 'sdk206-workflow-probe')
+  const sid = '18762a15-e1e9-443c-ae5e-e55f138989ac'
+  const run = 'wf_255e9212-aaa'
+
+  it('joins both agents (incl. the interpolated prompt) via prompt-regex', async () => {
+    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: sid, runId: run })
+    expect(tree).not.toBeNull()
+    expect(tree!.name).toBe('capture-probe')
+    expect(tree!.phases.map((p) => p.title)).toEqual(['Run'])
+    expect(tree!.expectedAgents).toBe(2)
+
+    const byResult = new Map(tree!.agents.map((a) => [a.result, a]))
+    expect(byResult.get('wf-alpha')).toMatchObject({
+      phase: 'Run',
+      status: 'done',
+      resolved: 'prompt-regex',
+      prompt: 'Reply with exactly: wf-alpha',
+    })
+    // The template-literal call site — exact-string matching would miss it.
+    expect(byResult.get('alpha-beta')).toMatchObject({
+      phase: 'Run',
+      status: 'done',
+      resolved: 'prompt-regex',
+      prompt: 'Concatenate these two words with a dash and reply with only the result: alpha beta',
+    })
+  })
+})
+
 // --- synthetic on-disk runs for the harder join cases ----------------------
 
 const tmpDirs: string[] = []

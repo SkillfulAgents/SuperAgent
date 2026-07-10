@@ -1,0 +1,23 @@
+{
+  "sessionId": "3d1ed890-037b-4811-a384-1a4a8db15378",
+  "agentSlug": "capture",
+  "description": "Real capture (2026-07-09, SDK 0.3.206). A 12s foreground turn gets TWO queued messages (command_lifecycle:queued frames present), then the session is interrupted via POST /interrupt. KEY PROPERTY: the inbound stream simply STOPS — no cancelled/discarded lifecycle frames, no post-interrupt idle arrive; the host must synthesize session_idle itself (markSessionInterrupted). This is the evidence base for adopting the interrupt() typed receipt (still_queued): the wire carries no queued-fate information today. Replay must not hang or double-finalize.",
+  "sdkVersion": "0.3.206",
+  "cliVersion": "2.1.206",
+  "capturedAt": "2026-07-09",
+  "startActive": true,
+  "subagents": [],
+  "backgroundTasks": [
+    {
+      "taskId": "bwmotrgj9",
+      "taskType": "local_bash",
+      "startedT": 441466,
+      "prematureIdleT": null,
+      "realCompletionT": null
+    }
+  ],
+  "newFrameCounts": {
+    "command_lifecycle:queued": 2
+  },
+  "totalEntries": 21
+}
