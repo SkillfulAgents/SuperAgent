@@ -463,6 +463,39 @@ The selector must target the actual file input element, such as input[type="file
   }
 )
 
+const browserDownloadTool = tool(
+  'browser_download',
+  `Download a file or page asset (image, PDF, CSV, ...) into the workspace THROUGH the browser — the browser's cookies and login state apply, so this works for assets behind a login that curl/fetch outside the browser cannot reach. The bytes travel over the browser connection, so it also works when the browser runs outside the container (host Chrome, remote providers).
+
+Files are saved under /workspace/downloads/ and the saved path is returned.
+
+- Get the asset URL from the page first: browser_snapshot with includeUrls, browser_run("get attr @eN src"), or browser_eval (e.g. document.querySelector('img.profile-photo').src).
+- Supports http(s) URLs, blob: URLs (files the page generated — fetched from the current page), and data: URLs.
+- Links/buttons that trigger a browser download can also just be clicked — those files land in /workspace/downloads/ too.`,
+  {
+    url: z.string().describe('URL of the file to download — an <img> src, <a> href, blob: or data: URL'),
+    filename: z
+      .string()
+      .optional()
+      .describe('Optional filename to save as (basename only). Derived from the URL/response headers when omitted.'),
+  },
+  async (args) => {
+    const result = await browserFetch('download', { url: args.url, filename: args.filename })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as { file?: { name: string; path: string; size: number; contentType: string | null } }
+    const file = data.file
+    if (!file) return errorResult('Download did not return file info')
+
+    let text = `Downloaded to ${file.path} (${file.size} bytes${file.contentType ? `, ${file.contentType}` : ''}).`
+    if (file.contentType === 'text/html') {
+      text += '\nWARNING: the response is an HTML page, not a file asset — this is usually a login or error page. Check the URL or your session.'
+    }
+    return {
+      content: [{ type: 'text' as const, text }],
+    }
+  }
+)
+
 const browserTypeTool = tool(
   'browser_type',
   `Type text with REAL keystrokes into the currently focused element — or pass a ref to focus that element first.
@@ -646,6 +679,7 @@ const browserGetStateTool = tool(
     browserSelectTool,
     browserHoverTool,
     browserUploadTool,
+    browserDownloadTool,
     browserTypeTool,
     browserEvalTool,
     browserRunTool,

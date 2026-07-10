@@ -38,6 +38,7 @@ import {
   browserScreenshotDef,
   browserSelectDef,
   browserHoverDef,
+  browserDownloadDef,
   browserEvalDef,
   browserRunDef,
 } from './browser-tools'
@@ -119,6 +120,7 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__browser__browser_screenshot': browserScreenshotDef,
   'mcp__browser__browser_select': browserSelectDef,
   'mcp__browser__browser_hover': browserHoverDef,
+  'mcp__browser__browser_download': browserDownloadDef,
   'mcp__browser__browser_eval': browserEvalDef,
   'mcp__browser__browser_run': browserRunDef,
 
