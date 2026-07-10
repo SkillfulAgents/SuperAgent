@@ -226,6 +226,7 @@ vi.mock('@shared/lib/utils/retry', () => ({ withRetry: vi.fn((fn: () => unknown)
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
   getConfiguredLlmClient: () => ({ messages: { create: vi.fn() } }),
   extractTextFromLlmResponse: () => null,
+  createSummarizerText: async () => null,
 }))
 
 vi.mock('@shared/lib/utils/message-transform', () => ({

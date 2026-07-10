@@ -6,7 +6,7 @@
  */
 
 import { Hono } from 'hono'
-import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
+import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import {
   getScheduledTask,
@@ -36,7 +36,6 @@ import { readAgentPreferences } from '@shared/lib/services/agent-preferences-ser
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
 import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
 import type { EffortLevel } from '@shared/lib/container/types'
-import { withRetry } from '@shared/lib/utils/retry'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, EntityAgentRole } from '../middleware/auth'
@@ -329,14 +328,12 @@ scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'),
     }
 
     const client = getConfiguredLlmClient()
-    const response = await withRetry(() =>
-      client.messages.create({
-        model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
-        max_tokens: 100,
-        messages: [
-          {
-            role: 'user',
-            content: `Translate the following crontab expression to a concise human-readable English description. Respond with ONLY the description, nothing else. No quotes, no explanation.
+    const description = await createSummarizerText(client, {
+      model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
+      messages: [
+        {
+          role: 'user',
+          content: `Translate the following crontab expression to a concise human-readable English description. Respond with ONLY the description, nothing else. No quotes, no explanation.
 
 Cron expression: ${task.scheduleExpression}
 
@@ -344,12 +341,9 @@ Examples:
 "0 9 * * 1-5" → "Every weekday at 9:00 AM"
 "*/15 * * * *" → "Every 15 minutes"
 "0 0 1 * *" → "First day of every month at midnight"`,
-          },
-        ],
-      })
-    )
-
-    const description = extractTextFromLlmResponse(response)
+        },
+      ],
+    })
     if (!description) {
       return c.json({ error: 'Failed to generate description' }, 500)
     }
@@ -376,14 +370,12 @@ scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), asyn
     }
 
     const client = getConfiguredLlmClient()
-    const response = await withRetry(() =>
-      client.messages.create({
-        model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
-        max_tokens: 50,
-        messages: [
-          {
-            role: 'user',
-            content: `Convert the following English schedule description to a standard 5-field crontab expression (minute hour day-of-month month day-of-week). Respond with ONLY the cron expression, nothing else. No quotes, no explanation.
+    const expression = await createSummarizerText(client, {
+      model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
+      messages: [
+        {
+          role: 'user',
+          content: `Convert the following English schedule description to a standard 5-field crontab expression (minute hour day-of-month month day-of-week). Respond with ONLY the cron expression, nothing else. No quotes, no explanation.
 
 Description: ${body.description.trim()}
 
@@ -391,12 +383,9 @@ Examples:
 "Every weekday at 9:00 AM" → 0 9 * * 1-5
 "Every 15 minutes" → */15 * * * *
 "First day of every month at midnight" → 0 0 1 * *`,
-          },
-        ],
-      })
-    )
-
-    const expression = extractTextFromLlmResponse(response)
+        },
+      ],
+    })
     if (!expression) {
       return c.json({ error: 'Failed to generate cron expression' }, 500)
     }

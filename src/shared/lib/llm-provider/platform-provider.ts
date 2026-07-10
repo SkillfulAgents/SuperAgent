@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
+import { rewriteLoopbackForContainer } from './container-url'
 import type { ModelDefinition } from './model-catalog-schema'
 import { PLATFORM_CATALOG } from './builtin-catalogs'
 import { attribution } from '@shared/lib/platform-attribution'
@@ -55,7 +56,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
 
   getContainerEnvVars(): Record<string, string | undefined> {
     const proxyUrl = getPlatformProxyBaseUrl()
-    const containerUrl = proxyUrl.replace('://localhost', '://host.docker.internal')
+    const containerUrl = rewriteLoopbackForContainer(proxyUrl)
 
     const auth = attribution.current()
     const authToken = auth?.bearerToken() ?? this.getEffectiveApiKey()

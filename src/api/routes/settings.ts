@@ -1,7 +1,7 @@
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
-import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema } from '@shared/lib/llm-provider'
+import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -281,6 +281,12 @@ type AppPreferencesPatch = Partial<AppPreferences> & {
   hostBrowserProvider?: unknown
 }
 
+/** The generic provider's saved endpoint — displayed (not secret) in Settings. */
+function getGenericBaseUrl(): string | undefined {
+  const provider = getLlmProvider('generic')
+  return provider instanceof GenericLlmProvider ? provider.getEffectiveBaseUrl() : undefined
+}
+
 /** Build the GlobalSettingsResponse shared by GET and PUT handlers. */
 function buildSettingsResponse(
   appSettings: AppSettings,
@@ -314,6 +320,7 @@ function buildSettingsResponse(
     agentLimits: getEffectiveAgentLimits(),
     customEnvVars: getCustomEnvVars(),
     composioUserId: getComposioUserId(),
+    genericBaseUrl: getGenericBaseUrl(),
     accountProviderUserId: getAccountProviderUserId(),
     setupCompleted: !!appSettings.app?.setupCompleted,
     hostBrowserStatus: { providers: detectAllProviders() },

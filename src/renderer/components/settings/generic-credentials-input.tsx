@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Button } from '@renderer/components/ui/button'
@@ -23,10 +23,19 @@ export function GenericCredentialsInput({ disabled = false }: GenericCredentials
   const updateSettings = useUpdateSettings()
 
   const [baseUrl, setBaseUrl] = useState('')
+  const [baseUrlEdited, setBaseUrlEdited] = useState(false)
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [isValidating, setIsValidating] = useState(false)
   const [isRemoving, setIsRemoving] = useState(false)
   const [validationResult, setValidationResult] = useState<{ valid: boolean; error?: string } | null>(null)
+
+  // The endpoint is not a secret: show the saved value so the user can see
+  // (and correct) what the provider actually points at. Stop syncing once
+  // they start typing.
+  const savedBaseUrl = settings?.genericBaseUrl ?? ''
+  useEffect(() => {
+    if (!baseUrlEdited) setBaseUrl(savedBaseUrl)
+  }, [savedBaseUrl, baseUrlEdited])
 
   const apiKeyStatus: ApiKeyStatus | undefined = settings?.apiKeyStatus?.generic
   const isBusy = isValidating || isRemoving
@@ -46,10 +55,16 @@ export function GenericCredentialsInput({ disabled = false }: GenericCredentials
       const result = await res.json()
       setValidationResult(result)
       if (result.valid) {
-        await updateSettings.mutateAsync({
-          apiKeys: { genericBaseUrl: trimmedUrl, genericApiKey: trimmedKey },
-        })
-        setApiKeyInput('')
+        try {
+          await updateSettings.mutateAsync({
+            apiKeys: { genericBaseUrl: trimmedUrl, genericApiKey: trimmedKey },
+          })
+          setApiKeyInput('')
+        } catch {
+          // The credentials ARE valid — don't report a save failure as a
+          // validation failure or the user will retry a working key.
+          setValidationResult({ valid: false, error: 'Credentials are valid, but saving them failed — try again.' })
+        }
       }
     } catch {
       setValidationResult({ valid: false, error: 'Failed to validate' })
@@ -65,6 +80,7 @@ export function GenericCredentialsInput({ disabled = false }: GenericCredentials
         apiKeys: { genericBaseUrl: '', genericApiKey: '' },
       })
       setBaseUrl('')
+      setBaseUrlEdited(false)
       setApiKeyInput('')
       setValidationResult(null)
     } catch (error) {
@@ -102,7 +118,7 @@ export function GenericCredentialsInput({ disabled = false }: GenericCredentials
         <Input
           id="generic-base-url"
           value={baseUrl}
-          onChange={(e) => { setBaseUrl(e.target.value); setValidationResult(null) }}
+          onChange={(e) => { setBaseUrl(e.target.value); setBaseUrlEdited(true); setValidationResult(null) }}
           placeholder="http://localhost:4000"
           disabled={disabled || isBusy}
           className="bg-background"

@@ -110,6 +110,31 @@ describe('GenericLlmProvider.getContainerEnvVars', () => {
   it('leaves a non-localhost baseURL untouched', () => {
     expect(provider.getContainerEnvVars().ANTHROPIC_BASE_URL).toBe('https://proxy.example')
   })
+
+  it('rewrites loopback IPs, not just the localhost hostname', () => {
+    settingsMock.mockReturnValue({
+      apiKeys: { genericApiKey: 'k', genericBaseUrl: 'http://127.0.0.1:11434' },
+    })
+    expect(provider.getContainerEnvVars().ANTHROPIC_BASE_URL).toBe('http://host.docker.internal:11434')
+  })
+
+  it('does not mangle hostnames that merely start with localhost', () => {
+    settingsMock.mockReturnValue({
+      apiKeys: { genericApiKey: 'k', genericBaseUrl: 'http://localhost.mycorp.dev:4000' },
+    })
+    expect(provider.getContainerEnvVars().ANTHROPIC_BASE_URL).toBe('http://localhost.mycorp.dev:4000')
+  })
+})
+
+describe('GenericLlmProvider.getApiKeyStatus', () => {
+  it('reports not-configured when a key is set without a base URL', () => {
+    settingsMock.mockReturnValue({ apiKeys: { genericApiKey: 'k' } })
+    expect(provider.getApiKeyStatus()).toEqual({ isConfigured: false, source: 'none' })
+  })
+
+  it('reports configured when both key and base URL are set', () => {
+    expect(provider.getApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
+  })
 })
 
 describe('GenericLlmProvider.createClient', () => {
@@ -285,6 +310,24 @@ describe('GenericLlmProvider.validateKey', () => {
   it('treats a 404 as reachable-but-not-listable (soft-passes so the user can proceed)', async () => {
     stubFetch({ ok: false, status: 404 })
     expect(await provider.validateKey('key')).toEqual({ valid: true })
+  })
+
+  it('rejects a /v1-suffixed base URL with guidance when the stripped base serves the listing', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => ({
+      ok: !url.includes('/v1/v1/'),
+      status: url.includes('/v1/v1/') ? 404 : 200,
+      json: async () => ({}),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = await provider.validateKey('key', { baseUrl: 'http://localhost:4000/v1' })
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('use http://localhost:4000')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('still soft-passes a /v1-suffixed base URL when the stripped base 404s too', async () => {
+    stubFetch({ ok: false, status: 404 })
+    expect(await provider.validateKey('key', { baseUrl: 'http://localhost:4000/v1' })).toEqual({ valid: true })
   })
 
   it('reports the status code on other non-OK responses', async () => {
