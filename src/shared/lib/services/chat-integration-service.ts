@@ -2,9 +2,9 @@
  * Chat Integration Service — CRUD operations for the chat_integrations table.
  */
 
-import { eq, and, inArray } from 'drizzle-orm'
+import { eq, and, inArray, count } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { chatIntegrations } from '@shared/lib/db/schema'
+import { chatIntegrations, chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
 import { captureException } from '@shared/lib/error-reporting'
@@ -195,13 +195,38 @@ function isBetterStartupCandidate(candidate: ChatIntegration, current: ChatInteg
   return candidateTs > currentTs
 }
 
-export function listChatIntegrationsByAgents(agentSlugs: string[]): Map<string, ChatIntegration[]> {
+/**
+ * Count chat sessions per integration across a set of agents — the
+ * "has this connection actually been used" signal for the home graph.
+ */
+export function countSessionsPerIntegration(agentSlugs: string[]): Record<string, number> {
+  if (agentSlugs.length === 0) return {}
+
+  const rows = db
+    .select({ integrationId: chatIntegrationSessions.integrationId, sessions: count() })
+    .from(chatIntegrationSessions)
+    .innerJoin(chatIntegrations, eq(chatIntegrationSessions.integrationId, chatIntegrations.id))
+    .where(inArray(chatIntegrations.agentSlug, agentSlugs))
+    .groupBy(chatIntegrationSessions.integrationId)
+    .all()
+
+  const counts: Record<string, number> = {}
+  for (const row of rows) counts[row.integrationId] = row.sessions
+  return counts
+}
+
+export function listChatIntegrationsByAgents(
+  agentSlugs: string[],
+  // Default stays active-only (the agent-list enrichment tags live chats);
+  // the home graph passes allStatuses so error/paused nodes still render.
+  options?: { allStatuses?: boolean },
+): Map<string, ChatIntegration[]> {
   if (agentSlugs.length === 0) return new Map()
 
   const results = db.select().from(chatIntegrations)
     .where(and(
       inArray(chatIntegrations.agentSlug, agentSlugs),
-      eq(chatIntegrations.status, 'active'),
+      options?.allStatuses ? undefined : eq(chatIntegrations.status, 'active'),
     ))
     .all()
 
