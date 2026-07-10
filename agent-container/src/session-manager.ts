@@ -52,6 +52,8 @@ function formatIdleThreshold(ms: number): string {
 
 export class SessionManager extends EventEmitter {
   private sessions: Map<string, SessionData> = new Map();
+  // In-flight resumes, keyed by session id — see resumeSession().
+  private resuming: Map<string, Promise<SessionData | undefined>> = new Map();
   private baseWorkingDirectory: string;
   private persistence: SessionPersistence;
   private readonly idleEvictionMs: number;
@@ -255,7 +257,15 @@ export class SessionManager extends EventEmitter {
       process,
       messages: [],
       subscribers: new Set(),
-      settlement: new SessionSettlementTracker({ wakeGraceMs: this.wakeGraceMs }),
+      // Authority: this container always runs the CLI with
+      // CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, so idle comes from state
+      // events only — a bare result (pre-init running event is dropped by
+      // listener-attach timing; queued streams carry intermediate results)
+      // must never read as settled.
+      settlement: new SessionSettlementTracker({
+        wakeGraceMs: this.wakeGraceMs,
+        stateEventsAuthority: true,
+      }),
       eviction: null,
     };
 
@@ -268,6 +278,12 @@ export class SessionManager extends EventEmitter {
     // continuation), so the tracker can never read settled mid-turn.
     process.on('outbound-message', (info: { expectsResponse: boolean }) => {
       sessionData.settlement.noteOutboundMessage(info);
+    });
+
+    // Background tasks die with the CLI process, and a fresh process emits no
+    // initial snapshot — carried-over ids would pin the session forever.
+    process.on('query-start', () => {
+      sessionData.settlement.resetBackgroundTasks();
     });
 
     process.on('stderr', (error: string) => {
@@ -308,7 +324,27 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  private async resumeSession(sessionId: string): Promise<SessionData | undefined> {
+  /**
+   * Dedup wrapper: concurrent callers of a cold session (a POST racing a GET,
+   * two rapid sends after a container restart) share ONE in-flight resume and
+   * only see the session once it has fully started. Publishing a
+   * half-initialized entry instead (the previous approach) let a second
+   * sender deliver its message before the first caller's — reversing
+   * conversation order at the model.
+   */
+  private resumeSession(sessionId: string): Promise<SessionData | undefined> {
+    const inFlight = this.resuming.get(sessionId);
+    if (inFlight) {
+      return inFlight;
+    }
+    const promise = this.doResumeSession(sessionId).finally(() => {
+      this.resuming.delete(sessionId);
+    });
+    this.resuming.set(sessionId, promise);
+    return promise;
+  }
+
+  private async doResumeSession(sessionId: string): Promise<SessionData | undefined> {
     // Check if we have persisted data for this session
     const persisted = this.persistence.getSession(sessionId);
     if (!persisted) {
@@ -317,7 +353,6 @@ export class SessionManager extends EventEmitter {
 
     console.log(`Attempting to resume session ${sessionId} with Claude session ID ${persisted.claudeSessionId}`);
 
-    let sessionData: SessionData | undefined;
     try {
       // Create a new Claude Code process with resume
       const process = new ClaudeCodeProcess({
@@ -364,10 +399,10 @@ export class SessionManager extends EventEmitter {
         settlement: new SessionSettlementTracker({
           bornIdle: true,
           wakeGraceMs: this.wakeGraceMs,
+          stateEventsAuthority: true,
         }),
         eviction: null,
       };
-      sessionData = data;
 
       // Set up event listeners (same as createSession)
       process.on('message', (message: SDKMessage) => {
@@ -378,6 +413,10 @@ export class SessionManager extends EventEmitter {
         data.settlement.noteOutboundMessage(info);
       });
 
+      process.on('query-start', () => {
+        data.settlement.resetBackgroundTasks();
+      });
+
       process.on('stderr', (error: string) => {
         console.error(`[Session ${sessionId}] stderr:`, error);
       });
@@ -386,23 +425,19 @@ export class SessionManager extends EventEmitter {
         console.log(`Resumed session ${sessionId} exited with code ${code}`);
       });
 
-      this.sessions.set(sessionId, data);
-
       // Start the process (which will resume the Claude session)
       // Note: slash commands are captured later when init event fires via WebSocket
       await process.start();
+
+      // Publish only once fully started — concurrent callers wait on the
+      // resuming promise, never on a half-initialized entry. A failed start
+      // therefore also can't leave a zombie in the map.
+      this.sessions.set(sessionId, data);
 
       console.log(`Successfully resumed session ${sessionId}`);
       return data;
     } catch (error) {
       console.error(`Failed to resume session ${sessionId}:`, error);
-      // The entry goes into the map BEFORE process.start() (which is also what
-      // dedupes concurrent resumes), so a failed start must remove OUR entry
-      // again — otherwise later calls find a zombie and report a dead session
-      // as live.
-      if (sessionData && this.sessions.get(sessionId) === sessionData) {
-        this.sessions.delete(sessionId);
-      }
       return undefined;
     }
   }

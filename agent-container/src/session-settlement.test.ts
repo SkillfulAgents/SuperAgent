@@ -405,6 +405,72 @@ function replay(frames: CapturedFrame[], tracker: SessionSettlementTracker): voi
   }
 }
 
+describe('SessionSettlementTracker — state-event authority', () => {
+  it('a result before any state event does not settle an authority tracker', () => {
+    const tracker = new SessionSettlementTracker({ stateEventsAuthority: true });
+    tracker.noteOutboundMessage();
+    tracker.handleMessage(result(), T0);
+    expect(tracker.isSettled(T0)).toBe(false); // idle needs the state event
+
+    tracker.handleMessage(state('idle'), T0);
+    expect(tracker.isSettled(T0)).toBe(true);
+  });
+
+  it('stream traffic does not flip an authority tracker busy', () => {
+    const tracker = new SessionSettlementTracker({ bornIdle: true, stateEventsAuthority: true });
+    tracker.handleMessage(userMsg(), T0);
+    tracker.handleMessage(assistantMsg(), T0);
+    expect(tracker.isSettled(T0)).toBe(true);
+  });
+
+  it('queued-message-final-response never settles before its final idle under authority', () => {
+    // The capture carries FOUR results before the single final idle — a
+    // legacy tracker reads idle at result #1 with three turns still pending;
+    // a threshold-0 sweep landing there would kill them.
+    const frames = loadFixture('queued-message-final-response');
+    const tracker = new SessionSettlementTracker({ stateEventsAuthority: true });
+    tracker.noteOutboundMessage();
+    const idleAt = frames.findIndex(
+      ({ frame }) => frame.subtype === 'session_state_changed' && frame.state === 'idle'
+    );
+    expect(idleAt).toBeGreaterThan(0);
+    frames.forEach(({ t, frame }, i) => {
+      tracker.handleMessage(frame, t);
+      if (i < idleAt) {
+        expect(tracker.isSettled(t)).toBe(false);
+      }
+    });
+    const endT = frames[frames.length - 1].t;
+    expect(tracker.isSettled(endT + DEFAULT_WAKE_GRACE_MS + 1)).toBe(true);
+  });
+});
+
+describe('SessionSettlementTracker — resetBackgroundTasks (process replacement)', () => {
+  it('clears edge tasks, snapshot tasks, and wake-grace state', () => {
+    const tracker = new SessionSettlementTracker({ stateEventsAuthority: true });
+    tracker.noteOutboundMessage();
+    tracker.handleMessage(taskStarted('edge-1'), T0);
+    tracker.handleMessage(snapshot(['edge-1', 'snap-only']), T0);
+    tracker.handleMessage(result(), T0);
+    tracker.handleMessage(state('idle'), T0);
+    expect(tracker.isSettled(T0)).toBe(false); // pinned by both sets
+
+    // The CLI process is replaced — its tasks died with it, and no terminal
+    // signal or startup snapshot will ever clear them.
+    tracker.resetBackgroundTasks();
+    expect(tracker.openBackgroundTaskCount).toBe(0);
+    expect(tracker.isSettled(T0)).toBe(true);
+  });
+
+  it('reset does not disturb turn state (busy stays busy)', () => {
+    const tracker = new SessionSettlementTracker({ stateEventsAuthority: true });
+    tracker.noteOutboundMessage();
+    tracker.handleMessage(taskStarted('t1'), T0);
+    tracker.resetBackgroundTasks();
+    expect(tracker.isSettled(T0)).toBe(false); // still mid-turn
+  });
+});
+
 describe('SessionSettlementTracker — real capture replay', () => {
   it('covers every capture fixture in the repo', () => {
     const onDisk = fs

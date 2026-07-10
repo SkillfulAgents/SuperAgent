@@ -34,6 +34,7 @@ class MockClaudeProcess extends EventEmitter {
   stopCalls = 0
   disposeCalls = 0
   sendMessageCalls = 0
+  sentContents: string[] = []
   lastStopOptions: { graceful?: boolean } | undefined
   sessionId: string
 
@@ -55,8 +56,9 @@ class MockClaudeProcess extends EventEmitter {
     this.running = true
   }
 
-  async sendMessage(): Promise<void> {
+  async sendMessage(content?: string): Promise<void> {
     this.sendMessageCalls++
+    this.sentContents.push(content ?? '')
     if (nextInitFailure) {
       const err = nextInitFailure
       nextInitFailure = null
@@ -238,16 +240,50 @@ describe('SessionManager idle eviction', () => {
     expect(proc.stopCalls).toBe(1)
   })
 
-  it('treats result as the idle signal when no state events were seen', async () => {
+  it('a bare result without an idle event does NOT settle (state events are authoritative)', async () => {
+    // This container always pins a CLI that emits session_state_changed, so a
+    // result arriving before any state event (the pre-init running event is
+    // dropped by listener-attach timing; queued-message streams contain
+    // intermediate results) must not read as idle — a queued turn may still
+    // be pending.
     const session = await manager.createSession({ initialMessage: 'hi' })
     const proc = spawnedProcesses[spawnedProcesses.length - 1]
     proc.emit('message', { type: 'result', subtype: 'success' })
     await pastThreshold()
 
     await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(0)
 
+    emitIdle(proc) // the authoritative signal
+    await pastThreshold()
+    await manager.evictIdleSessions()
     expect(proc.stopCalls).toBe(1)
     expect(manager.hasActiveSession(session.id)).toBe(true)
+  })
+
+  it('an intermediate result with a message queued cannot evict the pending turn', async () => {
+    // Real capture (queued-message-final-response) shows four results before
+    // the single final idle. A threshold-0 sweep landing after result #1
+    // must not kill the queued turns.
+    const promoOff = new SessionManager(workDir, {
+      idleEvictionMs: 0,
+      automatedIdleEvictionMs: 0,
+    })
+    try {
+      const session = await promoOff.createSession({ initialMessage: 'first question' })
+      const proc = spawnedProcesses[spawnedProcesses.length - 1]
+      await promoOff.sendMessage(session.id, 'second question') // queued mid-turn
+
+      proc.emit('message', { type: 'result', subtype: 'success' }) // turn 1 done, turn 2 pending
+      await promoOff.evictIdleSessions()
+      expect(proc.stopCalls).toBe(0)
+
+      emitSettled(proc) // turn 2's result + the real final idle
+      await promoOff.evictIdleSessions()
+      expect(proc.stopCalls).toBe(1)
+    } finally {
+      await promoOff.stopAll()
+    }
   })
 
   it('sendMessage after eviction restarts the same process transparently', async () => {
@@ -313,16 +349,24 @@ describe('SessionManager idle eviction', () => {
     expect(proc.stopCalls).toBe(0)
   })
 
-  it('assistant traffic flips busy on a legacy stream without state events', async () => {
+  it('assistant traffic neither settles nor pins an authority tracker', async () => {
+    // Under state-event authority, stream traffic is not a settlement signal
+    // in either direction: a result + assistant frames stay busy until the
+    // idle event, and post-idle echoes don't re-pin.
     const session = await manager.createSession({ initialMessage: 'hi' })
     const proc = spawnedProcesses[spawnedProcesses.length - 1]
-    proc.emit('message', { type: 'result', subtype: 'success' }) // legacy settle
+    proc.emit('message', { type: 'result', subtype: 'success' })
     proc.emit('message', { type: 'assistant', message: { content: [] } })
     await pastThreshold()
 
     await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(0) // no idle event yet — still busy
 
-    expect(proc.stopCalls).toBe(0)
+    emitIdle(proc)
+    proc.emit('message', { type: 'assistant', message: { content: [] } }) // late echo
+    await pastThreshold()
+    await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(1)
     expect(manager.hasActiveSession(session.id)).toBe(true)
   })
 
@@ -589,6 +633,51 @@ describe('SessionManager idle eviction', () => {
     } finally {
       await restarted.stopAll()
     }
+  })
+
+  it('concurrent sends into a cold session are delivered in order', async () => {
+    // A half-initialized session must not be visible to concurrent senders:
+    // if the second caller can send while the first is still inside
+    // resumeSession, the model receives the messages in reverse order.
+    const { id } = await createIdleSession()
+    await manager.stopAll()
+
+    const restarted = new SessionManager(workDir, {
+      idleEvictionMs: IDLE_MS,
+      automatedIdleEvictionMs: 0,
+    })
+    try {
+      nextStartDelayMs = 50
+      await Promise.all([
+        restarted.sendMessage(id, 'first'),
+        restarted.sendMessage(id, 'second'),
+      ])
+      nextStartDelayMs = 0
+
+      const proc = spawnedProcesses[spawnedProcesses.length - 1]
+      expect(proc.sentContents).toEqual(['first', 'second'])
+    } finally {
+      await restarted.stopAll()
+    }
+  })
+
+  it('background-task bookkeeping resets when the process is replaced (tasks die with the CLI)', async () => {
+    // background_tasks_changed is process-local and a fresh process emits no
+    // initial snapshot: a task id carried across a process replacement
+    // (interrupt/crash mid-task) would pin the session unevictable forever.
+    const { proc } = await createIdleSession({ metadata: { isAutomated: true } })
+    proc.emit('message', { type: 'system', subtype: 'task_started', task_id: 'orphan-1' })
+
+    await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(0) // held by the live task
+
+    // The CLI process is replaced (user interrupt / crash) — the task died
+    // with it, and no terminal signal or snapshot will ever arrive for it.
+    proc.emit('query-start')
+    emitSettled(proc)
+
+    await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(1)
   })
 
   it('a shouldQuery:false append does NOT promote an automated session', async () => {

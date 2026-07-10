@@ -175,6 +175,26 @@ describe('ClaudeCodeProcess stop/restart teardown race', () => {
     await proc.stop()
   })
 
+  it('a sendMessage racing a graceful stop waits it out instead of throwing the message away', async () => {
+    // The MCP-injection continuation (and any bypass caller) can hit
+    // sendMessage while a graceful stop has already closed the queue but not
+    // yet nulled it — pushing would throw "MessageQueue is closed" and the
+    // message would be silently lost. It must instead wait for the stop to
+    // finish and cold-restart, exactly like a send into an evicted session.
+    const proc = new ClaudeCodeProcess({ sessionId: 's8', workingDirectory: '/tmp' })
+    await proc.start()
+    expect(queryCalls.length).toBe(1)
+
+    const stopP = proc.stop({ graceful: true, graceMs: 400 })
+    await new Promise((r) => setTimeout(r, 50)) // inside the graceful window
+    await proc.sendMessage('rescue me') // must not throw
+    await stopP
+
+    expect(queryCalls.length).toBe(2) // restarted once, after the stop completed
+    expect(proc.isRunning()).toBe(true)
+    await proc.stop()
+  })
+
   it('graceful stop falls back to abort when the loop ignores the closed queue', async () => {
     // The mocked query never ends on queue-close (like a wedged CLI): the
     // graceful window must expire and the abort must still tear it down.

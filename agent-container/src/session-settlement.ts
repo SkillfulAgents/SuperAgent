@@ -83,6 +83,21 @@ export interface SettlementTrackerOptions {
    */
   bornIdle?: boolean;
   wakeGraceMs?: number;
+  /**
+   * The consumer KNOWS the process emits session_state_changed events
+   * (the container always sets CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1 on a
+   * pinned CLI), so state events are authoritative from the first frame —
+   * before one has actually been observed. Without this, a result arriving
+   * before the first state event flips the tracker idle: the pre-init
+   * `running` event is dropped by listener-attach timing, and queued-message
+   * streams carry intermediate results (see the queued-message-final-response
+   * capture: four results before the single final idle) — a threshold-0
+   * sweep landing there would evict a session with turns still pending.
+   * Fail-safe direction: if the CLI ever stops emitting state events under
+   * this flag, sessions stop settling (a bounded leak), rather than settling
+   * early (killed queued work).
+   */
+  stateEventsAuthority?: boolean;
 }
 
 export interface SettlementState {
@@ -114,6 +129,24 @@ export class SessionSettlementTracker {
   constructor(options?: SettlementTrackerOptions) {
     this.runtime = options?.bornIdle ? 'idle' : 'busy';
     this.wakeGraceMs = options?.wakeGraceMs ?? DEFAULT_WAKE_GRACE_MS;
+    // Authority = behave as if a state event was already seen: results stop
+    // acting as idle signals and stream traffic stops acting as busy signals.
+    this.stateEventsSeen = options?.stateEventsAuthority ?? false;
+  }
+
+  /**
+   * Background tasks are process-local: they die with the CLI process, and a
+   * fresh process emits NO initial background_tasks_changed snapshot. Any
+   * edge/snapshot ids carried across a process replacement (interrupt or
+   * crash mid-task, cold restart) would therefore pin the session
+   * unevictable forever — no terminal signal or snapshot will ever arrive
+   * for them. Call whenever the underlying query/process is replaced; never
+   * for ordinary messages within the same process.
+   */
+  resetBackgroundTasks(): void {
+    this.edgeTaskIds.clear();
+    this.snapshotTaskIds = null;
+    this.awaitingWakeSince = null;
   }
 
   /**

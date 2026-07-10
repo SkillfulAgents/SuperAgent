@@ -396,6 +396,11 @@ export class ClaudeCodeProcess extends EventEmitter {
   // tore down: the revived subprocess would belong to a session the manager
   // believes is cold (or gone), invisible to the idle reaper.
   private stopping = false;
+  // Completion of the most recent stop(). A sendMessage racing an in-flight
+  // stop (its queue already closed but not yet nulled) must wait this out and
+  // cold-restart — pushing into the closed queue would throw and silently
+  // lose the message (e.g. an MCP-injection continuation).
+  private currentStop: Promise<void> | null = null;
   // Terminal: the session was deleted. No path may revive this process.
   private disposed = false;
   private userMessageCount: number = 0;
@@ -804,6 +809,11 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.messageQueue = new MessageQueue();
     this.queryInstance = this.createQuery();
     this.isReady = true;
+    // Background tasks are process-local and die with the old process; the
+    // SessionManager listens for this to reset its settlement bookkeeping —
+    // a task id carried across the replacement would pin the session
+    // unevictable forever (no terminal signal or snapshot ever comes).
+    this.emit('query-start');
   }
 
   async start(): Promise<void> {
@@ -966,9 +976,14 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.model = model;
     }
 
-    if (!this.messageQueue || !this.isReady) {
-      // Cold session — first init will pick up the (possibly new) effort/model values.
+    if (this.stopping || !this.messageQueue || !this.isReady) {
+      // Cold session, or a stop in flight (queue closed but not yet nulled —
+      // pushing would throw and lose the message): wait the stop out, then
+      // restart. First init picks up the (possibly new) effort/model values.
       console.log(`[Session ${this.sessionId}] Session not running, restarting...`);
+      if (this.currentStop) {
+        await this.currentStop.catch(() => undefined);
+      }
       await this.restart();
     } else if (effortChanged) {
       // Effort can only be set at query creation time — the SDK has no setEffort
@@ -1092,6 +1107,12 @@ export class ClaudeCodeProcess extends EventEmitter {
    * anyway).
    */
   async stop(options?: { graceful?: boolean; graceMs?: number }): Promise<void> {
+    const stopRun = this.performStop(options);
+    this.currentStop = stopRun;
+    await stopRun;
+  }
+
+  private async performStop(options?: { graceful?: boolean; graceMs?: number }): Promise<void> {
     console.log(`[Session ${this.sessionId}] Stopping session${options?.graceful ? ' (graceful)' : ''}`);
     this.stopping = true;
 
