@@ -2,7 +2,8 @@ import Anthropic from '@anthropic-ai/sdk'
 import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { EffortLevel } from '../container/types'
-import { getSettings, getModelCatalogSettings } from '../config/settings'
+import { getSettings, getModelCatalogSettings, type ApiKeyStatus } from '../config/settings'
+import { rewriteLoopbackForContainer } from './container-url'
 
 const BASE_URL_ENV = 'GENERIC_BASE_URL'
 const DEFAULT_MODEL_ENV = 'GENERIC_DEFAULT_MODEL'
@@ -84,6 +85,17 @@ export class GenericLlmProvider extends BaseLlmProvider {
   protected readonly settingsKeyField = 'genericApiKey' as const
   protected readonly envVarName = 'GENERIC_API_KEY'
 
+  /**
+   * A key without an endpoint is not a usable configuration: createClient and
+   * searchModels both require the base URL, so reporting configured on the key
+   * alone lets getConfiguredLlmClient's guard pass and then throw downstream.
+   */
+  override getApiKeyStatus(): ApiKeyStatus {
+    const status = super.getApiKeyStatus()
+    if (!status.isConfigured || this.getEffectiveBaseUrl()) return status
+    return { isConfigured: false, source: 'none' }
+  }
+
   /** User-supplied endpoint, from settings (preferred) or GENERIC_BASE_URL env. */
   getEffectiveBaseUrl(): string | undefined {
     const fromSettings = getSettings().apiKeys?.genericBaseUrl?.trim()
@@ -117,10 +129,10 @@ export class GenericLlmProvider extends BaseLlmProvider {
   }
 
   getContainerEnvVars(): Record<string, string | undefined> {
-    // A 'localhost' endpoint (e.g. ollama on the host) isn't reachable as
+    // A loopback endpoint (e.g. ollama on the host) isn't reachable as
     // localhost from inside the agent container; rewrite to the host gateway
     // (same translation the platform provider applies).
-    const containerUrl = this.getEffectiveBaseUrl()?.replace('://localhost', '://host.docker.internal')
+    const containerUrl = rewriteLoopbackForContainer(this.getEffectiveBaseUrl())
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: containerUrl,
@@ -157,6 +169,22 @@ export class GenericLlmProvider extends BaseLlmProvider {
       return { valid: false, error: `Auth rejected (${response.status}) — check the API key.` }
     }
     if (response.status === 404) {
+      // The SDK appends /v1/* itself, so a base URL that already ends in /v1
+      // (the OpenAI-docs convention) probes /v1/v1/models and 404s. If the
+      // stripped base serves the listing, tell the user exactly what to fix
+      // instead of soft-passing a config that can never serve a request.
+      const trimmed = baseURL.replace(/\/+$/, '')
+      const stripped = trimmed.replace(/\/v1$/i, '')
+      if (stripped !== trimmed) {
+        try {
+          const retry = await fetchModelsList(stripped, apiKey)
+          if (retry.ok) {
+            return { valid: false, error: `Base URL should not include the /v1 suffix — use ${stripped}` }
+          }
+        } catch {
+          // Stripped probe unreachable; fall through to the soft-pass below.
+        }
+      }
       // Reachable but no /v1/models — key not verifiable this way. Allow save so
       // the user can proceed to add models manually.
       return { valid: true }
