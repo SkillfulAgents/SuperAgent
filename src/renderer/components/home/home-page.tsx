@@ -1,5 +1,6 @@
 
-import { useMemo } from 'react'
+import { lazy, Suspense, useMemo } from 'react'
+import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
@@ -18,13 +19,19 @@ import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { DashboardCard } from './dashboard-card'
 import { PwaInstallBanner } from './pwa-install-banner'
 import { isElectron, getPlatform } from '@renderer/lib/env'
-import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer, Search } from 'lucide-react'
+import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer, Search, LayoutGrid, Waypoints } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { DailyUsageEntry } from '@shared/lib/types/usage'
 import { formatDistanceToNow } from 'date-fns'
 import { useRenderTracker } from '@renderer/lib/perf'
+
+// Code-split: the graph pulls in @xyflow/react + d3-force, which nobody
+// should pay for on a cards-only page load.
+const AgentGraph = lazy(() =>
+  import('./graph/agent-graph').then((m) => ({ default: m.AgentGraph })),
+)
 
 /** Extract per-agent daily cost from the global usage data */
 function useAgentUsageSpark(agentSlug: string, dailyUsage: DailyUsageEntry[] | undefined) {
@@ -293,6 +300,21 @@ export function HomePage() {
   const hasAgents = orderedAgents.length > 0
   const { openSearch } = useSearch()
   const isMac = getPlatform() === 'darwin'
+  // Cards vs. graph view — URL-driven (`/?view=graph`) so back/forward
+  // navigation and reloads restore the selection; absent = cards.
+  const navigate = useNavigate()
+  const routeSearch = useRouteSearch({ strict: false }) as { view?: string }
+  const view: 'cards' | 'graph' = routeSearch.view === 'graph' ? 'graph' : 'cards'
+  const setView = (next: 'cards' | 'graph') => {
+    if (next === view) return
+    void navigate({
+      to: '/',
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        view: next === 'graph' ? ('graph' as const) : undefined,
+      }),
+    })
+  }
 
   return (
     <div className="h-full flex flex-col">
@@ -316,8 +338,61 @@ export function HomePage() {
             </kbd>
           </button>
         </div>
+        <div className="app-no-drag flex items-center gap-0.5 rounded-md border p-0.5">
+          <button
+            type="button"
+            onClick={() => setView('cards')}
+            title="Card view"
+            aria-pressed={view === 'cards'}
+            data-testid="home-view-cards"
+            className={`rounded p-1 transition-colors ${view === 'cards' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <LayoutGrid className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setView('graph')}
+            title="Graph view"
+            aria-pressed={view === 'graph'}
+            data-testid="home-view-graph"
+            className={`rounded p-1 transition-colors ${view === 'graph' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <Waypoints className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </header>
 
+      {view === 'graph' ? (
+        <div className="min-h-0 flex-1">
+          {agentsLoading ? (
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+            </div>
+          ) : hasAgents ? (
+            <Suspense
+              fallback={
+                <div className="flex h-full items-center justify-center text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                </div>
+              }
+            >
+              <AgentGraph />
+            </Suspense>
+          ) : (
+            <div
+              className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground"
+              data-testid="graph-empty-state"
+            >
+              <Waypoints className="h-8 w-8" />
+              <p className="text-sm">No agents yet — the graph lights up once you create one.</p>
+              <Button size="sm" onClick={() => { void createUntitledAgent() }} disabled={isCreatingAgent}>
+                <Plus className="h-4 w-4 mr-1" />
+                New Agent
+              </Button>
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="flex-1 overflow-y-auto px-4 py-6 md:p-6">
         <div className="max-w-4xl mx-auto space-y-8">
           {/* Mobile web/PWA only — "Install Gamut" prompt; renders nothing on desktop/Electron. */}
@@ -376,6 +451,7 @@ export function HomePage() {
 
         </div>
       </div>
+      )}
     </div>
   )
 }

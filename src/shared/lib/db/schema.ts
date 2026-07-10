@@ -225,7 +225,12 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
   matchedScopes: text('matched_scopes'), // JSON array string of matched scope names
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
-})
+}, (table) => ({
+  // Covers the home-graph usage aggregation (GROUP BY agent×account, with an
+  // owner join on account_id) — the table grows with every proxied call, so
+  // an unindexed scan degrades linearly forever.
+  accountAgentIdx: index('proxy_audit_log_account_agent_idx').on(table.accountId, table.agentSlug),
+}))
 
 // Remote MCP servers registered at app level
 export const remoteMcpServers = sqliteTable('remote_mcp_servers', {
@@ -281,7 +286,11 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
   policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
   matchedTool: text('matched_tool'), // tool name for tools/call requests
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
-})
+}, (table) => ({
+  // Same rationale as proxy_audit_log_account_agent_idx: usage aggregation
+  // over an append-only table.
+  mcpAgentIdx: index('mcp_audit_log_mcp_agent_idx').on(table.remoteMcpId, table.agentSlug),
+}))
 
 // Agent ACLs - maps users to agents with roles (auth mode only)
 export const agentAcl = sqliteTable('agent_acl', {

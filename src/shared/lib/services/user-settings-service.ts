@@ -31,6 +31,9 @@ export const userSettingsSchema = z.object({
   autoCheckUpdates: z.boolean().default(true),
   timezone: z.string().optional(),
   agentOrder: z.array(z.string()).optional(),
+  // Home graph view: user-dragged node positions, keyed by stable node id
+  // (e.g. 'agent:{slug}', 'account:{id}'). Absent entries fall back to auto-layout.
+  graphNodePositions: z.record(z.string(), z.object({ x: z.number(), y: z.number() })).optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),
