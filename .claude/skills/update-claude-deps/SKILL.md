@@ -50,6 +50,26 @@ Review the current versions of Claude-related packages and create an upgrade pla
   ```
   Then replace the template literal in `src/api/llm-sdk-bundle.ts` with the contents of `/tmp/sdk-bundle.js` (escape any backticks with `\``)
 
+## Validation after upgrading
+
+1. **Container unit suite**: `cd agent-container && npx vitest run` — includes the settlement-tracker fixture replays (19 real captured SDK streams), which catch most protocol-shape regressions.
+
+2. **Gated session-GC E2E suites** (MANDATORY on any `@anthropic-ai/claude-agent-sdk` / CLI bump — CI never runs these, and they guard CLI-behavior assumptions the idle-eviction reaper depends on):
+   ```bash
+   cd agent-container
+   RUN_SESSION_GC_E2E=1 ANTHROPIC_API_KEY=... npx vitest run src/session-gc.e2e.test.ts
+   RUN_SESSION_GC_E2E=1 ANTHROPIC_API_KEY=... npx vitest run src/session-gc-durability.e2e.test.ts
+   ```
+   - Run the two files **separately**, never in one vitest invocation: the pgrep zero-process assertions in each see the other worker's CLI subprocesses.
+   - Costs real API tokens (~$0.05, ~1.5 min total on haiku).
+   - What they hold in place, and what breaks silently if an SDK/CLI change violates it:
+     - the CLI does NOT emit `session_state_changed:idle` between a finished turn and a queued follow-up (violation → the reaper kills queued messages);
+     - an interrupt yields a `result` + `idle` so the session settles (violation → every user Stop pins a ~250MB parked subprocess forever);
+     - the CLI exits cleanly on stdin EOF, flushing its transcript (violation → eviction silently loses the latest turns / `shouldQuery:false` appends on the next `--resume`);
+     - `--resume` resumes in-place with the same session id, with prior context intact.
+
+3. If either E2E file fails, do not ship the bump — check the settlement tracker (`agent-container/src/session-settlement.ts`) and graceful-stop path (`claude-code.ts stop({graceful:true})`) against the new CLI's stream behavior.
+
 ## Important notes
 
 - The Claude Code CLI is installed as a native binary in Docker (not npm). Version is pinned via `curl -fsSL https://claude.ai/install.sh | bash -s <VERSION>`

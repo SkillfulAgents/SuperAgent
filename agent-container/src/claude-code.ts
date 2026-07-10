@@ -383,6 +383,26 @@ export class ClaudeCodeProcess extends EventEmitter {
   private effort: EffortLevel | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
+  // Monotonic id of the current query; bumped by initializeQuery. A previous
+  // query's processMessages loop checks it before clearing shared flags in
+  // its finally, so a slow teardown can't mark a fresh query stopped.
+  private queryGeneration = 0;
+  // Resolves when the current processMessages loop has fully unwound. stop()
+  // awaits it so an evict-then-resume can't start a second query while the
+  // first is still tearing down.
+  private processingDone: Promise<void> | null = null;
+  // Set by stop(), cleared by the sanctioned revival paths (start/restart).
+  // An interrupt() overlapping a stop() must not restart the query it just
+  // tore down: the revived subprocess would belong to a session the manager
+  // believes is cold (or gone), invisible to the idle reaper.
+  private stopping = false;
+  // Completion of the most recent stop(). A sendMessage racing an in-flight
+  // stop (its queue already closed but not yet nulled) must wait this out and
+  // cold-restart — pushing into the closed queue would throw and silently
+  // lose the message (e.g. an MCP-injection continuation).
+  private currentStop: Promise<void> | null = null;
+  // Terminal: the session was deleted. No path may revive this process.
+  private disposed = false;
   private userMessageCount: number = 0;
   private isResumedSession: boolean;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
@@ -782,13 +802,25 @@ export class ClaudeCodeProcess extends EventEmitter {
    * Initializes the abort controller and message queue, then creates a new query.
    */
   private initializeQuery(): void {
+    // New query generation: a stale processMessages loop from a previous
+    // query must not clobber this one's state when it finally unwinds.
+    this.queryGeneration++;
     this.abortController = new AbortController();
     this.messageQueue = new MessageQueue();
     this.queryInstance = this.createQuery();
     this.isReady = true;
+    // Background tasks are process-local and die with the old process; the
+    // SessionManager listens for this to reset its settlement bookkeeping —
+    // a task id carried across the replacement would pin the session
+    // unevictable forever (no terminal signal or snapshot ever comes).
+    this.emit('query-start');
   }
 
   async start(): Promise<void> {
+    if (this.disposed) {
+      throw new Error(`Session ${this.sessionId} process was disposed`);
+    }
+    this.stopping = false;
     const isResuming = !!this.claudeSessionId;
     console.log(`[Session ${this.sessionId}] Starting SDK-based session`);
     console.log(`[Session ${this.sessionId}] ANTHROPIC_API_KEY set:`, !!process.env.ANTHROPIC_API_KEY);
@@ -799,12 +831,13 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.emit('ready');
 
     // Start processing messages in the background
-    this.processMessages();
+    this.processingDone = this.processMessages();
   }
 
   private async processMessages(): Promise<void> {
     if (!this.queryInstance) return;
 
+    const generation = this.queryGeneration;
     this.isProcessing = true;
     // Tracks whether the MOST RECENT result was an error. The catch below emits
     // a synthetic error result only when the SDK hasn't already reported this
@@ -911,8 +944,13 @@ export class ClaudeCodeProcess extends EventEmitter {
         }
       }
     } finally {
-      this.isProcessing = false;
-      this.isReady = false;
+      // A newer query may already be live (initializeQuery bumped the
+      // generation while this loop was still unwinding) — its flags are not
+      // ours to clear.
+      if (generation === this.queryGeneration) {
+        this.isProcessing = false;
+        this.isReady = false;
+      }
       this.emit('exit', 0);
     }
   }
@@ -938,9 +976,14 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.model = model;
     }
 
-    if (!this.messageQueue || !this.isReady) {
-      // Cold session — first init will pick up the (possibly new) effort/model values.
+    if (this.stopping || !this.messageQueue || !this.isReady) {
+      // Cold session, or a stop in flight (queue closed but not yet nulled —
+      // pushing would throw and lose the message): wait the stop out, then
+      // restart. First init picks up the (possibly new) effort/model values.
       console.log(`[Session ${this.sessionId}] Session not running, restarting...`);
+      if (this.currentStop) {
+        await this.currentStop.catch(() => undefined);
+      }
       await this.restart();
     } else if (effortChanged) {
       // Effort can only be set at query creation time — the SDK has no setEffort
@@ -989,6 +1032,12 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
     console.log(`[Session ${this.sessionId}] Sending message (userMessageCount=${this.userMessageCount}):`, content.substring(0, 100));
     this.messageQueue!.push(message);
+    // Every send path must reach the session's settlement tracker — including
+    // internal ones that bypass SessionManager.sendMessage (the MCP-injection
+    // continuation in addRemoteMcpServer). Without this, a send landing while
+    // the tracker reads settled leaves the reaper free to kill the turn it
+    // just started.
+    this.emit('outbound-message', { expectsResponse: shouldQuery !== false });
   }
 
   /**
@@ -1026,17 +1075,61 @@ export class ClaudeCodeProcess extends EventEmitter {
 
   // Restart the session (used when session exits and user sends a new message)
   private async restart(): Promise<void> {
+    if (this.disposed) {
+      throw new Error(`Session ${this.sessionId} process was disposed`);
+    }
     console.log(`[Session ${this.sessionId}] Restarting session`);
+    this.stopping = false;
     this.initializeQuery();
-    this.processMessages();
+    this.processingDone = this.processMessages();
   }
 
-  async stop(): Promise<void> {
-    console.log(`[Session ${this.sessionId}] Stopping session`);
+  /**
+   * Terminal stop for deleteSession/shutdown: after this, no straggler
+   * (a deferred MCP-injection interrupt/continuation, a late caller holding
+   * the object) can revive the subprocess — the session it belonged to no
+   * longer exists anywhere the reaper can see.
+   */
+  async dispose(options?: { graceful?: boolean; graceMs?: number }): Promise<void> {
+    this.disposed = true;
+    await this.stop(options);
+  }
+
+  /**
+   * graceful: close the input stream and give the CLI a bounded window to
+   * exit on stdin EOF BEFORE aborting. An immediate abort hard-kills the CLI,
+   * racing its transcript flush — a reaper sweep landing right after idle (or
+   * during the boot of a shouldQuery:false append restart) then truncates the
+   * tail of the session JSONL, and the next --resume silently loses those
+   * turns. Proven live: identical evict-after-turn runs lost walnut-9/turn-2
+   * context on one run and kept it on the next. Eviction and shutdown must
+   * quiesce; deleteSession may keep the hard kill (the transcript is doomed
+   * anyway).
+   */
+  async stop(options?: { graceful?: boolean; graceMs?: number }): Promise<void> {
+    const stopRun = this.performStop(options);
+    this.currentStop = stopRun;
+    await stopRun;
+  }
+
+  private async performStop(options?: { graceful?: boolean; graceMs?: number }): Promise<void> {
+    console.log(`[Session ${this.sessionId}] Stopping session${options?.graceful ? ' (graceful)' : ''}`);
+    this.stopping = true;
 
     // Close the message queue to signal end of input
     if (this.messageQueue) {
       this.messageQueue.close();
+    }
+
+    if (options?.graceful && this.processingDone) {
+      // Stdin EOF lets the CLI finish pending work (transcript writes, an
+      // in-flight append) and exit cleanly, ending the message stream. Bounded:
+      // a CLI that ignores EOF gets the abort below, same as a hard stop.
+      // (Live-measured: a settled CLI exits ~1s after EOF.)
+      await Promise.race([
+        this.processingDone.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, options.graceMs ?? 8000)),
+      ]);
     }
 
     // Abort the query if still running
@@ -1044,8 +1137,18 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.abortController.abort();
     }
 
-    // Wait a moment for cleanup
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Wait for the processing loop to fully unwind — a fixed sleep is not
+    // enough: if SDK teardown outlives it, a restart (evict-then-resume) can
+    // start a second query while this one is still alive, whose finally then
+    // marks the new query stopped and the next message spawns a third,
+    // leaking the second's subprocess. Bounded so a hung teardown cannot
+    // wedge stop() forever; the generation guard covers the timeout path.
+    if (this.processingDone) {
+      await Promise.race([
+        this.processingDone.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    }
 
     this.isReady = false;
     this.queryInstance = null;
@@ -1060,7 +1163,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   async interrupt(): Promise<InterruptOutcome> {
     console.log(`[Session ${this.sessionId}] Interrupting current query`);
 
-    if (!this.abortController || !this.isProcessing) {
+    if (this.stopping || !this.abortController || !this.isProcessing) {
       console.log(`[Session ${this.sessionId}] Nothing to interrupt`);
       return { interrupted: false, discardedUuids: [] };
     }
@@ -1131,10 +1234,19 @@ export class ClaudeCodeProcess extends EventEmitter {
       });
     }
 
+    // A stop()/dispose() may have raced in while we were waiting above — the
+    // teardown wins: restarting here would revive a subprocess for a session
+    // the manager already considers cold (or deleted), leaking it past the
+    // reaper. The abort already landed, so the turn is dead either way.
+    if (this.stopping) {
+      console.log(`[Session ${this.sessionId}] Stop raced the interrupt — not restarting query`);
+      return { interrupted: true, discardedUuids };
+    }
+
     // Restart the query with resume to continue the session
     console.log(`[Session ${this.sessionId}] Restarting query after interrupt`);
     this.initializeQuery();
-    this.processMessages();
+    this.processingDone = this.processMessages();
 
     return { interrupted: true, discardedUuids };
   }
