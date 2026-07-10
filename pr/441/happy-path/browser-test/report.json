@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the SuperAgent browser-use feature works correctly: agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the chat interface.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Success. Page loaded with Gamut interface showing agents list.",
+    "Clicked on QA-20260710-185741-qk5h agent in sidebar — Success. Agent detail page loaded with chat interface.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Success. Message displayed in input textbox.",
+    "Clicked Send button to submit the message — Success. Message sent and new session \"Browser Navigation Task\" created. Agent status changed to \"working\".",
+    "Waited for agent to process the request (up to 3 minutes) — Success. Agent completed processing in approximately 16 seconds.",
+    "Verified the response mentions \"Example Domain\" and took screenshot — Success. Response clearly states: \"The page title is \\\"Example Domain\\\".\" and \"Done — the page at https://example.com loaded successfully and its title is \\\"Example Domain\\\". Browser closed.\""
+  ],
+  "bugs": [],
+  "durationMs": 244237,
+  "sessionId": "e6ef09a2-6e15-47d4-a211-b0037ce33374",
+  "cost": {
+    "inputTokens": 320,
+    "outputTokens": 10302,
+    "cacheCreationTokens": 109330,
+    "cacheReadTokens": 800903,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.268583
+  }
+}
