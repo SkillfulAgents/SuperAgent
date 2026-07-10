@@ -4970,6 +4970,84 @@ describe('MessagePersister', () => {
       expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-keep')
     })
 
+    it('background_tasks_changed self-heals a task whose terminal signal never arrives', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-lost' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      sseEvents.length = 0
+
+      // The SDK's snapshot no longer lists the task — it finished, but the
+      // per-task terminal signal is (in this scenario) lost. Without the
+      // snapshot the task would pin the session in waiting-background forever.
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toEqual(['bg-lost'])
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+
+      // A late terminal signal for the already-cleared task no-ops.
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_updated', task_id: 'bg-lost', patch: { status: 'completed' },
+      })
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+
+      // The settled idle now finalizes.
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('background_tasks_changed announcing an unregistered task blocks idle (union gate)', () => {
+      // The snapshot LEADS per-task signals: it can announce a task before the
+      // registration metadata (task_started / tool-result) arrives. An idle in
+      // that window must not finalize even though the incremental map is empty.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      // Mid-turn: the SDK announces the task (registration metadata not seen).
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-early', task_type: 'local_bash', description: 'Sleep' }],
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+      const waiting = sseEvents.filter(e => e.type === 'session_waiting_background')
+      expect(waiting).toHaveLength(1)
+      expect(waiting[0].backgroundTaskCount).toBe(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      // The task finishes: empty snapshot, then the settled idle finalizes.
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('ignores a malformed background_tasks_changed frame instead of clearing running tasks', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-safe' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      sseEvents.length = 0
+
+      // tasks is not an array / an element is missing task_id — acting on a
+      // partial parse could clear a still-running task, so the frame must be
+      // ignored outright.
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: 'garbage' })
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ nope: true }] })
+
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-safe')
+    })
+
     it('tracks multiple concurrent background tasks', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
 

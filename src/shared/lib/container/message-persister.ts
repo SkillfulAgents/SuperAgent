@@ -9,6 +9,7 @@ import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/requ
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { classifyResult } from './result-classification'
+import { parseBackgroundTasksChanged } from './background-tasks-changed'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   createScheduledTask,
@@ -114,6 +115,14 @@ interface StreamingState {
     string,
     { startedAt: number; isWorkflow?: boolean; isSubagent?: boolean; toolUseId?: string; workflowName?: string; runId?: string }
   >
+  // Latest system/background_tasks_changed snapshot (SDK >= 0.3.203): the full
+  // authoritative set of live background task ids. null until the first frame
+  // (older runtimes never send one — all gates then fall back to the
+  // incremental map alone). The snapshot LEADS per-task signals on the wire,
+  // so it may briefly announce a task the map hasn't registered yet (metadata
+  // arrives with the following task_started/tool-result) — liveness gates use
+  // the UNION of both.
+  bgTasksSnapshot: Set<string> | null
   pendingDeliverFiles: Map<string, { filePath: string; description?: string }> // deliver_file tool calls awaiting their tool_result, keyed by tool_use ID
   // True when the runtime publishes session_state_changed events — then IT is
   // the idle authority: a 'result' alone does not end the session (queued
@@ -278,6 +287,7 @@ class MessagePersister {
       pendingInputRequests: new Map(),
       lastApiErrorCode: null,
       activeBackgroundTasks: priorBackgroundTasks,
+      bgTasksSnapshot: prior?.bgTasksSnapshot ?? null,
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: null,
@@ -719,6 +729,7 @@ class MessagePersister {
         pendingInputRequests: new Map(),
         lastApiErrorCode: null,
         activeBackgroundTasks: new Map(),
+        bgTasksSnapshot: null,
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
         lastResultSubtype: null,
@@ -1278,7 +1289,8 @@ class MessagePersister {
             // turn output — must not finalize, or it fires a spurious
             // session_idle (and a bogus completion notification).
             if (state.isActive && state.lastResultSubtype !== null) {
-              if (state.activeBackgroundTasks.size > 0) {
+              const openBackgroundWork = this.openBackgroundWorkCount(state)
+              if (openBackgroundWork > 0) {
                 // Idle here does NOT mean "settled". activeBackgroundTasks holds
                 // backgrounded Bash commands (task_type=local_bash) and dynamic
                 // workflows (local_workflow); for both the SDK fires `idle` at
@@ -1292,7 +1304,7 @@ class MessagePersister {
                 // task, and the subsequent, truly-settled idle finalizes.
                 this.broadcastToSSE(sessionId, {
                   type: 'session_waiting_background',
-                  backgroundTaskCount: state.activeBackgroundTasks.size,
+                  backgroundTaskCount: openBackgroundWork,
                 })
               } else {
                 this.finalizeIdle(sessionId, state)
@@ -1316,6 +1328,28 @@ class MessagePersister {
               agentSlug: state.agentSlug,
               isActive: true,
             })
+          }
+        } else if (content.subtype === 'background_tasks_changed') {
+          // Authoritative full snapshot of the session's live background tasks
+          // (SDK >= 0.3.203), emitted on every membership change. A frame that
+          // fails validation is ignored outright — acting on a partial parse
+          // could clear running tasks (see parseBackgroundTasksChanged).
+          const snapshot = parseBackgroundTasksChanged(content)
+          if (snapshot) {
+            state.bgTasksSnapshot = snapshot.taskIds
+            // Self-heal: a tracked task the SDK no longer lists has finished.
+            // Its per-task terminal signal normally follows within a frame and
+            // then no-ops (clearBackgroundTask is idempotent) — but if that
+            // signal is missed, the task would otherwise pin the session in
+            // waiting-background forever.
+            for (const taskId of [...state.activeBackgroundTasks.keys()]) {
+              if (!snapshot.taskIds.has(taskId)) {
+                console.log(
+                  `[MessagePersister] background_tasks_changed: clearing ${taskId} (no longer in SDK snapshot)`
+                )
+                this.clearBackgroundTask(sessionId, state, taskId)
+              }
+            }
           }
         } else if (content.subtype === 'memory_recall') {
           // Memory recall — agent is reading memory files
@@ -1395,11 +1429,14 @@ class MessagePersister {
         this.broadcastToSSE(sessionId, { type: 'turn_output_complete' })
 
         // UI hint: background tasks outlive the turn output.
-        if (state.activeBackgroundTasks.size > 0) {
-          this.broadcastToSSE(sessionId, {
-            type: 'session_waiting_background',
-            backgroundTaskCount: state.activeBackgroundTasks.size,
-          })
+        {
+          const openBackgroundWork = this.openBackgroundWorkCount(state)
+          if (openBackgroundWork > 0) {
+            this.broadcastToSSE(sessionId, {
+              type: 'session_waiting_background',
+              backgroundTaskCount: openBackgroundWork,
+            })
+          }
         }
 
         // When the runtime publishes session_state_changed events, IT decides
@@ -1412,7 +1449,7 @@ class MessagePersister {
         }
 
         // Legacy containers (no state events): result-driven idle as before.
-        if (state.activeBackgroundTasks.size > 0) {
+        if (this.openBackgroundWorkCount(state) > 0) {
           break
         }
         this.finalizeIdle(sessionId, state)
@@ -1644,6 +1681,19 @@ class MessagePersister {
   // `workflow_completed` event and stopping the journal tailer. Returns whether a
   // task was actually present. Centralized so every terminal path — the idle/wake
   // `task_notification` and the busy `task_updated` — behaves identically.
+  // How many background tasks keep the session from settling. The union of
+  // the incremental map and the latest SDK snapshot: the snapshot LEADS the
+  // per-task signals on the wire, so around a membership change each side may
+  // briefly know a task the other doesn't. Counting the union means a missed
+  // registration can't cause a premature idle and a missed terminal signal
+  // can't pin the session forever (the snapshot self-heal below clears it).
+  private openBackgroundWorkCount(state: StreamingState): number {
+    if (!state.bgTasksSnapshot) return state.activeBackgroundTasks.size
+    const union = new Set(state.activeBackgroundTasks.keys())
+    for (const id of state.bgTasksSnapshot) union.add(id)
+    return union.size
+  }
+
   private clearBackgroundTask(sessionId: string, state: StreamingState, taskId: string): boolean {
     const info = state.activeBackgroundTasks.get(taskId)
     if (!info) return false
