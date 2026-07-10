@@ -298,6 +298,8 @@ export interface GlobalSettingsResponse {
     exa: ApiKeyStatus
   }
   composioUserId?: string
+  /** Saved generic-provider endpoint. Not a secret — echoed so the Settings UI can display/edit it. */
+  genericBaseUrl?: string
   accountProviderUserId?: string
   voice?: VoiceSettings
   models: ModelSettings
