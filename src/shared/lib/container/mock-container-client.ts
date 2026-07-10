@@ -2124,12 +2124,21 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.busySessions.delete(sessionId)
 
     // Queued steering messages die with the turn — the real CLI never picks
-    // them up after an abort; the renderer restores their text into the
-    // composer draft.
+    // them up after an abort. Mirror the real container: it names each dead
+    // uuid with a synthetic command_lifecycle 'discarded' frame (the SDK's own
+    // frames die with the aborted query), which the renderer uses to rescue
+    // the ghost's text into the composer deterministically.
     const timers = this.queuedSteeringTimers.get(sessionId)
     if (timers) {
+      const deadUuids = [...timers.keys()]
       for (const timer of timers.values()) clearTimeout(timer)
       timers.clear()
+      for (const uuid of deadUuids) {
+        this.emitStreamMessage(sessionId, {
+          type: 'command_lifecycle',
+          content: { type: 'command_lifecycle', command_uuid: uuid, state: 'discarded' },
+        })
+      }
     }
 
     this.emitStreamMessage(sessionId, {

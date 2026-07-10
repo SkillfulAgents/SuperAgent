@@ -21,6 +21,12 @@ const ERROR_TERMINAL_REASONS = new Set([
   'turn_setup_failed',
 ])
 
+// A deliberate stop, not a failure: the SDK reports a gracefully-interrupted
+// turn as an error-shaped result (is_error: true, subtype
+// error_during_execution) with one of these reasons. Surfacing that as a
+// session_error would show the user an error card for their own Stop click.
+const INTERRUPT_TERMINAL_REASONS = new Set(['aborted_streaming', 'aborted_tools'])
+
 // The stream is open-world: unknown subtypes and future terminal_reason values
 // must pass through untouched, and a malformed field must degrade to "absent",
 // never throw. Hence every field optional + .catch(undefined).
@@ -37,6 +43,8 @@ const resultFieldsSchema = z.object({
 
 export interface ResultClassification {
   isError: boolean
+  /** True for a deliberately stopped turn (user Stop / harness abort) — settle quietly, no error surface. */
+  isInterrupt: boolean
   /** Human-readable error text; null when the turn succeeded. */
   errorText: string | null
   /** Raw terminal_reason when present (success turns carry 'completed'). */
@@ -50,11 +58,14 @@ export function classifyResult(content: unknown): ResultClassification {
   const parsed = resultFieldsSchema.safeParse(content)
   const f = parsed.success ? parsed.data : {}
 
+  const isInterrupt = f.terminal_reason !== undefined && INTERRUPT_TERMINAL_REASONS.has(f.terminal_reason)
+
   const isError =
-    f.subtype === 'error' ||
-    f.subtype === 'error_during_execution' ||
-    f.is_error === true ||
-    (f.terminal_reason !== undefined && ERROR_TERMINAL_REASONS.has(f.terminal_reason))
+    !isInterrupt &&
+    (f.subtype === 'error' ||
+      f.subtype === 'error_during_execution' ||
+      f.is_error === true ||
+      (f.terminal_reason !== undefined && ERROR_TERMINAL_REASONS.has(f.terminal_reason)))
 
   // `result` carries the model-facing explanation in the modern error shape;
   // `error`/`message` are the legacy carriers and take precedence when set so
@@ -63,6 +74,7 @@ export function classifyResult(content: unknown): ResultClassification {
 
   return {
     isError,
+    isInterrupt,
     errorText,
     terminalReason: f.terminal_reason ?? null,
     apiErrorStatus: f.api_error_status ?? null,

@@ -407,6 +407,21 @@ describe('sdk 0.3.206 capture replays', () => {
       expect(fin.sessionIdleCount).toBe(1)
       expect(fin.isActive).toBe(false)
     })
+
+    it('forwards every command_lifecycle frame to SSE with its uuid and state', async () => {
+      const { streamEntries, sseEvents } = await replayTracked('sdk206-queued-message-final-response')
+
+      const wireFrames = streamEntries
+        .map((e) => e.message.content as Record<string, unknown>)
+        .filter((c) => c['type'] === 'command_lifecycle')
+        .map((c) => ({ commandUuid: c['command_uuid'], state: c['state'] }))
+      const forwarded = sseEvents
+        .filter((e) => e['type'] === 'command_lifecycle')
+        .map((e) => ({ commandUuid: e['commandUuid'], state: e['state'] }))
+
+      expect(wireFrames.length).toBeGreaterThanOrEqual(4) // queued, started, completed x2
+      expect(forwarded).toEqual(wireFrames)
+    })
   })
 
   describe('interrupt with queued messages: the stream just stops', () => {
@@ -435,6 +450,43 @@ describe('sdk 0.3.206 capture replays', () => {
       expect(fin.sessionIdleCount).toBe(0)
       expect(fin.isActive).toBe(true)
       expect(sseEvents.filter((e) => e['type'] === 'session_error')).toHaveLength(0)
+    })
+  })
+
+  describe('interrupt with queued messages: graceful-interrupt flow (receipt-aware container)', () => {
+    it('forwards SDK cancelled + synthetic discarded frames and settles without a session_error', async () => {
+      // The receipt-aware container asks the SDK to interrupt first: the SDK
+      // emits real cancelled lifecycle frames + an error-SHAPED result
+      // (terminal_reason aborted_tools) + idle, then the container appends
+      // synthetic discarded frames for the queued uuids its abort killed.
+      const { meta, streamEntries, sseEvents, timeline } = await replayTracked(
+        'sdk206-queued-message-interrupt-receipt'
+      )
+      const queuedUuids = (meta as unknown as { queuedUuids: string[] }).queuedUuids
+
+      // Every lifecycle frame on the wire reaches SSE.
+      const wireFrames = streamEntries
+        .map((e) => e.message.content as Record<string, unknown>)
+        .filter((c) => c['type'] === 'command_lifecycle')
+      const forwarded = sseEvents.filter((e) => e['type'] === 'command_lifecycle')
+      expect(forwarded).toHaveLength(wireFrames.length)
+
+      // Both queued messages resolve to a terminal dead state twice over: the
+      // SDK's cancelled AND the container's synthetic discarded.
+      for (const uuid of queuedUuids) {
+        const states = forwarded.filter((e) => e['commandUuid'] === uuid).map((e) => e['state'])
+        expect(states).toContain('cancelled')
+        expect(states).toContain('discarded')
+      }
+
+      // A deliberate stop is not an error: no session_error, session settles.
+      expect(sseEvents.filter((e) => e['type'] === 'session_error')).toHaveLength(0)
+      const fin = finalSnapshot(timeline)
+      expect(fin.isActive).toBe(false)
+      // The idle broadcast for a Stop is owned by the route's
+      // markSessionInterrupted (an API action outside this stream); the
+      // trailing SDK idle no-ops because the interrupt result already settled.
+      expect(fin.sessionIdleCount).toBe(0)
     })
   })
 

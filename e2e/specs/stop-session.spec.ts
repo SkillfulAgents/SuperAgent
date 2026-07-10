@@ -158,4 +158,35 @@ test.describe('Stop button interrupts the working agent', () => {
     await expect(sessionPage.getUserMessages()).toHaveCount(4)
     await expect(sessionPage.getStopButton()).not.toBeVisible()
   })
+
+  test('stopping with two queued messages rescues both texts into the composer', async ({ page }) => {
+    await sessionPage.sendMessage('please work slowly for the double rescue test')
+    await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 10000 })
+
+    // Queue two messages mid-turn ('pickup after turn' = 8s steering delay, so
+    // the stop lands while both are still queued). The runtime names each dead
+    // uuid with a command_lifecycle 'discarded' frame; both ghosts must rescue.
+    const firstQueued = 'first rescue candidate pickup after turn'
+    const secondQueued = 'second rescue candidate pickup after turn'
+    await sessionPage.typeMessage(firstQueued)
+    await sessionPage.getSendButton().click()
+    await sessionPage.typeMessage(secondQueued)
+    await sessionPage.getSendButton().click()
+
+    const ghosts = page.locator('[data-testid="queued-user-message"]')
+    await expect(ghosts).toHaveCount(2, { timeout: 5000 })
+
+    await sessionPage.getStopButton().click()
+    await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 10000 })
+
+    // Both ghosts detach and both texts land in the composer draft (rescue
+    // batching may merge them in either order — assert presence, not order).
+    await expect(ghosts).toHaveCount(0, { timeout: 10000 })
+    const composer = sessionPage.getMessageInput()
+    await expect(composer).toHaveValue(new RegExp('first rescue candidate'), { timeout: 10000 })
+    await expect(composer).toHaveValue(new RegExp('second rescue candidate'))
+
+    // Neither queued message ever reached the transcript.
+    await expect(sessionPage.getUserMessages()).toHaveCount(1)
+  })
 })

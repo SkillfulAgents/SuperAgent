@@ -10,6 +10,7 @@ import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
 import { classifyResult } from './result-classification'
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
+import { parseCommandLifecycle } from './command-lifecycle'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   createScheduledTask,
@@ -1360,6 +1361,23 @@ class MessagePersister {
         }
         break
 
+      case 'command_lifecycle': {
+        // Per-command state transitions (queued/started/completed/cancelled/
+        // discarded), keyed by the message's own uuid. Forwarded verbatim —
+        // the renderer joins terminal dead states back to its optimistic
+        // ghosts for deterministic composer rescue. Malformed frames are
+        // dropped (nothing downstream can act without a uuid).
+        const lifecycle = parseCommandLifecycle(content)
+        if (lifecycle) {
+          this.broadcastToSSE(sessionId, {
+            type: 'command_lifecycle',
+            commandUuid: lifecycle.commandUuid,
+            state: lifecycle.state,
+          })
+        }
+        break
+      }
+
       case 'result': {
         // Query completed. Classification handles both error shapes — the
         // legacy error subtypes and the modern success-subtype-with-is_error
@@ -1373,12 +1391,25 @@ class MessagePersister {
         // the final state) avoids a spurious working(true)→(false) pair — the
         // intermediate "isActive still true, streaming just cleared" snapshot
         // would read working=true and race connectors into a stuck indicator.
-        if (isError) state.isActive = false
+        if (isError || classification.isInterrupt) state.isActive = false
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
 
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)
+
+        // A deliberately stopped turn (terminal_reason aborted_tools /
+        // aborted_streaming — a graceful interrupt) arrives error-SHAPED but
+        // is not an error: settle quietly. No session_error (the user clicked
+        // Stop; an error card would be wrong) and no finalizeIdle here — the
+        // Stop route's markSessionInterrupted owns the idle broadcast, and
+        // container-internal restarts (MCP injection, effort change) resume
+        // with a continuation turn moments later. turn_output_complete still
+        // fires so partially-streamed text reconciles against the transcript.
+        if (classification.isInterrupt) {
+          this.broadcastToSSE(sessionId, { type: 'turn_output_complete' })
+          break
+        }
 
         // Check if this is an error result. Errors end the user-visible work
         // immediately in both lifecycle modes. (isActive + the working emit were

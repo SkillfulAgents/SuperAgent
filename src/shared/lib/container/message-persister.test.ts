@@ -5029,6 +5029,25 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
     })
 
+    it('forwards command_lifecycle frames to SSE and drops malformed ones', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+
+      mockClient._sendMessage({ type: 'command_lifecycle', command_uuid: 'u1', state: 'queued' })
+      mockClient._sendMessage({ type: 'command_lifecycle', command_uuid: 'u1', state: 'discarded' })
+      // Unknown future states must flow through, not be filtered here.
+      mockClient._sendMessage({ type: 'command_lifecycle', command_uuid: 'u2', state: 'some_future_state' })
+      // No uuid → nothing downstream can act; dropped.
+      mockClient._sendMessage({ type: 'command_lifecycle', state: 'discarded' })
+
+      const forwarded = sseEvents.filter(e => e.type === 'command_lifecycle')
+      expect(forwarded).toEqual([
+        { type: 'command_lifecycle', commandUuid: 'u1', state: 'queued' },
+        { type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' },
+        { type: 'command_lifecycle', commandUuid: 'u2', state: 'some_future_state' },
+      ])
+    })
+
     it('ignores a malformed background_tasks_changed frame instead of clearing running tasks', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       mockClient._sendMessage({

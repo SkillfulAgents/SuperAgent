@@ -56,6 +56,25 @@ describe('classifyResult', () => {
     }
   })
 
+  it('classifies gracefully interrupted turns as interrupts, not errors (real 0.3.206 capture)', () => {
+    // Verbatim field subset from the sdk206-queued-message-interrupt-receipt
+    // fixture: error-shaped (is_error + error_during_execution) but a
+    // deliberate stop.
+    const c = classifyResult({
+      subtype: 'error_during_execution',
+      is_error: true,
+      terminal_reason: 'aborted_tools',
+    })
+    expect(c.isInterrupt).toBe(true)
+    expect(c.isError).toBe(false)
+    expect(c.errorText).toBeNull()
+
+    expect(classifyResult({ subtype: 'error', terminal_reason: 'aborted_streaming' })).toMatchObject({
+      isInterrupt: true,
+      isError: false,
+    })
+  })
+
   it('keeps successful and unknown-reason turns as success (open-world)', () => {
     expect(classifyResult({ subtype: 'success', terminal_reason: 'completed' }).isError).toBe(false)
     // A future terminal_reason value we do not know must not flip a turn that
