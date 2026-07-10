@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: shot — Response clearly states: \"The page title is \"Example Domain\".\" with confirmation message: \"The page at https://example.com loaded with the title \"Example Domain\". I've closed the browser.\" All browser tools (Open Browser, Get State, Close Browser) executed successfully with green checkmarks.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 74251,
+  "sessionId": "8a7ca1b3-bf2b-4769-99b8-9d11f32a5235",
+  "cost": {
+    "inputTokens": 364,
+    "outputTokens": 9877,
+    "cacheCreationTokens": 109201,
+    "cacheReadTokens": 936636,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.279914
+  }
+}
