@@ -72,7 +72,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
   useSearch: () => ({}),
 }))
 
-describe('SUP-274 global Connections activity charts', () => {
+describe('global Connections activity charts', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockUseConnectionActivityStats.mockReturnValue({

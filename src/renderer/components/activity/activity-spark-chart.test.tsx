@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { ActivitySparkChart, CronSparkChart } from './activity-spark-chart'
 
-describe('SUP-274 spark charts', () => {
+describe('activity spark charts', () => {
   it('renders stacked daily volume with a useful accessible summary', () => {
     render(<ActivitySparkChart
       label="GitHub activity"
@@ -52,6 +52,23 @@ describe('SUP-274 spark charts', () => {
     expect(screen.getByTestId('cron-slot-succeeded')).toHaveAttribute('data-status', 'succeeded')
     expect(screen.getByTestId('cron-slot-skipped')).toHaveAttribute('data-status', 'skipped')
     expect(screen.getByTestId('cron-slot-failed')).toHaveAttribute('data-status', 'failed')
+  })
+
+  it('pulses an in-flight slot and calls it out in the accessible summary', () => {
+    render(<CronSparkChart
+      label="Nightly report schedule"
+      data={[
+        { scheduledAt: '2026-07-08T09:00:00.000Z', status: 'succeeded' },
+        { scheduledAt: '2026-07-09T09:00:00.000Z', status: 'running' },
+      ]}
+    />)
+
+    expect(screen.getByRole('img', {
+      name: 'Nightly report schedule: 2 planned runs, 1 ran, 1 running, 0 skipped, and 0 failed.',
+    })).toBeInTheDocument()
+    const runningSlot = screen.getByTestId('cron-slot-running')
+    expect(runningSlot).toHaveAttribute('data-status', 'running')
+    expect(runningSlot).toHaveClass('fill-emerald-500', 'animate-pulse')
   })
 
   it('uses one fixed right-aligned slot grid when tasks have different history lengths', () => {

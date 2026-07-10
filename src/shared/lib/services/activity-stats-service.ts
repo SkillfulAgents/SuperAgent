@@ -65,6 +65,11 @@ function webhookEvents(
 
   for (const meta of Object.values(metadata)) {
     if (!meta.isWebhookExecution || !meta.webhookTriggerId || !meta.createdAt) continue
+    // In-flight runs are neither a success nor a failure yet — leave them out
+    // of the daily bars until the terminal result finalizes automationStatus.
+    // Legacy sessions without a status predate outcome tracking and count as
+    // succeeded.
+    if (meta.automationStatus === 'running') continue
     const createdAt = new Date(meta.createdAt)
     if (!Number.isFinite(createdAt.getTime())) continue
     pushEvent(events, meta.webhookTriggerId, {
@@ -79,9 +84,30 @@ function webhookEvents(
   return events
 }
 
+// Only the columns the aggregation needs — audit rows carry more (paths,
+// scopes) that would be wasted I/O at this volume.
+const proxyAuditColumns = {
+  accountId: proxyAuditLog.accountId,
+  statusCode: proxyAuditLog.statusCode,
+  errorMessage: proxyAuditLog.errorMessage,
+  policyDecision: proxyAuditLog.policyDecision,
+  createdAt: proxyAuditLog.createdAt,
+}
+
+const mcpAuditColumns = {
+  remoteMcpId: mcpAuditLog.remoteMcpId,
+  statusCode: mcpAuditLog.statusCode,
+  errorMessage: mcpAuditLog.errorMessage,
+  policyDecision: mcpAuditLog.policyDecision,
+  createdAt: mcpAuditLog.createdAt,
+}
+
+type ProxyAuditRow = { [K in keyof typeof proxyAuditColumns]: (typeof proxyAuditLog.$inferSelect)[K] }
+type McpAuditRow = { [K in keyof typeof mcpAuditColumns]: (typeof mcpAuditLog.$inferSelect)[K] }
+
 function requestEventsByConnection(
-  proxyRows: Array<typeof proxyAuditLog.$inferSelect>,
-  mcpRows: Array<typeof mcpAuditLog.$inferSelect>,
+  proxyRows: ProxyAuditRow[],
+  mcpRows: McpAuditRow[],
   allowedAccountIds?: Set<string>,
   allowedMcpIds?: Set<string>,
 ): Map<string, DailyActivityEvent[]> {
@@ -128,11 +154,11 @@ export async function getAgentActivityStats(
     db.select({ id: agentRemoteMcps.remoteMcpId })
       .from(agentRemoteMcps)
       .where(eq(agentRemoteMcps.agentSlug, agentSlug)),
-    db.select().from(proxyAuditLog).where(and(
+    db.select(proxyAuditColumns).from(proxyAuditLog).where(and(
       eq(proxyAuditLog.agentSlug, agentSlug),
       gte(proxyAuditLog.createdAt, from),
     )),
-    db.select().from(mcpAuditLog).where(and(
+    db.select(mcpAuditColumns).from(mcpAuditLog).where(and(
       eq(mcpAuditLog.agentSlug, agentSlug),
       gte(mcpAuditLog.createdAt, from),
     )),
@@ -203,13 +229,13 @@ export async function getConnectionActivityStats(
 
   const [proxyRows, mcpRows] = await Promise.all([
     accountIds.length > 0
-      ? db.select().from(proxyAuditLog).where(and(
+      ? db.select(proxyAuditColumns).from(proxyAuditLog).where(and(
           inArray(proxyAuditLog.accountId, accountIds),
           gte(proxyAuditLog.createdAt, from),
         ))
       : Promise.resolve([]),
     mcpIds.length > 0
-      ? db.select().from(mcpAuditLog).where(and(
+      ? db.select(mcpAuditColumns).from(mcpAuditLog).where(and(
           inArray(mcpAuditLog.remoteMcpId, mcpIds),
           gte(mcpAuditLog.createdAt, from),
         ))

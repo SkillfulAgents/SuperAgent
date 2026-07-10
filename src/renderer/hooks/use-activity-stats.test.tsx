@@ -20,7 +20,7 @@ function jsonResponse(body: unknown, ok = true): Response {
   return { ok, json: async () => body } as Response
 }
 
-describe('SUP-274 activity hooks', () => {
+describe('activity hooks', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('fetches the encoded agent-scoped endpoint and returns typed chart maps', async () => {

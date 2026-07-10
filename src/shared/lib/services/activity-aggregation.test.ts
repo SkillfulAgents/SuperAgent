@@ -8,7 +8,7 @@ import {
 
 const NOW = new Date('2026-07-09T12:00:30.000Z')
 
-describe('SUP-274 activity aggregation', () => {
+describe('activity aggregation', () => {
   describe('request outcomes', () => {
     it.each([
       [{ statusCode: 200, errorMessage: null, policyDecision: 'allow' }, 'succeeded'],
@@ -89,6 +89,30 @@ describe('SUP-274 activity aggregation', () => {
         { scheduledAt: '2026-07-09T09:00:00.000Z', status: 'succeeded' },
         { scheduledAt: '2026-07-09T10:00:00.000Z', status: 'skipped' },
         { scheduledAt: '2026-07-09T11:00:00.000Z', status: 'succeeded' },
+      ])
+    })
+
+    it('marks an in-flight slot running and lets it override a stale duplicate success', () => {
+      const result = buildCronActivitySeries({
+        task: hourlyTask,
+        sessions: [
+          { scheduledExecutionAt: '2026-07-09T10:00:00.000Z' },
+          {
+            scheduledExecutionAt: '2026-07-09T10:00:00.000Z',
+            automationStatus: 'running',
+          },
+          {
+            scheduledExecutionAt: '2026-07-09T11:00:00.000Z',
+            automationStatus: 'running',
+          },
+        ],
+        now: NOW,
+        slots: 2,
+      })
+
+      expect(result).toEqual([
+        { scheduledAt: '2026-07-09T10:00:00.000Z', status: 'running' },
+        { scheduledAt: '2026-07-09T11:00:00.000Z', status: 'running' },
       ])
     })
 

@@ -816,10 +816,12 @@ class MessagePersister {
     agentSlug: string,
     automationStatus: 'succeeded' | 'failed',
   ): void {
-    void Promise.resolve()
-      .then(() => getSessionMetadata(agentSlug, sessionId))
+    void getSessionMetadata(agentSlug, sessionId)
       .then((meta) => {
         if (!meta?.isScheduledExecution && !meta?.isWebhookExecution) return
+        // Promoted sessions that never tracked an outcome predate automation
+        // status — a later interactive turn's result is not the automation's.
+        if (meta.promotedToInteractive && !meta.automationStatus) return
         if (meta.automationStatus && meta.automationStatus !== 'running') return
         return updateSessionMetadata(agentSlug, sessionId, { automationStatus })
       })

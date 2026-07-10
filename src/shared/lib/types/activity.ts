@@ -12,7 +12,7 @@ export interface DailyActivityPoint {
   failed: number
 }
 
-export type CronActivityStatus = 'succeeded' | 'skipped' | 'failed'
+export type CronActivityStatus = 'succeeded' | 'running' | 'skipped' | 'failed'
 
 export interface CronActivityPoint {
   scheduledAt: string

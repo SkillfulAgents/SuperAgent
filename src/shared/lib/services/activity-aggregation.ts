@@ -122,12 +122,21 @@ export function buildCronActivitySeries(input: CronActivityInput): CronActivityP
     return []
   }
 
-  const outcomeBySlot = new Map<string, 'succeeded' | 'failed'>()
+  // Sessions are matched to planned slots by exact ISO-string equality:
+  // the scheduler records `scheduledExecutionAt` as `nextExecutionAt.toISOString()`,
+  // which both come from cron-parser over the task's current expression/timezone.
+  // Editing a task's schedule or timezone breaks that invariant for older runs —
+  // they no longer match any reconstructed slot and render as skipped.
+  // Legacy sessions without an automationStatus predate outcome tracking and are
+  // assumed to have succeeded. A failure wins over duplicate metadata for the
+  // same planned slot, and a live rerun ('running') wins over a stale success.
+  const OUTCOME_RANK = { failed: 3, running: 2, succeeded: 1 } as const
+  const outcomeBySlot = new Map<string, keyof typeof OUTCOME_RANK>()
   for (const session of input.sessions) {
     if (!session.scheduledExecutionAt) continue
-    const outcome = session.automationStatus === 'failed' ? 'failed' : 'succeeded'
-    // A failure wins if duplicate metadata exists for the same planned slot.
-    if (outcome === 'failed' || !outcomeBySlot.has(session.scheduledExecutionAt)) {
+    const outcome = session.automationStatus ?? 'succeeded'
+    const existing = outcomeBySlot.get(session.scheduledExecutionAt)
+    if (!existing || OUTCOME_RANK[outcome] > OUTCOME_RANK[existing]) {
       outcomeBySlot.set(session.scheduledExecutionAt, outcome)
     }
   }

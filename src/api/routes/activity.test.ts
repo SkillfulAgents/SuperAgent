@@ -30,7 +30,7 @@ function createApp() {
   return app
 }
 
-describe('SUP-274 activity API', () => {
+describe('activity API', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockGetAgentActivityStats.mockResolvedValue({ days: 14, cronByTaskId: {}, webhookByTriggerId: {}, connectionById: {} })

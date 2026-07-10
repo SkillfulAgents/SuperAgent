@@ -60,7 +60,7 @@ async function insertMcp(id: string, userId: string | null = null) {
   })
 }
 
-describe('SUP-274 activity stats data pathways', () => {
+describe('activity stats data pathways', () => {
   beforeEach(() => {
     testSqlite = new Database(':memory:')
     testSqlite.pragma('foreign_keys = ON')
@@ -164,6 +164,14 @@ describe('SUP-274 activity stats data pathways', () => {
         webhookInvocationCount: 3,
         automationStatus: 'failed',
         createdAt: '2026-07-09T01:00:00.000Z',
+      },
+      // In-flight — must not be counted in the daily bars until it finalizes.
+      'webhook-in-flight': {
+        isWebhookExecution: true,
+        webhookTriggerId: 'webhook-a',
+        webhookInvocationCount: 5,
+        automationStatus: 'running',
+        createdAt: '2026-07-09T11:30:00.000Z',
       },
     })
 

@@ -88,6 +88,7 @@ interface CronSparkChartProps {
 
 const CRON_COLORS: Record<CronActivityPoint['status'], string> = {
   succeeded: 'fill-emerald-500',
+  running: 'fill-emerald-500 animate-pulse',
   skipped: 'fill-muted-foreground/25',
   failed: 'fill-red-500',
 }
@@ -105,6 +106,7 @@ function cronTimeLabel(value: string): string {
 
 export function CronSparkChart({ label, data, className }: CronSparkChartProps) {
   const succeeded = data.filter((point) => point.status === 'succeeded').length
+  const running = data.filter((point) => point.status === 'running').length
   const skipped = data.filter((point) => point.status === 'skipped').length
   const failed = data.filter((point) => point.status === 'failed').length
   const width = 4
@@ -113,9 +115,10 @@ export function CronSparkChart({ label, data, className }: CronSparkChartProps) 
   const gridSlots = Math.max(DEFAULT_CRON_ACTIVITY_SLOTS, data.length)
   const gap = gridSlots > 1 ? Math.max(1, (WIDTH - width * gridSlots) / (gridSlots - 1)) : 0
   const firstGridSlot = gridSlots - data.length
+  const runningSummary = running > 0 ? `${running} running, ` : ''
   const accessibleLabel = data.length === 0
     ? `${label}: no mature planned runs yet.`
-    : `${label}: ${data.length} planned ${plural(data.length, 'run')}, ${succeeded} ran, ${skipped} skipped, and ${failed} failed.`
+    : `${label}: ${data.length} planned ${plural(data.length, 'run')}, ${succeeded} ran, ${runningSummary}${skipped} skipped, and ${failed} failed.`
 
   return (
     <svg

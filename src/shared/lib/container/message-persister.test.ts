@@ -2922,6 +2922,31 @@ describe('MessagePersister', () => {
       })
       expect(updateSessionMetadata).not.toHaveBeenCalled()
     })
+
+    it('does not attribute an interactive-turn result to a promoted legacy automation session', async () => {
+      // Sessions from before outcome tracking have no automationStatus; once
+      // promoted, a later interactive turn's result is not the automation's.
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
+        isWebhookExecution: true,
+        webhookTriggerId: 'trigger-1',
+        promotedToInteractive: true,
+      })
+
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'error_during_execution',
+        error: 'Interactive turn failed',
+        is_error: true,
+        duration_ms: 100,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      })
+
+      await vi.waitFor(() => {
+        expect(getSessionMetadata).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID)
+      })
+      expect(updateSessionMetadata).not.toHaveBeenCalled()
+    })
   })
 
   // ============================================================================

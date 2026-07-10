@@ -63,7 +63,7 @@ const task: ApiScheduledTask = {
   pausedAt: null,
 }
 
-describe('SUP-274 HomeTriggers charts', () => {
+describe('HomeTriggers activity charts', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockUseAgentActivityStats.mockReturnValue({

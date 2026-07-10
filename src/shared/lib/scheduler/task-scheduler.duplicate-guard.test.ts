@@ -135,7 +135,7 @@ function existingScheduledSession(sessionId = 'container-session-1') {
   }
 }
 
-describe('TaskScheduler duplicate execution guard (SUP-243)', () => {
+describe('TaskScheduler duplicate execution guard', () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
