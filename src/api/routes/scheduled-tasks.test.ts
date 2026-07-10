@@ -98,6 +98,8 @@ vi.mock('@shared/lib/llm-provider/helpers', () => ({
     },
   }),
   extractTextFromLlmResponse: (...args: unknown[]) => mockExtractTextFromLlmResponse(...args),
+  createSummarizerText: async (_client: unknown, request: unknown) =>
+    mockExtractTextFromLlmResponse(await mockMessagesCreate(request)),
 }))
 
 const mockWithRetry = vi.fn(async (fn: () => Promise<unknown>) => fn())
@@ -414,7 +416,6 @@ describe('scheduled-tasks route', () => {
     })
     expect(mockMessagesCreate).toHaveBeenCalledWith(expect.objectContaining({
       model: 'claude-haiku-4-5',
-      max_tokens: 50,
     }))
   })
 

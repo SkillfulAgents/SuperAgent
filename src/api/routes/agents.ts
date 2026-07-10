@@ -114,14 +114,13 @@ import {
 } from '@shared/lib/services/agent-template-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import type { SkillsetConfig } from '@shared/lib/types/skillset'
-import { withRetry } from '@shared/lib/utils/retry'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { workflowRoutes } from './workflows'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { executeComputerUseCommand, checkACPermissions, ungrabAC } from '@shared/lib/computer-use/executor'
 import { resolveTargetApp } from '@shared/lib/computer-use/types'
-import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
+import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { revokeProxyToken } from '@shared/lib/proxy/token-store'
 import { getAgentWorkspaceDir } from '@shared/lib/utils/file-storage'
@@ -563,16 +562,22 @@ const generateNameBodySchema = z.object({
   prompt: z.string().min(1, 'Prompt is required'),
 })
 
+// The prompts ask for a short name, but a chatty model can answer with prose
+// anyway (the old max_tokens: 50 doubled as a truncator); clamp to one line
+// and a sidebar-sized length before using it.
+function clampGeneratedName(raw: string): string {
+  return raw.split('\n')[0].trim().substring(0, 80)
+}
+
 agents.post('/generate-name', zValidator('json', generateNameBodySchema), async (c) => {
   try {
     const { prompt } = c.req.valid('json')
     const truncatedPrompt = prompt.trim().substring(0, 10_000)
 
     const anthropic = getLlmClient()
-    const response = await withRetry(() =>
-      anthropic.messages.create({
+    const rawName = (
+      await createSummarizerText(anthropic, {
         model: getSummarizerModel(),
-        max_tokens: 50,
         messages: [
           {
             role: 'user',
@@ -584,9 +589,8 @@ Respond with ONLY the agent name, nothing else. No quotes, no explanation.`,
           },
         ],
       })
-    )
-
-    const name = extractTextFromLlmResponse(response)?.trim()
+    )?.trim()
+    const name = rawName ? clampGeneratedName(rawName) : undefined
     if (!name) {
       return c.json({ error: 'Failed to generate name' }, 500)
     }
@@ -672,32 +676,42 @@ async function generateAndUpdateSessionNameAsync(
   message: string,
   agentName: string
 ): Promise<void> {
+  let sessionName: string | null = null
   try {
     const anthropic = getLlmClient()
-    const response = await withRetry(() =>
-      anthropic.messages.create({
-        model: getSummarizerModel(),
-        max_tokens: 50,
-        messages: [
-          {
-            role: 'user',
-            content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
+    sessionName = await createSummarizerText(anthropic, {
+      model: getSummarizerModel(),
+      messages: [
+        {
+          role: 'user',
+          content: `Generate a short, descriptive session name (3-6 words max) for a conversation with an AI agent named "${agentName}". The first message in the conversation is:
 
 "${message}"
 
 Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
-          },
-        ],
-      })
-    )
-
-    const sessionName = extractTextFromLlmResponse(response)
-    if (sessionName) {
-      await updateSessionName(agentSlug, sessionId, sessionName)
+        },
+      ],
+    })
+  } catch (error) {
+    console.error('Failed to generate session name after retries:', error)
+  }
+  try {
+    // Naming can fail outright (misconfigured summarizer model) or return no
+    // text (thinking-first ruminators like small qwen burn the whole budget);
+    // fall back to the truncated first message so the session is still
+    // identifiable in the sidebar instead of staying "New Session".
+    if (!sessionName) {
+      console.warn(`Session name generation returned no text; falling back to truncated message for session ${sessionId}`)
+    }
+    const finalName = sessionName
+      ? clampGeneratedName(sessionName)
+      : message.trim().split(/\s+/).slice(0, 6).join(' ').substring(0, 60)
+    if (finalName) {
+      await updateSessionName(agentSlug, sessionId, finalName)
       messagePersister.broadcastSessionUpdate(sessionId)
     }
   } catch (error) {
-    console.error('Failed to generate session name after retries:', error)
+    console.error('Failed to update session name:', error)
   }
 }
 

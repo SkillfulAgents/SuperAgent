@@ -225,6 +225,7 @@ vi.mock('@shared/lib/utils/retry', () => ({ withRetry: vi.fn((fn: () => unknown)
 vi.mock('@shared/lib/llm-provider/helpers', () => ({
   getConfiguredLlmClient: () => ({ messages: { create: vi.fn() } }),
   extractTextFromLlmResponse: () => null,
+  createSummarizerText: async () => null,
 }))
 vi.mock('@shared/lib/utils/message-transform', () => ({ transformMessages: vi.fn(), resolveInterruptedSubagents: vi.fn() }))
 vi.mock('@shared/lib/proxy/token-store', () => ({ revokeProxyToken: vi.fn(), validateProxyToken: vi.fn() }))
