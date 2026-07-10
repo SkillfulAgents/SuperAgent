@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser-use feature successfully executes browser tool calls and retrieves page information",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully, displaying Gamut interface with agent sidebar",
+    "Clicked the \"QA-20260710-195933-tatm\" agent in the sidebar — Agent chat interface opened with message input field ready",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message displayed in textbox",
+    "Clicked the \"Send message\" button — Message was sent successfully, agent status changed to \"working\", new session created with title \"Browser Page Title Retrieval\"",
+    "Waited for agent response — Agent executed browser tool calls: ToolSearch, Open Browser, Browser Get State, and Close Browser (all completed with checkmarks)",
+    "Verified response mentions \"Example Domain\" — Agent correctly returned: \"The page title is \"Example Domain\".\" in the chat message, confirming successful browser navigation and page title extraction",
+    "Took screenshot showing complete interaction — Screenshot captured showing user message, all tool calls with success indicators, and agent's final response"
+  ],
+  "bugs": [],
+  "durationMs": 56396,
+  "sessionId": "ba3bcfba-3476-497a-9c5f-0bb611aeb20e",
+  "cost": {
+    "inputTokens": 344,
+    "outputTokens": 10935,
+    "cacheCreationTokens": 73282,
+    "cacheReadTokens": 936396,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.240261
+  }
+}
