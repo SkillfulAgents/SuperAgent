@@ -56,6 +56,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useHistoryNavigation } from '@renderer/router/use-history-navigation'
 import { useSearch } from '@renderer/context/search-context'
+import { useCmdHintTarget, CmdHintBadge } from '@renderer/context/cmd-hint-context'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -63,6 +64,7 @@ import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useUser } from '@renderer/context/user-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
+import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import {
   DndContext,
@@ -133,6 +135,7 @@ function SessionSubItem({
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
+  const { ref: hintRef, hint } = useCmdHintTarget()
 
   return (
     <SidebarMenuSubItem>
@@ -146,21 +149,26 @@ function SessionSubItem({
           isActive={isSelected}
         >
           <AppLink
+            ref={hintRef}
             to="/agents/$slug/sessions/$sessionId"
             params={{ slug: agentSlug, sessionId: session.id }}
             className="flex items-center gap-2 w-full"
             data-testid={`session-item-${session.id}`}
           >
             <span className="flex-1 min-w-0 truncate text-left">{session.name}</span>
-            <span className="flex items-center justify-center w-4 shrink-0">
-              {isAwaitingInput ? (
-                <AwaitingDot />
-              ) : isWorking ? (
-                <WorkingDots />
-              ) : hasUnread ? (
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
-              ) : null}
-            </span>
+            {hint !== null ? (
+              <CmdHintBadge hint={hint} />
+            ) : (
+              <span className="flex items-center justify-center w-4 shrink-0">
+                {isAwaitingInput ? (
+                  <AwaitingDot />
+                ) : isWorking ? (
+                  <WorkingDots />
+                ) : hasUnread ? (
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
+                ) : null}
+              </span>
+            )}
           </AppLink>
         </SidebarMenuSubButton>
       </SessionContextMenu>
@@ -180,6 +188,7 @@ function DashboardSubItem({
   const routeAgentId = useRouteAgentId()
   const isSelected = routeAgentId === agentSlug && routeDashSlug === artifact.slug
   const [isRenaming, setIsRenaming] = useState(false)
+  const { ref: hintRef, hint } = useCmdHintTarget()
 
   const handleDoubleClick = () => {
     openDashboardExternal(agentSlug, artifact.slug, artifact.name)
@@ -199,6 +208,7 @@ function DashboardSubItem({
           title={`${artifact.description || artifact.name} (double-click to open in new window)`}
         >
           <AppLink
+            ref={hintRef}
             to="/agents/$slug/dashboards/$dashSlug"
             params={{ slug: agentSlug, dashSlug: artifact.slug }}
             onDoubleClick={handleDoubleClick}
@@ -215,6 +225,7 @@ function DashboardSubItem({
             ) : (
               <span className="truncate">{artifact.name}</span>
             )}
+            {hint !== null && <CmdHintBadge hint={hint} className="ml-auto" />}
           </AppLink>
         </SidebarMenuSubButton>
       </DashboardContextMenu>
@@ -428,6 +439,8 @@ export const AgentMenuItem = React.forwardRef<
     setIsOpen((prev) => !prev)
   }
 
+  const { ref: hintRef, hint } = useCmdHintTarget()
+
   return (
     <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
       <SidebarMenuItem ref={ref} style={style} {...rest} onMouseEnter={handleMouseEnter}>
@@ -444,12 +457,16 @@ export const AgentMenuItem = React.forwardRef<
               className="justify-between pl-7"
               data-testid={`agent-item-${agent.slug}`}
             >
-              <AppLink to="/agents/$slug" params={{ slug: agent.displaySlug }}>
+              <AppLink ref={hintRef} to="/agents/$slug" params={{ slug: agent.displaySlug }}>
                 <span className="flex items-center gap-1.5 min-w-0">
                   <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
                   {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
                 </span>
-                <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+                {hint !== null ? (
+                  <CmdHintBadge hint={hint} />
+                ) : (
+                  <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+                )}
               </AppLink>
             </SidebarMenuButton>
           </AgentContextMenu>
@@ -536,7 +553,8 @@ if (__RENDER_TRACKING__) {
 
 function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
-  const unreadCount = countData?.count ?? 0
+  const { data: platformCountData } = usePlatformUnreadCount()
+  const unreadCount = (countData?.count ?? 0) + (platformCountData?.count ?? 0)
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isActive = pathname === '/notifications'
 

@@ -18,7 +18,7 @@ Use this to look up recent or external information you do not already know. Read
   },
   async (args) => {
     try {
-      const data = await callWebHost<WebSearchHostResult>('search', args)
+      const data = await callWebHost<WebSearchHostResult>('web-search', 'search', args)
       return textResult(formatWebSearchResults(data))
     } catch (error) {
       const msg = error instanceof XAgentError ? error.message : String(error)

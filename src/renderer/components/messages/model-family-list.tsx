@@ -24,18 +24,18 @@ export function formatTokenThreshold(tokens: number): string {
 }
 
 /**
- * Warning copy for a model that can't do web search and/or fetch, or null when both work (no banner).
- * Native web tools are Claude-only; a configured host vendor exposes the search tool to ANY model, so
- * search is "unavailable" only when the model lacks native support AND no vendor is set - the caller
- * passes those two booleans. Native web fetch has no vendor yet (search seam), so it stays Claude-only.
+ * Warning copy for a model that can't do web tools, or null when they work (no banner). Native web
+ * tools depend on the model's own support (Claude, and GPT over the Platform); a configured host vendor exposes the `mcp__web__*` tools to ANY model, so
+ * they are "unavailable" only when the model lacks native support AND no vendor is set - the caller
+ * passes that one boolean. INVARIANT: the single boolean assumes every registered vendor implements
+ * BOTH operations (Exa does). The backend seam is per-tool (optional search?()/fetch?(), the MCP
+ * gate, the container derivation), but the client only knows the vendor *id*, not its capabilities.
+ * If a search-only or fetch-only vendor is ever added, re-split this into per-tool booleans and
+ * plumb the vendor's capabilities to the client - else this banner would misreport the missing side.
  */
-export function webToolsWarning(searchUnavailable: boolean, fetchUnavailable: boolean): string | null {
-  if (!searchUnavailable && !fetchUnavailable) return null
-  if (searchUnavailable && fetchUnavailable) {
-    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web Search to use search on any model.'
-  }
-  if (fetchUnavailable) return 'Web fetch isn’t available on this model. Native web fetch works only on Claude models.'
-  return 'Web search isn’t available on this model. Set a provider under Settings → Web Search to use it on any model.'
+export function webToolsWarning(unavailable: boolean): string | null {
+  if (!unavailable) return null
+  return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web to use them on any model.'
 }
 
 type LongContextCliff = NonNullable<ModelDefinition['longContextPriceCliff']>
@@ -85,18 +85,20 @@ interface ModelFamilyListProps {
    */
   offerLatest?: boolean
   /**
-   * When set, clicking a family header also selects that family's latest concrete
-   * version (without closing) and expands it — one click gets the latest, the rest
-   * stay visible for refinement. Used by the composer (the common "just give me the
-   * latest" case); omitted by the settings picker, where the family is just a toggle.
+   * When set, clicking a family header also selects that family's latest (without
+   * closing) and expands it — one click gets the latest, the rest stay visible for
+   * refinement. Called with the latest concrete version id and the bare family
+   * alias: the composer stores the concrete id (per-message picks are concrete);
+   * the settings picker stores the alias (a saved "latest" rides upgrades).
    */
-  onSelectFamilyLatest?: (value: string) => void
+  onSelectFamilyLatest?: (latestId: string, family: string) => void
   /**
-   * Active host web-search provider id from global settings. Native web search is Claude-only
-   * (supportsWebSearch); a configured vendor exposes `mcp__web__web_search` to ANY model, so the
-   * "not available" warning clears for search once a vendor is set. Undefined = native.
+   * Active host web-provider id from global settings. Native web search/fetch depend on the model
+   * (the `supportsWebSearch` flag; Claude and GPT-over-Platform have them); a configured vendor
+   * exposes the `mcp__web__*` tools to ANY model, so the
+   * "not available" warning clears once a vendor is set. Undefined / 'native' = no host vendor.
    */
-  webSearchProvider?: string
+  webProvider?: string
 }
 
 function Row({
@@ -148,7 +150,7 @@ export function ModelFamilyList({
   onPick,
   offerLatest = false,
   onSelectFamilyLatest,
-  webSearchProvider,
+  webProvider,
 }: ModelFamilyListProps) {
   const { families, standalone } = useMemo(() => {
     const order: string[] = []
@@ -184,12 +186,12 @@ export function ModelFamilyList({
   const [expanded, setExpanded] = useState<string | null | undefined>(undefined)
   const openFamily = expanded === undefined ? selectedFamily : expanded
 
-  // Native web tools are Claude-only; a configured search vendor makes search work on ANY model, so
-  // search is unavailable only when the model lacks native support AND no vendor is set. Native web
-  // fetch has no vendor in the search seam, so it stays Claude-only. `native`/undefined = no vendor.
+  // Native web tools depend on the model's own support (Claude, GPT-over-Platform); a configured host vendor makes them work on ANY model, so web
+  // tools are unavailable only when the model lacks native support AND no vendor is set.
+  // `native`/undefined means no host vendor.
   const nativeWebUnavailable = resolved?.supportsWebSearch === false
-  const searchVendorSet = !!webSearchProvider && webSearchProvider !== 'native'
-  const webWarning = webToolsWarning(nativeWebUnavailable && !searchVendorSet, nativeWebUnavailable)
+  const webVendorSet = !!webProvider && webProvider !== 'native'
+  const webWarning = webToolsWarning(nativeWebUnavailable && !webVendorSet)
 
   return (
     <div className="flex flex-col gap-0.5">
@@ -225,7 +227,7 @@ export function ModelFamilyList({
                   // One-click latest: expand and select the family's newest
                   // version without closing, so refinement stays one tap away.
                   setExpanded(group.family)
-                  onSelectFamilyLatest(latestVersion.id)
+                  onSelectFamilyLatest(latestVersion.id, group.family)
                 } else {
                   setExpanded(isOpen ? null : group.family)
                 }

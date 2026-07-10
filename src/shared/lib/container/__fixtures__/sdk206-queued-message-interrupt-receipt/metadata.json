@@ -1,0 +1,16 @@
+{
+  "sessionId": "b9554538-8a80-45e8-83f1-1cd9c4a05a4b",
+  "agentSlug": "capture",
+  "description": "Real capture (2026-07-09, SDK 0.3.206) of the NEW graceful-interrupt flow: a 12s foreground turn gets two queued messages, then POST /interrupt. Unlike the pre-receipt flow (sdk206-queued-message-interrupt, where the stream just STOPS), the container now calls the SDK interrupt control request first: the SDK emits real command_lifecycle cancelled frames for all three commands plus a full termination sequence (result subtype error_during_execution with terminal_reason aborted_tools — error-SHAPED but a deliberate stop — and a trailing idle), and the container appends synthetic command_lifecycle discarded frames for the two queued uuids its abort killed. Guards: lifecycle forwarding, interrupt classification (NO session_error for aborted_tools), and quiet settling.",
+  "sdkVersion": "0.3.206",
+  "cliVersion": "2.1.206",
+  "capturedAt": "2026-07-09",
+  "startActive": true,
+  "subagents": [],
+  "backgroundTasks": [],
+  "queuedUuids": [
+    "94c088d7-7dad-453e-b3a8-43a15e46ac3d",
+    "b5f664db-c0a4-4e46-8a4d-f2066546bbad"
+  ],
+  "totalEntries": 31
+}

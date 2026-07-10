@@ -237,9 +237,25 @@ async function reconcileAfterAuthChange(): Promise<void> {
  * (platform-service → platform-auth-service → here).
  */
 function notifyPlatformServiceAuthChanged(connected: boolean): void {
+  // The success log is the only positive signal this fire-and-forget path ran;
+  // platform-auth-service.notify.test.ts asserts on it.
   void import('./platform-service')
-    .then((mod) => mod.platformService.onAuthChanged(connected))
+    .then((mod) => {
+      mod.platformService.onAuthChanged(connected)
+      console.log(`[platform-auth] platform-service notified of auth change (connected=${connected})`)
+    })
     .catch((error) => captureException(error, { tags: { area: 'platform-auth', op: 'notify-service' } }))
+  // The desktop notifications subscription follows platform connectivity:
+  // start on connect (self-gates on auth mode), tear down on disconnect.
+  void import('../scheduler/platform-notifications-manager')
+    .then((mod) =>
+      connected
+        ? mod.platformNotificationsManager.start()
+        : mod.platformNotificationsManager.stop(),
+    )
+    .catch((error) =>
+      captureException(error, { tags: { area: 'platform-auth', op: 'notify-notifications' } }),
+    )
 }
 
 function getEnvManagedStatus(): PlatformAuthStatus | null {

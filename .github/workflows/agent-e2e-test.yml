@@ -62,10 +62,19 @@ jobs:
       # ── Checkout & toolchain ────────────────────────────────────
       - uses: actions/checkout@v6
 
+      # Host Node stays on 20: qagent v0.1.2's hook loader trips Node 22's
+      # require(esm)-in-cycle restriction when loading .qagent/hooks/*.ts.
+      # The app under test runs in Docker (node:22-slim) regardless, so
+      # product coverage is unaffected. Bump to 22 once qagent supports it.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Resolve agent image tag
         id: agent-image

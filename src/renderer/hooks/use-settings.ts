@@ -10,7 +10,7 @@ import type {
   VoiceSettings,
   AnalyticsTarget,
   LlmProviderId,
-  WebSearchProviderId,
+  WebProviderId,
 } from '@shared/lib/config/settings'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
@@ -57,10 +57,12 @@ export interface UpdateSettingsParams {
   container?: Partial<ContainerSettings>
   app?: Omit<Partial<AppPreferences>, 'faviconDataUrl'> & { faviconDataUrl?: string | null }
   llmProvider?: LlmProviderId
-  webSearchProvider?: WebSearchProviderId
+  webProvider?: WebProviderId
   apiKeys?: {
     anthropicApiKey?: string
     openrouterApiKey?: string
+    genericApiKey?: string
+    genericBaseUrl?: string
     bedrockApiKey?: string
     bedrockAccessKeyId?: string
     bedrockSecretAccessKey?: string

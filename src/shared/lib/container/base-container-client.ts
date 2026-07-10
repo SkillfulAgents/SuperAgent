@@ -24,7 +24,7 @@ import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
-import { getActiveWebSearchProvider } from '../web-provider'
+import { getActiveWebProvider } from '../web-provider'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 const execAsync = promisify(exec)
@@ -1003,10 +1003,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const resolvedBrowserModel = resolveContainerModel(options.browserModel, 'browser')
     const resolvedDashboardBuilderModel = resolveContainerModel(options.dashboardBuilderModel, 'dashboard')
     const modelPromptHints = getContainerModelPromptHints(resolvedModel)
-    // The active web search vendor id is a non-secret signal (NOT a model, so no
-    // resolveContainerModel). Resolved once here from global settings so every session-creation
-    // caller inherits it; undefined means native (no host vendor, the container keeps WebSearch).
-    const webSearchProvider = getActiveWebSearchProvider()?.id
+    // The active web vendor id is a non-secret signal (NOT a model, so no resolveContainerModel).
+    // Resolved once here from global settings so every session-creation caller inherits it. One
+    // stored vendor backs both tools; the two ids sent to the container are the per-tool enablement
+    // signals, each derived from whether the vendor supports that operation (undefined -> native,
+    // the container keeps its built-in WebSearch/WebFetch for that tool).
+    const activeWebProvider = getActiveWebProvider()
+    const webSearchProvider = activeWebProvider?.search ? activeWebProvider.id : undefined
+    const webFetchProvider = activeWebProvider?.fetch ? activeWebProvider.id : undefined
 
     try {
       const controller = new AbortController()
@@ -1026,6 +1030,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           browserModel: resolvedBrowserModel,
           dashboardBuilderModel: resolvedDashboardBuilderModel,
           webSearchProvider,
+          webFetchProvider,
           maxOutputTokens: options.maxOutputTokens,
           maxThinkingTokens: options.maxThinkingTokens,
           maxTurns: options.maxTurns,

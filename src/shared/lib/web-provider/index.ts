@@ -1,13 +1,12 @@
-export { BaseWebSearchProvider } from './base-web-search-provider'
-export { ExaWebSearchProvider } from './exa-web-search-provider'
-export {
-  findWebSearchProvider,
-  getActiveWebSearchProvider,
-  getWebSearchProvider,
-} from './search-factory'
+export { BaseWebProvider } from './base-web-provider'
+export { ExaWebProvider } from './exa-web-provider'
+export { findWebProvider, getActiveWebProvider, getWebProvider } from './web-provider-factory'
 export type {
+  WebFetchOptions,
+  WebFetchResponse,
+  WebFetchResult,
+  WebProviderId,
   WebSearchHit,
   WebSearchOptions,
-  WebSearchProviderId,
   WebSearchResponse,
 } from './types'

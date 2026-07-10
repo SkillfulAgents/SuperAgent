@@ -37,6 +37,10 @@ export interface ContainerSettings {
 export interface ApiKeySettings {
   anthropicApiKey?: string
   openrouterApiKey?: string
+  /** Generic (custom baseURL) provider key, sent as ANTHROPIC_AUTH_TOKEN. */
+  genericApiKey?: string
+  /** Generic provider endpoint (Anthropic-wire-compatible), e.g. a LiteLLM proxy. */
+  genericBaseUrl?: string
   bedrockApiKey?: string
   bedrockAccessKeyId?: string
   bedrockSecretAccessKey?: string
@@ -63,6 +67,7 @@ export interface NotificationSettings {
   sessionComplete: boolean
   sessionWaiting: boolean
   sessionScheduled: boolean
+  platformNotification?: boolean
   notifyWhenUnfocused?: boolean
 }
 
@@ -185,8 +190,8 @@ export interface AnalyticsTarget {
 
 export type { LlmProviderId } from '../llm-provider/base-llm-provider'
 import type { LlmProviderId } from '../llm-provider/base-llm-provider'
-export type { WebSearchProviderId } from '../web-provider/types'
-import type { WebSearchProviderId } from '../web-provider/types'
+export type { WebProviderId } from '../web-provider/types'
+import type { WebProviderId } from '../web-provider/types'
 
 export interface PlatformAuthSettings {
   token: string
@@ -208,7 +213,7 @@ export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
   llmProvider?: LlmProviderId
-  webSearchProvider?: WebSearchProviderId // default 'native' (no host vendor; Anthropic server-side tools)
+  webProvider?: WebProviderId // default 'native' (no host vendor; Claude's built-in web tools). One stored vendor backs both search + fetch.
   webAllowedSites?: string[] // operator allow list; empty = allow all (host-side must-enforce, §8)
   webBlockedSites?: string[] // operator deny list; wins over allow
   app?: AppPreferences
@@ -224,8 +229,18 @@ export interface AppSettings {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports?: boolean
   platformAuth?: PlatformAuthSettings
+  /**
+   * Desktop platform-notifications state: the OS-notification dedup watermark
+   * (newest created_at already OS-notified). Content is never mirrored locally
+   * — the inbox reads live from the platform.
+   */
+  platformNotifications?: PlatformNotificationsSettings
   /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
   enableToolSearch?: boolean
+}
+
+export interface PlatformNotificationsSettings {
+  lastNotifiedAt?: string
 }
 
 // API key source types
@@ -268,12 +283,13 @@ export interface GlobalSettingsResponse {
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
-  webSearchProvider: WebSearchProviderId
+  webProvider: WebProviderId
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus
     bedrock: ApiKeyStatus
     platform: ApiKeyStatus
+    generic: ApiKeyStatus
     composio: ApiKeyStatus
     nango: ApiKeyStatus
     browserbase: ApiKeyStatus
@@ -282,6 +298,8 @@ export interface GlobalSettingsResponse {
     exa: ApiKeyStatus
   }
   composioUserId?: string
+  /** Saved generic-provider endpoint. Not a secret — echoed so the Settings UI can display/edit it. */
+  genericBaseUrl?: string
   accountProviderUserId?: string
   voice?: VoiceSettings
   models: ModelSettings
@@ -428,7 +446,12 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     },
     apiKeys: loaded.apiKeys,
     llmProvider: loaded.llmProvider,
-    webSearchProvider: loaded.webSearchProvider,
+    // Recover a pre-collapse selection: webSearchProvider shipped (v0.4.5-0.4.7) and the single
+    // UI select wrote both old fields to the same value, so the legacy webSearchProvider is the
+    // user's choice. Read-fallback (not a boot-time migration) keeps this merge pure; the next
+    // PUT /settings persists it under webProvider and the stale key lingers harmlessly. An invalid
+    // stored value falls back to native at the factory's isVendorId narrow.
+    webProvider: loaded.webProvider ?? loaded.webSearchProvider,
     webAllowedSites: loaded.webAllowedSites,
     webBlockedSites: loaded.webBlockedSites,
     models: (() => {
@@ -462,6 +485,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     analyticsTargets: loaded.analyticsTargets,
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
+    platformNotifications: loaded.platformNotifications,
     enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
   }
 }

@@ -1,0 +1,16 @@
+{
+  "sessionId": "265a9f5b-b1f5-4711-8684-fac7906c33a3",
+  "agentSlug": "capture",
+  "description": "Real capture (2026-07-09, SDK 0.3.206). Dead turn from a nonexistent model (claude-nonexistent-9). REAL SHAPE: result arrives with subtype:\"success\" but is_error:true, terminal_reason:\"api_error\", api_error_status:404, plus a synthetic assistant message with error:\"model_not_found\" and a command_lifecycle:cancelled frame for the dead command. Guards terminal_reason surfacing: the legacy subtype-only error check classifies this turn as SUCCESS and emits no session_error.",
+  "sdkVersion": "0.3.206",
+  "cliVersion": "2.1.206",
+  "capturedAt": "2026-07-09",
+  "startActive": true,
+  "subagents": [],
+  "backgroundTasks": [],
+  "newFrameCounts": {
+    "result.terminal_reason:api_error": 1,
+    "command_lifecycle:cancelled": 1
+  },
+  "totalEntries": 6
+}

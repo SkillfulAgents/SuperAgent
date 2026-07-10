@@ -4,6 +4,7 @@ import agents from './routes/agents'
 import xAgent from './routes/x-agent'
 import xAgentChat from './routes/x-agent-chat'
 import webSearch from './routes/web-search'
+import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
@@ -11,6 +12,7 @@ import scheduledTasks from './routes/scheduled-tasks'
 import webhookTriggers from './routes/webhook-triggers'
 import chatIntegrationsRouter from './routes/chat-integrations'
 import notifications from './routes/notifications'
+import platformNotifications from './routes/platform-notifications'
 import proxy from './routes/proxy'
 import mcpProxy from './routes/mcp-proxy'
 import browser from './routes/browser'
@@ -170,6 +172,7 @@ app.route('/api/agents', agents)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/web-search', webSearch)
+app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)
@@ -177,6 +180,7 @@ app.route('/api/scheduled-tasks', scheduledTasks)
 app.route('/api/webhook-triggers', webhookTriggers)
 app.route('/api/chat-integrations', chatIntegrationsRouter)
 app.route('/api/notifications', notifications)
+app.route('/api/platform-notifications', platformNotifications)
 app.route('/api/proxy', proxy)
 app.route('/api/agent-bootstrap', agentBootstrap)
 app.route('/api/mcp-proxy', mcpProxy)

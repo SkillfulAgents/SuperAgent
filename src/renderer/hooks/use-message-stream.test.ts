@@ -2256,6 +2256,65 @@ describe('useMessageStream', () => {
     })
   })
 
+  describe('command lifecycle (queued-ghost rescue signal)', () => {
+    async function setupHook(sessionId: string) {
+      const mod = await getHookModule()
+      const wrapper = createWrapper()
+      const { result } = renderHook(
+        () => mod.useMessageStream(sessionId, 'agent-1'),
+        { wrapper }
+      )
+      await vi.waitFor(() => {
+        expect(MockEventSource.instances.length).toBeGreaterThan(0)
+      })
+      const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+      })
+      return { mod, result, es }
+    }
+
+    it('accumulates terminal-dead command uuids (discarded/cancelled), deduped', async () => {
+      const { result, es } = await setupHook('cmd-s1')
+
+      act(() => {
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u2', state: 'cancelled' })
+        // Redelivery must not double up
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
+      })
+
+      expect(result.current.discardedCommandUuids).toEqual(['u1', 'u2'])
+    })
+
+    it('ignores non-terminal states and frames without a uuid', async () => {
+      const { result, es } = await setupHook('cmd-s2')
+
+      act(() => {
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'queued' })
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'started' })
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'completed' })
+        es.simulateMessage({ type: 'command_lifecycle', state: 'discarded' })
+      })
+
+      expect(result.current.discardedCommandUuids).toEqual([])
+    })
+
+    it('consumeDiscardedCommand removes a single uuid once acted upon', async () => {
+      const { mod, result, es } = await setupHook('cmd-s3')
+
+      act(() => {
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u2', state: 'discarded' })
+      })
+      act(() => {
+        mod.consumeDiscardedCommand('cmd-s3', 'u1')
+      })
+
+      expect(result.current.discardedCommandUuids).toEqual(['u2'])
+    })
+  })
+
   // ---- Parallel tool call streaming ----
 
   describe('parallel tool calls', () => {

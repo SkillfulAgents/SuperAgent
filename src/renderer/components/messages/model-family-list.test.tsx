@@ -60,26 +60,14 @@ describe('longContextWarningText', () => {
 })
 
 describe('webToolsWarning', () => {
-  it('warns about both and points to Web Search when neither is available', () => {
-    const w = webToolsWarning(true, true)!
+  it('warns and points to a provider when web tools are unavailable', () => {
+    const w = webToolsWarning(true)!
     expect(w).toMatch(/Web search and fetch aren.t available on this model/)
-    expect(w).toMatch(/Set a provider under Settings . Web Search to use search on any model/)
+    expect(w).toMatch(/Set a provider under Settings . Web to use them on any model/)
   })
 
-  it('names web fetch only (Claude-only, no vendor yet) when just fetch is unavailable', () => {
-    const w = webToolsWarning(false, true)!
-    expect(w).toMatch(/Web fetch isn.t available on this model/)
-    expect(w).toMatch(/Native web fetch works only on Claude models/)
-  })
-
-  it('names web search only when just search is unavailable', () => {
-    const w = webToolsWarning(true, false)!
-    expect(w).toMatch(/Web search isn.t available on this model/)
-    expect(w).toMatch(/Set a provider under Settings . Web Search/)
-  })
-
-  it('returns null (no banner) when both are available', () => {
-    expect(webToolsWarning(false, false)).toBeNull()
+  it('returns null (no banner) when web tools are available', () => {
+    expect(webToolsWarning(false)).toBeNull()
   })
 })
 
@@ -134,8 +122,9 @@ describe('ModelFamilyList', () => {
     )
     expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
     await user.click(screen.getByTestId('model-family-opus'))
-    // selects the family's latest concrete id, and does NOT take the close path
-    expect(onSelectFamilyLatest).toHaveBeenCalledWith('claude-opus-4-8')
+    // selects the family's latest concrete id (family alias alongside, for
+    // callers that store "latest" as the bare alias), and does NOT take the close path
+    expect(onSelectFamilyLatest).toHaveBeenCalledWith('claude-opus-4-8', 'opus')
     expect(onPick).not.toHaveBeenCalled()
     // and expands so the rest are one tap away
     expect(await screen.findByTestId('model-pinned-claude-opus-4-7')).toBeInTheDocument()
@@ -156,7 +145,7 @@ describe('ModelFamilyList', () => {
     expect(screen.getByTestId('model-family-gpt')).toHaveTextContent('GPT')
   })
 
-  it('warns about both when a non-Claude model has no search vendor, and not for Claude', () => {
+  it('warns when a non-Claude model lacks web tools and no vendor is set, and not for Claude', () => {
     const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)
     expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/search and fetch/)
 
@@ -164,18 +153,18 @@ describe('ModelFamilyList', () => {
     expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
   })
 
-  it('narrows to a fetch-only warning when a search vendor is configured', () => {
+  it('clears the warning on a non-Claude model when a web vendor is configured', () => {
     render(
-      <ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} webSearchProvider="exa" />,
+      <ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} webProvider="exa" />,
     )
-    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/Web fetch isn.t available/)
+    expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
   })
 
-  it('treats a "native" provider id as no vendor (still warns about both)', () => {
+  it('treats a "native" provider id as no vendor (still warns)', () => {
     render(
-      <ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} webSearchProvider="native" />,
+      <ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} webProvider="native" />,
     )
-    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/search and fetch/)
+    expect(screen.getByTestId('model-no-websearch-warning')).toBeInTheDocument()
   })
 
   it('warns about the long-context price cliff for GPT, and not for flat-priced Claude', () => {

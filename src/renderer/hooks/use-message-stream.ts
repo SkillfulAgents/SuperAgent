@@ -128,6 +128,11 @@ interface StreamState {
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
   backgroundTasks: Array<{ taskId: string; startedAt: number; isWorkflow?: boolean; isSubagent?: boolean }> // Active background Bash commands, dynamic workflows + background subagents
   isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
+  // Uuids of queued user messages the runtime reported dead (command_lifecycle
+  // state discarded/cancelled — e.g. killed by an interrupt). MessageList
+  // rescues matching ghosts' text to the composer immediately instead of
+  // racing the post-idle refetch, then consumes each uuid.
+  discardedCommandUuids: string[]
 }
 
 // Upsert a subagent entry in the array by parentToolId (immutable)
@@ -170,6 +175,7 @@ const EMPTY_STREAM_STATE: StreamState = {
   apiRetry: null,
   backgroundTasks: [],
   isWaitingBackground: false,
+  discardedCommandUuids: [],
 }
 
 const streamStates = new Map<string, StreamState>()
@@ -402,6 +408,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: Array.isArray(data.backgroundTasks) ? data.backgroundTasks : (current?.backgroundTasks ?? []),
           isWaitingBackground: Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         // Reconcile against the persisted transcript on every (re)connect. A client
         // that opens the stream AFTER the agent already broadcast events (common for a
@@ -459,6 +466,7 @@ function getOrCreateEventSource(
           apiRetry: null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -509,6 +517,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: [],
           isWaitingBackground: false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
@@ -556,9 +565,27 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: [],
           isWaitingBackground: false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      }
+      // Per-command lifecycle (runtime >= CLI 2.1.206). Terminal dead states
+      // name a queued message that will never run — the deterministic rescue
+      // signal. 'cancelled' for a command that already materialized is
+      // harmless: rescue only fires while its ghost still exists.
+      else if (data.type === 'command_lifecycle') {
+        if (
+          current &&
+          (data.state === 'discarded' || data.state === 'cancelled') &&
+          typeof data.commandUuid === 'string' &&
+          !current.discardedCommandUuids.includes(data.commandUuid)
+        ) {
+          streamStates.set(sessionId, {
+            ...current,
+            discardedCommandUuids: [...current.discardedCommandUuids, data.commandUuid],
+          })
+        }
       }
       // Background Bash task events
       else if (data.type === 'background_task_started') {
@@ -691,6 +718,7 @@ function getOrCreateEventSource(
           apiRetry: null, // Clear retry state — API call succeeded
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
       else if (data.type === 'stream_delta') {
@@ -722,6 +750,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
       else if (data.type === 'stream_api_error') {
@@ -769,6 +798,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
       else if (data.type === 'tool_use_ready') {
@@ -816,6 +846,7 @@ function getOrCreateEventSource(
           apiRetry: current?.apiRetry ?? null,
           backgroundTasks: current?.backgroundTasks ?? [],
           isWaitingBackground: current?.isWaitingBackground ?? false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
       else if (data.type === 'user_message') {
@@ -870,6 +901,13 @@ function getOrCreateEventSource(
             ...current,
             isStreaming: false,
           })
+        }
+        // A tool_result for a pending user-input request means it was resolved —
+        // possibly by another tab/window viewing the same session. The resolving
+        // tab removes its card optimistically; every other tab relies on this
+        // broadcast to drop the stale card instead of waiting for session_idle.
+        if (data.type === 'tool_result' && typeof data.toolUseId === 'string') {
+          removePendingRequestsByToolUseId(sessionId, data.toolUseId)
         }
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
       }
@@ -1370,6 +1408,40 @@ function releaseEventSource(sessionId: string): void {
   }
 }
 
+// Drop any pending user-input request matching a resolved tool call. Driven by
+// the server's `tool_result` broadcast, which fires for every tool — for ids
+// that never had a request card this is a no-op (no state write, no re-render).
+function removePendingRequestsByToolUseId(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (!current) return
+  const strip = <T extends { toolUseId: string }>(list: T[]): T[] =>
+    list.some((r) => r.toolUseId === toolUseId) ? list.filter((r) => r.toolUseId !== toolUseId) : list
+  const next: StreamState = {
+    ...current,
+    pendingSecretRequests: strip(current.pendingSecretRequests),
+    pendingConnectedAccountRequests: strip(current.pendingConnectedAccountRequests),
+    pendingQuestionRequests: strip(current.pendingQuestionRequests),
+    pendingFileRequests: strip(current.pendingFileRequests),
+    pendingRemoteMcpRequests: strip(current.pendingRemoteMcpRequests),
+    pendingBrowserInputRequests: strip(current.pendingBrowserInputRequests),
+    pendingScriptRunRequests: strip(current.pendingScriptRunRequests),
+    pendingComputerUseRequests: strip(current.pendingComputerUseRequests),
+  }
+  const changed =
+    next.pendingSecretRequests !== current.pendingSecretRequests ||
+    next.pendingConnectedAccountRequests !== current.pendingConnectedAccountRequests ||
+    next.pendingQuestionRequests !== current.pendingQuestionRequests ||
+    next.pendingFileRequests !== current.pendingFileRequests ||
+    next.pendingRemoteMcpRequests !== current.pendingRemoteMcpRequests ||
+    next.pendingBrowserInputRequests !== current.pendingBrowserInputRequests ||
+    next.pendingScriptRunRequests !== current.pendingScriptRunRequests ||
+    next.pendingComputerUseRequests !== current.pendingComputerUseRequests
+  if (changed) {
+    streamStates.set(sessionId, next)
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 // Helper function to remove a secret request from a session
 export function removeSecretRequest(sessionId: string, toolUseId: string): void {
   const current = streamStates.get(sessionId)
@@ -1488,6 +1560,21 @@ export function removeComputerUseRequest(sessionId: string, toolUseId: string): 
 }
 
 // Remove a peer user message once its persisted copy is visible in fetched messages
+// Consume a discarded-command uuid once MessageList has acted on it (rescued
+// the ghost's text or dropped a peer ghost). Leftover uuids are harmless —
+// rescue only fires while a matching ghost exists — but consuming keeps the
+// list from growing across a long session.
+export function consumeDiscardedCommand(sessionId: string, uuid: string): void {
+  const current = streamStates.get(sessionId)
+  if (current && current.discardedCommandUuids.includes(uuid)) {
+    streamStates.set(sessionId, {
+      ...current,
+      discardedCommandUuids: current.discardedCommandUuids.filter((u) => u !== uuid),
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
 export function removePeerUserMessage(sessionId: string, uuid: string): void {
   const current = streamStates.get(sessionId)
   if (current && current.peerUserMessages.some((p) => p.uuid === uuid)) {

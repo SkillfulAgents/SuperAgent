@@ -28,6 +28,7 @@ import { ComposerOptions, useComposerOptions } from '@renderer/components/messag
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
+import { HomeDefaultModel } from './home-default-model'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeChatIntegrations } from './home-chat-integrations'
@@ -35,6 +36,7 @@ import { HomeVolumes } from './home-volumes'
 import { HomeBookmarks } from './home-bookmarks'
 import { DashboardCard } from '@renderer/components/home/dashboard-card'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import {
@@ -86,7 +88,15 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
-  const composerOptions = useComposerOptions()
+  const { data: agentPrefs } = useAgentPreferences(agent.slug)
+  const composerOptions = useComposerOptions({
+    agentDefaultModel: agentPrefs?.defaultModel,
+    agentDefaultEffort: agentPrefs?.defaultEffort,
+    agentKey: agent.slug,
+    // The default-model card sits next to this composer; an untouched selection
+    // must visibly track it, including a reset back to the global default.
+    followDefaults: true,
+  })
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   const isMobile = useIsMobile()
@@ -512,6 +522,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             }} />
             <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
+            <HomeDefaultModel className="intro-step intro-step-9" agentSlug={agent.slug} />
             <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
           </div>
         )}

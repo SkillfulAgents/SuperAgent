@@ -1,4 +1,5 @@
 import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
@@ -42,26 +43,21 @@ function mcpToolNames(
 }
 import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
-import { resolveWebSearchToolInPrompt } from './web-search-prompt';
+import { renderPrompt } from './render-prompt';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
-// Defaults for `${VAR}` placeholders in prompt files. Mirror values the host
-// (base-container-client.ts) sets, so out-of-host runs render sensibly.
+// Default values for system-prompt template vars when the host env is unset.
+// Mirror values the host (base-container-client.ts) sets, so out-of-host runs
+// render sensibly.
 const PROMPT_ENV_DEFAULTS: Record<string, string> = {
   CLAUDE_CONFIG_DIR: '/workspace/.claude',
 };
 
-function interpolateEnv(template: string): string {
-  return template.replace(/\$\{(\w+)\}/g, (match, name) => {
-    return process.env[name] || PROMPT_ENV_DEFAULTS[name] || match;
-  });
-}
-
 function loadPrompt(filename: string): string {
-  return interpolateEnv(fs.readFileSync(path.join(__dirname, filename), 'utf-8'));
+  return fs.readFileSync(path.join(__dirname, filename), 'utf-8');
 }
 
 const SYSTEM_PROMPT = loadPrompt('system-prompt.md');
@@ -112,128 +108,173 @@ function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string 
   return accounts;
 }
 
+/** One toolkit's connected accounts, as the template's `connectedAccounts` list. */
+interface ConnectedAccountGroup {
+  displayName: string;
+  entries: Array<{ name: string; id: string }>;
+}
+
+/** One remote MCP server, as the template's `remoteMcps` list. */
+interface RemoteMcpView {
+  name: string;
+  tools: string;
+  sanitizedName: string;
+}
+
+function connectedAccountGroups(): ConnectedAccountGroup[] {
+  return [...parseConnectedAccounts()].map(([toolkit, entries]) => ({
+    displayName: toolkit.charAt(0).toUpperCase() + toolkit.slice(1),
+    entries,
+  }));
+}
+
+function remoteMcpViews(): RemoteMcpView[] {
+  return parseRemoteMcps().map(mcp => ({
+    name: mcp.name,
+    tools: mcp.tools.map(t => t.name).join(', '),
+    sanitizedName: sanitizeMcpName(mcp.name),
+  }));
+}
+
+/** Env vars the agent may read directly — the proxy's own vars are documented separately. */
+function agentEnvVars(availableEnvVars?: string[]): string[] {
+  const proxyEnvVars = new Set(['PROXY_BASE_URL', 'PROXY_TOKEN', 'CONNECTED_ACCOUNTS']);
+  return (availableEnvVars || []).filter(
+    name => !name.startsWith('CONNECTED_ACCOUNT_') && !proxyEnvVars.has(name)
+  );
+}
+
+/** Computer-use tools and the request_script_run tool only exist on desktop hosts. */
+// Interrupt receipt from Query.interrupt() (SDK >= 0.3.205, advertised by the
+// interrupt_receipt_v1 capability): `still_queued` lists the uuids of async
+// user messages that would SURVIVE a graceful interrupt and still run. Older
+// CLIs resolve with an empty success payload (undefined / no field) — treat
+// that as "nothing known", never as "nothing queued".
+const interruptReceiptSchema = z.object({
+  still_queued: z.array(z.string()).optional().catch(undefined),
+});
+
+export function stillQueuedFromReceipt(receipt: unknown): string[] {
+  const parsed = interruptReceiptSchema.safeParse(receipt);
+  if (!parsed.success) return [];
+  return parsed.data.still_queued ?? [];
+}
+
+export interface InterruptOutcome {
+  interrupted: boolean;
+  // Uuids of queued user messages that died with this interrupt — never picked
+  // up by the agent. The same uuids are also emitted on the message stream as
+  // synthetic `command_lifecycle` frames with state 'discarded'.
+  discardedUuids: string[];
+}
+
+// An error result with no human-readable text anywhere gets the resume-failure
+// fallback copy. `result` counts as text: the modern error shape (is_error:true
+// with terminal_reason, e.g. an api_error from a bad model id) puts the real
+// explanation there — stomping a synthetic "session corrupted" message next to
+// it misleads the host into showing the wrong error. Gracefully interrupted
+// turns (terminal_reason aborted_*) are textless BY DESIGN — they are a
+// deliberate stop, not a resume failure, and must not get the copy either.
+export function resultNeedsResumeErrorFallback(msg: {
+  error?: unknown;
+  message?: unknown;
+  result?: unknown;
+  terminal_reason?: unknown;
+}): boolean {
+  if (msg.terminal_reason === 'aborted_tools' || msg.terminal_reason === 'aborted_streaming') return false;
+  return !msg.error && !msg.message && !msg.result;
+}
+
+export function isComputerUseHost(): boolean {
+  return ['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '');
+}
+
 /**
- * Generates the full system prompt from the SuperAgent prompt plus dynamic
- * sections (connected accounts, env vars, user instructions).
+ * The template renders every section itself; this bag carries only data. Each
+ * list is paired with a `has*` boolean because a Mustache list section repeats
+ * its body per item and so cannot host the section's heading. A string needs no
+ * such pair: a non-empty string renders its section body exactly once.
  */
-function generateSystemPrompt(
+export interface SystemPromptVars {
+  CLAUDE_CONFIG_DIR: string;
+  webSearchToolName: string;
+  webFetchToolName: string;
+  composioTriggers: boolean;
+  webhookEndpoints: boolean;
+  anyTriggers: boolean;
+  computerUse: boolean;
+  hasModelHints: boolean;
+  modelHints: string[];
+  hasConnectedAccounts: boolean;
+  connectedAccounts: ConnectedAccountGroup[];
+  hasRemoteMcps: boolean;
+  remoteMcps: RemoteMcpView[];
+  hasEnvVars: boolean;
+  envVars: string[];
+  userInstructions: string;
+}
+
+/**
+ * Builds the variable bag consumed by the system-prompt template: the two
+ * trigger-availability gates and the computer-use host gate read from the
+ * environment, the labels of whichever native web tools a vendor replaced, the
+ * config dir, and the data behind the sections that only render for some agents.
+ */
+export function buildSystemPromptVars(
   availableEnvVars?: string[],
   userSystemPrompt?: string,
   modelPromptHints?: string[],
   webSearchProvider?: string,
+  webFetchProvider?: string,
+): SystemPromptVars {
+  const composioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true';
+  const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
+  const modelHints = modelPromptHints || [];
+  const connectedAccounts = connectedAccountGroups();
+  const remoteMcps = remoteMcpViews();
+  const envVars = agentEnvVars(availableEnvVars);
+  const userInstructions = userSystemPrompt?.trim() || '';
+  return {
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
+    webSearchToolName: webSearchProvider ? 'mcp__web__web_search' : 'WebSearch',
+    webFetchToolName: webFetchProvider ? 'mcp__web__web_fetch' : 'WebFetch',
+    composioTriggers,
+    webhookEndpoints,
+    anyTriggers: composioTriggers || webhookEndpoints,
+    computerUse: isComputerUseHost(),
+    hasModelHints: modelHints.length > 0,
+    modelHints,
+    hasConnectedAccounts: connectedAccounts.length > 0,
+    connectedAccounts,
+    hasRemoteMcps: remoteMcps.length > 0,
+    remoteMcps,
+    hasEnvVars: envVars.length > 0,
+    envVars,
+    userInstructions,
+  };
+}
+
+/**
+ * Generates the full system prompt by rendering the SuperAgent prompt template
+ * against the variable bag (env-gated triggers, web-search label, config dir)
+ * plus dynamic sections (connected accounts, env vars, user instructions).
+ */
+export function generateSystemPrompt(
+  availableEnvVars?: string[],
+  userSystemPrompt?: string,
+  modelPromptHints?: string[],
+  webSearchProvider?: string,
+  webFetchProvider?: string,
 ): string {
-  const sections: string[] = [];
-
-  sections.push(resolveWebSearchToolInPrompt(SYSTEM_PROMPT, webSearchProvider));
-
-  if (modelPromptHints?.length) {
-    sections.push(`## Model-Specific Instructions
-
-${modelPromptHints.map(hint => `- ${hint}`).join('\n')}`);
-  }
-
-  // Parse connected accounts metadata
-  const connectedAccounts = parseConnectedAccounts();
-
-  // Filter out proxy/connected-account env vars from regular secrets
-  const proxyEnvVars = new Set(['PROXY_BASE_URL', 'PROXY_TOKEN', 'CONNECTED_ACCOUNTS']);
-  const regularEnvVars = (availableEnvVars || []).filter(
-    name => !name.startsWith('CONNECTED_ACCOUNT_') && !proxyEnvVars.has(name)
-  );
-
-  // Connected accounts section with proxy usage instructions
-  if (connectedAccounts.size > 0) {
-    const accountSections: string[] = [];
-
-    for (const [toolkit, entries] of connectedAccounts) {
-      const displayName = toolkit.charAt(0).toUpperCase() + toolkit.slice(1);
-      accountSections.push(
-        `### ${displayName}\n${entries.map(e => `- ${e.name} (ID: \`${e.id}\`)`).join('\n')}`
-      );
-    }
-
-    sections.push(`## Connected Accounts (Already Available)
-
-**IMPORTANT: You already have access to the following connected accounts via the proxy. Do NOT request access to these - you already have it!**
-
-${accountSections.join('\n\n')}
-
-### How to Make API Calls
-
-All API calls to external services go through a proxy that handles authentication automatically. Use the proxy URL with the account ID and target API host:
-
-\`\`\`
-URL: $PROXY_BASE_URL/<account_id>/<target_host>/<api_path>
-Header: Authorization: Bearer $PROXY_TOKEN
-\`\`\`
-
-**Example (curl):**
-\`\`\`bash
-curl "$PROXY_BASE_URL/<account_id>/api.gmail.com/gmail/v1/users/me/messages" \\
-  -H "Authorization: Bearer $PROXY_TOKEN"
-\`\`\`
-
-**Example (Python):**
-\`\`\`python
-import os, requests
-proxy_url = os.environ["PROXY_BASE_URL"]
-proxy_token = os.environ["PROXY_TOKEN"]
-resp = requests.get(
-    f"{proxy_url}/<account_id>/api.gmail.com/gmail/v1/users/me/messages",
-    headers={"Authorization": f"Bearer {proxy_token}"}
-)
-\`\`\`
-
-**Important notes:**
-- Replace \`<account_id>\` with the ID shown above for the account you want to use
-- The proxy handles token refresh automatically
-- The \`CONNECTED_ACCOUNTS\` env var contains the full account metadata as JSON`);
-  }
-
-  // Remote MCP servers section
-  const remoteMcps = parseRemoteMcps();
-  if (remoteMcps.length > 0) {
-    const mcpSections: string[] = [];
-    for (const mcp of remoteMcps) {
-      const toolNames = mcp.tools.map(t => t.name);
-      const sanitizedName = sanitizeMcpName(mcp.name);
-      mcpSections.push(
-        `### ${mcp.name}\nTools: ${toolNames.join(', ')}\nUse these tools via mcp__${sanitizedName}__<tool_name>`
-      );
-    }
-    sections.push(`## Remote MCP Servers (Available)
-
-The following remote MCP servers are connected and their tools are available for use:
-
-${mcpSections.join('\n\n')}`);
-  }
-
-  // Available environment variables (regular secrets)
-  if (regularEnvVars.length > 0) {
-    sections.push(`## Available Environment Variables
-
-The following environment variables have been configured for this agent and are available in your environment:
-
-${regularEnvVars.map(name => `- \`${name}\``).join('\n')}
-
-You can access these using standard environment variable methods (e.g., \`process.env.VAR_NAME\` in Node.js, \`os.environ['VAR_NAME']\` in Python, \`$VAR_NAME\` in shell scripts).`);
-  }
-
-  // User's custom system prompt
-  if (userSystemPrompt?.trim()) {
-    sections.push(`## Agent-Specific Instructions
-
-${userSystemPrompt.trim()}`);
-  }
-
-  return sections.join('\n\n');
+  const vars = buildSystemPromptVars(availableEnvVars, userSystemPrompt, modelPromptHints, webSearchProvider, webFetchProvider);
+  return renderPrompt(SYSTEM_PROMPT, vars);
 }
 
 /**
  * Async message queue that bridges imperative sendMessage() calls
  * to an async iterable for the SDK's streaming input mode.
  */
-class MessageQueue {
+export class MessageQueue {
   private queue: SDKUserMessage[] = [];
   private resolveNext: ((value: IteratorResult<SDKUserMessage>) => void) | null = null;
   private closed = false;
@@ -268,6 +309,12 @@ class MessageQueue {
     if (index < 0) return false;
     this.queue.splice(index, 1);
     return true;
+  }
+
+  // Empty the buffer and return what was still waiting — the messages the SDK
+  // never saw, which die when the queue is replaced on interrupt.
+  drain(): SDKUserMessage[] {
+    return this.queue.splice(0, this.queue.length);
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
@@ -306,6 +353,7 @@ export interface ClaudeCodeProcessOptions {
   browserModel?: string;
   dashboardBuilderModel?: string;
   webSearchProvider?: string;
+  webFetchProvider?: string;
   maxOutputTokens?: number;
   maxThinkingTokens?: number;
   maxTurns?: number;
@@ -326,6 +374,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private browserModel: string | undefined;
   private dashboardBuilderModel: string | undefined;
   private webSearchProvider: string | undefined;
+  private webFetchProvider: string | undefined;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -351,6 +400,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.browserModel = options.browserModel;
     this.dashboardBuilderModel = options.dashboardBuilderModel;
     this.webSearchProvider = options.webSearchProvider;
+    this.webFetchProvider = options.webFetchProvider;
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
@@ -361,7 +411,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       options.availableEnvVars,
       options.userSystemPrompt,
       options.modelPromptHints,
-      options.webSearchProvider
+      options.webSearchProvider,
+      options.webFetchProvider
     );
     // Set module-level reference for tools that need access to the process
     currentProcess = this;
@@ -459,6 +510,8 @@ export class ClaudeCodeProcess extends EventEmitter {
           'EnterWorktree', 'ExitWorktree',
           // Suppress native WebSearch only when a host vendor is active; it's replaced by mcp__web__web_search.
           ...(this.webSearchProvider ? ['WebSearch'] : []),
+          // Same for native WebFetch → mcp__web__web_fetch when a host fetch vendor is active.
+          ...(this.webFetchProvider ? ['WebFetch'] : []),
         ],
         // Request summarized thinking so reasoning text streams to the UI. Without an
         // explicit `display`, Opus 4.8/4.7 default to `omitted` — thinking_delta events
@@ -491,8 +544,10 @@ export class ClaudeCodeProcess extends EventEmitter {
           'dashboards': createDashboardsMcpServer(),
           'agents': createAgentsMcpServer(() => this.sessionId),
           'chat': createChatMcpServer(),
-          ...(this.webSearchProvider ? { 'web': createWebMcpServer() } : {}),
-          ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? { 'computer-use': createComputerUseMcpServer() } : {}),
+          ...((this.webSearchProvider || this.webFetchProvider)
+            ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
+            : {}),
+          ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
           ...remoteMcpConfigs,
         },
         agents: {
@@ -533,9 +588,9 @@ export class ClaudeCodeProcess extends EventEmitter {
             prompt: DASHBOARD_BUILDER_AGENT_PROMPT,
             maxTurns: 200,
           },
-          ...(['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '') ? {
+          ...(isComputerUseHost() ? {
             'computer-use': {
-              description: 'Desktop automation specialist for macOS. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. The app should already be launched and grabbed (use computer_launch first). This agent runs on a cheaper model and handles all app interactions autonomously.',
+              description: 'Desktop automation specialist for macOS and Windows. Delegate any task that requires interacting with native applications — clicking buttons, filling forms, reading screen content, navigating menus, or any multi-step app interaction. The app should already be launched and grabbed (use computer_launch first). This agent runs on a cheaper model and handles all app interactions autonomously.',
               // Cheap tier (browser model); falls back to the main model — never a
               // hardcoded Claude alias.
               model: this.browserModel || this.model,
@@ -803,7 +858,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             msg.subtype === 'error' ||
             msg.is_error === true;
           // Enrich error results that have no useful error message
-          if (lastResultWasError && !msg.error && !msg.message && this.claudeSessionId) {
+          if (lastResultWasError && resultNeedsResumeErrorFallback(msg) && this.claudeSessionId) {
             msg.error = 'This session could not be resumed (it may have been corrupted by a previous crash). Please start a new session.';
           }
           console.log(`[Session ${this.sessionId}] Query completed`);
@@ -1002,12 +1057,47 @@ export class ClaudeCodeProcess extends EventEmitter {
     return this.isReady && this.isProcessing;
   }
 
-  async interrupt(): Promise<void> {
+  async interrupt(): Promise<InterruptOutcome> {
     console.log(`[Session ${this.sessionId}] Interrupting current query`);
 
     if (!this.abortController || !this.isProcessing) {
       console.log(`[Session ${this.sessionId}] Nothing to interrupt`);
-      return;
+      return { interrupted: false, discardedUuids: [] };
+    }
+
+    // Ask the SDK which async messages are still queued BEFORE killing the
+    // query — after the abort the stream just stops and that knowledge is
+    // gone (queued command_lifecycle frames never resolve; see the
+    // sdk206-queued-message-interrupt fixture). The receipt's still_queued
+    // messages would survive a graceful interrupt and run — our Stop
+    // semantics kill them, so cancel each one while the query is still alive
+    // and report it as discarded.
+    const discardedUuids: string[] = [];
+    if (this.queryInstance) {
+      try {
+        const receipt = await Promise.race([
+          this.queryInstance.interrupt(),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2000)),
+        ]);
+        for (const uuid of stillQueuedFromReceipt(receipt)) {
+          // Reuses the two-layer cancel; false = already dequeued for
+          // execution, in which case the abort below kills it mid-turn and
+          // its user message has already materialized — not "discarded".
+          const cancelled = await this.cancelQueuedMessage(uuid as UUID);
+          if (cancelled) discardedUuids.push(uuid);
+        }
+      } catch (error) {
+        // Old CLI without the interrupt control request, or a query already
+        // torn down — the abort below still stops the turn; we just cannot
+        // name the SDK-side queued casualties.
+        console.warn(`[Session ${this.sessionId}] Graceful interrupt failed, falling back to abort:`, error);
+      }
+    }
+
+    // Messages still buffered locally (never handed to the SDK) die when the
+    // queue is replaced below.
+    for (const message of this.messageQueue?.drain() ?? []) {
+      if (message.uuid) discardedUuids.push(message.uuid);
     }
 
     // Abort the current query
@@ -1028,9 +1118,24 @@ export class ClaudeCodeProcess extends EventEmitter {
       }, 5000);
     });
 
+    // The SDK's own terminal lifecycle frames died with the query, so emit
+    // them ourselves: downstream (persister → SSE → renderer) learns each
+    // dead uuid through the exact same pipeline as real SDK frames and can
+    // rescue the message text deterministically instead of racing a refetch.
+    for (const uuid of discardedUuids) {
+      this.emit('message', {
+        type: 'command_lifecycle',
+        command_uuid: uuid,
+        state: 'discarded',
+        session_id: this.claudeSessionId || this.sessionId,
+      });
+    }
+
     // Restart the query with resume to continue the session
     console.log(`[Session ${this.sessionId}] Restarting query after interrupt`);
     this.initializeQuery();
     this.processMessages();
+
+    return { interrupted: true, discardedUuids };
   }
 }

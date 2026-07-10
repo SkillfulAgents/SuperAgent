@@ -14,8 +14,10 @@ import { getGenericOAuthProviderConfigs } from './provider-config'
 // so consumers that only need the check don't pull in ESM deps.
 export { isAuthMode } from './mode'
 
-// Lazy singleton for the Better Auth instance
-let _auth: ReturnType<typeof betterAuth> | null = null
+// Lazy singleton for the Better Auth instance.
+// Typed via createAuthInstance so the concrete plugin/option inference is
+// preserved (betterAuth's generic default is not assignable since 1.6).
+let _auth: ReturnType<typeof createAuthInstance> | null = null
 
 /**
  * Reset the Better Auth singleton so the next getAuth() call
@@ -31,140 +33,155 @@ export function resetAuth() {
  */
 export function getAuth() {
   if (!_auth) {
-    const trustedOrigins = getTrustedOrigins()
-    const settings = getSettings()
-    const authSettings = { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
-    const oauthProviders = getGenericOAuthProviderConfigs()
-    const oauthPlugin = oauthProviders.length > 0
-      ? genericOAuth({
-          config: oauthProviders,
-        })
-      : null
+    _auth = createAuthInstance()
+  }
+  return _auth
+}
 
-    _auth = betterAuth({
-      database: drizzleAdapter(db, {
-        provider: 'sqlite',
-        schema: {
-          user: schema.user,
-          session: schema.authSession,
-          account: schema.authAccount,
-          verification: schema.verification,
+function createAuthInstance() {
+  const trustedOrigins = getTrustedOrigins()
+  const settings = getSettings()
+  const authSettings = { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
+  const oauthProviders = getGenericOAuthProviderConfigs()
+  const oauthPlugin = oauthProviders.length > 0
+    ? genericOAuth({
+        config: oauthProviders,
+      })
+    : null
+
+  return betterAuth({
+    database: drizzleAdapter(db, {
+      provider: 'sqlite',
+      schema: {
+        user: schema.user,
+        session: schema.authSession,
+        account: schema.authAccount,
+        verification: schema.verification,
+      },
+    }),
+    emailAndPassword: {
+      enabled: true,
+      minPasswordLength: authSettings.passwordMinLength,
+      maxPasswordLength: authSettings.passwordMaxLength,
+    },
+    account: {
+      accountLinking: {
+        // Keep pre-1.6.11 behavior: OAuth sign-in with a matching email
+        // auto-links to the local account even if its email is unverified.
+        // This app does not require email verification, so the hardened
+        // default would stop OAuth/password accounts from merging.
+        // The option is deprecated upstream and the secure gate becomes
+        // unconditional in the next minor — revisit before moving past 1.6.
+        requireLocalEmailVerified: false,
+      },
+    },
+    session: {
+      expiresIn: (authSettings.sessionMaxLifetimeHrs ?? 24) * 3600,
+      updateAge: (authSettings.sessionIdleTimeoutMin ?? 60) * 60,
+    },
+    user: {
+      additionalFields: {
+        mustChangePassword: {
+          type: 'boolean',
+          required: false,
+          defaultValue: false,
+          input: false, // users cannot set this on self-registration
         },
+      },
+    },
+    plugins: [
+      admin({
+        defaultRole: authSettings.defaultUserRole === 'admin' ? 'admin' : 'user',
       }),
-      emailAndPassword: {
-        enabled: true,
-        minPasswordLength: authSettings.passwordMinLength,
-        maxPasswordLength: authSettings.passwordMaxLength,
-      },
-      session: {
-        expiresIn: (authSettings.sessionMaxLifetimeHrs ?? 24) * 3600,
-        updateAge: (authSettings.sessionIdleTimeoutMin ?? 60) * 60,
-      },
+      ...(oauthPlugin ? [oauthPlugin] : []),
+    ],
+    secret: getOrCreateAuthSecret(),
+    baseURL: getAppBaseUrl(),
+    // When trustedOrigins is explicitly configured, use that list.
+    // Otherwise allow all origins (matches spec: "Default: allow all origins").
+    trustedOrigins: trustedOrigins.length > 0
+      ? trustedOrigins
+      : (request) => {
+          const origin = request?.headers.get('origin')
+          return origin ? [origin] : []
+        },
+    databaseHooks: {
       user: {
-        additionalFields: {
-          mustChangePassword: {
-            type: 'boolean',
-            required: false,
-            defaultValue: false,
-            input: false, // users cannot set this on self-registration
+        create: {
+          after: async (createdUser) => {
+            try {
+              // Atomic: only promote if this is the sole user in the table
+              const result = db
+                .update(schema.user)
+                .set({ role: 'admin' })
+                .where(
+                  and(
+                    eq(schema.user.id, createdUser.id),
+                    sql`(SELECT count(*) FROM user) = 1`
+                  )
+                )
+                .run()
+              if (result.changes > 0) {
+                console.log(`First user ${createdUser.email} promoted to admin`)
+              }
+
+              // If admin approval is required and this is NOT the first user,
+              // auto-ban them pending admin review.
+              // Read fresh settings so runtime changes are picked up without
+              // needing to recreate the Better Auth singleton.
+              const currentSettings = getSettings()
+              const currentAuth = { ...DEFAULT_AUTH_SETTINGS, ...currentSettings.auth }
+              if (result.changes === 0 && currentAuth.requireAdminApproval) {
+                db.update(schema.user)
+                  .set({ banned: true, banReason: 'Pending admin approval' })
+                  .where(eq(schema.user.id, createdUser.id))
+                  .run()
+                console.log(`User ${createdUser.email} requires admin approval`)
+              }
+            } catch (err) {
+              console.error('Failed to check/set admin role:', err)
+            }
           },
         },
       },
-      plugins: [
-        admin({
-          defaultRole: authSettings.defaultUserRole === 'admin' ? 'admin' : 'user',
-        }),
-        ...(oauthPlugin ? [oauthPlugin] : []),
-      ],
-      secret: getOrCreateAuthSecret(),
-      baseURL: getAppBaseUrl(),
-      // When trustedOrigins is explicitly configured, use that list.
-      // Otherwise allow all origins (matches spec: "Default: allow all origins").
-      trustedOrigins: trustedOrigins.length > 0
-        ? trustedOrigins
-        : (request) => {
-            const origin = request?.headers.get('origin')
-            return origin ? [origin] : []
-          },
-      databaseHooks: {
-        user: {
-          create: {
-            after: async (createdUser) => {
-              try {
-                // Atomic: only promote if this is the sole user in the table
-                const result = db
-                  .update(schema.user)
-                  .set({ role: 'admin' })
+      account: {
+        update: {
+          after: async (account) => {
+            // Auto-clear mustChangePassword when a user changes their password.
+            // The changePassword endpoint calls updateAccount() which returns the
+            // full row via .returning(), so we have userId and providerId here.
+            // Admin setUserPassword uses updateMany (returns count, not row) — no-op.
+            try {
+              if (account && account.providerId === 'credential' && account.userId) {
+                db.update(schema.user)
+                  .set({ mustChangePassword: false })
                   .where(
                     and(
-                      eq(schema.user.id, createdUser.id),
-                      sql`(SELECT count(*) FROM user) = 1`
+                      eq(schema.user.id, account.userId as string),
+                      eq(schema.user.mustChangePassword, true)
                     )
                   )
                   .run()
-                if (result.changes > 0) {
-                  console.log(`First user ${createdUser.email} promoted to admin`)
-                }
-
-                // If admin approval is required and this is NOT the first user,
-                // auto-ban them pending admin review.
-                // Read fresh settings so runtime changes are picked up without
-                // needing to recreate the Better Auth singleton.
-                const currentSettings = getSettings()
-                const currentAuth = { ...DEFAULT_AUTH_SETTINGS, ...currentSettings.auth }
-                if (result.changes === 0 && currentAuth.requireAdminApproval) {
-                  db.update(schema.user)
-                    .set({ banned: true, banReason: 'Pending admin approval' })
-                    .where(eq(schema.user.id, createdUser.id))
-                    .run()
-                  console.log(`User ${createdUser.email} requires admin approval`)
-                }
-              } catch (err) {
-                console.error('Failed to check/set admin role:', err)
               }
-            },
-          },
-        },
-        account: {
-          update: {
-            after: async (account) => {
-              // Auto-clear mustChangePassword when a user changes their password.
-              // The changePassword endpoint calls updateAccount() which returns the
-              // full row via .returning(), so we have userId and providerId here.
-              // Admin setUserPassword uses updateMany (returns count, not row) — no-op.
-              try {
-                if (account && account.providerId === 'credential' && account.userId) {
-                  db.update(schema.user)
-                    .set({ mustChangePassword: false })
-                    .where(
-                      and(
-                        eq(schema.user.id, account.userId as string),
-                        eq(schema.user.mustChangePassword, true)
-                      )
-                    )
-                    .run()
-                }
-              } catch (err) {
-                console.error('Failed to clear mustChangePassword:', err)
-              }
-            },
-          },
-        },
-        session: {
-          create: {
-            after: async (session) => {
-              try {
-                const sessSettings = getSettings()
-                const sessAuth = { ...DEFAULT_AUTH_SETTINGS, ...sessSettings.auth }
-                enforceMaxConcurrentSessions(session.userId, sessAuth.maxConcurrentSessions ?? 5)
-              } catch (err) {
-                console.error('Failed to enforce max concurrent sessions:', err)
-              }
-            },
+            } catch (err) {
+              console.error('Failed to clear mustChangePassword:', err)
+            }
           },
         },
       },
-    })
-  }
-  return _auth
+      session: {
+        create: {
+          after: async (session) => {
+            try {
+              const sessSettings = getSettings()
+              const sessAuth = { ...DEFAULT_AUTH_SETTINGS, ...sessSettings.auth }
+              enforceMaxConcurrentSessions(session.userId, sessAuth.maxConcurrentSessions ?? 5)
+            } catch (err) {
+              console.error('Failed to enforce max concurrent sessions:', err)
+            }
+          },
+        },
+      },
+    },
+  })
 }

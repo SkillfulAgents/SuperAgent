@@ -7,6 +7,7 @@
 
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { webSearchTool } from './tools/web/web-search'
+import { webFetchTool } from './tools/web/web-fetch'
 import { requestSecretTool } from './tools/request-secret'
 import { requestConnectedAccountTool } from './tools/request-connected-account'
 import { searchConnectedAccountServicesTool } from './tools/search-connected-account-services'
@@ -153,13 +154,18 @@ export function createChatMcpServer() {
   })
 }
 
-// Registered only when a host-side web search vendor is active (server name 'web' →
-// tool id mcp__web__web_search). The tool RPCs to /api/web-search/search; the host
-// holds the vendor key and applies allowed-sites policy.
-export function createWebMcpServer() {
+// Registered when a host-side web search AND/OR fetch vendor is active (server name 'web' → tool
+// ids mcp__web__web_search / mcp__web__web_fetch). Each tool is included only when its own vendor is
+// active, so a broken tool (one whose host route would 400 "no vendor configured") is never exposed.
+// The tools RPC to /api/web-search/search and /api/web-fetch/fetch; the host holds the vendor key
+// and applies allowed-sites policy.
+export function createWebMcpServer(opts: { search: boolean; fetch: boolean }) {
+  const tools = []
+  if (opts.search) tools.push(webSearchTool)
+  if (opts.fetch) tools.push(webFetchTool)
   return createSdkMcpServer({
     name: 'web',
     version: '1.0.0',
-    tools: [webSearchTool],
+    tools,
   })
 }

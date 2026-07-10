@@ -43,6 +43,7 @@ import {
 } from '@shared/lib/services/x-agent-policy-service'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
 
 // Typed context variables for the x-agent router. Using Hono's generic instead
@@ -560,12 +561,16 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   const agentLimits = getEffectiveAgentLimits()
   const customEnvVars = getCustomEnvVars()
 
+  // Model/effort preference order: target agent's default > global default.
+  const targetPrefs = await readAgentPreferences(targetSlug)
+
   const containerSession = await client.createSession({
     availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
     initialMessage: prompt,
-    model: getEffectiveModels().agentModel,
+    model: targetPrefs.defaultModel ?? getEffectiveModels().agentModel,
     browserModel: getEffectiveModels().browserModel,
     dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
+    ...(targetPrefs.defaultEffort ? { effort: targetPrefs.defaultEffort } : {}),
     maxOutputTokens: agentLimits.maxOutputTokens,
     maxThinkingTokens: agentLimits.maxThinkingTokens,
     maxTurns: agentLimits.maxTurns,

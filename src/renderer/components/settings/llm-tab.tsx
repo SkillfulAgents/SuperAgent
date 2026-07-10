@@ -5,6 +5,7 @@ import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 import { BedrockCredentialsInput } from './bedrock-credentials-input'
+import { GenericCredentialsInput } from './generic-credentials-input'
 import { SettingsModelSelect } from './settings-model-select'
 import { CatalogEditor } from './model-catalog/catalog-editor'
 import type { LlmProviderId } from '@shared/lib/config/settings'
@@ -35,6 +36,7 @@ const PROVIDER_DESCRIPTIONS: Partial<Record<LlmProviderId, string>> = {
   openrouter: 'Multi-model access through a single API key.',
   bedrock: 'AWS-managed Claude inference with IAM or API key credentials.',
   platform: 'Use credentials provided by your Gamut account.',
+  generic: 'Point at any Anthropic-compatible endpoint — localhost ollama, a self-hosted gateway, or a proxy.',
 }
 
 const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
@@ -234,6 +236,8 @@ export function LlmTab() {
                   disabled={isLoading}
                   showNotConfiguredAlert={false}
                 />
+              ) : provider.id === 'generic' ? (
+                <GenericCredentialsInput key="generic" disabled={isLoading} />
               ) : keyConfig ? (
                 <ProviderApiKeyInput
                   key={provider.id}

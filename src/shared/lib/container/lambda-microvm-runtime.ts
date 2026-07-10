@@ -430,6 +430,44 @@ interface AgentMicrovmState {
 }
 const agentStates = new Map<string, AgentMicrovmState>()
 
+type MicrovmDetail = { state?: string; endpoint?: string }
+
+// Control plane selection, keyed on MICROVM_PROXY_URL:
+//
+//   - unset → call the AWS MicroVM API directly with the task's own IAM. This is
+//     the default and works out of the box for open-source / self-hosted setups
+//     (no proxy, no token).
+//
+//   - set   → route every op through an external MicroVM controller instead.
+//     Image / exec role / egress connector are never sent — the controller
+//     supplies them and enforces ownership; MICROVM_PROXY_TOKEN authenticates
+//     the caller.
+//
+// A URL without a token is a misconfiguration — fail loudly rather than quietly
+// falling back to the direct path.
+function microvmService(): { url: string; token: string } | null {
+  const url = process.env.MICROVM_PROXY_URL?.replace(/\/+$/, '')
+  if (!url) return null
+  const token = process.env.MICROVM_PROXY_TOKEN
+  if (!token) {
+    throw new Error(
+      'MICROVM_PROXY_URL is set but MICROVM_PROXY_TOKEN is missing. Set ' +
+        'MICROVM_PROXY_TOKEN, or unset MICROVM_PROXY_URL to use the direct AWS path.',
+    )
+  }
+  return { url, token }
+}
+
+// Marker matching the AWS SDK's not-found error name, so isNotFound() works
+// whether the op went through the service (404) or the SDK.
+class MicrovmNotFoundError extends Error {
+  readonly name = 'ResourceNotFoundException'
+}
+
+function isNotFound(error: unknown): boolean {
+  return (error as { name?: string })?.name === 'ResourceNotFoundException'
+}
+
 let memoizedClient: { region: string; client: LambdaMicrovmsClient } | null = null
 function getMicrovmClient(region: string): LambdaMicrovmsClient {
   if (!memoizedClient || memoizedClient.region !== region) {
@@ -438,8 +476,124 @@ function getMicrovmClient(region: string): LambdaMicrovmsClient {
   return memoizedClient.client
 }
 
-function isNotFound(error: unknown): boolean {
-  return (error as { name?: string })?.name === 'ResourceNotFoundException'
+async function serviceFetch<T>(
+  svc: { url: string; token: string },
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const res = await fetch(`${svc.url}${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${svc.token}`,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  if (res.status === 404) throw new MicrovmNotFoundError(`microvm not found (${path})`)
+  if (!res.ok) throw new Error(`microvm service ${method} ${path} failed: ${res.status}`)
+  return (await res.json()) as T
+}
+
+async function runMicrovm(
+  config: MicrovmRuntimeConfig,
+  opts: { runHookPayload: string; clientToken: string; logStream: string },
+): Promise<{ microvmId: string; endpoint: string }> {
+  const idlePolicy = {
+    maxIdleDurationSeconds: resolveIdleSeconds(config),
+    suspendedDurationSeconds: config.suspendedSeconds,
+    autoResumeEnabled: true,
+  }
+  const logging = config.logGroup
+    ? { cloudWatch: { logGroup: config.logGroup, logStream: opts.logStream } }
+    : undefined
+
+  const svc = microvmService()
+  if (svc) {
+    // The service injects image / exec role and VERIFIES egressConnectorArn
+    // resolves to this org's connector name before using it, so passing our own
+    // connector ARN is a hint (rejected if it isn't ours), not trusted input.
+    return serviceFetch(svc, 'POST', '/microvm/run', {
+      egressConnectorArn: config.egressConnectorArn,
+      imageVersion: config.imageVersion,
+      ingressNetworkConnectors: [config.ingressConnectorArn],
+      idlePolicy,
+      logging,
+      maximumDurationInSeconds: config.maxDurationSeconds,
+      runHookPayload: opts.runHookPayload,
+      clientToken: opts.clientToken,
+    })
+  }
+  const res = (await getMicrovmClient(config.region).send(
+    new RunMicrovmCommand({
+      imageIdentifier: config.imageArn,
+      imageVersion: config.imageVersion,
+      executionRoleArn: config.executionRoleArn,
+      ingressNetworkConnectors: [config.ingressConnectorArn],
+      egressNetworkConnectors: [config.egressConnectorArn],
+      idlePolicy,
+      logging,
+      maximumDurationInSeconds: config.maxDurationSeconds,
+      runHookPayload: opts.runHookPayload,
+      clientToken: opts.clientToken,
+    }),
+  )) as RunMicrovmCommandOutput
+  if (!res.microvmId || !res.endpoint) throw new Error('RunMicrovm returned no microvmId/endpoint')
+  return { microvmId: res.microvmId, endpoint: res.endpoint }
+}
+
+async function getMicrovm(region: string, microvmId: string): Promise<MicrovmDetail> {
+  const svc = microvmService()
+  if (svc) return serviceFetch(svc, 'GET', `/microvm/${encodeURIComponent(microvmId)}`)
+  const res = (await getMicrovmClient(region).send(
+    new GetMicrovmCommand({ microvmIdentifier: microvmId }),
+  )) as GetMicrovmCommandOutput
+  return { state: res.state, endpoint: res.endpoint }
+}
+
+async function suspendMicrovm(region: string, microvmId: string): Promise<void> {
+  const svc = microvmService()
+  if (svc) {
+    await serviceFetch(svc, 'POST', `/microvm/${encodeURIComponent(microvmId)}/suspend`)
+    return
+  }
+  await getMicrovmClient(region).send(new SuspendMicrovmCommand({ microvmIdentifier: microvmId }))
+}
+
+async function terminateMicrovm(region: string, microvmId: string): Promise<void> {
+  const svc = microvmService()
+  if (svc) {
+    await serviceFetch(svc, 'DELETE', `/microvm/${encodeURIComponent(microvmId)}`)
+    return
+  }
+  await getMicrovmClient(region).send(new TerminateMicrovmCommand({ microvmIdentifier: microvmId }))
+}
+
+async function createMicrovmAuthToken(
+  region: string,
+  microvmId: string,
+  allowedPorts: number[],
+  expirationInMinutes: number,
+): Promise<MicrovmAuthToken> {
+  const svc = microvmService()
+  if (svc) {
+    const out = await serviceFetch<{ authToken: MicrovmAuthToken }>(
+      svc,
+      'POST',
+      `/microvm/${encodeURIComponent(microvmId)}/token`,
+      { allowedPorts },
+    )
+    return out.authToken
+  }
+  const out = (await getMicrovmClient(region).send(
+    new CreateMicrovmAuthTokenCommand({
+      microvmIdentifier: microvmId,
+      expirationInMinutes,
+      allowedPorts: allowedPorts.map((port) => ({ port })),
+    }),
+  )) as CreateMicrovmAuthTokenCommandOutput
+  if (!out.authToken) throw new Error('CreateMicrovmAuthToken returned no token')
+  return out.authToken
 }
 
 export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
@@ -474,7 +628,6 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     if ((await this.getInfoFromRuntime()).status === 'running') return
 
     const config = getMicrovmRuntimeConfig()
-    const client = getMicrovmClient(config.region)
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
     const env = this.buildAgentEnv(options?.envVars)
@@ -510,37 +663,19 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       )
     }
 
-    const run = await client.send(
-      new RunMicrovmCommand({
-        imageIdentifier: config.imageArn,
-        imageVersion: config.imageVersion,
-        executionRoleArn: config.executionRoleArn,
-        ingressNetworkConnectors: [config.ingressConnectorArn],
-        egressNetworkConnectors: [config.egressConnectorArn],
-        idlePolicy: {
-          maxIdleDurationSeconds: resolveIdleSeconds(config),
-          suspendedDurationSeconds: config.suspendedSeconds,
-          autoResumeEnabled: true,
-        },
-        logging: config.logGroup
-          ? { cloudWatch: { logGroup: config.logGroup, logStream: this.config.agentId } }
-          : undefined,
-        maximumDurationInSeconds: config.maxDurationSeconds,
-        runHookPayload,
-        // Unique per start() — dedupes this call's SDK retries, but never collides
-        // with a prior start (a fixed token reused with changed params makes
-        // RunMicrovm return InternalFailure on the idempotency conflict).
-        clientToken: randomUUID(),
-      }),
-    ) as RunMicrovmCommandOutput
-    if (!run.microvmId || !run.endpoint) {
-      throw new Error('RunMicrovm returned no microvmId/endpoint')
-    }
+    const run = await runMicrovm(config, {
+      runHookPayload,
+      // Unique per start() — dedupes retries, but never collides with a prior
+      // start (a fixed token reused with changed params makes RunMicrovm return
+      // InternalFailure on the idempotency conflict).
+      clientToken: randomUUID(),
+      logStream: this.config.agentId,
+    })
 
     const proxy = new LocalAuthForwardProxy({
       endpoint: run.endpoint,
       agentPort: config.agentPort,
-      mintToken: () => this.mintToken(run.microvmId!),
+      mintToken: () => this.mintToken(run.microvmId),
     })
     const proxyPort = await proxy.start()
     // Stop any stale proxy before overwriting state (no leaked port/listener); stash
@@ -550,7 +685,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     agentStates.set(this.config.agentId, { microvmId: run.microvmId, endpoint: run.endpoint, proxy, proxyPort })
 
     try {
-      await this.waitForRunning(client, run.microvmId, 300_000)
+      await this.waitForRunning(config.region, run.microvmId, 300_000)
       if (!(await this.waitForHealthy(120_000, proxyPort))) {
         throw new Error(`MicroVM agent ${run.microvmId} failed to become healthy`)
       }
@@ -584,9 +719,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     if (!state) return { status: 'stopped', port: null }
     const config = getMicrovmRuntimeConfig()
     try {
-      const mvm = await getMicrovmClient(config.region).send(
-        new GetMicrovmCommand({ microvmIdentifier: state.microvmId }),
-      ) as GetMicrovmCommandOutput
+      const mvm = await getMicrovm(config.region, state.microvmId)
       // SUSPENDED is "running on demand": idlePolicy.autoResumeEnabled wakes it
       // on the next request through the proxy.
       if (mvm.state === 'RUNNING' || mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') {
@@ -623,21 +756,13 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   private async mintToken(microvmId: string): Promise<MicrovmAuthToken> {
     const config = getMicrovmRuntimeConfig()
-    const out = await getMicrovmClient(config.region).send(
-      new CreateMicrovmAuthTokenCommand({
-        microvmIdentifier: microvmId,
-        expirationInMinutes: AUTH_TOKEN_EXPIRATION_MINUTES,
-        allowedPorts: [{ port: config.agentPort }],
-      }),
-    ) as CreateMicrovmAuthTokenCommandOutput
-    if (!out.authToken) throw new Error('CreateMicrovmAuthToken returned no token')
-    return out.authToken
+    return createMicrovmAuthToken(config.region, microvmId, [config.agentPort], AUTH_TOKEN_EXPIRATION_MINUTES)
   }
 
-  private async waitForRunning(client: LambdaMicrovmsClient, microvmId: string, timeoutMs: number): Promise<void> {
+  private async waitForRunning(region: string, microvmId: string, timeoutMs: number): Promise<void> {
     const startedAt = Date.now()
     while (Date.now() - startedAt < timeoutMs) {
-      const mvm = await client.send(new GetMicrovmCommand({ microvmIdentifier: microvmId })) as GetMicrovmCommandOutput
+      const mvm = await getMicrovm(region, microvmId)
       if (mvm.state === 'RUNNING') return
       if (mvm.state === 'TERMINATED' || mvm.state === 'TERMINATING') {
         throw new Error(`MicroVM ${microvmId} entered ${mvm.state} before becoming ready`)
@@ -653,15 +778,13 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     if (!state) return
     const config = getMicrovmRuntimeConfig()
     try {
-      const mvm = await getMicrovmClient(config.region).send(
-        new GetMicrovmCommand({ microvmIdentifier: state.microvmId }),
-      ) as GetMicrovmCommandOutput
+      const mvm = await getMicrovm(config.region, state.microvmId)
       if (mvm.state === 'SUSPENDED' || mvm.state === 'SUSPENDING') return
       if (mvm.state === 'TERMINATED' || mvm.state === 'TERMINATING') {
         this.cleanupLocal()
         return
       }
-      await getMicrovmClient(config.region).send(new SuspendMicrovmCommand({ microvmIdentifier: state.microvmId }))
+      await suspendMicrovm(config.region, state.microvmId)
     } catch (error) {
       if (isNotFound(error)) {
         this.cleanupLocal()
@@ -676,7 +799,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     if (state) {
       const config = getMicrovmRuntimeConfig()
       try {
-        await getMicrovmClient(config.region).send(new TerminateMicrovmCommand({ microvmIdentifier: state.microvmId }))
+        await terminateMicrovm(config.region, state.microvmId)
       } catch (error) {
         if (!isNotFound(error)) {
           captureException(error, { tags: { area: 'container', op: 'microvm.terminate' }, extra: { microvmId: state.microvmId } })

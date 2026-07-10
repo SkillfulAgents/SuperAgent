@@ -2,7 +2,11 @@ import { XAgentError, textResult } from '../agents/host-client'
 
 export { XAgentError, textResult }
 
+// `resource` is the host route segment ('web-search' | 'web-fetch'); `op` is the endpoint under it
+// ('search' | 'fetch'). Parametrized (not hardcoded to web-search) so each web RPC targets its own
+// dedicated host route, e.g. callWebHost('web-fetch', 'fetch', ...) -> /web-fetch/fetch.
 export async function callWebHost<T>(
+  resource: string,
   op: string,
   body: Record<string, unknown>,
 ): Promise<T> {
@@ -14,7 +18,7 @@ export async function callWebHost<T>(
   if (!token) {
     throw new XAgentError(500, 'PROXY_TOKEN not set')
   }
-  const url = `${baseUrl.replace(/\/$/, '')}/web-search/${op}`
+  const url = `${baseUrl.replace(/\/$/, '')}/${resource}/${op}`
   let response: Response
   try {
     response = await fetch(url, {
@@ -26,7 +30,7 @@ export async function callWebHost<T>(
       body: JSON.stringify(body),
     })
   } catch (error) {
-    throw new XAgentError(0, `Network error calling web-search/${op}: ${error instanceof Error ? error.message : String(error)}`)
+    throw new XAgentError(0, `Network error calling ${resource}/${op}: ${error instanceof Error ? error.message : String(error)}`)
   }
   if (!response.ok) {
     let errorBody: { error?: string } = {}
@@ -35,7 +39,7 @@ export async function callWebHost<T>(
     } catch {
       // ignore
     }
-    throw new XAgentError(response.status, errorBody.error ?? `web-search/${op} failed (HTTP ${response.status})`)
+    throw new XAgentError(response.status, errorBody.error ?? `${resource}/${op} failed (HTTP ${response.status})`)
   }
   return (await response.json()) as T
 }

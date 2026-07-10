@@ -20,7 +20,7 @@ const SETTINGS_TAB_TITLES = {
   llm: 'LLM Provider',
   runtime: 'Runtime',
   browser: 'Browser Use',
-  'web-search': 'Web Search',
+  web: 'Web',
   'computer-use': 'Computer Use',
   'account-provider': 'Account Provider',
   voice: 'Voice',

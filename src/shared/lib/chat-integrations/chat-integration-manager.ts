@@ -205,6 +205,10 @@ class ChatIntegrationManager {
         reportError(err, 'global-notification')
       })
     })
+
+    // Positive start signal: startup.ts only logs start() FAILURES, so without
+    // this a dead manager is indistinguishable from a healthy idle one.
+    console.log(`[ChatIntegrationManager] Started (${integrations.length} startup integration(s))`)
   }
 
   stop(): void {
@@ -916,17 +920,21 @@ class ChatIntegrationManager {
     const { getEffectiveModels } = await import('@shared/lib/config/settings')
     const { getSecretEnvVars } = await import('@shared/lib/services/secrets-service')
     const { registerSession, updateSessionMetadata } = await import('@shared/lib/services/session-service')
+    const { readAgentPreferences } = await import('@shared/lib/services/agent-preferences-service')
 
     const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
+    // Model/effort preference order: integration override > agent default > global default.
     const models = getEffectiveModels()
+    const agentPrefs = await readAgentPreferences(integration.agentSlug)
+    const effort = integration.effort ?? agentPrefs.defaultEffort
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
       initialMessage: messageText,
-      model: integration.model || models.agentModel,
+      model: integration.model || agentPrefs.defaultModel || models.agentModel,
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
-      ...(integration.effort ? { effort: integration.effort as EffortLevel } : {}),
+      ...(effort ? { effort: effort as EffortLevel } : {}),
       ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
     })
 

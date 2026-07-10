@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 
-export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock' | 'platform'
+export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock' | 'platform' | 'generic'
 
 export type ModelPurpose = 'agent' | 'summarizer' | 'browser' | 'dashboard'
 
@@ -80,8 +80,14 @@ export abstract class BaseLlmProvider {
   /** Get env vars to inject into agent containers. */
   abstract getContainerEnvVars(): Record<string, string | undefined>
 
-  /** Validate an API key. */
-  abstract validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }>
+  /**
+   * Validate an API key. `opts.baseUrl` is only meaningful for providers whose
+   * endpoint is user-supplied (the generic provider); others ignore it.
+   */
+  abstract validateKey(
+    apiKey: string,
+    opts?: { baseUrl?: string },
+  ): Promise<{ valid: boolean; error?: string }>
 
   /**
    * Search provider-native model catalogs and return normalized local-catalog

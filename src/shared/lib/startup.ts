@@ -4,6 +4,7 @@ import { shutdownActiveRunner } from './container/client-factory'
 import { reviewManager } from './proxy/review-manager'
 import { taskScheduler } from './scheduler/task-scheduler'
 import { triggerManager } from './scheduler/trigger-manager'
+import { platformNotificationsManager } from './scheduler/platform-notifications-manager'
 import { chatIntegrationManager } from './chat-integrations/chat-integration-manager'
 import { captureException } from './error-reporting'
 import { registerAllAccountProviders } from './account-providers/register'
@@ -127,6 +128,14 @@ export async function initializeServices() {
     })
   }
 
+  // Desktop-only platform-notifications subscription (OS notifications from
+  // Supabase Realtime INSERTs). The manager self-gates on auth mode and
+  // platform connectivity; connect/disconnect after launch is handled by the
+  // platform auth-changed notifier.
+  platformNotificationsManager.start().catch((error) => {
+    console.error('Failed to start platform notifications manager:', error)
+  })
+
   // Start chat integration manager
   chatIntegrationManager.start().catch((error) => {
     console.error('Failed to start chat integration manager:', error)
@@ -179,6 +188,7 @@ export async function shutdownServices() {
   await stopAllProviders()
   taskScheduler.stop()
   triggerManager.stop()
+  platformNotificationsManager.stop()
   autoSleepMonitor.stop()
   sessionAutoDeleteMonitor.stop()
   accountSyncService.stop()

@@ -21,9 +21,13 @@ async function readAgentPreferencesStrict(agentSlug: string): Promise<AgentPrefe
 }
 
 /**
- * Read prefs for READ-ONLY consumers. Tolerant: a corrupt file degrades to `{}`
- * (logged + captured) rather than crashing, but this never writes — only the
- * serialized {@link updateAgentPreferences} writes, and it re-throws on corruption.
+ * Read prefs for READ-ONLY consumers. Fail-open: ANY read failure — corrupt
+ * file, EACCES after a container-side ownership flip, transient FS errors —
+ * degrades to `{}` (logged + captured) rather than throwing. Preferences only
+ * supply defaults, and every session-spawn site reads them, so a throw here
+ * would take down session creation for the agent. This never writes — only the
+ * serialized {@link updateAgentPreferences} writes, and its strict read still
+ * aborts on any failure so a broken file is never overwritten.
  */
 export async function readAgentPreferences(
   agentSlug: string
@@ -31,12 +35,10 @@ export async function readAgentPreferences(
   try {
     return await readAgentPreferencesStrict(agentSlug)
   } catch (error) {
-    if (error instanceof CorruptFileError) {
-      console.error(`Corrupt agent preferences for ${agentSlug}; using empty (NOT overwriting)`, error)
-      captureException(error, { tags: { area: 'agent-preferences', op: 'read' }, extra: { agentSlug } })
-      return {}
-    }
-    throw error
+    const kind = error instanceof CorruptFileError ? 'Corrupt' : 'Unreadable'
+    console.error(`${kind} agent preferences for ${agentSlug}; using empty (NOT overwriting)`, error)
+    captureException(error, { tags: { area: 'agent-preferences', op: 'read' }, extra: { agentSlug } })
+    return {}
   }
 }
 

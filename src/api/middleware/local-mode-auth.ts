@@ -24,6 +24,7 @@ const CONTAINER_FACING_PREFIXES = [
   '/api/mcp-proxy/',
   '/api/x-agent/', // covers /api/x-agent and /api/x-agent/chat
   '/api/web-search/',
+  '/api/web-fetch/',
   '/api/browser/',
 ]
 

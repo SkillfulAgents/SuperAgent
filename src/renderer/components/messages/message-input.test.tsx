@@ -211,10 +211,14 @@ describe('MessageInput', () => {
           sessionId: 's-1',
           agentSlug: 'agent-1',
           content: 'Hello world',
-          effort: 'medium',
         })
       )
     })
+    // Untouched composer: model/effort are omitted so the server resolves
+    // agent-default > global instead of receiving the display echo as a pick.
+    const call = mockSendMessage.mutateAsync.mock.calls[0][0]
+    expect(call).not.toHaveProperty('effort')
+    expect(call).not.toHaveProperty('model')
   })
 
   it('does not submit on Shift+Enter', async () => {
@@ -273,7 +277,6 @@ describe('MessageInput', () => {
           sessionId: 's-1',
           agentSlug: 'agent-1',
           content: 'Hello by button',
-          effort: 'medium',
         })
       )
     })
@@ -653,7 +656,6 @@ describe('MessageInput', () => {
           sessionId: 's-1',
           agentSlug: 'agent-1',
           content: 'Hello',
-          effort: 'medium',
         })
       )
     })

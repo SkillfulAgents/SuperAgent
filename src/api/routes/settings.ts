@@ -1,7 +1,7 @@
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
-import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema } from '@shared/lib/llm-provider'
+import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -34,7 +34,7 @@ import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
 import { isValidAccelerator } from '@shared/lib/config/shortcuts'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { getSttProvider } from '@shared/lib/stt'
-import { findWebSearchProvider, getWebSearchProvider } from '@shared/lib/web-provider'
+import { findWebProvider, getWebProvider } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
@@ -191,6 +191,8 @@ settings.use('*', Authenticated(), IsAdmin())
 const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
   'anthropicApiKey',
   'openrouterApiKey',
+  'genericApiKey',
+  'genericBaseUrl',
   'bedrockApiKey',
   'bedrockAccessKeyId',
   'bedrockSecretAccessKey',
@@ -230,7 +232,8 @@ settings.get('/llm-providers/:providerId/models/search', async (c) => {
       return c.json({ error: error.message }, 400)
     }
     console.error('Failed to search provider models:', error)
-    return c.json({ error: 'Failed to search provider models' }, 500)
+    const message = error instanceof Error ? error.message : 'Failed to search provider models'
+    return c.json({ error: message }, 500)
   }
 })
 
@@ -278,6 +281,12 @@ type AppPreferencesPatch = Partial<AppPreferences> & {
   hostBrowserProvider?: unknown
 }
 
+/** The generic provider's saved endpoint — displayed (not secret) in Settings. */
+function getGenericBaseUrl(): string | undefined {
+  const provider = getLlmProvider('generic')
+  return provider instanceof GenericLlmProvider ? provider.getEffectiveBaseUrl() : undefined
+}
+
 /** Build the GlobalSettingsResponse shared by GET and PUT handlers. */
 function buildSettingsResponse(
   appSettings: AppSettings,
@@ -293,23 +302,25 @@ function buildSettingsResponse(
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
-    webSearchProvider: appSettings.webSearchProvider ?? 'native',
+    webProvider: appSettings.webProvider ?? 'native',
     apiKeyStatus: {
       anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
       bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
       platform: getLlmProvider('platform').getApiKeyStatus(),
+      generic: getLlmProvider('generic').getApiKeyStatus(),
       browserbase: getBrowserbaseApiKeyStatus(),
       composio: getComposioApiKeyStatus(),
       nango: getNangoApiKeyStatus(),
       deepgram: getSttProvider('deepgram').getApiKeyStatus(),
       openai: getSttProvider('openai').getApiKeyStatus(),
-      exa: getWebSearchProvider('exa').getApiKeyStatus(),
+      exa: getWebProvider('exa').getApiKeyStatus(),
     },
     models: getEffectiveModels(),
     agentLimits: getEffectiveAgentLimits(),
     customEnvVars: getCustomEnvVars(),
     composioUserId: getComposioUserId(),
+    genericBaseUrl: getGenericBaseUrl(),
     accountProviderUserId: getAccountProviderUserId(),
     setupCompleted: !!appSettings.app?.setupCompleted,
     hostBrowserStatus: { providers: detectAllProviders() },
@@ -497,7 +508,7 @@ settings.put('/', async (c) => {
       },
       apiKeys: currentSettings.apiKeys,
       llmProvider: body.llmProvider !== undefined ? body.llmProvider : currentSettings.llmProvider,
-      webSearchProvider: body.webSearchProvider !== undefined ? body.webSearchProvider : currentSettings.webSearchProvider,
+      webProvider: body.webProvider !== undefined ? body.webProvider : currentSettings.webProvider,
       webAllowedSites: body.webAllowedSites !== undefined ? body.webAllowedSites : currentSettings.webAllowedSites,
       webBlockedSites: body.webBlockedSites !== undefined ? body.webBlockedSites : currentSettings.webBlockedSites,
       models: body.models
@@ -687,19 +698,27 @@ settings.post('/validate-anthropic-key', async (c) => {
 // POST /api/settings/validate-llm-key - Validate an API key for any LLM provider
 settings.post('/validate-llm-key', async (c) => {
   try {
-    const { provider, apiKey } = await c.req.json()
+    const { provider, apiKey, baseUrl } = await c.req.json()
     if (!apiKey || typeof apiKey !== 'string') {
       return c.json({ valid: false, error: 'API key is required' }, 400)
     }
     if (!provider || typeof provider !== 'string') {
       return c.json({ valid: false, error: 'Provider is required' }, 400)
     }
-    if (provider !== 'anthropic' && provider !== 'openrouter' && provider !== 'bedrock') {
+    if (
+      provider !== 'anthropic' &&
+      provider !== 'openrouter' &&
+      provider !== 'bedrock' &&
+      provider !== 'generic'
+    ) {
       return c.json({ valid: false, error: `Unknown provider: ${provider}` }, 400)
     }
 
     const llmProvider = getLlmProvider(provider)
-    const result = await llmProvider.validateKey(apiKey)
+    const result = await llmProvider.validateKey(
+      apiKey,
+      typeof baseUrl === 'string' ? { baseUrl } : undefined,
+    )
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Invalid API key'
@@ -853,20 +872,21 @@ settings.post('/validate-stt-key', async (c) => {
   }
 })
 
-// POST /api/settings/validate-web-search-key - Validate a web search vendor API key.
-// Dispatches by `provider` through the registry, so a new vendor needs zero changes here.
-settings.post('/validate-web-search-key', async (c) => {
+// POST /api/settings/validate-web-key - Validate a web vendor API key. One endpoint for the seam:
+// a vendor uses one key for both search and fetch. Dispatches by `provider` through the registry,
+// so a new vendor needs zero changes here.
+settings.post('/validate-web-key', async (c) => {
   try {
     const { provider, apiKey } = await c.req.json()
     if (!apiKey || typeof apiKey !== 'string') {
       return c.json({ valid: false, error: 'API key is required' }, 400)
     }
     if (!provider || typeof provider !== 'string' || provider === 'native') {
-      return c.json({ valid: false, error: 'A web search vendor is required' }, 400)
+      return c.json({ valid: false, error: 'A web vendor is required' }, 400)
     }
-    const webProvider = findWebSearchProvider(provider)
+    const webProvider = findWebProvider(provider)
     if (!webProvider) {
-      return c.json({ valid: false, error: `Unknown web search provider: ${provider}` }, 400)
+      return c.json({ valid: false, error: `Unknown web provider: ${provider}` }, 400)
     }
     const result = await webProvider.validateKey(apiKey)
     return c.json(result)

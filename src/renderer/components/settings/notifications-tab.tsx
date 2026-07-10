@@ -56,6 +56,7 @@ export function NotificationsTab() {
     sessionComplete: boolean
     sessionWaiting: boolean
     sessionScheduled: boolean
+    platformNotification: boolean
     notifyWhenUnfocused: boolean
   } | null>(null)
 
@@ -76,6 +77,7 @@ export function NotificationsTab() {
     sessionComplete: true,
     sessionWaiting: true,
     sessionScheduled: true,
+    platformNotification: true,
     notifyWhenUnfocused: false,
   }
 
@@ -167,6 +169,19 @@ export function NotificationsTab() {
               id="notify-session-scheduled"
               checked={notificationSettings.sessionScheduled}
               onCheckedChange={(checked) => updateNotificationSetting('sessionScheduled', checked)}
+              disabled={isLoading || !notificationSettings.enabled}
+            />
+          }
+        />
+        <SettingRow
+          htmlFor="notify-platform-notification"
+          name="Platform notifications"
+          subtitle="Product announcements and account updates from the platform"
+          right={
+            <Switch
+              id="notify-platform-notification"
+              checked={notificationSettings.platformNotification}
+              onCheckedChange={(checked) => updateNotificationSetting('platformNotification', checked)}
               disabled={isLoading || !notificationSettings.enabled}
             />
           }

@@ -179,6 +179,7 @@ export class SessionManager extends EventEmitter {
       browserModel: request.browserModel,
       dashboardBuilderModel: request.dashboardBuilderModel,
       webSearchProvider: request.webSearchProvider,
+      webFetchProvider: request.webFetchProvider,
       maxOutputTokens: request.maxOutputTokens,
       maxThinkingTokens: request.maxThinkingTokens,
       maxTurns: request.maxTurns,
@@ -276,6 +277,7 @@ export class SessionManager extends EventEmitter {
       browserModel: request.browserModel,
       dashboardBuilderModel: request.dashboardBuilderModel,
       webSearchProvider: request.webSearchProvider,
+      webFetchProvider: request.webFetchProvider,
       maxOutputTokens: request.maxOutputTokens,
       maxThinkingTokens: request.maxThinkingTokens,
       maxTurns: request.maxTurns,
@@ -312,6 +314,7 @@ export class SessionManager extends EventEmitter {
         browserModel: persisted.browserModel,
         dashboardBuilderModel: persisted.dashboardBuilderModel,
         webSearchProvider: persisted.webSearchProvider,
+        webFetchProvider: persisted.webFetchProvider,
         maxOutputTokens: persisted.maxOutputTokens,
         maxThinkingTokens: persisted.maxThinkingTokens,
         maxTurns: persisted.maxTurns,
@@ -642,14 +645,14 @@ export class SessionManager extends EventEmitter {
     return sessionData.process.isRunning();
   }
 
-  async interruptSession(sessionId: string): Promise<boolean> {
+  async interruptSession(sessionId: string): Promise<{ found: boolean; discardedUuids: string[] }> {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) {
-      return false;
+      return { found: false, discardedUuids: [] };
     }
 
-    await sessionData.process.interrupt();
-    return true;
+    const outcome = await sessionData.process.interrupt();
+    return { found: true, discardedUuids: outcome.discardedUuids };
   }
 
   /**

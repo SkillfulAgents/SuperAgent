@@ -81,8 +81,9 @@ const toolRenderers: Record<string, ToolRenderer> = {
   // Web tools
   WebSearch: webSearchRenderer,
   WebFetch: webFetchRenderer,
-  // Vendor-backed web tool (when a host search provider is active); reuses the native renderer.
+  // Vendor-backed web tools (when a host provider is active); reuse the native renderers.
   'mcp__web__web_search': webSearchRenderer,
+  'mcp__web__web_fetch': webFetchRenderer,
 
   // Task management
   TodoWrite: todoWriteRenderer,

@@ -273,12 +273,20 @@ describe('loadSettings', () => {
       expect(result.models?.agentEffort).toBe('high')
     })
 
-    it('preserves the web search provider selection', () => {
+    it('preserves the web provider selection', () => {
+      mockSettingsFile(JSON.stringify({ webProvider: 'exa' }))
+
+      const result = loadSettings()
+
+      expect(result.webProvider).toBe('exa')
+    })
+
+    it('recovers a legacy webSearchProvider selection on upgrade (pre-collapse installs)', () => {
       mockSettingsFile(JSON.stringify({ webSearchProvider: 'exa' }))
 
       const result = loadSettings()
 
-      expect(result.webSearchProvider).toBe('exa')
+      expect(result.webProvider).toBe('exa')
     })
 
     it('preserves the web allow/deny site lists', () => {

@@ -137,7 +137,10 @@ function SettingsModelSelectImpl({
           value={model}
           onPick={pick}
           offerLatest
-          webSearchProvider={settings?.webSearchProvider}
+          // Family click = that family's latest, stored as the bare alias (same
+          // as the "· latest" row). Stays open so a pinned version is one tap away.
+          onSelectFamilyLatest={(_latestId, family) => onModelChange(family)}
+          webProvider={settings?.webProvider}
         />
         {includeEffort && (
           <>

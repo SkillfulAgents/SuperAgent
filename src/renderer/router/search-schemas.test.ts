@@ -72,7 +72,7 @@ describe('lenient wrapper', () => {
 describe('settingsTabSchema', () => {
   it('accepts a known tab', () => {
     expect(settingsTabSchema.safeParse('general').success).toBe(true)
-    expect(settingsTabSchema.safeParse('web-search').success).toBe(true)
+    expect(settingsTabSchema.safeParse('web').success).toBe(true)
   })
   it('rejects an unknown tab', () => {
     expect(settingsTabSchema.safeParse('garbage').success).toBe(false)

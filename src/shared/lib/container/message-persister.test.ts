@@ -3106,6 +3106,34 @@ describe('MessagePersister', () => {
       expect(errorEvents[0].error).toBe('Invalid API key')
     })
 
+    it('classifies a success-subtype result with is_error as an error turn (modern shape)', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+
+      // The modern SDK dead-turn shape: subtype stays 'success', the error is
+      // signaled via is_error + terminal_reason, and the human-readable
+      // explanation lives in `result` (see sdk206-error-turn-invalid-model).
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        terminal_reason: 'api_error',
+        api_error_status: 404,
+        result: 'The selected model does not exist.',
+        duration_ms: 100,
+        num_turns: 1,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+
+      const errorEvents = sseEvents.filter(e => e.type === 'session_error')
+      expect(errorEvents).toHaveLength(1)
+      expect(errorEvents[0].error).toBe('The selected model does not exist.')
+      expect(errorEvents[0].terminalReason).toBe('api_error')
+      expect(errorEvents[0].apiErrorStatus).toBe(404)
+      expect(errorEvents[0].apiErrorCode).toBeNull()
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
     it('broadcasts session_error with null apiErrorCode when no assistant error preceded', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       sseEvents.length = 0
@@ -4940,6 +4968,103 @@ describe('MessagePersister', () => {
       mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'running' })
       expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
       expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-keep')
+    })
+
+    it('background_tasks_changed self-heals a task whose terminal signal never arrives', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-lost' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      sseEvents.length = 0
+
+      // The SDK's snapshot no longer lists the task — it finished, but the
+      // per-task terminal signal is (in this scenario) lost. Without the
+      // snapshot the task would pin the session in waiting-background forever.
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      expect(sseEvents.filter(e => e.type === 'background_task_completed').map(e => e.taskId)).toEqual(['bg-lost'])
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID)).toHaveLength(0)
+
+      // A late terminal signal for the already-cleared task no-ops.
+      sseEvents.length = 0
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_updated', task_id: 'bg-lost', patch: { status: 'completed' },
+      })
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+
+      // The settled idle now finalizes.
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('background_tasks_changed announcing an unregistered task blocks idle (union gate)', () => {
+      // The snapshot LEADS per-task signals: it can announce a task before the
+      // registration metadata (task_started / tool-result) arrives. An idle in
+      // that window must not finalize even though the incremental map is empty.
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      // Mid-turn: the SDK announces the task (registration metadata not seen).
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [{ task_id: 'bg-early', task_type: 'local_bash', description: 'Sleep' }],
+      })
+      mockClient._sendMessage({ type: 'result', subtype: 'success' })
+      sseEvents.length = 0
+
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(0)
+      const waiting = sseEvents.filter(e => e.type === 'session_waiting_background')
+      expect(waiting).toHaveLength(1)
+      expect(waiting[0].backgroundTaskCount).toBe(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+
+      // The task finishes: empty snapshot, then the settled idle finalizes.
+      sseEvents.length = 0
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [] })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
+    it('forwards command_lifecycle frames to SSE and drops malformed ones', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+
+      mockClient._sendMessage({ type: 'command_lifecycle', command_uuid: 'u1', state: 'queued' })
+      mockClient._sendMessage({ type: 'command_lifecycle', command_uuid: 'u1', state: 'discarded' })
+      // Unknown future states must flow through, not be filtered here.
+      mockClient._sendMessage({ type: 'command_lifecycle', command_uuid: 'u2', state: 'some_future_state' })
+      // No uuid → nothing downstream can act; dropped.
+      mockClient._sendMessage({ type: 'command_lifecycle', state: 'discarded' })
+
+      const forwarded = sseEvents.filter(e => e.type === 'command_lifecycle')
+      expect(forwarded).toEqual([
+        { type: 'command_lifecycle', commandUuid: 'u1', state: 'queued' },
+        { type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' },
+        { type: 'command_lifecycle', commandUuid: 'u2', state: 'some_future_state' },
+      ])
+    })
+
+    it('ignores a malformed background_tasks_changed frame instead of clearing running tasks', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({
+        type: 'user',
+        tool_use_result: { backgroundTaskId: 'bg-safe' },
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Running' }] },
+      })
+      sseEvents.length = 0
+
+      // tasks is not an array / an element is missing task_id — acting on a
+      // partial parse could clear a still-running task, so the frame must be
+      // ignored outright.
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: 'garbage' })
+      mockClient._sendMessage({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ nope: true }] })
+
+      expect(sseEvents.filter(e => e.type === 'background_task_completed')).toHaveLength(0)
+      expect(messagePersister.getActiveBackgroundTasks(SESSION_ID).map(t => t.taskId)).toContain('bg-safe')
     })
 
     it('tracks multiple concurrent background tasks', () => {

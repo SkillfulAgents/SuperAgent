@@ -128,6 +128,12 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn(async () => []),
 }))
 
+// Agent preferences (file-based) — per-agent default model/effort
+const mockReadAgentPreferences = vi.fn(async (..._args: unknown[]): Promise<Record<string, unknown>> => ({}))
+vi.mock('@shared/lib/services/agent-preferences-service', () => ({
+  readAgentPreferences: (...args: unknown[]) => mockReadAgentPreferences(...args),
+}))
+
 // Review manager (direct decision injection)
 let reviewDecisions: Array<'allow' | 'deny'> = []
 vi.mock('@shared/lib/proxy/review-manager', () => ({
@@ -210,6 +216,7 @@ beforeEach(async () => {
   mockIsSessionActive.mockReturnValue(false)
   mockIsSessionAwaitingInput.mockReturnValue(false)
   mockWaitForIdle.mockResolvedValue(undefined)
+  mockReadAgentPreferences.mockResolvedValue({})
   mockEnsureRunning.mockClear()
   mockEnsureRunning.mockResolvedValue({
     createSession: mockCreateSession,
@@ -628,6 +635,43 @@ describe('/invoke', () => {
     })
     const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hi' })
     expect(res.status).toBe(200)
+  })
+})
+
+// ============================================================================
+// /invoke model and effort resolution
+// ============================================================================
+
+describe('/invoke model and effort resolution', () => {
+  // /invoke has no per-call model/effort override, so the order is just:
+  // target agent default (agent preferences) > global default.
+  beforeEach(() => {
+    mockGetAgent.mockResolvedValue({
+      slug: TARGET_SLUG,
+      frontmatter: { name: 'Target', createdAt: '2024-01-01' },
+      instructions: '',
+    })
+    mockCreateSession.mockResolvedValue({ id: 'new-sess-id' })
+    reviewDecisions.push('allow')
+  })
+
+  it('uses the target agent default over the global default', async () => {
+    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello' })
+    expect(res.status).toBe(200)
+    expect(mockReadAgentPreferences).toHaveBeenCalledWith(TARGET_SLUG)
+    const args = mockCreateSession.mock.calls[0][0] as Record<string, unknown>
+    expect(args.model).toBe('opus')
+    expect(args.effort).toBe('high')
+  })
+
+  it('falls back to the global default and omits effort when the agent sets none', async () => {
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello' })
+    expect(res.status).toBe(200)
+    const args = mockCreateSession.mock.calls[0][0] as Record<string, unknown>
+    expect(args.model).toBe('sonnet') // the mocked getEffectiveModels().agentModel
+    // Effort must be omitted entirely, not sent as undefined.
+    expect('effort' in args).toBe(false)
   })
 })
 

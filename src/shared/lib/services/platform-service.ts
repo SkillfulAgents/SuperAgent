@@ -37,6 +37,9 @@ class PlatformService {
       this.startupTimeoutId = null
       void this.refresh()
     }, this.startupDelayMs)
+    // Positive start signal — every service launched by startup.ts logs one
+    // so a silent-dead service is distinguishable from a healthy idle one.
+    console.log(`[PlatformService] Started (first refresh in ${Math.round(this.startupDelayMs / 1000)}s)`)
   }
 
   stop(): void {

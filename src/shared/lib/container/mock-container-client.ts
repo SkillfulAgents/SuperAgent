@@ -1720,15 +1720,39 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
 
     // Handle input resolve/reject — decrement pending count and complete session when all done
-    const resolveMatch = fetchPath.match(/^\/inputs\/[^/]+\/(resolve|reject)$/)
+    const resolveMatch = fetchPath.match(/^\/inputs\/([^/]+)\/(resolve|reject)$/)
     if (resolveMatch) {
-      console.log(`[MockContainerClient] Input ${resolveMatch[1]}: ${fetchPath}`)
+      let toolUseId = resolveMatch[1]
+      try {
+        toolUseId = decodeURIComponent(toolUseId)
+      } catch {
+        // Malformed escape — keep the raw path segment (mock tool ids are alphanumeric anyway)
+      }
+      console.log(`[MockContainerClient] Input ${resolveMatch[2]}: ${fetchPath}`)
       // Find the session with pending inputs (we only have one active at a time in tests)
       for (const [sessionId, count] of this.pendingInputCounts) {
         if (count > 0) {
           const remaining = count - 1
           this.pendingInputCounts.set(sessionId, remaining)
           console.log(`[MockContainerClient] Session ${sessionId}: ${remaining} pending inputs remaining`)
+          // The real SDK surfaces each resolved/rejected input as a 'user' message
+          // carrying the tool_result block — persisted to the transcript and
+          // streamed so MessagePersister broadcasts `tool_result` to every SSE
+          // client (this is what lets other tabs drop the resolved card).
+          const toolResultBlocks = [{
+            type: 'tool_result',
+            tool_use_id: toolUseId,
+            content: resolveMatch[2] === 'resolve' ? 'User provided input' : 'User declined the request',
+          }]
+          this.writeJsonlEntry(sessionId, {
+            type: 'user',
+            message: { content: toolResultBlocks },
+            timestamp: new Date().toISOString(),
+          })
+          this.emitStreamMessage(sessionId, {
+            type: 'user',
+            content: { type: 'user', message: { content: toolResultBlocks } },
+          })
           if (remaining === 0) {
             this.pendingInputCounts.delete(sessionId)
             // Complete the session after a short delay
@@ -2100,12 +2124,21 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.busySessions.delete(sessionId)
 
     // Queued steering messages die with the turn — the real CLI never picks
-    // them up after an abort; the renderer restores their text into the
-    // composer draft.
+    // them up after an abort. Mirror the real container: it names each dead
+    // uuid with a synthetic command_lifecycle 'discarded' frame (the SDK's own
+    // frames die with the aborted query), which the renderer uses to rescue
+    // the ghost's text into the composer deterministically.
     const timers = this.queuedSteeringTimers.get(sessionId)
     if (timers) {
+      const deadUuids = [...timers.keys()]
       for (const timer of timers.values()) clearTimeout(timer)
       timers.clear()
+      for (const uuid of deadUuids) {
+        this.emitStreamMessage(sessionId, {
+          type: 'command_lifecycle',
+          content: { type: 'command_lifecycle', command_uuid: uuid, state: 'discarded' },
+        })
+      }
     }
 
     this.emitStreamMessage(sessionId, {

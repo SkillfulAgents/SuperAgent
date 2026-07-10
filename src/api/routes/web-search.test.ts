@@ -2,14 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Hono } from 'hono'
 
 const mockValidateProxyToken = vi.fn()
-const mockGetActiveWebSearchProvider = vi.fn()
+const mockGetActiveWebProvider = vi.fn()
 const mockGetSettings = vi.fn()
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...a: unknown[]) => mockValidateProxyToken(...a),
 }))
 vi.mock('@shared/lib/web-provider', () => ({
-  getActiveWebSearchProvider: () => mockGetActiveWebSearchProvider(),
+  getActiveWebProvider: () => mockGetActiveWebProvider(),
 }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => mockGetSettings(),
@@ -55,20 +55,27 @@ describe('POST /api/web-search/search', () => {
   })
 
   it('400 when no web search vendor is configured', async () => {
-    mockGetActiveWebSearchProvider.mockReturnValue(null)
+    mockGetActiveWebProvider.mockReturnValue(null)
+    const res = await search({ query: 'q' })
+    expect(res.status).toBe(400)
+  })
+
+  it('400 when the active vendor does not support search (fetch-only vendor)', async () => {
+    // Capability gate: a one-sided vendor has fetch but no search; the route probes provider.search.
+    mockGetActiveWebProvider.mockReturnValue({ id: 'x', fetch: vi.fn() })
     const res = await search({ query: 'q' })
     expect(res.status).toBe(400)
   })
 
   it('400 when the body is missing a query', async () => {
-    mockGetActiveWebSearchProvider.mockReturnValue({ search: vi.fn() })
+    mockGetActiveWebProvider.mockReturnValue({ search: vi.fn() })
     const res = await search({})
     expect(res.status).toBe(400)
   })
 
   it('returns hits on success and forwards options to the provider', async () => {
     const searchFn = vi.fn().mockResolvedValue({ hits: [{ url: 'https://a.com', title: 'A', snippet: 's' }] })
-    mockGetActiveWebSearchProvider.mockReturnValue({ search: searchFn })
+    mockGetActiveWebProvider.mockReturnValue({ search: searchFn })
     const res = await search({ query: 'cats', numResults: 3 })
     expect(res.status).toBe(200)
     const json = await res.json()
@@ -77,7 +84,7 @@ describe('POST /api/web-search/search', () => {
   })
 
   it('applies the allowed-sites policy and warns about removed results', async () => {
-    mockGetActiveWebSearchProvider.mockReturnValue({
+    mockGetActiveWebProvider.mockReturnValue({
       search: vi.fn().mockResolvedValue({
         hits: [
           { url: 'https://a.com/x', title: 'A', snippet: 's' },
@@ -93,20 +100,20 @@ describe('POST /api/web-search/search', () => {
   })
 
   it('502 when the provider throws', async () => {
-    mockGetActiveWebSearchProvider.mockReturnValue({ search: vi.fn().mockRejectedValue(new Error('vendor down')) })
+    mockGetActiveWebProvider.mockReturnValue({ search: vi.fn().mockRejectedValue(new Error('vendor down')) })
     const res = await search({ query: 'q' })
     expect(res.status).toBe(502)
   })
 
   it('400 when the query exceeds the max length', async () => {
-    mockGetActiveWebSearchProvider.mockReturnValue({ search: vi.fn() })
+    mockGetActiveWebProvider.mockReturnValue({ search: vi.fn() })
     const res = await search({ query: 'x'.repeat(2001) })
     expect(res.status).toBe(400)
   })
 
   it('caps the hit count and truncates oversized snippets host-side', async () => {
     const hits = Array.from({ length: 60 }, (_, i) => ({ url: `https://a.com/${i}`, title: 'A', snippet: 'x'.repeat(3000) }))
-    mockGetActiveWebSearchProvider.mockReturnValue({ search: vi.fn().mockResolvedValue({ hits }) })
+    mockGetActiveWebProvider.mockReturnValue({ search: vi.fn().mockResolvedValue({ hits }) })
     const res = await search({ query: 'q' })
     const json = await res.json()
     expect(json.hits.length).toBe(50)
