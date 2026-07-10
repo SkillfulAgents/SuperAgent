@@ -7,6 +7,12 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import { releaseBrowserLock } from './browser-state';
 import { claudeSettingsSchema, SESSION_RETENTION_DAYS } from './claude-settings-schema';
+import {
+  BackgroundTaskLiveness,
+  createBackgroundTaskLiveness,
+  hasOpenBackgroundWork,
+  trackBackgroundTaskMessage,
+} from './background-task-liveness';
 
 interface SessionData {
   session: Session;
@@ -19,7 +25,8 @@ interface SessionData {
   // session_state_changed:idle without a result for this turn is ignored
   // (stale idle racing a fresh message).
   lastResultSubtype: string | null;
-  activeBackgroundTaskIds: Set<string>;
+  // Snapshot ∪ incremental liveness (same model as message-persister / #438).
+  backgroundTasks: BackgroundTaskLiveness;
   eviction: Promise<void> | null;
 }
 
@@ -246,7 +253,7 @@ export class SessionManager extends EventEmitter {
       runtimeState: 'busy',
       stateEventsSeen: false,
       lastResultSubtype: null,
-      activeBackgroundTaskIds: new Set(),
+      backgroundTasks: createBackgroundTaskLiveness(),
       eviction: null,
     };
 
@@ -344,7 +351,7 @@ export class SessionManager extends EventEmitter {
         runtimeState: 'idle',
         stateEventsSeen: false,
         lastResultSubtype: null,
-        activeBackgroundTaskIds: new Set(),
+        backgroundTasks: createBackgroundTaskLiveness(),
         eviction: null,
       };
 
@@ -546,16 +553,16 @@ export class SessionManager extends EventEmitter {
   // Track whether the session is settled (safe to evict) from the SDK stream.
   // session_state_changed is authoritative when present; idle is only accepted
   // after a result for this turn (same gate as message-persister). 'result' is
-  // the idle fallback when no state events exist. Background tasks block eviction.
+  // the idle fallback when no state events exist. Background-task liveness uses
+  // background_tasks_changed ∪ incremental (same model as message-persister).
   private trackRuntimeState(sessionData: SessionData, message: SDKMessage): void {
     const msg = message as {
       type?: string;
       subtype?: string;
       state?: string;
-      task_id?: string;
-      status?: string;
-      patch?: { status?: string };
     };
+
+    trackBackgroundTaskMessage(sessionData.backgroundTasks, message);
 
     if (msg.type === 'result') {
       sessionData.lastResultSubtype = msg.subtype ?? 'unknown';
@@ -575,17 +582,6 @@ export class SessionManager extends EventEmitter {
           }
         } else {
           sessionData.runtimeState = 'busy';
-        }
-      } else if (msg.subtype === 'task_started' && msg.task_id) {
-        sessionData.activeBackgroundTaskIds.add(msg.task_id);
-      } else if (msg.subtype === 'task_updated' && msg.task_id) {
-        const status = msg.patch?.status;
-        if (status === 'completed' || status === 'failed' || status === 'killed') {
-          sessionData.activeBackgroundTaskIds.delete(msg.task_id);
-        }
-      } else if (msg.subtype === 'task_notification' && msg.task_id) {
-        if (msg.status === 'completed' || msg.status === 'failed' || msg.status === 'killed') {
-          sessionData.activeBackgroundTaskIds.delete(msg.task_id);
         }
       }
     } else if (msg.type === 'user' || msg.type === 'assistant') {
@@ -609,7 +605,7 @@ export class SessionManager extends EventEmitter {
     for (const [sessionId, data] of this.sessions) {
       if (data.eviction) continue; // already evicting
       if (data.runtimeState !== 'idle') continue;
-      if (data.activeBackgroundTaskIds.size > 0) continue;
+      if (hasOpenBackgroundWork(data.backgroundTasks)) continue;
       if (!data.process.isRunning()) continue; // already cold
       const thresholdMs = this.idleThresholdMs(data);
       if (thresholdMs < 0) continue; // disabled for this class

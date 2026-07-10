@@ -176,14 +176,23 @@ describe('SessionManager idle eviction', () => {
 
   it('does not evict while a background task is running, evicts after it settles', async () => {
     const { proc } = await createIdleSession()
-    proc.emit('message', { type: 'system', subtype: 'task_started', task_id: 'bg-1' })
+    // SDK snapshot is authoritative (leads per-task signals on the wire).
+    proc.emit('message', {
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [{ task_id: 'bg-1', task_type: 'local_bash' }],
+    })
     emitSettled(proc) // SDK fires idle at turn-end while background work runs
     await pastThreshold()
 
     await manager.evictIdleSessions()
     expect(proc.stopCalls).toBe(0)
 
-    proc.emit('message', { type: 'system', subtype: 'task_updated', task_id: 'bg-1', patch: { status: 'completed' } })
+    proc.emit('message', {
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [],
+    })
     emitSettled(proc)
     await pastThreshold()
 
@@ -191,10 +200,78 @@ describe('SessionManager idle eviction', () => {
     expect(proc.stopCalls).toBe(1)
   })
 
-  it('clears a background task via task_notification too', async () => {
+  it('clears sticky incremental work when the snapshot no longer lists it', async () => {
     const { proc } = await createIdleSession()
-    proc.emit('message', { type: 'system', subtype: 'task_started', task_id: 'bg-2' })
-    proc.emit('message', { type: 'system', subtype: 'task_notification', task_id: 'bg-2', status: 'completed' })
+    // Pre-snapshot fallback path: bg Bash registers via tool_use_result.
+    proc.emit('message', {
+      type: 'user',
+      tool_use_result: { backgroundTaskId: 'bg-sticky' },
+    })
+    emitSettled(proc)
+    await pastThreshold()
+    await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(0)
+
+    // Missed terminal signal — snapshot self-heals so eviction is not pinned forever.
+    proc.emit('message', {
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [],
+    })
+    emitSettled(proc)
+    await pastThreshold()
+
+    await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(1)
+  })
+
+  it('holds eviction from backgroundTaskId when no snapshot has arrived yet', async () => {
+    const { proc } = await createIdleSession()
+    proc.emit('message', {
+      type: 'user',
+      tool_use_result: { backgroundTaskId: 'bg-2' },
+    })
+    emitSettled(proc)
+    await pastThreshold()
+
+    await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(0)
+
+    proc.emit('message', {
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'bg-2',
+      status: 'completed',
+    })
+    emitSettled(proc)
+    await pastThreshold()
+
+    await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(1)
+  })
+
+  it('ignores bare task_started for a foreground agent (not background work)', async () => {
+    const { proc } = await createIdleSession()
+    proc.emit('message', {
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'agent-fg',
+      task_type: 'local_agent',
+    })
+    emitSettled(proc)
+    await pastThreshold()
+
+    await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(1)
+  })
+
+  it('ignores a malformed background_tasks_changed frame', async () => {
+    const { proc } = await createIdleSession()
+    proc.emit('message', {
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: 'not-an-array',
+    })
     emitSettled(proc)
     await pastThreshold()
 
