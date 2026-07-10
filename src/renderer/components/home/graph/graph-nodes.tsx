@@ -1,10 +1,10 @@
 /**
  * Custom React Flow nodes for the home connections graph.
  *
- * Agent nodes are small status cards; resource nodes (accounts, MCPs,
- * triggers, chat integrations) are icon chips with a status dot. Both reuse
- * the app's existing status indicators so colors/motion match the rest of
- * the UI. Handles are invisible and centered so straight edges radiate from
+ * Agent nodes are circular status badges; resource nodes (accounts, MCPs,
+ * triggers, chat integrations) are bare icon chips — their health shows
+ * through the edge styling (red dashes) and the hover label, not on the
+ * node itself. Handles are invisible and centered so straight edges radiate from
  * node centers, mind-map style.
  */
 
@@ -43,11 +43,42 @@ function CenterHandles() {
   )
 }
 
+const PORT_POSITIONS: Record<string, Position> = {
+  top: Position.Top,
+  bottom: Position.Bottom,
+  left: Position.Left,
+  right: Position.Right,
+}
+
+/**
+ * The four connection points (N/S/E/W) on the node's visible shape, shown
+ * while it's hovered. Real React Flow handles: when connectable, dragging
+ * one out draws a new connection, FigJam-style (drop targets snap within
+ * ReactFlow's connectionRadius). Visibility/pointer-events gating lives in
+ * agent-graph.css (.graph-port) so hidden ports never block node drags.
+ */
+function ConnectPorts({ connectable }: { connectable: boolean }) {
+  return (
+    <>
+      {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
+        <Handle
+          key={side}
+          id={side}
+          type="source"
+          position={PORT_POSITIONS[side]}
+          className="graph-port"
+          isConnectable={connectable}
+        />
+      ))}
+    </>
+  )
+}
+
 const agentBorder: Record<AgentActivityStatus, string> = {
-  working: 'border-green-500/60',
-  awaiting_input: 'border-orange-500/70',
-  idle: 'border-border',
-  sleeping: 'border-border opacity-70',
+  working: 'border-green-500/50',
+  awaiting_input: 'border-orange-500/60',
+  idle: 'border-border/60',
+  sleeping: 'border-border/60',
 }
 
 export function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData, 'agent'>>) {
@@ -59,7 +90,7 @@ export function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData, 'agent'>>
       aria-label={`Open agent ${agent.name}`}
       onKeyDown={activateOnKey}
       className={cn(
-        'relative w-44 cursor-pointer rounded-lg border bg-card px-3 py-2.5 shadow-sm transition-colors hover:border-accent-foreground/40',
+        'group relative flex h-28 w-28 cursor-pointer flex-col items-center justify-center rounded-full border-[0.5px] bg-card px-3 text-center shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg',
         agentBorder[
           getAgentActivityStatus(
             agent.status,
@@ -70,30 +101,39 @@ export function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData, 'agent'>>
       )}
       data-testid={`graph-node-agent-${agent.slug}`}
     >
-      {agent.hasUnreadNotifications && (
-        <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-blue-500" title="New notifications" />
-      )}
-      <div className="truncate text-sm font-medium">{agent.name}</div>
+      <ConnectPorts connectable />
+      {/* Icon-only status (sidebar-style) floated at the circle's top,
+          tucked just inside the edge */}
       <AgentStatus
         status={agent.status}
         hasActiveSessions={agent.hasActiveSessions ?? false}
         hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
-        size="sm"
-        className="mt-1"
+        iconOnly
+        className="absolute left-1/2 top-3 -translate-x-1/2"
       />
+      <span className="line-clamp-2 max-w-full break-words text-center text-xs">{agent.name}</span>
       <CenterHandles />
     </div>
   )
 }
 
-const toneDot: Record<ResourceTone, string> = {
+export const toneDot: Record<ResourceTone, string> = {
   ok: 'bg-green-500',
   muted: 'bg-muted-foreground/50',
   attention: 'bg-orange-500',
   error: 'bg-red-500',
 }
 
-function ResourceIcon({ data }: { data: ResourceNodeData }) {
+// Usage badge in the hover pill: text matches the dot, chip bg is a faint
+// wash of the same tone.
+const toneBadge: Record<ResourceTone, string> = {
+  ok: 'bg-green-500/10 text-green-500',
+  muted: 'bg-muted-foreground/10 text-muted-foreground',
+  attention: 'bg-orange-500/10 text-orange-500',
+  error: 'bg-red-500/10 text-red-500',
+}
+
+export function ResourceIcon({ data }: { data: ResourceNodeData }) {
   const className = 'h-4 w-4 text-muted-foreground'
   switch (data.kind) {
     case 'account':
@@ -110,29 +150,48 @@ function ResourceIcon({ data }: { data: ResourceNodeData }) {
 }
 
 export function ResourceGraphNode({ data }: NodeProps<Node<ResourceNodeData, 'resource'>>) {
+  // No `title` attr: the OS tooltip would race the fade-in label with the
+  // same text.
   return (
     <div
       role="button"
       tabIndex={0}
       aria-label={`Open ${data.kind} ${data.label} — ${data.statusLabel}`}
       onKeyDown={activateOnKey}
-      className="group flex w-32 cursor-pointer flex-col items-center gap-1"
-      title={data.statusLabel}
+      className="flex w-32 cursor-pointer flex-col items-center gap-1"
       data-testid={`graph-node-${data.kind}-${data.resourceId}`}
     >
-      <div className="relative flex h-10 w-10 items-center justify-center rounded-full border bg-card shadow-sm transition-colors group-hover:border-accent-foreground/40">
+      {/* Only the chip is the hover zone: it's its own `group` (port dots)
+          and a `peer` for the sibling label — hovering the label's empty
+          layout slot below must not light anything up. */}
+      <div className="group peer relative flex h-10 w-10 items-center justify-center rounded-full border-[0.5px] border-border/60 bg-card shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg">
+        {/* Webhooks/crons/chats are owned by their agent and created through
+            forms — you can't draw one, so their ports stay decorative. */}
+        <ConnectPorts connectable={data.kind === 'account' || data.kind === 'mcp'} />
         <ResourceIcon data={data} />
+      </div>
+      {/* The label keeps its layout slot (opacity, not display) so edge
+          anchors and collision footprints don't shift when it fades in. */}
+      <div className="flex max-w-full flex-col items-start rounded-md bg-card/40 px-1.5 py-0.5 opacity-0 backdrop-blur-sm transition-opacity duration-200 peer-hover:opacity-100">
+        <span className="block max-w-full truncate text-2xs text-foreground/80">{data.label}</span>
+        {data.sublabel && (
+          <span className="block max-w-full truncate text-2xs text-muted-foreground">{data.sublabel}</span>
+        )}
         <span
           className={cn(
-            'absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background',
-            toneDot[data.tone],
+            'mt-0.5 inline-flex max-w-full items-center gap-1 rounded-full px-1.5 py-px text-[9px] leading-tight',
+            toneBadge[data.tone],
           )}
-        />
+        >
+          <span className={cn('h-1 w-1 shrink-0 rounded-full', toneDot[data.tone])} />
+          <span className="truncate">{data.status}</span>
+        </span>
+        {data.usage && (
+          <span className="mt-0.5 block max-w-full truncate text-[9px] leading-tight text-muted-foreground">
+            {data.usage}
+          </span>
+        )}
       </div>
-      <span className="max-w-full truncate text-center text-2xs text-foreground/80">{data.label}</span>
-      {data.sublabel && (
-        <span className="-mt-1 max-w-full truncate text-center text-2xs text-muted-foreground">{data.sublabel}</span>
-      )}
       <CenterHandles />
     </div>
   )
