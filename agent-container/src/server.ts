@@ -106,13 +106,15 @@ app.post('/sessions/:id/interrupt', async (c) => {
   const sessionId = c.req.param('id');
 
   try {
-    const interrupted = await sessionManager.interruptSession(sessionId);
+    const { found, discardedUuids } = await sessionManager.interruptSession(sessionId);
 
-    if (!interrupted) {
+    if (!found) {
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    return c.json({ success: true });
+    // The same uuids also flow to the host as synthetic command_lifecycle
+    // 'discarded' stream frames; this response is for the API caller.
+    return c.json({ success: true, discardedUuids });
   } catch (error: any) {
     console.error('Error interrupting session:', error);
     return c.json({ error: error.message || 'Failed to interrupt session' }, 500);

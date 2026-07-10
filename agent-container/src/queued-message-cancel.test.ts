@@ -38,6 +38,11 @@ describe('SDK queued-message cancel API', () => {
 
     try {
       expect(typeof (q as unknown as Record<string, unknown>).cancelAsyncMessage).toBe('function')
+      // The typed interrupt control request (SDK >= 0.3.205) — its receipt's
+      // still_queued is what interrupt() consumes to name the queued messages
+      // an interrupt kills. If an SDK bump removes/renames it, interrupt()
+      // silently degrades to local-queue-only reporting; fail loudly here.
+      expect(typeof q.interrupt).toBe('function')
     } finally {
       abortController.abort()
       // The Query is an async generator; closing it releases any resources.

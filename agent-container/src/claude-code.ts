@@ -1,4 +1,5 @@
 import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
@@ -144,13 +145,44 @@ function agentEnvVars(availableEnvVars?: string[]): string[] {
 }
 
 /** Computer-use tools and the request_script_run tool only exist on desktop hosts. */
+// Interrupt receipt from Query.interrupt() (SDK >= 0.3.205, advertised by the
+// interrupt_receipt_v1 capability): `still_queued` lists the uuids of async
+// user messages that would SURVIVE a graceful interrupt and still run. Older
+// CLIs resolve with an empty success payload (undefined / no field) — treat
+// that as "nothing known", never as "nothing queued".
+const interruptReceiptSchema = z.object({
+  still_queued: z.array(z.string()).optional().catch(undefined),
+});
+
+export function stillQueuedFromReceipt(receipt: unknown): string[] {
+  const parsed = interruptReceiptSchema.safeParse(receipt);
+  if (!parsed.success) return [];
+  return parsed.data.still_queued ?? [];
+}
+
+export interface InterruptOutcome {
+  interrupted: boolean;
+  // Uuids of queued user messages that died with this interrupt — never picked
+  // up by the agent. The same uuids are also emitted on the message stream as
+  // synthetic `command_lifecycle` frames with state 'discarded'.
+  discardedUuids: string[];
+}
+
 // An error result with no human-readable text anywhere gets the resume-failure
 // fallback copy. `result` counts as text: the modern error shape (is_error:true
 // with terminal_reason, e.g. an api_error from a bad model id) puts the real
 // explanation there — stomping a synthetic "session corrupted" message next to
-// it misleads the host into showing the wrong error.
-export function resultNeedsResumeErrorFallback(msg: { error?: unknown; message?: unknown; result?: unknown }): boolean {
-  return !msg.error && !msg.message && !msg.result
+// it misleads the host into showing the wrong error. Gracefully interrupted
+// turns (terminal_reason aborted_*) are textless BY DESIGN — they are a
+// deliberate stop, not a resume failure, and must not get the copy either.
+export function resultNeedsResumeErrorFallback(msg: {
+  error?: unknown;
+  message?: unknown;
+  result?: unknown;
+  terminal_reason?: unknown;
+}): boolean {
+  if (msg.terminal_reason === 'aborted_tools' || msg.terminal_reason === 'aborted_streaming') return false;
+  return !msg.error && !msg.message && !msg.result;
 }
 
 export function isComputerUseHost(): boolean {
@@ -242,7 +274,7 @@ export function generateSystemPrompt(
  * Async message queue that bridges imperative sendMessage() calls
  * to an async iterable for the SDK's streaming input mode.
  */
-class MessageQueue {
+export class MessageQueue {
   private queue: SDKUserMessage[] = [];
   private resolveNext: ((value: IteratorResult<SDKUserMessage>) => void) | null = null;
   private closed = false;
@@ -277,6 +309,12 @@ class MessageQueue {
     if (index < 0) return false;
     this.queue.splice(index, 1);
     return true;
+  }
+
+  // Empty the buffer and return what was still waiting — the messages the SDK
+  // never saw, which die when the queue is replaced on interrupt.
+  drain(): SDKUserMessage[] {
+    return this.queue.splice(0, this.queue.length);
   }
 
   [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
@@ -1019,12 +1057,47 @@ export class ClaudeCodeProcess extends EventEmitter {
     return this.isReady && this.isProcessing;
   }
 
-  async interrupt(): Promise<void> {
+  async interrupt(): Promise<InterruptOutcome> {
     console.log(`[Session ${this.sessionId}] Interrupting current query`);
 
     if (!this.abortController || !this.isProcessing) {
       console.log(`[Session ${this.sessionId}] Nothing to interrupt`);
-      return;
+      return { interrupted: false, discardedUuids: [] };
+    }
+
+    // Ask the SDK which async messages are still queued BEFORE killing the
+    // query — after the abort the stream just stops and that knowledge is
+    // gone (queued command_lifecycle frames never resolve; see the
+    // sdk206-queued-message-interrupt fixture). The receipt's still_queued
+    // messages would survive a graceful interrupt and run — our Stop
+    // semantics kill them, so cancel each one while the query is still alive
+    // and report it as discarded.
+    const discardedUuids: string[] = [];
+    if (this.queryInstance) {
+      try {
+        const receipt = await Promise.race([
+          this.queryInstance.interrupt(),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2000)),
+        ]);
+        for (const uuid of stillQueuedFromReceipt(receipt)) {
+          // Reuses the two-layer cancel; false = already dequeued for
+          // execution, in which case the abort below kills it mid-turn and
+          // its user message has already materialized — not "discarded".
+          const cancelled = await this.cancelQueuedMessage(uuid as UUID);
+          if (cancelled) discardedUuids.push(uuid);
+        }
+      } catch (error) {
+        // Old CLI without the interrupt control request, or a query already
+        // torn down — the abort below still stops the turn; we just cannot
+        // name the SDK-side queued casualties.
+        console.warn(`[Session ${this.sessionId}] Graceful interrupt failed, falling back to abort:`, error);
+      }
+    }
+
+    // Messages still buffered locally (never handed to the SDK) die when the
+    // queue is replaced below.
+    for (const message of this.messageQueue?.drain() ?? []) {
+      if (message.uuid) discardedUuids.push(message.uuid);
     }
 
     // Abort the current query
@@ -1045,9 +1118,24 @@ export class ClaudeCodeProcess extends EventEmitter {
       }, 5000);
     });
 
+    // The SDK's own terminal lifecycle frames died with the query, so emit
+    // them ourselves: downstream (persister → SSE → renderer) learns each
+    // dead uuid through the exact same pipeline as real SDK frames and can
+    // rescue the message text deterministically instead of racing a refetch.
+    for (const uuid of discardedUuids) {
+      this.emit('message', {
+        type: 'command_lifecycle',
+        command_uuid: uuid,
+        state: 'discarded',
+        session_id: this.claudeSessionId || this.sessionId,
+      });
+    }
+
     // Restart the query with resume to continue the session
     console.log(`[Session ${this.sessionId}] Restarting query after interrupt`);
     this.initializeQuery();
     this.processMessages();
+
+    return { interrupted: true, discardedUuids };
   }
 }
