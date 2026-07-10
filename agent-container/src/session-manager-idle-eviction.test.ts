@@ -34,6 +34,7 @@ class MockClaudeProcess extends EventEmitter {
   stopCalls = 0
   disposeCalls = 0
   sendMessageCalls = 0
+  lastStopOptions: { graceful?: boolean } | undefined
   sessionId: string
 
   constructor(options: { sessionId: string }) {
@@ -67,14 +68,15 @@ class MockClaudeProcess extends EventEmitter {
     this.emit('init-complete')
   }
 
-  async stop(): Promise<void> {
+  async stop(options?: { graceful?: boolean }): Promise<void> {
     this.stopCalls++
+    this.lastStopOptions = options
     this.running = false
   }
 
-  async dispose(): Promise<void> {
+  async dispose(options?: { graceful?: boolean }): Promise<void> {
     this.disposeCalls++
-    await this.stop()
+    await this.stop(options)
   }
 
   isRunning(): boolean {
@@ -481,6 +483,32 @@ describe('SessionManager idle eviction', () => {
     } finally {
       await promoManager.stopAll()
     }
+  })
+
+  it('eviction stops the process GRACEFULLY (transcript-flush protection)', async () => {
+    // A hard abort races the CLI's transcript flush — the durability E2E
+    // proved probabilistic loss of the latest turns. This pins the graceful
+    // flag at unit level so a revert can't slip through the normal suite.
+    const { proc } = await createIdleSession({ metadata: { isAutomated: true } })
+    await manager.evictIdleSessions()
+    expect(proc.stopCalls).toBe(1)
+    expect(proc.lastStopOptions?.graceful).toBe(true)
+  })
+
+  it('stopAll disposes gracefully; deleteSession disposes hard', async () => {
+    // stopAll precedes a container restart that will resume these sessions —
+    // transcripts must flush. deleteSession's transcript is doomed anyway,
+    // so it may keep the fast hard kill. Both must DISPOSE (terminal), so a
+    // straggler interrupt/continuation can't revive an untracked subprocess.
+    const { id, proc } = await createIdleSession()
+    await manager.deleteSession(id)
+    expect(proc.disposeCalls).toBe(1)
+    expect(proc.lastStopOptions?.graceful).toBeFalsy()
+
+    const { proc: proc2 } = await createIdleSession()
+    await manager.stopAll()
+    expect(proc2.disposeCalls).toBe(1)
+    expect(proc2.lastStopOptions?.graceful).toBe(true)
   })
 
   it('a send that bypasses SessionManager.sendMessage still marks the session busy (outbound-message event)', async () => {

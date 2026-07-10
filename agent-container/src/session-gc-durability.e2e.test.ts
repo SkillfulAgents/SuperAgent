@@ -236,4 +236,69 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
     },
     360_000
   );
+
+  it(
+    'a message queued mid-turn survives an aggressive reaper (no idle gap between chained turns)',
+    async () => {
+      // Guards a CLI-behavior assumption the reaper depends on: the CLI does
+      // NOT emit session_state_changed:idle between a finished turn and a
+      // queued follow-up. If a future CLI/SDK does, a threshold-0 sweep
+      // landing in that gap would evict and silently kill the queued message.
+      const manager = new SessionManager(workDir, {
+        idleEvictionMs: 0, // human promotion flips class → keep both classes at 0
+        automatedIdleEvictionMs: 0,
+        evictionPollMs: 250,
+      });
+      managers.push(manager);
+
+      const session = await manager.createSession({
+        initialMessage: 'Reply with exactly: alpha-one',
+        metadata: { isAutomated: true },
+        model: MODEL,
+      });
+      const id = session.id;
+      // Queue a second message while turn 1 is (very likely) still running.
+      await manager.sendMessage(id, 'Reply with exactly: beta-two');
+
+      await waitFor('both chained results', () => resultCount(manager.getMessages(id)) >= 2, 120_000);
+      const text = assistantText(manager.getMessages(id));
+      dlog(`chained-turns text=${JSON.stringify(text)}`);
+      expect(text).toContain('alpha-one');
+      expect(text).toContain('beta-two');
+    },
+    360_000
+  );
+
+  it(
+    'an interrupted session settles and is reaped (no permanent busy-pin leak)',
+    async () => {
+      // Guards the other CLI-behavior assumption: an interrupt yields a
+      // result (error_during_execution) + idle, so the tracker settles and
+      // the fresh parked query gets reaped. If an SDK change stops emitting
+      // those frames, every user Stop would pin a ~250MB subprocess forever.
+      const manager = new SessionManager(workDir, {
+        idleEvictionMs: 3_000,
+        automatedIdleEvictionMs: -1,
+        evictionPollMs: 500,
+      });
+      managers.push(manager);
+
+      const session = await manager.createSession({
+        initialMessage:
+          'Write a numbered list of 60 short sentences about the ocean, one per line. Do not stop early.',
+        model: MODEL,
+      });
+      const id = session.id;
+
+      // Interrupt mid-turn, then the restarted parked query must become
+      // settled and get reaped by the real sweep.
+      await new Promise((r) => setTimeout(r, 2_500));
+      const outcome = await manager.interruptSession(id);
+      dlog(`interrupt outcome=${JSON.stringify(outcome)}`);
+      expect(outcome.found).toBe(true);
+
+      await waitFor('reaped after interrupt', () => !manager.isSessionRunning(id), 45_000);
+    },
+    360_000
+  );
 });
