@@ -298,7 +298,19 @@ export class SlackConnector extends ChatClientConnector {
       appToken: this.config.appToken,
       socketMode: true,
       logLevel: 'warn' as any,
+      // Without this, Bolt's constructor fires its own async token
+      // verification whose rejection (e.g. invalid_auth on a bad token)
+      // escapes every try/catch here and takes the app down via the main
+      // process's unhandled-rejection handler. Deferring routes it through
+      // our explicit init() below instead.
+      deferInitialization: true,
     })
+    try {
+      await this.app.init()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(`Slack app failed to initialize: ${msg}`)
+    }
 
     // Catch-all for events we don't explicitly handle (Bolt requires ack for all events)
     this.app.event(/.*/, async (_ctx: any) => {
