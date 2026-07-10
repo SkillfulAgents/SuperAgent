@@ -1,6 +1,7 @@
 
 import {
   Braces,
+  Download,
   Globe,
   MousePointerClick,
   TextCursorInput,
@@ -17,7 +18,7 @@ import {
   browserOpenDef, browserCloseDef, browserSnapshotDef,
   browserClickDef, browserFillDef, browserScrollDef,
   browserWaitDef, browserPressDef, browserTypeDef, browserScreenshotDef,
-  browserSelectDef, browserHoverDef, browserEvalDef, browserRunDef,
+  browserSelectDef, browserHoverDef, browserDownloadDef, browserEvalDef, browserRunDef,
 } from '@shared/lib/tool-definitions/browser-tools'
 
 export const browserOpenRenderer: ToolRenderer = { displayName: browserOpenDef.displayName, icon: Globe, getSummary: browserOpenDef.getSummary }
@@ -32,5 +33,6 @@ export const browserTypeRenderer: ToolRenderer = { displayName: browserTypeDef.d
 export const browserScreenshotRenderer: ToolRenderer = { displayName: browserScreenshotDef.displayName, icon: Camera, getSummary: browserScreenshotDef.getSummary, ExpandedView: () => null }
 export const browserSelectRenderer: ToolRenderer = { displayName: browserSelectDef.displayName, icon: CircleDot, getSummary: browserSelectDef.getSummary }
 export const browserHoverRenderer: ToolRenderer = { displayName: browserHoverDef.displayName, icon: MousePointer2, getSummary: browserHoverDef.getSummary }
+export const browserDownloadRenderer: ToolRenderer = { displayName: browserDownloadDef.displayName, icon: Download, getSummary: browserDownloadDef.getSummary }
 export const browserEvalRenderer: ToolRenderer = { displayName: browserEvalDef.displayName, icon: Braces, getSummary: browserEvalDef.getSummary }
 export const browserRunRenderer: ToolRenderer = { displayName: browserRunDef.displayName, icon: Terminal, getSummary: browserRunDef.getSummary }

@@ -15,6 +15,7 @@ import { inputManager } from './input-manager';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
 import { runBrowserUpload } from './browser-upload';
+import { runBrowserDownload } from './browser-download';
 import { updateEnvFileEntry, healEnvFilePermissions } from './env-file-store';
 
 import { getEditingCommands } from './cdp-editing-commands';
@@ -828,6 +829,21 @@ async function setDownloadBehaviorViaCDP(cdpUrl: string, downloadPath: string): 
   });
 }
 
+// The CDP download path applied for the current browser (host path in host
+// mode, /workspace/downloads locally). Playwright connections made mid-session
+// (browser_upload/browser_download) can clobber Browser.setDownloadBehavior,
+// so we remember what we applied and re-apply it after those calls.
+let appliedCdpDownloadPath: string | null = null;
+
+async function reapplyDownloadBehavior(): Promise<void> {
+  if (!browserState.cdpUrl || !appliedCdpDownloadPath) return;
+  try {
+    await setDownloadBehaviorViaCDP(browserState.cdpUrl, appliedCdpDownloadPath);
+  } catch (err) {
+    console.error('[Browser] Failed to re-apply download behavior via CDP:', err);
+  }
+}
+
 // Tell the host to stop the Chrome process for this agent.
 async function stopHostBrowserIfNeeded(): Promise<void> {
   if (!process.env.AGENT_BROWSER_USE_HOST) return;
@@ -928,9 +944,11 @@ app.post('/browser/open', async (c) => {
     // For host browser: use the host-filesystem path (volume-mounted as /workspace).
     // For container browser: use /workspace/downloads directly.
     const downloadPath = hostBrowser?.hostDownloadDir || WORKSPACE_DOWNLOADS_DIR;
+    appliedCdpDownloadPath = null;
     if (cdpUrl) {
       try {
         await setDownloadBehaviorViaCDP(cdpUrl, downloadPath);
+        appliedCdpDownloadPath = downloadPath;
       } catch (err) {
         console.error('[Browser] Failed to set download behavior via CDP:', err);
       }
@@ -1421,6 +1439,10 @@ app.post('/browser/upload', async (c) => {
       urlsMatch: (left, right) => tabManager.urlsMatch(left, right),
     });
 
+    // Playwright's CDP attach can reset Browser.setDownloadBehavior — re-apply
+    // ours so click-triggered downloads keep landing in the workspace.
+    await reapplyDownloadBehavior();
+
     if (!result.success) {
       return c.json(result.body, result.status);
     }
@@ -1430,6 +1452,36 @@ app.post('/browser/upload', async (c) => {
   } catch (error: any) {
     console.error('[Browser] Error uploading file:', error);
     return c.json({ error: error.message || 'Failed to upload file' }, 500);
+  }
+});
+
+// POST /browser/download - Download a URL's bytes through the browser session
+// into /workspace/downloads. The bytes travel over the CDP wire, so this works
+// even when the browser's own filesystem is unreachable (host Chrome, Browserbase).
+app.post('/browser/download', async (c) => {
+  try {
+    const rawBody = await c.req.json().catch(() => ({}));
+    const result = await runBrowserDownload(rawBody, {
+      validateSession: validateBrowserSessionWithRecovery,
+      isBrowserActive: () => browserState.active,
+      getConnectionUrl: () => browserState.cdpUrl || getCdpHttpEndpoint(),
+      getActiveTargetUrl: async () => (await findActivePageTarget())?.url ?? null,
+      urlsMatch: (left, right) => tabManager.urlsMatch(left, right),
+    });
+
+    // Playwright's CDP attach can reset Browser.setDownloadBehavior — re-apply
+    // ours so click-triggered downloads keep landing in the workspace.
+    await reapplyDownloadBehavior();
+
+    if (!result.success) {
+      return c.json(result.body, result.status);
+    }
+
+    notifyBrowserAction();
+    return c.json(result.body);
+  } catch (error: any) {
+    console.error('[Browser] Error downloading file:', error);
+    return c.json({ error: error.message || 'Failed to download file' }, 500);
   }
 });
 
