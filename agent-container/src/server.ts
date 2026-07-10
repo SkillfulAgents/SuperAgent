@@ -96,6 +96,12 @@ app.delete('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
   const deleted = await sessionManager.deleteSession(sessionId);
 
+  // The host never answers a deleted session's input requests — reject them
+  // so awaiting tool handlers unblock and the entries don't live forever.
+  // Unconditional: a not-found session may still own entries from a racing
+  // or repeated delete.
+  inputManager.rejectForSession(sessionId);
+
   if (!deleted) {
     return c.json({ error: 'Session not found' }, 404);
   }
@@ -2399,6 +2405,12 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 dashboardManager.scanAndStartAll().catch((error) => {
   console.error('[DashboardManager] Failed to scan and start dashboards:', error);
 });
+
+// Sweep abandoned input requests. Entries the host never answers (session
+// deleted mid-prompt, app closed, request card ignored) would otherwise live
+// forever — pinning dead tool-handler closures and, via the early-result
+// buffer, secret values. TTLs are type-aware inside cleanupStale.
+setInterval(() => inputManager.cleanupStale(), 60_000).unref();
 
 console.log(`Server running on http://localhost:${port}`);
 console.log('Available endpoints:');

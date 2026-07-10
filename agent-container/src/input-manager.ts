@@ -18,12 +18,47 @@ interface PendingInput<T extends InputValue = string> {
   inputType: string // 'secret' | 'question' | 'connected_account'
   metadata?: unknown // questions array, secretName, toolkit, etc.
   createdAt: Date
+  // Owning session, when known — lets deleteSession reject the session's
+  // abandoned requests instead of leaving them (and the tool-handler closures
+  // they retain) in the map forever.
+  sessionId?: string
 }
 
 // Buffered result for when resolve/reject arrives before createPending
 type EarlyResult =
-  | { type: 'resolve'; value: InputValue }
-  | { type: 'reject'; error: string }
+  | { type: 'resolve'; value: InputValue; createdAt: Date }
+  | { type: 'reject'; error: string; createdAt: Date }
+
+// Input types the HOST answers programmatically (message-persister handlers
+// hitting the DB/scheduler) — normally within milliseconds. An entry this old
+// means the host handler died mid-request; nobody is coming back for it.
+const AUTOMATED_INPUT_TYPES: ReadonlySet<string> = new Set([
+  'schedule_task',
+  'list_scheduled_tasks',
+  'cancel_scheduled_task',
+  'pause_scheduled_task',
+  'resume_scheduled_task',
+  'create_webhook_endpoint',
+  'update_webhook_endpoint',
+  'inspect_webhook_events',
+  'list_triggers',
+  'get_available_triggers',
+  'setup_trigger',
+  'cancel_trigger',
+])
+export const AUTOMATED_INPUT_TTL_MS = 10 * 60 * 1000
+
+// Everything else waits on a human decision (secrets, questions, script/file
+// approvals, browser takeover). Generous by design — an overnight answer must
+// still land — and the fail-safe default for unknown future types: worst case
+// is a 24h-bounded entry, never a prematurely rejected human prompt.
+export const HUMAN_INPUT_TTL_MS = 24 * 60 * 60 * 1000
+
+// Early results only bridge the answer-before-createPending race, which is
+// millisecond-scale (parallel tool calls). Anything older is an answer to a
+// request whose handler never registered (e.g. the query was interrupted) —
+// and since the buffer can hold secret values, it must not sit in memory.
+export const EARLY_RESULT_TTL_MS = 5 * 60 * 1000
 
 class InputManager {
   // Pending requests keyed by toolUseId
@@ -39,12 +74,37 @@ class InputManager {
   // The hook sets this before the tool handler runs
   private currentToolUseId: string | null = null
 
+  // Session attribution recorded at hook time, consumed when the matching
+  // createPending* runs. Keyed by toolUseId (not a single slot) so two
+  // sessions' interleaved tool calls can't cross-tag each other. Bounded
+  // FIFO: a hook can fire for a call whose handler never registers a pending
+  // (validation early-returns), so stragglers are possible but capped.
+  private sessionIdByToolUse: Map<string, string> = new Map()
+  private static readonly SESSION_TAG_CAP = 200
+
   /**
-   * Set the current tool use ID (called by PreToolUse hook)
+   * Set the current tool use ID (called by PreToolUse hook / canUseTool).
+   * Pass the owning sessionId when known so the eventual pending entry can be
+   * rejected if that session is deleted.
    */
-  setCurrentToolUseId(toolUseId: string): void {
+  setCurrentToolUseId(toolUseId: string, sessionId?: string): void {
     this.currentToolUseId = toolUseId
+    if (sessionId) {
+      this.sessionIdByToolUse.set(toolUseId, sessionId)
+      while (this.sessionIdByToolUse.size > InputManager.SESSION_TAG_CAP) {
+        const oldest = this.sessionIdByToolUse.keys().next().value
+        if (oldest === undefined) break
+        this.sessionIdByToolUse.delete(oldest)
+      }
+    }
     console.log(`[InputManager] Set current toolUseId: ${toolUseId}`)
+  }
+
+  /** Get and clear the session recorded for a toolUseId at hook time. */
+  private takeSessionIdFor(toolUseId: string): string | undefined {
+    const sessionId = this.sessionIdByToolUse.get(toolUseId)
+    this.sessionIdByToolUse.delete(toolUseId)
+    return sessionId
   }
 
   /**
@@ -68,35 +128,9 @@ class InputManager {
     secretName: string,
     reason?: string
   ): Promise<string> {
-    // Check if the user already responded before this pending was created
-    const early = this.earlyResults.get(toolUseId)
-    if (early) {
-      this.earlyResults.delete(toolUseId)
-      if (early.type === 'resolve') {
-        console.log(
-          `[InputManager] Immediately resolving ${toolUseId} for secret ${secretName} (early result)`
-        )
-        return Promise.resolve(early.value as string)
-      } else {
-        console.log(
-          `[InputManager] Immediately rejecting ${toolUseId} for secret ${secretName} (early result): ${early.error}`
-        )
-        return Promise.reject(new Error(early.error))
-      }
-    }
-
-    return new Promise((resolve, reject) => {
-      this.pending.set(toolUseId, {
-        resolve: resolve as (value: InputValue) => void,
-        reject,
-        inputType: 'secret',
-        metadata: { secretName, reason },
-        createdAt: new Date(),
-      })
-
-      console.log(
-        `[InputManager] Created pending request ${toolUseId} for secret ${secretName}`
-      )
+    return this.createPendingWithType<string>(toolUseId, 'secret', {
+      secretName,
+      reason,
     })
   }
 
@@ -110,8 +144,13 @@ class InputManager {
   createPendingWithType<T extends InputValue>(
     toolUseId: string,
     inputType: string,
-    metadata?: unknown
+    metadata?: unknown,
+    sessionId?: string
   ): Promise<T> {
+    // Session attribution: explicit param wins, else whatever the hook
+    // recorded for this toolUseId. Consume the tag either way.
+    const owner = sessionId ?? this.takeSessionIdFor(toolUseId)
+
     // Check if the user already responded before this pending was created
     const early = this.earlyResults.get(toolUseId)
     if (early) {
@@ -136,12 +175,34 @@ class InputManager {
         inputType,
         metadata,
         createdAt: new Date(),
+        sessionId: owner,
       })
 
       console.log(
-        `[InputManager] Created pending ${inputType} request ${toolUseId}`
+        `[InputManager] Created pending ${inputType} request ${toolUseId}${owner ? ` (session ${owner})` : ''}`
       )
     })
+  }
+
+  /**
+   * Reject and remove every pending request owned by a session. Called when
+   * the session is deleted — the host will never answer them, and each entry
+   * pins its tool-handler closure (and the dead query context) in memory. A
+   * still-live awaiter gets a clean error instead of a permanent hang.
+   * @returns number of requests rejected
+   */
+  rejectForSession(sessionId: string, reason = 'Input request abandoned: the session was deleted'): number {
+    let rejected = 0
+    for (const [toolUseId, pending] of this.pending) {
+      if (pending.sessionId !== sessionId) continue
+      console.log(
+        `[InputManager] Rejecting ${pending.inputType} request ${toolUseId} (session ${sessionId} deleted)`
+      )
+      this.pending.delete(toolUseId)
+      pending.reject(new Error(reason))
+      rejected++
+    }
+    return rejected
   }
 
   /**
@@ -161,7 +222,7 @@ class InputManager {
       console.log(
         `[InputManager] No pending request found for ${toolUseId}, buffering early resolve`
       )
-      this.earlyResults.set(toolUseId, { type: 'resolve', value })
+      this.earlyResults.set(toolUseId, { type: 'resolve', value, createdAt: new Date() })
       return true
     }
 
@@ -190,7 +251,7 @@ class InputManager {
       console.log(
         `[InputManager] No pending request found for ${toolUseId}, buffering early reject`
       )
-      this.earlyResults.set(toolUseId, { type: 'reject', error })
+      this.earlyResults.set(toolUseId, { type: 'reject', error, createdAt: new Date() })
       return true
     }
 
@@ -219,36 +280,40 @@ class InputManager {
     inputType: string
     metadata?: unknown
     createdAt: Date
+    sessionId?: string
   }> {
     return Array.from(this.pending.entries()).map(([toolUseId, pending]) => ({
       toolUseId,
       inputType: pending.inputType,
       metadata: pending.metadata,
       createdAt: pending.createdAt,
+      sessionId: pending.sessionId,
     }))
   }
 
   /**
-   * Cleanup stale pending requests (optional timeout mechanism).
-   * @param maxAgeMs - Maximum age in milliseconds before a request is considered stale
+   * Reject pending requests past their type's TTL and drop expired early
+   * results. Run periodically (the server wires a 60s sweep) — without it,
+   * entries the host never answers live forever.
    */
-  cleanupStale(maxAgeMs: number = 5 * 60 * 1000): void {
-    const now = new Date()
+  cleanupStale(nowMs: number = Date.now()): void {
     for (const [toolUseId, pending] of this.pending) {
-      if (now.getTime() - pending.createdAt.getTime() > maxAgeMs) {
+      const ttlMs = AUTOMATED_INPUT_TYPES.has(pending.inputType)
+        ? AUTOMATED_INPUT_TTL_MS
+        : HUMAN_INPUT_TTL_MS
+      if (nowMs - pending.createdAt.getTime() > ttlMs) {
         console.log(
           `[InputManager] Cleaning up stale ${pending.inputType} request ${toolUseId}`
         )
-        pending.reject(new Error('Input request timed out'))
         this.pending.delete(toolUseId)
+        pending.reject(new Error('Input request timed out'))
       }
     }
-    // Early results should be consumed almost immediately; clear any stragglers
-    if (this.earlyResults.size > 0) {
-      console.log(
-        `[InputManager] Cleaning up ${this.earlyResults.size} stale early results`
-      )
-      this.earlyResults.clear()
+    for (const [toolUseId, early] of this.earlyResults) {
+      if (nowMs - early.createdAt.getTime() > EARLY_RESULT_TTL_MS) {
+        console.log(`[InputManager] Dropping expired early result for ${toolUseId}`)
+        this.earlyResults.delete(toolUseId)
+      }
     }
   }
 }

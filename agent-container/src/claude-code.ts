@@ -648,7 +648,8 @@ export class ClaudeCodeProcess extends EventEmitter {
               const answers = await inputManager.createPendingWithType<Record<string, string>>(
                 requestId,
                 'question',
-                questions
+                questions,
+                this.sessionId
               );
 
               console.log('[canUseTool] Got answers:', JSON.stringify(answers));
@@ -676,7 +677,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           // but if two user-input tools fire concurrently the first ID could
           // be overwritten before consumeCurrentToolUseId is called.
           if ((toolName.startsWith('mcp__user-input__') || toolName.startsWith('mcp__computer-use__')) && options.toolUseID) {
-            inputManager.setCurrentToolUseId(options.toolUseID);
+            inputManager.setCurrentToolUseId(options.toolUseID, this.sessionId);
           }
 
           // Auto-approve other tools (we're in bypassPermissions mode)
@@ -689,7 +690,7 @@ export class ClaudeCodeProcess extends EventEmitter {
               hooks: [
                 async (_input, toolUseId) => {
                   if (toolUseId) {
-                    inputManager.setCurrentToolUseId(toolUseId);
+                    inputManager.setCurrentToolUseId(toolUseId, this.sessionId);
                   }
                   return {};
                 },
@@ -700,7 +701,7 @@ export class ClaudeCodeProcess extends EventEmitter {
               hooks: [
                 async (_input, toolUseId) => {
                   if (toolUseId) {
-                    inputManager.setCurrentToolUseId(toolUseId);
+                    inputManager.setCurrentToolUseId(toolUseId, this.sessionId);
                   }
                   return {};
                 },
