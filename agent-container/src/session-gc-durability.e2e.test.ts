@@ -270,6 +270,62 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
   );
 
   it(
+    'a live background task holds off the reaper; the session is reaped only after the wake turn settles',
+    async () => {
+      // Live guard for the background-task hold: fixtures pin the tracker
+      // against captured frames, but only a real CLI proves the end-to-end
+      // signal chain (task_started/background_tasks_changed actually emitted
+      // for a live task, completion wake actually delivered). Background
+      // bash is the one task type triggerable deterministically; subagents
+      // and workflows ride the same type-agnostic task_id bookkeeping and
+      // are covered by the fixture replays.
+      const manager = new SessionManager(workDir, {
+        idleEvictionMs: 60 * 60_000,
+        automatedIdleEvictionMs: 0, // most aggressive class
+        evictionPollMs: 500,
+      });
+      managers.push(manager);
+
+      const session = await manager.createSession({
+        initialMessage:
+          'Use the Bash tool with run_in_background: true to run exactly: sleep 15 && echo SLEEP-DONE. Do not wait for it. After starting it, reply with exactly: started',
+        metadata: { isAutomated: true },
+        model: MODEL,
+      });
+      const id = session.id;
+
+      await waitFor('bg-task first result', () => resultCount(manager.getMessages(id)) >= 1, 120_000);
+
+      // The test is only valid if a background task was actually registered.
+      const sawBgTask = () =>
+        manager.getMessages(id).some(
+          (m) =>
+            m.type === 'system' &&
+            (m.subtype === 'task_started' || m.subtype === 'background_tasks_changed')
+        );
+      expect(sawBgTask()).toBe(true);
+
+      // ~16 threshold-0 sweeps fire while the task runs — none may evict.
+      for (let i = 0; i < 16; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        expect(manager.isSessionRunning(id)).toBe(true);
+      }
+
+      // Completion wake delivers the task output to the model...
+      await waitFor(
+        'wake turn observed',
+        () => assistantText(manager.getMessages(id)).includes('SLEEP-DONE') ||
+              resultCount(manager.getMessages(id)) >= 2,
+        60_000
+      );
+      // ...and only after the wake settles does the reaper take the process.
+      await waitFor('reaped after wake settled', () => !manager.isSessionRunning(id), 60_000);
+      dlog(`bg-task msgs: ${describeMessages(manager.getMessages(id))}`);
+    },
+    360_000
+  );
+
+  it(
     'an interrupted session settles and is reaped (no permanent busy-pin leak)',
     async () => {
       // Guards the other CLI-behavior assumption: an interrupt yields a
