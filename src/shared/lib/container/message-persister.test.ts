@@ -223,7 +223,6 @@ function createMockClient(): ContainerClient & {
     getSession: vi.fn(() => Promise.resolve(null)),
     deleteSession: vi.fn(),
     sendMessage: vi.fn(),
-    getMessages: vi.fn(),
     interruptSession: vi.fn(),
     subscribeToStream: vi.fn((sessionId: string, callback: (message: StreamMessage) => void) => {
       messageCallback = callback
@@ -5314,7 +5313,6 @@ describe('MessagePersister.handleConnectionClosed re-subscribe', () => {
       getSession: vi.fn(() => Promise.resolve({ isRunning: true } as any)),
       deleteSession: vi.fn(),
       sendMessage: vi.fn(),
-      getMessages: vi.fn(),
       interruptSession: vi.fn(),
       subscribeToStream: vi.fn((_sessionId: string, cb: (message: StreamMessage) => void) => {
         callback = cb

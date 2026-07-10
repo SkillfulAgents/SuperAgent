@@ -80,6 +80,21 @@ function assistantText(messages: AnyMessage[]): string {
     .join('\n');
 }
 
+// The manager keeps no message history (the old unbounded per-session buffer
+// backed an endpoint nothing called) — observe the stream the way production
+// consumers do: by subscription. Attach right after createSession/getSession
+// resolves; turn output only starts after the next sendMessage, so nothing
+// the assertions need can be missed. NOTE: a manager-restart resume builds a
+// fresh SessionData (fresh subscriber set) — re-collect after it.
+function collectMessages(
+  manager: { subscribe(id: string, cb: (m: unknown) => void): () => void },
+  id: string
+): AnyMessage[] {
+  const collected: AnyMessage[] = [];
+  manager.subscribe(id, (m) => collected.push(m as AnyMessage));
+  return collected;
+}
+
 describe.skipIf(!ENABLED)('session GC end-to-end (real CLI subprocesses)', () => {
   let workDir: string;
   // Loaded dynamically AFTER the env below is in place.
@@ -126,11 +141,12 @@ describe.skipIf(!ENABLED)('session GC end-to-end (real CLI subprocesses)', () =>
         model: MODEL,
       });
       const id = session.id;
+      const msgs = collectMessages(manager, id);
 
       // Turn completes → a real `claude` subprocess exists and is parked.
       await waitFor(
         'first result',
-        () => resultCount(manager.getMessages(id)) >= 1,
+        () => resultCount(msgs) >= 1,
         120_000
       );
       expect(countClaudeSubprocesses()).toBeGreaterThanOrEqual(1);
@@ -149,10 +165,10 @@ describe.skipIf(!ENABLED)('session GC end-to-end (real CLI subprocesses)', () =>
       );
       await waitFor(
         'resume result',
-        () => resultCount(manager.getMessages(id)) >= 2,
+        () => resultCount(msgs) >= 2,
         120_000
       );
-      expect(assistantText(manager.getMessages(id))).toContain('kumquat-42');
+      expect(assistantText(msgs)).toContain('kumquat-42');
 
       // And the resumed (now interactive-class, via promotion) turn gets
       // reaped again once its 5s idle threshold elapses.
@@ -178,9 +194,10 @@ describe.skipIf(!ENABLED)('session GC end-to-end (real CLI subprocesses)', () =>
         model: MODEL,
       });
       const id = session.id;
+      const msgs = collectMessages(manager, id);
       await waitFor(
         'first result',
-        () => resultCount(manager.getMessages(id)) >= 1,
+        () => resultCount(msgs) >= 1,
         120_000
       );
       const settledAt = Date.now();
@@ -197,7 +214,7 @@ describe.skipIf(!ENABLED)('session GC end-to-end (real CLI subprocesses)', () =>
       await manager.sendMessage(id, 'Reply with exactly: hello again');
       await waitFor(
         'resume result',
-        () => resultCount(manager.getMessages(id)) >= 2,
+        () => resultCount(msgs) >= 2,
         120_000
       );
       expect(manager.isSessionRunning(id)).toBe(true);

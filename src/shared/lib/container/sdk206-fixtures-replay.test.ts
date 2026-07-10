@@ -140,7 +140,6 @@ function createReplayClient(): {
     getSession: vi.fn(() => Promise.resolve(null)),
     deleteSession: vi.fn(),
     sendMessage: vi.fn(),
-    getMessages: vi.fn(),
     interruptSession: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),

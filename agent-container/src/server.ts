@@ -123,18 +123,6 @@ app.post('/sessions/:id/interrupt', async (c) => {
 });
 
 // Message endpoints
-app.get('/sessions/:id/messages', async (c) => {
-  const sessionId = c.req.param('id');
-  const session = await sessionManager.getSession(sessionId);
-
-  if (!session) {
-    return c.json({ error: 'Session not found' }, 404);
-  }
-
-  const messages = sessionManager.getMessages(sessionId);
-  return c.json(messages);
-});
-
 app.post('/sessions/:id/messages', async (c) => {
   const sessionId = c.req.param('id');
   const session = await sessionManager.getSession(sessionId);
@@ -2419,7 +2407,6 @@ console.log('  GET    /sessions/:id');
 console.log('  GET    /sessions');
 console.log('  DELETE /sessions/:id');
 console.log('  POST   /sessions/:id/interrupt');
-console.log('  GET    /sessions/:id/messages');
 console.log('  POST   /sessions/:id/messages');
 console.log('  WS     /sessions/:id/stream');
 console.log('  GET    /files/*');

@@ -1230,20 +1230,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return response.ok
   }
 
-  async getMessages(sessionId: string): Promise<any[]> {
-    const port = await this.getPortOrThrow()
-
-    const response = await fetch(
-      `${this.getBaseUrl(port)}/sessions/${sessionId}/messages`
-    )
-
-    if (!response.ok) {
-      throw new Error(`Failed to get messages: ${response.statusText}`)
-    }
-
-    return response.json()
-  }
-
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void
