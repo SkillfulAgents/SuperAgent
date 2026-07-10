@@ -8,6 +8,7 @@ import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request
 import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { classifyResult } from './result-classification'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   createScheduledTask,
@@ -1326,8 +1327,11 @@ class MessagePersister {
         break
 
       case 'result': {
-        // Query completed
-        const isError = content.subtype === 'error_during_execution' || content.subtype === 'error'
+        // Query completed. Classification handles both error shapes — the
+        // legacy error subtypes and the modern success-subtype-with-is_error
+        // (terminal_reason: api_error etc.) that a subtype check alone misses.
+        const classification = classifyResult(content)
+        const isError = classification.isError
         state.isStreaming = false
         state.isAwaitingInput = false
         // On error the turn ends here, so settle isActive too BEFORE the single
@@ -1346,14 +1350,22 @@ class MessagePersister {
         // immediately in both lifecycle modes. (isActive + the working emit were
         // already settled above, before the session_error broadcasts below.)
         if (isError) {
-          const errorMessage = content.error || content.message || 'An error occurred during execution'
+          const errorMessage = classification.errorText || 'An error occurred during execution'
           // Use SDK error code from the preceding assistant message (e.g., 'authentication_failed', 'rate_limit')
           const apiErrorCode = state.lastApiErrorCode || null
-          console.error(`[MessagePersister] Session ${sessionId} error:`, errorMessage, apiErrorCode ? `(${apiErrorCode})` : '')
+          const { terminalReason, apiErrorStatus } = classification
+          console.error(
+            `[MessagePersister] Session ${sessionId} error:`,
+            errorMessage,
+            apiErrorCode ? `(${apiErrorCode})` : '',
+            terminalReason ? `[${terminalReason}]` : ''
+          )
           this.broadcastToSSE(sessionId, {
             type: 'session_error',
             error: errorMessage,
             apiErrorCode,
+            terminalReason,
+            apiErrorStatus,
             isActive: false
           })
           // Also broadcast globally
@@ -1363,6 +1375,8 @@ class MessagePersister {
             agentSlug: state.agentSlug,
             error: errorMessage,
             apiErrorCode,
+            terminalReason,
+            apiErrorStatus,
             isActive: false,
           })
           // If the error is fatal (e.g., OOM), request container stop

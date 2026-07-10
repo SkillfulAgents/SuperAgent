@@ -144,6 +144,15 @@ function agentEnvVars(availableEnvVars?: string[]): string[] {
 }
 
 /** Computer-use tools and the request_script_run tool only exist on desktop hosts. */
+// An error result with no human-readable text anywhere gets the resume-failure
+// fallback copy. `result` counts as text: the modern error shape (is_error:true
+// with terminal_reason, e.g. an api_error from a bad model id) puts the real
+// explanation there — stomping a synthetic "session corrupted" message next to
+// it misleads the host into showing the wrong error.
+export function resultNeedsResumeErrorFallback(msg: { error?: unknown; message?: unknown; result?: unknown }): boolean {
+  return !msg.error && !msg.message && !msg.result
+}
+
 export function isComputerUseHost(): boolean {
   return ['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '');
 }
@@ -811,7 +820,7 @@ export class ClaudeCodeProcess extends EventEmitter {
             msg.subtype === 'error' ||
             msg.is_error === true;
           // Enrich error results that have no useful error message
-          if (lastResultWasError && !msg.error && !msg.message && this.claudeSessionId) {
+          if (lastResultWasError && resultNeedsResumeErrorFallback(msg) && this.claudeSessionId) {
             msg.error = 'This session could not be resumed (it may have been corrupted by a previous crash). Please start a new session.';
           }
           console.log(`[Session ${this.sessionId}] Query completed`);

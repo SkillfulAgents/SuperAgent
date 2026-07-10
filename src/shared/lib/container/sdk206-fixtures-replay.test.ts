@@ -452,13 +452,11 @@ describe('sdk 0.3.206 capture replays', () => {
   })
 
   describe('dead turn via nonexistent model (terminal_reason: api_error)', () => {
-    it('replays the success-subtype-but-is_error result shape without hanging', async () => {
+    it('classifies the success-subtype-but-is_error result as an error turn', async () => {
       // REAL SHAPE: subtype "success" + is_error:true + terminal_reason
-      // "api_error" + api_error_status 404. The legacy subtype-only error check
-      // classifies this as success today (no session_error) — the
-      // terminal_reason surfacing change owns fixing and asserting that; this
-      // test locks stream tolerance and finalization only.
-      const { streamEntries, timeline } = await replayTracked('sdk206-error-turn-invalid-model')
+      // "api_error" + api_error_status 404. A subtype-only error check
+      // classifies this as a successful turn and emits no session_error.
+      const { streamEntries, sseEvents, timeline } = await replayTracked('sdk206-error-turn-invalid-model')
 
       const result = streamEntries
         .map((e) => e.message.content as Record<string, unknown>)
@@ -468,9 +466,19 @@ describe('sdk 0.3.206 capture replays', () => {
       expect(result!['is_error']).toBe(true)
       expect(result!['terminal_reason']).toBe('api_error')
 
+      const errors = sseEvents.filter((e) => e['type'] === 'session_error')
+      expect(errors).toHaveLength(1)
+      expect(errors[0]['terminalReason']).toBe('api_error')
+      expect(errors[0]['apiErrorStatus']).toBe(404)
+      // The api error code comes from the preceding synthetic assistant
+      // message's error field, present in this capture.
+      expect(errors[0]['apiErrorCode']).toBe('model_not_found')
+
+      // The error settles the session at the result; the trailing SDK idle
+      // frame must not double-finalize.
       const fin = finalSnapshot(timeline)
-      expect(fin.sessionIdleCount).toBe(1)
       expect(fin.isActive).toBe(false)
+      expect(fin.sessionIdleCount).toBe(0)
     })
   })
 })

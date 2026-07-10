@@ -3106,6 +3106,34 @@ describe('MessagePersister', () => {
       expect(errorEvents[0].error).toBe('Invalid API key')
     })
 
+    it('classifies a success-subtype result with is_error as an error turn (modern shape)', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+
+      // The modern SDK dead-turn shape: subtype stays 'success', the error is
+      // signaled via is_error + terminal_reason, and the human-readable
+      // explanation lives in `result` (see sdk206-error-turn-invalid-model).
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        terminal_reason: 'api_error',
+        api_error_status: 404,
+        result: 'The selected model does not exist.',
+        duration_ms: 100,
+        num_turns: 1,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+
+      const errorEvents = sseEvents.filter(e => e.type === 'session_error')
+      expect(errorEvents).toHaveLength(1)
+      expect(errorEvents[0].error).toBe('The selected model does not exist.')
+      expect(errorEvents[0].terminalReason).toBe('api_error')
+      expect(errorEvents[0].apiErrorStatus).toBe(404)
+      expect(errorEvents[0].apiErrorCode).toBeNull()
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    })
+
     it('broadcasts session_error with null apiErrorCode when no assistant error preceded', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
       sseEvents.length = 0
