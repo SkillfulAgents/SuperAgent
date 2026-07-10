@@ -54,6 +54,21 @@ function assistantText(messages: AnyMessage[]): string {
     .join('\n');
 }
 
+// The manager keeps no message history (the old unbounded per-session buffer
+// backed an endpoint nothing called) — observe the stream the way production
+// consumers do: by subscription. Attach right after createSession/getSession
+// resolves; turn output only starts after the next sendMessage, so nothing
+// the assertions need can be missed. NOTE: a manager-restart resume builds a
+// fresh SessionData (fresh subscriber set) — re-collect after it.
+function collectMessages(
+  manager: { subscribe(id: string, cb: (m: unknown) => void): () => void },
+  id: string
+): AnyMessage[] {
+  const collected: AnyMessage[] = [];
+  manager.subscribe(id, (m) => collected.push(m as AnyMessage));
+  return collected;
+}
+
 function describeMessages(messages: AnyMessage[]): string {
   return messages
     .filter((m) => m.type !== 'stream_event')
@@ -146,15 +161,16 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
         model: MODEL,
       });
       const id = session.id;
+      const msgs = collectMessages(manager, id);
       dlog(`A2: created ${id}`);
 
-      await waitFor('A2 first result', () => resultCount(manager.getMessages(id)) >= 1, 120_000);
+      await waitFor('A2 first result', () => resultCount(msgs) >= 1, 120_000);
       await waitFor('A2 reaped once', () => !manager.isSessionRunning(id), 45_000);
       logDisk(configDir, 'A2 after evict#1', ['papaya-7']);
 
       await manager.sendMessage(id, 'Remember: codeword two is walnut-9. Reply with exactly: OK');
-      await waitFor('A2 second result', () => resultCount(manager.getMessages(id)) >= 2, 120_000);
-      dlog(`A2 turn-2 msgs: ${describeMessages(manager.getMessages(id))}`);
+      await waitFor('A2 second result', () => resultCount(msgs) >= 2, 120_000);
+      dlog(`A2 turn-2 msgs: ${describeMessages(msgs)}`);
       logDisk(configDir, 'A2 after turn 2 (pre-evict)', ['papaya-7', 'walnut-9']);
       await waitFor('A2 reaped twice', () => !manager.isSessionRunning(id), 45_000);
       // Give the CLI a beat, then check what survived the eviction kill.
@@ -169,13 +185,17 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
         evictionPollMs: 60_000,
       });
       managers.push(manager2);
+      // Resume first (bare getSession) so the fresh SessionData exists to
+      // subscribe to before the question's turn produces any frames.
+      await manager2.getSession(id);
+      const msgs2 = collectMessages(manager2, id);
       await manager2.sendMessage(
         id,
         'What are codeword one and codeword two? Reply with only the two codewords.'
       );
-      await waitFor('A2 post-restart result', () => resultCount(manager2.getMessages(id)) >= 1, 120_000);
-      const reply = assistantText(manager2.getMessages(id));
-      dlog(`A2 post-restart msgs: ${describeMessages(manager2.getMessages(id))}`);
+      await waitFor('A2 post-restart result', () => resultCount(msgs2) >= 1, 120_000);
+      const reply = assistantText(msgs2);
+      dlog(`A2 post-restart msgs: ${describeMessages(msgs2)}`);
       dlog(`A2: post-restart reply=${JSON.stringify(reply)}`);
 
       expect(reply).toContain('papaya-7');
@@ -200,7 +220,8 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
         model: MODEL,
       });
       const id = session.id;
-      await waitFor('D2 first result', () => resultCount(manager.getMessages(id)) >= 1, 120_000);
+      const msgs = collectMessages(manager, id);
+      await waitFor('D2 first result', () => resultCount(msgs) >= 1, 120_000);
       await waitFor('D2 reaped', () => !manager.isSessionRunning(id), 45_000);
       logDisk(configDir, 'D2 after evict#1', ['ready']);
       dlog('D2: appending notification with shouldQuery:false into cold session');
@@ -213,21 +234,21 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
       );
       await waitFor('D2 re-reaped after append', () => !manager.isSessionRunning(id), 45_000);
       await new Promise((r) => setTimeout(r, 2_000));
-      dlog(`D2 post-append msgs: ${describeMessages(manager.getMessages(id))}`);
+      dlog(`D2 post-append msgs: ${describeMessages(msgs)}`);
       logDisk(configDir, 'D2 after append+evict', ['q3-report-xyzzy']);
 
-      const baseline = resultCount(manager.getMessages(id));
+      const baseline = resultCount(msgs);
       await manager.sendMessage(
         id,
         'What file path did the notification from finance-bot mention? Reply with only the path.'
       );
       await waitFor(
         'D2 question result',
-        () => resultCount(manager.getMessages(id)) > baseline,
+        () => resultCount(msgs) > baseline,
         120_000
       );
-      const reply = assistantText(manager.getMessages(id));
-      dlog(`D2 all msgs: ${describeMessages(manager.getMessages(id))}`);
+      const reply = assistantText(msgs);
+      dlog(`D2 all msgs: ${describeMessages(msgs)}`);
       dlog(`D2: reply=${JSON.stringify(reply)}`);
 
       // Invariant: the transcript-only append must not be silently lost.
@@ -257,11 +278,12 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
         model: MODEL,
       });
       const id = session.id;
+      const msgs = collectMessages(manager, id);
       // Queue a second message while turn 1 is (very likely) still running.
       await manager.sendMessage(id, 'Reply with exactly: beta-two');
 
-      await waitFor('both chained results', () => resultCount(manager.getMessages(id)) >= 2, 120_000);
-      const text = assistantText(manager.getMessages(id));
+      await waitFor('both chained results', () => resultCount(msgs) >= 2, 120_000);
+      const text = assistantText(msgs);
       dlog(`chained-turns text=${JSON.stringify(text)}`);
       expect(text).toContain('alpha-one');
       expect(text).toContain('beta-two');
@@ -293,12 +315,13 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
         model: MODEL,
       });
       const id = session.id;
+      const msgs = collectMessages(manager, id);
 
-      await waitFor('bg-task first result', () => resultCount(manager.getMessages(id)) >= 1, 120_000);
+      await waitFor('bg-task first result', () => resultCount(msgs) >= 1, 120_000);
 
       // The test is only valid if a background task was actually registered.
       const sawBgTask = () =>
-        manager.getMessages(id).some(
+        msgs.some(
           (m) =>
             m.type === 'system' &&
             (m.subtype === 'task_started' || m.subtype === 'background_tasks_changed')
@@ -314,13 +337,13 @@ describe.skipIf(!ENABLED)('session GC durability (live, disk forensics)', () => 
       // Completion wake delivers the task output to the model...
       await waitFor(
         'wake turn observed',
-        () => assistantText(manager.getMessages(id)).includes('SLEEP-DONE') ||
-              resultCount(manager.getMessages(id)) >= 2,
+        () => assistantText(msgs).includes('SLEEP-DONE') ||
+              resultCount(msgs) >= 2,
         60_000
       );
       // ...and only after the wake settles does the reaper take the process.
       await waitFor('reaped after wake settled', () => !manager.isSessionRunning(id), 60_000);
-      dlog(`bg-task msgs: ${describeMessages(manager.getMessages(id))}`);
+      dlog(`bg-task msgs: ${describeMessages(msgs)}`);
     },
     360_000
   );

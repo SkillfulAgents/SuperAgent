@@ -12,7 +12,6 @@ import { SessionSettlementTracker } from './session-settlement';
 interface SessionData {
   session: Session;
   process: ClaudeCodeProcess;
-  messages: SDKMessage[];
   subscribers: Set<(message: SDKMessage) => void>;
   // Whether the session is settled (turn over, no background work, not in a
   // completion-wake window) — the only state a subprocess may be stopped in.
@@ -255,7 +254,6 @@ export class SessionManager extends EventEmitter {
     const sessionData: SessionData = {
       session,
       process,
-      messages: [],
       subscribers: new Set(),
       // Authority: this container always runs the CLI with
       // CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, so idle comes from state
@@ -391,7 +389,6 @@ export class SessionManager extends EventEmitter {
       const data: SessionData = {
         session,
         process,
-        messages: [],
         subscribers: new Set(),
         // Born-idle: a bare getSession() resume gets no turn (no result, never
         // idle), so born-busy would park the process beyond the reaper forever.
@@ -558,12 +555,6 @@ export class SessionManager extends EventEmitter {
     return sessionData.process.cancelQueuedMessage(uuid);
   }
 
-  getMessages(sessionId: string): SDKMessage[] {
-    const sessionData = this.sessions.get(sessionId);
-    if (!sessionData) return [];
-    return [...sessionData.messages];
-  }
-
   subscribe(sessionId: string, callback: (message: SDKMessage) => void): () => void {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) {
@@ -595,9 +586,6 @@ export class SessionManager extends EventEmitter {
   private handleMessage(sessionId: string, message: SDKMessage): void {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return;
-
-    // Store the message
-    sessionData.messages.push(message);
 
     sessionData.settlement.handleMessage(message);
 
