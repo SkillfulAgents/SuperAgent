@@ -20,8 +20,9 @@ const mockSettings = {
         cpu: 1,
         memory: '1g',
       },
-      runtimeSettings: {},
+      runtimeSettings: {} as Record<string, Record<string, string>>,
     },
+    hostTotalMemoryBytes: 64 * 1024 ** 3,
     runnerAvailability: [
       {
         runner: 'docker',
@@ -83,6 +84,8 @@ describe('RuntimeTab', () => {
     vi.clearAllMocks()
     mockSettings.data.container.containerRunner = 'docker'
     mockSettings.data.container.agentImage = 'ghcr.io/skillfulagents/superagent-agent-container-base:latest'
+    mockSettings.data.container.runtimeSettings = {}
+    mockSettings.data.hostTotalMemoryBytes = 64 * 1024 ** 3
     mockSettings.data.customEnvVars = {}
     mockSettings.data.runnerAvailability = [
       {
@@ -228,6 +231,63 @@ describe('RuntimeTab', () => {
         FOO: 'updated',
         BAR: 'two',
       },
+    })
+  })
+
+  describe('Lima VM memory guardrails', () => {
+    beforeEach(() => {
+      mockSettings.data.container.containerRunner = 'lima'
+      mockSettings.data.runnerAvailability = [
+        {
+          runner: 'lima',
+          installed: true,
+          running: true,
+          available: true,
+          canStart: false,
+          supportsCustomAgentImage: true,
+        },
+      ]
+      // A 16 GB machine — the Jessica configuration.
+      mockSettings.data.hostTotalMemoryBytes = 16 * 1024 ** 3
+    })
+
+    it('disables VM memory options at or above the machine total', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<RuntimeTab />)
+
+      const trigger = screen.getByRole('combobox', { name: 'VM Memory' })
+      trigger.focus()
+      await user.keyboard('[Enter]')
+
+      const oversized = await screen.findByRole('option', { name: /16 GB \(exceeds system memory\)/ })
+      expect(oversized).toHaveAttribute('aria-disabled', 'true')
+      // Options that fit stay selectable.
+      const fits = screen.getByRole('option', { name: '8 GB' })
+      expect(fits).not.toHaveAttribute('aria-disabled', 'true')
+    })
+
+    it('warns when the saved VM memory is more than half of the machine total', () => {
+      mockSettings.data.container.runtimeSettings = { lima: { vmMemory: '12GiB' } }
+
+      renderWithProviders(<RuntimeTab />)
+
+      expect(screen.getByText(/more than half of this machine's 16 GB/)).toBeInTheDocument()
+    })
+
+    it('shows no warning at or below half of the machine total', () => {
+      mockSettings.data.container.runtimeSettings = { lima: { vmMemory: '8GiB' } }
+
+      renderWithProviders(<RuntimeTab />)
+
+      expect(screen.queryByText(/more than half/)).not.toBeInTheDocument()
+    })
+
+    it('flags a legacy persisted oversized value (saved before the guardrail existed)', () => {
+      mockSettings.data.container.runtimeSettings = { lima: { vmMemory: '16GiB' } }
+
+      renderWithProviders(<RuntimeTab />)
+
+      expect(screen.getByText(/must be smaller than this machine's total memory/)).toBeInTheDocument()
     })
   })
 

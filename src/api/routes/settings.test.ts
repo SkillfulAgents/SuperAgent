@@ -29,6 +29,17 @@ const mockFsPromises = vi.hoisted(() => ({
 const mockAuthenticatedMiddleware = vi.hoisted(() =>
   vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
 )
+// Host total memory for the VM-memory sizing guard. Default is large enough
+// that every allowlisted option passes; sizing tests shrink it.
+const mockTotalmem = vi.hoisted(() => vi.fn(() => 64 * 1024 ** 3))
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>()
+  return {
+    ...actual,
+    default: { ...actual, totalmem: mockTotalmem },
+    totalmem: mockTotalmem,
+  }
+})
 const mockIsAdminMiddleware = vi.hoisted(() =>
   vi.fn(async (_c: unknown, next: () => Promise<void>) => next()),
 )
@@ -230,6 +241,7 @@ function setupDefaults() {
   mockGetReadiness.mockReturnValue({ ready: true })
   mockEnsureImageReady.mockResolvedValue(undefined)
   mockClearClients.mockReturnValue(undefined)
+  mockTotalmem.mockReturnValue(64 * 1024 ** 3)
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,6 +1211,41 @@ describe('settings route', () => {
       const res = await putSettings({
         container: {
           runtimeSettings: { lima: { somethingElse: 'value' } },
+        },
+      })
+      expect(res.status).toBe(200)
+      expect(mockUpdateSettings).toHaveBeenCalledOnce()
+    })
+
+    it('refuses VM memory equal to host total memory', async () => {
+      mockTotalmem.mockReturnValue(16 * 1024 ** 3)
+      const res = await putSettings({
+        container: {
+          runtimeSettings: { lima: { vmMemory: '16GiB' } },
+        },
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('total memory')
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('refuses VM memory above host total memory', async () => {
+      mockTotalmem.mockReturnValue(8 * 1024 ** 3)
+      const res = await putSettings({
+        container: {
+          runtimeSettings: { lima: { vmMemory: '12GiB' } },
+        },
+      })
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('accepts VM memory above half of host total (warn is UI-side, not a rejection)', async () => {
+      mockTotalmem.mockReturnValue(16 * 1024 ** 3)
+      const res = await putSettings({
+        container: {
+          runtimeSettings: { lima: { vmMemory: '12GiB' } },
         },
       })
       expect(res.status).toBe(200)

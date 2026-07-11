@@ -5361,3 +5361,105 @@ describe('MessagePersister.handleConnectionClosed re-subscribe', () => {
     }
   })
 })
+
+// ============================================================================
+// connection lost mid-turn → session_error (not a silent session_idle)
+// ============================================================================
+//
+// When the runtime vanishes while a turn is in flight (container crash, guest
+// OOM kill, VM death), the WebSocket closes and markSessionInactive settles the
+// session. Settling with session_idle presents as the agent just stopping with
+// no explanation — the terminal broadcast must be session_error instead.
+
+describe('MessagePersister connection lost mid-turn', () => {
+  const SESSION_ID = 'mid-turn-death-session'
+  const AGENT_SLUG = 'mid-turn-death-agent'
+
+  let mockClient: ReturnType<typeof createMockClient>
+  let sseEvents: any[]
+  let sseCleanup: () => void
+
+  const dropConnection = async () => {
+    mockClient._messageCallback!({
+      type: 'connection_closed',
+      content: { type: 'connection_closed' },
+      timestamp: new Date(),
+      sessionId: SESSION_ID,
+    })
+    // Let handleConnectionClosed's getSession().then(...) settle
+    // (the default mock getSession resolves null → markSessionInactive).
+    await new Promise((r) => setTimeout(r, 0))
+  }
+
+  beforeEach(async () => {
+    mockClient = createMockClient()
+    await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
+    const sse = collectSSEEvents(SESSION_ID)
+    sseEvents = sse.events
+    sseCleanup = sse.cleanup
+  })
+
+  afterEach(() => {
+    sseCleanup()
+    messagePersister.unsubscribeFromSession(SESSION_ID)
+    vi.clearAllMocks()
+  })
+
+  it('broadcasts session_error (not session_idle) when the connection drops mid-turn', async () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    sseEvents.length = 0
+
+    await dropConnection()
+
+    const errors = sseEvents.filter((e) => e.type === 'session_error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0].error).toMatch(/stopped unexpectedly/i)
+    expect(errors[0].error).toMatch(/out of memory/i)
+    expect(errors[0].terminalReason).toBe('connection_lost')
+    expect(errors[0].isActive).toBe(false)
+    expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(0)
+    // The session still settles: no longer active, activity reads idle.
+    expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+    expect(messagePersister.getSessionActivity(SESSION_ID)).toBe('idle')
+  })
+
+  it('also announces the mid-turn death on the global stream (sidebar/notifications)', async () => {
+    const globalEvents: any[] = []
+    const removeGlobal = messagePersister.addGlobalNotificationClient((data) => {
+      globalEvents.push(data)
+    })
+    try {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      await dropConnection()
+
+      const errors = globalEvents.filter((e) => e.type === 'session_error')
+      expect(errors).toHaveLength(1)
+      expect(errors[0].sessionId).toBe(SESSION_ID)
+      expect(errors[0].agentSlug).toBe(AGENT_SLUG)
+      expect(errors[0].terminalReason).toBe('connection_lost')
+    } finally {
+      removeGlobal()
+    }
+  })
+
+  it('settles quietly with session_idle when the connection drops while idle', async () => {
+    // No active turn — e.g. the container auto-slept between turns.
+    sseEvents.length = 0
+
+    await dropConnection()
+
+    expect(sseEvents.filter((e) => e.type === 'session_error')).toHaveLength(0)
+    expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(1)
+  })
+
+  it('does not report an error when the connection drops after a user interrupt', async () => {
+    messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+    await messagePersister.markSessionInterrupted(SESSION_ID)
+    sseEvents.length = 0
+
+    await dropConnection()
+
+    expect(sseEvents.filter((e) => e.type === 'session_error')).toHaveLength(0)
+  })
+})

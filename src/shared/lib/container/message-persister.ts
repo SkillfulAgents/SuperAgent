@@ -1579,6 +1579,12 @@ class MessagePersister {
 
   // Mark a session as inactive and broadcast the update
   private markSessionInactive(sessionId: string, state: StreamingState): void {
+    // A session that was mid-turn (user message sent, no result yet) and not
+    // deliberately interrupted didn't finish — its runtime vanished (container
+    // crash, guest OOM kill of the agent process, VM death). Surface that as an
+    // error instead of settling silently: session_idle would render as the turn
+    // just ending with no explanation (and wipes any error client-side).
+    const diedMidTurn = state.isActive && !state.isInterrupted
     state.isStreaming = false
     state.isAwaitingInput = false
     state.currentText = ''
@@ -1587,6 +1593,35 @@ class MessagePersister {
     state.activeSubagents.clear()
     state.activeBackgroundTasks.clear()
     this.stopAllWorkflowTailers(sessionId)
+    if (diedMidTurn) {
+      // Mirror the result-error path: settle isActive BEFORE broadcasting so
+      // the terminal transition is a single non-busy emit (an intermediate
+      // "isActive still true, streaming just cleared" snapshot would read
+      // working=true and race connectors into a stuck indicator), and emit
+      // session_error INSTEAD of session_idle — connectors finalize on either.
+      state.isActive = false
+      const errorMessage =
+        'The agent stopped unexpectedly because the connection to its runtime was lost. ' +
+        'The container may have crashed or run out of memory.'
+      console.error(`[MessagePersister] Session ${sessionId} died mid-turn (connection lost)`)
+      this.broadcastToSSE(sessionId, {
+        type: 'session_error',
+        error: errorMessage,
+        apiErrorCode: null,
+        terminalReason: 'connection_lost',
+        isActive: false,
+      })
+      this.broadcastGlobal({
+        type: 'session_error',
+        sessionId,
+        agentSlug: state.agentSlug,
+        error: errorMessage,
+        apiErrorCode: null,
+        terminalReason: 'connection_lost',
+        isActive: false,
+      })
+      return
+    }
     // finalizeIdle clears isActive and emits the single settling working(false).
     // Don't emit here first: clearing streaming while isActive is still true
     // would read working=true and emit a spurious working(true)→(false) pair

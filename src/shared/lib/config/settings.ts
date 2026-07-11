@@ -276,6 +276,8 @@ export type { LlmProviderInfo }
 
 export interface GlobalSettingsResponse {
   dataDir: string
+  /** Host machine's total physical memory — lets the UI warn about oversized VM memory picks. */
+  hostTotalMemoryBytes?: number
   container: ContainerSettings
   app: AppPreferences
   hasRunningAgents: boolean

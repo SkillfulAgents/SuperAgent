@@ -1,3 +1,4 @@
+import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
@@ -38,6 +39,7 @@ import { findWebProvider, getWebProvider } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
+import { assessVmMemory } from '@shared/lib/container/vm-memory'
 import { customEnvVarsSchema } from '@shared/lib/container/reserved-env-vars'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
@@ -295,6 +297,7 @@ function buildSettingsResponse(
 ): GlobalSettingsResponse {
   return {
     dataDir: getDataDir(),
+    hostTotalMemoryBytes: os.totalmem(),
     container: appSettings.container,
     app: appSettings.app || { showMenuBarIcon: true },
     hasRunningAgents,
@@ -429,6 +432,14 @@ settings.put('/', async (c) => {
       const limaSettings = body.container.runtimeSettings.lima
       if (limaSettings?.vmMemory && !VALID_LIMA_VM_MEMORY_OPTIONS.includes(limaSettings.vmMemory)) {
         return c.json({ error: `Invalid VM memory setting. Must be one of: ${VALID_LIMA_VM_MEMORY_OPTIONS.join(', ')}` }, 400)
+      }
+      // A VM sized at or beyond physical RAM starves the host and gets agents
+      // OOM-killed mid-turn — refuse it here so it can never be persisted.
+      if (limaSettings?.vmMemory) {
+        const assessment = assessVmMemory(limaSettings.vmMemory, os.totalmem())
+        if (assessment.level === 'refuse') {
+          return c.json({ error: assessment.message }, 400)
+        }
       }
     }
 
