@@ -5,11 +5,56 @@ import { captureDashboardScreenshot, type ScreenshotResult } from './dashboard-s
 
 const SCREENSHOT_FILENAME = 'screenshot.png'
 
-export const ARTIFACTS_DIR = '/workspace/artifacts'
+// Env override exists so tests can point the manager at a temp directory.
+export const ARTIFACTS_DIR = process.env.ARTIFACTS_DIR || '/workspace/artifacts'
 const DASHBOARD_BASE_PORT = 5000
 const MAX_RESTARTS = 3
 const RESTART_WINDOW_MS = 5 * 60 * 1000 // 5 minutes
 export const SLUG_REGEX = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
+
+// dashboard.log is append-only across every start/crash/restart; without a
+// cap a chatty or crash-looping dashboard grows it forever.
+export const MAX_LOG_SIZE_BYTES = 10 * 1024 * 1024
+export const LOG_TAIL_KEEP_BYTES = 256 * 1024
+
+/**
+ * If the log exceeds `maxBytes`, rewrite it to a marker line plus the last
+ * `keepBytes` of content (the recent output is what debugging needs).
+ * Only call while no stream has the file open for append.
+ * @returns true if the file was truncated
+ */
+export async function truncateOversizedLog(
+  logPath: string,
+  maxBytes: number = MAX_LOG_SIZE_BYTES,
+  keepBytes: number = LOG_TAIL_KEEP_BYTES
+): Promise<boolean> {
+  try {
+    const stat = await fs.promises.stat(logPath)
+    if (stat.size <= maxBytes) return false
+
+    const fd = await fs.promises.open(logPath, 'r')
+    let tail: Buffer
+    try {
+      const buf = Buffer.alloc(Math.min(keepBytes, stat.size))
+      const { bytesRead } = await fd.read(buf, 0, buf.length, stat.size - buf.length)
+      tail = buf.subarray(0, bytesRead)
+    } finally {
+      await fd.close()
+    }
+
+    await fs.promises.writeFile(
+      logPath,
+      Buffer.concat([
+        Buffer.from(`[DashboardManager] Log truncated from ${stat.size} bytes, keeping the last ${tail.length}\n`),
+        tail,
+      ])
+    )
+    return true
+  } catch {
+    // ENOENT (no log yet) or a read/write failure — leave the file alone
+    return false
+  }
+}
 
 export function validateSlug(slug: string): void {
   if (!SLUG_REGEX.test(slug)) {
@@ -39,6 +84,18 @@ interface DashboardInfo {
 class DashboardManager {
   private dashboards: Map<string, DashboardInfo> = new Map()
   private nextPort = DASHBOARD_BASE_PORT
+
+  /**
+   * End a dashboard's log stream exactly once. Nulls the field BEFORE ending:
+   * a second end() on a finished WriteStream emits ERR_STREAM_ALREADY_FINISHED,
+   * which would be an uncaught exception. Every close site must go through
+   * this — the process 'close' handler, stop paths, and restarts can overlap.
+   */
+  private closeLogStream(info: DashboardInfo): void {
+    const stream = info.logStream
+    info.logStream = null
+    stream?.end()
+  }
 
   async scanAndStartAll(): Promise<void> {
     try {
@@ -110,7 +167,7 @@ class DashboardManager {
           resolve()
         }
       })
-      existing.logStream?.end()
+      this.closeLogStream(existing)
     }
 
     const { name, description } = this.readPackageJson(slug)
@@ -133,8 +190,16 @@ class DashboardManager {
     this.dashboards.set(slug, info)
 
     try {
+      // Bound the append-only log before reopening it
+      await truncateOversizedLog(logPath)
+
       // Open log stream early so install errors are captured
       info.logStream = fs.createWriteStream(logPath, { flags: 'a' })
+      // A write failure (e.g. ENOSPC) must not take down the server — a
+      // WriteStream 'error' with no listener throws as an uncaught exception.
+      info.logStream.on('error', (error) => {
+        console.error(`[DashboardManager] Log stream error for ${slug}:`, error)
+      })
 
       // Run bun install only if node_modules is missing or package.json is newer than it
       await this.runBunInstallIfNeeded(dashboardDir, info.logStream)
@@ -166,11 +231,22 @@ class DashboardManager {
         }
       })
 
+      // 'close' (not 'exit') is when stdout/stderr have finished flushing into
+      // the log, so ending here can't drop the process's final output. Without
+      // this, every exit leaked the stream's fd — a crash-looping dashboard
+      // accumulated them until EMFILE.
+      proc.on('close', () => {
+        this.closeLogStream(info)
+      })
+
       proc.on('error', (error) => {
         console.error(`[DashboardManager] Dashboard ${slug} process error:`, error)
         info.logStream?.write(`[process error] ${error.message}\n`)
         info.status = 'crashed'
         info.process = null
+        // On spawn failure 'close' isn't guaranteed — close here too (no-op if
+        // the 'close' handler already ran).
+        this.closeLogStream(info)
       })
 
       console.log(`[DashboardManager] Starting dashboard ${slug} on port ${port}, waiting for port...`)
@@ -193,8 +269,7 @@ class DashboardManager {
     } catch (error: any) {
       console.error(`[DashboardManager] Failed to start dashboard ${slug}:`, error)
       info.logStream?.write(`[DashboardManager] Failed to start: ${error?.message || error}\n`)
-      info.logStream?.end()
-      info.logStream = null
+      this.closeLogStream(info)
       info.status = 'crashed'
     }
 
@@ -366,7 +441,7 @@ class DashboardManager {
       })
     }
 
-    info.logStream?.end()
+    this.closeLogStream(info)
     this.dashboards.delete(slug)
     return true
   }
@@ -507,8 +582,10 @@ console.log(\`Dashboard server running on http://localhost:\${port}\`);
     for (const info of this.dashboards.values()) {
       if (info.process) {
         info.process.kill('SIGTERM')
-        info.logStream?.end()
       }
+      // The stream can outlive the process (crashed dashboards keep it for a
+      // final write) — close it regardless of process state.
+      this.closeLogStream(info)
     }
     this.dashboards.clear()
   }
