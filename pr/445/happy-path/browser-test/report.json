@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the chat response.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut application home screen with two agents listed in the sidebar, including \"QA-20260711-000715-brkl\".",
+    "Step 2: Clicked on the \"QA-20260711-000715-brkl\" agent in the sidebar — Agent page loaded successfully with a chat interface and input field ready for message input.",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input field — Message entered successfully in the textbox.",
+    "Step 4: Clicked the send button to send the message — Message sent successfully, new chat session created with URL showing session ID \"8070b35f-c0b2-426f-84ae-5bcf2df4e7f7\" and page title changed to \"Browser Navigation and Page Title Check\".",
+    "Step 5: Waited for agent response (up to 3 minutes) — Agent completed execution in 11 seconds, displaying complete response with all browser tool calls marked as successful.",
+    "Step 6: Verified the response mentions \"Example Domain\" — Response text confirmed to contain \"Example Domain\" with exact phrases: \"The page title is \"Example Domain\"\" and \"The page at https://example.com has the title \"Example Domain\".\""
+  ],
+  "bugs": [],
+  "durationMs": 82013,
+  "sessionId": "d83575ba-2775-4bbb-bf59-16ad980c90a4",
+  "cost": {
+    "inputTokens": 440,
+    "outputTokens": 12662,
+    "cacheCreationTokens": 68054,
+    "cacheReadTokens": 1247406,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.273558
+  }
+}
