@@ -15,6 +15,7 @@ import { inputManager } from './input-manager';
 import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
+import { startTabPolling, stopTabPolling } from './tab-poll';
 import { runBrowserUpload } from './browser-upload';
 import { runBrowserDownload } from './browser-download';
 import { updateEnvFileEntry, healEnvFilePermissions } from './env-file-store';
@@ -1850,8 +1851,6 @@ interface BrowserTabInfo {
   active: boolean;
 }
 
-let tabPollInterval: NodeJS.Timeout | null = null;
-
 /** Get ALL CDP page targets across all strategies */
 async function getAllPageTargets(): Promise<PageTarget[]> {
   // Try Chrome's HTTP /json endpoint first (works for local Chrome)
@@ -2266,8 +2265,8 @@ function handleBrowserStreamConnection(ws: WebSocket) {
     ws.close();
   });
 
-  // Start tab list polling
-  tabPollInterval = setInterval(() => broadcastTabList(), 2000);
+  // Start tab list polling for this connection (replaces any previous viewer's timer)
+  const tabPoll = startTabPolling(() => broadcastTabList());
 
   // Forward input events and handle tab control messages from client
   // Protocol: see src/renderer/components/browser/browser-preview.tsx
@@ -2392,12 +2391,12 @@ function handleBrowserStreamConnection(ws: WebSocket) {
   });
 
   ws.on('close', () => {
-    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
+    stopTabPolling(tabPoll);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 
   ws.on('error', () => {
-    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
+    stopTabPolling(tabPoll);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 }
