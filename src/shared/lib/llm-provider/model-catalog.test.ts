@@ -52,10 +52,11 @@ describe('getProviderCatalog', () => {
     expect(sonnet.supportedEfforts).toEqual(['low', 'medium', 'high'])
   })
 
-  it('exposes the OpenRouter non-Claude built-ins (gpt, glm) with their own icons', () => {
+  it('exposes the OpenRouter non-Claude built-ins (gpt, glm, grok) with their own icons', () => {
     const catalog = getProviderCatalog('openrouter')
     const gpt = catalog.find((m) => m.id === 'openai/gpt-5.5')!
     const glm = catalog.find((m) => m.id === 'z-ai/glm-5.2')!
+    const grok = catalog.find((m) => m.id === 'x-ai/grok-4.5')!
     expect(gpt).toMatchObject({
       family: 'gpt',
       isLatest: true,
@@ -68,8 +69,18 @@ describe('getProviderCatalog', () => {
       icon: 'zai',
       pricing: { inputPerMtok: 1.2, outputPerMtok: 4.2 },
     })
+    expect(grok).toMatchObject({
+      family: 'grok',
+      isLatest: true,
+      icon: 'xai',
+      supportsWebSearch: false,
+      pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+      contextWindow: 500_000,
+    })
     // Anthropic must NOT inherit the OpenRouter-only extras.
     expect(getProviderCatalog('anthropic').some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
+    expect(getProviderCatalog('anthropic').some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
+    expect(getProviderCatalog('platform').some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
   })
 
   it('offers both GPT versions, with 5.5 the family latest and 5.4 a pinnable older version', () => {
@@ -389,6 +400,8 @@ describe('resolveModelForProvider', () => {
   it('resolves OpenRouter non-Claude models (gpt alias → latest id, glm slug passthrough)', () => {
     expect(resolveModelForProvider('gpt', 'openrouter', 'agent')).toBe('openai/gpt-5.5')
     expect(resolveModelForProvider('z-ai/glm-5.2', 'openrouter', 'agent')).toBe('z-ai/glm-5.2')
+    expect(resolveModelForProvider('grok', 'openrouter', 'agent')).toBe('x-ai/grok-4.5')
+    expect(resolveModelForProvider('x-ai/grok-4.5', 'openrouter', 'agent')).toBe('x-ai/grok-4.5')
   })
 
   it('resolves Platform GPT models to bare ids and falls back for unsupported glm', () => {

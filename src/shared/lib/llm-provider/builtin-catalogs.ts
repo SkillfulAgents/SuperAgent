@@ -215,6 +215,20 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-06-18.
     pricing: { inputPerMtok: 1.2, outputPerMtok: 4.2 },
   },
+  {
+    id: 'x-ai/grok-4.5',
+    label: 'Grok 4.5',
+    blurb: 'xAI Grok, routed via OpenRouter',
+    family: 'grok',
+    isLatest: true,
+    icon: 'xai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportsWebSearch: false,
+    // Baked from OpenRouter's live model list (per-Mtok USD), fetched 2026-07-10.
+    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+    // OpenRouter-reported context length for x-ai/grok-4.5, fetched 2026-07-10.
+    contextWindow: 500_000,
+  },
 ]
 
 /** OpenRouter — the bare Claude models plus curated non-Claude built-ins. */
