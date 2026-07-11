@@ -19,6 +19,7 @@ interface SessionThreadProps {
   pendingUserMessages?: PendingMessage[]
   pendingRequestCount?: number
   onPendingMessageAppeared?: (localId: string) => void
+  suppressScrollToBottom?: boolean
 }
 
 /**
@@ -40,6 +41,7 @@ export function SessionThread({
   pendingUserMessages,
   pendingRequestCount,
   onPendingMessageAppeared,
+  suppressScrollToBottom,
 }: SessionThreadProps) {
   return (
     <div className="relative flex-1 flex min-h-0">
@@ -53,6 +55,7 @@ export function SessionThread({
           pendingUserMessages={pendingUserMessages}
           pendingRequestCount={pendingRequestCount}
           onPendingMessageAppeared={onPendingMessageAppeared}
+          suppressScrollToBottom={suppressScrollToBottom}
         />
         <div className={`${footerClassName} pb-[env(safe-area-inset-bottom)]`} data-composer-footer>
           <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />

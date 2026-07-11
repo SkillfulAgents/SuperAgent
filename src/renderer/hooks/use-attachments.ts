@@ -7,10 +7,17 @@ const MAX_WEB_FOLDER_SIZE = 500 * 1024 * 1024
 
 interface UseAttachmentsOptions {
   onFoldersReceived?: (folders: FolderGroup[]) => void
+  initialAttachments?: Attachment[]
 }
 
 export function useAttachments(options?: UseAttachmentsOptions) {
-  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [attachments, setAttachments] = useState<Attachment[]>(() =>
+    (options?.initialAttachments ?? []).map((attachment) =>
+      attachment.type === 'file' && attachment.file.type.startsWith('image/') && !attachment.preview
+        ? { ...attachment, preview: URL.createObjectURL(attachment.file) }
+        : attachment,
+    ),
+  )
   const [isDragOver, setIsDragOver] = useState(false)
 
   const addFiles = useCallback((files: FileWithPath[]) => {

@@ -2,9 +2,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, act, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState, type ReactNode } from 'react'
 import { AgentHome } from './agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import { useDraftsStore } from '@renderer/context/drafts-context'
+import {
+  newSessionCarryoverKey,
+  type NewSessionCarryover,
+} from '@renderer/lib/new-session-carryover'
 
 // --- Mock data ---
 
@@ -143,6 +149,15 @@ const mockComposer = {
 }
 
 let capturedComposerOptions: any
+
+function CarryoverSeeder({ value, children }: { value: NewSessionCarryover; children: ReactNode }) {
+  const store = useDraftsStore()
+  useState(() => {
+    store.set(newSessionCarryoverKey(testAgent.slug), value)
+    return null
+  })
+  return children
+}
 
 vi.mock('@renderer/hooks/use-message-composer', () => ({
   useMessageComposer: (opts: any) => {
@@ -482,6 +497,28 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(capturedComposerOptions.draftKey).toBe('agent:test-agent')
+  })
+
+  it('hydrates a carried composer and sends its model and effort on the new session', async () => {
+    const attachment = {
+      type: 'file' as const,
+      id: 'file-1',
+      file: new File(['hello'], 'hello.txt', { type: 'text/plain' }),
+    }
+    renderWithProviders(
+      <CarryoverSeeder value={{ attachments: [attachment], model: 'opus', effort: 'high' }}>
+        <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+      </CarryoverSeeder>,
+    )
+
+    expect(capturedComposerOptions.initialAttachments).toEqual([attachment])
+    await act(() => capturedComposerOptions.onSubmit('Continue in a new session'))
+    expect(mockCreateSession.mutateAsync).toHaveBeenCalledWith({
+      agentSlug: 'test-agent',
+      message: 'Continue in a new session',
+      model: 'opus',
+      effort: 'high',
+    })
   })
 
   it('passes submitDisabled based on createSession.isPending and runtime readiness', () => {
