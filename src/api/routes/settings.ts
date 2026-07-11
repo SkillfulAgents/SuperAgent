@@ -699,11 +699,14 @@ settings.post('/validate-anthropic-key', async (c) => {
 settings.post('/validate-llm-key', async (c) => {
   try {
     const { provider, apiKey, baseUrl } = await c.req.json()
-    if (!apiKey || typeof apiKey !== 'string') {
-      return c.json({ valid: false, error: 'API key is required' }, 400)
-    }
     if (!provider || typeof provider !== 'string') {
       return c.json({ valid: false, error: 'Provider is required' }, 400)
+    }
+    // The generic provider accepts an empty key and revalidates with the saved
+    // one — the renderer never holds the saved secret, so a base-URL-only
+    // change couldn't resend it.
+    if (typeof apiKey !== 'string' || (!apiKey && provider !== 'generic')) {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
     }
     if (
       provider !== 'anthropic' &&

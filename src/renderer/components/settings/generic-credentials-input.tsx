@@ -39,25 +39,34 @@ export function GenericCredentialsInput({ disabled = false }: GenericCredentials
 
   const apiKeyStatus: ApiKeyStatus | undefined = settings?.apiKeyStatus?.generic
   const isBusy = isValidating || isRemoving
+  // A URL-only change is validatable against the already-saved key (the server
+  // falls back to it), so the key field only gates the button on first setup.
+  const hasSavedKey = apiKeyStatus?.isConfigured ?? false
+  const canValidate = Boolean(baseUrl.trim()) && (Boolean(apiKeyInput.trim()) || hasSavedKey)
 
   const handleValidateAndSave = async () => {
     const trimmedUrl = baseUrl.trim()
     const trimmedKey = apiKeyInput.trim()
-    if (!trimmedUrl || !trimmedKey) return
+    if (!trimmedUrl || (!trimmedKey && !hasSavedKey)) return
     setIsValidating(true)
     setValidationResult(null)
     try {
       const res = await apiFetch('/api/settings/validate-llm-key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // An empty apiKey tells the server to revalidate with the saved key.
         body: JSON.stringify({ provider: 'generic', apiKey: trimmedKey, baseUrl: trimmedUrl }),
       })
       const result = await res.json()
       setValidationResult(result)
       if (result.valid) {
         try {
+          // Omit genericApiKey when the field is empty — in the settings PUT,
+          // absent means keep and '' means delete the saved key.
           await updateSettings.mutateAsync({
-            apiKeys: { genericBaseUrl: trimmedUrl, genericApiKey: trimmedKey },
+            apiKeys: trimmedKey
+              ? { genericBaseUrl: trimmedUrl, genericApiKey: trimmedKey }
+              : { genericBaseUrl: trimmedUrl },
           })
           setApiKeyInput('')
         } catch {
@@ -138,7 +147,7 @@ export function GenericCredentialsInput({ disabled = false }: GenericCredentials
       </div>
 
       <div className="flex gap-2">
-        {baseUrl.trim() && apiKeyInput.trim() && (
+        {canValidate && (
           <Button size="sm" onClick={handleValidateAndSave} disabled={isBusy}>
             {isValidating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Validating...</> : 'Validate & Save'}
           </Button>

@@ -284,6 +284,56 @@ describe('GenericLlmProvider.validateKey', () => {
     expect(await provider.validateKey('key')).toEqual({ valid: false, error: 'Base URL is required' })
   })
 
+  it('falls back to the saved key when called with an empty key (base-URL-only change)', async () => {
+    const fetchMock = stubFetch({ ok: true, status: 200 })
+    const result = await provider.validateKey('', { baseUrl: 'http://ollama.example.com:11434' })
+    expect(result).toEqual({ valid: true })
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer test-key' })
+  })
+
+  it('requires a key when none is provided and none is saved', async () => {
+    settingsMock.mockReturnValue({ apiKeys: { genericBaseUrl: 'https://proxy.example' } })
+    const fetchMock = stubFetch()
+    expect(await provider.validateKey('')).toEqual({ valid: false, error: 'API key is required' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a bare single-label hostname without probing the network', async () => {
+    settingsMock.mockReturnValue({ apiKeys: {} })
+    const fetchMock = stubFetch()
+    const result = await provider.validateKey('key', { baseUrl: 'http://my-gpu-box:11434' })
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('"my-gpu-box" is a bare hostname')
+    expect(result.error).toContain('fully-qualified domain name')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('accepts loopback and IP-literal base URLs (containers reach those via the rewrite/routing)', async () => {
+    settingsMock.mockReturnValue({ apiKeys: {} })
+    stubFetch({ ok: true, status: 200 })
+    expect(await provider.validateKey('key', { baseUrl: 'http://127.0.0.1:11434' })).toEqual({ valid: true })
+    expect(await provider.validateKey('key', { baseUrl: 'http://100.92.209.99:11434' })).toEqual({ valid: true })
+  })
+
+  it('rejects an unparseable base URL with scheme guidance', async () => {
+    settingsMock.mockReturnValue({ apiKeys: {} })
+    const fetchMock = stubFetch()
+    const result = await provider.validateKey('key', { baseUrl: 'http://' })
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('not a valid URL')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a scheme-less base URL (parses as a URL with a bogus protocol)', async () => {
+    settingsMock.mockReturnValue({ apiKeys: {} })
+    const fetchMock = stubFetch()
+    const result = await provider.validateKey('key', { baseUrl: 'my-gpu-box:11434' })
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('must start with http:// or https://')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('probes /v1/models on the inline baseURL and reports success without needing a real model id', async () => {
     settingsMock.mockReturnValue({ apiKeys: {} })
     const fetchMock = stubFetch({ ok: true, status: 200 })

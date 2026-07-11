@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
 // ---------------------------------------------------------------------------
@@ -940,6 +940,70 @@ describe('settings route', () => {
       const body = await res.json()
       expect(body.valid).toBe(false)
       expect(body.error).toBe('Network timeout')
+    })
+  })
+
+  // =========================================================================
+  // LLM key validation (uses the REAL provider classes over mocked settings)
+  // =========================================================================
+  describe('POST /validate-llm-key', () => {
+    async function validateLlmKey(body: Record<string, unknown>): Promise<Response> {
+      return app.request('http://localhost/api/settings/validate-llm-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    }
+
+    const savedGenericKeyEnv = process.env.GENERIC_API_KEY
+    beforeEach(() => {
+      delete process.env.GENERIC_API_KEY
+    })
+    afterEach(() => {
+      if (savedGenericKeyEnv === undefined) delete process.env.GENERIC_API_KEY
+      else process.env.GENERIC_API_KEY = savedGenericKeyEnv
+      vi.unstubAllGlobals()
+    })
+
+    it('returns 400 for an empty apiKey on a non-generic provider', async () => {
+      const res = await validateLlmKey({ provider: 'openrouter', apiKey: '' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('API key is required')
+    })
+
+    it('lets the generic provider revalidate a base-URL-only change with the saved key', async () => {
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        apiKeys: { genericApiKey: 'saved-key', genericBaseUrl: 'http://old.example.com:4000' },
+      })
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const res = await validateLlmKey({
+        provider: 'generic',
+        apiKey: '',
+        baseUrl: 'http://ollama.example.com:11434',
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ valid: true })
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      expect(url).toBe('http://ollama.example.com:11434/v1/models')
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer saved-key' })
+    })
+
+    it('reports a key requirement for generic when no key is given or saved', async () => {
+      mockGetSettings.mockReturnValue({ ...defaultSettings(), apiKeys: {} })
+      const res = await validateLlmKey({ provider: 'generic', apiKey: '', baseUrl: 'http://ollama.example.com:11434' })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ valid: false, error: 'API key is required' })
+    })
+
+    it('rejects a bare single-label hostname for the generic provider', async () => {
+      const res = await validateLlmKey({ provider: 'generic', apiKey: 'k', baseUrl: 'http://my-gpu-box:11434' })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.valid).toBe(false)
+      expect(body.error).toContain('bare hostname')
     })
   })
 

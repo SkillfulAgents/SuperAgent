@@ -3,7 +3,7 @@ import { BaseLlmProvider, type ModelPurpose } from './base-llm-provider'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
 import type { EffortLevel } from '../container/types'
 import { getSettings, getModelCatalogSettings, type ApiKeyStatus } from '../config/settings'
-import { rewriteLoopbackForContainer } from './container-url'
+import { isHostOnlyHostname, rewriteLoopbackForContainer } from './container-url'
 
 const BASE_URL_ENV = 'GENERIC_BASE_URL'
 const DEFAULT_MODEL_ENV = 'GENERIC_DEFAULT_MODEL'
@@ -147,17 +147,42 @@ export class GenericLlmProvider extends BaseLlmProvider {
    * added: 200 means auth + connectivity both work, 401/403 pinpoints an auth
    * failure, and a 404 is treated as a soft-warn (endpoint reachable but
    * doesn't expose /v1/models — the user can still add models manually).
+   *
+   * An empty apiKey means "revalidate with the saved key" — the renderer never
+   * holds the saved secret, so a base-URL-only change can't resend it.
    */
   async validateKey(
     apiKey: string,
     opts?: { baseUrl?: string },
   ): Promise<{ valid: boolean; error?: string }> {
+    const effectiveKey = apiKey || this.getEffectiveApiKey()
+    if (!effectiveKey) return { valid: false, error: 'API key is required' }
     // baseURL may not be saved yet during first-time setup, so accept it inline.
     const baseURL = opts?.baseUrl?.trim() || this.getEffectiveBaseUrl()
     if (!baseURL) return { valid: false, error: 'Base URL is required' }
+    // Validation probes from the HOST, where the OS resolver qualifies bare
+    // hostnames via search domains and scoped resolvers (Tailscale MagicDNS,
+    // mDNS). Agent containers get none of that, so a single-label hostname
+    // passes validation and then fails on every agent request. Reject it here
+    // with the fix instead of letting it save.
+    let parsedUrl: URL
+    try {
+      parsedUrl = new URL(baseURL)
+    } catch {
+      return { valid: false, error: 'Base URL is not a valid URL — include the scheme, e.g. http://my-host.example.com:11434' }
+    }
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      return { valid: false, error: 'Base URL must start with http:// or https://' }
+    }
+    if (isHostOnlyHostname(parsedUrl.hostname)) {
+      return {
+        valid: false,
+        error: `"${parsedUrl.hostname}" is a bare hostname that agent containers cannot resolve — use its fully-qualified domain name or IP address instead (localhost is fine; it is rewritten for containers automatically).`,
+      }
+    }
     let response: Response
     try {
-      response = await fetchModelsList(baseURL, apiKey)
+      response = await fetchModelsList(baseURL, effectiveKey)
     } catch (error) {
       const message = error instanceof Error && error.name === 'AbortError'
         ? `Timed out after ${REQUEST_TIMEOUT_MS / 1000}s — check the base URL is reachable.`
@@ -177,7 +202,7 @@ export class GenericLlmProvider extends BaseLlmProvider {
       const stripped = trimmed.replace(/\/v1$/i, '')
       if (stripped !== trimmed) {
         try {
-          const retry = await fetchModelsList(stripped, apiKey)
+          const retry = await fetchModelsList(stripped, effectiveKey)
           if (retry.ok) {
             return { valid: false, error: `Base URL should not include the /v1 suffix — use ${stripped}` }
           }
