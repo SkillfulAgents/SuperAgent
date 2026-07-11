@@ -12,6 +12,7 @@ import { promisify } from 'util';
 import * as dns from 'dns';
 
 import { inputManager } from './input-manager';
+import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
 import { runBrowserUpload } from './browser-upload';
@@ -2411,6 +2412,10 @@ dashboardManager.scanAndStartAll().catch((error) => {
 // forever — pinning dead tool-handler closures and, via the early-result
 // buffer, secret values. TTLs are type-aware inside cleanupStale.
 setInterval(() => inputManager.cleanupStale(), 60_000).unref();
+
+// Pin agent-browser's screenshot directory and sweep stale files (boot +
+// hourly). Every screenshot is a uniquely named PNG nothing else deletes.
+startScreenshotJanitor();
 
 console.log(`Server running on http://localhost:${port}`);
 console.log('Available endpoints:');
