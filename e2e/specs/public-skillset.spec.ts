@@ -15,6 +15,8 @@ test.describe('Public Skillset Provider', () => {
   })
 
   test('public skillset appears in Settings > Skillsets with Public badge', async ({ page }) => {
+    // Settings now lives inside the footer account menu
+    await page.locator('[data-testid="user-menu-trigger"]').click()
     await page.locator('[data-testid="settings-button"]').click()
     // Settings nav items are now links (URL-driven tabs), so target the stable
     // testid rather than a button role.

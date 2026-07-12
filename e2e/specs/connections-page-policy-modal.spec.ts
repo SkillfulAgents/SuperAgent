@@ -22,6 +22,8 @@ test.describe('Connections Page — Policy Modal After OAuth', () => {
    */
   test('connecting an API from the connections page opens the scope policy editor', async ({ page, request }) => {
     // 1. Open Settings → Connections
+    // Settings now lives inside the footer account menu
+    await page.locator('[data-testid="user-menu-trigger"]').click()
     await page.locator('[data-testid="settings-button"]').click()
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
     await page.locator('[data-testid="settings-nav-connections"]').click()
