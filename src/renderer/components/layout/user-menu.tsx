@@ -1,6 +1,12 @@
 import {
+  BookOpen,
+  Calendar,
   ChevronDown,
+  CircleFadingArrowUp,
+  CircleHelp,
   LogOut,
+  Mail,
+  MessagesSquare,
   Monitor,
   Moon,
   Settings,
@@ -15,16 +21,51 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@renderer/components/ui/dropdown-menu'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUser } from '@renderer/context/user-context'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
 import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
 
-function AvatarInitials({ name, size = 32 }: { name: string; size?: number }) {
+// Mirrors the platform web app's account menu (SkillfulAgents/platform PR #173).
+
+const SUPPORT_EMAIL = 'support@gamut.so'
+const SUPPORT_CALL_URL = 'https://cal.com/graham-cummings-gamut/agentonboarding'
+const DOCS_URL = 'https://www.gamut.so/docs'
+const SLACK_COMMUNITY_URL =
+  'https://join.slack.com/t/gamut-org/shared_invite/zt-43pmy0p1w-DJ_gLMx_nWNKxQpKjsnbWQ'
+
+const HELP_LINKS = [
+  { key: 'docs', label: 'Gamut docs', href: DOCS_URL, icon: BookOpen },
+  { key: 'slack', label: 'Chat with the community', href: SLACK_COMMUNITY_URL, icon: MessagesSquare },
+  { key: 'contact', label: 'Contact us', href: `mailto:${SUPPORT_EMAIL}`, icon: Mail },
+  { key: 'support_call', label: 'Book a support call', href: SUPPORT_CALL_URL, icon: Calendar },
+] as const
+
+function openExternal(url: string) {
+  if (window.electronAPI?.openExternal) {
+    void window.electronAPI.openExternal(url)
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+function AccountAvatar({
+  name,
+  image,
+  size = 32,
+}: {
+  name: string
+  image?: string | null
+  size?: number
+}) {
   const initials = name
     .split(' ')
     .filter(Boolean)
@@ -36,11 +77,47 @@ function AvatarInitials({ name, size = 32 }: { name: string; size?: number }) {
   return (
     <div
       aria-hidden="true"
-      className="flex shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted text-xs font-semibold"
+      className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-border/60 bg-muted text-xs font-semibold"
       style={{ width: size, height: size }}
     >
       {initials}
+      {image && (
+        <img
+          src={image}
+          alt=""
+          className="absolute inset-0 size-full object-cover"
+          onError={(event) => event.currentTarget.remove()}
+        />
+      )}
     </div>
+  )
+}
+
+// Account-menu Help submenu: docs, community, support email, and call booking.
+function HelpMenu() {
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger className="focus:bg-sidebar-accent focus:text-sidebar-accent-foreground data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground">
+        <CircleHelp className="size-4 text-muted-foreground" aria-hidden="true" />
+        <span className="flex-1">Help</span>
+      </DropdownMenuSubTrigger>
+
+      <DropdownMenuSubContent
+        sideOffset={8}
+        className="border-sidebar-border/60 bg-popover shadow-lg shadow-black/5"
+      >
+        {HELP_LINKS.map(({ key, label, href, icon: Icon }) => (
+          <DropdownMenuItem
+            key={key}
+            onSelect={() => openExternal(href)}
+            className="focus:bg-sidebar-accent focus:text-sidebar-accent-foreground"
+          >
+            <Icon className="size-4 text-muted-foreground" aria-hidden="true" />
+            {label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   )
 }
 
@@ -95,15 +172,26 @@ function AppearanceRow() {
 export function UserMenu() {
   const { isAuthMode, user } = useUser()
   const { openSettings } = useDialogs()
+  const { data: platformAuth } = usePlatformAuthStatus()
   const { switching, switchTo } = useTargetSwitch()
   const updateStatus = useUpdateStatus()
   const updateAvailable = updateStatus.state === 'available' || updateStatus.state === 'downloaded'
   const showUseThisComputer = isAuthMode && !!user && !hasInteractiveLogin()
 
-  // TODO(iddo): source identity from the connected platform account (name,
-  // email, avatar). The auth-mode session user is used when present so
-  // multi-user deployments keep showing the signed-in user.
-  const displayName = user?.name ?? 'Test Taskew'
+  // Better Auth owns identity in auth mode. Platform account data enriches the
+  // secondary metadata and billing destination, but never determines whether
+  // the user has an identity. PR #661 supplies the provider/settings fallback
+  // for non-auth mode.
+  const displayName = isAuthMode && user
+    ? (user.name.trim() || user.email)
+    : 'Personal'
+  const email = isAuthMode && user
+    ? (platformAuth?.connected && platformAuth.email ? platformAuth.email : user.email)
+    : null
+  const avatarUrl = isAuthMode && user ? user.image : null
+  const upgradeUrl = isAuthMode && platformAuth?.connected && platformAuth.platformBaseUrl && platformAuth.orgId
+    ? `${platformAuth.platformBaseUrl}/dashboard/organizations/${platformAuth.orgId}?tab=billing`
+    : null
 
   return (
     /* modal={false}: a modal menu can leave `pointer-events: none` stuck on
@@ -117,9 +205,10 @@ export function UserMenu() {
           data-testid="user-menu-trigger"
           className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-foreground/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30 data-[state=open]:bg-foreground/5"
         >
-          <AvatarInitials name={displayName} />
+          <AccountAvatar name={displayName} image={avatarUrl} />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-foreground">{displayName}</p>
+            {upgradeUrl && <p className="truncate text-xs text-brand">Upgrade to Pro</p>}
           </div>
           <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
         </button>
@@ -131,6 +220,26 @@ export function UserMenu() {
         sideOffset={6}
         className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-56 border-sidebar-border/60 bg-popover shadow-lg shadow-black/5"
       >
+        <div className="px-2 pb-1.5 pt-1">
+          <p className="truncate text-sm font-medium text-foreground">{displayName}</p>
+          {email && <p className="truncate text-xs text-muted-foreground">{email}</p>}
+        </div>
+
+        {/* Sized to match the app's small outline buttons, like the platform
+            account menu's upgrade CTA. */}
+        {upgradeUrl && (
+          <DropdownMenuItem
+            onSelect={() => openExternal(upgradeUrl)}
+            data-testid="upgrade-to-pro-button"
+            className="mx-1 mb-2 mt-1 h-8 justify-center rounded-md border border-input bg-background px-3 text-xs font-medium focus:bg-sidebar-accent focus:text-sidebar-accent-foreground"
+          >
+            <CircleFadingArrowUp className="size-3.5" aria-hidden="true" />
+            Upgrade to Pro
+          </DropdownMenuItem>
+        )}
+
+        <DropdownMenuSeparator className="bg-sidebar-border/60" />
+
         <DropdownMenuItem
           onSelect={() => openSettings()}
           data-testid="settings-button"
@@ -139,6 +248,8 @@ export function UserMenu() {
           <Settings className="size-4 text-muted-foreground" aria-hidden="true" />
           <span className="flex-1">Settings</span>
         </DropdownMenuItem>
+
+        <HelpMenu />
 
         <DropdownMenuSeparator className="bg-sidebar-border/60" />
 

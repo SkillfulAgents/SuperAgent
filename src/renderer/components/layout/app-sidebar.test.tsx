@@ -66,6 +66,11 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   }),
 }))
 
+const mockUsePlatformAuthStatus = vi.fn()
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => mockUsePlatformAuthStatus(),
+}))
+
 vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUserSettings: () => ({ data: { setupCompleted: true, agentOrder: [] } }),
   useUpdateUserSettings: () => ({ mutate: vi.fn() }),
@@ -326,8 +331,20 @@ function notifyHistory(actionType: string) {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.stubGlobal('__WEB__', true)
+  vi.stubGlobal('__AUTH_MODE__', false)
   mockIsElectron.mockReturnValue(false)
   mockGetPlatform.mockReturnValue('web')
+  mockUserContext.isAuthMode = false
+  mockUserContext.user = null
+  mockUsePlatformAuthStatus.mockReturnValue({
+    data: {
+      connected: false,
+      email: null,
+      orgId: null,
+      orgName: null,
+      platformBaseUrl: 'https://platform.test.gamut.so',
+    },
+  })
   mockRouteParams = {}
   mockRoutePathname = '/'
   mockHistorySubscribers = []
@@ -450,6 +467,60 @@ describe('AppSidebar — layout & top nav', () => {
 
     await user.click(forwardButton)
     expect(mockHistory.forward).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('AppSidebar — auth identity enrichment', () => {
+  it('uses Better Auth identity when platform metadata is unavailable', async () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    mockUserContext.isAuthMode = true
+    mockUserContext.user = {
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      image: null,
+    } as never
+
+    const user = userEvent.setup()
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('user-menu-trigger')).toHaveTextContent('Ada Lovelace')
+
+    await user.click(screen.getByTestId('user-menu-trigger'))
+    expect(await screen.findByText('ada@example.com')).toBeInTheDocument()
+    expect(screen.queryByTestId('upgrade-to-pro-button')).not.toBeInTheDocument()
+  })
+
+  it('enriches Better Auth identity and billing from connected platform metadata', async () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    mockUserContext.isAuthMode = true
+    mockUserContext.user = {
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      image: null,
+    } as never
+    mockUsePlatformAuthStatus.mockReturnValue({
+      data: {
+        connected: true,
+        email: 'ada@platform.example',
+        orgId: 'org_ada',
+        orgName: 'Analytical Engines',
+        platformBaseUrl: 'https://platform.test.gamut.so',
+      },
+    })
+    const openWindow = vi.spyOn(window, 'open').mockImplementation(() => null)
+
+    const user = userEvent.setup()
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('user-menu-trigger')).toHaveTextContent('Ada Lovelace')
+
+    await user.click(screen.getByTestId('user-menu-trigger'))
+    expect(await screen.findByText('ada@platform.example')).toBeInTheDocument()
+    await user.click(screen.getByTestId('upgrade-to-pro-button'))
+    expect(openWindow).toHaveBeenCalledWith(
+      'https://platform.test.gamut.so/dashboard/organizations/org_ada?tab=billing',
+      '_blank',
+      'noopener,noreferrer'
+    )
+    openWindow.mockRestore()
   })
 })
 
