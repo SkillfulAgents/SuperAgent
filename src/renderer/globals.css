@@ -20,6 +20,8 @@
     --accent-foreground: 0 0% 9%;
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 0 0% 98%;
+    /* Gamut brand blue — matches the platform web app's --brand token. */
+    --brand: 204 100% 50%;
     --border: 0 0% 89.8%;
     --input: 0 0% 89.8%;
     --ring: 0 0% 3.9%;
@@ -56,6 +58,7 @@
     --accent-foreground: 0 0% 98%;
     --destructive: 0 75% 55%;
     --destructive-foreground: 0 0% 98%;
+    --brand: 204 100% 50%;
     --border: 0 0% 19%;
     --input: 0 0% 19%;
     --ring: 0 0% 83.1%;
