@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, AlertTriangle, LayoutGrid, SquareMousePointer, Users, Compass } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
@@ -58,11 +58,9 @@ import { useHistoryNavigation } from '@renderer/router/use-history-navigation'
 import { useSearch } from '@renderer/context/search-context'
 import { useCmdHintTarget, CmdHintBadge } from '@renderer/context/cmd-hint-context'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useUser } from '@renderer/context/user-context'
-import { useUpdateStatus } from '@renderer/context/update-status-context'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
 import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
@@ -83,6 +81,7 @@ import {
 } from '@dnd-kit/sortable'
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
+import { UserMenu } from './user-menu'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
@@ -574,33 +573,6 @@ function NotificationsMenuButton() {
   )
 }
 
-function UserMenu() {
-  const { isAuthMode, user, signOut } = useUser()
-  if (!isAuthMode || !user) return null
-  return (
-    <div className="px-2">
-      <Popover>
-        <PopoverTrigger asChild>
-          <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
-            <User className="h-3 w-3" />
-            <span className="truncate max-w-[140px]">{user.name}</span>
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-48 p-1">
-          <button
-            onClick={signOut}
-            className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
-            data-testid="sign-out-button"
-          >
-            <LogOut className="h-4 w-4" />
-            Sign out
-          </button>
-        </PopoverContent>
-      </Popover>
-    </div>
-  )
-}
-
 /**
  * Shows API key warning only for admins (who can actually fix it).
  * Isolated to avoid calling useSettings() for non-admin users.
@@ -677,8 +649,6 @@ export function AppSidebar() {
   useRenderTracker('AppSidebar')
   const { openSettings } = useDialogs()
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
-  const updateStatus = useUpdateStatus()
-  const updateAvailable = updateStatus.state === 'available' || updateStatus.state === 'downloaded'
 
   // The "New Agent" menu command is handled centrally by MenuCommandHandler
   // (which calls createUntitledAgent); the sidebar keeps the hook for its own
@@ -948,30 +918,8 @@ export function AppSidebar() {
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t p-0 px-2 pt-1 pb-[env(safe-area-inset-bottom)]">
+      <SidebarFooter className="p-1 pb-[max(0.25rem,env(safe-area-inset-bottom))]">
         <UserMenu />
-        <div className="flex items-center justify-between gap-2">
-          <SidebarMenuButton
-            onClick={() => openSettings()}
-            className="w-auto"
-            data-testid="settings-button"
-          >
-            <Settings className="h-4 w-4" />
-            <span>Settings</span>
-          </SidebarMenuButton>
-          <button
-            type="button"
-            onClick={() => openSettings('general')}
-            className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
-            title={updateAvailable ? `Update available: v${updateStatus.version}` : undefined}
-            data-testid="sidebar-version"
-          >
-            {updateAvailable && (
-              <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Update available" />
-            )}
-            <span>v{__APP_VERSION__}</span>
-          </button>
-        </div>
       </SidebarFooter>
 
       <SidebarRail />

@@ -47,6 +47,8 @@ test.describe('Global Settings → Connections — Add MCP flow', () => {
 
       try {
         // 1. Open Global Settings → Connections.
+        // Settings now lives inside the footer account menu
+        await page.locator('[data-testid="user-menu-trigger"]').click()
         await page.locator('[data-testid="settings-button"]').click()
         await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
         await page.locator('[data-testid="settings-nav-connections"]').click()

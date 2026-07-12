@@ -26,6 +26,8 @@ interface UserSettingsSnapshot {
 }
 
 async function openSettings(page: Page) {
+  // Settings now lives inside the footer account menu
+  await page.locator('[data-testid="user-menu-trigger"]').click()
   await page.locator('[data-testid="settings-button"]').click()
   await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
 }
@@ -233,15 +235,15 @@ test.describe('Settings Page', () => {
     await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()
 
     await openSettings(page)
-    // App sidebar (and its Settings button) is gone; the settings sidebar replaces it
+    // App sidebar (and its account menu) is gone; the settings sidebar replaces it
     await expect(page.locator('[data-testid="app-sidebar"]')).not.toBeVisible()
-    await expect(page.locator('[data-testid="settings-button"]')).not.toBeVisible()
+    await expect(page.locator('[data-testid="user-menu-trigger"]')).not.toBeVisible()
     await expect(page.locator('[data-testid="settings-sidebar"]')).toBeVisible()
 
     await page.locator('[data-testid="settings-back"]').click()
     // App sidebar returns
     await expect(page.locator('[data-testid="app-sidebar"]')).toBeVisible()
-    await expect(page.locator('[data-testid="settings-button"]')).toBeVisible()
+    await expect(page.locator('[data-testid="user-menu-trigger"]')).toBeVisible()
     await expect(page.locator('[data-testid="settings-sidebar"]')).not.toBeVisible()
   })
 
@@ -675,6 +677,8 @@ test.describe('Settings deep-link reset', () => {
 
       // Close, then reopen via the plain Settings button (no tab argument).
       await page.locator('[data-testid="settings-back"]').click()
+      // Settings now lives inside the footer account menu
+      await page.locator('[data-testid="user-menu-trigger"]').click()
       await page.locator('[data-testid="settings-button"]').click()
       await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
 
@@ -709,6 +713,10 @@ test.describe('Settings ?from= close-target', () => {
       await expect(page).toHaveURL(new RegExp(`/agents/${agent.displaySlug}$`))
       const origin = page.url()
 
+      // Settings now lives inside the footer account menu
+
+      await page.locator('[data-testid="user-menu-trigger"]').click()
+
       await page.locator('[data-testid="settings-button"]').click()
       await expect(page).toHaveURL(/\/settings(\/|\?|$)/)
       await page.locator('[data-testid="settings-back"]').click()
@@ -742,6 +750,10 @@ test.describe('Settings ?from= close-target', () => {
       // The URL carries the display slug ({name}-{id}), not the bare canonical id.
       await expect(page).toHaveURL(new RegExp(`/agents/${agent.displaySlug}$`))
       const origin = page.url()
+
+      // Settings now lives inside the footer account menu
+
+      await page.locator('[data-testid="user-menu-trigger"]').click()
 
       await page.locator('[data-testid="settings-button"]').click()
       await expect(page).toHaveURL(/\/settings(\/|\?|$)/)
