@@ -39,6 +39,8 @@ test.describe('Accessibility Audit', () => {
   })
 
   test('global settings page has no critical a11y violations', async ({ page }) => {
+    // Settings now lives inside the footer account menu
+    await page.locator('[data-testid="user-menu-trigger"]').click()
     await page.locator('[data-testid="settings-button"]').click()
     await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
 

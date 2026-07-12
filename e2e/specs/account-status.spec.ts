@@ -92,6 +92,10 @@ async function openConnectionsSettings(page: Page) {
   await appPage.goto()
   await appPage.waitForAgentsLoaded()
 
+  // Settings now lives inside the footer account menu
+
+  await page.locator('[data-testid="user-menu-trigger"]').click()
+
   await page.locator('[data-testid="settings-button"]').click()
   await expect(page.locator('[data-testid="global-settings-page"]')).toBeVisible()
   await page.locator('[data-testid="settings-nav-connections"]').click()

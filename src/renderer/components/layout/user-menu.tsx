@@ -1,0 +1,169 @@
+import {
+  ChevronDown,
+  LogOut,
+  Monitor,
+  Moon,
+  Settings,
+  Sun,
+} from 'lucide-react'
+
+import { cn } from '@shared/lib/utils/cn'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu'
+import { useDialogs } from '@renderer/context/dialog-context'
+import { useUpdateStatus } from '@renderer/context/update-status-context'
+import { useUser } from '@renderer/context/user-context'
+import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
+
+function AvatarInitials({ name, size = 32 }: { name: string; size?: number }) {
+  const initials = name
+    .split(' ')
+    .filter(Boolean)
+    .map((w) => w[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase()
+
+  return (
+    <div
+      aria-hidden="true"
+      className="flex shrink-0 items-center justify-center rounded-full border border-border/60 bg-muted text-xs font-semibold"
+      style={{ width: size, height: size }}
+    >
+      {initials}
+    </div>
+  )
+}
+
+const THEME_OPTIONS = [
+  { value: 'light', label: 'Light', icon: Sun },
+  { value: 'dark', label: 'Dark', icon: Moon },
+  { value: 'system', label: 'System', icon: Monitor },
+] as const
+
+// Account-menu theme row: a segmented Light/Dark/System toggle that flips the
+// theme live without closing the menu. Persists via the same user-settings
+// mutation as the Settings → General appearance picker.
+function AppearanceRow() {
+  const { data: userSettings, isLoading } = useUserSettings()
+  const updateUserSettings = useUpdateUserSettings()
+  const theme = userSettings?.theme ?? 'system'
+
+  return (
+    <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+      <span className="text-sm">Appearance</span>
+      <div className="flex items-center gap-0.5 rounded-md bg-muted/60 p-0.5">
+        {THEME_OPTIONS.map((opt) => {
+          const active = theme === opt.value
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              aria-label={`${opt.label} theme`}
+              aria-pressed={active}
+              disabled={isLoading}
+              onClick={() => updateUserSettings.mutate({ theme: opt.value })}
+              className={cn(
+                'flex items-center justify-center rounded p-1 transition-colors',
+                active
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <opt.icon className="size-4" aria-hidden="true" />
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// Sidebar-footer account menu, mirroring the platform web app's user menu.
+export function UserMenu() {
+  const { isAuthMode, user, signOut } = useUser()
+  const { openSettings } = useDialogs()
+  const updateStatus = useUpdateStatus()
+  const updateAvailable = updateStatus.state === 'available' || updateStatus.state === 'downloaded'
+
+  // TODO(iddo): source identity from the connected platform account (name,
+  // email, avatar). The auth-mode session user is used when present so
+  // multi-user deployments keep showing the signed-in user.
+  const displayName = user?.name ?? 'Test Taskew'
+
+  const handleSignOut = () => {
+    // Auth-mode sign-out keeps working as before.
+    // TODO(iddo): wire platform-account sign out for the desktop app.
+    if (isAuthMode && user) void signOut()
+  }
+
+  return (
+    /* modal={false}: a modal menu can leave `pointer-events: none` stuck on
+       <body> when it closes mid-navigation (e.g. Settings opening a route),
+       making the whole sidebar unclickable. */
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Account menu"
+          data-testid="user-menu-trigger"
+          className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-foreground/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30 data-[state=open]:bg-foreground/5"
+        >
+          <AvatarInitials name={displayName} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium text-foreground">{displayName}</p>
+          </div>
+          <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </button>
+      </DropdownMenuTrigger>
+
+      <DropdownMenuContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-56 border-sidebar-border/60 bg-popover shadow-lg shadow-black/5"
+      >
+        <DropdownMenuItem
+          onSelect={() => openSettings()}
+          data-testid="settings-button"
+          className="focus:bg-sidebar-accent focus:text-sidebar-accent-foreground"
+        >
+          <Settings className="size-4 text-muted-foreground" aria-hidden="true" />
+          <span className="flex-1">Settings</span>
+        </DropdownMenuItem>
+
+        <DropdownMenuSeparator className="bg-sidebar-border/60" />
+
+        <AppearanceRow />
+
+        <DropdownMenuSeparator className="bg-sidebar-border/60" />
+
+        <DropdownMenuItem
+          onSelect={handleSignOut}
+          data-testid="sign-out-button"
+          className="focus:bg-sidebar-accent focus:text-sidebar-accent-foreground"
+        >
+          <span className="flex-1">Sign out</span>
+          <LogOut className="size-4 text-muted-foreground" aria-hidden="true" />
+        </DropdownMenuItem>
+
+        <DropdownMenuItem
+          onSelect={() => openSettings('general')}
+          data-testid="sidebar-version"
+          title={updateAvailable ? `Update available: v${updateStatus.version}` : undefined}
+          className="justify-between py-1 text-xs text-muted-foreground focus:bg-sidebar-accent focus:text-sidebar-accent-foreground"
+        >
+          <span>v{__APP_VERSION__}</span>
+          {updateAvailable && (
+            <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Update available" />
+          )}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}

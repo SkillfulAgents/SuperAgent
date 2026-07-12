@@ -378,9 +378,12 @@ describe('AppSidebar — layout & top nav', () => {
     expect(screen.getByText('Your Agents')).toBeInTheDocument()
   })
 
-  it('renders Settings + version in the footer', () => {
+  it('opens the footer account menu with Settings, sign out, and the version', async () => {
+    const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByTestId('settings-button')).toBeInTheDocument()
+    await user.click(screen.getByTestId('user-menu-trigger'))
+    expect(await screen.findByTestId('settings-button')).toBeInTheDocument()
+    expect(screen.getByTestId('sign-out-button')).toBeInTheDocument()
     expect(screen.getByText('v0.1.0-test')).toBeInTheDocument()
   })
 
