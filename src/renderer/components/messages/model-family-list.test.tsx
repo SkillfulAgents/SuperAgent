@@ -60,14 +60,42 @@ describe('longContextWarningText', () => {
 })
 
 describe('webToolsWarning', () => {
-  it('warns and points to a provider when web tools are unavailable', () => {
-    const w = webToolsWarning(true)!
+  it('warns for both when supportsWebSearch is false and no vendor is set', () => {
+    const w = webToolsWarning(CATALOG.find((m) => m.id === 'openai/gpt-5.5'), false)!
     expect(w).toMatch(/Web search and fetch aren.t available on this model/)
     expect(w).toMatch(/Set a provider under Settings . Web to use them on any model/)
   })
 
-  it('returns null (no banner) when web tools are available', () => {
-    expect(webToolsWarning(false)).toBeNull()
+  it('warns fetch-only when search works but native fetch does not', () => {
+    const w = webToolsWarning(
+      {
+        id: 'gpt-5.5',
+        label: 'GPT-5.5',
+        supportedEfforts: STD,
+        supportsWebSearch: true,
+        supportsWebFetch: false,
+      },
+      false,
+    )!
+    expect(w).toMatch(/Native web fetch isn.t available/)
+    expect(w).toMatch(/search still works/)
+  })
+
+  it('returns null for Claude, when both are supported, or when a vendor is set', () => {
+    expect(webToolsWarning(CATALOG.find((m) => m.id === 'claude-sonnet-4-6'), false)).toBeNull()
+    expect(
+      webToolsWarning(
+        {
+          id: 'gpt-5.5',
+          label: 'GPT-5.5',
+          supportedEfforts: STD,
+          supportsWebSearch: true,
+          supportsWebFetch: true,
+        },
+        false,
+      ),
+    ).toBeNull()
+    expect(webToolsWarning(CATALOG.find((m) => m.id === 'openai/gpt-5.5'), true)).toBeNull()
   })
 })
 
@@ -150,6 +178,32 @@ describe('ModelFamilyList', () => {
     expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/search and fetch/)
 
     rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+  })
+
+  it('warns fetch-only for Platform Responses models (search works, native fetch does not)', () => {
+    const platformCatalog: ModelDefinition[] = [
+      {
+        id: 'grok-4.5',
+        label: 'Grok 4.5',
+        family: 'grok',
+        isLatest: true,
+        icon: 'xai',
+        supportedEfforts: STD,
+        supportsWebSearch: true,
+        supportsWebFetch: false,
+        contextWindow: 500_000,
+      },
+    ]
+    const { rerender } = render(
+      <ModelFamilyList catalog={platformCatalog} value="grok-4.5" onPick={vi.fn()} />,
+    )
+    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/Native web fetch/)
+    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/search still works/)
+
+    rerender(
+      <ModelFamilyList catalog={platformCatalog} value="grok-4.5" onPick={vi.fn()} webProvider="exa" />,
+    )
     expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
   })
 
