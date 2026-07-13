@@ -13,6 +13,7 @@ import type {
   ContainerSession,
   ContainerStats,
   CreateSessionOptions,
+  HostPortProbeResult,
   StartOptions,
   StopOptions,
   StopResult,
@@ -362,6 +363,17 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    */
   getHostBridgeIp(): string | null {
     return null
+  }
+
+  /**
+   * Probe whether a host-side TCP endpoint is reachable from the runner's
+   * network side. Default 'unknown' — most runtimes have no vantage point
+   * inside the runner network to test from. Runners that do (WSL2) override
+   * this so a host firewall blocking container→host traffic can be detected
+   * at launch time instead of failing opaquely inside the container.
+   */
+  async probeHostPortFromRunner(_host: string, _port: number): Promise<HostPortProbeResult> {
+    return 'unknown'
   }
 
   /**

@@ -5,9 +5,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // ============================================================================
 
 const mockSpawn = vi.fn()
+const mockExecFile = vi.fn()
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
   spawn: (...args: any[]) => mockSpawn(...args),
+  execFile: (...args: any[]) => mockExecFile(...args),
 }))
 
 vi.mock('fs', () => ({
@@ -73,6 +75,7 @@ import {
   ensureWSL2Ready,
   stopWSL2Distro,
   WSL2ContainerClient,
+  classifyProbeCurlExit,
 } from './wsl2-container-client'
 
 const mockedFs = vi.mocked(fs)
@@ -779,5 +782,82 @@ describe('WSL2ContainerClient.handleRunError', () => {
     const client = createClient()
     const result = await client.testHandleRunError('some random string error')
     expect(result).toBe(false)
+  })
+})
+
+// ============================================================================
+// Host-port reachability probe (firewall detection for the host-browser
+// CDP proxy)
+// ============================================================================
+
+describe('classifyProbeCurlExit', () => {
+  it('maps exit 0 to reachable', () => {
+    expect(classifyProbeCurlExit(0)).toBe('reachable')
+  })
+
+  it('maps connection-refused (7) and timeout (28) to unreachable', () => {
+    expect(classifyProbeCurlExit(7)).toBe('unreachable')
+    expect(classifyProbeCurlExit(28)).toBe('unreachable')
+  })
+
+  it('maps everything else to unknown so a broken probe cannot fail a working setup', () => {
+    expect(classifyProbeCurlExit(127)).toBe('unknown') // curl not installed
+    expect(classifyProbeCurlExit(56)).toBe('unknown') // TCP connected, transfer broke
+    expect(classifyProbeCurlExit(1)).toBe('unknown')
+    expect(classifyProbeCurlExit(null)).toBe('unknown')
+    expect(classifyProbeCurlExit(undefined)).toBe('unknown')
+  })
+})
+
+describe('WSL2ContainerClient.probeHostPortFromRunner', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function createClient() {
+    return new WSL2ContainerClient({ agentId: 'test-agent' } as any)
+  }
+
+  function mockCurlResult(err: Error | null) {
+    mockExecFile.mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1]
+      cb(err, err ? undefined : { stdout: '', stderr: '' })
+    })
+  }
+
+  it('probes the endpoint via curl inside the distro', async () => {
+    mockCurlResult(null)
+
+    const result = await createClient().probeHostPortFromRunner('172.22.192.1', 9222)
+
+    expect(result).toBe('reachable')
+    const [file, cmdArgs] = mockExecFile.mock.calls[0]
+    expect(file).toBe('wsl')
+    expect(cmdArgs).toContain(WSL2_DISTRO_NAME)
+    expect(cmdArgs).toContain('http://172.22.192.1:9222/json/version')
+  })
+
+  it('reports unreachable when curl times out (firewall drop)', async () => {
+    mockCurlResult(Object.assign(new Error('curl timed out'), { code: 28 }))
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unreachable')
+  })
+
+  it('reports unreachable when the connection is refused', async () => {
+    mockCurlResult(Object.assign(new Error('connection refused'), { code: 7 }))
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unreachable')
+  })
+
+  it('reports unknown when curl is missing from the distro', async () => {
+    mockCurlResult(Object.assign(new Error('curl: not found'), { code: 127 }))
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unknown')
+  })
+
+  it('reports unknown when wsl itself cannot run (non-numeric error code)', async () => {
+    mockCurlResult(Object.assign(new Error('spawn wsl ENOENT'), { code: 'ENOENT' }))
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unknown')
   })
 })

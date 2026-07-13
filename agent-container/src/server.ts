@@ -764,7 +764,22 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
   // (ws://host:port/devtools/browser/<id>), not just ws://host:port.
   // Query Chrome's /json/version endpoint to discover it.
   const cdpHost = `${cdpIp}:${data.port}`;
-  const versionRes = await fetch(`http://${cdpHost}/json/version`);
+  // A network-level failure here (vs. an HTTP error) means the host browser
+  // launched but this container can't reach its debugging port — on Windows
+  // that is almost always the host firewall dropping container→host traffic.
+  // Surface that diagnosis instead of an opaque "fetch failed".
+  let versionRes: Response;
+  try {
+    versionRes = await fetch(`http://${cdpHost}/json/version`);
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `The host browser launched, but its debugging endpoint at ${cdpHost} is unreachable from inside the agent container (${cause}). ` +
+      `This usually means a firewall on the host machine is blocking container-to-host connections ` +
+      `(on Windows: Windows Defender Firewall or antivirus blocking the app on the "vEthernet (WSL)" network). ` +
+      `Ask the user to allow the app through their firewall, or to switch Browser Host to the built-in browser in Settings.`
+    );
+  }
   if (!versionRes.ok) {
     throw new Error(`Failed to query CDP /json/version: ${versionRes.status}`);
   }
