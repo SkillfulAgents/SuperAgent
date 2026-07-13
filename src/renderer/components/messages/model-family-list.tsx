@@ -193,12 +193,17 @@ interface ModelFamilyListProps {
 
 function Row({
   label,
+  icon,
   isSelected,
   indent,
   onClick,
   testId,
 }: {
   label: ReactNode
+  /** Optional leading brand icon. Family/lineage rows omit it (the vendor tab
+   *  already says the brand), but standalone models — especially "Other"-tab
+   *  models with uploaded icons — need it to stay distinguishable. */
+  icon?: ReactNode
   isSelected: boolean
   indent?: boolean
   onClick: () => void
@@ -215,7 +220,10 @@ function Row({
         isSelected && 'bg-accent'
       )}
     >
-      <span className="min-w-0 truncate">{label}</span>
+      <span className="flex min-w-0 items-center gap-2">
+        {icon}
+        <span className="truncate">{label}</span>
+      </span>
       {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
     </button>
   )
@@ -227,11 +235,14 @@ function Row({
  * pin a specific entry. Chips are siblings of the label button (buttons can't
  * nest); the spacer pushes the check to the row's right edge.
  *
- * Touch devices have no hover to reveal chips — worse, invisible chips would
- * still be tap targets, silently pinning a version the user never saw. So on
- * coarse pointers (`touch:` variant) the chips are display-none and the
- * selected row instead gains a gear that expands a nested menu below the row:
- * a "· latest" row (same action as the row label) plus one row per version.
+ * Touch has no hover to reveal chips — worse, invisible chips would still be
+ * tap targets, silently pinning a version the user never saw. Hover-gating
+ * can't fix that (a tap's compat `mouseover` fires before its `click`, so the
+ * chips would wake up mid-gesture), so wherever a finger EXISTS (`has-touch:`,
+ * any-pointer coarse — phones AND hybrid touch laptops) the chips are
+ * display-none and the selected row instead gains a gear that expands a nested
+ * menu below the row: a "· latest" row (same action as the row label) plus one
+ * row per version.
  */
 function LineRow({
   label,
@@ -258,8 +269,11 @@ function LineRow({
   latestSuffix?: boolean
 }) {
   // Touch-only nested version menu, toggled by the gear on the selected row.
-  // Rendered only while selected, so switching families auto-collapses it.
+  // Deselecting must actually CLOSE it (not just hide it): stale-open state
+  // would make the menu spring back expanded on re-selection, shifting the
+  // rows under the user's finger mid-interaction.
   const [versionsOpen, setVersionsOpen] = useState(false)
+  if (versionsOpen && !selected) setVersionsOpen(false)
   // The row label picks the line's main value; a version row pins one. When no
   // listed version is the pinned selection, the "latest" row is the selected one.
   const pinnedVersionShown = models.some((m) => m.id === activeId)
@@ -284,7 +298,7 @@ function LineRow({
         </button>
         <span
           className={cn(
-            'flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 touch:hidden',
+            'flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 has-touch:hidden',
             selected && 'opacity-100'
           )}
         >
@@ -320,7 +334,7 @@ function LineRow({
             aria-label={`${label} versions`}
             aria-expanded={versionsOpen}
             onClick={() => setVersionsOpen((open) => !open)}
-            className="hidden shrink-0 rounded-sm p-1 text-muted-foreground hover:text-foreground touch:inline-flex"
+            className="hidden shrink-0 rounded-sm p-1 text-muted-foreground hover:text-foreground has-touch:inline-flex"
           >
             <Settings className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
@@ -560,6 +574,10 @@ export function ModelFamilyList({
         <Row
           key={m.id}
           testId={`model-option-${m.id}`}
+          // Standalone models keep their own icon: under the pooled "Other"
+          // tab (uploaded/missing brand icons) it's the only thing telling two
+          // same-named custom-provider models apart.
+          icon={<ModelIcon icon={m.icon} className="h-3.5 w-3.5 shrink-0" />}
           label={m.label}
           isSelected={resolved?.id === m.id}
           onClick={() => onPick(m.id)}

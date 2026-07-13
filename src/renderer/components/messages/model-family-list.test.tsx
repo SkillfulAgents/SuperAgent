@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { useState } from 'react'
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {
   ModelFamilyList,
@@ -244,16 +245,18 @@ describe('ModelFamilyList', () => {
     const onPick = vi.fn()
     render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={onPick} />)
 
-    // Chips are display-none on coarse pointers — invisible chips must never
-    // be tap targets (a tap on one silently pinned an unseen version).
+    // Chips are display-none whenever ANY coarse pointer exists (has-touch:,
+    // any-pointer — not the primary-pointer touch: variant): invisible chips
+    // must never be tap targets, and on hybrid touch laptops the primary
+    // pointer is a fine mouse while the finger is still there to mis-tap.
     expect(screen.getByTestId('model-pinned-claude-opus-4-7').parentElement!.className).toContain(
-      'touch:hidden',
+      'has-touch:hidden',
     )
 
     // Only the selected row gets the gear; it's touch-only via CSS.
     expect(screen.queryByTestId('model-family-sonnet-versions')).not.toBeInTheDocument()
     const gear = screen.getByTestId('model-family-opus-versions')
-    expect(gear.className).toContain('touch:inline-flex')
+    expect(gear.className).toContain('has-touch:inline-flex')
 
     // Gear toggles the nested menu: a "· latest" row plus one row per version.
     expect(screen.queryByTestId('model-version-claude-opus-4-7')).not.toBeInTheDocument()
@@ -268,6 +271,47 @@ describe('ModelFamilyList', () => {
     // …and toggles closed.
     await user.click(gear)
     expect(screen.queryByTestId('model-version-claude-opus-4-7')).not.toBeInTheDocument()
+  })
+
+  it('closes the nested version menu when the selection leaves the row', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    // Stateful harness: picking really moves the selection between rows.
+    function Harness() {
+      const [value, setValue] = useState('claude-opus-4-8')
+      return (
+        <ModelFamilyList
+          catalog={CATALOG}
+          value={value}
+          onPick={(v) => {
+            onPick(v)
+            setValue(v)
+          }}
+        />
+      )
+    }
+    render(<Harness />)
+    await user.click(screen.getByTestId('model-family-opus-versions'))
+    expect(screen.getByTestId('model-version-claude-opus-4-7')).toBeInTheDocument()
+
+    // Move the selection to Sonnet, then back to Opus: the menu must come back
+    // CLOSED — stale-open state would shift the rows mid-interaction.
+    await user.click(screen.getByTestId('model-family-sonnet'))
+    expect(screen.queryByTestId('model-version-claude-opus-4-7')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('model-family-opus'))
+    expect(screen.queryByTestId('model-version-claude-opus-4-7')).not.toBeInTheDocument()
+  })
+
+  it('standalone models keep their own brand icon on the row', () => {
+    const withStandalone: ModelDefinition[] = [
+      ...CATALOG,
+      { id: 'local-llama', label: 'Llama 3 8B', icon: 'uploaded:my-provider.png', supportedEfforts: STD },
+    ]
+    render(<ModelFamilyList catalog={withStandalone} value="claude-opus-4-8" onPick={vi.fn()} />)
+    // Uploaded icons pool the model under the "Other" tab, where the row icon
+    // is the only thing distinguishing same-named custom-provider models.
+    fireEvent.click(screen.getByTestId('model-vendor-tab-other'))
+    expect(screen.getByTestId('model-option-local-llama').querySelector('img, svg')).not.toBeNull()
   })
 
   it('the nested version menu stores the bare alias from its latest row in settings mode', async () => {

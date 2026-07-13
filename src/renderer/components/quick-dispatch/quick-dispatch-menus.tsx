@@ -101,7 +101,7 @@ export function AgentMenu({
 }
 
 export function ModelEffortMenu({ state, maxHeight }: { state: ComposerOptionsState; maxHeight: number }) {
-  const { effort, setEffort, model, setModel, catalog } = state
+  const { effort, setEffort, model, setModel, catalog, webProvider } = state
   const selected =
     findCatalogModel(model, catalog) ?? catalog.find((m) => m.family === 'sonnet' && m.isLatest) ?? catalog[0]
   const efforts = EFFORT_LEVELS.filter((l) => (selected ? selected.supportedEfforts.includes(l) : true))
@@ -113,7 +113,10 @@ export function ModelEffortMenu({ state, maxHeight }: { state: ComposerOptionsSt
     // the pinned effort row; `min-h-0` lets the list actually shrink to scroll.
     <div className="flex flex-col" style={{ maxHeight }}>
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pt-2">
-        <ModelFamilyList header="Model" catalog={catalog} value={model} onPick={setModel} />
+        {/* webProvider silences the web-tools warning when a configured host
+            vendor already makes web tools work on any model — without it this
+            picker contradicted the composer's. */}
+        <ModelFamilyList header="Model" catalog={catalog} value={model} onPick={setModel} webProvider={webProvider} />
       </div>
       <div className="shrink-0 px-1 pb-1 pt-2">
         <SectionHeader>Effort</SectionHeader>
