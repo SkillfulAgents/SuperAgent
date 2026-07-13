@@ -758,7 +758,6 @@ describe('MessageInput', () => {
     )
 
     await user.click(screen.getByTestId('composer-options-trigger'))
-    await user.click(await screen.findByTestId('model-family-haiku'))
     await user.click(await screen.findByTestId('model-pinned-claude-haiku-4-5'))
 
     const input = screen.getByTestId('message-input')
@@ -781,11 +780,9 @@ describe('MessageInput', () => {
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
 
-    // Effort keeps the popover open, so the model pick follows in the same
-    // visit (the model pick is what closes it).
+    // Neither pick dismisses the popover, so both knobs get set in one session.
     await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('effort-option-low'))
-    await user.click(await screen.findByTestId('model-family-sonnet'))
     await user.click(await screen.findByTestId('model-pinned-claude-sonnet-4-6'))
 
     const input = screen.getByTestId('message-input')

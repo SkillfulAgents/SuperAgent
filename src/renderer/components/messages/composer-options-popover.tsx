@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type ReactNode } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -8,14 +8,6 @@ import { EFFORT_LEVELS } from '@shared/lib/container/types'
 import { type ComposerOptionsState } from './composer-options'
 import { ModelFamilyList, findCatalogModel } from './model-family-list'
 import { EFFORT_LABELS, EffortSection } from './effort-slider'
-
-function SectionHeader({ children }: { children: ReactNode }) {
-  return (
-    <div className="px-2 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-      {children}
-    </div>
-  )
-}
 
 interface ComposerOptionsPopoverProps {
   state: ComposerOptionsState
@@ -80,28 +72,30 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
           <ChevronDown className="h-3.5 w-3.5" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-80 px-1 py-2" align="start">
+      <PopoverContent
+        className="w-64 px-1 py-2"
+        align="start"
+        // Don't auto-focus the first element (a vendor tab) on open — focusing
+        // it pops its name tooltip instantly. Keyboard users can Tab in.
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
         {selectedModel && (
           <>
-            <SectionHeader>Models</SectionHeader>
-            {/* Grouped by family, no "latest" — per-message picks a concrete version. */}
+            {/* Flat list, no "latest" — per-message picks a concrete version.
+                The "Models" label renders inside, below the vendor tabs.
+                Picks never dismiss: model and effort get tuned together, and the
+                popover closes only on outside click / Escape / trigger toggle. */}
             <ModelFamilyList
+              header="Models"
               catalog={catalog}
               value={model}
-              onPick={(value) => {
-                setModel(value)
-                setOpen(false)
-              }}
-              // One click on a family selects its latest and expands (no close),
-              // so the 90% who just want the latest are done in a single click.
-              onSelectFamilyLatest={(value) => setModel(value)}
+              onPick={setModel}
               webProvider={webProvider}
             />
-            {includeEffort && <Separator className="my-2" />}
+            {includeEffort && <Separator className="my-2 bg-border/50" />}
           </>
         )}
         {includeEffort && (
-          /* Effort changes never dismiss — the slider invites adjustment. */
           <EffortSection levels={visibleEfforts} value={effort} onChange={setEffort} />
         )}
       </PopoverContent>
