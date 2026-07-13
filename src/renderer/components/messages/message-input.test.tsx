@@ -781,10 +781,10 @@ describe('MessageInput', () => {
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
 
-    // Picking an option closes the popover, so reopen between picks.
+    // Effort keeps the popover open, so the model pick follows in the same
+    // visit (the model pick is what closes it).
     await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('effort-option-low'))
-    await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('model-family-sonnet'))
     await user.click(await screen.findByTestId('model-pinned-claude-sonnet-4-6'))
 

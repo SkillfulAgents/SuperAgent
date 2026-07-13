@@ -100,7 +100,7 @@ describe('ComposerOptionsPopover', () => {
     expect(screen.queryByText('Models')).not.toBeInTheDocument()
   })
 
-  it('selecting an effort calls setEffort and closes the popover', async () => {
+  it('selecting an effort calls setEffort and keeps the popover open', async () => {
     const user = userEvent.setup()
     const setEffort = vi.fn()
     render(
@@ -118,7 +118,8 @@ describe('ComposerOptionsPopover', () => {
     await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('effort-option-low'))
     expect(setEffort).toHaveBeenCalledWith('low')
-    expect(screen.queryByText('Effort')).not.toBeInTheDocument()
+    // The slider stays put so effort can be adjusted repeatedly.
+    expect(screen.getByText('Effort')).toBeInTheDocument()
   })
 
   it('hides Extra High and Max when a non-Opus model is selected', async () => {
