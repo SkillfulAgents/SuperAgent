@@ -723,11 +723,28 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
   const browserAuthHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
   if (proxyToken) browserAuthHeaders['Authorization'] = `Bearer ${proxyToken}`;
 
-  const response = await fetch(`${hostAppUrl}/api/browser/launch-host-browser`, {
-    method: 'POST',
-    headers: browserAuthHeaders,
-    body: JSON.stringify({ agentId: agentId || 'default' }),
-  });
+  // A network-level failure here means the launch request never reached the
+  // host app at all — the host never launches Chrome and never reports to
+  // Sentry, so this bare 'fetch failed' used to be the only trace. On Windows
+  // it is almost always Windows Firewall blocking the app's API port for
+  // container (WSL2) traffic, e.g. after the first-run firewall prompt was
+  // dismissed. Surface that diagnosis instead.
+  let response: Response;
+  try {
+    response = await fetch(`${hostAppUrl}/api/browser/launch-host-browser`, {
+      method: 'POST',
+      headers: browserAuthHeaders,
+      body: JSON.stringify({ agentId: agentId || 'default' }),
+    });
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Could not reach the host app at ${hostAppUrl} to launch the browser (${cause}). ` +
+      `Connections from the agent container to the host machine appear to be blocked — on Windows this is usually ` +
+      `Windows Defender Firewall blocking the app (open "Allow an app through Windows Firewall" and enable it for both Private and Public networks), ` +
+      `or third-party antivirus. Ask the user to allow the app through their firewall, then try again.`
+    );
+  }
 
   if (!response.ok) {
     const body = await response.text();
