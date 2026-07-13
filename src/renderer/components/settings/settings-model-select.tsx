@@ -19,6 +19,14 @@ interface SettingsModelSelectProps {
   effort?: EffortLevel
   onEffortChange?: (effort: EffortLevel) => void
   disabled?: boolean
+  /**
+   * Which trigger edge the popover anchors to. Picks rewrite the trigger label
+   * live, so its width changes while the popover is open — anchor to the edge
+   * the host layout keeps FIXED or the popover slides on every selection.
+   * 'end' (default) for right-aligned rows (settings rows, the agent-home
+   * card); 'start' for left-aligned hosts (the trigger/cron runtime card).
+   */
+  align?: 'start' | 'end'
 }
 
 /**
@@ -38,6 +46,7 @@ function SettingsModelSelectImpl({
   effort = 'medium',
   onEffortChange,
   disabled,
+  align = 'end',
 }: SettingsModelSelectProps) {
   const { data: settings } = useSettings()
   const [open, setOpen] = useState(false)
@@ -100,8 +109,9 @@ function SettingsModelSelectImpl({
         </Button>
       </PopoverTrigger>
       <PopoverContent
-        className="w-64 px-1 py-2"
-        align="start"
+        className="flex w-64 flex-col px-1 py-2 data-[side=bottom]:flex-col-reverse"
+        align={align}
+        collisionPadding={8}
         // Don't auto-focus the first element (a vendor tab) on open — focusing
         // it pops its name tooltip instantly. Keyboard users can Tab in.
         onOpenAutoFocus={(e) => e.preventDefault()}

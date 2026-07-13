@@ -213,7 +213,10 @@ export function EffortSection({
   onChange: (level: EffortLevel) => void
 }) {
   return (
-    <>
+    // A real wrapper (not a fragment): hosts reverse the popover column to keep
+    // this section nearest the trigger, and a fragment's children would get
+    // reordered individually (slider above its own header).
+    <div>
       <div className="flex items-center justify-between px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground/70">
         <span>
           <span>Effort</span>
@@ -238,6 +241,6 @@ export function EffortSection({
         </TooltipProvider>
       </div>
       <EffortSlider levels={levels} value={value} onChange={onChange} />
-    </>
+    </div>
   )
 }
