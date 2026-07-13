@@ -89,6 +89,18 @@ vi.mock('@shared/lib/error-reporting', () => ({
   addErrorBreadcrumb: vi.fn(),
 }))
 
+// The recovery restores the image via ensureImageReady()'s primitives (build
+// in dev, pull in packaged apps — the bundled Lima VM has no buildkit, so the
+// old build-only ensureImageExists() fallback can never restore it there).
+const pullImageMock = vi.fn((_runner: string, _image: string) => Promise.resolve())
+const buildImageMock = vi.fn((_runner: string, _image: string) => Promise.resolve())
+let canBuild = false
+vi.mock('./client-factory', () => ({
+  canBuildImage: vi.fn(() => canBuild),
+  pullImage: (runner: string, image: string) => pullImageMock(runner, image),
+  buildImage: (runner: string, image: string) => buildImageMock(runner, image),
+}))
+
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: vi.fn(() => ({
     enableToolSearch: false,
@@ -151,25 +163,43 @@ describe('start() recovers from a corrupt image snapshot', () => {
     execCommands.length = 0
     runScript = []
     runAttempts = 0
+    canBuild = false
+    pullImageMock.mockClear()
+    buildImageMock.mockClear()
   })
 
-  it('removes the image, recreates it, and retries the run once', async () => {
+  it('removes the image, re-pulls it (packaged app), and retries the run once', async () => {
     runScript = [CORRUPT_SNAPSHOT_MSG, 'ok']
     const client = new TestContainerClient({ agentId: 'abc123' } as ContainerConfig)
 
     await client.start()
 
-    const rmiIndex = execCommands.findIndex((c) => c.includes(`rmi -f ${IMAGE}`))
-    expect(rmiIndex).toBeGreaterThanOrEqual(0)
-
-    // ensureImageExists() runs again after the removal (image inspect follows
-    // the rmi), so a rebuilt/re-pulled image backs the retry.
-    const inspectAfterRmi = execCommands
-      .slice(rmiIndex + 1)
-      .some((c) => c.includes(`image inspect ${IMAGE}`))
-    expect(inspectAfterRmi).toBe(true)
-
+    expect(execCommands.some((c) => c.includes(`rmi -f ${IMAGE}`))).toBe(true)
+    // No build context (packaged app) → the registry pull restores the image.
+    expect(pullImageMock).toHaveBeenCalledWith('docker', IMAGE)
+    expect(buildImageMock).not.toHaveBeenCalled()
     expect(countRunAttempts()).toBe(2)
+  })
+
+  it('rebuilds instead of pulling when a local build context exists (dev)', async () => {
+    canBuild = true
+    runScript = [CORRUPT_SNAPSHOT_MSG, 'ok']
+    const client = new TestContainerClient({ agentId: 'abc123' } as ContainerConfig)
+
+    await client.start()
+
+    expect(buildImageMock).toHaveBeenCalledWith('docker', IMAGE)
+    expect(pullImageMock).not.toHaveBeenCalled()
+    expect(countRunAttempts()).toBe(2)
+  })
+
+  it('surfaces the original error when the re-pull itself fails', async () => {
+    pullImageMock.mockRejectedValueOnce(new Error('Image pull failed with exit code 1'))
+    runScript = [CORRUPT_SNAPSHOT_MSG]
+    const client = new TestContainerClient({ agentId: 'abc123' } as ContainerConfig)
+
+    await expect(client.start()).rejects.toThrow(/mount callback failed/i)
+    expect(countRunAttempts()).toBe(1)
   })
 
   it('gives up after one recovery attempt when the corruption persists', async () => {

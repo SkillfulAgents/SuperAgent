@@ -462,6 +462,25 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     await execWithPath(`${this.getRunnerShellCommand()} rmi -f ${image}`)
   }
 
+  /**
+   * Recreate the agent image after removeCorruptImage(). Mirrors
+   * ensureImageReady()'s decision: build from the local agent-container
+   * context when it exists (dev), otherwise pull from the registry — the
+   * packaged app has no build context, and the bundled Lima VM has no
+   * buildkit, so `build` is never an option there (ensureImageExists()'s
+   * build-only fallback hard-fails on Lima). Lazy import avoids a
+   * base-client ↔ client-factory module cycle.
+   */
+  protected async recreateImage(image: string): Promise<void> {
+    const { canBuildImage, buildImage, pullImage } = await import('./client-factory')
+    const runner = getSettings().container.containerRunner as import('./client-factory').ContainerRunner
+    if (canBuildImage()) {
+      await buildImage(runner, image)
+    } else {
+      await pullImage(runner, image)
+    }
+  }
+
   protected getContainerName(): string {
     return `superagent-${this.config.agentId}`
   }
@@ -701,7 +720,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
               addErrorBreadcrumb({ category: 'container', message: 'Corrupt image snapshot, removing image and recreating', data: { image, agentId: this.config.agentId } })
               try {
                 await this.removeCorruptImage(image)
-                await this.ensureImageExistsWithRecovery()
+                await this.recreateImage(image)
                 captureMessage('Recovered from corrupt container image snapshot', {
                   level: 'warning',
                   tags: { component: 'container', operation: 'corrupt-image-recovery' },
