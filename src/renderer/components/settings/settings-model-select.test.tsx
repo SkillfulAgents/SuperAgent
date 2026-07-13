@@ -37,14 +37,13 @@ beforeEach(() => {
   })
 })
 
-describe('SettingsModelSelect (two-layered)', () => {
+describe('SettingsModelSelect (flat picker)', () => {
   it('stores the bare family alias when "latest" is picked', async () => {
     const user = userEvent.setup()
     const onModelChange = vi.fn()
     render(<SettingsModelSelect model="claude-haiku-4-5" onModelChange={onModelChange} />)
 
     await user.click(screen.getByTestId('settings-model-trigger'))
-    await user.click(await screen.findByTestId('model-family-opus'))
     await user.click(await screen.findByTestId('model-latest-opus'))
 
     expect(onModelChange).toHaveBeenCalledWith('opus')
@@ -56,7 +55,6 @@ describe('SettingsModelSelect (two-layered)', () => {
     render(<SettingsModelSelect model="claude-haiku-4-5" onModelChange={onModelChange} />)
 
     await user.click(screen.getByTestId('settings-model-trigger'))
-    await user.click(await screen.findByTestId('model-family-opus'))
     await user.click(await screen.findByTestId('model-pinned-claude-opus-4-7'))
 
     expect(onModelChange).toHaveBeenCalledWith('claude-opus-4-7')

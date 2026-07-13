@@ -71,14 +71,15 @@ describe('ComposerOptionsPopover', () => {
     await user.click(screen.getByTestId('composer-options-trigger'))
     expect(await screen.findByText('Models')).toBeInTheDocument()
     expect(screen.getByText('Effort')).toBeInTheDocument()
-    expect(screen.getByTestId('model-family-haiku')).toBeInTheDocument()
-    expect(screen.getByTestId('model-family-sonnet')).toBeInTheDocument()
-    expect(screen.getByTestId('model-family-opus')).toBeInTheDocument()
+    // Flat list: concrete versions are top-level rows, no family headers.
+    expect(screen.getByTestId('model-pinned-claude-haiku-4-5')).toBeInTheDocument()
+    expect(screen.getByTestId('model-pinned-claude-sonnet-4-6')).toBeInTheDocument()
+    expect(screen.getByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
     // Composer never offers the bare-alias "latest" row.
     expect(screen.queryByTestId('model-latest-opus')).not.toBeInTheDocument()
   })
 
-  it('expanding a family and picking a version calls setModel with the concrete id', async () => {
+  it('picking a version calls setModel with the concrete id and keeps the popover open', async () => {
     const user = userEvent.setup()
     const setModel = vi.fn()
     render(
@@ -94,13 +95,13 @@ describe('ComposerOptionsPopover', () => {
       />
     )
     await user.click(screen.getByTestId('composer-options-trigger'))
-    await user.click(await screen.findByTestId('model-family-opus'))
     await user.click(await screen.findByTestId('model-pinned-claude-opus-4-8'))
     expect(setModel).toHaveBeenCalledWith('claude-opus-4-8')
-    expect(screen.queryByText('Models')).not.toBeInTheDocument()
+    // Stays open so model + effort can be tuned together.
+    expect(screen.getByText('Models')).toBeInTheDocument()
   })
 
-  it('selecting an effort calls setEffort and closes the popover', async () => {
+  it('selecting an effort calls setEffort and keeps the popover open', async () => {
     const user = userEvent.setup()
     const setEffort = vi.fn()
     render(
@@ -118,7 +119,8 @@ describe('ComposerOptionsPopover', () => {
     await user.click(screen.getByTestId('composer-options-trigger'))
     await user.click(await screen.findByTestId('effort-option-low'))
     expect(setEffort).toHaveBeenCalledWith('low')
-    expect(screen.queryByText('Effort')).not.toBeInTheDocument()
+    // The slider stays put so you can keep adjusting model + effort together.
+    expect(screen.getByText('Effort')).toBeInTheDocument()
   })
 
   it('hides Extra High and Max when a non-Opus model is selected', async () => {
@@ -144,7 +146,6 @@ describe('ComposerOptionsPopover', () => {
     render(<Harness initialModel="claude-opus-4-8" initialEffort="xhigh" />)
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · Extra High')
     await user.click(screen.getByTestId('composer-options-trigger'))
-    await user.click(await screen.findByTestId('model-family-sonnet'))
     await user.click(await screen.findByTestId('model-pinned-claude-sonnet-4-6'))
     expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · Medium')
   })

@@ -55,11 +55,11 @@ function EffortRow({ label, isSelected, onClick, testId }: {
  * The two-layered model picker used by saved-setting selectors (default model,
  * summarizer, browser, scheduled-job/trigger, chat integration).
  *
- * The grouped family/version list is the shared {@link ModelFamilyList}, here
- * with `offerLatest` on: each family expands to **Latest** (stores the bare
- * alias, rides upgrades) plus **specific versions** (store the concrete id,
- * pinned), labeled `· latest` / `· pinned`. Reads and writes the raw selection
- * string — resolution happens host-side.
+ * The flat model list is the shared {@link ModelFamilyList}, here with
+ * `offerLatest` on: each family shows a **Latest** row (stores the bare alias,
+ * rides upgrades) plus its **specific versions** (store the concrete id, pinned),
+ * labeled `· latest` / `· pinned`. Reads and writes the raw selection string —
+ * resolution happens host-side.
  */
 function SettingsModelSelectImpl({
   model,
@@ -128,24 +128,19 @@ function SettingsModelSelectImpl({
           <ChevronDown className="h-3.5 w-3.5" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-80 px-1 py-2" align="start">
-        <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Model
-        </div>
+      <PopoverContent className="w-64 px-1 py-2" align="start">
         <ModelFamilyList
+          header="Model"
           catalog={catalog}
           value={model}
           onPick={pick}
           offerLatest
-          // Family click = that family's latest, stored as the bare alias (same
-          // as the "· latest" row). Stays open so a pinned version is one tap away.
-          onSelectFamilyLatest={(_latestId, family) => onModelChange(family)}
           webProvider={settings?.webProvider}
         />
         {includeEffort && (
           <>
             <Separator className="my-2" />
-            <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            <div className="px-2 pb-1 text-[11px] font-medium text-muted-foreground/70">
               Effort
             </div>
             <div className="flex flex-col gap-0.5">

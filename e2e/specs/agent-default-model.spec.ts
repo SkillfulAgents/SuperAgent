@@ -67,13 +67,13 @@ test.describe('Per-agent default model', () => {
     await expect(card).toBeVisible()
     await expect(page.locator('[data-testid="home-default-model-reset"]')).not.toBeVisible()
 
-    // One click on the family header selects that family's latest (bare alias)
-    // and keeps the popover open...
+    // The flat list shows a "Haiku · latest" row (stores the bare alias) …
     await card.locator('[data-testid="settings-model-trigger"]').click()
-    await page.locator('[data-testid="model-family-haiku"]').click()
+    await page.locator('[data-testid="model-latest-haiku"]').click()
     await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText('Haiku · latest')
 
-    // ...with the versions expanded, so pinning a concrete one is one tap away.
+    // … and the concrete versions right below it, so pinning one is one tap away.
+    await card.locator('[data-testid="settings-model-trigger"]').click()
     await page.locator(`[data-testid="model-pinned-${HAIKU_PINNED}"]`).click()
     await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText('Haiku 4.5')
 

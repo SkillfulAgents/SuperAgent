@@ -48,13 +48,13 @@ describe('longContextWarningText', () => {
 
   it('frames the threshold as a share of the context window when known', () => {
     expect(longContextWarningText(cliff, 1_050_000)).toBe(
-      'Note: beyond about 26% of the context window, input pricing rises 2× and output 1.5×.',
+      'Beyond about 26% of the context window, requests cost roughly 2× as much. Starting a new session resets this.',
     )
   })
 
   it('falls back to a token count when the context window is unknown', () => {
     expect(longContextWarningText(cliff)).toBe(
-      'Note: beyond ~272K tokens of context, input pricing rises 2× and output 1.5×.',
+      'Beyond ~272K tokens of context, requests cost roughly 2× as much. Starting a new session resets this.',
     )
   })
 })
@@ -85,21 +85,31 @@ describe('findCatalogModel', () => {
 })
 
 describe('ModelFamilyList', () => {
-  it('lists versions newest-first within a family', async () => {
-    // Opus owns the selection → auto-expanded. Read the pinned rows in DOM order.
-    const { container } = render(<ModelFamilyList catalog={CATALOG} value="opus" onPick={vi.fn()} />)
-    await screen.findByTestId('model-pinned-claude-opus-4-8')
-    const ids = Array.from(container.querySelectorAll('[data-testid^="model-pinned-"]')).map((el) =>
-      el.getAttribute('data-testid'),
+  it('collapses a lineage family to one row with version pin chips, newest-first', async () => {
+    const onPick = vi.fn()
+    const user = userEvent.setup()
+    const { container } = render(<ModelFamilyList catalog={CATALOG} value="opus" onPick={onPick} />)
+    // One row for the whole Opus line…
+    const row = screen.getByTestId('model-family-opus')
+    expect(row).toHaveTextContent('Opus')
+    // …with a chip per version (family prefix stripped), newest-first.
+    const ids = Array.from(container.querySelectorAll('[data-testid^="model-pinned-claude-opus"]')).map(
+      (el) => el.getAttribute('data-testid'),
     )
     expect(ids).toEqual([
       'model-pinned-claude-opus-4-8',
       'model-pinned-claude-opus-4-7',
       'model-pinned-claude-opus-4-6',
     ])
+    expect(screen.getByTestId('model-pinned-claude-opus-4-7')).toHaveTextContent('4.7')
+    // Chip pins that concrete version; the row label picks the family latest.
+    await user.click(screen.getByTestId('model-pinned-claude-opus-4-7'))
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-4-7')
+    await user.click(row)
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-4-8')
   })
 
-  it('picks the concrete id of a chosen version', async () => {
+  it('picks the concrete id of a chosen version directly, no drill-in', async () => {
     const user = userEvent.setup()
     const onPick = vi.fn()
     render(<ModelFamilyList catalog={CATALOG} value="opus" onPick={onPick} />)
@@ -107,42 +117,84 @@ describe('ModelFamilyList', () => {
     expect(onPick).toHaveBeenCalledWith('claude-opus-4-7')
   })
 
-  it('one-click on a family selects its latest and expands, without closing (composer mode)', async () => {
-    const user = userEvent.setup()
-    const onPick = vi.fn()
-    const onSelectFamilyLatest = vi.fn()
-    // Sonnet is selected, so opus starts collapsed.
-    render(
-      <ModelFamilyList
-        catalog={CATALOG}
-        value="claude-sonnet-4-6"
-        onPick={onPick}
-        onSelectFamilyLatest={onSelectFamilyLatest}
-      />,
-    )
-    expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
-    await user.click(screen.getByTestId('model-family-opus'))
-    // selects the family's latest concrete id (family alias alongside, for
-    // callers that store "latest" as the bare alias), and does NOT take the close path
-    expect(onSelectFamilyLatest).toHaveBeenCalledWith('claude-opus-4-8', 'opus')
-    expect(onPick).not.toHaveBeenCalled()
-    // and expands so the rest are one tap away
-    expect(await screen.findByTestId('model-pinned-claude-opus-4-7')).toBeInTheDocument()
+  it('shows all vendor models flat at once (Sonnet selected still lists every Opus version)', () => {
+    render(<ModelFamilyList catalog={CATALOG} value="claude-sonnet-4-6" onPick={vi.fn()} />)
+    // Nothing is collapsed: a different family's versions are present without a click.
+    expect(screen.getByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
+    expect(screen.getByTestId('model-pinned-claude-sonnet-4-6')).toBeInTheDocument()
   })
 
-  it('without onSelectFamilyLatest a family click only toggles expansion (settings mode)', async () => {
+  it('collapses non-lineage models sharing a versioned label base (GPT-5.6 tiers) into one chip row', async () => {
     const user = userEvent.setup()
     const onPick = vi.fn()
-    render(<ModelFamilyList catalog={CATALOG} value="claude-sonnet-4-6" onPick={onPick} offerLatest />)
-    expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
-    await user.click(screen.getByTestId('model-family-opus'))
-    expect(onPick).not.toHaveBeenCalled() // expanding alone doesn't select
-    expect(await screen.findByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
+    const platformStyle: ModelDefinition[] = [
+      { id: 'gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-5.5', label: 'GPT-5.5', family: 'gpt', icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', family: 'gpt', icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', family: 'gpt', icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD },
+    ]
+    render(<ModelFamilyList catalog={platformStyle} value="gpt-5.5" onPick={onPick} />)
+    // One row for the 5.6 line, chips per tier (newest-first), suffix-only labels.
+    const row = screen.getByTestId('model-family-gpt-5.6')
+    expect(row).toHaveTextContent('GPT-5.6')
+    expect(screen.getByTestId('model-pinned-gpt-5.6-sol')).toHaveTextContent('Sol')
+    expect(screen.getByTestId('model-pinned-gpt-5.6-terra')).toHaveTextContent('Terra')
+    expect(screen.getByTestId('model-pinned-gpt-5.6-luna')).toHaveTextContent('Luna')
+    // 5.5 and 5.4 stay single rows (their labels carry no variant word).
+    expect(screen.getByTestId('model-pinned-gpt-5.5')).toHaveTextContent('GPT-5.5')
+    expect(screen.getByTestId('model-pinned-gpt-5.4')).toHaveTextContent('GPT-5.4')
+    // Row click picks the line's latest tier; a chip pins a specific one.
+    await user.click(row)
+    expect(onPick).toHaveBeenLastCalledWith('gpt-5.6-sol')
+    await user.click(screen.getByTestId('model-pinned-gpt-5.6-luna'))
+    expect(onPick).toHaveBeenLastCalledWith('gpt-5.6-luna')
   })
 
-  it('renders acronym family headers upper-cased (GPT)', () => {
+  it('offers a per-family "latest" alias row in settings mode', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={onPick} offerLatest />)
+    await user.click(screen.getByTestId('model-latest-gpt'))
+    expect(onPick).toHaveBeenCalledWith('gpt') // stores the bare alias (rides upgrades)
+  })
+
+  it('hides vendor tabs when the catalog has a single vendor', () => {
+    const claudeOnly = CATALOG.filter((m) => m.icon === 'anthropic')
+    render(<ModelFamilyList catalog={claudeOnly} value="claude-opus-4-8" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-vendor-tab-anthropic')).not.toBeInTheDocument()
+  })
+
+  it('vendor tabs are icon-only with the name as accessible label', () => {
     render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
-    expect(screen.getByTestId('model-family-gpt')).toHaveTextContent('GPT')
+    const tab = screen.getByTestId('model-vendor-tab-openai')
+    expect(tab).toHaveAccessibleName('OpenAI')
+    expect(tab).not.toHaveTextContent(/OpenAI/) // name lives in the tooltip, not the tab
+    expect(screen.getByTestId('model-vendor-tab-anthropic')).toHaveAccessibleName('Anthropic')
+  })
+
+  it('opens on the selection vendor tab and filters the list to it', () => {
+    render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)
+    expect(screen.getByTestId('model-vendor-tab-openai')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('model-pinned-openai/gpt-5.5')).toBeInTheDocument()
+    expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
+  })
+
+  it('switching vendor tab swaps the model list without picking a model', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={onPick} />)
+    expect(screen.getByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
+    expect(screen.queryByTestId('model-pinned-openai/gpt-5.5')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('model-vendor-tab-openai'))
+    expect(screen.getByTestId('model-pinned-openai/gpt-5.5')).toBeInTheDocument()
+    expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
+    expect(onPick).not.toHaveBeenCalled()
+
+    // Round-trip back: the Anthropic models return, selection intact.
+    await user.click(screen.getByTestId('model-vendor-tab-anthropic'))
+    expect(screen.getByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
   })
 
   it('warns when a non-Claude model lacks web tools and no vendor is set, and not for Claude', () => {
@@ -167,15 +219,28 @@ describe('ModelFamilyList', () => {
     expect(screen.getByTestId('model-no-websearch-warning')).toBeInTheDocument()
   })
 
-  it('warns about the long-context price cliff for GPT, and not for flat-priced Claude', () => {
+  it('notes the long-context price cliff for GPT at the end of the list, and not for flat-priced Claude', () => {
     const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)
-    const warning = screen.getByTestId('model-long-context-cliff-warning')
-    // 272K / 1.05M ≈ 26% of the context window; input/output multipliers spelled out.
-    expect(warning).toHaveTextContent('26% of the context window')
-    expect(warning).toHaveTextContent('input pricing rises 2× and output 1.5×')
+    const note = screen.getByTestId('model-long-context-cliff-warning')
+    // Plain-language footnote naming the family generation (shared label
+    // prefix); mechanics live behind the hover tooltip.
+    expect(note).toHaveTextContent('Long chats cost more on GPT-5 models')
+    expect(screen.getByTestId('model-long-context-cliff-info')).toBeInTheDocument()
 
     rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
     expect(screen.queryByTestId('model-long-context-cliff-warning')).not.toBeInTheDocument()
+  })
+
+  it('hides the cliff note when browsing a tab that does not own the selection', async () => {
+    const user = userEvent.setup()
+    render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)
+    expect(screen.getByTestId('model-long-context-cliff-warning')).toBeInTheDocument()
+    // Switch to the Anthropic tab — the GPT selection's note would read as
+    // being about Claude models, so it hides until you're back on OpenAI.
+    await user.click(screen.getByTestId('model-vendor-tab-anthropic'))
+    expect(screen.queryByTestId('model-long-context-cliff-warning')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('model-vendor-tab-openai'))
+    expect(screen.getByTestId('model-long-context-cliff-warning')).toBeInTheDocument()
   })
 
   it('offers a "latest" row only when offerLatest is set', async () => {
