@@ -26,7 +26,12 @@ export interface FirewallStatus {
   blocked: boolean
   /** Display names of the enabled Inbound Block rules targeting our exe. */
   blockRuleNames: string[]
-  /** Win11 24H2+: the Hyper-V firewall layer for WSL defaults inbound to Block. */
+  /**
+   * Win11 24H2+: the Hyper-V firewall's WSL inbound default is Block.
+   * INFORMATIONAL ONLY — this setting governs traffic INTO the WSL VM, not
+   * WSL→host (our container→host path), and Block is a common stock default,
+   * so it must never gate the banner. Kept for Sentry telemetry.
+   */
   hyperVInboundBlock: boolean
 }
 
@@ -111,10 +116,13 @@ function detectionScript(): string {
   ].join('\n')
 }
 
-function fixScript(includeHyperV: boolean): string {
+function fixScript(): string {
   const exe = psQuote(process.execPath)
   const name = psQuote(ruleDisplayName())
-  const lines = [
+  // Deliberately does NOT touch Get/Set-NetFirewallHyperVVMSetting: that layer
+  // guards traffic into the WSL VM (Block is a stock default) and is unrelated
+  // to our WSL→host path — "fixing" it would weaken a default protection.
+  return [
     `$ErrorActionPreference = 'Stop'`,
     `$p = ${exe}`,
     // Only rules whose application filter targets OUR exe are touched.
@@ -122,13 +130,8 @@ function fixScript(includeHyperV: boolean): string {
     `if (-not (Get-NetFirewallRule -DisplayName ${name} -ErrorAction SilentlyContinue)) {`,
     `  New-NetFirewallRule -DisplayName ${name} -Direction Inbound -Program $p -Action Allow -Profile Any | Out-Null`,
     `}`,
-  ]
-  if (includeHyperV) {
-    // Scoped to the WSL VM creator only — not the machine-wide default.
-    lines.push(`Set-NetFirewallHyperVVMSetting -Name '${WSL_VM_CREATOR_ID}' -DefaultInboundAction Allow`)
-  }
-  lines.push(`exit 0`)
-  return lines.join('\n')
+    `exit 0`,
+  ].join('\n')
 }
 
 async function runDetection(): Promise<FirewallStatus> {
@@ -141,7 +144,10 @@ async function runDetection(): Promise<FirewallStatus> {
     const parsed = firewallProbeOutputSchema.parse(JSON.parse(stdout.trim()))
     const status: FirewallStatus = {
       supported: true,
-      blocked: parsed.blockRules.length > 0 || parsed.hyperVInboundBlock,
+      // ONLY explicit Block rules against our exe count — the Hyper-V WSL
+      // inbound default is Block on healthy Win11 24H2 machines and guards a
+      // different traffic direction, so it must never trigger the banner.
+      blocked: parsed.blockRules.length > 0,
       blockRuleNames: parsed.blockRules.map((r) => r.displayName || r.name),
       hyperVInboundBlock: parsed.hyperVInboundBlock,
     }
@@ -196,7 +202,7 @@ export async function fixFirewallBlock(): Promise<FixResult> {
 
   const scriptPath = path.join(os.tmpdir(), `gamut-firewall-fix-${Date.now()}.ps1`)
   try {
-    fs.writeFileSync(scriptPath, fixScript(current.hyperVInboundBlock), { mode: 0o600 })
+    fs.writeFileSync(scriptPath, fixScript(), { mode: 0o600 })
 
     // Outer (non-elevated) PowerShell launches the elevated one so we get a
     // real UAC prompt and can distinguish "user declined" from "script failed".

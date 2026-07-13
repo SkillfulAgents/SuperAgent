@@ -103,14 +103,15 @@ describe('getFirewallStatus', () => {
     expect(status.blockRuleNames).toEqual(['gamut.exe'])
   })
 
-  it('treats a Hyper-V WSL inbound-block default as blocked even with no rules', async () => {
+  it('never treats the Hyper-V WSL inbound-block default as blocked — it is a stock Win11 24H2 posture guarding traffic INTO the VM, not WSL→host', async () => {
     setPlatform('win32')
     h.responses.push({ stdout: JSON.stringify({ blockRules: [], hyperVInboundBlock: true }) })
 
     const status = await getFirewallStatus()
-    expect(status.blocked).toBe(true)
-    expect(status.hyperVInboundBlock).toBe(true)
+    expect(status.blocked).toBe(false)
+    expect(status.hyperVInboundBlock).toBe(true) // still surfaced for telemetry
     expect(status.blockRuleNames).toEqual([])
+    expect(h.captureMessage).not.toHaveBeenCalled()
   })
 
   it('never reports blocked when the probe itself fails', async () => {
@@ -195,16 +196,26 @@ describe('fixFirewallBlock', () => {
     if (!result.ok) expect(result.reason).toBe('failed')
   })
 
-  it('includes the Hyper-V remediation only when that layer was the blocker', async () => {
+  it('never mutates the Hyper-V firewall — a Hyper-V-only signal is not blocked, so the fix short-circuits', async () => {
+    setPlatform('win32')
+    h.responses.push({ stdout: JSON.stringify({ blockRules: [], hyperVInboundBlock: true }) })
+
+    const result = await fixFirewallBlock()
+    expect(result.ok).toBe(true)
+    expect(h.execFileMock).toHaveBeenCalledTimes(1) // detection only, no elevation
+  })
+
+  it('the fix script touches only our exe rules, never Hyper-V settings', async () => {
     setPlatform('win32')
     const fsMock = vi.mocked((await import('fs')).writeFileSync)
-    h.responses.push({ stdout: JSON.stringify({ blockRules: [], hyperVInboundBlock: true }) })
+    h.responses.push({ stdout: BLOCKED })
     h.responses.push({ stdout: '' })
     h.responses.push({ stdout: CLEAN })
 
     await fixFirewallBlock()
     const script = String(fsMock.mock.calls[fsMock.mock.calls.length - 1][1])
-    expect(script).toContain('Set-NetFirewallHyperVVMSetting')
+    expect(script).not.toContain('Set-NetFirewallHyperVVMSetting')
+    expect(script).toContain('New-NetFirewallRule')
   })
 })
 
