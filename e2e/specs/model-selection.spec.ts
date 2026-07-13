@@ -143,6 +143,8 @@ test.describe('Model selection', () => {
     await pickModel(page, 'haiku', HAIKU)
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="effort-option-low"]').click()
+    // Effort picks keep the popover open now — dismiss before sending.
+    await page.keyboard.press('Escape')
 
     await sessionPage.sendMessage(followUp)
 
@@ -163,6 +165,8 @@ test.describe('Model selection', () => {
     await pickModel(page, 'opus', OPUS_LATEST)
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="effort-option-xhigh"]').click()
+    // Effort picks keep the popover open now — dismiss before re-opening.
+    await page.keyboard.press('Escape')
 
     // Switch to Sonnet — the popover's auto-reset clamps effort back to Medium
     // since Sonnet doesn't allow xhigh.
