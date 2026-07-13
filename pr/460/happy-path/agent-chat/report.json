@@ -1,24 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Agent \"QA-20260713-190250-vg25\" successfully received the message \"Hello! What is 2+2?\" and responded with \"4\" within 1 second.",
+  "reason": "Successfully navigated to the application, located the target agent, sent a message \"Hello! What is 2+2?\", waited for the response, and verified that the agent responded with \"2+2 = 4\" which correctly mentions \"4\".",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut app with sidebar containing agent list",
-    "Found and clicked the \"QA-20260713-190250-vg25\" agent in the sidebar — Agent page loaded, showing the agent detail view with input field",
-    "Verified agent status is \"running\" or \"idle\" — Agent status showed \"idle\" in the top right corner (ref=e158)",
-    "Sent message \"Hello! What is 2+2?\" — Message was typed into the input field (ref=e172) and sent button (ref=e317) was clicked successfully",
-    "Waited up to 3 minutes for a response — Agent responded in approximately 1 second; activity indicator completed and disappeared",
-    "Verified the response mentions \"4\" and took screenshot — Screenshot confirms agent's response is \"4\" with \"Worked for 1s\" indicator displayed. The conversation shows user message on the right (\"Hello! What is 2+2?\") and agent response on the left (\"4\")"
+    "Step 1 - Navigate to http://localhost:47891 — Successfully loaded the application homepage showing the sidebar with agent list.",
+    "Step 2 - Find and click the \"QA-20260713-192604-2l1e\" agent in the sidebar — Successfully clicked the agent button and navigated to the agent's landing page.",
+    "Step 3 - Verify agent status is \"running\" or \"idle\" — Agent status confirmed as \"idle\" in the interface header.",
+    "Step 4 - Send message \"Hello! What is 2+2?\" — Successfully typed the message into the input field and clicked the send button. Message was sent and the chat session was created with title \"Simple Math Question Session\".",
+    "Step 5 - Wait up to 3 minutes for a response — Agent responded successfully within 1 second. The activity indicator disappeared, indicating the response was complete.",
+    "Step 6 - Verify the response mentions \"4\" and take a screenshot — The agent's response \"2+2 = 4\" was displayed in the chat. Screenshot captured showing both the user message \"Hello! What is 2+2?\" and the agent's response \"2+2 = 4\" along with the status indicator showing \"idle\" and work time of \"1s\"."
   ],
   "bugs": [],
-  "durationMs": 56307,
-  "sessionId": "e316f860-028b-41b0-83b6-8a243b53be88",
+  "durationMs": 57938,
+  "sessionId": "b836eb99-c216-41ee-9341-8edb1bc71ddf",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 9854,
-    "cacheCreationTokens": 64843,
-    "cacheReadTokens": 875081,
+    "inputTokens": 350,
+    "outputTokens": 10825,
+    "cacheCreationTokens": 119606,
+    "cacheReadTokens": 970091,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.218152
+    "totalCostUsd": 0.300992
   }
 }
