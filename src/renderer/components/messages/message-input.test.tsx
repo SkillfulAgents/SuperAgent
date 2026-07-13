@@ -84,6 +84,7 @@ describe('MessageInput', () => {
     mockStreamState.isActive = false
     mockStreamState.slashCommands = []
     mockSendMessage.isPending = false
+    mockInterruptSession.isPending = false
     mockIsOnline = true
     mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
     mockRuntimeStatus.isPending = false
@@ -128,13 +129,25 @@ describe('MessageInput', () => {
     expect(screen.getByTestId('message-input')).not.toBeDisabled()
   })
 
-  it('shows stop and send buttons when active', () => {
+  it('swaps stop for send while active as the user types, and back when cleared', async () => {
     mockStreamState.isActive = true
+    const user = userEvent.setup()
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
+
+    // Empty composer: only the stop button occupies the action slot
     expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, 'Follow up')
     expect(screen.getByTestId('send-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('stop-button')).not.toBeInTheDocument()
+
+    await user.clear(input)
+    expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
   })
 
   it('queues a message sent while the agent is active (localId, queued=true, no model/effort)', async () => {
@@ -819,6 +832,53 @@ describe('MessageInput', () => {
     expect(mockInterruptSession.mutateAsync).not.toHaveBeenCalled()
   })
 
+  it('typing during a pending interrupt keeps the disabled stop button and blocks Enter', async () => {
+    mockStreamState.isActive = true
+    mockInterruptSession.isPending = true
+    const user = userEvent.setup()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    await user.type(screen.getByTestId('message-input'), 'queued during teardown')
+
+    // The interrupt spinner stays pinned — typing must not surface an enabled
+    // Send against a session mid-teardown.
+    expect(screen.getByTestId('stop-button')).toBeDisabled()
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+
+    await user.keyboard('{Enter}')
+    expect(mockSendMessage.mutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('double-clicking send mid-turn does not interrupt the agent', async () => {
+    mockStreamState.isActive = true
+    // Emulate React Query: the pending flag is up from the moment the mutation
+    // fires, so the re-render caused by the composer clearing reads it as true.
+    mockSendMessage.mutateAsync.mockImplementation(async () => {
+      mockSendMessage.isPending = true
+      return { success: true, uuid: 'server-uuid-1', queued: true }
+    })
+    const user = userEvent.setup()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    await user.type(screen.getByTestId('message-input'), 'double click me')
+    await user.dblClick(screen.getByTestId('send-button'))
+
+    // One send; the second click landed on a disabled Send, not an enabled Stop.
+    await waitFor(() => {
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledTimes(1)
+    })
+    expect(mockInterruptSession.mutateAsync).not.toHaveBeenCalled()
+    expect(screen.getByTestId('send-button')).toBeDisabled()
+
+    // Restore the shared mock for subsequent tests (clearAllMocks does not).
+    mockSendMessage.mutateAsync.mockReset()
+    mockSendMessage.mutateAsync.mockResolvedValue({ success: true, uuid: 'server-uuid-1', queued: false })
+  })
+
   // ---- Draft persistence ----
 
   describe('draft persistence', () => {
@@ -828,6 +888,31 @@ describe('MessageInput', () => {
       useEffect(() => { setDraft(value) }, [setDraft, value])
       return null
     }
+
+    it('keeps the stop button when a restored draft fills the composer while active', async () => {
+      mockStreamState.isActive = true
+      const user = userEvent.setup()
+      renderWithProviders(
+        <>
+          <DraftSeeder sessionId="s-1" value="restored draft" />
+          <MessageInput sessionId="s-1" agentSlug="agent-1" />
+        </>
+      )
+
+      await waitFor(() => {
+        expect(screen.getByTestId('message-input')).toHaveValue('restored draft')
+      })
+
+      // A restored draft alone must not hide Stop — with a runaway agent and a
+      // saved draft there'd otherwise be no way to interrupt.
+      expect(screen.getByTestId('stop-button')).toBeInTheDocument()
+      expect(screen.queryByTestId('send-button')).not.toBeInTheDocument()
+
+      // The first actual user edit swaps to Send.
+      await user.type(screen.getByTestId('message-input'), '!')
+      expect(screen.getByTestId('send-button')).toBeInTheDocument()
+      expect(screen.queryByTestId('stop-button')).not.toBeInTheDocument()
+    })
 
     it('restores the draft when re-mounted in the same provider', async () => {
       const { rerender } = renderWithProviders(
