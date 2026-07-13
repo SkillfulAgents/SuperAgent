@@ -73,7 +73,6 @@ describe('IntegrationModelEffort', () => {
     render(<IntegrationModelEffort integration={makeIntegration({ model: 'sonnet' })} />)
 
     await user.click(screen.getByTestId('settings-model-trigger'))
-    await user.click(await screen.findByTestId('model-family-opus'))
     await user.click(await screen.findByTestId('model-latest-opus'))
 
     expect(mutateMock).toHaveBeenCalledWith({ id: 'int-1', model: 'opus' })
@@ -84,7 +83,6 @@ describe('IntegrationModelEffort', () => {
     render(<IntegrationModelEffort integration={makeIntegration({ model: 'sonnet' })} />)
 
     await user.click(screen.getByTestId('settings-model-trigger'))
-    await user.click(await screen.findByTestId('model-family-opus'))
     await user.click(await screen.findByTestId('model-pinned-claude-opus-4-8'))
 
     expect(mutateMock).toHaveBeenCalledWith({ id: 'int-1', model: 'claude-opus-4-8' })
@@ -105,7 +103,6 @@ describe('IntegrationModelEffort', () => {
     render(<IntegrationModelEffort integration={makeIntegration({ id: 'custom-id', model: 'sonnet' })} />)
 
     await user.click(screen.getByTestId('settings-model-trigger'))
-    await user.click(await screen.findByTestId('model-family-haiku'))
     await user.click(await screen.findByTestId('model-latest-haiku'))
 
     expect(mutateMock).toHaveBeenCalledWith({ id: 'custom-id', model: 'haiku' })

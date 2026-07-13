@@ -51,20 +51,17 @@ const OPUS_PINNED_OLDER = 'claude-opus-4-7'
 const SONNET = 'claude-sonnet-4-6'
 const HAIKU = 'claude-haiku-4-5'
 
-// The composer model picker is grouped by family: open the popover, expand the
-// family, then pick the concrete version (no "latest" row in the composer).
-// The currently-selected family auto-expands, so only click the family header
-// when the target version isn't already visible — clicking an open family
-// collapses it.
-async function pickModel(page: Page, family: string, modelId: string) {
+// Open the composer popover and pick a concrete version directly (no "latest"
+// row in the composer; versions are pin chips on their family row, revealed by
+// the hover Playwright performs before clicking). Picking no longer dismisses
+// the popover, so close it explicitly — callers assume a closed postcondition.
+// The `family` arg is kept for call-site readability only.
+async function pickModel(page: Page, _family: string, modelId: string) {
   await page.locator('[data-testid="composer-options-trigger"]').click()
-  const familyRow = page.locator(`[data-testid="model-family-${family}"]`)
-  await familyRow.waitFor({ state: 'visible' })
   const version = page.locator(`[data-testid="model-pinned-${modelId}"]`)
-  if (!(await version.isVisible())) {
-    await familyRow.click()
-  }
+  await version.waitFor({ state: 'visible' })
   await version.click()
+  await page.keyboard.press('Escape')
 }
 
 test.describe('Model selection', () => {
@@ -140,10 +137,10 @@ test.describe('Model selection', () => {
     await expect(page.locator('[data-testid="message-list"]')).toBeVisible()
 
     // Switch to Haiku in the in-session composer, then drop effort to low.
+    // Effort no longer auto-closes the popover, so dismiss it before sending.
     await pickModel(page, 'haiku', HAIKU)
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="effort-option-low"]').click()
-    // Effort picks keep the popover open now — dismiss before sending.
     await page.keyboard.press('Escape')
 
     await sessionPage.sendMessage(followUp)
@@ -165,12 +162,12 @@ test.describe('Model selection', () => {
     await pickModel(page, 'opus', OPUS_LATEST)
     await page.locator('[data-testid="composer-options-trigger"]').click()
     await page.locator('[data-testid="effort-option-xhigh"]').click()
-    // Effort picks keep the popover open now — dismiss before re-opening.
-    await page.keyboard.press('Escape')
 
-    // Switch to Sonnet — the popover's auto-reset clamps effort back to Medium
-    // since Sonnet doesn't allow xhigh.
-    await pickModel(page, 'sonnet', SONNET)
+    // Picks keep the popover open, so the model list is right there — pick
+    // Sonnet directly, then dismiss. The popover's auto-reset clamps effort
+    // back to Medium since Sonnet doesn't allow xhigh.
+    await page.locator(`[data-testid="model-pinned-${SONNET}"]`).click()
+    await page.keyboard.press('Escape')
 
     await expect(page.locator('[data-testid="composer-options-trigger"]')).toContainText('Medium')
     await expect(page.locator('[data-testid="composer-options-trigger"]')).not.toContainText('Extra High')
@@ -220,10 +217,9 @@ test.describe('Model selection', () => {
     await expect(page.locator('[data-testid="effort-option-xhigh"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-max"]')).toBeVisible()
 
-    // Switch to Sonnet (popover already open), reopen, and confirm xhigh/max disappear.
-    await page.locator('[data-testid="model-family-sonnet"]').click()
+    // Switch to Sonnet — the pick keeps the popover open, so the effort ticks
+    // swap in place: xhigh/max disappear immediately.
     await page.locator(`[data-testid="model-pinned-${SONNET}"]`).click()
-    await page.locator('[data-testid="composer-options-trigger"]').click()
     await expect(page.locator('[data-testid="effort-option-low"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-medium"]')).toBeVisible()
     await expect(page.locator('[data-testid="effort-option-high"]')).toBeVisible()
