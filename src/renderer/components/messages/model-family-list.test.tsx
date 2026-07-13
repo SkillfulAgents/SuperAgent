@@ -234,6 +234,64 @@ describe('ModelFamilyList', () => {
     expect(screen.queryByTestId('model-long-context-cliff-warning')).not.toBeInTheDocument()
   })
 
+  it('labels a lineage row "· latest" in settings mode, where the row stores the alias', () => {
+    render(<ModelFamilyList catalog={CATALOG} value="opus" onPick={vi.fn()} offerLatest />)
+    expect(screen.getByTestId('model-latest-opus')).toHaveTextContent('Opus · latest')
+  })
+
+  it('hides version chips on touch, where a gear on the selected row opens a nested version menu', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={onPick} />)
+
+    // Chips are display-none on coarse pointers — invisible chips must never
+    // be tap targets (a tap on one silently pinned an unseen version).
+    expect(screen.getByTestId('model-pinned-claude-opus-4-7').parentElement!.className).toContain(
+      'touch:hidden',
+    )
+
+    // Only the selected row gets the gear; it's touch-only via CSS.
+    expect(screen.queryByTestId('model-family-sonnet-versions')).not.toBeInTheDocument()
+    const gear = screen.getByTestId('model-family-opus-versions')
+    expect(gear.className).toContain('touch:inline-flex')
+
+    // Gear toggles the nested menu: a "· latest" row plus one row per version.
+    expect(screen.queryByTestId('model-version-claude-opus-4-7')).not.toBeInTheDocument()
+    await user.click(gear)
+    expect(screen.getByTestId('model-family-opus-menu-latest')).toHaveTextContent('Opus · latest')
+    await user.click(screen.getByTestId('model-version-claude-opus-4-7'))
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-4-7')
+    // The latest menu row repeats the row-label action (latest concrete id in
+    // composer mode).
+    await user.click(screen.getByTestId('model-family-opus-menu-latest'))
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-4-8')
+    // …and toggles closed.
+    await user.click(gear)
+    expect(screen.queryByTestId('model-version-claude-opus-4-7')).not.toBeInTheDocument()
+  })
+
+  it('the nested version menu stores the bare alias from its latest row in settings mode', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-7" onPick={onPick} offerLatest />)
+    await user.click(screen.getByTestId('model-latest-opus-versions'))
+    // The pinned selection's version row carries the check, not the latest row.
+    await user.click(screen.getByTestId('model-latest-opus-menu-latest'))
+    expect(onPick).toHaveBeenLastCalledWith('opus')
+  })
+
+  it('hides the web-tools warning when browsing a tab that does not own the selection', async () => {
+    const user = userEvent.setup()
+    render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)
+    expect(screen.getByTestId('model-no-websearch-warning')).toBeInTheDocument()
+    // On the Anthropic tab the warning's "this model" copy would read as being
+    // about the Claude models on screen — hide it like the cliff note.
+    await user.click(screen.getByTestId('model-vendor-tab-anthropic'))
+    expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('model-vendor-tab-openai'))
+    expect(screen.getByTestId('model-no-websearch-warning')).toBeInTheDocument()
+  })
+
   it('hides the cliff note when browsing a tab that does not own the selection', async () => {
     const user = userEvent.setup()
     render(<ModelFamilyList catalog={CATALOG} value="openai/gpt-5.5" onPick={vi.fn()} />)

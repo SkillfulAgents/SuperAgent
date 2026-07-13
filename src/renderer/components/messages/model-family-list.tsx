@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Check, HelpCircle, TriangleAlert } from 'lucide-react'
+import { Check, HelpCircle, Settings, TriangleAlert } from 'lucide-react'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
 import {
   Tooltip,
@@ -226,6 +226,12 @@ function Row({
  * per-model pin chips — revealed on hover, keyboard focus, or while selected —
  * pin a specific entry. Chips are siblings of the label button (buttons can't
  * nest); the spacer pushes the check to the row's right edge.
+ *
+ * Touch devices have no hover to reveal chips — worse, invisible chips would
+ * still be tap targets, silently pinning a version the user never saw. So on
+ * coarse pointers (`touch:` variant) the chips are display-none and the
+ * selected row instead gains a gear that expands a nested menu below the row:
+ * a "· latest" row (same action as the row label) plus one row per version.
  */
 function LineRow({
   label,
@@ -236,6 +242,7 @@ function LineRow({
   activeId,
   chipLabel,
   onPickModel,
+  latestSuffix,
 }: {
   label: string
   models: ModelDefinition[]
@@ -246,57 +253,102 @@ function LineRow({
   activeId?: string
   chipLabel: (m: ModelDefinition) => string
   onPickModel: (id: string) => void
+  /** Append "· latest" to the label — set when the row click stores the bare
+   *  alias (settings mode), so the alias-vs-pin semantics are visible. */
+  latestSuffix?: boolean
 }) {
+  // Touch-only nested version menu, toggled by the gear on the selected row.
+  // Rendered only while selected, so switching families auto-collapses it.
+  const [versionsOpen, setVersionsOpen] = useState(false)
+  // The row label picks the line's main value; a version row pins one. When no
+  // listed version is the pinned selection, the "latest" row is the selected one.
+  const pinnedVersionShown = models.some((m) => m.id === activeId)
   return (
-    <div
-      className={cn(
-        'group flex items-center gap-1 rounded-sm pr-2 hover:bg-accent',
-        selected && 'bg-accent'
-      )}
-    >
-      <button
-        type="button"
-        data-testid={rowTestId}
-        onClick={onRowPick}
-        className="flex min-w-0 items-center py-1 pl-2 text-left text-xs"
-      >
-        <span className="truncate">{label}</span>
-      </button>
-      <span
+    <>
+      <div
         className={cn(
-          'flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100',
-          selected && 'opacity-100'
+          'group flex items-center gap-1 rounded-sm pr-2 hover:bg-accent',
+          selected && 'bg-accent'
         )}
       >
-        {models.map((m) => (
+        <button
+          type="button"
+          data-testid={rowTestId}
+          onClick={onRowPick}
+          className="flex min-w-0 items-center py-1 pl-2 text-left text-xs"
+        >
+          <span className="truncate">
+            {label}
+            {latestSuffix && <span className="text-muted-foreground"> · latest</span>}
+          </span>
+        </button>
+        <span
+          className={cn(
+            'flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 touch:hidden',
+            selected && 'opacity-100'
+          )}
+        >
+          {models.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              data-testid={`model-pinned-${m.id}`}
+              aria-label={m.label}
+              onClick={() => onPickModel(m.id)}
+              className={cn(
+                'rounded px-1 py-0.5 text-[10px] tabular-nums text-muted-foreground hover:bg-background/80 hover:text-foreground',
+                activeId === m.id && 'bg-background text-foreground shadow-sm'
+              )}
+            >
+              {chipLabel(m)}
+            </button>
+          ))}
+        </span>
+        {/* The rest of the row is also a "pick the default" target, so clicking
+            anywhere that isn't a version chip selects the latest. A plain div —
+            the label button is the semantic click target. */}
+        <div
+          aria-hidden="true"
+          data-testid={`${rowTestId}-fill`}
+          onClick={onRowPick}
+          className="h-6 min-w-0 flex-1 cursor-pointer"
+        />
+        {selected && (
           <button
-            key={m.id}
             type="button"
-            data-testid={`model-pinned-${m.id}`}
-            aria-label={m.label}
-            onClick={() => onPickModel(m.id)}
-            className={cn(
-              'rounded px-1 py-0.5 text-[10px] tabular-nums text-muted-foreground hover:bg-background/80 hover:text-foreground',
-              activeId === m.id && 'bg-background text-foreground shadow-sm'
-            )}
+            data-testid={`${rowTestId}-versions`}
+            aria-label={`${label} versions`}
+            aria-expanded={versionsOpen}
+            onClick={() => setVersionsOpen((open) => !open)}
+            className="hidden shrink-0 rounded-sm p-1 text-muted-foreground hover:text-foreground touch:inline-flex"
           >
-            {chipLabel(m)}
+            <Settings className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
-        ))}
-      </span>
-      {/* The rest of the row is also a "pick the default" target, so clicking
-          anywhere that isn't a version chip selects the latest. Hidden from
-          the a11y tree (tabIndex -1) — the label button is the semantic one. */}
-      <button
-        type="button"
-        tabIndex={-1}
-        aria-hidden="true"
-        data-testid={`${rowTestId}-fill`}
-        onClick={onRowPick}
-        className="h-6 min-w-0 flex-1 cursor-pointer"
-      />
-      {selected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
-    </div>
+        )}
+        {selected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
+      </div>
+      {selected && versionsOpen && (
+        <div className="flex flex-col gap-0.5">
+          <Row
+            indent
+            testId={`${rowTestId}-menu-latest`}
+            label={<span>{label} <span className="text-muted-foreground">· latest</span></span>}
+            isSelected={!pinnedVersionShown}
+            onClick={onRowPick}
+          />
+          {models.map((m) => (
+            <Row
+              key={m.id}
+              indent
+              testId={`model-version-${m.id}`}
+              label={m.label}
+              isSelected={activeId === m.id}
+              onClick={() => onPickModel(m.id)}
+            />
+          ))}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -424,7 +476,10 @@ export function ModelFamilyList({
           )}
         </div>
       )}
-      {webWarning && (
+      {/* Like the cliff note below, scoped to the tab that owns the selection —
+          on any other tab its "this model" copy would read as being about the
+          listed models. */}
+      {webWarning && resolved && vendorKey(resolved) === activeVendor && (
         <div
           data-testid="model-no-websearch-warning"
           className="mx-1 mb-1 flex items-start gap-1.5 rounded-sm bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-500"
@@ -450,6 +505,7 @@ export function ModelFamilyList({
               activeId={!isLatestSelected ? resolved?.id : undefined}
               chipLabel={(m) => versionChipLabel(m.label, group.displayName)}
               onPickModel={onPick}
+              latestSuffix={offerLatest}
             />
           )
         }
@@ -521,8 +577,8 @@ export function ModelFamilyList({
                 type="button"
                 data-testid="model-long-context-cliff-warning"
                 // px-2 (no margin) lines the text up with the row labels above.
-                // Same blue as the effort slider's accents (#007DED).
-                className="mt-1 flex cursor-default items-center gap-1 rounded-sm px-2 py-1 text-left text-[11px] text-[#007DED]"
+                // Same blues as the effort slider's accents (light/dark pair).
+                className="mt-1 flex cursor-default items-center gap-1 rounded-sm px-2 py-1 text-left text-[11px] text-[#007DED] dark:text-[#4EB3FF]"
               >
                 {/* The cliff is a family-wide trait (every GPT entry shares
                     it), so name the family's generation ("GPT-5 models")
