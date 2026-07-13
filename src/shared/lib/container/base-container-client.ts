@@ -25,7 +25,7 @@ import { getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
 import { getActiveWebProvider } from '../web-provider'
-import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
 const execAsync = promisify(exec)
 
@@ -436,6 +436,32 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return null
   }
 
+  /**
+   * Whether a run failure means the image's unpacked snapshot in the runtime's
+   * store is corrupt — containerd's "mount callback failed on /tmp/containerd-
+   * mountNNN: ..." (e.g. ": no users found" when resolving the Dockerfile USER
+   * against a truncated /etc/passwd). Seen after disk exhaustion during image
+   * pull/unpack. The corruption lives in the image store, not in this
+   * container, so retrying the same run can never succeed — recovery is
+   * removing the image (removeCorruptImage) and rebuilding it.
+   */
+  protected isCorruptImageSnapshotError(error: any): boolean {
+    const msg = String(error?.message || error?.stderr || error || '')
+    return /mount callback failed on/i.test(msg)
+  }
+
+  /**
+   * Remove the agent image so the next ensureImageExists() recreates it from
+   * scratch. Base implementation only removes the tagged image — conservative
+   * on user-owned daemons (docker/podman) that may hold unrelated images.
+   * Runtimes that own their whole store (bundled Lima VM) override to also
+   * prune dangling layers and build cache, where the corrupt layer content
+   * would otherwise survive the bare `rmi` and poison the rebuild.
+   */
+  protected async removeCorruptImage(image: string): Promise<void> {
+    await execWithPath(`${this.getRunnerShellCommand()} rmi -f ${image}`)
+  }
+
   protected getContainerName(): string {
     return `superagent-${this.config.agentId}`
   }
@@ -620,12 +646,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       // Bounded retry loop. Each recovery path makes exactly one attempt of
       // progress so the loop can't spin: dropping a mount shrinks `volumes`,
-      // re-picking a port is capped by portRetries, and VM provisioning runs
-      // once. A fresh stop+rm precedes every attempt so we never double-start.
+      // re-picking a port is capped by portRetries, and VM provisioning and
+      // image re-creation each run once. A fresh stop+rm precedes every
+      // attempt so we never double-start.
       const MAX_PORT_RETRIES = 3
       let portRetries = 0
       const triedPorts = new Set<number>([port])
       let vmRecoveryTried = false
+      let imageRecoveryTried = false
       let stdout: string
       try {
         for (;;) {
@@ -661,7 +689,35 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
               continue
             }
 
-            // 3. Subclass recovery (e.g. provisioning a missing VM) — once.
+            // 3. Corrupt image snapshot in the runtime's store — the same run
+            //    can never succeed no matter how often the user retries, so
+            //    remove the image, recreate it, and retry once. Checked before
+            //    the generic subclass recovery because the VM itself is
+            //    healthy in this mode (handleRunError would probe it, find
+            //    nothing wrong, and give up).
+            if (!imageRecoveryTried && this.isCorruptImageSnapshotError(runError)) {
+              imageRecoveryTried = true
+              console.warn(`[Container] Corrupt image snapshot detected, removing ${image} and recreating`)
+              addErrorBreadcrumb({ category: 'container', message: 'Corrupt image snapshot, removing image and recreating', data: { image, agentId: this.config.agentId } })
+              try {
+                await this.removeCorruptImage(image)
+                await this.ensureImageExistsWithRecovery()
+                captureMessage('Recovered from corrupt container image snapshot', {
+                  level: 'warning',
+                  tags: { component: 'container', operation: 'corrupt-image-recovery' },
+                  extra: { agentId: this.config.agentId, image, originalError: String(runError?.message || runError).slice(0, 2000) },
+                })
+                continue
+              } catch (repairError) {
+                captureException(repairError, {
+                  tags: { component: 'container', operation: 'corrupt-image-recovery' },
+                  extra: { agentId: this.config.agentId, image, originalError: String(runError?.message || runError).slice(0, 2000) },
+                })
+                // Fall through — surface the original run error below.
+              }
+            }
+
+            // 4. Subclass recovery (e.g. provisioning a missing VM) — once.
             if (!vmRecoveryTried) {
               vmRecoveryTried = true
               const recovered = await this.handleRunError(runError)

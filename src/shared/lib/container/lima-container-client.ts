@@ -457,6 +457,19 @@ export class LimaContainerClient extends BaseContainerClient {
   }
 
   /**
+   * The bundled Lima VM's containerd store holds nothing but our images, so
+   * beyond removing the tagged image it's safe to prune unused images and
+   * build cache too — the corrupt layer content (e.g. a /etc/passwd truncated
+   * by disk exhaustion during unpack) can survive a bare `rmi` via the build
+   * cache or a shared parent layer and poison the rebuild. Running containers
+   * and bind mounts are untouched; volumes are not pruned.
+   */
+  protected async removeCorruptImage(image: string): Promise<void> {
+    await super.removeCorruptImage(image)
+    await execWithPath(`${this.getRunnerShellCommand()} system prune -af`)
+  }
+
+  /**
    * Handle run errors by provisioning the Lima VM if needed.
    */
   protected async handleRunError(error: any): Promise<boolean> {
