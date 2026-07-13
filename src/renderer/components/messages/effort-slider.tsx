@@ -52,7 +52,7 @@ export function EffortSlider({
   const n = levels.length
   const activeIndex = Math.max(0, levels.indexOf(value))
   // Top tier ("Max") gets a celebratory animated rainbow-mesh fill; everything
-  // below is a calm light-gray fill, just a shade darker than the background.
+  // below is a blue fill on a light-blue track.
   const maxedOut = value === 'max'
   const frac = (i: number) => (n > 1 ? i / (n - 1) : 0)
   // Stop i's center x, inset by the track radius on both ends.
@@ -102,10 +102,16 @@ export function EffortSlider({
   return (
     <div className="px-2 pt-1 pb-2" data-testid="effort-slider">
       {/* Only the two poles are labeled — the ticks below carry the levels.
-          Color matches the section headers (e.g. "Effort · Medium"). */}
-      <div className="mb-2 flex items-center justify-between px-1 text-[11px] text-muted-foreground/70">
-        <span>Faster</span>
-        <span>Smarter</span>
+          Each pole pairs the speed/quality trade-off with its cost ($ vs $$$),
+          slightly dimmer so the words stay primary. Color matches the section
+          headers (e.g. "Effort · Medium"). */}
+      <div className="mb-2 flex items-center justify-between text-[11px] text-muted-foreground/70">
+        <span>
+          Faster <span className="text-muted-foreground/50">· $</span>
+        </span>
+        <span>
+          Smarter <span className="text-muted-foreground/50">· $$$</span>
+        </span>
       </div>
       {/* Track + thumb. The track is a pill slightly taller than the knob, so the
           knob nestles inside it (toggle style) rather than riding a thin rail. */}
@@ -116,13 +122,13 @@ export function EffortSlider({
         onPointerUp={handlePointerUp}
         className="relative h-5 cursor-pointer touch-none"
       >
-        <div className="absolute inset-0 rounded-full bg-muted" />
+        <div className="absolute inset-0 rounded-full bg-[#E1F6FF]" />
         <div
           data-testid="effort-fill"
           className={cn(
-            'absolute inset-y-0 left-0 rounded-full bg-foreground/15',
+            'absolute inset-y-0 left-0 rounded-full bg-[#0099FF]',
             // Crossfade with the rainbow: the gray fades OUT exactly where the
-            // rainbow fades IN, so the two never stack (stacking greyed the
+            // rainbow fades IN, so the two never stack (stacking muddied the
             // rainbow's fade zone into a dingy blend).
             maxedOut && 'effort-fill-fade'
           )}
@@ -145,9 +151,9 @@ export function EffortSlider({
               onCommit?.(level)
             }}
             style={{ left: pos(i) }}
-            className="absolute top-1/2 flex h-4 w-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
+            className="group/tick absolute top-1/2 flex h-4 w-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
           >
-            <span className="h-1 w-1 rounded-full bg-muted-foreground/40" />
+            <span className="h-1 w-1 rounded-full bg-[#007DED] transition-transform duration-150 group-hover/tick:scale-150" />
           </button>
         ))}
         {maxedOut && (

@@ -59,14 +59,14 @@ describe('EffortSlider', () => {
     expect(onCommit).not.toHaveBeenCalled()
   })
 
-  it('keeps a calm light-gray fill, overlaying the rainbow only at Max', () => {
+  it('keeps a blue fill, overlaying the rainbow only at Max', () => {
     const { rerender } = render(<EffortSlider levels={ALL} value="high" onChange={vi.fn()} />)
-    // The base fill is always the calm gray; the rainbow is a separate overlay.
-    expect(screen.getByTestId('effort-fill').className).toContain('bg-foreground/15')
+    // The base fill is always the blue fill; the rainbow is a separate overlay.
+    expect(screen.getByTestId('effort-fill').className).toContain('bg-[#0099FF]')
     expect(screen.queryByTestId('effort-fill-rainbow')).not.toBeInTheDocument()
 
     rerender(<EffortSlider levels={ALL} value="max" onChange={vi.fn()} />)
-    // At Max the gray crossfades out (inverse mask) as the rainbow fades in.
+    // At Max the blue crossfades out (inverse mask) as the rainbow fades in.
     expect(screen.getByTestId('effort-fill').className).toContain('effort-fill-fade')
     expect(screen.getByTestId('effort-fill-rainbow').className).toContain('effort-rainbow')
   })

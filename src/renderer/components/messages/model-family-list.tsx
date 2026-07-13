@@ -1,7 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Check, Info, TriangleAlert } from 'lucide-react'
+import { Check, HelpCircle, TriangleAlert } from 'lucide-react'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
-import { Separator } from '@renderer/components/ui/separator'
 import {
   Tooltip,
   TooltipContent,
@@ -173,9 +172,8 @@ interface ModelFamilyListProps {
   /** Called with the value to store: a concrete id, or a bare alias for the "latest" row. */
   onPick: (value: string) => void
   /**
-   * Section label (e.g. "Models") rendered INSIDE the picker, below the vendor
-   * tabs and divided from them — not above the tabs, which is why the parent
-   * passes it in rather than rendering its own header.
+   * Section label (e.g. "Models") rendered INSIDE the picker, above the vendor
+   * tabs — passed in by the parent so the label and tabs stack as one block.
    */
   header?: ReactNode
   /**
@@ -286,7 +284,17 @@ function LineRow({
           </button>
         ))}
       </span>
-      <span className="flex-1" />
+      {/* The rest of the row is also a "pick the default" target, so clicking
+          anywhere that isn't a version chip selects the latest. Hidden from
+          the a11y tree (tabIndex -1) — the label button is the semantic one. */}
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-hidden="true"
+        data-testid={`${rowTestId}-fill`}
+        onClick={onRowPick}
+        className="h-6 min-w-0 flex-1 cursor-pointer"
+      />
       {selected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
     </div>
   )
@@ -370,48 +378,50 @@ export function ModelFamilyList({
 
   return (
     <div className="flex flex-col gap-0.5">
-      {vendors.length > 1 && (
-        // Icon-only single-select segmented control, mirroring the Appearance
+      {(header !== undefined || vendors.length > 1) && (
+        // One row: section label left, vendor tabs right. The tab bar is an
+        // icon-only single-select segmented control, mirroring the Appearance
         // picker in general settings (intentionally not Radix Tabs — see that
         // comment). Names live in standard-delay tooltips so the bar scales to
         // many vendors without crowding.
-        <TooltipProvider>
-          <div
-            role="radiogroup"
-            aria-label="Model vendor"
-            className="mx-1 mb-1.5 inline-flex items-center self-start rounded-lg bg-muted p-0.5 text-muted-foreground"
-          >
-            {vendors.map((key) => {
-              const isActive = key === activeVendor
-              return (
-                <Tooltip key={key}>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      role="radio"
-                      aria-checked={isActive}
-                      aria-label={vendorDisplayName(key)}
-                      data-testid={`model-vendor-tab-${key}`}
-                      onClick={() => setPickedVendor(key)}
-                      className={cn(
-                        'inline-flex h-6 w-8 items-center justify-center rounded-md transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                        isActive && 'bg-background text-foreground shadow'
-                      )}
-                    >
-                      <ModelIcon icon={key === NO_VENDOR ? undefined : key} className="h-3.5 w-3.5 shrink-0" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>{vendorDisplayName(key)}</TooltipContent>
-                </Tooltip>
-              )
-            })}
-          </div>
-        </TooltipProvider>
-      )}
-      {vendors.length > 1 && header !== undefined && <Separator className="mb-1" />}
-      {header !== undefined && (
-        <div className="px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground/70">
-          {header}
+        <div className="flex items-center justify-between gap-2 pb-1 pl-2 pr-1 pt-1">
+          <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground/70">
+            {header}
+          </span>
+          {vendors.length > 1 && (
+            <TooltipProvider>
+              <div
+                role="radiogroup"
+                aria-label="Model vendor"
+                className="inline-flex shrink-0 items-center rounded-lg bg-muted p-0.5 text-muted-foreground"
+              >
+                {vendors.map((key) => {
+                  const isActive = key === activeVendor
+                  return (
+                    <Tooltip key={key}>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={isActive}
+                          aria-label={vendorDisplayName(key)}
+                          data-testid={`model-vendor-tab-${key}`}
+                          onClick={() => setPickedVendor(key)}
+                          className={cn(
+                            'inline-flex h-6 w-8 items-center justify-center rounded-md transition-all hover:bg-background/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                            isActive && 'bg-background text-foreground shadow'
+                          )}
+                        >
+                          <ModelIcon icon={key === NO_VENDOR ? undefined : key} className="h-3.5 w-3.5 shrink-0" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>{vendorDisplayName(key)}</TooltipContent>
+                    </Tooltip>
+                  )
+                })}
+              </div>
+            </TooltipProvider>
+          )}
         </div>
       )}
       {webWarning && (
@@ -511,7 +521,8 @@ export function ModelFamilyList({
                 type="button"
                 data-testid="model-long-context-cliff-warning"
                 // px-2 (no margin) lines the text up with the row labels above.
-                className="mt-1 flex cursor-default items-center gap-1 rounded-sm px-2 py-1 text-left text-[11px] text-blue-600 dark:text-blue-400"
+                // Same blue as the effort slider's accents (#007DED).
+                className="mt-1 flex cursor-default items-center gap-1 rounded-sm px-2 py-1 text-left text-[11px] text-[#007DED]"
               >
                 {/* The cliff is a family-wide trait (every GPT entry shares
                     it), so name the family's generation ("GPT-5 models")
@@ -525,7 +536,7 @@ export function ModelFamilyList({
                       )} models`
                     : resolved.label}
                 </span>
-                <Info
+                <HelpCircle
                   data-testid="model-long-context-cliff-info"
                   className="h-3 w-3 shrink-0"
                   aria-hidden="true"

@@ -1,8 +1,14 @@
 import { memo, useEffect, useState, type ReactNode } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, HelpCircle } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@renderer/components/ui/tooltip'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
 import { type ComposerOptionsState } from './composer-options'
@@ -20,7 +26,7 @@ const EFFORT_LABEL: Record<EffortLevel, string> = {
 
 function SectionHeader({ children }: { children: ReactNode }) {
   return (
-    <div className="px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground/70">
+    <div className="flex items-center justify-between px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground/70">
       {children}
     </div>
   )
@@ -89,7 +95,13 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
           <ChevronDown className="h-3.5 w-3.5" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-64 px-1 py-2" align="start">
+      <PopoverContent
+        className="w-64 px-1 py-2"
+        align="start"
+        // Don't auto-focus the first element (a vendor tab) on open — focusing
+        // it pops its name tooltip instantly. Keyboard users can Tab in.
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
         {selectedModel && (
           <>
             {/* Flat list, no "latest" — per-message picks a concrete version.
@@ -103,16 +115,36 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
               onPick={setModel}
               webProvider={webProvider}
             />
-            {includeEffort && <Separator className="my-2" />}
+            {includeEffort && <Separator className="my-2 bg-border/50" />}
           </>
         )}
         {includeEffort && (
           <>
             {/* The bar only labels its poles (Faster/Smarter), so the concrete
-                selection is named here next to the section label. */}
+                selection is named here next to the section label. The help icon
+                explains the trade-off on hover. */}
             <SectionHeader>
-              <span>Effort</span>
-              <span className="text-foreground"> · {effortLabel}</span>
+              <span>
+                <span>Effort</span>
+                <span className="text-[#007DED]"> · {effortLabel}</span>
+              </span>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="About effort"
+                      data-testid="effort-help"
+                      className="inline-flex shrink-0 hover:text-foreground"
+                    >
+                      <HelpCircle className="h-3 w-3" aria-hidden="true" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-60">
+                    Higher effort means more thorough responses, but takes longer and is more expensive.
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </SectionHeader>
             {/* No onCommit: effort stays put so model + effort can be tuned
                 together without the popover dismissing. The model pick closes it. */}

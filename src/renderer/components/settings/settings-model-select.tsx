@@ -128,7 +128,13 @@ function SettingsModelSelectImpl({
           <ChevronDown className="h-3.5 w-3.5" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-64 px-1 py-2" align="start">
+      <PopoverContent
+        className="w-64 px-1 py-2"
+        align="start"
+        // Don't auto-focus the first element (a vendor tab) on open — focusing
+        // it pops its name tooltip instantly. Keyboard users can Tab in.
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
         <ModelFamilyList
           header="Model"
           catalog={catalog}
@@ -139,7 +145,7 @@ function SettingsModelSelectImpl({
         />
         {includeEffort && (
           <>
-            <Separator className="my-2" />
+            <Separator className="my-2 bg-border/50" />
             <div className="px-2 pb-1 text-[11px] font-medium text-muted-foreground/70">
               Effort
             </div>

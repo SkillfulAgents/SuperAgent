@@ -36,7 +36,9 @@ export function ModelIcon({ icon, className }: ModelIconProps) {
       src={getModelIconSrc(icon)}
       alt=""
       aria-hidden="true"
-      className={cn('object-contain', className)}
+      // Bundled brand icons are monochrome dark glyphs; invert them in dark
+      // mode so they stay visible. Uploaded icons keep their own colors.
+      className={cn('object-contain', !icon.startsWith(UPLOADED_ICON_PREFIX) && 'dark:invert', className)}
       onError={() => setFailed(true)}
     />
   )

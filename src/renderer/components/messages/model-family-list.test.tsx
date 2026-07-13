@@ -107,6 +107,9 @@ describe('ModelFamilyList', () => {
     expect(onPick).toHaveBeenLastCalledWith('claude-opus-4-7')
     await user.click(row)
     expect(onPick).toHaveBeenLastCalledWith('claude-opus-4-8')
+    // Clicking the row's empty stretch (not a chip) also picks the latest.
+    await user.click(screen.getByTestId('model-family-opus-fill'))
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-4-8')
   })
 
   it('picks the concrete id of a chosen version directly, no drill-in', async () => {
