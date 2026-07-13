@@ -1,36 +1,13 @@
-import { memo, useEffect, useState, type ReactNode } from 'react'
-import { ChevronDown, HelpCircle } from 'lucide-react'
+import { memo, useEffect, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@renderer/components/ui/tooltip'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
-import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
+import { EFFORT_LEVELS } from '@shared/lib/container/types'
 import { type ComposerOptionsState } from './composer-options'
 import { ModelFamilyList, findCatalogModel } from './model-family-list'
-import { EffortSlider } from './effort-slider'
-
-// Full effort names for the trigger button (the slider uses its own short ones).
-const EFFORT_LABEL: Record<EffortLevel, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Extra High',
-  max: 'Max',
-}
-
-function SectionHeader({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground/70">
-      {children}
-    </div>
-  )
-}
+import { EFFORT_LABELS, EffortSection } from './effort-slider'
 
 interface ComposerOptionsPopoverProps {
   state: ComposerOptionsState
@@ -65,7 +42,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
     selectedModel ? selectedModel.supportedEfforts.includes(level) : true
   )
 
-  const effortLabel = EFFORT_LABEL[effort]
+  const effortLabel = EFFORT_LABELS[effort]
   const selectedModelLabel = selectedModel?.label
   const triggerAriaLabel = includeEffort
     ? (selectedModelLabel ? `${selectedModelLabel} · ${effortLabel}` : effortLabel)
@@ -119,37 +96,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
           </>
         )}
         {includeEffort && (
-          <>
-            {/* The bar only labels its poles (Faster/Smarter), so the concrete
-                selection is named here next to the section label. The help icon
-                explains the trade-off on hover. */}
-            <SectionHeader>
-              <span>
-                <span>Effort</span>
-                <span className="text-[#007DED]"> · {effortLabel}</span>
-              </span>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="About effort"
-                      data-testid="effort-help"
-                      className="inline-flex shrink-0 hover:text-foreground"
-                    >
-                      <HelpCircle className="h-3 w-3" aria-hidden="true" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-60">
-                    Higher effort means more thorough responses, but takes longer and is more expensive.
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </SectionHeader>
-            {/* No onCommit: effort stays put so model + effort can be tuned
-                together without the popover dismissing. The model pick closes it. */}
-            <EffortSlider levels={visibleEfforts} value={effort} onChange={setEffort} />
-          </>
+          <EffortSection levels={visibleEfforts} value={effort} onChange={setEffort} />
         )}
       </PopoverContent>
     </Popover>

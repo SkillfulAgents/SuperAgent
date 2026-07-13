@@ -1,10 +1,26 @@
 import { useRef, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { HelpCircle } from 'lucide-react'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils'
 import { type EffortLevel } from '@shared/lib/container/types'
 
+/** Full per-level names, shared by trigger buttons and the EffortSection header. */
+export const EFFORT_LABELS: Record<EffortLevel, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra High',
+  max: 'Max',
+}
+
 /** Per-level names, used for accessibility only (aria-valuetext, tick aria-labels)
  *  — the bar itself shows just Faster/Smarter end labels; the current selection
- *  is displayed by the caller next to its section header. */
+ *  is displayed in the section header. */
 export const SHORT_EFFORT_LABELS: Record<EffortLevel, string> = {
   low: 'Low',
   medium: 'Med',
@@ -178,5 +194,50 @@ export function EffortSlider({
         />
       </div>
     </div>
+  )
+}
+
+/**
+ * The complete effort block shared by every picker popover/menu: a header row
+ * naming the selection ("Effort · Medium", value in the accent blue) with a
+ * help tooltip explaining the trade-off, above the slider. No commit concept —
+ * changes apply live and never dismiss the surface that hosts it.
+ */
+export function EffortSection({
+  levels,
+  value,
+  onChange,
+}: {
+  levels: EffortLevel[]
+  value: EffortLevel
+  onChange: (level: EffortLevel) => void
+}) {
+  return (
+    <>
+      <div className="flex items-center justify-between px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground/70">
+        <span>
+          <span>Effort</span>
+          <span className="text-[#007DED]"> · {EFFORT_LABELS[value]}</span>
+        </span>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="About effort"
+                data-testid="effort-help"
+                className="inline-flex shrink-0 hover:text-foreground"
+              >
+                <HelpCircle className="h-3 w-3" aria-hidden="true" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-60">
+              Higher effort means more thorough responses, but takes longer and is more expensive.
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
+      <EffortSlider levels={levels} value={value} onChange={onChange} />
+    </>
   )
 }

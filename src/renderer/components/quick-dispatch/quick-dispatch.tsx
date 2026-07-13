@@ -17,7 +17,8 @@ import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { toast } from 'sonner'
-import { AgentMenu, AttachMenu, ModelEffortMenu, EFFORT_LABELS } from './quick-dispatch-menus'
+import { AgentMenu, AttachMenu, ModelEffortMenu } from './quick-dispatch-menus'
+import { EFFORT_LABELS } from '@renderer/components/messages/effort-slider'
 
 type OpenMenu = 'agent' | 'model' | 'attach' | null
 

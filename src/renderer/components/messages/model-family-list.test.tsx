@@ -246,6 +246,43 @@ describe('ModelFamilyList', () => {
     expect(screen.getByTestId('model-long-context-cliff-warning')).toBeInTheDocument()
   })
 
+  it('shows a Latest chip on lineage rows in settings mode: lit for alias, unlit for pin', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    // Alias selected: Latest chip is the active one, no version chip lit.
+    const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="opus" onPick={onPick} offerLatest />)
+    const latestChip = screen.getByTestId('model-latest-chip-opus')
+    expect(latestChip).toHaveTextContent('Latest')
+    expect(latestChip.className).toContain('shadow-sm')
+    expect(screen.getByTestId('model-pinned-claude-opus-4-8').className).not.toContain('shadow-sm')
+    await user.click(latestChip)
+    expect(onPick).toHaveBeenLastCalledWith('opus')
+
+    // Pinned: the version chip is lit instead of Latest.
+    rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-7" onPick={onPick} offerLatest />)
+    expect(screen.getByTestId('model-latest-chip-opus').className).not.toContain('shadow-sm')
+    expect(screen.getByTestId('model-pinned-claude-opus-4-7').className).toContain('shadow-sm')
+  })
+
+  it('renders the family alias as a "GPT · Latest" chip row in settings mode, versions unsuffixed', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="gpt" onPick={onPick} offerLatest />)
+    // Alias row: label + Latest chip, no "· latest" text suffix.
+    const aliasRow = screen.getByTestId('model-latest-gpt')
+    expect(aliasRow).toHaveTextContent('GPT')
+    expect(aliasRow).not.toHaveTextContent('· latest')
+    await user.click(screen.getByTestId('model-latest-chip-gpt'))
+    expect(onPick).toHaveBeenLastCalledWith('gpt')
+    // Version rows drop the "· pinned" suffix; state reads from highlights.
+    expect(screen.getByTestId('model-pinned-openai/gpt-5.5')).not.toHaveTextContent('pinned')
+  })
+
+  it('omits Latest chips in composer mode (concrete picks only)', () => {
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-latest-chip-opus')).not.toBeInTheDocument()
+  })
+
   it('offers a "latest" row only when offerLatest is set', async () => {
     const user = userEvent.setup()
     const onPick = vi.fn()

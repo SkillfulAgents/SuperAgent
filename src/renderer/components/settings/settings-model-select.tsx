@@ -1,12 +1,12 @@
 import { memo, useEffect, useMemo, useState } from 'react'
-import { Check, ChevronDown } from 'lucide-react'
+import { ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { ModelFamilyList, findCatalogModel, familyDisplayName } from '@renderer/components/messages/model-family-list'
-import { cn } from '@shared/lib/utils'
+import { EFFORT_LABELS, EffortSection } from '@renderer/components/messages/effort-slider'
 import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
@@ -19,36 +19,6 @@ interface SettingsModelSelectProps {
   effort?: EffortLevel
   onEffortChange?: (effort: EffortLevel) => void
   disabled?: boolean
-}
-
-const EFFORT_LABEL: Record<EffortLevel, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Extra High',
-  max: 'Max',
-}
-
-function EffortRow({ label, isSelected, onClick, testId }: {
-  label: string
-  isSelected: boolean
-  onClick: () => void
-  testId: string
-}) {
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      onClick={onClick}
-      className={cn(
-        'flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-accent',
-        isSelected && 'bg-accent'
-      )}
-    >
-      <span className="truncate">{label}</span>
-      {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
-    </button>
-  )
 }
 
 /**
@@ -99,9 +69,10 @@ function SettingsModelSelectImpl({
   else if (resolved?.family) triggerLabel = `${resolved.label} · pinned`
   else if (resolved) triggerLabel = resolved.label
 
+  // Picks never dismiss (matching the composer): model and effort get set in
+  // one visit; the popover closes on outside click / Escape / trigger toggle.
   const pick = (value: string) => {
     onModelChange(value)
-    setOpen(false)
   }
 
   return (
@@ -121,7 +92,7 @@ function SettingsModelSelectImpl({
             {triggerLabel ?? 'Select model'}
             {includeEffort && (
               <span className="text-muted-foreground">
-                {' · '}{EFFORT_LABEL[effort]}
+                {' · '}{EFFORT_LABELS[effort]}
               </span>
             )}
           </span>
@@ -146,23 +117,11 @@ function SettingsModelSelectImpl({
         {includeEffort && (
           <>
             <Separator className="my-2 bg-border/50" />
-            <div className="px-2 pb-1 text-[11px] font-medium text-muted-foreground/70">
-              Effort
-            </div>
-            <div className="flex flex-col gap-0.5">
-              {visibleEfforts.map((level) => (
-                <EffortRow
-                  key={level}
-                  label={EFFORT_LABEL[level]}
-                  isSelected={effort === level}
-                  onClick={() => {
-                    onEffortChange?.(level)
-                    setOpen(false)
-                  }}
-                  testId={`effort-option-${level}`}
-                />
-              ))}
-            </div>
+            <EffortSection
+              levels={visibleEfforts}
+              value={effort}
+              onChange={(level) => onEffortChange?.(level)}
+            />
           </>
         )}
       </PopoverContent>
