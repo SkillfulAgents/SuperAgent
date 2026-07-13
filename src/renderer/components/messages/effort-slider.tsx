@@ -9,23 +9,15 @@ import {
 import { cn } from '@shared/lib/utils'
 import { type EffortLevel } from '@shared/lib/container/types'
 
-/** Full per-level names, shared by trigger buttons and the EffortSection header. */
+/** Full per-level names, shared by trigger buttons, the EffortSection header,
+ *  and the slider's accessibility strings (aria-valuetext, tick aria-labels) —
+ *  the bar itself shows just Faster/Smarter end labels; the current selection
+ *  is displayed in the section header. */
 export const EFFORT_LABELS: Record<EffortLevel, string> = {
   low: 'Low',
   medium: 'Medium',
   high: 'High',
   xhigh: 'Extra High',
-  max: 'Max',
-}
-
-/** Per-level names, used for accessibility only (aria-valuetext, tick aria-labels)
- *  — the bar itself shows just Faster/Smarter end labels; the current selection
- *  is displayed in the section header. */
-export const SHORT_EFFORT_LABELS: Record<EffortLevel, string> = {
-  low: 'Low',
-  medium: 'Med',
-  high: 'High',
-  xhigh: 'X-High',
   max: 'Max',
 }
 
@@ -60,7 +52,7 @@ export function EffortSlider({
   value,
   onChange,
   onCommit,
-  labels = SHORT_EFFORT_LABELS,
+  labels = EFFORT_LABELS,
 }: EffortSliderProps) {
   const trackRef = useRef<HTMLDivElement>(null)
   const dragging = useRef(false)
@@ -102,6 +94,12 @@ export function EffortSlider({
     dragging.current = false
     onCommit?.(levels[indexFromClientX(e.clientX)])
   }
+  // An aborted gesture (touch interruption, OS gesture) never delivers pointerup.
+  // Without this reset, `dragging` sticks true and plain hovers keep changing the
+  // effort until the next press. No commit — onChange already applied the value.
+  const handlePointerCancel = () => {
+    dragging.current = false
+  }
 
   const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     let next = activeIndex
@@ -136,9 +134,11 @@ export function EffortSlider({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        onLostPointerCapture={handlePointerCancel}
         className="relative h-5 cursor-pointer touch-none"
       >
-        <div className="absolute inset-0 rounded-full bg-[#E1F6FF]" />
+        <div className="absolute inset-0 rounded-full bg-[#E1F6FF] dark:bg-[#15384F]" />
         <div
           data-testid="effort-fill"
           className={cn(
@@ -169,14 +169,17 @@ export function EffortSlider({
             style={{ left: pos(i) }}
             className="group/tick absolute top-1/2 flex h-4 w-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
           >
-            <span className="h-1 w-1 rounded-full bg-[#007DED] transition-transform duration-150 group-hover/tick:scale-150" />
+            <span className="h-1 w-1 rounded-full bg-[#007DED] transition-transform duration-150 group-hover/tick:scale-150 dark:bg-[#4EB3FF]" />
           </button>
         ))}
         {maxedOut && (
           <div
             data-testid="effort-fill-rainbow"
             aria-hidden="true"
-            className="absolute inset-y-0 left-0 rounded-full effort-rainbow"
+            // pointer-events-none: purely decorative — without it this overlay
+            // hit-tests over the tick buttons (killing their hover feedback and
+            // failing automated clicks on effort-option-* while at Max).
+            className="pointer-events-none absolute inset-y-0 left-0 rounded-full effort-rainbow"
             style={{ width: fillWidth }}
           />
         )}
@@ -220,7 +223,7 @@ export function EffortSection({
       <div className="flex items-center justify-between px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground/70">
         <span>
           <span>Effort</span>
-          <span className="text-[#007DED]"> · {EFFORT_LABELS[value]}</span>
+          <span className="text-[#007DED] dark:text-[#4EB3FF]"> · {EFFORT_LABELS[value]}</span>
         </span>
         <TooltipProvider>
           <Tooltip>

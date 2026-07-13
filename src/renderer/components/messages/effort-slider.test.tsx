@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { EffortSlider } from './effort-slider'
 import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
@@ -14,10 +14,11 @@ describe('EffortSlider', () => {
     for (const level of ALL) expect(screen.getByTestId(`effort-option-${level}`)).toBeInTheDocument()
     expect(screen.getByText('Faster')).toBeInTheDocument()
     expect(screen.getByText('Smarter')).toBeInTheDocument()
-    // No per-level names on the bar — they live in aria labels only.
-    expect(screen.queryByText('Med')).not.toBeInTheDocument()
-    expect(screen.queryByText('X-High')).not.toBeInTheDocument()
-    expect(screen.getByTestId('effort-option-xhigh')).toHaveAccessibleName('X-High')
+    // No per-level names on the bar — they live in aria labels only, spelled
+    // out in full for screen readers.
+    expect(screen.queryByText('Medium')).not.toBeInTheDocument()
+    expect(screen.queryByText('Extra High')).not.toBeInTheDocument()
+    expect(screen.getByTestId('effort-option-xhigh')).toHaveAccessibleName('Extra High')
   })
 
   it('only renders the levels it is given (3-effort model has no xhigh/max)', () => {
@@ -69,6 +70,24 @@ describe('EffortSlider', () => {
     // At Max the blue crossfades out (inverse mask) as the rainbow fades in.
     expect(screen.getByTestId('effort-fill').className).toContain('effort-fill-fade')
     expect(screen.getByTestId('effort-fill-rainbow').className).toContain('effort-rainbow')
+  })
+
+  it('the rainbow overlay never hit-tests over the tick buttons', () => {
+    render(<EffortSlider levels={ALL} value="max" onChange={vi.fn()} />)
+    // Decorative only — without this, the overlay covers every tick at Max and
+    // intercepts clicks targeted at the effort-option-* buttons.
+    expect(screen.getByTestId('effort-fill-rainbow').className).toContain('pointer-events-none')
+  })
+
+  it('a cancelled drag stops tracking — later hovers no longer change the value', () => {
+    const onChange = vi.fn()
+    render(<EffortSlider levels={ALL} value="medium" onChange={onChange} />)
+    const track = screen.getByTestId('effort-slider').querySelector('.touch-none')!
+    fireEvent.pointerDown(track, { clientX: 0 })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    fireEvent.pointerCancel(track)
+    fireEvent.pointerMove(track, { clientX: 50 })
+    expect(onChange).toHaveBeenCalledTimes(1) // the post-cancel hover changed nothing
   })
 
   it('does not step past the ends', async () => {
