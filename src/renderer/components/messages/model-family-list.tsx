@@ -253,7 +253,7 @@ function LineRow({
   activeId,
   chipLabel,
   onPickModel,
-  latestSuffix,
+  latestChip,
 }: {
   label: string
   models: ModelDefinition[]
@@ -264,9 +264,12 @@ function LineRow({
   activeId?: string
   chipLabel: (m: ModelDefinition) => string
   onPickModel: (id: string) => void
-  /** Append "· latest" to the label — set when the row click stores the bare
-   *  alias (settings mode), so the alias-vs-pin semantics are visible. */
-  latestSuffix?: boolean
+  /**
+   * Explicit "Latest" chip ahead of the version chips (offerLatest surfaces):
+   * picks the bare alias, highlighted while the alias is the stored selection —
+   * making latest-vs-pinned readable at a glance. Row clicks pick it too.
+   */
+  latestChip?: { onPick: () => void; active: boolean; testId: string }
 }) {
   // Touch-only nested version menu, toggled by the gear on the selected row.
   // Deselecting must actually CLOSE it (not just hide it): stale-open state
@@ -277,6 +280,11 @@ function LineRow({
   // The row label picks the line's main value; a version row pins one. When no
   // listed version is the pinned selection, the "latest" row is the selected one.
   const pinnedVersionShown = models.some((m) => m.id === activeId)
+  const chipClass = (active: boolean) =>
+    cn(
+      'rounded px-1 py-0.5 text-[10px] tabular-nums text-muted-foreground hover:bg-background/80 hover:text-foreground',
+      active && 'bg-background text-foreground shadow-sm'
+    )
   return (
     <>
       <div
@@ -291,10 +299,7 @@ function LineRow({
           onClick={onRowPick}
           className="flex min-w-0 items-center py-1 pl-2 text-left text-xs"
         >
-          <span className="truncate">
-            {label}
-            {latestSuffix && <span className="text-muted-foreground"> · latest</span>}
-          </span>
+          <span className="truncate">{label}</span>
         </button>
         <span
           className={cn(
@@ -302,6 +307,17 @@ function LineRow({
             selected && 'opacity-100'
           )}
         >
+          {latestChip && (
+            <button
+              type="button"
+              data-testid={latestChip.testId}
+              aria-label={`${label} — latest`}
+              onClick={latestChip.onPick}
+              className={chipClass(latestChip.active)}
+            >
+              Latest
+            </button>
+          )}
           {models.map((m) => (
             <button
               key={m.id}
@@ -309,10 +325,7 @@ function LineRow({
               data-testid={`model-pinned-${m.id}`}
               aria-label={m.label}
               onClick={() => onPickModel(m.id)}
-              className={cn(
-                'rounded px-1 py-0.5 text-[10px] tabular-nums text-muted-foreground hover:bg-background/80 hover:text-foreground',
-                activeId === m.id && 'bg-background text-foreground shadow-sm'
-              )}
+              className={chipClass(activeId === m.id)}
             >
               {chipLabel(m)}
             </button>
@@ -327,7 +340,8 @@ function LineRow({
           onClick={onRowPick}
           className="h-6 min-w-0 flex-1 cursor-pointer"
         />
-        {selected && (
+        {/* No gear for a bare alias row (models=[]) — there's nothing to pin. */}
+        {selected && models.length > 0 && (
           <button
             type="button"
             data-testid={`${rowTestId}-versions`}
@@ -372,9 +386,10 @@ function LineRow({
  * to one vendor. Lineage families (Opus, Sonnet, …) collapse to one row with
  * per-version pin chips revealed on hover/selection, and non-lineage models whose
  * labels share a versioned base ("GPT-5.6 Sol/Terra/Luna") collapse the same way;
- * remaining models render one row each, newest-first. When `offerLatest` is set, a
- * lineage row's label stores the bare alias (rides upgrades) and non-lineage
- * families gain a "· latest" alias row; otherwise labels pick the latest concrete
+ * remaining models render one row each, newest-first. When `offerLatest` is set,
+ * rows carry an explicit "Latest" chip storing the bare alias (rides upgrades) —
+ * lit when the alias is the stored selection, while a lit version chip means a
+ * pin; row clicks store the alias too. Otherwise labels pick the latest concrete
  * version. Keeps no popover state of its own — the parent owns open/close and
  * renders any effort section.
  */
@@ -519,18 +534,38 @@ export function ModelFamilyList({
               activeId={!isLatestSelected ? resolved?.id : undefined}
               chipLabel={(m) => versionChipLabel(m.label, group.displayName)}
               onPickModel={onPick}
-              latestSuffix={offerLatest}
+              // Alias surfaces get an explicit Latest chip so latest-vs-pinned
+              // is readable at a glance (Latest lit = alias; version lit = pin).
+              latestChip={
+                offerLatest
+                  ? {
+                      onPick: () => onPick(group.family),
+                      active: isLatestSelected && familyHasSelection,
+                      testId: `model-latest-chip-${group.family}`,
+                    }
+                  : undefined
+              }
             />
           )
         }
         return (
           <div key={group.family} className="flex flex-col gap-0.5">
             {offerLatest && (
-              <Row
-                testId={`model-latest-${group.family}`}
-                label={<span>{group.displayName} <span className="text-muted-foreground">· latest</span></span>}
-                isSelected={familyHasSelection && isLatestSelected}
-                onClick={() => onPick(group.family)}
+              // Family alias row in the same chip language as lineage rows:
+              // "GPT  [Latest]" — the row and its chip both store the alias.
+              <LineRow
+                label={group.displayName}
+                models={[]}
+                rowTestId={`model-latest-${group.family}`}
+                onRowPick={() => onPick(group.family)}
+                selected={familyHasSelection && isLatestSelected}
+                chipLabel={() => ''}
+                onPickModel={onPick}
+                latestChip={{
+                  onPick: () => onPick(group.family),
+                  active: isLatestSelected && familyHasSelection,
+                  testId: `model-latest-chip-${group.family}`,
+                }}
               />
             )}
             {splitIntoLines(group.versions).map((line) => {
@@ -557,11 +592,7 @@ export function ModelFamilyList({
                 <Row
                   key={version.id}
                   testId={`model-pinned-${version.id}`}
-                  label={
-                    offerLatest
-                      ? <span>{version.label} <span className="text-muted-foreground">· pinned</span></span>
-                      : version.label
-                  }
+                  label={version.label}
                   isSelected={!isLatestSelected && resolved?.id === version.id}
                   onClick={() => onPick(version.id)}
                 />
