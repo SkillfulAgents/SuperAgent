@@ -55,6 +55,35 @@ export function mapExaContentsResponse(raw: unknown, fetchedAt: string): WebFetc
 }
 
 /**
+ * Shared Exa POST /search body (also used by PlatformWebProvider via the proxy).
+ * `numResults` arrives pre-clamped. Request both highlights + text (~2× content cost) for
+ * snippet quality in v1; drop to one source later if optimizing spend.
+ */
+export function buildExaSearchBody(query: string, opts: WebSearchOptions, numResults: number): string {
+  return JSON.stringify({
+    query,
+    numResults,
+    includeDomains: opts.includeDomains,
+    excludeDomains: opts.excludeDomains,
+    startPublishedDate: opts.startPublishedDate,
+    endPublishedDate: opts.endPublishedDate,
+    contents: { highlights: true, text: { maxCharacters: 800 } },
+  })
+}
+
+/**
+ * Shared Exa POST /contents body. `maxChars` pre-clamped; undefined = no cap.
+ * filterEmptyResults MUST stay false: Exa defaults true and silently drops failed URLs.
+ */
+export function buildExaContentsBody(url: string, maxChars: number | undefined): string {
+  return JSON.stringify({
+    urls: [url],
+    text: maxChars != null ? { maxCharacters: maxChars } : true,
+    filterEmptyResults: false,
+  })
+}
+
+/**
  * The Exa reference vendor — one class exposing both web operations. `search` hits POST /search;
  * `fetch` hits POST /contents. Both resolve the key per call, run under the shared transport
  * (BaseWebProvider timeout + retry), and map explicitly through a Zod boundary.
@@ -62,6 +91,7 @@ export function mapExaContentsResponse(raw: unknown, fetchedAt: string): WebFetc
 export class ExaWebProvider extends BaseWebProvider {
   readonly id: WebProviderId = 'exa'
   readonly name = 'Exa'
+
   protected readonly settingsKeyField: keyof ApiKeySettings = 'exaApiKey'
   protected readonly envVarName = 'EXA_API_KEY'
 
@@ -69,25 +99,10 @@ export class ExaWebProvider extends BaseWebProvider {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Exa API key not configured')
 
-    const body = JSON.stringify({
-      query,
-      numResults: this.clampNumResults(opts.numResults),
-      includeDomains: opts.includeDomains,
-      excludeDomains: opts.excludeDomains,
-      startPublishedDate: opts.startPublishedDate,
-      endPublishedDate: opts.endPublishedDate,
-      // Request BOTH content types: highlights (the snippet source) + text (fallback when a page
-      // returns no highlights). Exa bills ~$1/1k pages PER content type, so this roughly doubles
-      // content cost. Kept intentionally for v1 (snippet quality over spend); to cost-optimize
-      // later, drop to a single source — likely highlights-only, which fits search=relevance-preview
-      // while web_fetch owns full content. Verified live 2026-06-30: both come back, body accepted.
-      contents: { highlights: true, text: { maxCharacters: 800 } },
-    })
-
     const json = await this.fetchJson(EXA_SEARCH_URL, {
       method: 'POST',
       headers: { 'x-api-key': apiKey, 'content-type': 'application/json' },
-      body,
+      body: buildExaSearchBody(query, opts, this.clampNumResults(opts.numResults)),
     })
     return mapExaSearchResponse(json)
   }
@@ -96,20 +111,10 @@ export class ExaWebProvider extends BaseWebProvider {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Exa API key not configured')
 
-    const maxChars = this.clampMaxChars(opts.maxChars)
-    const body = JSON.stringify({
-      urls: [url],
-      // A bare `true` returns full text; a cap object bounds it when the caller asked for maxChars.
-      text: maxChars != null ? { maxCharacters: maxChars } : true,
-      // ALWAYS false: Exa defaults this to true, which silently DROPS a failed/empty URL from
-      // results[] and breaks one-doc-per-URL mapping (§15). false keeps it so we map empty content.
-      filterEmptyResults: false,
-    })
-
     const json = await this.fetchJson(EXA_CONTENTS_URL, {
       method: 'POST',
       headers: { 'x-api-key': apiKey, 'content-type': 'application/json' },
-      body,
+      body: buildExaContentsBody(url, this.clampMaxChars(opts.maxChars)),
     })
     return mapExaContentsResponse(json, new Date().toISOString())
   }

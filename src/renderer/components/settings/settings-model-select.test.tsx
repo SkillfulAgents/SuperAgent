@@ -18,7 +18,27 @@ const CATALOG = [
   { id: 'claude-opus-4-6', label: 'Opus 4.6', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
   { id: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL },
+  // A model with no native web tools: the only shape that surfaces the web-tools warning.
+  { id: 'glm-4-6', label: 'GLM 4.6', family: 'glm', icon: 'anthropic', supportedEfforts: STD, supportsWebSearch: false },
 ]
+
+function settingsWith(web: { webProvider: string; webProviderIsDefault?: boolean }) {
+  return {
+    data: {
+      llmProvider: 'anthropic',
+      llmProviderStatus: [
+        {
+          id: 'anthropic',
+          name: 'Anthropic',
+          isConfigured: true,
+          catalog: CATALOG,
+          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+        },
+      ],
+      ...web,
+    },
+  }
+}
 
 beforeEach(() => {
   useSettingsMock.mockReturnValue({
@@ -93,5 +113,25 @@ describe('SettingsModelSelect (flat picker)', () => {
     expect(screen.getByTestId('effort-option-high')).toBeInTheDocument()
     expect(screen.queryByTestId('effort-option-xhigh')).not.toBeInTheDocument()
     expect(screen.queryByTestId('effort-option-max')).not.toBeInTheDocument()
+  })
+
+  describe('web-tools warning reads the active vendor', () => {
+    it('stays hidden when a host vendor is active', async () => {
+      useSettingsMock.mockReturnValue(settingsWith({ webProvider: 'platform', webProviderIsDefault: true }))
+      const user = userEvent.setup()
+      render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
+
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+    })
+
+    it('shows when the active vendor is native and the model has no web tools', async () => {
+      useSettingsMock.mockReturnValue(settingsWith({ webProvider: 'native', webProviderIsDefault: true }))
+      const user = userEvent.setup()
+      render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
+
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      expect(await screen.findByTestId('model-no-websearch-warning')).toBeInTheDocument()
+    })
   })
 })

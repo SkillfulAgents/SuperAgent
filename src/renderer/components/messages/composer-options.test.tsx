@@ -170,3 +170,11 @@ describe('useComposerOptions default adoption', () => {
     expect(result.current.effort).toBe('xhigh')
   })
 })
+
+describe('useComposerOptions web provider', () => {
+  it('exposes the active webProvider from settings', () => {
+    state.settings = { ...LOADED_SETTINGS, webProvider: 'platform', webProviderIsDefault: true }
+    const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
+    expect(result.current.webProvider).toBe('platform')
+  })
+})

@@ -58,7 +58,8 @@ export interface UpdateSettingsParams {
   container?: Partial<ContainerSettings>
   app?: Omit<Partial<AppPreferences>, 'faviconDataUrl'> & { faviconDataUrl?: string | null }
   llmProvider?: LlmProviderId
-  webProvider?: WebProviderId
+  // null clears to auto-resolve (server stores undefined).
+  webProvider?: WebProviderId | null
   apiKeys?: {
     anthropicApiKey?: string
     openrouterApiKey?: string

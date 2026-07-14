@@ -220,7 +220,7 @@ export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
   llmProvider?: LlmProviderId
-  webProvider?: WebProviderId // default 'native' (no host vendor; Claude's built-in web tools). One stored vendor backs both search + fetch.
+  webProvider?: WebProviderId // unset = Platform when Gamut login present, else native. A stored pin is sticky (no silent fallback). One vendor backs both search + fetch.
   webAllowedSites?: string[] // operator allow list; empty = allow all (host-side must-enforce, §8)
   webBlockedSites?: string[] // operator deny list; wins over allow
   app?: AppPreferences
@@ -294,7 +294,10 @@ export interface GlobalSettingsResponse {
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
+  // GET: always the vendor the agent runs (pin when set; Platform-if-login / native when unset).
+  // PUT still writes the stored pin (or null to clear). `webProviderIsDefault` is true iff stored unset.
   webProvider: WebProviderId
+  webProviderIsDefault: boolean
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus
@@ -463,7 +466,8 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     // UI select wrote both old fields to the same value, so the legacy webSearchProvider is the
     // user's choice. Read-fallback (not a boot-time migration) keeps this merge pure; the next
     // PUT /settings persists it under webProvider and the stale key lingers harmlessly. An invalid
-    // stored value falls back to native at the factory's isVendorId narrow.
+    // stored value fails the factory's isVendorId narrow and resolves to the automatic default
+    // (which may be a vendor, not native).
     webProvider: loaded.webProvider ?? loaded.webSearchProvider,
     webAllowedSites: loaded.webAllowedSites,
     webBlockedSites: loaded.webBlockedSites,

@@ -44,6 +44,12 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (token: string) => mockValidateProxyToken(token),
 }))
 
+vi.mock('@shared/lib/platform-attribution', () => ({
+  runWithRequestUser: (_userId: string, fn: () => unknown) => fn(),
+  runWithOptionalUser: (_userId: string | null | undefined, fn: () => unknown) => fn(),
+}))
+vi.mock('@shared/lib/services/agent-owner', () => ({ getAgentOwnerUserId: () => null }))
+
 // Import after mocks
 import {
   Authenticated,
@@ -465,6 +471,7 @@ describe('Auth Middleware', () => {
       expect(res.status).toBe(401)
       expect(await res.json()).toEqual({ error: 'Unauthorized' })
     })
+
 
     it('returns 401 when Authorization header is missing', async () => {
       const app = new Hono()

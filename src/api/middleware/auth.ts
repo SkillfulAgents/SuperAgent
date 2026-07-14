@@ -1,9 +1,10 @@
 import type { Context, Next, MiddlewareHandler } from 'hono'
 import { and, eq } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { runWithRequestUser } from '@shared/lib/platform-attribution'
+import { runWithOptionalUser, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { resolveAgentId } from '@shared/lib/utils/file-storage'
 
@@ -355,13 +356,9 @@ export function HasNotificationAccess(): MiddlewareHandler {
 // ---------------------------------------------------------------------------
 
 /**
- * IsAgent — validates synthetic bearer token from a container.
- * Works in both auth and non-auth modes (containers always use proxy tokens).
- *
- * Stashes the resolved agent slug on the context as `agentSlug` so route
- * handlers can bind their action to the token's agent instead of trusting an
- * attacker-controlled body/param (see SUP-216). Each agent has exactly one
- * proxy token, so the token uniquely identifies the agent.
+ * Gate for container→host routes. Validates the agent proxy token, stashes `agentSlug` (SUP-216),
+ * and runs under the agent owner's attribution scope so billed proxy calls (`/v1/browserbase`,
+ * `/v1/exa`) carry `token::memberId`. Single-user installs have no ACL row → null scope.
  */
 export function IsAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
@@ -371,7 +368,7 @@ export function IsAgent(): MiddlewareHandler {
       return c.json({ error: 'Unauthorized' }, 401)
     }
     c.set('agentSlug' as never, agentSlug as never)
-    return next()
+    return runWithOptionalUser(getAgentOwnerUserId(agentSlug), () => next())
   }
 }
 
