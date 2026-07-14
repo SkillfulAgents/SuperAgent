@@ -38,6 +38,13 @@ vi.mock('./client-factory', () => ({
   clearRunnerAvailabilityCache: (...args: unknown[]) => mockClearRunnerAvailabilityCache(...args),
   getRunnerDisplayName: (runner: string) => runner,
   reconcileRunnerState: vi.fn().mockResolvedValue(false),
+  // Routed through the same statfs mock the old module-local helper used, so
+  // the per-test disk-space overrides below keep working.
+  getAvailableDiskSpace: async () => {
+    const stats = await mockStatfs()
+    return stats.bavail * stats.bsize
+  },
+  MIN_IMAGE_DISK_SPACE_BYTES: 5 * 1024 * 1024 * 1024,
 }))
 
 const mockGetOrCreateProxyToken = vi.fn()

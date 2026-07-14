@@ -236,15 +236,6 @@ const BASE_PORT = (() => {
 const HEALTH_PROBE_TIMEOUT_MS = 2000
 
 /**
- * Error thrown by ensureImageExists() when an image build fails, carrying the
- * captured stderr tail and exit code so start()'s catch can surface them to Sentry.
- */
-interface ImageBuildError extends Error {
-  imageBuildStderr?: string
-  imageBuildExitCode?: number | null
-}
-
-/**
  * Parse a memory value string (e.g., "231.2MiB", "1.5GiB", "512MB") to bytes.
  */
 export function parseMemoryValue(value: string): number {
@@ -480,8 +471,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
    * ensureImageReady()'s decision: build from the local agent-container
    * context when it exists (dev), otherwise pull from the registry — the
    * packaged app has no build context, and the bundled Lima VM has no
-   * buildkit, so `build` is never an option there (ensureImageExists()'s
-   * build-only fallback hard-fails on Lima). Lazy import avoids a
+   * buildkit, so `build` is never an option there. Lazy import avoids a
    * base-client ↔ client-factory module cycle.
    */
   protected async recreateImage(image: string): Promise<void> {
@@ -800,8 +790,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       console.log(`Container ${containerName} is now running on port ${port}`)
     } catch (error: any) {
-      // Only capture if not already captured (health check errors are captured above)
-      if (!error.message?.includes('Container failed to become healthy')) {
+      // Only capture if not already captured (health check errors are captured
+      // above; image pull/build failures are captured at their throw site —
+      // they arrive here flagged sentryCaptured).
+      if (!error.message?.includes('Container failed to become healthy') && !error.sentryCaptured) {
         // Port races are a handled, user-environment failure — we retried with
         // fresh ports and only land here after exhausting them. Downgrade to a
         // warning so it doesn't page as a hard error.
@@ -814,10 +806,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             containerName: this.getContainerName(),
             runner: getSettings().container.containerRunner,
             image: getSettings().container.agentImage,
-            // Surface image-build diagnostics when start() failed during
-            // ensureImageExists() (otherwise these are undefined).
-            imageBuildExitCode: error.imageBuildExitCode,
-            imageBuildStderr: error.imageBuildStderr,
           },
         })
       }
@@ -1497,50 +1485,94 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
+  /**
+   * Whether the runtime behind this client is reachable right now. Used to
+   * tell "image missing" apart from "runtime down" when `image inspect`
+   * fails — the two need opposite handling. Delegates to the subclass's
+   * canonical static isRunning() probe (e.g. Lima's ha.sock-aware health
+   * probe, `docker info`).
+   */
+  protected isRuntimeReachable(): Promise<boolean> {
+    return (this.constructor as typeof BaseContainerClient).isRunning()
+  }
+
   private async ensureImageExists(): Promise<void> {
     const settings = getSettings()
-    const runner = this.getRunnerCommand()
     const image = settings.container.agentImage
 
     try {
       await execWithPath(`${this.getRunnerShellCommand()} image inspect ${image}`)
       console.log(`Container image ${image} found`)
-    } catch {
-      console.log(`Building container image ${image}...`)
+      return
+    } catch (inspectError) {
+      // `image inspect` fails both when the image is missing (healthy
+      // runtime) and when the runtime itself is unreachable (e.g. a wedged
+      // Lima VM → ssh-style exit 255 with empty stderr). Only the first is
+      // fixable by creating the image; rethrow the second so
+      // ensureImageExistsWithRecovery() heals the runtime and retries,
+      // instead of attempting a build/pull that can only fail.
+      if (!(await this.isRuntimeReachable())) {
+        const detail = inspectError instanceof Error ? inspectError.message : String(inspectError)
+        throw new Error(`Container runtime unreachable while checking for image ${image}: ${detail.slice(-500)}`)
+      }
+    }
 
-      // Pipe (not inherit) stdout/stderr so we can capture the build output —
-      // a bare exit code is undiagnosable in Sentry. Mirrors buildImage() in
-      // client-factory.ts.
-      const buildProcess = spawnWithPath(
-        runner,
-        ['build', '-t', image, AGENT_CONTAINER_PATH]
-      )
+    // Image genuinely missing. Same decision as recreateImage() and startup's
+    // ensureImageReady(): build only where the local agent-container context
+    // exists (dev) — packaged apps have no build context and the bundled Lima
+    // VM has no buildkit, so a build there fails unconditionally ("buildctl
+    // not found in $PATH") — otherwise pull from the registry. Lazy import
+    // avoids a base-client ↔ client-factory module cycle.
+    const { canBuildImage, buildImage, pullImage, checkImageExists, getAvailableDiskSpace, MIN_IMAGE_DISK_SPACE_BYTES } = await import('./client-factory')
+    const runner = settings.container.containerRunner as import('./client-factory').ContainerRunner
 
-      const stderrChunks: string[] = []
-      buildProcess.stdout?.on('data', (data: Buffer) => process.stdout.write(data))
-      buildProcess.stderr?.on('data', (data: Buffer) => {
-        stderrChunks.push(data.toString())
-        process.stderr.write(data)
-      })
-
-      await new Promise<void>((resolve, reject) => {
-        buildProcess.on('close', (code) => {
-          const stderr = stderrChunks.join('').trim()
-          // Treat an "already exists" image as success — a concurrent build
-          // (e.g. ensureImageReady racing the start path) may have created it.
-          if (code === 0 || /already exists/i.test(stderr)) {
-            console.log(`Container image ${image} built successfully`)
-            resolve()
-          } else {
-            const detail = stderr ? `: ${stderr.slice(-500)}` : ''
-            const error = new Error(`Container build failed with code ${code}${detail}`) as ImageBuildError
-            error.imageBuildExitCode = code
-            error.imageBuildStderr = stderr.slice(-2000)
-            reject(error)
-          }
+    // Same pre-flight ensureImageReady() runs at startup: creating the image
+    // on a nearly-full disk is how the containerd store ends up with corrupt
+    // snapshots (truncated layers mid-unpack) that poison every later start.
+    try {
+      const availableBytes = await getAvailableDiskSpace()
+      if (availableBytes < MIN_IMAGE_DISK_SPACE_BYTES) {
+        const availableGB = (availableBytes / (1024 * 1024 * 1024)).toFixed(1)
+        const requiredGB = (MIN_IMAGE_DISK_SPACE_BYTES / (1024 * 1024 * 1024)).toFixed(0)
+        captureMessage('Insufficient disk space for image create at session start', {
+          level: 'info',
+          tags: { component: 'container', operation: 'disk-space-check' },
+          extra: { availableGB: parseFloat(availableGB), requiredGB: parseInt(requiredGB), runner },
         })
-        buildProcess.on('error', reject)
-      })
+        // sentryCaptured: reported via the captureMessage above; start()'s
+        // catch must not add an error-level event for a full disk.
+        throw Object.assign(
+          new Error(`Insufficient disk space: ${availableGB} GB available, at least ${requiredGB} GB required to download the agent image. Free up disk space and try again.`),
+          { sentryCaptured: true, isImageCreateError: true }
+        )
+      }
+    } catch (diskError) {
+      if ((diskError as { isImageCreateError?: boolean }).isImageCreateError) throw diskError
+      console.warn('[Container] Disk space check failed, proceeding anyway:', diskError)
+    }
+
+    try {
+      if (canBuildImage()) {
+        console.log(`Building container image ${image}...`)
+        await buildImage(runner, image)
+        console.log(`Container image ${image} built successfully`)
+      } else {
+        console.log(`Pulling container image ${image}...`)
+        await pullImage(runner, image)
+        console.log(`Container image ${image} pulled successfully`)
+      }
+    } catch (createError) {
+      // A concurrent create (e.g. startup's ensureImageReady racing this
+      // start path) may have produced the image even though our attempt
+      // failed — re-check before propagating.
+      if (await checkImageExists(runner, image)) {
+        console.log(`Container image ${image} appeared concurrently`)
+        return
+      }
+      // isImageCreateError: a registry-level failure (404 "not found", DNS)
+      // must not string-match the VM-issue heuristics in Lima/WSL2
+      // handleRunError — only their health probes should decide recovery.
+      throw Object.assign(createError as object, { isImageCreateError: true })
     }
   }
 

@@ -450,16 +450,35 @@ export class WSL2ContainerClient extends BaseContainerClient {
   protected async handleRunError(error: any): Promise<boolean> {
     const msg = error.message || error.stderr || String(error)
     addErrorBreadcrumb({ category: 'wsl2', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
-    if (
-      msg.includes('ENOENT') ||
-      msg.includes('not found') ||
-      msg.includes('does not exist') ||
-      msg.includes('not running') ||
-      msg.includes('No such file') ||
-      msg.includes('EACCES') ||
-      msg.includes('is not recognized')
-    ) {
-      console.log('WSL2 distro not ready, attempting to provision...')
+    // Image create (pull/build) failures carry registry-level text that would
+    // false-match the patterns below — for those, only the health probe may
+    // decide recovery.
+    const isKnownVmIssue =
+      error?.isImageCreateError !== true && (
+        msg.includes('ENOENT') ||
+        msg.includes('not found') ||
+        msg.includes('does not exist') ||
+        msg.includes('not running') ||
+        msg.includes('No such file') ||
+        msg.includes('EACCES') ||
+        msg.includes('is not recognized')
+      )
+
+    // Mirror Lima (SUP-291): when the string match doesn't decide — including
+    // tagged image-create errors, whose runtime may have died mid-pull — let
+    // the real health probe decide, so recovery is driven by actual distro
+    // state rather than error text.
+    let distroUnhealthy = false
+    if (!isKnownVmIssue) {
+      try {
+        distroUnhealthy = !(await WSL2ContainerClient.isRunning())
+      } catch {
+        distroUnhealthy = true
+      }
+    }
+
+    if (isKnownVmIssue || distroUnhealthy) {
+      console.log(`WSL2 distro not ready (${distroUnhealthy ? 'unhealthy distro' : 'known issue'}), attempting to provision...`)
       try {
         await ensureWSL2Ready()
         return true
@@ -472,10 +491,13 @@ export class WSL2ContainerClient extends BaseContainerClient {
         return false
       }
     }
-    captureException(error, {
-      tags: { component: 'wsl2', operation: 'container-run' },
-      extra: { agentId: this.config.agentId, ...collectWSL2Diagnostics() },
-    })
+    // Skip errors whose throw site already captured them (e.g. pullImage).
+    if (!error?.sentryCaptured) {
+      captureException(error, {
+        tags: { component: 'wsl2', operation: 'container-run' },
+        extra: { agentId: this.config.agentId, ...collectWSL2Diagnostics() },
+      })
+    }
     return false
   }
 

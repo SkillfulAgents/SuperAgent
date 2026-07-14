@@ -11,8 +11,9 @@ import { RunnerSetupError, type RunnerSetupRemediation } from './wsl2-setup-erro
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
 import { BaseContainerClient, execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
-import { platform } from 'os'
+import { platform, homedir } from 'os'
 import * as fs from 'fs'
+import { statfs } from 'fs/promises'
 
 export type ContainerRunner = 'docker' | 'podman' | 'apple-container' | 'lima' | 'wsl2' | 'kubernetes' | 'lambda-microvm'
 
@@ -367,6 +368,15 @@ export async function reconcileRunnerState(runner: ContainerRunner): Promise<boo
   return entry.reconcileRuntimeState()
 }
 
+/** Minimum free disk space (in bytes) required before pulling/building an image: 5 GB */
+export const MIN_IMAGE_DISK_SPACE_BYTES = 5 * 1024 * 1024 * 1024
+
+/** Free bytes on the volume the agent image lands on (host home dir). */
+export async function getAvailableDiskSpace(): Promise<number> {
+  const stats = await statfs(homedir())
+  return stats.bavail * stats.bsize
+}
+
 /**
  * Check if a container image exists locally.
  */
@@ -396,7 +406,31 @@ export async function checkImageExists(runner: ContainerRunner, image: string): 
  *
  * We track unique layer/item IDs and completed ones to compute progress.
  */
+/**
+ * In-flight pulls keyed by runner:image. Startup's ensureImageReady() and a
+ * session start's ensureImageExists() can both decide to pull the same image
+ * concurrently; sharing one pull avoids a duplicate multi-GB download and the
+ * loser failing a start the winner was about to satisfy.
+ */
+const inflightPulls = new Map<string, Promise<void>>()
+
 export function pullImage(
+  runner: ContainerRunner,
+  image: string,
+  onProgress?: (progress: ImagePullProgress) => void
+): Promise<void> {
+  const key = `${runner}:${image}`
+  const existing = inflightPulls.get(key)
+  if (existing) {
+    addErrorBreadcrumb({ category: 'container', message: 'Awaiting already in-flight pull of the same image', data: { image, runner } })
+    return existing
+  }
+  const pull = doPullImage(runner, image, onProgress).finally(() => inflightPulls.delete(key))
+  inflightPulls.set(key, pull)
+  return pull
+}
+
+function doPullImage(
   runner: ContainerRunner,
   image: string,
   onProgress?: (progress: ImagePullProgress) => void
@@ -480,7 +514,10 @@ export function pullImage(
       } else {
         const stderr = stderrChunks.join('').trim()
         const detail = stderr ? `: ${stderr.slice(-500)}` : ''
-        const pullError = new Error(`Image pull failed with exit code ${code}${detail}`)
+        // sentryCaptured: this capture is the canonical event for the failure —
+        // callers up the stack (start()'s catch, handleRunError fallthroughs,
+        // ensureImageReady) must not re-capture the same error.
+        const pullError = Object.assign(new Error(`Image pull failed with exit code ${code}${detail}`), { sentryCaptured: true })
         captureException(pullError, {
           tags: { component: 'container', operation: 'image-pull' },
           extra: {
@@ -500,7 +537,7 @@ export function pullImage(
         tags: { component: 'container', operation: 'image-pull-spawn' },
         extra: { image, runner },
       })
-      reject(err)
+      reject(Object.assign(err, { sentryCaptured: true }))
     })
   })
 }
@@ -561,7 +598,8 @@ export function buildImage(
       } else {
         const stderr = stderrChunks.join('').trim()
         const detail = stderr ? `: ${stderr.slice(-500)}` : ''
-        const buildError = new Error(`Image build failed with exit code ${code}${detail}`)
+        // sentryCaptured: canonical event — see pullImage.
+        const buildError = Object.assign(new Error(`Image build failed with exit code ${code}${detail}`), { sentryCaptured: true })
         captureException(buildError, {
           tags: { component: 'container', operation: 'image-build' },
           extra: { image, runner, exitCode: code, stderr: stderr.slice(-2000) },
@@ -574,7 +612,7 @@ export function buildImage(
         tags: { component: 'container', operation: 'image-build-spawn' },
         extra: { image, runner },
       })
-      reject(err)
+      reject(Object.assign(err, { sentryCaptured: true }))
     })
   })
 }
