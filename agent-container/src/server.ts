@@ -12,9 +12,12 @@ import { promisify } from 'util';
 import * as dns from 'dns';
 
 import { inputManager } from './input-manager';
+import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
+import { startTabPolling, stopTabPolling } from './tab-poll';
 import { runBrowserUpload } from './browser-upload';
+import { runBrowserDownload } from './browser-download';
 import { updateEnvFileEntry, healEnvFilePermissions } from './env-file-store';
 
 import { getEditingCommands } from './cdp-editing-commands';
@@ -95,6 +98,12 @@ app.delete('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
   const deleted = await sessionManager.deleteSession(sessionId);
 
+  // The host never answers a deleted session's input requests — reject them
+  // so awaiting tool handlers unblock and the entries don't live forever.
+  // Unconditional: a not-found session may still own entries from a racing
+  // or repeated delete.
+  inputManager.rejectForSession(sessionId);
+
   if (!deleted) {
     return c.json({ error: 'Session not found' }, 404);
   }
@@ -106,13 +115,15 @@ app.post('/sessions/:id/interrupt', async (c) => {
   const sessionId = c.req.param('id');
 
   try {
-    const interrupted = await sessionManager.interruptSession(sessionId);
+    const { found, discardedUuids } = await sessionManager.interruptSession(sessionId);
 
-    if (!interrupted) {
+    if (!found) {
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    return c.json({ success: true });
+    // The same uuids also flow to the host as synthetic command_lifecycle
+    // 'discarded' stream frames; this response is for the API caller.
+    return c.json({ success: true, discardedUuids });
   } catch (error: any) {
     console.error('Error interrupting session:', error);
     return c.json({ error: error.message || 'Failed to interrupt session' }, 500);
@@ -120,18 +131,6 @@ app.post('/sessions/:id/interrupt', async (c) => {
 });
 
 // Message endpoints
-app.get('/sessions/:id/messages', async (c) => {
-  const sessionId = c.req.param('id');
-  const session = await sessionManager.getSession(sessionId);
-
-  if (!session) {
-    return c.json({ error: 'Session not found' }, 404);
-  }
-
-  const messages = sessionManager.getMessages(sessionId);
-  return c.json(messages);
-});
-
 app.post('/sessions/:id/messages', async (c) => {
   const sessionId = c.req.param('id');
   const session = await sessionManager.getSession(sessionId);
@@ -724,11 +723,28 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
   const browserAuthHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
   if (proxyToken) browserAuthHeaders['Authorization'] = `Bearer ${proxyToken}`;
 
-  const response = await fetch(`${hostAppUrl}/api/browser/launch-host-browser`, {
-    method: 'POST',
-    headers: browserAuthHeaders,
-    body: JSON.stringify({ agentId: agentId || 'default' }),
-  });
+  // A network-level failure here means the launch request never reached the
+  // host app at all — the host never launches Chrome and never reports to
+  // Sentry, so this bare 'fetch failed' used to be the only trace. On Windows
+  // it is almost always Windows Firewall blocking the app's API port for
+  // container (WSL2) traffic, e.g. after the first-run firewall prompt was
+  // dismissed. Surface that diagnosis instead.
+  let response: Response;
+  try {
+    response = await fetch(`${hostAppUrl}/api/browser/launch-host-browser`, {
+      method: 'POST',
+      headers: browserAuthHeaders,
+      body: JSON.stringify({ agentId: agentId || 'default' }),
+    });
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Could not reach the host app at ${hostAppUrl} to launch the browser (${cause}). ` +
+      `Connections from the agent container to the host machine appear to be blocked — on Windows this is usually ` +
+      `Windows Defender Firewall blocking the app (open "Allow an app through Windows Firewall" and enable it for both Private and Public networks), ` +
+      `or third-party antivirus. Ask the user to allow the app through their firewall, then try again.`
+    );
+  }
 
   if (!response.ok) {
     const body = await response.text();
@@ -765,7 +781,22 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
   // (ws://host:port/devtools/browser/<id>), not just ws://host:port.
   // Query Chrome's /json/version endpoint to discover it.
   const cdpHost = `${cdpIp}:${data.port}`;
-  const versionRes = await fetch(`http://${cdpHost}/json/version`);
+  // A network-level failure here (vs. an HTTP error) means the host browser
+  // launched but this container can't reach its debugging port — on Windows
+  // that is almost always the host firewall dropping container→host traffic.
+  // Surface that diagnosis instead of an opaque "fetch failed".
+  let versionRes: Response;
+  try {
+    versionRes = await fetch(`http://${cdpHost}/json/version`);
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `The host browser launched, but its debugging endpoint at ${cdpHost} is unreachable from inside the agent container (${cause}). ` +
+      `This usually means a firewall on the host machine is blocking container-to-host connections ` +
+      `(on Windows: Windows Defender Firewall or antivirus blocking the app on the "vEthernet (WSL)" network). ` +
+      `Ask the user to allow the app through their firewall, or to switch Browser Host to the built-in browser in Settings.`
+    );
+  }
   if (!versionRes.ok) {
     throw new Error(`Failed to query CDP /json/version: ${versionRes.status}`);
   }
@@ -824,6 +855,21 @@ async function setDownloadBehaviorViaCDP(cdpUrl: string, downloadPath: string): 
       reject(err);
     });
   });
+}
+
+// The CDP download path applied for the current browser (host path in host
+// mode, /workspace/downloads locally). Playwright connections made mid-session
+// (browser_upload/browser_download) can clobber Browser.setDownloadBehavior,
+// so we remember what we applied and re-apply it after those calls.
+let appliedCdpDownloadPath: string | null = null;
+
+async function reapplyDownloadBehavior(): Promise<void> {
+  if (!browserState.cdpUrl || !appliedCdpDownloadPath) return;
+  try {
+    await setDownloadBehaviorViaCDP(browserState.cdpUrl, appliedCdpDownloadPath);
+  } catch (err) {
+    console.error('[Browser] Failed to re-apply download behavior via CDP:', err);
+  }
 }
 
 // Tell the host to stop the Chrome process for this agent.
@@ -926,9 +972,11 @@ app.post('/browser/open', async (c) => {
     // For host browser: use the host-filesystem path (volume-mounted as /workspace).
     // For container browser: use /workspace/downloads directly.
     const downloadPath = hostBrowser?.hostDownloadDir || WORKSPACE_DOWNLOADS_DIR;
+    appliedCdpDownloadPath = null;
     if (cdpUrl) {
       try {
         await setDownloadBehaviorViaCDP(cdpUrl, downloadPath);
+        appliedCdpDownloadPath = downloadPath;
       } catch (err) {
         console.error('[Browser] Failed to set download behavior via CDP:', err);
       }
@@ -1419,6 +1467,10 @@ app.post('/browser/upload', async (c) => {
       urlsMatch: (left, right) => tabManager.urlsMatch(left, right),
     });
 
+    // Playwright's CDP attach can reset Browser.setDownloadBehavior — re-apply
+    // ours so click-triggered downloads keep landing in the workspace.
+    await reapplyDownloadBehavior();
+
     if (!result.success) {
       return c.json(result.body, result.status);
     }
@@ -1428,6 +1480,36 @@ app.post('/browser/upload', async (c) => {
   } catch (error: any) {
     console.error('[Browser] Error uploading file:', error);
     return c.json({ error: error.message || 'Failed to upload file' }, 500);
+  }
+});
+
+// POST /browser/download - Download a URL's bytes through the browser session
+// into /workspace/downloads. The bytes travel over the CDP wire, so this works
+// even when the browser's own filesystem is unreachable (host Chrome, Browserbase).
+app.post('/browser/download', async (c) => {
+  try {
+    const rawBody = await c.req.json().catch(() => ({}));
+    const result = await runBrowserDownload(rawBody, {
+      validateSession: validateBrowserSessionWithRecovery,
+      isBrowserActive: () => browserState.active,
+      getConnectionUrl: () => browserState.cdpUrl || getCdpHttpEndpoint(),
+      getActiveTargetUrl: async () => (await findActivePageTarget())?.url ?? null,
+      urlsMatch: (left, right) => tabManager.urlsMatch(left, right),
+    });
+
+    // Playwright's CDP attach can reset Browser.setDownloadBehavior — re-apply
+    // ours so click-triggered downloads keep landing in the workspace.
+    await reapplyDownloadBehavior();
+
+    if (!result.success) {
+      return c.json(result.body, result.status);
+    }
+
+    notifyBrowserAction();
+    return c.json(result.body);
+  } catch (error: any) {
+    console.error('[Browser] Error downloading file:', error);
+    return c.json({ error: error.message || 'Failed to download file' }, 500);
   }
 });
 
@@ -1800,8 +1882,6 @@ interface BrowserTabInfo {
   title: string;
   active: boolean;
 }
-
-let tabPollInterval: NodeJS.Timeout | null = null;
 
 /** Get ALL CDP page targets across all strategies */
 async function getAllPageTargets(): Promise<PageTarget[]> {
@@ -2217,8 +2297,8 @@ function handleBrowserStreamConnection(ws: WebSocket) {
     ws.close();
   });
 
-  // Start tab list polling
-  tabPollInterval = setInterval(() => broadcastTabList(), 2000);
+  // Start tab list polling for this connection (replaces any previous viewer's timer)
+  const tabPoll = startTabPolling(() => broadcastTabList());
 
   // Forward input events and handle tab control messages from client
   // Protocol: see src/renderer/components/browser/browser-preview.tsx
@@ -2343,12 +2423,12 @@ function handleBrowserStreamConnection(ws: WebSocket) {
   });
 
   ws.on('close', () => {
-    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
+    stopTabPolling(tabPoll);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 
   ws.on('error', () => {
-    if (tabPollInterval) { clearInterval(tabPollInterval); tabPollInterval = null; }
+    stopTabPolling(tabPoll);
     if (cdpScreencast?.clientWs === ws) cleanupCdpScreencast();
   });
 }
@@ -2358,6 +2438,16 @@ dashboardManager.scanAndStartAll().catch((error) => {
   console.error('[DashboardManager] Failed to scan and start dashboards:', error);
 });
 
+// Sweep abandoned input requests. Entries the host never answers (session
+// deleted mid-prompt, app closed, request card ignored) would otherwise live
+// forever — pinning dead tool-handler closures and, via the early-result
+// buffer, secret values. TTLs are type-aware inside cleanupStale.
+setInterval(() => inputManager.cleanupStale(), 60_000).unref();
+
+// Pin agent-browser's screenshot directory and sweep stale files (boot +
+// hourly). Every screenshot is a uniquely named PNG nothing else deletes.
+startScreenshotJanitor();
+
 console.log(`Server running on http://localhost:${port}`);
 console.log('Available endpoints:');
 console.log('  POST   /sessions');
@@ -2365,7 +2455,6 @@ console.log('  GET    /sessions/:id');
 console.log('  GET    /sessions');
 console.log('  DELETE /sessions/:id');
 console.log('  POST   /sessions/:id/interrupt');
-console.log('  GET    /sessions/:id/messages');
 console.log('  POST   /sessions/:id/messages');
 console.log('  WS     /sessions/:id/stream');
 console.log('  GET    /files/*');

@@ -51,18 +51,21 @@ const mockStreamState = {
   completedSubagents: null as Set<string> | null,
   typingUser: null as { id: string; name?: string } | null,
   peerUserMessages: [] as Array<{ uuid: string; receivedAt: number; content: string; sender: { id: string; name?: string; email?: string }; queued?: boolean }>,
+  discardedCommandUuids: [] as string[],
   thinkingBlocks: [] as Array<{ id: number; text: string; startedAt: number; endedAt: number | null }>,
 }
 
 const mockClearCompacting = vi.fn()
 const mockRemovePeerUserMessage = vi.fn()
 const mockClearPeerUserMessages = vi.fn()
+const mockConsumeDiscardedCommand = vi.fn()
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => mockStreamState,
   clearCompacting: (...args: unknown[]) => mockClearCompacting(...args),
   removePeerUserMessage: (...args: unknown[]) => mockRemovePeerUserMessage(...args),
   clearPeerUserMessages: (...args: unknown[]) => mockClearPeerUserMessages(...args),
+  consumeDiscardedCommand: (...args: unknown[]) => mockConsumeDiscardedCommand(...args),
 }))
 
 // Mock useUser — default no user, override per test
@@ -148,6 +151,7 @@ describe('MessageList', () => {
       completedSubagents: null,
       typingUser: null,
       peerUserMessages: [],
+      discardedCommandUuids: [],
       thinkingBlocks: [],
     })
   })
@@ -731,6 +735,61 @@ describe('MessageList', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('rescues a queued ghost immediately when the runtime reports its command discarded', async () => {
+    // Deterministic path: a command_lifecycle discarded/cancelled frame named
+    // this uuid (e.g. killed by Stop). No idle, no grace timer — the session
+    // is even still ACTIVE — the rescue must fire right away.
+    const onAppeared = vi.fn()
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+    mockStreamState.discardedCommandUuids = ['u-dead']
+
+    const DraftProbe = () => {
+      const [draft] = useDraft<string>('session:s-1')
+      return <div data-testid="draft-probe">{draft ?? ''}</div>
+    }
+
+    renderWithProviders(
+      <>
+        <MessageList
+          sessionId="s-1"
+          agentSlug="agent-1"
+          pendingUserMessages={[{ localId: 'l1', uuid: 'u-dead', text: 'killed by stop', sentAt: Date.now(), queued: true }]}
+          onPendingMessageAppeared={onAppeared}
+        />
+        <DraftProbe />
+      </>
+    )
+
+    await act(async () => {})
+
+    expect(onAppeared).toHaveBeenCalledWith('l1')
+    expect(screen.getByTestId('draft-probe')).toHaveTextContent('killed by stop')
+    expect(mockConsumeDiscardedCommand).toHaveBeenCalledWith('s-1', 'u-dead')
+  })
+
+  it('leaves a queued ghost alone when the discarded uuid belongs to a different command', async () => {
+    const onAppeared = vi.fn()
+    mockMessagesData.data = []
+    mockStreamState.isActive = true
+    mockStreamState.discardedCommandUuids = ['someone-else']
+
+    renderWithProviders(
+      <MessageList
+        sessionId="s-1"
+        agentSlug="agent-1"
+        pendingUserMessages={[{ localId: 'l1', uuid: 'u-alive', text: 'still queued', sentAt: Date.now(), queued: true }]}
+        onPendingMessageAppeared={onAppeared}
+      />
+    )
+
+    await act(async () => {})
+
+    expect(onAppeared).not.toHaveBeenCalled()
+    expect(screen.getByTestId('queued-user-message')).toHaveTextContent('still queued')
+    expect(mockConsumeDiscardedCommand).not.toHaveBeenCalled()
   })
 
   it('does not restore a non-queued pending whose POST is still in flight', async () => {

@@ -622,6 +622,31 @@ export class ChromeProvider implements HostBrowserProvider {
       }, 1000)
     }
 
+    // Chrome is up and the proxy is bound, but on bridged runners the container
+    // still has to cross the host firewall to reach the proxy (on Windows,
+    // Defender or third-party AV commonly drops WSL2→host traffic on the
+    // vEthernet interface). That block only manifests at connect time inside
+    // the container, where nothing reports to Sentry — so probe the proxy from
+    // the runner's network side and fail the launch loudly with an actionable
+    // message instead.
+    if (proxyHost && proxyPort) {
+      const probe = await this.probeProxyFromRunner(instanceId, proxyHost, proxyPort)
+      if (probe === 'unreachable') {
+        const err = new Error(
+          `Chrome launched on the host, but the agent cannot reach it: connections from the container network to the browser's debugging proxy on ${proxyHost}:${proxyPort} are being blocked — most likely by a firewall on the host machine` +
+          (process.platform === 'win32'
+            ? ' (Windows Defender Firewall or third-party antivirus blocking inbound connections on the "vEthernet (WSL)" interface). Ask the user to allow this app through Windows Firewall for all network profiles (including Public), then try again — or switch Browser Host to the built-in browser in Settings.'
+            : '. Ask the user to allow this app through the host firewall, or switch Browser Host to the built-in browser in Settings.'),
+        )
+        captureException(err, {
+          tags: { component: 'browser', operation: 'cdp-proxy-reachability' },
+          extra: { instanceId, proxyHost, proxyPort, chromePort: port, platform: process.platform },
+        })
+        await this.stop(instanceId)
+        throw err
+      }
+    }
+
     const exposedPort = proxyPort ?? port
 
     console.log(`[ChromeProvider] Chrome CDP on ${CDP_LOOPBACK_ADDRESS}:${port}${proxyPort ? `, proxy on ${proxyHost}:${proxyPort}` : ''} for instance ${instanceId} (pid ${chromePid})`)
@@ -768,6 +793,22 @@ export class ChromeProvider implements HostBrowserProvider {
       else if (pid > 0) process.kill(pid)
     } catch {
       /* already gone */
+    }
+  }
+
+  /** Ask the active runner to probe the CDP proxy from its network side.
+   *  Any failure to run the probe itself means 'unknown' — only a positive
+   *  "connection refused / timed out" verdict may fail a launch. */
+  private async probeProxyFromRunner(
+    instanceId: string,
+    host: string,
+    port: number,
+  ): Promise<'reachable' | 'unreachable' | 'unknown'> {
+    try {
+      return await containerManager.getClient(instanceId).probeHostPortFromRunner(host, port)
+    } catch (error) {
+      console.warn('[ChromeProvider] CDP proxy reachability probe failed to run:', error)
+      return 'unknown'
     }
   }
 

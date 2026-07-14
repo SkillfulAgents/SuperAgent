@@ -8,6 +8,7 @@ import {
   clearCompacting,
   removePeerUserMessage,
   clearPeerUserMessages,
+  consumeDiscardedCommand,
 } from '@renderer/hooks/use-message-stream'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { MessageItem } from './message-item'
@@ -63,9 +64,11 @@ interface MessageListProps {
   /** Read-only mirror (chat-integration replay): suppress edit/delete actions and
    *  lift the connector's inline sender prefix into a label. */
   readOnly?: boolean
+  /** Hide the scroll affordance while a footer popover overlaps it. */
+  suppressScrollToBottom?: boolean
 }
 
-export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly }: MessageListProps) {
+export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error } = useMessages(sessionId, agentSlug)
   const deleteMessage = useDeleteMessage()
@@ -135,6 +138,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     apiErrorCode,
     typingUser,
     peerUserMessages,
+    discardedCommandUuids,
     workflows,
     thinkingBlocks,
   } = useMessageStream(sessionId, agentSlug)
@@ -217,6 +221,36 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       }
     }
   }, [messages, pendingUserMessages, peerUserMessages, onPendingMessageAppeared, sessionId, user?.id])
+
+  // Deterministic ghost rescue: the runtime reported these queued messages
+  // dead via command_lifecycle discarded/cancelled (e.g. killed by Stop, or
+  // dropped by the interrupt-and-restart an MCP injection does). No grace
+  // race — the runtime named the uuid, so restore the ghost's text to the
+  // composer right away. Peer ghosts just drop (their own client restores
+  // their text). The idle-grace effect below stays as the fallback for
+  // runtimes that don't emit lifecycle frames.
+  useEffect(() => {
+    if (discardedCommandUuids.length === 0) return
+    const dead = new Set(discardedCommandUuids)
+    const rescued = (pendingUserMessages ?? []).filter((p) => p.uuid && dead.has(p.uuid))
+    if (rescued.length > 0) {
+      const draftKey = `session:${sessionId}`
+      const existing = draftsStore.get<string>(draftKey)?.trim() ?? ''
+      const restored = rescued.map((p) => p.text.trim()).filter(Boolean)
+      const merged = [...restored, existing].filter(Boolean).join('\n\n')
+      draftsStore.set(draftKey, merged || undefined)
+      for (const pending of rescued) {
+        onPendingMessageAppeared?.(pending.localId)
+        consumeDiscardedCommand(sessionId, pending.uuid!)
+      }
+    }
+    for (const peer of peerUserMessages) {
+      if (dead.has(peer.uuid)) {
+        removePeerUserMessage(sessionId, peer.uuid)
+        consumeDiscardedCommand(sessionId, peer.uuid)
+      }
+    }
+  }, [discardedCommandUuids, pendingUserMessages, peerUserMessages, sessionId, draftsStore, onPendingMessageAppeared])
 
   // Once the session goes idle, our messages still showing as pending are
   // treated as undelivered — the agent was interrupted before picking them
@@ -918,7 +952,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         {/* Pending interactive requests render in the composer slot — see SessionChatColumn. */}
         </div>
       </div>
-      {showScrollToBottom && (
+      {showScrollToBottom && !suppressScrollToBottom && (
         <button
           onClick={scrollToBottom}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium shadow-lg hover:bg-primary/90 transition-opacity cursor-pointer"

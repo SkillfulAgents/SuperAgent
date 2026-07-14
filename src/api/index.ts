@@ -23,6 +23,7 @@ import commonMcpServers from './routes/common-mcp-servers'
 import userSettingsRouter from './routes/user-settings'
 import policies from './routes/policies'
 import runtimeStatusRouter from './routes/runtime-status'
+import firewallRouter from './routes/firewall'
 import sttRouter from './routes/stt'
 import llmRouter from './routes/llm'
 import faviconRouter from './routes/favicon'
@@ -194,6 +195,7 @@ app.route('/api/common-mcp-servers', commonMcpServers)
 app.route('/api/user-settings', userSettingsRouter)
 app.route('/api/policies', policies)
 app.route('/api/runtime-status', runtimeStatusRouter)
+app.route('/api/firewall', firewallRouter)
 app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/audit-log', auditLogRouter)
 app.route('/api/platform-auth', platformAuth)

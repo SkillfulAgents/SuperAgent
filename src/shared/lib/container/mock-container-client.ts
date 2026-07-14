@@ -1458,7 +1458,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   private running: boolean = false
   private activeBrowserSessionId: string | null = null
   private sessions: Map<string, ContainerSession> = new Map()
-  private sessionMessages: Map<string, unknown[]> = new Map()
   private streamCallbacks: Map<string, Set<(message: StreamMessage) => void>> = new Map()
   // Map from containerSessionId to our internal sessionId (which is the same as the API sessionId)
   private sessionToApiSession: Map<string, string> = new Map()
@@ -1631,6 +1630,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return null
   }
 
+  // No runner network to probe from in mock mode.
+  async probeHostPortFromRunner(_host: string, _port: number): Promise<'reachable' | 'unreachable' | 'unknown'> {
+    return 'unknown'
+  }
+
   // Lifecycle management
 
   async start(options?: StartOptions): Promise<void> {
@@ -1657,7 +1661,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
     this.running = false
     this.sessions.clear()
-    this.sessionMessages.clear()
     this.streamCallbacks.clear()
     console.log(`[MockContainerClient] Stopped mock container for agent ${this.config.agentId}`)
     return { forceStopUsed: false, stopped: true }
@@ -1670,7 +1673,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
     this.running = false
     this.sessions.clear()
-    this.sessionMessages.clear()
     this.streamCallbacks.clear()
     console.log(`[MockContainerClient] Stopped mock container (sync) for agent ${this.config.agentId}`)
   }
@@ -1863,7 +1865,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     }
 
     this.sessions.set(sessionId, session)
-    this.sessionMessages.set(sessionId, [])
     this.streamCallbacks.set(sessionId, new Set())
 
     console.log(`[MockContainerClient] Created session ${sessionId}`)
@@ -1876,14 +1877,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           { uuid: options.initialMessageUuid, content: options.initialMessage },
         ])
       }
-      // Store user message
-      const userMessage = {
-        role: 'user',
-        content: options.initialMessage,
-        timestamp: new Date().toISOString(),
-      }
-      this.sessionMessages.get(sessionId)?.push(userMessage)
-
       // Delay message emission to give time for subscription
       // The API subscribes after createSession returns, so we need to wait
       setTimeout(() => {
@@ -1923,7 +1916,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   async deleteSession(sessionId: string): Promise<boolean> {
     const existed = this.sessions.has(sessionId)
     this.sessions.delete(sessionId)
-    this.sessionMessages.delete(sessionId)
     this.streamCallbacks.delete(sessionId)
     this.pendingUserMessageUuids.delete(sessionId)
     this.busySessions.delete(sessionId)
@@ -1974,12 +1966,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
     // shouldQuery: false — append to transcript without triggering a response
     if (options?.shouldQuery === false) {
-      this.sessionMessages.get(sessionId)?.push({
-        role: 'user',
-        content,
-        timestamp: new Date().toISOString(),
-        shouldQuery: false,
-      })
       return
     }
 
@@ -2038,14 +2024,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       return
     }
 
-    // Store user message
-    const userMessage = {
-      role: 'user',
-      content,
-      timestamp: new Date().toISOString(),
-    }
-    this.sessionMessages.get(sessionId)?.push(userMessage)
-
     // Remember the uuid so the scenario's JSONL echo of this message gets it
     if (uuid) {
       const queue = this.pendingUserMessageUuids.get(sessionId) ?? []
@@ -2075,10 +2053,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.busySessions.add(sessionId)
     this.emitSessionState(sessionId, 'running')
     scenario.execute(sessionId, this.scenarioView(sessionId), content)
-  }
-
-  async getMessages(sessionId: string): Promise<unknown[]> {
-    return this.sessionMessages.get(sessionId) || []
   }
 
   async cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean> {
@@ -2124,12 +2098,21 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     this.busySessions.delete(sessionId)
 
     // Queued steering messages die with the turn — the real CLI never picks
-    // them up after an abort; the renderer restores their text into the
-    // composer draft.
+    // them up after an abort. Mirror the real container: it names each dead
+    // uuid with a synthetic command_lifecycle 'discarded' frame (the SDK's own
+    // frames die with the aborted query), which the renderer uses to rescue
+    // the ghost's text into the composer deterministically.
     const timers = this.queuedSteeringTimers.get(sessionId)
     if (timers) {
+      const deadUuids = [...timers.keys()]
       for (const timer of timers.values()) clearTimeout(timer)
       timers.clear()
+      for (const uuid of deadUuids) {
+        this.emitStreamMessage(sessionId, {
+          type: 'command_lifecycle',
+          content: { type: 'command_lifecycle', command_uuid: uuid, state: 'discarded' },
+        })
+      }
     }
 
     this.emitStreamMessage(sessionId, {

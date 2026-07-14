@@ -61,6 +61,8 @@ export interface UpdateSettingsParams {
   apiKeys?: {
     anthropicApiKey?: string
     openrouterApiKey?: string
+    genericApiKey?: string
+    genericBaseUrl?: string
     bedrockApiKey?: string
     bedrockAccessKeyId?: string
     bedrockSecretAccessKey?: string

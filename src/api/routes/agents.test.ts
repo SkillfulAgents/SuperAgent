@@ -340,6 +340,10 @@ vi.mock('@shared/lib/llm-provider/helpers', () => ({
   }),
   extractTextFromLlmResponse: (response: unknown) =>
     (response as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? null,
+  createSummarizerText: async (_client: unknown, request: unknown) => {
+    const response = await mockLlmMessagesCreate(request)
+    return (response as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? null
+  },
 }))
 
 const mockTransformMessages = vi.fn()

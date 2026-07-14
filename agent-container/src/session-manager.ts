@@ -7,23 +7,96 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import { releaseBrowserLock } from './browser-state';
 import { claudeSettingsSchema, SESSION_RETENTION_DAYS } from './claude-settings-schema';
+import { SessionSettlementTracker } from './session-settlement';
 
 interface SessionData {
   session: Session;
   process: ClaudeCodeProcess;
-  messages: SDKMessage[];
   subscribers: Set<(message: SDKMessage) => void>;
+  // Whether the session is settled (turn over, no background work, not in a
+  // completion-wake window) — the only state a subprocess may be stopped in.
+  settlement: SessionSettlementTracker;
+  eviction: Promise<void> | null;
+}
+
+const DEFAULT_INTERACTIVE_IDLE_EVICTION_MINUTES = 5;
+const DEFAULT_AUTOMATED_IDLE_EVICTION_MINUTES = 0;
+const IDLE_EVICTION_POLL_MS = 30_000;
+
+// Minutes → ms. < 0 disables that class; 0 = evict as soon as idle.
+// Parsed once at startup so misconfiguration is loud.
+function idleEvictionMsFromEnv(
+  envName: string,
+  defaultMinutes: number
+): number {
+  const raw = process.env[envName];
+  if (raw === undefined || raw.trim() === '') {
+    return defaultMinutes * 60_000;
+  }
+  const minutes = Number(raw);
+  if (!Number.isFinite(minutes)) {
+    console.error(
+      `Invalid ${envName} "${raw}" — using default ${defaultMinutes}`
+    );
+    return defaultMinutes * 60_000;
+  }
+  return minutes * 60_000;
+}
+
+function formatIdleThreshold(ms: number): string {
+  if (ms < 0) return 'disabled';
+  if (ms === 0) return 'immediate';
+  return `${Math.round(ms / 60_000)}m`;
 }
 
 export class SessionManager extends EventEmitter {
   private sessions: Map<string, SessionData> = new Map();
+  // In-flight resumes, keyed by session id — see resumeSession().
+  private resuming: Map<string, Promise<SessionData | undefined>> = new Map();
   private baseWorkingDirectory: string;
   private persistence: SessionPersistence;
+  private readonly idleEvictionMs: number;
+  private readonly automatedIdleEvictionMs: number;
+  private readonly wakeGraceMs: number | undefined;
+  private evictionTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(baseWorkingDirectory: string = '/workspace') {
+  constructor(
+    baseWorkingDirectory: string = '/workspace',
+    options?: {
+      idleEvictionMs?: number;
+      automatedIdleEvictionMs?: number;
+      wakeGraceMs?: number;
+      evictionPollMs?: number;
+    }
+  ) {
     super();
     this.baseWorkingDirectory = baseWorkingDirectory;
     this.persistence = new SessionPersistence();
+    this.wakeGraceMs = options?.wakeGraceMs;
+    this.idleEvictionMs =
+      options?.idleEvictionMs ??
+      idleEvictionMsFromEnv(
+        'SESSION_IDLE_EVICTION_MINUTES',
+        DEFAULT_INTERACTIVE_IDLE_EVICTION_MINUTES
+      );
+    this.automatedIdleEvictionMs =
+      options?.automatedIdleEvictionMs ??
+      idleEvictionMsFromEnv(
+        'SESSION_AUTOMATED_IDLE_EVICTION_MINUTES',
+        DEFAULT_AUTOMATED_IDLE_EVICTION_MINUTES
+      );
+    if (this.idleEvictionMs >= 0 || this.automatedIdleEvictionMs >= 0) {
+      console.log(
+        `[SessionManager] Idle session eviction enabled: interactive=${formatIdleThreshold(this.idleEvictionMs)}, automated=${formatIdleThreshold(this.automatedIdleEvictionMs)}`
+      );
+      this.evictionTimer = setInterval(() => {
+        this.evictIdleSessions().catch((error) => {
+          console.error('[SessionManager] Idle eviction sweep failed:', error);
+        });
+      }, options?.evictionPollMs ?? IDLE_EVICTION_POLL_MS);
+      // Never keep the process alive just for the reaper.
+      this.evictionTimer.unref?.();
+    }
 
     // Ensure base directory exists
     if (!fs.existsSync(this.baseWorkingDirectory)) {
@@ -144,14 +217,22 @@ export class SessionManager extends EventEmitter {
       });
     });
 
-    // Start the Claude Code process
-    await process.start();
+    // Start the process and wait for the init handshake. On ANY failure the
+    // started process must be torn down here: it has no session entry yet, so
+    // nothing else — not the reaper, not a delete — could ever reach it.
+    let claudeSessionId: string;
+    try {
+      await process.start();
 
-    // Send the initial message - this triggers Claude to emit the session ID
-    await process.sendMessage(request.initialMessage, request.initialMessageUuid);
+      // Send the initial message - this triggers Claude to emit the session ID
+      await process.sendMessage(request.initialMessage, request.initialMessageUuid);
 
-    // Wait for init to complete (session ID + slash commands)
-    const claudeSessionId = await initCompletePromise;
+      // Wait for init to complete (session ID + slash commands)
+      claudeSessionId = await initCompletePromise;
+    } catch (error) {
+      await process.dispose().catch(() => undefined);
+      throw error;
+    }
     console.log(`Got Claude session ID: ${claudeSessionId}`);
 
     // Use Claude's session ID as the canonical session ID
@@ -173,13 +254,34 @@ export class SessionManager extends EventEmitter {
     const sessionData: SessionData = {
       session,
       process,
-      messages: [],
       subscribers: new Set(),
+      // Authority: this container always runs the CLI with
+      // CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, so idle comes from state
+      // events only — a bare result (pre-init running event is dropped by
+      // listener-attach timing; queued streams carry intermediate results)
+      // must never read as settled.
+      settlement: new SessionSettlementTracker({
+        wakeGraceMs: this.wakeGraceMs,
+        stateEventsAuthority: true,
+      }),
+      eviction: null,
     };
 
     // Set up event listeners
     process.on('message', (message: SDKMessage) => {
       this.handleMessage(sessionId, message);
+    });
+
+    // Covers send paths that bypass this.sendMessage (e.g. the MCP-injection
+    // continuation), so the tracker can never read settled mid-turn.
+    process.on('outbound-message', (info: { expectsResponse: boolean }) => {
+      sessionData.settlement.noteOutboundMessage(info);
+    });
+
+    // Background tasks die with the CLI process, and a fresh process emits no
+    // initial snapshot — carried-over ids would pin the session forever.
+    process.on('query-start', () => {
+      sessionData.settlement.resetBackgroundTasks();
     });
 
     process.on('stderr', (error: string) => {
@@ -211,6 +313,7 @@ export class SessionManager extends EventEmitter {
       maxBudgetUsd: request.maxBudgetUsd,
       customEnvVars: request.customEnvVars,
       effort: request.effort,
+      metadata: request.metadata,
     });
 
     this.sessions.set(sessionId, sessionData);
@@ -219,7 +322,27 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  private async resumeSession(sessionId: string): Promise<SessionData | undefined> {
+  /**
+   * Dedup wrapper: concurrent callers of a cold session (a POST racing a GET,
+   * two rapid sends after a container restart) share ONE in-flight resume and
+   * only see the session once it has fully started. Publishing a
+   * half-initialized entry instead (the previous approach) let a second
+   * sender deliver its message before the first caller's — reversing
+   * conversation order at the model.
+   */
+  private resumeSession(sessionId: string): Promise<SessionData | undefined> {
+    const inFlight = this.resuming.get(sessionId);
+    if (inFlight) {
+      return inFlight;
+    }
+    const promise = this.doResumeSession(sessionId).finally(() => {
+      this.resuming.delete(sessionId);
+    });
+    this.resuming.set(sessionId, promise);
+    return promise;
+  }
+
+  private async doResumeSession(sessionId: string): Promise<SessionData | undefined> {
     // Check if we have persisted data for this session
     const persisted = this.persistence.getSession(sessionId);
     if (!persisted) {
@@ -254,22 +377,41 @@ export class SessionManager extends EventEmitter {
         id: sessionId,
         createdAt: new Date(persisted.createdAt),
         lastActivity: new Date(),
+        // Restore metadata so a resumed automated session keeps its eviction
+        // class (and its release-browser-lock-on-result behavior).
+        metadata: persisted.metadata,
         workingDirectory: persisted.workingDirectory,
         systemPrompt: persisted.systemPrompt,
         modelPromptHints: persisted.modelPromptHints,
         availableEnvVars: persisted.availableEnvVars,
       };
 
-      const sessionData: SessionData = {
+      const data: SessionData = {
         session,
         process,
-        messages: [],
         subscribers: new Set(),
+        // Born-idle: a bare getSession() resume gets no turn (no result, never
+        // idle), so born-busy would park the process beyond the reaper forever.
+        // sendMessage marks the tracker busy itself right after resuming.
+        settlement: new SessionSettlementTracker({
+          bornIdle: true,
+          wakeGraceMs: this.wakeGraceMs,
+          stateEventsAuthority: true,
+        }),
+        eviction: null,
       };
 
       // Set up event listeners (same as createSession)
       process.on('message', (message: SDKMessage) => {
         this.handleMessage(sessionId, message);
+      });
+
+      process.on('outbound-message', (info: { expectsResponse: boolean }) => {
+        data.settlement.noteOutboundMessage(info);
+      });
+
+      process.on('query-start', () => {
+        data.settlement.resetBackgroundTasks();
       });
 
       process.on('stderr', (error: string) => {
@@ -280,14 +422,17 @@ export class SessionManager extends EventEmitter {
         console.log(`Resumed session ${sessionId} exited with code ${code}`);
       });
 
-      this.sessions.set(sessionId, sessionData);
-
       // Start the process (which will resume the Claude session)
       // Note: slash commands are captured later when init event fires via WebSocket
       await process.start();
 
+      // Publish only once fully started — concurrent callers wait on the
+      // resuming promise, never on a half-initialized entry. A failed start
+      // therefore also can't leave a zombie in the map.
+      this.sessions.set(sessionId, data);
+
       console.log(`Successfully resumed session ${sessionId}`);
-      return sessionData;
+      return data;
     } catch (error) {
       console.error(`Failed to resume session ${sessionId}:`, error);
       return undefined;
@@ -328,8 +473,10 @@ export class SessionManager extends EventEmitter {
       console.log(`[Session ${sessionId}] Released browser lock (session deleted)`);
     }
 
-    // Stop the process
-    await sessionData.process.stop();
+    // Stop the process terminally — dispose (not stop) so a straggler
+    // interrupt/continuation can't revive a subprocess for a session that no
+    // longer exists in this map (the reaper would never see it).
+    await sessionData.process.dispose();
 
     // Clean up subscribers
     sessionData.subscribers.clear();
@@ -360,6 +507,27 @@ export class SessionManager extends EventEmitter {
       }
     }
 
+    // A racing idle eviction may be closing the message queue right now; wait it
+    // out, then process.sendMessage's cold-session path restarts with --resume.
+    if (sessionData.eviction) {
+      await sessionData.eviction;
+    }
+    // A shouldQuery:false append runs no turn — it must not mark the session
+    // busy, or it becomes unevictable until the next real turn.
+    const expectsResponse = options?.shouldQuery !== false;
+    sessionData.settlement.noteOutboundMessage({ expectsResponse });
+
+    // A real message into an automated session is human-originated (the
+    // scheduler and trigger-manager only ever CREATE sessions; cross-agent
+    // chat appends are shouldQuery:false) — promote it to the interactive
+    // eviction class so the conversation doesn't pay a cold restart after
+    // every turn.
+    if (expectsResponse && sessionData.session.metadata?.isAutomated) {
+      console.log(`[Session ${sessionId}] Promoting automated session to interactive (human message)`);
+      sessionData.session.metadata = { ...sessionData.session.metadata, isAutomated: false };
+      this.persistence.updateMetadata(sessionId, sessionData.session.metadata);
+    }
+
     // Update last activity
     sessionData.session.lastActivity = new Date();
     this.persistence.updateLastActivity(sessionId);
@@ -385,12 +553,6 @@ export class SessionManager extends EventEmitter {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return false;
     return sessionData.process.cancelQueuedMessage(uuid);
-  }
-
-  getMessages(sessionId: string): SDKMessage[] {
-    const sessionData = this.sessions.get(sessionId);
-    if (!sessionData) return [];
-    return [...sessionData.messages];
   }
 
   subscribe(sessionId: string, callback: (message: SDKMessage) => void): () => void {
@@ -425,8 +587,7 @@ export class SessionManager extends EventEmitter {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return;
 
-    // Store the message
-    sessionData.messages.push(message);
+    sessionData.settlement.handleMessage(message);
 
     // Release browser lock when an automated session's turn completes.
     // The SDK query keeps the for-await loop alive waiting for the next user
@@ -452,6 +613,51 @@ export class SessionManager extends EventEmitter {
     sessionData.session.lastActivity = new Date();
   }
 
+  private idleThresholdMs(data: SessionData): number {
+    return data.session.metadata?.isAutomated
+      ? this.automatedIdleEvictionMs
+      : this.idleEvictionMs;
+  }
+
+  // Stop the claude subprocess of sessions idle past their class threshold.
+  // Interactive default 5m; automated (cron/webhook) default 0 = next sweep.
+  // Eviction only stops the process — SessionData + claudeSessionId survive so
+  // the next sendMessage restarts with --resume. Public for tests.
+  async evictIdleSessions(): Promise<void> {
+    const now = Date.now();
+    const evictions: Promise<void>[] = [];
+    for (const [sessionId, data] of this.sessions) {
+      if (data.eviction) continue; // already evicting
+      if (!data.settlement.isSettled(now)) continue;
+      if (!data.process.isRunning()) continue; // already cold
+      const thresholdMs = this.idleThresholdMs(data);
+      if (thresholdMs < 0) continue; // disabled for this class
+      if (now - data.session.lastActivity.getTime() < thresholdMs) continue;
+
+      data.eviction = (async () => {
+        try {
+          // An idle session has no business holding the shared browser.
+          if (releaseBrowserLock(sessionId)) {
+            console.log(`[Session ${sessionId}] Released browser lock (idle eviction)`);
+          }
+          // Graceful: let the CLI exit on stdin EOF and flush its transcript —
+          // a hard abort here races the flush and can truncate the session
+          // JSONL tail, silently losing the latest turns on the next resume.
+          await data.process.stop({ graceful: true });
+          console.log(
+            `[Session ${sessionId}] Evicted idle session process (idle ${Math.round((Date.now() - data.session.lastActivity.getTime()) / 60_000)}m)`
+          );
+        } catch (error) {
+          console.error(`[Session ${sessionId}] Idle eviction failed:`, error);
+        } finally {
+          data.eviction = null;
+        }
+      })();
+      evictions.push(data.eviction);
+    }
+    await Promise.all(evictions);
+  }
+
   getAllSessions(): Session[] {
     return Array.from(this.sessions.values()).map((data) => data.session);
   }
@@ -462,20 +668,24 @@ export class SessionManager extends EventEmitter {
     return sessionData.process.isRunning();
   }
 
-  async interruptSession(sessionId: string): Promise<boolean> {
+  async interruptSession(sessionId: string): Promise<{ found: boolean; discardedUuids: string[] }> {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) {
-      return false;
+      return { found: false, discardedUuids: [] };
     }
 
-    await sessionData.process.interrupt();
-    return true;
+    const outcome = await sessionData.process.interrupt();
+    return { found: true, discardedUuids: outcome.discardedUuids };
   }
 
   /**
    * Stop all active sessions. Used for graceful shutdown.
    */
   async stopAll(): Promise<void> {
+    if (this.evictionTimer) {
+      clearInterval(this.evictionTimer);
+      this.evictionTimer = null;
+    }
     const sessionIds = Array.from(this.sessions.keys());
     console.log(`Stopping ${sessionIds.length} active session(s)...`);
 
@@ -484,7 +694,9 @@ export class SessionManager extends EventEmitter {
         try {
           const sessionData = this.sessions.get(sessionId);
           if (sessionData) {
-            await sessionData.process.stop();
+            // Graceful shutdown: these sessions will be resumed after the
+            // container restarts, so their transcripts must be flushed.
+            await sessionData.process.dispose({ graceful: true });
             sessionData.subscribers.clear();
           }
         } catch (error) {

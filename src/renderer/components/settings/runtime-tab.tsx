@@ -22,6 +22,7 @@ import { useSettings, useUpdateSettings, useStartRunner, useRestartRunner, useRe
 import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw, Plus, X } from 'lucide-react'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { DEFAULT_LIMA_VM_MEMORY, VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
+import { assessVmMemory } from '@shared/lib/container/vm-memory'
 import { findReservedEnvVarKeys } from '@shared/lib/container/reserved-env-vars'
 import { getDefaultAgentImage } from '@shared/lib/config/version'
 
@@ -120,6 +121,19 @@ export function RuntimeTab() {
     () => RUNTIME_SETTINGS[containerRunner] ?? [],
     [containerRunner]
   )
+
+  // Sizing guardrail for the built-in runtime's VM memory: options at or above
+  // the machine's physical RAM are disabled (the server refuses them too), and
+  // picks above half of it get an inline warning — that configuration starves
+  // the host and gets agents OOM-killed mid-turn.
+  const hostTotalMemoryBytes = settings?.hostTotalMemoryBytes
+  const assessVmMemoryOption = (value: string) =>
+    hostTotalMemoryBytes ? assessVmMemory(value, hostTotalMemoryBytes) : ({ level: 'ok' } as const)
+  const vmMemoryAssessment = useMemo(() => {
+    const selected = runtimeSettingsForm.vmMemory
+    if (!selected || !hostTotalMemoryBytes) return { level: 'ok' } as const
+    return assessVmMemory(selected, hostTotalMemoryBytes)
+  }, [runtimeSettingsForm.vmMemory, hostTotalMemoryBytes])
 
   // Check if runtime-specific settings have changed
   const runtimeSettingsChanged = useMemo(() => {
@@ -547,11 +561,16 @@ export function RuntimeTab() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {field.options.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
+                    {field.options.map((opt) => {
+                      const oversized =
+                        field.key === 'vmMemory' && assessVmMemoryOption(opt.value).level === 'refuse'
+                      return (
+                        <SelectItem key={opt.value} value={opt.value} disabled={oversized}>
+                          {opt.label}
+                          {oversized ? ' (exceeds system memory)' : ''}
+                        </SelectItem>
+                      )
+                    })}
                   </SelectContent>
                 </Select>
               ) : (
@@ -566,6 +585,14 @@ export function RuntimeTab() {
                 />
               )}
               <p className="text-xs text-muted-foreground">{field.description}</p>
+              {field.key === 'vmMemory' && vmMemoryAssessment.level === 'warn' && (
+                <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                  {vmMemoryAssessment.message}
+                </p>
+              )}
+              {field.key === 'vmMemory' && vmMemoryAssessment.level === 'refuse' && (
+                <p className="text-xs text-destructive">{vmMemoryAssessment.message}</p>
+              )}
             </div>
           ))}
 
@@ -594,7 +621,7 @@ export function RuntimeTab() {
               </Button>
               <Button
                 onClick={handleSaveRuntimeSettings}
-                disabled={isRestarting || runtimeSaveBlocked}
+                disabled={isRestarting || runtimeSaveBlocked || vmMemoryAssessment.level === 'refuse'}
               >
                 {isRestarting ? (
                   <>

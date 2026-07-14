@@ -4,6 +4,7 @@ export { AnthropicLlmProvider } from './anthropic-provider'
 export { OpenRouterLlmProvider } from './openrouter-provider'
 export { BedrockLlmProvider } from './bedrock-provider'
 export { PlatformLlmProvider } from './platform-provider'
+export { GenericLlmProvider } from './generic-provider'
 export {
   modelDefinitionSchema,
   modelCatalogSchema,
@@ -37,6 +38,7 @@ import { AnthropicLlmProvider } from './anthropic-provider'
 import { OpenRouterLlmProvider } from './openrouter-provider'
 import { BedrockLlmProvider } from './bedrock-provider'
 import { PlatformLlmProvider } from './platform-provider'
+import { GenericLlmProvider } from './generic-provider'
 import { getSettings } from '../config/settings'
 
 const providers: Record<LlmProviderId, BaseLlmProvider> = {
@@ -44,6 +46,7 @@ const providers: Record<LlmProviderId, BaseLlmProvider> = {
   openrouter: new OpenRouterLlmProvider(),
   bedrock: new BedrockLlmProvider(),
   platform: new PlatformLlmProvider(),
+  generic: new GenericLlmProvider(),
 }
 
 /** Get a specific provider by ID. */

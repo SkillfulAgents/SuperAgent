@@ -19,6 +19,7 @@ import { ComposerOptions, useComposerOptions } from './composer-options'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
 import type { EffortLevel } from '@shared/lib/container/types'
+import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
 
 interface MessageInputProps {
   sessionId: string
@@ -33,9 +34,11 @@ interface MessageInputProps {
   initialEffort?: EffortLevel
   /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
   initialModel?: string
+  /** Registers a getter so the stale-session prompt can move the live draft. */
+  registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialModel }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialModel, registerSnapshot }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -110,6 +113,24 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     submitDisabled: sendMessage.isPending || isOffline || !isRuntimeReady,
     draftKey: `session:${sessionId}`,
   })
+
+  const snapshotRef = useRef<ComposerSnapshot>({
+    text: '',
+    attachments: [],
+    model: undefined,
+    effort: composerOptions.effort,
+  })
+  snapshotRef.current = {
+    text: composer.message,
+    attachments: composer.attachments,
+    model: composerOptions.model,
+    effort: composerOptions.effort,
+  }
+  useEffect(() => {
+    if (!registerSnapshot) return
+    registerSnapshot(() => snapshotRef.current)
+    return () => registerSnapshot(null)
+  }, [registerSnapshot])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {

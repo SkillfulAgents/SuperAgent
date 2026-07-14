@@ -52,10 +52,11 @@ describe('getProviderCatalog', () => {
     expect(sonnet.supportedEfforts).toEqual(['low', 'medium', 'high'])
   })
 
-  it('exposes the OpenRouter non-Claude built-ins (gpt, glm) with their own icons', () => {
+  it('exposes the OpenRouter non-Claude built-ins (gpt, glm, grok) with their own icons', () => {
     const catalog = getProviderCatalog('openrouter')
     const gpt = catalog.find((m) => m.id === 'openai/gpt-5.5')!
     const glm = catalog.find((m) => m.id === 'z-ai/glm-5.2')!
+    const grok = catalog.find((m) => m.id === 'x-ai/grok-4.5')!
     expect(gpt).toMatchObject({
       family: 'gpt',
       isLatest: true,
@@ -68,8 +69,18 @@ describe('getProviderCatalog', () => {
       icon: 'zai',
       pricing: { inputPerMtok: 1.2, outputPerMtok: 4.2 },
     })
+    expect(grok).toMatchObject({
+      family: 'grok',
+      isLatest: true,
+      icon: 'xai',
+      supportsWebSearch: false,
+      pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+      contextWindow: 500_000,
+    })
     // Anthropic must NOT inherit the OpenRouter-only extras.
     expect(getProviderCatalog('anthropic').some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
+    expect(getProviderCatalog('anthropic').some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
+    expect(getProviderCatalog('platform').some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
   })
 
   it('offers both GPT versions, with 5.5 the family latest and 5.4 a pinnable older version', () => {
@@ -94,6 +105,7 @@ describe('getProviderCatalog', () => {
       family: 'gpt',
       icon: 'openai',
       supportsWebSearch: true,
+      supportsWebFetch: false,
       pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     })
     expect(gpt.isLatest).toBeFalsy()
@@ -101,25 +113,39 @@ describe('getProviderCatalog', () => {
     expect(catalog.find((m) => m.id === 'gpt-5.6-luna')).toMatchObject({
       family: 'gpt',
       supportsWebSearch: true,
+      supportsWebFetch: false,
       pricing: { inputPerMtok: 1, outputPerMtok: 6 },
     })
     expect(catalog.find((m) => m.id === 'gpt-5.6-terra')).toMatchObject({
       family: 'gpt',
       supportsWebSearch: true,
+      supportsWebFetch: false,
       pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
     })
     expect(catalog.find((m) => m.id === 'gpt-5.6-sol')).toMatchObject({
       family: 'gpt',
       isLatest: true,
       supportsWebSearch: true,
+      supportsWebFetch: false,
       pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     })
     const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
     expect(gptLatest.map((m) => m.id)).toEqual(['gpt-5.6-sol'])
+    // Grok rides the same Responses wire (xai-responses upstream); bare id only.
+    expect(catalog.find((m) => m.id === 'grok-4.5')).toMatchObject({
+      family: 'grok',
+      isLatest: true,
+      icon: 'xai',
+      supportsWebSearch: true,
+      supportsWebFetch: false,
+      pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+      contextWindow: 500_000,
+    })
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
     expect(catalog.some((m) => m.id === 'glm-5.2')).toBe(false)
+    expect(catalog.some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
   })
 })
 
@@ -312,6 +338,10 @@ describe('getModelContextWindow', () => {
     expect(getModelContextWindow('gpt-5.6-sol', 'platform')).toBe(1_050_000)
   })
 
+  it('returns the catalog window for Platform Grok models', () => {
+    expect(getModelContextWindow('grok-4.5', 'platform')).toBe(500_000)
+  })
+
   it('returns the catalog window for OpenRouter GPT models', () => {
     expect(getModelContextWindow('openai/gpt-5.5', 'openrouter')).toBe(1_050_000)
     expect(getModelContextWindow('z-ai/glm-5.2', 'openrouter')).toBeUndefined()
@@ -389,12 +419,16 @@ describe('resolveModelForProvider', () => {
   it('resolves OpenRouter non-Claude models (gpt alias → latest id, glm slug passthrough)', () => {
     expect(resolveModelForProvider('gpt', 'openrouter', 'agent')).toBe('openai/gpt-5.5')
     expect(resolveModelForProvider('z-ai/glm-5.2', 'openrouter', 'agent')).toBe('z-ai/glm-5.2')
+    expect(resolveModelForProvider('grok', 'openrouter', 'agent')).toBe('x-ai/grok-4.5')
+    expect(resolveModelForProvider('x-ai/grok-4.5', 'openrouter', 'agent')).toBe('x-ai/grok-4.5')
   })
 
-  it('resolves Platform GPT models to bare ids and falls back for unsupported glm', () => {
+  it('resolves Platform GPT/Grok models to bare ids and falls back for unsupported glm', () => {
     expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
+    expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.5')
+    expect(resolveModelForProvider('grok-4.5', 'platform', 'agent')).toBe('grok-4.5')
     expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('claude-opus-4-8')
   })
 
@@ -430,6 +464,35 @@ describe('resolveModelForProvider', () => {
 
     expect(resolveModelForProvider('claude-opus-4-9-custom', 'anthropic', 'agent')).toBe('claude-opus-4-9-custom')
     expect(resolveModelForProvider('opus', 'anthropic', 'agent')).toBe('claude-opus-4-9-custom')
+  })
+
+  it('handles the generic provider empty built-in catalog: resolves user-added ids, passes versioned pins, else falls back to the default', () => {
+    settingsMock.mockReturnValue({
+      llmProvider: 'generic',
+      modelCatalog: {
+        generic: {
+          overrides: [
+            {
+              id: 'llama3.1',
+              label: 'Llama 3.1',
+              supportedEfforts: ['low', 'medium', 'high'],
+            },
+          ],
+        },
+      },
+    })
+
+    // 1. A user-added id resolves exactly (it lives in the effective catalog).
+    expect(resolveModelForProvider('llama3.1', 'generic', 'agent')).toBe('llama3.1')
+    // 2. An unknown but versioned selection passes straight through to the SDK.
+    expect(resolveModelForProvider('mixtral-8x7b', 'generic', 'agent')).toBe('mixtral-8x7b')
+    // 3. An unknown alias falls back to the default — the first user-added model.
+    expect(resolveModelForProvider('mystery', 'generic', 'agent')).toBe('llama3.1')
+  })
+
+  it('falls back to the generic placeholder default when no user models are configured', () => {
+    settingsMock.mockReturnValue({ llmProvider: 'generic' })
+    expect(resolveModelForProvider('mystery', 'generic', 'agent')).toBe('default')
   })
 
   it('falls back cleanly when the only latest member of a family is disabled', () => {

@@ -48,6 +48,7 @@ import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
+import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
 
 interface AgentHomeProps {
   agent: ApiAgent
@@ -89,7 +90,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
   const { data: agentPrefs } = useAgentPreferences(agent.slug)
+  const carryover = useNewSessionCarryover(agent.slug)
   const composerOptions = useComposerOptions({
+    initialModel: carryover?.model,
+    initialEffort: carryover?.effort,
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultEffort: agentPrefs?.defaultEffort,
     agentKey: agent.slug,
@@ -187,6 +191,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     submitDisabled: createSession.isPending || !isRuntimeReady,
     keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
+    initialAttachments: carryover?.attachments,
   })
 
   // Reset the manual-collapse flag once the message clears.

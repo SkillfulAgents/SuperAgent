@@ -138,4 +138,22 @@ describe('SessionChatColumn composer swap', () => {
     expect(screen.queryByText('Send')).not.toBeInTheDocument()
     expect(screen.queryByText('New line')).not.toBeInTheDocument()
   })
+
+  it('shows the new-conversation notice for an old session with a large context', () => {
+    renderWithProviders(
+      <SessionChatColumn
+        {...baseProps}
+        lastActivityAt={new Date(Date.now() - 7 * 60 * 60 * 1000)}
+        contextUsage={{
+          inputTokens: 110_000,
+          outputTokens: 1_000,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          contextWindow: 200_000,
+        }}
+      />,
+    )
+
+    expect(screen.getByTestId('stale-toast')).toBeInTheDocument()
+  })
 })

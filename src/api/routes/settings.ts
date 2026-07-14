@@ -1,7 +1,8 @@
+import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
-import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema } from '@shared/lib/llm-provider'
+import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -38,6 +39,7 @@ import { findWebProvider, getWebProvider } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { VALID_LIMA_VM_MEMORY_OPTIONS, EFFORT_LEVELS } from '@shared/lib/container/types'
+import { assessVmMemory } from '@shared/lib/container/vm-memory'
 import { customEnvVarsSchema } from '@shared/lib/container/reserved-env-vars'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
@@ -191,6 +193,8 @@ settings.use('*', Authenticated(), IsAdmin())
 const API_KEY_FIELDS: (keyof ApiKeySettings)[] = [
   'anthropicApiKey',
   'openrouterApiKey',
+  'genericApiKey',
+  'genericBaseUrl',
   'bedrockApiKey',
   'bedrockAccessKeyId',
   'bedrockSecretAccessKey',
@@ -230,7 +234,8 @@ settings.get('/llm-providers/:providerId/models/search', async (c) => {
       return c.json({ error: error.message }, 400)
     }
     console.error('Failed to search provider models:', error)
-    return c.json({ error: 'Failed to search provider models' }, 500)
+    const message = error instanceof Error ? error.message : 'Failed to search provider models'
+    return c.json({ error: message }, 500)
   }
 })
 
@@ -278,6 +283,12 @@ type AppPreferencesPatch = Partial<AppPreferences> & {
   hostBrowserProvider?: unknown
 }
 
+/** The generic provider's saved endpoint — displayed (not secret) in Settings. */
+function getGenericBaseUrl(): string | undefined {
+  const provider = getLlmProvider('generic')
+  return provider instanceof GenericLlmProvider ? provider.getEffectiveBaseUrl() : undefined
+}
+
 /** Build the GlobalSettingsResponse shared by GET and PUT handlers. */
 function buildSettingsResponse(
   appSettings: AppSettings,
@@ -286,6 +297,7 @@ function buildSettingsResponse(
 ): GlobalSettingsResponse {
   return {
     dataDir: getDataDir(),
+    hostTotalMemoryBytes: os.totalmem(),
     container: appSettings.container,
     app: appSettings.app || { showMenuBarIcon: true },
     hasRunningAgents,
@@ -299,6 +311,7 @@ function buildSettingsResponse(
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),
       bedrock: getLlmProvider('bedrock').getApiKeyStatus(),
       platform: getLlmProvider('platform').getApiKeyStatus(),
+      generic: getLlmProvider('generic').getApiKeyStatus(),
       browserbase: getBrowserbaseApiKeyStatus(),
       composio: getComposioApiKeyStatus(),
       nango: getNangoApiKeyStatus(),
@@ -310,6 +323,7 @@ function buildSettingsResponse(
     agentLimits: getEffectiveAgentLimits(),
     customEnvVars: getCustomEnvVars(),
     composioUserId: getComposioUserId(),
+    genericBaseUrl: getGenericBaseUrl(),
     accountProviderUserId: getAccountProviderUserId(),
     setupCompleted: !!appSettings.app?.setupCompleted,
     hostBrowserStatus: { providers: detectAllProviders() },
@@ -418,6 +432,14 @@ settings.put('/', async (c) => {
       const limaSettings = body.container.runtimeSettings.lima
       if (limaSettings?.vmMemory && !VALID_LIMA_VM_MEMORY_OPTIONS.includes(limaSettings.vmMemory)) {
         return c.json({ error: `Invalid VM memory setting. Must be one of: ${VALID_LIMA_VM_MEMORY_OPTIONS.join(', ')}` }, 400)
+      }
+      // A VM sized at or beyond physical RAM starves the host and gets agents
+      // OOM-killed mid-turn — refuse it here so it can never be persisted.
+      if (limaSettings?.vmMemory) {
+        const assessment = assessVmMemory(limaSettings.vmMemory, os.totalmem())
+        if (assessment.level === 'refuse') {
+          return c.json({ error: assessment.message }, 400)
+        }
       }
     }
 
@@ -687,19 +709,30 @@ settings.post('/validate-anthropic-key', async (c) => {
 // POST /api/settings/validate-llm-key - Validate an API key for any LLM provider
 settings.post('/validate-llm-key', async (c) => {
   try {
-    const { provider, apiKey } = await c.req.json()
-    if (!apiKey || typeof apiKey !== 'string') {
-      return c.json({ valid: false, error: 'API key is required' }, 400)
-    }
+    const { provider, apiKey, baseUrl } = await c.req.json()
     if (!provider || typeof provider !== 'string') {
       return c.json({ valid: false, error: 'Provider is required' }, 400)
     }
-    if (provider !== 'anthropic' && provider !== 'openrouter' && provider !== 'bedrock') {
+    // The generic provider accepts an empty key and revalidates with the saved
+    // one — the renderer never holds the saved secret, so a base-URL-only
+    // change couldn't resend it.
+    if (typeof apiKey !== 'string' || (!apiKey && provider !== 'generic')) {
+      return c.json({ valid: false, error: 'API key is required' }, 400)
+    }
+    if (
+      provider !== 'anthropic' &&
+      provider !== 'openrouter' &&
+      provider !== 'bedrock' &&
+      provider !== 'generic'
+    ) {
       return c.json({ valid: false, error: `Unknown provider: ${provider}` }, 400)
     }
 
     const llmProvider = getLlmProvider(provider)
-    const result = await llmProvider.validateKey(apiKey)
+    const result = await llmProvider.validateKey(
+      apiKey,
+      typeof baseUrl === 'string' ? { baseUrl } : undefined,
+    )
     return c.json(result)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Invalid API key'

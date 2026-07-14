@@ -137,6 +137,15 @@ describe('OpenRouterLlmProvider.searchModels — listing mapping', () => {
     expect(model.family).toBe('glm')
   })
 
+  it('maps the x-ai vendor to the xai icon', async () => {
+    stubFetch({ data: [{ id: 'x-ai/grok-4.5', name: 'xAI: Grok 4.5' }] })
+
+    const [model] = await provider.searchModels('grok')
+
+    expect(model.icon).toBe('xai')
+    expect(model.family).toBe('grok')
+  })
+
   it('omits pricing unless both prompt and completion are present', async () => {
     stubFetch({ data: [{ id: 'x/y', name: 'Y', pricing: { prompt: '0.000001' } }] })
 

@@ -261,6 +261,33 @@ describe('MessageInput', () => {
     expect(screen.getByTestId('send-button')).toBeEnabled()
   })
 
+  it('registers a getter for the live composer and deregisters on unmount', async () => {
+    const user = userEvent.setup()
+    const registerSnapshot = vi.fn()
+    const { unmount } = renderWithProviders(
+      <MessageInput
+        sessionId="s-1"
+        agentSlug="agent-1"
+        initialModel="sonnet"
+        initialEffort="high"
+        registerSnapshot={registerSnapshot}
+      />,
+    )
+
+    const getSnapshot = registerSnapshot.mock.calls.find(([value]) => typeof value === 'function')?.[0]
+    expect(getSnapshot).toEqual(expect.any(Function))
+    await user.type(screen.getByTestId('message-input'), 'Move this draft')
+
+    expect(getSnapshot()).toMatchObject({
+      text: 'Move this draft',
+      attachments: [],
+      model: 'sonnet',
+      effort: 'high',
+    })
+    unmount()
+    expect(registerSnapshot).toHaveBeenLastCalledWith(null)
+  })
+
   it('submits message on send button click', async () => {
     const user = userEvent.setup()
     renderWithProviders(

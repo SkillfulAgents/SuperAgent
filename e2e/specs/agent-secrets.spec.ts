@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Locator } from '@playwright/test'
 import * as fs from 'fs'
 import * as path from 'path'
 import { AppPage } from '../pages/app.page'
@@ -138,5 +138,64 @@ test.describe('Agent Secrets (reach the container & persist)', () => {
       (r) => r.type === 'createSession' && r.initialMessage === sessionMessage
     )
     expect(record.availableEnvVars ?? []).not.toContain(expectedEnvVar)
+  })
+
+  /**
+   * DialogContent and AlertDialogContent are `display: grid`. A direct child of a grid
+   * container has `min-width: auto`, so its automatic minimum size is its min-content
+   * width. One long unbreakable token drives that to thousands of pixels: the child
+   * overflows the capped dialog and the dialog's own controls are laid out outside it,
+   * unreachable. Both primitives neutralize it with `[&>*]:min-w-0`.
+   *
+   * Assert geometry, never the class name, so any other way of reintroducing the
+   * overflow fails this too.
+   */
+  test('an unbreakable token must not strand dialog controls', async ({ page }) => {
+    const longToken = 'a'.repeat(240)
+
+    const expectContainedIn = async (control: Locator, container: Locator) => {
+      await expect(control).toBeVisible({ timeout: 10000 })
+      const containerBox = await container.boundingBox()
+      const controlBox = await control.boundingBox()
+      expect(containerBox).not.toBeNull()
+      expect(controlBox).not.toBeNull()
+      expect(controlBox!.x + controlBox!.width).toBeLessThanOrEqual(containerBox!.x + containerBox!.width)
+    }
+
+    await agentPage.openSettings()
+
+    await test.step('DialogContent: an overlong secret key leaves Delete reachable', async () => {
+      await page.locator('[data-testid="agent-settings-nav-secrets"]').click()
+      await page.locator('#secret-key').fill(longToken)
+      await page.locator('#secret-value').fill('overlong-key-value')
+      await page.getByRole('button', { name: 'Add Secret' }).click()
+
+      const deleteButton = page.locator(`[data-testid="delete-secret-${longToken.toUpperCase()}"]`)
+      await expectContainedIn(deleteButton, page.locator('[data-testid="agent-settings-dialog"]'))
+      // The click is the other half of the guard: a stranded button is not hittable.
+      await deleteButton.click()
+    })
+
+    await test.step('AlertDialogContent: an overlong agent name leaves Confirm reachable and wraps', async () => {
+      await page.locator('[data-testid="agent-settings-nav-general"]').click()
+      // The confirmation quotes the live value of this field, so the dialog inflates
+      // without the rename ever being saved.
+      await page.locator('#agent-name').fill(longToken)
+      await page.locator('[data-testid="delete-agent-button"]').click()
+
+      const alertDialog = page.getByRole('alertdialog')
+      const confirmButton = page.locator('[data-testid="confirm-button"]')
+      await expectContainedIn(confirmButton, alertDialog)
+
+      // Reachable controls are not enough: the name itself must wrap rather than paint
+      // out through the alert's edge, which `overflow: visible` on the dialog allows.
+      const descOverflow = await alertDialog
+        .locator('p')
+        .first()
+        .evaluate((el) => el.scrollWidth - el.clientWidth)
+      expect(descOverflow).toBeLessThanOrEqual(0)
+
+      await confirmButton.click()
+    })
   })
 })

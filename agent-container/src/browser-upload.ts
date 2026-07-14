@@ -267,14 +267,15 @@ export async function uploadToFileInput({
   }
 }
 
-function getActivePage(
+/** Find the Playwright page matching the daemon's active tab (shared with browser-download) */
+export function getActivePage(
   browser: Browser,
   activeTargetUrl: string | null,
   urlsMatch: (left: string, right: string) => boolean
 ): Page {
   const pages = browser.contexts().flatMap(context => context.pages())
   if (pages.length === 0) {
-    throw new Error('No browser pages available for upload')
+    throw new Error('No browser pages available')
   }
 
   const activePage = activeTargetUrl

@@ -22,9 +22,15 @@ interface SessionMetadata {
   maxBudgetUsd?: number;
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
+  // Session classification (e.g. isAutomated) — must survive resume so the
+  // idle-eviction class and browser-lock-on-result behavior stay correct.
+  metadata?: Record<string, unknown>;
 }
 
-const SESSIONS_FILE = '/workspace/.superagent-sessions.json';
+// Overridable so the session-GC E2E harness (which runs this stack on a dev
+// machine, where /workspace does not exist) gets working persistence.
+const SESSIONS_FILE =
+  process.env.SUPERAGENT_SESSIONS_FILE || '/workspace/.superagent-sessions.json';
 
 export class SessionPersistence {
   private sessions: Map<string, SessionMetadata> = new Map();
@@ -106,6 +112,14 @@ export class SessionPersistence {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.effort = effort;
+      this.save();
+    }
+  }
+
+  updateMetadata(sessionId: string, metadata: Record<string, unknown> | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.metadata = metadata;
       this.save();
     }
   }

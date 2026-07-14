@@ -1,5 +1,10 @@
-import { describe, it, expect, vi } from 'vitest'
-import { inputManager } from './input-manager'
+import { describe, it, expect } from 'vitest'
+import {
+  inputManager,
+  AUTOMATED_INPUT_TTL_MS,
+  HUMAN_INPUT_TTL_MS,
+  EARLY_RESULT_TTL_MS,
+} from './input-manager'
 
 describe('InputManager', () => {
   // Tests use the exported singleton but unique toolUseIds per test to avoid cross-contamination.
@@ -212,28 +217,20 @@ describe('InputManager', () => {
     })
   })
 
-  describe('cleanupStale', () => {
-    it('rejects pending entries older than maxAgeMs', async () => {
-      vi.useFakeTimers()
-      try {
-        const promise = inputManager.createPending('stale-1', 'OLD_KEY')
+  describe('cleanupStale (type-aware TTLs)', () => {
+    it('rejects a human-input entry past the human TTL', async () => {
+      const promise = inputManager.createPending('stale-1', 'OLD_KEY')
 
-        // Advance time past the maxAge threshold
-        vi.advanceTimersByTime(10_000)
-        inputManager.cleanupStale(5_000)
+      inputManager.cleanupStale(Date.now() + HUMAN_INPUT_TTL_MS + 1_000)
 
-        await expect(promise).rejects.toThrow('Input request timed out')
-        expect(inputManager.hasPending('stale-1')).toBe(false)
-      } finally {
-        vi.useRealTimers()
-      }
+      await expect(promise).rejects.toThrow('Input request timed out')
+      expect(inputManager.hasPending('stale-1')).toBe(false)
     })
 
-    it('does not reject entries younger than maxAgeMs', async () => {
+    it('keeps a human-input entry that is younger than the human TTL', async () => {
       const promise = inputManager.createPending('fresh-1', 'NEW_KEY')
 
-      // Cleanup with a very large maxAge — nothing should be removed
-      inputManager.cleanupStale(999_999_999)
+      inputManager.cleanupStale(Date.now() + HUMAN_INPUT_TTL_MS - 60_000)
       expect(inputManager.hasPending('fresh-1')).toBe(true)
 
       // Clean up
@@ -241,16 +238,147 @@ describe('InputManager', () => {
       await promise
     })
 
-    it('clears stale early results', () => {
+    it('rejects an automated entry on the short TTL while a same-age human entry survives', async () => {
+      const automated = inputManager.createPendingWithType<string>(
+        'stale-auto-1',
+        'list_scheduled_tasks'
+      )
+      const human = inputManager.createPendingWithType<string>(
+        'stale-human-1',
+        'script_run',
+        { script: 'ls' }
+      )
+
+      // Past the automated TTL but well inside the human TTL.
+      inputManager.cleanupStale(Date.now() + AUTOMATED_INPUT_TTL_MS + 1_000)
+
+      await expect(automated).rejects.toThrow('Input request timed out')
+      expect(inputManager.hasPending('stale-auto-1')).toBe(false)
+      expect(inputManager.hasPending('stale-human-1')).toBe(true)
+
+      // Clean up
+      inputManager.resolve('stale-human-1', 'x')
+      await human
+    })
+
+    it('an unknown input type gets the long (fail-safe) TTL', async () => {
+      const promise = inputManager.createPendingWithType<string>(
+        'stale-unknown-1',
+        'some_future_type'
+      )
+
+      inputManager.cleanupStale(Date.now() + AUTOMATED_INPUT_TTL_MS + 1_000)
+      expect(inputManager.hasPending('stale-unknown-1')).toBe(true)
+
+      // Clean up
+      inputManager.resolve('stale-unknown-1', 'x')
+      await promise
+    })
+
+    it('drops an early result past its TTL', () => {
       inputManager.resolve('stale-early-1', 'buffered')
-      inputManager.cleanupStale(0)
+      inputManager.cleanupStale(Date.now() + EARLY_RESULT_TTL_MS + 1_000)
 
       // The early result should be gone — createPending should now block normally
-      const promise = inputManager.createPending('stale-early-1', 'KEY')
+      inputManager.createPending('stale-early-1', 'KEY')
       expect(inputManager.hasPending('stale-early-1')).toBe(true)
 
       // Clean up
       inputManager.resolve('stale-early-1', 'x')
+    })
+
+    it('keeps a fresh early result across a sweep (the race-bridging must survive periodic sweeps)', async () => {
+      inputManager.resolve('fresh-early-1', 'buffered-value')
+
+      // A periodic sweep firing between the answer and createPending must
+      // NOT eat the buffered value (the old implementation cleared ALL
+      // early results on every call).
+      inputManager.cleanupStale()
+
+      const value = await inputManager.createPending('fresh-early-1', 'KEY')
+      expect(value).toBe('buffered-value')
+    })
+  })
+
+  describe('session attribution and rejectForSession', () => {
+    it('rejects only the deleted session\'s pending entries', async () => {
+      inputManager.setCurrentToolUseId('sess-tool-A', 'session-1')
+      expect(inputManager.consumeCurrentToolUseId()).toBe('sess-tool-A')
+      const promiseA = inputManager.createPendingWithType<string>('sess-tool-A', 'secret', {
+        secretName: 'KEY_A',
+      })
+
+      inputManager.setCurrentToolUseId('sess-tool-B', 'session-2')
+      expect(inputManager.consumeCurrentToolUseId()).toBe('sess-tool-B')
+      const promiseB = inputManager.createPendingWithType<string>('sess-tool-B', 'secret', {
+        secretName: 'KEY_B',
+      })
+
+      const rejected = inputManager.rejectForSession('session-1')
+      expect(rejected).toBe(1)
+
+      await expect(promiseA).rejects.toThrow('Input request abandoned')
+      expect(inputManager.hasPending('sess-tool-A')).toBe(false)
+      expect(inputManager.hasPending('sess-tool-B')).toBe(true)
+
+      // Clean up
+      inputManager.resolve('sess-tool-B', 'x')
+      await promiseB
+    })
+
+    it('an explicit sessionId parameter wins over the hook-recorded one', async () => {
+      inputManager.setCurrentToolUseId('sess-tool-C', 'hook-session')
+      const promise = inputManager.createPendingWithType<string>(
+        'sess-tool-C',
+        'question',
+        undefined,
+        'explicit-session'
+      )
+
+      expect(inputManager.rejectForSession('hook-session')).toBe(0)
+      expect(inputManager.hasPending('sess-tool-C')).toBe(true)
+
+      expect(inputManager.rejectForSession('explicit-session')).toBe(1)
+      await expect(promise).rejects.toThrow('Input request abandoned')
+    })
+
+    it('untagged entries are untouched by rejectForSession', async () => {
+      const promise = inputManager.createPending('untagged-1', 'KEY')
+
+      expect(inputManager.rejectForSession('any-session')).toBe(0)
+      expect(inputManager.hasPending('untagged-1')).toBe(true)
+
+      // Clean up
+      inputManager.resolve('untagged-1', 'x')
+      await promise
+    })
+
+    it('interleaved hook fires from two sessions cannot cross-tag (keyed by toolUseId, not a slot)', async () => {
+      // Both hooks fire before either handler registers its pending.
+      inputManager.setCurrentToolUseId('interleave-A', 'session-X')
+      inputManager.setCurrentToolUseId('interleave-B', 'session-Y')
+
+      const promiseA = inputManager.createPendingWithType<string>('interleave-A', 'secret')
+      const promiseB = inputManager.createPendingWithType<string>('interleave-B', 'secret')
+
+      expect(inputManager.rejectForSession('session-X')).toBe(1)
+      await expect(promiseA).rejects.toThrow('Input request abandoned')
+      expect(inputManager.hasPending('interleave-B')).toBe(true)
+
+      // Clean up
+      inputManager.resolve('interleave-B', 'x')
+      await promiseB
+    })
+
+    it('getAllPending exposes the owning sessionId', () => {
+      inputManager.setCurrentToolUseId('expose-1', 'session-Z')
+      inputManager.createPendingWithType<string>('expose-1', 'secret')
+
+      const entry = inputManager.getAllPending().find((p) => p.toolUseId === 'expose-1')
+      expect(entry?.sessionId).toBe('session-Z')
+
+      // Clean up
+      inputManager.resolve('expose-1', 'x')
     })
   })
 

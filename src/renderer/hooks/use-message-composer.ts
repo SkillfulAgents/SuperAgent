@@ -6,6 +6,7 @@ import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
 import { zipFolderFiles, type FolderGroup } from '@renderer/lib/file-utils'
+import type { Attachment } from '@renderer/components/messages/attachment-preview'
 
 interface UseMessageComposerOptions {
   agentSlug: string
@@ -21,6 +22,8 @@ interface UseMessageComposerOptions {
   keepMessageUntilComplete?: boolean
   /** If provided, the composer persists its draft under this key via DraftsContext so it survives unmount. */
   draftKey?: string
+  /** One-shot attachment seed, used when moving a draft into a new session. */
+  initialAttachments?: Attachment[]
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
@@ -74,7 +77,10 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     handleFileSelect,
     handleFolderSelect,
     dragHandlers,
-  } = useAttachments({ onFoldersReceived: isElectron ? handleFoldersReceived : undefined })
+  } = useAttachments({
+    onFoldersReceived: isElectron ? handleFoldersReceived : undefined,
+    initialAttachments: options.initialAttachments,
+  })
 
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {

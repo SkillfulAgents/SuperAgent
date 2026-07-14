@@ -37,6 +37,10 @@ export interface ContainerSettings {
 export interface ApiKeySettings {
   anthropicApiKey?: string
   openrouterApiKey?: string
+  /** Generic (custom baseURL) provider key, sent as ANTHROPIC_AUTH_TOKEN. */
+  genericApiKey?: string
+  /** Generic provider endpoint (Anthropic-wire-compatible), e.g. a LiteLLM proxy. */
+  genericBaseUrl?: string
   bedrockApiKey?: string
   bedrockAccessKeyId?: string
   bedrockSecretAccessKey?: string
@@ -272,6 +276,8 @@ export type { LlmProviderInfo }
 
 export interface GlobalSettingsResponse {
   dataDir: string
+  /** Host machine's total physical memory — lets the UI warn about oversized VM memory picks. */
+  hostTotalMemoryBytes?: number
   container: ContainerSettings
   app: AppPreferences
   hasRunningAgents: boolean
@@ -285,6 +291,7 @@ export interface GlobalSettingsResponse {
     openrouter: ApiKeyStatus
     bedrock: ApiKeyStatus
     platform: ApiKeyStatus
+    generic: ApiKeyStatus
     composio: ApiKeyStatus
     nango: ApiKeyStatus
     browserbase: ApiKeyStatus
@@ -293,6 +300,8 @@ export interface GlobalSettingsResponse {
     exa: ApiKeyStatus
   }
   composioUserId?: string
+  /** Saved generic-provider endpoint. Not a secret — echoed so the Settings UI can display/edit it. */
+  genericBaseUrl?: string
   accountProviderUserId?: string
   voice?: VoiceSettings
   models: ModelSettings

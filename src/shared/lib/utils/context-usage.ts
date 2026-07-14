@@ -1,6 +1,21 @@
 import type { SessionUsage } from '@shared/lib/types/agent'
 
 /**
+ * Compute current context occupancy across both Anthropic usage formats:
+ * older responses report uncached input separately, while newer responses may
+ * report inputTokens as the total with cache fields as subsets.
+ */
+export function computeContextTokens(
+  usage: Pick<SessionUsage, 'inputTokens' | 'cacheCreationInputTokens' | 'cacheReadInputTokens'>,
+): number {
+  const { inputTokens, cacheCreationInputTokens, cacheReadInputTokens } = usage
+  const cacheTotal = cacheCreationInputTokens + cacheReadInputTokens
+  return cacheTotal > 0 && inputTokens >= cacheTotal
+    ? inputTokens
+    : inputTokens + cacheTotal
+}
+
+/**
  * Compute the context window usage percentage from token usage fields.
  *
  * The Anthropic API has two formats:
@@ -12,11 +27,7 @@ import type { SessionUsage } from '@shared/lib/types/agent'
  * Returns null if contextWindow is invalid (zero or negative).
  */
 export function computeContextPercent(usage: SessionUsage): number | null {
-  const { inputTokens, cacheCreationInputTokens, cacheReadInputTokens, contextWindow } = usage
+  const { contextWindow } = usage
   if (contextWindow <= 0) return null
-  const cacheTotal = cacheCreationInputTokens + cacheReadInputTokens
-  const totalTokens = (cacheTotal > 0 && inputTokens >= cacheTotal)
-    ? inputTokens                    // New format: input_tokens is already the total
-    : inputTokens + cacheTotal       // Old format: add cache fields
-  return Math.round((totalTokens / contextWindow) * 100)
+  return Math.round((computeContextTokens(usage) / contextWindow) * 100)
 }

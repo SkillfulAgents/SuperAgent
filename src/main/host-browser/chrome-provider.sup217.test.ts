@@ -98,6 +98,13 @@ const h = vi.hoisted(() => {
   const getHostBridgeIp = vi.fn(() => hostBridgeIp)
   function setHostBridgeIp(ip: string | null) { hostBridgeIp = ip }
 
+  // Verdict of the runner-side reachability probe ChromeProvider runs against
+  // the CDP proxy after launch (firewall detection). Default 'unknown' = probe
+  // can't tell, launch proceeds.
+  let probeResult: 'reachable' | 'unreachable' | 'unknown' = 'unknown'
+  const probeHostPortFromRunner = vi.fn(async () => probeResult)
+  function setProbeResult(r: 'reachable' | 'unreachable' | 'unknown') { probeResult = r }
+
   // Which IPs this host "has" as local interfaces — controls whether ChromeProvider
   // treats a reported bridge IP as bindable (run the proxy) or virtual (skip the
   // proxy, loopback-direct). A virtual user-mode gateway (e.g. Lima 192.168.5.2) is
@@ -119,6 +126,8 @@ const h = vi.hoisted(() => {
     proxyCloseCount = 0
     hostBridgeIp = null
     localIps = []
+    probeResult = 'unknown'
+    probeHostPortFromRunner.mockClear()
     getHostBridgeIp.mockClear()
     spawnMock.mockClear().mockImplementation((_cmd: string, _args: string[]) => makeChild(4321))
     execSyncMock.mockClear().mockImplementation(() => 'default via 172.22.192.1 dev eth0')
@@ -130,6 +139,7 @@ const h = vi.hoisted(() => {
     listenCalls, createServer, connect, netMock, spawnMock, execSyncMock,
     getHostBridgeIp, setHostBridgeIp, networkInterfaces, setLocalIps, reset,
     killedPids,
+    probeHostPortFromRunner, setProbeResult,
     setFailProxyListen: (v: boolean) => { failProxyListen = v },
     getProxyCloseCount: () => proxyCloseCount,
   }
@@ -194,7 +204,10 @@ vi.mock('@shared/lib/error-reporting', () => ({
 // manager so each test controls that answer without loading container-manager.
 vi.mock('@shared/lib/container/container-manager', () => ({
   containerManager: {
-    getClient: () => ({ getHostBridgeIp: h.getHostBridgeIp }),
+    getClient: () => ({
+      getHostBridgeIp: h.getHostBridgeIp,
+      probeHostPortFromRunner: h.probeHostPortFromRunner,
+    }),
   },
 }))
 
@@ -357,5 +370,66 @@ describe('ChromeProvider CDP bind address (SUP-217)', () => {
 
     await provider.stop('agent1')
     expect(h.getProxyCloseCount()).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Runner-side CDP proxy reachability probe. A launched Chrome + bound proxy
+// can still be unreachable from the container when the host firewall drops
+// runner→host traffic (Windows Defender on the vEthernet (WSL) interface is
+// the common case). The probe must fail the launch loudly on a proven block,
+// and must never fail it on an inconclusive result.
+// ---------------------------------------------------------------------------
+
+describe('ChromeProvider CDP proxy reachability probe', () => {
+  let provider: ChromeProvider
+
+  beforeEach(() => {
+    h.reset()
+    provider = new ChromeProvider()
+  })
+
+  afterEach(() => {
+    setPlatform(originalPlatform)
+  })
+
+  function setupBridgedWin32() {
+    setPlatform('win32')
+    h.setHostBridgeIp('172.22.192.1')
+    h.setLocalIps(['172.22.192.1'])
+  }
+
+  it('fails the launch with a firewall diagnosis when the proxy is unreachable from the runner', async () => {
+    setupBridgedWin32()
+    h.setProbeResult('unreachable')
+
+    await expect(provider.launch('agent1')).rejects.toThrow(/firewall/i)
+    expect(h.probeHostPortFromRunner).toHaveBeenCalled()
+    // Chrome and the proxy must be torn down — no orphan browser behind a dead launch.
+    expect(h.killedPids).toContain(4321)
+    expect(h.getProxyCloseCount()).toBeGreaterThan(0)
+  })
+
+  it('proceeds when the probe verdict is unknown (probe may be broken; never fail a working setup)', async () => {
+    setupBridgedWin32()
+    h.setProbeResult('unknown')
+
+    await expect(provider.launch('agent1')).resolves.toMatchObject({ port: expect.any(Number) })
+  })
+
+  it('proceeds when the proxy is reachable', async () => {
+    setupBridgedWin32()
+    h.setProbeResult('reachable')
+
+    await expect(provider.launch('agent1')).resolves.toMatchObject({ port: expect.any(Number) })
+  })
+
+  it('does not probe loopback-direct runners (no proxy to test)', async () => {
+    setPlatform('linux')
+    h.setHostBridgeIp(null)
+
+    await provider.launch('agent1')
+
+    expect(h.probeHostPortFromRunner).not.toHaveBeenCalled()
   })
 })

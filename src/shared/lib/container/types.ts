@@ -116,6 +116,10 @@ export interface StopResult {
   stopped: boolean
 }
 
+// Verdict from probing a host-side TCP endpoint from the runner's network side.
+// Only 'unreachable' is a proven block; 'unknown' must never fail a launch.
+export type HostPortProbeResult = 'reachable' | 'unreachable' | 'unknown'
+
 export interface ContainerClient {
   // Lifecycle management
   start(options?: StartOptions): Promise<void>
@@ -131,6 +135,13 @@ export interface ContainerClient {
   // forward an unauthenticated host CDP port to the container without ever binding
   // it on 0.0.0.0 (SUP-217).
   getHostBridgeIp(): string | null
+
+  // Probe whether a host-side TCP endpoint (e.g. the CDP proxy bound to
+  // getHostBridgeIp()) is actually reachable from the runner's network side,
+  // where container-originated traffic comes from. 'unknown' means the runner
+  // has no vantage point to test from — callers must treat it as "proceed",
+  // never as a failure.
+  probeHostPortFromRunner(host: string, port: number): Promise<HostPortProbeResult>
 
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead
@@ -163,7 +174,6 @@ export interface ContainerClient {
   // Cancel a queued (not yet picked up) message by the uuid it was sent with.
   // false = too late (already picked up) or session not live — never throws for that.
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>
-  getMessages(sessionId: string): Promise<any[]>
   interruptSession(sessionId: string): Promise<boolean>
 
   // Streaming - returns unsubscribe function and a ready promise

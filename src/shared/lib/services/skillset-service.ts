@@ -14,9 +14,8 @@ import fs from 'fs'
 import yaml from 'js-yaml'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
-import { getConfiguredLlmClient, extractTextFromLlmResponse } from '@shared/lib/llm-provider/helpers'
+import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
-import { withRetry } from '@shared/lib/utils/retry'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import {
   getAgentWorkspaceDir,
@@ -1289,14 +1288,12 @@ async function generatePRSuggestions(
   try {
     const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 
-    const response = await withRetry(() =>
-      client.messages.create({
-        model,
-        max_tokens: 500,
-        messages: [
-          {
-            role: 'user',
-            content: `You are analyzing changes to a skill definition file (SKILL.md). Compare the original and modified versions and generate a PR title, description, and new SemVer version.
+    const text = await createSummarizerText(client, {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: `You are analyzing changes to a skill definition file (SKILL.md). Compare the original and modified versions and generate a PR title, description, and new SemVer version.
 
 Current version: ${meta.installedVersion}
 
@@ -1322,27 +1319,24 @@ Rules for the version bump:
 - PATCH (x.y.Z): bug fixes, typo corrections, minor wording tweaks
 - MINOR (x.Y.0): new features, added capabilities, significant improvements
 - MAJOR (X.0.0): breaking changes, fundamental restructuring`,
-          },
-        ],
-        output_config: {
-          format: {
-            type: 'json_schema' as const,
-            schema: {
-              type: 'object',
-              properties: {
-                title: { type: 'string', description: 'Concise imperative PR title' },
-                body: { type: 'string', description: 'Markdown description of what changed' },
-                version: { type: 'string', description: 'New SemVer version' },
-              },
-              required: ['title', 'body', 'version'],
-              additionalProperties: false,
+        },
+      ],
+      output_config: {
+        format: {
+          type: 'json_schema' as const,
+          schema: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Concise imperative PR title' },
+              body: { type: 'string', description: 'Markdown description of what changed' },
+              version: { type: 'string', description: 'New SemVer version' },
             },
+            required: ['title', 'body', 'version'],
+            additionalProperties: false,
           },
         },
-      })
-    )
-
-    const text = extractTextFromLlmResponse(response)
+      },
+    })
     if (!text) return fallback
 
     const parsed = JSON.parse(text)
@@ -1521,14 +1515,12 @@ async function generatePublishSuggestions(
   try {
     const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 
-    const response = await withRetry(() =>
-      client.messages.create({
-        model,
-        max_tokens: 500,
-        messages: [
-          {
-            role: 'user',
-            content: `You are reviewing a new skill definition file (SKILL.md) that is being submitted to a shared skillset repository. Generate a PR title, description, and confirm the version.
+    const text = await createSummarizerText(client, {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: `You are reviewing a new skill definition file (SKILL.md) that is being submitted to a shared skillset repository. Generate a PR title, description, and confirm the version.
 
 Skill name: ${skillName}
 
@@ -1541,27 +1533,24 @@ Generate:
 - A concise, imperative PR title (e.g. "Add NDA review skill")
 - A markdown description explaining what the skill does and its key capabilities
 - The version to use (use the version from the skill's metadata if present, otherwise "1.0.0")`,
-          },
-        ],
-        output_config: {
-          format: {
-            type: 'json_schema' as const,
-            schema: {
-              type: 'object',
-              properties: {
-                title: { type: 'string', description: 'Concise imperative PR title' },
-                body: { type: 'string', description: 'Markdown description of the skill' },
-                version: { type: 'string', description: 'SemVer version for the skill' },
-              },
-              required: ['title', 'body', 'version'],
-              additionalProperties: false,
+        },
+      ],
+      output_config: {
+        format: {
+          type: 'json_schema' as const,
+          schema: {
+            type: 'object',
+            properties: {
+              title: { type: 'string', description: 'Concise imperative PR title' },
+              body: { type: 'string', description: 'Markdown description of the skill' },
+              version: { type: 'string', description: 'SemVer version for the skill' },
             },
+            required: ['title', 'body', 'version'],
+            additionalProperties: false,
           },
         },
-      })
-    )
-
-    const text = extractTextFromLlmResponse(response)
+      },
+    })
     if (!text) return fallback
 
     const parsed = JSON.parse(text)

@@ -31,6 +31,7 @@ import {
   browserScreenshotRenderer,
   browserSelectRenderer,
   browserHoverRenderer,
+  browserDownloadRenderer,
   browserEvalRenderer,
   browserRunRenderer,
 } from './browser-tools'
@@ -118,6 +119,7 @@ const toolRenderers: Record<string, ToolRenderer> = {
   'mcp__browser__browser_screenshot': browserScreenshotRenderer,
   'mcp__browser__browser_select': browserSelectRenderer,
   'mcp__browser__browser_hover': browserHoverRenderer,
+  'mcp__browser__browser_download': browserDownloadRenderer,
   'mcp__browser__browser_eval': browserEvalRenderer,
   'mcp__browser__browser_run': browserRunRenderer,
 
