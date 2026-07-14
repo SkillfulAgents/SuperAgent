@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
 const mockValidateProxyToken = vi.fn()
@@ -15,6 +15,9 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => mockGetPlatformAccessToken(),
   getStoredPlatformMemberId: () => null,
 }))
+vi.mock('@shared/lib/platform-auth/config', () => ({
+  getPlatformProxyBaseUrl: () => 'https://proxy.test',
+}))
 vi.mock('@shared/lib/db', () => {
   const chainable = {
     select: () => chainable,
@@ -27,7 +30,7 @@ vi.mock('@shared/lib/db', () => {
   return { db: chainable }
 })
 vi.mock('@shared/lib/db/schema', () => ({
-  agentAcl: { userId: 'acl.user_id', agentSlug: 'acl.agent_slug', role: 'acl.role' },
+  agentAcl: { userId: 'acl.user_id', agentSlug: 'acl.agent_slug', role: 'acl.role', createdAt: 'acl.created_at' },
   connectedAccounts: {}, remoteMcpServers: {}, notifications: {},
   authAccount: {
     userId: 'account.user_id',
@@ -44,6 +47,10 @@ vi.mock('drizzle-orm', () => ({
 }))
 
 import { attribution } from '@shared/lib/platform-attribution'
+import {
+  _uninstallPlatformFetchInterceptorForTest,
+  installPlatformFetchInterceptor,
+} from '@shared/lib/platform-attribution/install-fetch-interceptor'
 import { IsAgent } from './auth'
 
 // An org-scoped runtime JWT: three segments with an `orgId` claim. Only this shape makes the proxy
@@ -70,9 +77,17 @@ async function bearerSeenByHandler(): Promise<string | undefined> {
   return seen
 }
 
+const realFetchMock = vi.fn()
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockValidateProxyToken.mockResolvedValue('my-agent')
+  realFetchMock.mockReset()
+  realFetchMock.mockResolvedValue(new Response(null, { status: 200 }))
+})
+
+afterEach(() => {
+  _uninstallPlatformFetchInterceptorForTest()
 })
 
 describe('IsAgent attribution scope', () => {
@@ -104,5 +119,35 @@ describe('IsAgent attribution scope', () => {
     mockDbAll.mockReturnValueOnce([]) // no owner
 
     expect(await bearerSeenByHandler()).toBeUndefined()
+  })
+
+  // Closes the wire the two sibling suites leave open: IsAgent opens the owner scope, and the
+  // global interceptor must stamp that acting member onto the outbound proxy Authorization.
+  // Without this, ALS bearerToken() can look right while container→proxy calls still go unattributed.
+  it('stamps ::memberId onto outbound platform-proxy fetches made inside the handler', async () => {
+    mockIsAuthMode.mockReturnValue(true)
+    const token = orgJwt('org_1')
+    mockGetPlatformAccessToken.mockReturnValue(token)
+    mockDbAll
+      .mockReturnValueOnce([{ userId: 'user_alice' }])
+      .mockReturnValueOnce([{ accountId: 'sub_member_1' }])
+
+    globalThis.fetch = realFetchMock as unknown as typeof fetch
+    installPlatformFetchInterceptor()
+
+    const app = new Hono()
+    app.use('*', IsAgent())
+    app.get('/x', async (c) => {
+      await fetch('https://proxy.test/v1/exa/search', { method: 'POST' })
+      return c.json({ ok: true })
+    })
+    const res = await app.request('http://localhost/x', {
+      headers: { Authorization: 'Bearer proxy-token-abc' },
+    })
+    expect(res.status).toBe(200)
+    expect(realFetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = realFetchMock.mock.calls[0]
+    const headers = new Headers((init as RequestInit).headers)
+    expect(headers.get('Authorization')).toBe(`Bearer ${token}::sub_member_1`)
   })
 })
