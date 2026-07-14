@@ -9,6 +9,7 @@ import {
   removeBrowserInputRequest,
   removeScriptRunRequest,
   removeComputerUseRequest,
+  removeCapabilityReviewRequest,
 } from '@renderer/hooks/use-message-stream'
 import { useMessages } from '@renderer/hooks/use-messages'
 import { usePendingProxyReviews, type PendingReview } from '@renderer/hooks/use-proxy-reviews'
@@ -177,6 +178,7 @@ export type PendingRequestDescriptor =
   | { kind: 'browser_input'; key: string; toolUseId: string; message: string; requirements: string[]; onComplete: () => void }
   | { kind: 'script_run'; key: string; toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell'; onComplete: () => void }
   | { kind: 'computer_use'; key: string; toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; onComplete: () => void }
+  | { kind: 'capability_review'; key: string; toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown>; onComplete: () => void }
   | { kind: 'proxy_review'; key: string; reviewId: string; accountId: string; toolkit: string; method: string; targetPath: string; matchedScopes: string[]; scopeDescriptions: Record<string, string>; displayText?: string; onComplete: () => void }
   | { kind: 'x_agent_review'; key: string; reviewId: string; xAgent: NonNullable<PendingReview['xAgent']>; onComplete: () => void }
 
@@ -204,6 +206,7 @@ export function usePendingRequests({
     pendingBrowserInputRequests: sseBrowserInputRequests,
     pendingScriptRunRequests: sseScriptRunRequests,
     pendingComputerUseRequests: sseComputerUseRequests,
+    pendingCapabilityReviewRequests: sseCapabilityReviewRequests,
     streamingToolUses,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
@@ -393,6 +396,16 @@ export function usePendingRequests({
     return merged
   }, [sseComputerUseRequests, streamingBasedPendingRequests.computerUseRequests, messagesBasedPendingRequests.computerUseRequests, isActive, autoApprovedComputerUseIds])
 
+  // Capability reviews come from SSE (+ the server's reconnect replay map)
+  // ONLY — no message-history or streaming recovery. A Task/Workflow call
+  // without a result usually means the launch is RUNNING (allow policy or an
+  // active session grant), not awaiting approval; only the host knows which,
+  // and its replay map already covers refresh/reconnect.
+  const pendingCapabilityReviewRequests = useMemo(() => {
+    if (!isActive) return []
+    return sseCapabilityReviewRequests.filter((r) => !dismissedRequestIds.current.has(r.toolUseId))
+  }, [sseCapabilityReviewRequests, isActive])
+
   // Track arrival order so the stack is chronological. Each id gets a
   // monotonically increasing sequence number the first time it appears.
   const arrivalOrder = useRef(new Map<string, number>())
@@ -409,6 +422,7 @@ export function usePendingRequests({
       pendingBrowserInputRequests,
       pendingScriptRunRequests,
       pendingComputerUseRequests,
+      pendingCapabilityReviewRequests,
     ]) {
       for (const req of arr) ids.push(req.toolUseId)
     }
@@ -417,7 +431,7 @@ export function usePendingRequests({
   }, [
     pendingSecretRequests, pendingConnectedAccountRequests, pendingRemoteMcpRequests,
     pendingQuestionRequests, pendingFileRequests, pendingBrowserInputRequests,
-    pendingScriptRunRequests, pendingComputerUseRequests, pendingProxyReviews,
+    pendingScriptRunRequests, pendingComputerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
   ])
 
   // Effect — not useMemo — because we mutate refs. useMemo may re-run for the
@@ -477,6 +491,11 @@ export function usePendingRequests({
   const handleBrowserInputRequestComplete = useCallback((toolUseId: string) => {
     dismissedRequestIds.current.add(toolUseId)
     removeBrowserInputRequest(sessionId, toolUseId)
+  }, [sessionId])
+
+  const handleCapabilityReviewRequestComplete = useCallback((toolUseId: string) => {
+    dismissedRequestIds.current.add(toolUseId)
+    removeCapabilityReviewRequest(sessionId, toolUseId)
   }, [sessionId])
 
   const handleProxyReviewComplete = useCallback(() => {
@@ -569,6 +588,17 @@ export function usePendingRequests({
         onComplete: () => handleComputerUseRequestComplete(r.toolUseId),
       })
     }
+    for (const r of pendingCapabilityReviewRequests) {
+      all.push({
+        kind: 'capability_review',
+        key: r.toolUseId,
+        toolUseId: r.toolUseId,
+        capability: r.capability,
+        toolName: r.toolName,
+        input: r.input,
+        onComplete: () => handleCapabilityReviewRequestComplete(r.toolUseId),
+      })
+    }
     for (const review of pendingProxyReviews) {
       if (review.xAgent) {
         all.push({
@@ -598,13 +628,13 @@ export function usePendingRequests({
   }, [
     pendingSecretRequests, pendingConnectedAccountRequests, pendingRemoteMcpRequests,
     pendingQuestionRequests, pendingFileRequests, pendingBrowserInputRequests,
-    pendingScriptRunRequests, pendingComputerUseRequests, pendingProxyReviews,
+    pendingScriptRunRequests, pendingComputerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
     getArrivalOrder,
     handleSecretRequestComplete, handleConnectedAccountRequestComplete,
     handleRemoteMcpRequestComplete, handleQuestionRequestComplete,
     handleFileRequestComplete, handleBrowserInputRequestComplete,
     handleScriptRunRequestComplete, handleComputerUseRequestComplete,
-    handleProxyReviewComplete,
+    handleCapabilityReviewRequestComplete, handleProxyReviewComplete,
   ])
 
   return { items, count: items.length }

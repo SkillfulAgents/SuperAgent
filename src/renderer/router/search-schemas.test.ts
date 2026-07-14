@@ -81,8 +81,9 @@ describe('settingsTabSchema', () => {
     expect(settingsTabSchema.safeParse('system-prompt').success).toBe(false)
     expect(settingsTabSchema.safeParse('secrets').success).toBe(false)
   })
-  it('has 19 tabs', () => {
-    expect(SETTINGS_TABS).toHaveLength(19)
+  it('has 20 tabs', () => {
+    expect(SETTINGS_TABS).toHaveLength(20)
+    expect(settingsTabSchema.safeParse('capabilities').success).toBe(true)
   })
 })
 

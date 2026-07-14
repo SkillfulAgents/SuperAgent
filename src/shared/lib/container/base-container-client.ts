@@ -22,11 +22,12 @@ import type {
 import type { RuntimeOptions } from './runtime-options'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
-import { getSettings } from '@shared/lib/config/settings'
+import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { getOrCreateHostToken } from './host-token-store'
 
 const execAsync = promisify(exec)
 
@@ -1027,6 +1028,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // hanging the fetch — and the caller — indefinitely without this.
       const response = await fetch(`${this.getBaseUrl(port)}/health`, {
         signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+        headers: this.getHostAuthHeaders(),
       })
       return response.ok
     } catch {
@@ -1062,13 +1064,26 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return `http://${getContainerHostUrl()}:${getAppPort()}`
   }
 
+  // Proves to the container API that the caller is the host, not the agent's
+  // own Bash reaching the server over the shared network namespace.
+  private hostAuthHeadersCache?: Record<string, string>
+  getHostAuthHeaders(): Record<string, string> {
+    this.hostAuthHeadersCache ??= {
+      'x-superagent-host-token': getOrCreateHostToken(this.config.agentId),
+    }
+    return this.hostAuthHeadersCache
+  }
+
   async fetch(path: string, init?: RequestInit): Promise<Response> {
     const port = await this.getPortOrThrow()
     const baseUrl = this.getBaseUrl(port)
     const url = `${baseUrl}${path.startsWith('/') ? path : '/' + path}`
 
     try {
-      return await fetch(url, init)
+      return await fetch(url, {
+        ...init,
+        headers: { ...this.getHostAuthHeaders(), ...(init?.headers as Record<string, string> | undefined) },
+      })
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error))
 
@@ -1098,6 +1113,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const activeWebProvider = getActiveWebProvider()
     const webSearchProvider = activeWebProvider?.search ? activeWebProvider.id : undefined
     const webFetchProvider = activeWebProvider?.fetch ? activeWebProvider.id : undefined
+    // Host-authoritative launch policies (allow/review/block for subagents and
+    // workflows), resolved from global settings here so every session-creation
+    // caller inherits them. Never taken from the request — a caller (or the
+    // agent itself) must not be able to loosen its own policy.
+    const capabilityPolicies = getAgentCapabilitySettings()
 
     try {
       const controller = new AbortController()
@@ -1105,7 +1125,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       const response = await fetch(`${this.getBaseUrl(port)}/sessions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
         body: JSON.stringify({
           metadata: options.metadata,
           systemPrompt: options.systemPrompt,
@@ -1125,6 +1145,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           customEnvVars: options.customEnvVars,
           maxBrowserTabs: options.maxBrowserTabs,
           effort: options.effort,
+          capabilityPolicies,
         }),
         signal: controller.signal,
       })
@@ -1187,7 +1208,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
 
     const response = await fetch(
-      `${this.getBaseUrl(port)}/sessions/${sessionId}`
+      `${this.getBaseUrl(port)}/sessions/${sessionId}`,
+      { headers: this.getHostAuthHeaders() }
     )
 
     if (response.status === 404) return null
@@ -1210,7 +1232,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     const response = await fetch(
       `${this.getBaseUrl(port)}/sessions/${sessionId}`,
-      { method: 'DELETE' }
+      { method: 'DELETE', headers: this.getHostAuthHeaders() }
     )
 
     return response.ok
@@ -1222,6 +1244,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const effort = options?.effort
     const model = resolveContainerModel(options?.model, 'agent')
     const shouldQuery = options?.shouldQuery
+    // Refreshed on every message so a long-lived session tracks settings
+    // changes; the container restarts its query only on a block-boundary flip.
+    const capabilityPolicies = getAgentCapabilitySettings()
 
     try {
       const controller = new AbortController()
@@ -1231,13 +1256,14 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
         `${this.getBaseUrl(port)}/sessions/${sessionId}/messages`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...this.getHostAuthHeaders() },
           body: JSON.stringify({
             content,
             ...(uuid ? { uuid } : {}),
             ...(effort ? { effort } : {}),
             ...(model ? { model } : {}),
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
+            capabilityPolicies,
           }),
           signal: controller.signal,
         }
@@ -1287,7 +1313,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     const response = await fetch(
       `http://127.0.0.1:${port}/sessions/${sessionId}/queued-messages/${encodeURIComponent(uuid)}`,
-      { method: 'DELETE' }
+      { method: 'DELETE', headers: this.getHostAuthHeaders() }
     )
     if (response.status === 404) {
       // Route missing = the container is running a build that predates the
@@ -1311,7 +1337,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
     const response = await fetch(
       `${this.getBaseUrl(port)}/sessions/${sessionId}/interrupt`,
-      { method: 'POST' }
+      { method: 'POST', headers: this.getHostAuthHeaders() }
     )
 
     return response.ok
@@ -1337,7 +1363,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
 
       const ws = new WebSocket(
-        `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream`
+        `${this.getWebSocketBaseUrl(port)}/sessions/${sessionId}/stream`,
+        { headers: this.getHostAuthHeaders() }
       )
 
       ws.on('open', () => {

@@ -2346,6 +2346,86 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
   }
 })
 
+// POST /api/agents/:id/sessions/:sessionId/capability-review - Approve or block a
+// subagent/workflow launch paused by a 'review' policy. Approve resolves the
+// container's pending input ({ scope: 'once' | 'session' }); block rejects it
+// (the reason becomes the deny message the model adapts to).
+agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const body = await c.req.json()
+    const { toolUseId, capability, decline, declineReason } = body
+    const scope = body.scope === 'session' ? 'session' : 'once'
+
+    if (!toolUseId) {
+      return c.json({ error: 'toolUseId is required' }, 400)
+    }
+    if (capability !== 'subagents' && capability !== 'workflows') {
+      return c.json({ error: 'capability must be subagents or workflows' }, 400)
+    }
+
+    const client = containerManager.getClient(agentSlug)
+
+    if (decline) {
+      const reason = declineReason || 'User declined'
+
+      const rejectResponse = await client.fetch(
+        `/inputs/${encodeURIComponent(toolUseId)}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        }
+      )
+
+      if (!rejectResponse.ok) {
+        const error = await rejectResponse.json()
+        console.error('Failed to reject capability launch:', error)
+        return c.json({ error: 'Failed to reject capability launch' }, 500)
+      }
+
+      messagePersister.completeCapabilityReview(sessionId, toolUseId)
+      trackServerEvent('request_declined', { type: 'capability_review', capability, withReason: !!declineReason })
+      return c.json({ success: true, declined: true })
+    }
+
+    const resolveResponse = await client.fetch(
+      `/inputs/${encodeURIComponent(toolUseId)}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: { scope } }),
+      }
+    )
+
+    if (!resolveResponse.ok) {
+      let errorDetails = 'Unknown error'
+      try {
+        const error = await resolveResponse.json()
+        errorDetails = JSON.stringify(error)
+      } catch {
+        errorDetails = await resolveResponse.text()
+      }
+      console.error(`[capability-review] Failed to resolve request: ${errorDetails}`)
+      return c.json({ error: 'Failed to approve launch' }, 500)
+    }
+
+    // Mirror the container's grant so later launches in this session don't
+    // produce review cards nothing is waiting on.
+    if (scope === 'session') {
+      messagePersister.grantSessionCapability(sessionId, capability)
+    }
+    messagePersister.completeCapabilityReview(sessionId, toolUseId)
+
+    trackServerEvent('capability_launch_approved', { capability, scope })
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('Failed to handle capability review:', error)
+    return c.json({ error: 'Failed to handle capability review' }, 500)
+  }
+})
+
 // POST /api/agents/:id/sessions/:sessionId/complete-browser-input - Complete or cancel a browser input request
 agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), async (c) => {
   try {

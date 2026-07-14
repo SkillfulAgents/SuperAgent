@@ -65,6 +65,16 @@ export interface ComputerUseRequest {
   appName?: string
 }
 
+// A subagent (Task/Agent) or workflow (Workflow) launch paused by a 'review'
+// policy, awaiting the user's Run / Block / Allow-for-session decision.
+export interface CapabilityReviewRequest {
+  toolUseId: string
+  capability: 'subagents' | 'workflows'
+  toolName: string
+  /** The launching tool's input (subagent_type/description/prompt for Task; name/script for Workflow). */
+  input: Record<string, unknown>
+}
+
 export interface SubagentInfo {
   parentToolId: string | null
   agentId: string | null
@@ -112,6 +122,7 @@ interface StreamState {
   pendingBrowserInputRequests: BrowserInputRequest[]
   pendingScriptRunRequests: ScriptRunRequest[]
   pendingComputerUseRequests: ComputerUseRequest[]
+  pendingCapabilityReviewRequests: CapabilityReviewRequest[]
   error: string | null // Error message if session encountered an error
   /** SDK error code from the LLM provider (e.g., 'authentication_failed', 'rate_limit', 'server_error') */
   apiErrorCode: string | null
@@ -160,6 +171,7 @@ const EMPTY_STREAM_STATE: StreamState = {
   pendingBrowserInputRequests: [],
   pendingScriptRunRequests: [],
   pendingComputerUseRequests: [],
+  pendingCapabilityReviewRequests: [],
   error: null,
   apiErrorCode: null,
   browserActive: false,
@@ -393,6 +405,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: null,
           apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
@@ -451,6 +464,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: null, // Clear any previous error when starting new request
           apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
@@ -497,6 +511,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: [],
           pendingScriptRunRequests: [],
           pendingComputerUseRequests: [],
+          pendingCapabilityReviewRequests: [],
           error: null,
           // Preserve apiErrorCode — it was set from the assistant message's error field
           // and is still valid context for the last turn. Cleared on next session_active.
@@ -550,6 +565,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: [],
           pendingScriptRunRequests: [],
           pendingComputerUseRequests: [],
+          pendingCapabilityReviewRequests: [],
           error: data.error || 'An unknown error occurred',
           apiErrorCode: data.apiErrorCode || null,
           browserActive: current?.browserActive ?? false,
@@ -703,6 +719,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: null,
           apiErrorCode: null,
           browserActive: current?.browserActive ?? false,
@@ -735,6 +752,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: current?.error ?? null,
           apiErrorCode: data.apiErrorCode || current?.apiErrorCode || null,
           browserActive: current?.browserActive ?? false,
@@ -783,6 +801,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
@@ -831,6 +850,7 @@ function getOrCreateEventSource(
           pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
           pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
           pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          pendingCapabilityReviewRequests: current?.pendingCapabilityReviewRequests ?? [],
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
           browserActive: current?.browserActive ?? false,
@@ -999,6 +1019,34 @@ function getOrCreateEventSource(
             pendingQuestionRequests: [...current.pendingQuestionRequests, newRequest],
           })
           queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        }
+      }
+      else if (data.type === 'capability_review_request') {
+        // A subagent/workflow launch is paused awaiting the user's decision
+        const newRequest: CapabilityReviewRequest = {
+          toolUseId: data.toolUseId,
+          capability: data.capability,
+          toolName: data.toolName,
+          input: data.input ?? {},
+        }
+        if (current && !current.pendingCapabilityReviewRequests.some(r => r.toolUseId === data.toolUseId)) {
+          streamStates.set(sessionId, {
+            ...current,
+            pendingCapabilityReviewRequests: [...current.pendingCapabilityReviewRequests, newRequest],
+          })
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        }
+      }
+      else if (data.type === 'capability_review_resolved') {
+        // Decided (possibly in another window) — close the card everywhere now.
+        // The launched Task/Workflow's tool_result can be minutes away.
+        if (current?.pendingCapabilityReviewRequests.some(r => r.toolUseId === data.toolUseId)) {
+          streamStates.set(sessionId, {
+            ...current,
+            pendingCapabilityReviewRequests: current.pendingCapabilityReviewRequests.filter(
+              r => r.toolUseId !== data.toolUseId
+            ),
+          })
         }
       }
       else if (data.type === 'file_request') {
@@ -1426,6 +1474,7 @@ function removePendingRequestsByToolUseId(sessionId: string, toolUseId: string):
     pendingBrowserInputRequests: strip(current.pendingBrowserInputRequests),
     pendingScriptRunRequests: strip(current.pendingScriptRunRequests),
     pendingComputerUseRequests: strip(current.pendingComputerUseRequests),
+    pendingCapabilityReviewRequests: strip(current.pendingCapabilityReviewRequests),
   }
   const changed =
     next.pendingSecretRequests !== current.pendingSecretRequests ||
@@ -1435,7 +1484,8 @@ function removePendingRequestsByToolUseId(sessionId: string, toolUseId: string):
     next.pendingRemoteMcpRequests !== current.pendingRemoteMcpRequests ||
     next.pendingBrowserInputRequests !== current.pendingBrowserInputRequests ||
     next.pendingScriptRunRequests !== current.pendingScriptRunRequests ||
-    next.pendingComputerUseRequests !== current.pendingComputerUseRequests
+    next.pendingComputerUseRequests !== current.pendingComputerUseRequests ||
+    next.pendingCapabilityReviewRequests !== current.pendingCapabilityReviewRequests
   if (changed) {
     streamStates.set(sessionId, next)
     streamListeners.get(sessionId)?.forEach((listener) => listener())
@@ -1552,6 +1602,19 @@ export function removeComputerUseRequest(sessionId: string, toolUseId: string): 
     streamStates.set(sessionId, {
       ...current,
       pendingComputerUseRequests: current.pendingComputerUseRequests.filter(
+        (r) => r.toolUseId !== toolUseId
+      ),
+    })
+    streamListeners.get(sessionId)?.forEach((listener) => listener())
+  }
+}
+
+export function removeCapabilityReviewRequest(sessionId: string, toolUseId: string): void {
+  const current = streamStates.get(sessionId)
+  if (current) {
+    streamStates.set(sessionId, {
+      ...current,
+      pendingCapabilityReviewRequests: current.pendingCapabilityReviewRequests.filter(
         (r) => r.toolUseId !== toolUseId
       ),
     })

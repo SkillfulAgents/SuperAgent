@@ -47,6 +47,11 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   getOrCreateProxyToken: (...args: unknown[]) => mockGetOrCreateProxyToken(...args),
 }))
 
+const mockGetOrCreateHostToken = vi.fn((..._args: unknown[]) => 'real-host-token')
+vi.mock('@shared/lib/container/host-token-store', () => ({
+  getOrCreateHostToken: (...args: unknown[]) => mockGetOrCreateHostToken(...args),
+}))
+
 const mockGetContainerHostUrl = vi.fn()
 const mockGetAppPort = vi.fn()
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -178,6 +183,7 @@ describe('SUP-210 — customEnvVars cannot override reserved runtime env vars', 
         PROXY_BASE_URL: 'http://evil.example/api/proxy/spoofed',
         SUPERAGENT_AGENT_SLUG: 'not-the-real-agent',
         SUPERAGENT_HOST_API_URL: 'http://evil.example/api',
+        SUPERAGENT_HOST_TOKEN: 'attacker-host-token',
         CONNECTED_ACCOUNTS: '{"gmail":[{"name":"spoof","id":"x"}]}',
         TZ: 'Antarctica/Troll',
         HOST_PLATFORM: 'spoofed-os',
@@ -202,6 +208,7 @@ describe('SUP-210 — customEnvVars cannot override reserved runtime env vars', 
     expect(envVars.PROXY_BASE_URL).toBe('http://192.168.1.100:3000/api/proxy/test-agent')
     expect(envVars.SUPERAGENT_AGENT_SLUG).toBe('test-agent')
     expect(envVars.SUPERAGENT_HOST_API_URL).toBe('http://192.168.1.100:3000/api')
+    expect(envVars.SUPERAGENT_HOST_TOKEN).toBe('real-host-token')
     // No active accounts -> empty object, not the spoofed metadata.
     expect(envVars.CONNECTED_ACCOUNTS).toBe('{}')
   })

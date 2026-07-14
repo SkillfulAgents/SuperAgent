@@ -21,6 +21,8 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   // Cross-agent / host API wiring
   'SUPERAGENT_HOST_API_URL',
   'SUPERAGENT_AGENT_SLUG',
+  // Host→container API auth (never agent-visible)
+  'SUPERAGENT_HOST_TOKEN',
   // Account + MCP metadata
   'CONNECTED_ACCOUNTS',
   'REMOTE_MCPS',

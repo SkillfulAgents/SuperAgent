@@ -166,3 +166,55 @@ describe('generateSystemPrompt rendering', () => {
     expect(template).not.toMatch(/\$\{[A-Za-z_]+\}/)
   })
 })
+
+describe('subagent capability gating', () => {
+  const render = (policies?: { subagents?: 'allow' | 'review' | 'block'; workflows?: 'allow' | 'review' | 'block' }) =>
+    generateSystemPrompt(undefined, undefined, undefined, undefined, undefined, policies)
+
+  it.each([
+    { label: 'no policies', policies: undefined },
+    { label: 'subagents allow', policies: { subagents: 'allow' as const } },
+    { label: 'subagents review', policies: { subagents: 'review' as const } },
+  ])('$label: delegation sections render', ({ policies }) => {
+    const out = render(policies)
+    expect(out).toContain('Use the Agent tool with specialized agents')
+    expect(out).toContain('### Web Browser Agent (delegate browsing tasks)')
+    expect(out).toContain('## Dashboard Builder Agent')
+    expect(out).not.toContain('## Building Dashboards')
+    expect(out).not.toMatch(/<%|%>/)
+  })
+
+  it('subagents block: no delegation mention survives anywhere in the prompt', () => {
+    process.env.HOST_PLATFORM = 'darwin' // include the computer-use block too
+    const out = render({ subagents: 'block' })
+    expect(out).not.toMatch(/subagent/i)
+    expect(out).not.toContain('Agent tool')
+    expect(out).not.toContain('Task(')
+    // "don't delegate further" (cross-agent invocation) legitimately survives;
+    // every instruction TO delegate must not.
+    expect(out).not.toMatch(/delegate to the|Delegate:|delegating|delegations/i)
+    // Direct-work fallbacks take the delegation sections' place
+    expect(out).toContain('### Browsing Workflow')
+    expect(out).toContain('## Building Dashboards')
+    expect(out).not.toMatch(/<%|%>/)
+  })
+
+  it('workflow policy does not affect the prompt (the Workflow tool self-describes)', () => {
+    expect(render({ workflows: 'block' })).toBe(render(undefined))
+  })
+
+  it('blocking subagents orphans no heading', () => {
+    const bodyless = (prompt: string) => {
+      const lines = prompt.split('\n')
+      return lines.filter((line, i) => {
+        if (!/^#{1,4} /.test(line)) return false
+        const next = lines.slice(i + 1).find(l => l.trim() !== '')
+        return next !== undefined && /^#{1,4} /.test(next)
+      })
+    }
+    for (const desktop of [true, false]) {
+      process.env.HOST_PLATFORM = desktop ? 'darwin' : 'linux'
+      expect(bodyless(render({ subagents: 'block' }))).toEqual(bodyless(render(undefined)))
+    }
+  })
+})

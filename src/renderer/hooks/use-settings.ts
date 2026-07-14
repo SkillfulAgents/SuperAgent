@@ -11,6 +11,7 @@ import type {
   AnalyticsTarget,
   LlmProviderId,
   WebProviderId,
+  AgentCapabilitySettings,
 } from '@shared/lib/config/settings'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
@@ -88,6 +89,7 @@ export interface UpdateSettingsParams {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports?: boolean
   enableToolSearch?: boolean
+  agentCapabilities?: Partial<AgentCapabilitySettings>
 }
 
 export interface UpdateSettingsError {

@@ -45,6 +45,11 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   getOrCreateProxyToken: (...args: unknown[]) => mockGetOrCreateProxyToken(...args),
 }))
 
+const mockGetOrCreateHostToken = vi.fn((..._args: unknown[]) => 'hostc_test-token')
+vi.mock('@shared/lib/container/host-token-store', () => ({
+  getOrCreateHostToken: (...args: unknown[]) => mockGetOrCreateHostToken(...args),
+}))
+
 const mockGetContainerHostUrl = vi.fn()
 const mockGetAppPort = vi.fn()
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -223,6 +228,16 @@ describe('containerManager.ensureRunning — env var construction', () => {
     const startOpts = mockStart.mock.calls[0][0]
     expect(startOpts.envVars.PROXY_TOKEN).toBe('custom-proxy-token')
     expect(mockGetOrCreateProxyToken).toHaveBeenCalledWith('test-agent')
+  })
+
+  it('sets SUPERAGENT_HOST_TOKEN so the container can authenticate host API calls', async () => {
+    setupAccountMocks([])
+
+    await containerManager.ensureRunning('test-agent')
+
+    const startOpts = mockStart.mock.calls[0][0]
+    expect(startOpts.envVars.SUPERAGENT_HOST_TOKEN).toBe('hostc_test-token')
+    expect(mockGetOrCreateHostToken).toHaveBeenCalledWith('test-agent')
   })
 
   it('CONNECTED_ACCOUNTS includes only active accounts, grouped by toolkitSlug', async () => {

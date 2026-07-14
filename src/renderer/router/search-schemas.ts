@@ -77,6 +77,7 @@ export const SETTINGS_TABS = [
   'runtime',
   'browser',
   'web',
+  'capabilities',
   'computer-use',
   'account-provider',
   'voice',

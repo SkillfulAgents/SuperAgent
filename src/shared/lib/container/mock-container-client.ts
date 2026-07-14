@@ -1293,6 +1293,37 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         },
       },
     ])],
+    // Capability review scenarios: the streamed Task/Workflow tool_use flows
+    // through the real MessagePersister policy gate (workflows default to
+    // review, subagents to allow), and the decision route answers via the
+    // mock's /inputs resolve/reject just like the real container.
+    ['launch workflow', new UserInputRequestScenario([
+      {
+        name: 'Workflow',
+        input: {
+          name: 'sample-audit',
+          script: [
+            "export const meta = {",
+            "  name: 'sample-audit',",
+            "  description: 'Audit the sample data set',",
+            "  phases: [",
+            "    { title: 'Scan', detail: 'collect candidates' },",
+            "    { title: 'Verify', detail: 'adversarially check each' },",
+            "  ],",
+            "}",
+            "const found = await parallel([() => agent('scan part one'), () => agent('scan part two')])",
+            "const verified = await agent('verify: ' + JSON.stringify(found))",
+            "return verified",
+          ].join('\n'),
+        },
+      },
+    ])],
+    ['launch subagent', new UserInputRequestScenario([
+      {
+        name: 'Task',
+        input: { subagent_type: 'Explore', description: 'Scan the repo', prompt: 'Look at the files and report back' },
+      },
+    ])],
     // Proxy review scenario for E2E tests
     ['proxy review', new ProxyReviewScenario(
       'slack',
@@ -1688,6 +1719,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async getInfo(): Promise<ContainerInfo> {
     return this.getInfoFromRuntime()
+  }
+
+  getHostAuthHeaders(): Record<string, string> {
+    return {}
   }
 
   async fetch(fetchPath: string, _init?: RequestInit): Promise<Response> {
