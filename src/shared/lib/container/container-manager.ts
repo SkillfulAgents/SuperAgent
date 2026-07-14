@@ -1,7 +1,5 @@
 import path from 'path'
-import { statfs } from 'node:fs/promises'
-import os from 'os'
-import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, reconcileRunnerState, getRunnerDisplayName, getContainerClientClass, getCliCommand, type ContainerRunner } from './client-factory'
+import { createContainerClient, checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner, refreshRunnerAvailability, clearRunnerAvailabilityCache, reconcileRunnerState, getRunnerDisplayName, getContainerClientClass, getCliCommand, getAvailableDiskSpace, MIN_IMAGE_DISK_SPACE_BYTES, type ContainerRunner } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
 import type { ContainerClient, ContainerConfig, ContainerInfo, HealthCheckResult, ImagePullProgress, RuntimeReadiness, StopOptions } from './types'
 import { healthMonitor } from './health-monitor'
@@ -35,8 +33,6 @@ const HEALTH_CHECK_INTERVAL_MS = parseInt(
   10
 ) * 1000
 
-/** Minimum free disk space (in bytes) required before pulling an image: 5 GB */
-const MIN_DISK_SPACE_BYTES = 5 * 1024 * 1024 * 1024
 
 /**
  * Max age (in ms) of a cached 'running' status before ensureRunning re-verifies
@@ -49,11 +45,6 @@ const RUNNING_STATUS_TTL_MS = parseInt(
   process.env.CONTAINER_RUNNING_STATUS_TTL_SECONDS || '10',
   10
 ) * 1000
-
-async function getAvailableDiskSpace(): Promise<number> {
-  const stats = await statfs(os.homedir())
-  return stats.bavail * stats.bsize
-}
 
 /** Cached container status */
 interface CachedContainerStatus {
@@ -995,9 +986,9 @@ class ContainerManager {
     // Step 3: Pre-flight disk space check
     try {
       const availableBytes = await getAvailableDiskSpace()
-      if (availableBytes < MIN_DISK_SPACE_BYTES) {
+      if (availableBytes < MIN_IMAGE_DISK_SPACE_BYTES) {
         const availableGB = (availableBytes / (1024 * 1024 * 1024)).toFixed(1)
-        const requiredGB = (MIN_DISK_SPACE_BYTES / (1024 * 1024 * 1024)).toFixed(0)
+        const requiredGB = (MIN_IMAGE_DISK_SPACE_BYTES / (1024 * 1024 * 1024)).toFixed(0)
         captureMessage('Insufficient disk space for image pull', {
           level: 'info',
           tags: { component: 'runtime', operation: 'disk-space-check' },
@@ -1103,9 +1094,11 @@ class ContainerManager {
           continue
         }
 
-        // Non-retryable or exhausted retries
+        // Non-retryable or exhausted retries. pullImage/buildImage capture
+        // their own failures at the throw site (flagged sentryCaptured) —
+        // don't emit a second event for the same error.
         console.error(`[ContainerManager] Failed to ${actionLabel.toLowerCase()} image ${image}:`, errMsg)
-        captureException(error, {
+        if (!(error as { sentryCaptured?: boolean })?.sentryCaptured) captureException(error, {
           tags: { component: 'runtime', operation: shouldBuild ? 'image-build' : 'image-pull' },
           extra: { image, runner: effectiveRunner, attempt },
         })

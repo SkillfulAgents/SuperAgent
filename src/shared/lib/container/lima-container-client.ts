@@ -488,13 +488,18 @@ export class LimaContainerClient extends BaseContainerClient {
       return false
     }
 
-    const isKnownVmIssue =
+    // Image create (pull/build) failures carry registry-level text ("ghcr.io/
+    // x/y:z: not found") that would false-match the VM-issue patterns below —
+    // for those, only the health probe may decide recovery.
+    const isImageCreateError = error?.isImageCreateError === true
+    const isKnownVmIssue = !isImageCreateError && (
       msg.includes('ENOENT') ||
       msg.includes('not found') ||
       msg.includes('does not exist') ||
       msg.includes('not running') ||
       msg.includes('No such file') ||
       msg.includes('EACCES')
+    )
 
     // Check if the VM is actually unusable — if so, recovery is worth attempting
     // even for unexpected error messages (e.g. "Bad port '0'"). Use the real
@@ -527,10 +532,14 @@ export class LimaContainerClient extends BaseContainerClient {
       }
     }
 
-    captureException(error, {
-      tags: { component: 'lima', operation: 'container-run' },
-      extra: { agentId: this.config.agentId, ...collectLimaDiagnostics() },
-    })
+    // Skip errors whose throw site already captured them (e.g. pullImage) —
+    // re-capturing here inflates event counts without adding signal.
+    if (!error?.sentryCaptured) {
+      captureException(error, {
+        tags: { component: 'lima', operation: 'container-run' },
+        extra: { agentId: this.config.agentId, ...collectLimaDiagnostics() },
+      })
+    }
     return false
   }
 

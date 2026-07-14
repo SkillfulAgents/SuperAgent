@@ -450,14 +450,18 @@ export class WSL2ContainerClient extends BaseContainerClient {
   protected async handleRunError(error: any): Promise<boolean> {
     const msg = error.message || error.stderr || String(error)
     addErrorBreadcrumb({ category: 'wsl2', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
+    // Image create (pull/build) failures carry registry-level text that would
+    // false-match the patterns below — never reprovision the distro for those.
     if (
-      msg.includes('ENOENT') ||
-      msg.includes('not found') ||
-      msg.includes('does not exist') ||
-      msg.includes('not running') ||
-      msg.includes('No such file') ||
-      msg.includes('EACCES') ||
-      msg.includes('is not recognized')
+      error?.isImageCreateError !== true && (
+        msg.includes('ENOENT') ||
+        msg.includes('not found') ||
+        msg.includes('does not exist') ||
+        msg.includes('not running') ||
+        msg.includes('No such file') ||
+        msg.includes('EACCES') ||
+        msg.includes('is not recognized')
+      )
     ) {
       console.log('WSL2 distro not ready, attempting to provision...')
       try {
@@ -472,10 +476,13 @@ export class WSL2ContainerClient extends BaseContainerClient {
         return false
       }
     }
-    captureException(error, {
-      tags: { component: 'wsl2', operation: 'container-run' },
-      extra: { agentId: this.config.agentId, ...collectWSL2Diagnostics() },
-    })
+    // Skip errors whose throw site already captured them (e.g. pullImage).
+    if (!error?.sentryCaptured) {
+      captureException(error, {
+        tags: { component: 'wsl2', operation: 'container-run' },
+        extra: { agentId: this.config.agentId, ...collectWSL2Diagnostics() },
+      })
+    }
     return false
   }
 
