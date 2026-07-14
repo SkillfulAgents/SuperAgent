@@ -148,6 +148,9 @@ export function SessionView({ agentSlug, sessionId }: SessionViewProps) {
               onMessageFailed={onPendingMessageAppeared}
               lastActivityAt={session?.lastActivityAt ? new Date(session.lastActivityAt) : null}
               contextUsage={contextUsage}
+              pendingWakeAt={session?.pendingWakeAt}
+              pendingWakeTaskId={session?.pendingWakeTaskId}
+              pendingWakeNote={session?.pendingWakeNote}
             />
           </div>
         </WorkflowProvider>

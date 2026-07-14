@@ -113,6 +113,7 @@ function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     timezone: 'America/Los_Angeles',
     model: null,
     effort: null,
+    resumeSessionId: null,
     createdAt: new Date('2026-06-26T16:00:00.000Z'),
     cancelledAt: null,
     pausedAt: null,

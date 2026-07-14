@@ -38,6 +38,8 @@ import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
 import type { EffortLevel } from '@shared/lib/container/types'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { buildWakeMessage } from '@shared/lib/scheduler/wake-message'
+import { randomUUID } from 'crypto'
 import { Authenticated, EntityAgentRole } from '../middleware/auth'
 
 const scheduledTasksRouter = new Hono()
@@ -89,6 +91,16 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
     }
 
     logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'deleted' })
+
+    // Cancelling a session wake changes that session's list/badge state.
+    if (task!.resumeSessionId) {
+      messagePersister.broadcastGlobal({
+        type: 'session_updated',
+        sessionId: task!.resumeSessionId,
+        agentSlug: task!.agentSlug,
+      })
+      messagePersister.broadcastSessionUpdate(task!.resumeSessionId)
+    }
 
     return c.body(null, 204)
   } catch (error) {
@@ -268,6 +280,40 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     if (!task || (task.status !== 'pending' && task.status !== 'paused')) {
       return c.json({ error: 'Task is not pending' }, 400)
+    }
+
+    // Session wake ("Wake now"): resume the target session instead of creating
+    // a new one — the manual mirror of the scheduler's wake branch.
+    if (task.resumeSessionId) {
+      const sessionId = task.resumeSessionId
+      const client = await containerManager.ensureRunning(task.agentSlug)
+
+      if (!messagePersister.isSubscribed(sessionId)) {
+        await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug)
+      }
+      // Clear any stale blocking user-input request so the wake message starts
+      // a fresh turn instead of deadlocking behind it.
+      await messagePersister.cancelAwaitingInput(sessionId, task.agentSlug)
+      messagePersister.markSessionActive(sessionId, task.agentSlug)
+
+      await client.sendMessage(sessionId, buildWakeMessage(task, 'manual'), randomUUID(), {
+        shouldQuery: true,
+      })
+
+      await updateSessionMetadata(task.agentSlug, sessionId, {
+        lastWake: { taskId: task.id, executionAt: task.nextExecutionAt.toISOString() },
+      })
+      await markTaskExecuted(task.id, sessionId)
+
+      messagePersister.broadcastGlobal({
+        type: 'session_updated',
+        sessionId,
+        agentSlug: task.agentSlug,
+      })
+      messagePersister.broadcastSessionUpdate(sessionId)
+
+      const updated = await getScheduledTask(task.id)
+      return c.json({ sessionId, agentSlug: task.agentSlug, task: updated }, 201)
     }
 
     const client = await containerManager.ensureRunning(task.agentSlug)

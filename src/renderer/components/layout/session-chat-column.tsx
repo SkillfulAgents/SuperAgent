@@ -5,6 +5,7 @@ import { renderPendingRequest, type RenderContext } from '@renderer/components/m
 import { PendingRequestErrorBoundary } from '@renderer/components/messages/pending-request-error-boundary'
 import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
 import { StaleSessionNotice } from '@renderer/components/messages/stale-session-notice'
+import { PendingWakeBanner } from '@renderer/components/messages/pending-wake-banner'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useScreenWakeLock } from '@renderer/hooks/use-screen-wake-lock'
 import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watcher'
@@ -32,6 +33,10 @@ interface SessionChatColumnProps {
   onMessageFailed: (localId: string) => void
   lastActivityAt?: Date | null
   contextUsage?: SessionUsage | null
+  // Pending scheduled wake (long sleep) — renders the auto-resume banner
+  pendingWakeAt?: string
+  pendingWakeTaskId?: string
+  pendingWakeNote?: string
 }
 
 export function SessionChatColumn({
@@ -49,6 +54,9 @@ export function SessionChatColumn({
   onMessageFailed,
   lastActivityAt,
   contextUsage,
+  pendingWakeAt,
+  pendingWakeTaskId,
+  pendingWakeNote,
 }: SessionChatColumnProps) {
   const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug)
   // Keep the phone awake (PWA only) while this session is actively working.
@@ -104,6 +112,16 @@ export function SessionChatColumn({
           </div>
         ) : (
           <>
+            {pendingWakeAt && pendingWakeTaskId && !isActive && (
+              <PendingWakeBanner
+                sessionId={sessionId}
+                agentSlug={agentSlug}
+                wakeAt={pendingWakeAt}
+                taskId={pendingWakeTaskId}
+                note={pendingWakeNote}
+                readOnly={isViewOnly}
+              />
+            )}
             {staleSession.showNotice && (
               <StaleSessionNotice
                 onIgnore={staleSession.ignore}

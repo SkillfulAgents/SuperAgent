@@ -20,6 +20,7 @@ import {
   pauseScheduledTaskTool,
   resumeScheduledTaskTool,
 } from './tools/schedule-task'
+import { scheduleResumeTool } from './tools/schedule-resume'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -76,7 +77,7 @@ export function createUserInputMcpServer() {
     tools: [
       requestSecretTool, requestConnectedAccountTool, searchConnectedAccountServicesTool,
       requestRemoteMcpTool, searchRemoteMcpServicesTool,
-      scheduleTaskTool, listScheduledTasksTool, cancelScheduledTaskTool,
+      scheduleTaskTool, scheduleResumeTool, listScheduledTasksTool, cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
       ...(includeScriptRun ? [requestScriptRunTool] : []),

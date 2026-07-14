@@ -1,0 +1,1 @@
+ALTER TABLE `scheduled_tasks` ADD `resume_session_id` text;

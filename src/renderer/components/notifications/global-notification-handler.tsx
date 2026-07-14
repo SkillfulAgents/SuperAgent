@@ -377,6 +377,23 @@ export function GlobalNotificationHandler() {
             break
           }
 
+          case 'session_updated': {
+            // Session-level state changed outside a session stream (e.g. a
+            // pending wake was created/cancelled/fired) — refresh session
+            // lists so sidebar badges and the resume banner stay current.
+            const agentSlug = data.agentSlug as string | undefined
+            const sessionId = data.sessionId as string | undefined
+            if (agentSlug) {
+              queryClient.invalidateQueries({ queryKey: ['sessions', agentSlug] })
+            } else {
+              queryClient.invalidateQueries({ queryKey: ['sessions'] })
+            }
+            if (sessionId) {
+              queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
+            }
+            break
+          }
+
           case 'webhook_trigger_created':
           case 'webhook_trigger_cancelled': {
             const agentSlug = data.agentSlug as string | undefined

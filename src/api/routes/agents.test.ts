@@ -254,6 +254,9 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   listPendingScheduledTasks: vi.fn(),
   listPendingScheduledTasksByAgents: vi.fn(() => Promise.resolve(new Map())),
   listCancelledScheduledTasks: vi.fn(),
+  listPendingWakesByAgent: vi.fn(() => Promise.resolve([])),
+  getPendingWakeForSession: vi.fn(() => Promise.resolve(null)),
+  cancelPendingWakeForSession: vi.fn(() => Promise.resolve(false)),
 }))
 
 vi.mock('@shared/lib/account-providers', () => ({

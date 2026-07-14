@@ -47,6 +47,15 @@ vi.mock('@shared/lib/container/message-persister', () => ({
   },
 }))
 
+const mockListSessionIdsWithPendingWakes = vi.fn((_slug: string) =>
+  Promise.resolve(new Set<string>())
+)
+
+vi.mock('@shared/lib/services/scheduled-task-service', () => ({
+  listSessionIdsWithPendingWakes: (slug: string) =>
+    mockListSessionIdsWithPendingWakes(slug),
+}))
+
 vi.mock('@shared/lib/db', () => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: { delete: (...args: any[]) => mockDbDelete(...args) },
@@ -240,6 +249,24 @@ describe('SessionAutoDeleteMonitor', () => {
     expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', [
       'inactive',
     ])
+  })
+
+  it('preserves sessions with a pending scheduled wake', async () => {
+    const now = Date.now()
+    const oldSleeping = makeSession('sleeping', new Date(now - 60 * 86_400_000))
+    const oldNormal = makeSession('normal', new Date(now - 60 * 86_400_000))
+
+    mockGetSettings.mockReturnValue({ app: { autoDeleteInactiveDays: 30 } })
+    mockListAgents.mockResolvedValue([makeAgent('test-agent')])
+    mockReadAgentPreferences.mockResolvedValue({})
+    mockListSessions.mockResolvedValue([oldSleeping, oldNormal])
+    mockReadSessionMetadata.mockResolvedValue({})
+    mockListSessionIdsWithPendingWakes.mockResolvedValue(new Set(['sleeping']))
+
+    await startAndTrigger()
+
+    expect(mockListSessionIdsWithPendingWakes).toHaveBeenCalledWith('test-agent')
+    expect(mockDeleteSessionsBatch).toHaveBeenCalledWith('test-agent', ['normal'])
   })
 
   it('does not delete when no sessions exceed threshold', async () => {

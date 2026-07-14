@@ -57,6 +57,9 @@ import {
   listPendingScheduledTasks,
   listPendingScheduledTasksByAgents,
   listCancelledScheduledTasks,
+  cancelPendingWakeForSession,
+  getPendingWakeForSession,
+  listPendingWakesByAgent,
 } from '@shared/lib/services/scheduled-task-service'
 import { db } from '@shared/lib/db'
 import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, user as userTable, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
@@ -178,7 +181,9 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
       ])
 
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
-      const pendingTasks = tasksByAgent.get(agent.slug) ?? []
+      // Session wakes are excluded from the agent-level automation summary —
+      // they belong to a session, not the agent's schedule.
+      const pendingTasks = (tasksByAgent.get(agent.slug) ?? []).filter((t) => !t.resumeSessionId)
 
       // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
@@ -1289,13 +1294,23 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     const sessionList = await listSessions(slug, { excludeAutomated: true })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
     const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(slug).length > 0
+    const pendingWakes = await listPendingWakesByAgent(slug)
+    const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const sessionsWithStatus = sessionList.map((session) => {
       const isActive = messagePersister.isSessionActive(session.id)
+      const wake = wakesBySession.get(session.id)
       return {
         ...session,
         isActive,
         isAwaitingInput: messagePersister.isSessionAwaitingInput(session.id) || (isActive && hasAgentLevelReviews),
         hasUnreadNotifications: unreadSessionIds.has(session.id),
+        ...(wake
+          ? {
+              pendingWakeAt: wake.nextExecutionAt.toISOString(),
+              pendingWakeTaskId: wake.id,
+              pendingWakeNote: wake.prompt,
+            }
+          : {}),
       }
     })
 
@@ -1734,6 +1749,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
 
     const isActive = messagePersister.isSessionActive(sessionId)
     const metadata = await getSessionMetadata(agentSlug, sessionId)
+    const pendingWake = await getPendingWakeForSession(agentSlug, sessionId)
 
     return c.json({
       id: session.id,
@@ -1750,6 +1766,13 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       webhookTriggerName: metadata?.webhookTriggerName,
       effort: metadata?.effort,
       model: metadata?.model,
+      ...(pendingWake
+        ? {
+            pendingWakeAt: pendingWake.nextExecutionAt.toISOString(),
+            pendingWakeTaskId: pendingWake.id,
+            pendingWakeNote: pendingWake.prompt,
+          }
+        : {}),
     })
   } catch (error) {
     console.error('Failed to fetch session:', error)
@@ -1810,6 +1833,12 @@ agents.delete('/:id/sessions/:sessionId', AgentAdmin(), async (c) => {
     if (!deleted) {
       return c.json({ error: 'Session not found' }, 404)
     }
+
+    // A pending wake targeting this session would otherwise fire into nothing
+    // and be marked failed — cancel it alongside the session.
+    await cancelPendingWakeForSession(agentSlug, sessionId).catch((error) => {
+      console.error('Failed to cancel pending wake for deleted session:', error)
+    })
 
     // Clean up message author records for this session (auth mode only).
     if (isAuthMode()) {
@@ -2769,6 +2798,10 @@ agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
     } else {
       tasks = await listScheduledTasks(slug)
     }
+
+    // Session wakes are session-scoped (surfaced on the session row/banner),
+    // not agent-level automations — keep them out of this list.
+    tasks = tasks.filter((t) => !t.resumeSessionId)
 
     return c.json(tasks)
   } catch (error) {

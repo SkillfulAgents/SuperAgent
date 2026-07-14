@@ -3,7 +3,8 @@ import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { ScrollArea, ScrollBar } from '@renderer/components/ui/scroll-area'
 import { cn } from '@shared/lib/utils/cn'
-import { Loader2 } from 'lucide-react'
+import { Loader2, MoonStar } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
 
 interface SessionListProps {
   agentSlug: string
@@ -50,6 +51,13 @@ function SessionTab({
         <span className="relative flex h-2 w-2">
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-75"></span>
           <span className="relative inline-flex rounded-full h-2 w-2 bg-current"></span>
+        </span>
+      ) : session.pendingWakeAt ? (
+        <span
+          title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt), { addSuffix: true })}`}
+          className="flex items-center"
+        >
+          <MoonStar className="h-3 w-3" />
         </span>
       ) : null}
       {session.name}

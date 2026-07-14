@@ -34,6 +34,7 @@ type EarlyResult =
 // means the host handler died mid-request; nobody is coming back for it.
 const AUTOMATED_INPUT_TYPES: ReadonlySet<string> = new Set([
   'schedule_task',
+  'schedule_resume',
   'list_scheduled_tasks',
   'cancel_scheduled_task',
   'pause_scheduled_task',

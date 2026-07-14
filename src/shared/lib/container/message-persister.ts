@@ -14,6 +14,7 @@ import { parseCommandLifecycle } from './command-lifecycle'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   createScheduledTask,
+  createSessionWake,
   listPendingScheduledTasks,
   getScheduledTask,
   cancelScheduledTask,
@@ -2196,6 +2197,16 @@ class MessagePersister {
             )
           }
 
+          // Schedule resume (session wake) tool - blocking
+          if (state.currentToolUse.name === 'mcp__user-input__schedule_resume') {
+            this.handleScheduleResumeTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           // List scheduled tasks tool - blocking
           if (state.currentToolUse.name === 'mcp__user-input__list_scheduled_tasks') {
             this.handleListScheduledTasksTool(
@@ -2616,6 +2627,109 @@ class MessagePersister {
   }
 
   /**
+   * Handle schedule_resume: persist a session wake (a one-shot scheduled task
+   * that resumes THIS session instead of creating a new one), then resolve the
+   * blocking container tool. Mirrors handleScheduleTaskTool's persist-then-
+   * resolve contract: a persistence failure rejects; a delivery failure after
+   * persistence never does.
+   */
+  private handleScheduleResumeTool(
+    sessionId: string,
+    toolUseId: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    ;(async () => {
+      if (!agentSlug) {
+        console.error('[MessagePersister] Schedule resume missing agentSlug')
+        return
+      }
+
+      let input: { wakeTime?: string; note?: string; timezone?: string }
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        console.error('[MessagePersister] Failed to parse schedule resume input:', toolInput)
+        await this.rejectContainerInput(agentSlug, toolUseId, 'Invalid tool input').catch(console.error)
+        return
+      }
+
+      if (!input.wakeTime?.trim() || !input.note?.trim()) {
+        await this.rejectContainerInput(
+          agentSlug,
+          toolUseId,
+          'Missing required fields: wakeTime and note are required'
+        ).catch(console.error)
+        return
+      }
+
+      // Accept both "at tomorrow 9am" and bare "tomorrow 9am" — the parser's
+      // 'at' syntax needs the prefix.
+      const trimmed = input.wakeTime.trim()
+      const scheduleExpression = /^at\s/i.test(trimmed) ? trimmed : `at ${trimmed}`
+
+      let taskId: string
+      let replaced: ScheduledTask | null
+      let timezone: string | undefined
+      try {
+        timezone = input.timezone || resolveTimezoneForAgent(agentSlug)
+        const sessionOwnerId = (await getSessionMetadata(agentSlug, sessionId))?.createdByUserId
+        ;({ taskId, replaced } = await createSessionWake({
+          agentSlug,
+          scheduleExpression,
+          note: input.note,
+          sessionId,
+          createdByUserId: sessionOwnerId ?? undefined,
+          timezone,
+        }))
+      } catch (error) {
+        console.error('[MessagePersister] Error handling schedule resume:', error)
+        const msg = error instanceof Error ? error.message : String(error)
+        await this.rejectContainerInput(agentSlug, toolUseId, `Failed to schedule resume: ${msg}`).catch(console.error)
+        return
+      }
+
+      // Persisted — everything past here is best-effort delivery.
+      try {
+        this.broadcastToSSE(sessionId, {
+          type: 'scheduled_task_created',
+          toolUseId,
+          taskId,
+          scheduleType: 'at',
+          scheduleExpression,
+          agentSlug,
+          resumeSessionId: sessionId,
+        })
+        this.broadcastGlobal({
+          type: 'scheduled_task_created',
+          taskId,
+          agentSlug,
+          resumeSessionId: sessionId,
+        })
+        // The pending wake is session-level state (badges, resume banner) —
+        // nudge session lists to refetch.
+        this.broadcastToSSE(sessionId, { type: 'session_updated' })
+        this.broadcastGlobal({ type: 'session_updated', sessionId, agentSlug })
+
+        const parsed = validateScheduleExpression('at', scheduleExpression, timezone)
+        const resolvedTime = parsed.nextTime ? parsed.nextTime.toISOString() : scheduleExpression
+        let resultMessage =
+          `Scheduled this session to auto-resume at ${resolvedTime}${timezone ? ` (${timezone})` : ''} (wake ID: ${taskId}).\n\n` +
+          `Your note (echoed back to you on wake): "${input.note}"`
+        if (replaced) {
+          resultMessage += `\n\nReplaced this session's previous pending wake (was scheduled for ${replaced.nextExecutionAt.toISOString()}). A session holds at most one pending wake.`
+        }
+        resultMessage +=
+          '\n\nEnd your turn now. This conversation will resume automatically at the scheduled time with full context; while sleeping it costs nothing and survives restarts.'
+
+        await this.resolveContainerInput(agentSlug, toolUseId, resultMessage)
+      } catch (deliveryError) {
+        console.error('[MessagePersister] Wake persisted but result delivery failed:', deliveryError)
+      }
+    })()
+  }
+
+  /**
    * Build the success message returned to the agent after a schedule is persisted,
    * appending a too-frequent-interval warning for recurring schedules below the
    * recommended minimum.
@@ -2672,10 +2786,12 @@ ${continuation}`
     if (count > 0) {
       const list = tasks
         .map((t) => {
-          const kind = t.scheduleType === 'cron' ? 'recurring' : 'one-time'
+          const kind = t.resumeSessionId
+            ? 'session wake'
+            : t.scheduleType === 'cron' ? 'recurring' : 'one-time'
           const next = t.nextExecutionAt ? t.nextExecutionAt.toISOString() : 'unknown'
           const status = t.status === 'paused' ? ' [PAUSED]' : ''
-          return `- **${t.name || 'Scheduled Task'}** (ID: ${t.id})${status} — ${kind} (${t.scheduleExpression}), next run ${next}${t.timezone ? ` (${t.timezone})` : ''}`
+          return `- **${t.name || (t.resumeSessionId ? 'Session Wake' : 'Scheduled Task')}** (ID: ${t.id})${status} — ${kind} (${t.scheduleExpression}), next run ${next}${t.timezone ? ` (${t.timezone})` : ''}`
         })
         .join('\n')
       summary += `\n\n${list}`
@@ -2702,10 +2818,12 @@ ${continuation}`
         const formatted = tasks.length === 0
           ? 'No scheduled tasks on the schedule for this agent.'
           : `Scheduled tasks:\n\n${tasks.map((t) => {
-              const kind = t.scheduleType === 'cron' ? 'recurring' : 'one-time'
+              const kind = t.resumeSessionId
+                ? `session wake (resumes session ${t.resumeSessionId})`
+                : t.scheduleType === 'cron' ? 'recurring' : 'one-time'
               const next = t.nextExecutionAt ? t.nextExecutionAt.toISOString() : 'unknown'
               const status = t.status === 'paused' ? ' [PAUSED]' : ''
-              return `- **${t.name || 'Scheduled Task'}** (ID: ${t.id})${status}\n  Type: ${kind} (${t.scheduleExpression})\n  Next run: ${next}${t.timezone ? ` (${t.timezone})` : ''}\n  Prompt: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
+              return `- **${t.name || (t.resumeSessionId ? 'Session Wake' : 'Scheduled Task')}** (ID: ${t.id})${status}\n  Type: ${kind} (${t.scheduleExpression})\n  Next run: ${next}${t.timezone ? ` (${t.timezone})` : ''}\n  ${t.resumeSessionId ? 'Note' : 'Prompt'}: ${t.prompt.substring(0, 80)}${t.prompt.length > 80 ? '...' : ''}`
             }).join('\n\n')}`
 
         await this.resolveContainerInput(agentSlug, toolUseId, formatted)

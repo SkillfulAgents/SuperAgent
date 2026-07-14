@@ -1,5 +1,6 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass } from 'lucide-react'
+import { Bell, ChevronDown, ChevronLeft, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, User, Users, Compass, MoonStar } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
@@ -138,6 +139,10 @@ function SessionSubItem({
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
+  // Pending-wake (long sleep) indicator: shown alongside the unread dot, but
+  // suppressed while the session is actively working/awaiting (momentarily
+  // redundant — the session clearly isn't asleep).
+  const showPendingWake = !!session.pendingWakeAt && !isWorking && !isAwaitingInput
   const { ref: hintRef, hint } = useCmdHintTarget()
 
   return (
@@ -162,7 +167,18 @@ function SessionSubItem({
             {hint !== null ? (
               <CmdHintBadge hint={hint} />
             ) : (
-              <span className="flex items-center justify-center w-4 shrink-0">
+              <span className="flex items-center justify-center gap-1 min-w-4 shrink-0">
+                {showPendingWake && (
+                  <span
+                    className="flex items-center"
+                    role="img"
+                    aria-label="scheduled to resume"
+                    title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt!), { addSuffix: true })}`}
+                    data-testid={`session-pending-wake-${session.id}`}
+                  >
+                    <MoonStar className="h-3 w-3 text-muted-foreground" />
+                  </span>
+                )}
                 {isAwaitingInput ? (
                   <AwaitingDot />
                 ) : isWorking ? (

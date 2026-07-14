@@ -260,6 +260,31 @@ class NotificationManager {
   }
 
   /**
+   * Trigger notification when a scheduled wake resumes an existing session.
+   * Reuses the session_scheduled type — a wake is a scheduled execution whose
+   * target happens to be an existing session.
+   */
+  async triggerScheduledSessionResumed(
+    sessionId: string,
+    agentSlug: string,
+    taskId: string,
+    sessionName?: string,
+    agentName?: string
+  ): Promise<void> {
+    const displayName = agentName || await this.getAgentDisplayName(agentSlug)
+    const sessionDisplay = sessionName || 'Session'
+
+    await this.triggerNotification({
+      type: 'session_scheduled',
+      sessionId,
+      agentSlug,
+      title: 'Session Resumed',
+      body: `${sessionDisplay} resumed as scheduled for ${displayName}`,
+      extra: { taskId },
+    })
+  }
+
+  /**
    * Trigger notification for chat integration events (connected, disconnected, error)
    */
   async triggerChatIntegrationEvent(

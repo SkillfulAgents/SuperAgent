@@ -100,6 +100,9 @@ export interface SessionMetadata {
   // Set when an automated session is promoted to interactive (e.g. agent asked a user question).
   // The original automation flags above are preserved for provenance.
   promotedToInteractive?: boolean
+  // Last scheduled wake delivered to this session. Duplicate-fire guard: the
+  // scheduler skips re-sending a wake whose task id + execution slot match.
+  lastWake?: { taskId: string; executionAt: string }
   // Context window usage from the last completed turn
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK

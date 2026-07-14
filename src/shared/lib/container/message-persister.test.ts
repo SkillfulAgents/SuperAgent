@@ -9,10 +9,14 @@ const mockCancelScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
 const mockPauseScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
 const mockResumeScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve(true))
 const mockCreateScheduledTask = vi.fn<SchedMockFn>(() => Promise.resolve('task_new_id'))
+const mockCreateSessionWake = vi.fn<SchedMockFn>(() =>
+  Promise.resolve({ taskId: 'wake_new_id', replaced: null })
+)
 
 // Mock external dependencies before importing
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   createScheduledTask: (...args: unknown[]) => mockCreateScheduledTask(...args),
+  createSessionWake: (...args: unknown[]) => mockCreateSessionWake(...args),
   listPendingScheduledTasks: (...args: unknown[]) => mockListPendingScheduledTasks(...args),
   getScheduledTask: (...args: unknown[]) => mockGetScheduledTask(...args),
   cancelScheduledTask: (...args: unknown[]) => mockCancelScheduledTask(...args),
@@ -1669,6 +1673,153 @@ describe('MessagePersister', () => {
       const toolReady = sseEvents.filter(e => e.type === 'tool_use_ready')
       expect(toolReady).toHaveLength(1)
       expect(toolReady[0].toolName).toBe('mcp__user-input__request_remote_mcp')
+    })
+  })
+
+  // ============================================================================
+  // schedule_resume tool handling
+  // ============================================================================
+
+  describe('schedule_resume tool handling', () => {
+    function simulateScheduleResumeToolUse(toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: 'mcp__user-input__schedule_resume' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    function resolveCalls() {
+      return mockContainerClientFetch.mock.calls.filter((c) =>
+        String(c[0]).includes('/resolve')
+      )
+    }
+
+    function rejectCalls() {
+      return mockContainerClientFetch.mock.calls.filter((c) =>
+        String(c[0]).includes('/reject')
+      )
+    }
+
+    beforeEach(() => {
+      mockCreateSessionWake.mockResolvedValue({ taskId: 'wake_new_id', replaced: null })
+    })
+
+    it('creates a session wake and resolves the tool with the note echoed back', async () => {
+      simulateScheduleResumeToolUse('wake-tool-1', {
+        wakeTime: 'at tomorrow 9am',
+        note: 'Check whether Dana replied',
+      })
+
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+
+      expect(mockCreateSessionWake).toHaveBeenCalledWith({
+        agentSlug: AGENT_SLUG,
+        scheduleExpression: 'at tomorrow 9am',
+        note: 'Check whether Dana replied',
+        sessionId: SESSION_ID,
+        createdByUserId: undefined,
+        timezone: 'UTC',
+      })
+
+      const body = JSON.parse(resolveCalls()[0][1].body)
+      expect(body.value).toContain('Check whether Dana replied')
+      expect(body.value).toContain('auto-resume')
+    })
+
+    it('normalizes a wakeTime without the "at " prefix', async () => {
+      simulateScheduleResumeToolUse('wake-tool-2', {
+        wakeTime: 'in 72 hours',
+        note: 'Check app review status',
+      })
+
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+
+      expect(mockCreateSessionWake).toHaveBeenCalledWith(
+        expect.objectContaining({ scheduleExpression: 'at in 72 hours' })
+      )
+    })
+
+    it('mentions the replaced wake in the tool result', async () => {
+      mockCreateSessionWake.mockResolvedValue({
+        taskId: 'wake_new_id',
+        replaced: {
+          id: 'wake_old_id',
+          nextExecutionAt: new Date('2027-01-01T09:00:00.000Z'),
+          prompt: 'Old note',
+        },
+      })
+
+      simulateScheduleResumeToolUse('wake-tool-3', {
+        wakeTime: 'at tomorrow 9am',
+        note: 'New plan',
+      })
+
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+
+      const body = JSON.parse(resolveCalls()[0][1].body)
+      expect(body.value).toContain('Replaced')
+      expect(body.value).toContain('2027-01-01T09:00:00.000Z')
+    })
+
+    it('rejects when the note is missing', async () => {
+      simulateScheduleResumeToolUse('wake-tool-4', {
+        wakeTime: 'at tomorrow 9am',
+        note: '   ',
+      })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      expect(mockCreateSessionWake).not.toHaveBeenCalled()
+    })
+
+    it('rejects when the wakeTime is missing', async () => {
+      simulateScheduleResumeToolUse('wake-tool-5', { note: 'A note' })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      expect(mockCreateSessionWake).not.toHaveBeenCalled()
+    })
+
+    it('rejects when wake creation fails (e.g. time in the past)', async () => {
+      mockCreateSessionWake.mockRejectedValue(
+        new Error('Scheduled time "at yesterday" is in the past')
+      )
+
+      simulateScheduleResumeToolUse('wake-tool-6', {
+        wakeTime: 'at yesterday',
+        note: 'Impossible wake',
+      })
+
+      await vi.waitFor(() => expect(rejectCalls()).toHaveLength(1))
+      const body = JSON.parse(rejectCalls()[0][1].body)
+      expect(body.reason).toContain('in the past')
+    })
+
+    it('broadcasts scheduled_task_created and session_updated', async () => {
+      sseEvents.length = 0
+
+      simulateScheduleResumeToolUse('wake-tool-7', {
+        wakeTime: 'at tomorrow 9am',
+        note: 'Check back',
+      })
+
+      await vi.waitFor(() => expect(resolveCalls()).toHaveLength(1))
+      await vi.waitFor(() => {
+        expect(sseEvents.filter((e) => e.type === 'scheduled_task_created')).toHaveLength(1)
+        expect(sseEvents.filter((e) => e.type === 'session_updated')).toHaveLength(1)
+      })
     })
   })
 

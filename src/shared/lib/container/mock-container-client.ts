@@ -1376,6 +1376,18 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // API error scenarios
     ['auth error', new ApiErrorScenario('authentication_failed', 'Invalid API key')],
     ['rate limit error', new ApiErrorScenario('rate_limit', 'Rate limit exceeded, please try again later')],
+    // Schedule resume (session long-sleep) scenario — the host interceptor
+    // persists a real wake row targeting this session, so E2E can exercise the
+    // pending-wake banner, sidebar badge, and Wake now / Cancel actions.
+    ['schedule resume', new ToolUseScenario(
+      'mcp__user-input__schedule_resume',
+      {
+        wakeTime: 'at now + 2 hours',
+        note: 'Check whether the review has been approved',
+      },
+      'Scheduled this session to auto-resume in 2 hours.',
+      'I\'ll pause here and check back in 2 hours.'
+    )],
     // Schedule task scenario
     ['schedule task', new ToolUseScenario(
       'mcp__user-input__schedule_task',

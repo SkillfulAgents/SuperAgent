@@ -161,6 +161,9 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   lastSessionId: text('last_session_id'),
   createdBySessionId: text('created_by_session_id'),
   createdByUserId: text('created_by_user_id'), // For ACL purposes in auth mode
+  // When set, this task is a session "wake": firing resumes the referenced
+  // existing session (sendMessage into it) instead of creating a new one.
+  resumeSessionId: text('resume_session_id'),
 
   // Timezone (IANA identifier, e.g. 'America/New_York')
   timezone: text('timezone'),
