@@ -9,6 +9,7 @@ import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts, agentRemoteMcps, remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
+import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
@@ -524,6 +525,11 @@ class ContainerManager {
       // X-Agent Work: cross-agent calls. Container POSTs to host with PROXY_TOKEN.
       envVars['SUPERAGENT_HOST_API_URL'] = `${hostApiBaseUrl}/api`
       envVars['SUPERAGENT_AGENT_SLUG'] = agentId
+
+      // Authenticates the HOST to the container API (the reverse direction of
+      // PROXY_TOKEN, which the agent legitimately holds). The container server
+      // strips this from its env before spawning the CLI.
+      envVars['SUPERAGENT_HOST_TOKEN'] = getOrCreateHostToken(agentId)
 
       // Fetch connected accounts for this agent
       const accountMappings = await db

@@ -1037,6 +1037,18 @@ function getOrCreateEventSource(
           queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
+      else if (data.type === 'capability_review_resolved') {
+        // Decided (possibly in another window) — close the card everywhere now.
+        // The launched Task/Workflow's tool_result can be minutes away.
+        if (current?.pendingCapabilityReviewRequests.some(r => r.toolUseId === data.toolUseId)) {
+          streamStates.set(sessionId, {
+            ...current,
+            pendingCapabilityReviewRequests: current.pendingCapabilityReviewRequests.filter(
+              r => r.toolUseId !== data.toolUseId
+            ),
+          })
+        }
+      }
       else if (data.type === 'file_request') {
         // Agent is requesting a file from the user
         const newRequest: FileRequest = {

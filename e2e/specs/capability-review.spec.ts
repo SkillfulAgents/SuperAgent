@@ -84,17 +84,19 @@ test.describe('Capability launch review', () => {
     await sessionPage.waitForInputEnabled(15000)
 
     // Second launch in the same session: the host-side grant suppresses the
-    // review broadcast entirely.
+    // review broadcast entirely. Wait for the full turn to settle — an
+    // unwanted card would still be showing (nothing ever resolves it).
     await sessionPage.sendMessage('launch workflow')
-    await page.waitForTimeout(4000)
+    await sessionPage.waitForInputEnabled(15000)
     await expect(reviewCard(page)).toHaveCount(0)
   })
 
   test('subagent launches do not prompt under the default allow policy', async ({ page }) => {
     await sessionPage.sendMessage('launch subagent')
 
-    // Give the stream time to deliver the Task tool_use, then assert no card.
-    await page.waitForTimeout(4000)
+    // Wait for the whole turn (including the Task tool_use) to settle — an
+    // unwanted card would still be showing (nothing ever resolves it).
+    await sessionPage.waitForInputEnabled(15000)
     await expect(reviewCard(page)).toHaveCount(0)
   })
 })

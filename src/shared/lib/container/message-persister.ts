@@ -60,6 +60,7 @@ import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
+import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
 import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
@@ -330,6 +331,9 @@ class MessagePersister {
     }
     this.streamingStates.delete(sessionId)
     this.containerClients.delete(sessionId)
+    // Safe to drop: the container's persisted grants are authoritative, so a
+    // resubscribed session repopulates this on the next launch with one GET.
+    this.sessionCapabilityGrants.delete(sessionId)
   }
 
   // Single idle finalizer — flips state and broadcasts to session + global
@@ -488,6 +492,25 @@ class MessagePersister {
 
   hasSessionCapabilityGrant(sessionId: string, capability: 'subagents' | 'workflows'): boolean {
     return this.sessionCapabilityGrants.get(sessionId)?.has(capability) ?? false
+  }
+
+  // Drop a decided capability review from the reconnect-replay store and tell live
+  // clients to close the card. Unlike other input requests this can't wait for the
+  // tool_result cleanup at handleToolResult — an approved Task/Workflow runs for
+  // minutes before its result arrives, and until then a refresh would replay (and
+  // other connected clients would keep) a stale approval card.
+  completeCapabilityReview(sessionId: string, toolUseId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state) return
+    state.pendingInputRequests.delete(toolUseId)
+    this.broadcastToSSE(sessionId, { type: 'capability_review_resolved', toolUseId })
+    if (state.pendingInputRequests.size === 0) {
+      this.broadcastGlobal({
+        type: 'session_input_provided',
+        sessionId,
+        agentSlug: state.agentSlug,
+      })
+    }
   }
 
   // Clear a pending computer use request (after approval/rejection)
@@ -2029,7 +2052,7 @@ class MessagePersister {
           // A nested launch from inside a subagent pauses in canUseTool too —
           // it needs the same approval card as a top-level one.
           if (['Task', 'Agent', 'Workflow'].includes(sub.currentToolUse.name)) {
-            this.handleCapabilityReviewTool(
+            void this.handleCapabilityReviewTool(
               sessionId,
               sub.currentToolUse.id,
               sub.currentToolUse.name,
@@ -2317,7 +2340,7 @@ class MessagePersister {
           // policy — surface the approval card. The handler itself checks the
           // policy and session grants (no-op under allow/block/granted).
           if (['Task', 'Agent', 'Workflow'].includes(state.currentToolUse.name)) {
-            this.handleCapabilityReviewTool(
+            void this.handleCapabilityReviewTool(
               sessionId,
               state.currentToolUse.id,
               state.currentToolUse.name,
@@ -3579,17 +3602,42 @@ ${continuation}`
   // decision route answers it via /inputs/:toolUseId/resolve|reject. Under
   // 'allow' or an active session grant the container never pauses, and under
   // 'block' it denies outright — no card in any of those cases.
-  private handleCapabilityReviewTool(
+  private async handleCapabilityReviewTool(
     sessionId: string,
     toolUseId: string,
     toolName: string,
     toolInput: string,
     agentSlug?: string
-  ): void {
+  ): Promise<void> {
     try {
       const capability = toolName === 'Workflow' ? 'workflows' : 'subagents'
       if (getAgentCapabilitySettings()[capability] !== 'review') return
       if (this.hasSessionCapabilityGrant(sessionId, capability)) return
+
+      // The in-memory mirror above is only a fast path — the container's
+      // persisted grants are authoritative. A fresh host process against a
+      // live granted session would otherwise render a phantom review card
+      // while the container runs the launch without waiting.
+      const client = this.containerClients.get(sessionId)
+      if (client) {
+        try {
+          const response = await client.fetch(
+            `/sessions/${encodeURIComponent(sessionId)}/capability-grants`,
+            { method: 'GET' }
+          )
+          if (response.ok) {
+            const { grants } = sessionCapabilityGrantsResponseSchema.parse(await response.json())
+            if (grants.includes(capability)) {
+              this.grantSessionCapability(sessionId, capability)
+              return
+            }
+          }
+        } catch (error) {
+          // Fail toward showing the card: a review the container isn't waiting
+          // on beats a launch that silently skips review.
+          console.warn('[MessagePersister] Capability grant lookup failed; showing review card:', error)
+        }
+      }
 
       let input: Record<string, unknown> = {}
       try {

@@ -10,6 +10,7 @@ import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { readFile } from 'fs/promises'
 import { z } from 'zod'
 import { resizeScreenshot } from '../image-utils'
+import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
 import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
 
@@ -66,9 +67,11 @@ export function createBrowserTools(getSessionId: () => string | null) {
     body: Record<string, unknown>
   ): Promise<{ success: boolean; data?: unknown; error?: string }> {
     try {
+      // In-process self-call to our own server: needs the host token now that
+      // the API rejects unauthenticated callers.
       const response = await fetch(`${CONTAINER_URL}/browser/${endpoint}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...hostAuthHeaders() },
         body: JSON.stringify({ sessionId: getSessionId(), ...body }),
       })
       const data = await response.json() as Record<string, unknown>

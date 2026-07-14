@@ -143,6 +143,11 @@ export interface ContainerClient {
   // Throws if container is not running
   fetch(path: string, init?: RequestInit): Promise<Response>
 
+  // Headers proving the caller is the host — required by the container API,
+  // which is also reachable from the agent's own Bash. Callers that dial the
+  // container directly (e.g. WebSocket upgrades) must attach these.
+  getHostAuthHeaders(): Record<string, string>
+
   getWebSocketBaseUrl(port: number): string
   getHostApiBaseUrl(): string | Promise<string>
 

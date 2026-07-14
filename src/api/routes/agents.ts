@@ -2385,6 +2385,7 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
         return c.json({ error: 'Failed to reject capability launch' }, 500)
       }
 
+      messagePersister.completeCapabilityReview(sessionId, toolUseId)
       trackServerEvent('request_declined', { type: 'capability_review', capability, withReason: !!declineReason })
       return c.json({ success: true, declined: true })
     }
@@ -2415,6 +2416,7 @@ agents.post('/:id/sessions/:sessionId/capability-review', AgentUser(), async (c)
     if (scope === 'session') {
       messagePersister.grantSessionCapability(sessionId, capability)
     }
+    messagePersister.completeCapabilityReview(sessionId, toolUseId)
 
     trackServerEvent('capability_launch_approved', { capability, scope })
     return c.json({ success: true })

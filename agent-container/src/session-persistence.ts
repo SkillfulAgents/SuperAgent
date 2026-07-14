@@ -153,4 +153,10 @@ export class SessionPersistence {
       this.save();
     }
   }
+
+  getSessionCapabilityGrants(sessionId: string): Array<'subagents' | 'workflows'> | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    return session.sessionCapabilityGrants ?? [];
+  }
 }

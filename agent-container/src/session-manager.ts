@@ -689,6 +689,12 @@ export class SessionManager extends EventEmitter {
     return sessionData.process.isRunning();
   }
 
+  // Reads persistence only — never resumes an evicted session the way
+  // getSession does. null = unknown session.
+  getSessionCapabilityGrants(sessionId: string): Array<'subagents' | 'workflows'> | null {
+    return this.persistence.getSessionCapabilityGrants(sessionId);
+  }
+
   async interruptSession(sessionId: string): Promise<{ found: boolean; discardedUuids: string[] }> {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) {

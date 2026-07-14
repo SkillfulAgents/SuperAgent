@@ -34,8 +34,13 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 
 const mockGetSettings = vi.fn((): Record<string, unknown> => ({}))
+const mockAgentCapabilities: Record<'subagents' | 'workflows', 'allow' | 'review' | 'block'> = {
+  subagents: 'allow',
+  workflows: 'review',
+}
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => mockGetSettings(),
+  getAgentCapabilitySettings: () => ({ ...mockAgentCapabilities }),
   getModelCatalogSettings: () => mockGetSettings().modelCatalog ?? {},
   VALID_SCRIPT_TYPES: {
     darwin: ['applescript', 'shell'],
@@ -2677,6 +2682,118 @@ describe('MessagePersister', () => {
 
     it('is idle for an unknown session', () => {
       expect(messagePersister.getSessionActivity('nope')).toBe('idle')
+    })
+  })
+
+  // ============================================================================
+  // Capability review lifecycle
+  // ============================================================================
+
+  describe('capability review lifecycle', () => {
+    function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: toolName },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    beforeEach(() => {
+      mockAgentCapabilities.subagents = 'allow'
+      mockAgentCapabilities.workflows = 'review'
+      // Grant lookup on the container: default to "no persisted grants".
+      vi.mocked(mockClient.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ grants: [] }),
+      } as unknown as Response)
+    })
+
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+    it('broadcasts a review card and stores it for reconnect replay', async () => {
+      simulateToolUse('Workflow', 'wf-1', { script: 'export const meta = {}' })
+
+      await vi.waitFor(() => {
+        expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(1)
+      })
+      expect(sseEvents.filter(e => e.type === 'capability_review_request')[0]).toMatchObject({
+        toolUseId: 'wf-1',
+        capability: 'workflows',
+      })
+      expect(messagePersister.getPendingInputRequests(SESSION_ID).map(r => r.toolUseId)).toContain('wf-1')
+    })
+
+    it('completeCapabilityReview clears the replay store immediately and notifies live clients', async () => {
+      simulateToolUse('Workflow', 'wf-1', { script: 'export const meta = {}' })
+      await vi.waitFor(() => {
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+      })
+
+      // The decision route calls this on approve AND reject. Waiting for the
+      // launched Workflow's tool_result would leave the card replaying to any
+      // reconnecting client for the whole (possibly minutes-long) run.
+      messagePersister.completeCapabilityReview(SESSION_ID, 'wf-1')
+
+      expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      const resolved = sseEvents.filter(e => e.type === 'capability_review_resolved')
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0]).toMatchObject({ toolUseId: 'wf-1' })
+    })
+
+    it('a session-scope grant in the host mirror suppresses review cards without a container query', async () => {
+      messagePersister.grantSessionCapability(SESSION_ID, 'workflows')
+      simulateToolUse('Workflow', 'wf-2', { script: 'export const meta = {}' })
+
+      await flush()
+      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
+      expect(mockClient.fetch).not.toHaveBeenCalled()
+    })
+
+    it('consults the container-persisted grants when the host mirror is cold', async () => {
+      // Fresh host process, live granted session: the container reports the
+      // grant, so no phantom card — and the mirror is repopulated for next time.
+      vi.mocked(mockClient.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ grants: ['workflows'] }),
+      } as unknown as Response)
+
+      simulateToolUse('Workflow', 'wf-3', { script: 'export const meta = {}' })
+
+      await vi.waitFor(() => {
+        expect(messagePersister.hasSessionCapabilityGrant(SESSION_ID, 'workflows')).toBe(true)
+      })
+      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
+    })
+
+    it('still shows the card when the grant lookup fails', async () => {
+      vi.mocked(mockClient.fetch).mockRejectedValue(new Error('container gone'))
+
+      simulateToolUse('Workflow', 'wf-4', { script: 'export const meta = {}' })
+
+      await vi.waitFor(() => {
+        expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(1)
+      })
+    })
+
+    it('subagent launches under allow policy broadcast nothing', async () => {
+      simulateToolUse('Task', 'task-1', { prompt: 'go', subagent_type: 'Explore' })
+
+      await flush()
+      expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
+      expect(mockClient.fetch).not.toHaveBeenCalled()
     })
   })
 

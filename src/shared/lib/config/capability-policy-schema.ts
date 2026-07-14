@@ -18,6 +18,11 @@ export type AgentCapabilitySettings = z.infer<typeof agentCapabilitySettingsSche
 /** Partial patch shape accepted by PUT /settings. */
 export const agentCapabilitySettingsPatchSchema = agentCapabilitySettingsSchema.partial()
 
+/** Response of the container's GET /sessions/:id/capability-grants. */
+export const sessionCapabilityGrantsResponseSchema = z.object({
+  grants: z.array(z.enum(['subagents', 'workflows'])),
+})
+
 // Subagents default open (they are core to browsing/dashboards and cheap-tier
 // delegation); workflows default to review (a single launch can fan out into
 // dozens of agents).

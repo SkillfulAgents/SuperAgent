@@ -1716,6 +1716,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return this.getInfoFromRuntime()
   }
 
+  getHostAuthHeaders(): Record<string, string> {
+    return {}
+  }
+
   async fetch(fetchPath: string, _init?: RequestInit): Promise<Response> {
     // Mock fetch - return appropriate empty responses based on path
 

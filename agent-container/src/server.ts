@@ -1,5 +1,8 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
+// Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
+// so no later module can snapshot an environment that still contains it.
+import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
 import { SessionManager } from './session-manager';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema } from './capability-policies';
@@ -51,6 +54,17 @@ const app = new Hono();
 const sessionManager = new SessionManager();
 const WORKSPACE_DOWNLOADS_DIR = '/workspace/downloads';
 
+// The agent's own Bash can reach this API (shared network namespace), so every
+// endpoint that could loosen policy or self-approve an input must prove the
+// caller is the host. /health stays open for the Docker HEALTHCHECK.
+app.use('*', async (c, next) => {
+  if (!hostAuthEnabled() || c.req.path === '/health') return next();
+  if (!isValidHostToken(c.req.header(HOST_TOKEN_HEADER))) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  return next();
+});
+
 // Health check endpoint
 app.get('/health', (c) => {
   return c.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -88,6 +102,17 @@ app.get('/sessions/:id', async (c) => {
     ...session,
     isRunning: sessionManager.isSessionRunning(sessionId),
   });
+});
+
+// Persisted "Allow for this session" review grants. The host consults this when
+// its in-memory grant mirror is cold (fresh host process against a live
+// container) before broadcasting a review card the container isn't waiting on.
+app.get('/sessions/:id/capability-grants', (c) => {
+  const grants = sessionManager.getSessionCapabilityGrants(c.req.param('id'));
+  if (grants === null) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+  return c.json({ grants });
 });
 
 app.get('/sessions', (c) => {
@@ -1698,6 +1723,14 @@ const browserWss = new WebSocketServer({ noServer: true });
 
 // Handle WebSocket upgrade
 server.on('upgrade', (request: http.IncomingMessage, socket: any, head: Buffer) => {
+  // Upgrades bypass the Hono middleware chain — enforce host auth here too.
+  const presentedToken = request.headers[HOST_TOKEN_HEADER];
+  if (!isValidHostToken(Array.isArray(presentedToken) ? presentedToken[0] : presentedToken)) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
   const url = new URL(request.url || '', `http://${request.headers.host}`);
   const pathname = url.pathname;
 

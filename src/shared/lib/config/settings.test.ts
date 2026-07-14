@@ -1558,9 +1558,14 @@ describe('agentCapabilities', () => {
     expect(loadSettings().agentCapabilities).toEqual({ subagents: 'review', workflows: 'allow' })
   })
 
-  it('falls back to defaults when a stored tier is invalid', () => {
-    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'maybe', workflows: 'review' } }))
-    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
+  it('defaults only the invalid field, keeping valid siblings', () => {
+    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'maybe', workflows: 'allow' } }))
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'allow', workflows: 'allow' })
+  })
+
+  it('an invalid field never lifts a valid block on the other capability', () => {
+    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'block', workflows: 'future-tier' } }))
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'block', workflows: 'review' })
   })
 
   it('DEFAULT_SETTINGS carries the section so new files persist it', () => {

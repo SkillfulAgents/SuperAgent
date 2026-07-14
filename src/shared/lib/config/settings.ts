@@ -20,7 +20,7 @@ import {
   type ModelCatalogSettings,
 } from '../llm-provider/model-catalog-schema'
 import {
-  agentCapabilitySettingsSchema,
+  capabilityPolicySchema,
   DEFAULT_AGENT_CAPABILITIES,
   type AgentCapabilitySettings,
 } from './capability-policy-schema'
@@ -501,13 +501,18 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     platformNotifications: loaded.platformNotifications,
     enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
     // Sanitize per-field: an unknown tier (hand-edited file, future version)
-    // falls back to that field's default instead of poisoning the section.
+    // falls back to that field's default instead of poisoning the section —
+    // resetting the whole section would silently lift a valid 'block'.
     agentCapabilities: (() => {
-      const merged = { ...DEFAULT_AGENT_CAPABILITIES, ...loaded.agentCapabilities }
-      const parsed = agentCapabilitySettingsSchema.safeParse(merged)
-      if (parsed.success) return parsed.data
-      console.warn('Invalid agentCapabilities in settings.json; using defaults:', parsed.error.message)
-      return structuredClone(DEFAULT_AGENT_CAPABILITIES)
+      const out = structuredClone(DEFAULT_AGENT_CAPABILITIES)
+      for (const key of Object.keys(out) as (keyof AgentCapabilitySettings)[]) {
+        const raw = loaded.agentCapabilities?.[key]
+        if (raw === undefined) continue
+        const parsed = capabilityPolicySchema.safeParse(raw)
+        if (parsed.success) out[key] = parsed.data
+        else console.warn(`Invalid agentCapabilities.${key} in settings.json; using default:`, raw)
+      }
+      return out
     })(),
   }
 }
