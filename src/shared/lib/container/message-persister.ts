@@ -1417,7 +1417,14 @@ class MessagePersister {
 
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)
-        this.persistAutomationStatus(sessionId, state, isError ? 'failed' : 'succeeded')
+        // A graceful interrupt is not the automation's terminal outcome: a
+        // container-internal restart (MCP injection, effort change) continues
+        // the turn moments later, and a user Stop leaves the run unfinished.
+        // Leave automationStatus 'running' — the continuation's real result
+        // (or the dead-session downgrade in activity-stats) settles it.
+        if (!classification.isInterrupt) {
+          this.persistAutomationStatus(sessionId, state, isError ? 'failed' : 'succeeded')
+        }
 
         // A deliberately stopped turn (terminal_reason aborted_tools /
         // aborted_streaming — a graceful interrupt) arrives error-SHAPED but

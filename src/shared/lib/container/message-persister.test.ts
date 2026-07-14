@@ -2896,6 +2896,24 @@ describe('MessagePersister', () => {
       expect(finalizeAutomationStatus).toHaveBeenCalledTimes(1)
     })
 
+    it('does not finalize on a gracefully interrupted turn', async () => {
+      // Error-shaped but terminal_reason marks a deliberate stop; a
+      // container-internal restart continues the turn, so the automation's
+      // real outcome is still pending.
+      mockClient._sendMessage({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        terminal_reason: 'aborted_tools',
+        duration_ms: 100,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(finalizeAutomationStatus).not.toHaveBeenCalled()
+    })
+
     it('keeps consulting the metadata while the session is an automation session', async () => {
       vi.mocked(finalizeAutomationStatus).mockResolvedValue('updated')
 
