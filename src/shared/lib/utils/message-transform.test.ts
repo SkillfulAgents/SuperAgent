@@ -6,7 +6,7 @@ import {
   parseCommandMessage,
   TransformedMessage,
 } from './message-transform'
-import { JsonlMessageEntry, ContentBlock } from '@shared/lib/types/agent'
+import { JsonlMessageEntry, JsonlSystemEntry, ContentBlock } from '@shared/lib/types/agent'
 
 /** Helper to narrow TransformedItem to TransformedMessage in tests */
 function asMessage(item: unknown): TransformedMessage {
@@ -1670,6 +1670,63 @@ describe('parseCommandMessage', () => {
       ])
       const result = transformMessages([entry])
       expect(asMessage(result[0]).apiError).toBeUndefined()
+    })
+  })
+
+  // ============================================================================
+  // Informational banners (host-persisted, e.g. hook-blocked prompts)
+  // ============================================================================
+
+  describe('informational entries', () => {
+    function createInformational(
+      uuid: string,
+      content: string,
+      timestamp: string = '2026-01-24T10:00:00.500Z'
+    ): JsonlSystemEntry {
+      return {
+        type: 'system',
+        subtype: 'informational',
+        uuid,
+        content,
+        level: 'warning',
+        isMeta: false,
+        timestamp,
+      }
+    }
+
+    it('emits a trailing informational item when nothing follows it (blocked prompt)', () => {
+      const entries = [
+        createUserMessage('user-1', 'Hello'),
+        createAssistantMessage('asst-1', 'msg-1', [{ type: 'text', text: 'Hi!' }]),
+        createInformational('info-1', 'UserPromptSubmit operation blocked by hook:\nCircuit breaker'),
+      ]
+      const result = transformMessages(entries)
+      expect(result).toHaveLength(3)
+      const last = result[2] as { type: string; content: string; level?: string; id: string }
+      expect(last.type).toBe('informational')
+      expect(last.content).toContain('blocked by hook')
+      expect(last.level).toBe('warning')
+      expect(last.id).toBe('info-1')
+    })
+
+    it('anchors an informational item before the next message', () => {
+      const entries = [
+        createUserMessage('user-1', 'First'),
+        createInformational('info-1', 'Prompt blocked'),
+        createUserMessage('user-2', 'iman please respond', '2026-01-24T10:00:02.000Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.type)).toEqual(['user', 'informational', 'user'])
+    })
+
+    it('preserves multiple trailing informational items in order', () => {
+      const entries = [
+        createUserMessage('user-1', 'Hello'),
+        createInformational('info-1', 'Blocked once'),
+        createInformational('info-2', 'Blocked twice', '2026-01-24T10:00:01.000Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1', 'info-2'])
     })
   })
 })

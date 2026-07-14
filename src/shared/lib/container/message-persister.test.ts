@@ -28,6 +28,10 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
+const mockAppendInformationalEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
+vi.mock('@shared/lib/services/session-transcript-append', () => ({
+  appendInformationalEntry: (...args: unknown[]) => mockAppendInformationalEntry(...args),
+}))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: vi.fn(() => 'UTC'),
 }))
@@ -279,6 +283,68 @@ describe('MessagePersister', () => {
     sseCleanup()
     messagePersister.unsubscribeFromSession(SESSION_ID)
     vi.clearAllMocks()
+  })
+
+  // ============================================================================
+  // Informational banners (hook feedback, e.g. UserPromptSubmit blocks)
+  // ============================================================================
+
+  describe('informational system messages', () => {
+    it('persists a warning banner to the transcript and broadcasts messages_updated', async () => {
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'informational',
+        uuid: 'info-uuid-1',
+        content: 'UserPromptSubmit operation blocked by hook:\nCircuit breaker\n\nOriginal prompt: hello',
+        level: 'warning',
+        prevent_continuation: true,
+      })
+
+      expect(mockAppendInformationalEntry).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, {
+        uuid: 'info-uuid-1',
+        content: 'UserPromptSubmit operation blocked by hook:\nCircuit breaker\n\nOriginal prompt: hello',
+        level: 'warning',
+      })
+      await vi.waitFor(() => {
+        expect(sseEvents).toContainEqual({ type: 'messages_updated' })
+      })
+    })
+
+    it('persists a blocking banner even without a warning level', async () => {
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'informational',
+        uuid: 'info-uuid-2',
+        content: 'Operation blocked by hook',
+        prevent_continuation: true,
+      })
+
+      expect(mockAppendInformationalEntry).toHaveBeenCalledTimes(1)
+    })
+
+    it('ignores info-level chatter (non-blocking status lines)', () => {
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'informational',
+        uuid: 'info-uuid-3',
+        content: 'Loaded 3 skills',
+        level: 'info',
+      })
+
+      expect(mockAppendInformationalEntry).not.toHaveBeenCalled()
+      expect(sseEvents).not.toContainEqual({ type: 'messages_updated' })
+    })
+
+    it('ignores warning banners with no content', () => {
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'informational',
+        uuid: 'info-uuid-4',
+        level: 'warning',
+      })
+
+      expect(mockAppendInformationalEntry).not.toHaveBeenCalled()
+    })
   })
 
   // ============================================================================

@@ -357,6 +357,41 @@ export class DelayedTextResponseScenario implements MockScenario {
 }
 
 /**
+ * Hook-blocked prompt scenario — mirrors what the CLI emits when a workspace
+ * settings-file hook (e.g. UserPromptSubmit) blocks a prompt: a warning-level
+ * `informational` system message with prevent_continuation, then a success
+ * result with num_turns 0 and no API time. Crucially, the CLI writes NOTHING
+ * to the transcript JSONL for a blocked prompt — the host's message-persister
+ * is responsible for persisting the banner.
+ */
+export class HookBlockScenario implements MockScenario {
+  constructor(private reason: string) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'system',
+        content: {
+          type: 'system',
+          subtype: 'informational',
+          uuid: randomUUID(),
+          content: `UserPromptSubmit operation blocked by hook:\n${this.reason}\n\nOriginal prompt: ${userMessage}`,
+          level: 'warning',
+          prevent_continuation: true,
+        },
+      })
+    }, 80)
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success', num_turns: 0, duration_api_ms: 0 },
+      })
+    }, 160)
+  }
+}
+
+/**
  * Tool use scenario - simulates a tool call with result
  * Event format matches what MessagePersister expects from the real container
  */
@@ -1149,6 +1184,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     )],
     // Register a background bash scenario for testing background task tracking
     ['run background', new BackgroundBashScenario(2000, 'done sleeping')],
+    // A workspace hook blocking the prompt before the model sees it
+    ['trip the breaker', new HookBlockScenario('Circuit breaker: too many messages without operator input')],
     // Register a slow response scenario for cross-session tests
     ['slow response', new DelayedTextResponseScenario(
       'This is a delayed mock response.',
