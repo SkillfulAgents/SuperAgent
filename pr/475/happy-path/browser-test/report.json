@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, and returned the correct page title \"Example Domain\"",
+  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title, and report back with the correct title \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
-    "Found the \"QA-20260714-223056-y5h1\" agent in the sidebar and clicked it — Agent page opened with chat interface",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input — Message successfully typed in the textbox",
-    "Clicked the \"Send message\" button — Message sent successfully and agent began processing",
-    "Waited for agent response (up to 3 minutes) — Agent completed response in 13 seconds",
-    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \\\"Example Domain\\\".\"",
-    "Took final screenshot showing complete conversation — Screenshot shows full agent response with all tool calls (Open Browser, Browser Get State, Close Browser) executed successfully with green checkmarks"
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing two agents in the sidebar",
+    "Step 2: Found and clicked the \"QA-20260714-231339-cxoc\" agent in the sidebar — Successfully opened the agent's chat interface and created a new session titled \"Browser Navigation and Page Title Check\"",
+    "Step 3: Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully sent to the agent; agent status changed to \"working\"",
+    "Step 4: Waited for the response (waited 30 seconds, within the 3-minute timeout) — Agent completed the task successfully in 15 seconds",
+    "Step 5: Verified the response mentions \"Example Domain\" — Response clearly states both \"The page title is \\\"Example Domain\\\"\" and \"Its title/heading is \\\"Example Domain\\\"\". The agent successfully:"
   ],
   "bugs": [],
-  "durationMs": 140810,
-  "sessionId": "721678ef-ce7a-4883-bc80-4be4dcdedda3",
+  "durationMs": 97342,
+  "sessionId": "1b9fc862-eea8-44d4-a94a-44c5b063b185",
   "cost": {
-    "inputTokens": 454,
-    "outputTokens": 11027,
-    "cacheCreationTokens": 67866,
-    "cacheReadTokens": 1206158,
+    "inputTokens": 430,
+    "outputTokens": 9680,
+    "cacheCreationTokens": 76489,
+    "cacheReadTokens": 1228789,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.261037
+    "totalCostUsd": 0.26732
   }
 }
