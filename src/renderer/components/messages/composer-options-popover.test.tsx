@@ -163,4 +163,38 @@ describe('ComposerOptionsPopover', () => {
     render(<Harness disabled initialModel="claude-opus-4-8" />)
     expect(screen.getByTestId('composer-options-trigger')).toBeDisabled()
   })
+
+  it('orders the sections Model → Effort → Speed', async () => {
+    const user = userEvent.setup()
+    render(<Harness initialModel="claude-opus-4-8" />)
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    const models = await screen.findByText('Models')
+    const effort = screen.getByText('Effort')
+    const speed = screen.getByText('Speed')
+    // DOM order == visual order (no col-reverse): Models, then Effort, then Speed.
+    expect(models.compareDocumentPosition(effort) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(effort.compareDocumentPosition(speed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('offers only Normal/Fast speeds for an Anthropic model', async () => {
+    const user = userEvent.setup()
+    render(<Harness initialModel="claude-opus-4-8" />)
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    expect(await screen.findByTestId('speed-option-normal')).toBeInTheDocument()
+    expect(screen.getByTestId('speed-option-fast')).toBeInTheDocument()
+    expect(screen.queryByTestId('speed-option-slow')).not.toBeInTheDocument()
+  })
+
+  it('adds the Slow speed for a GPT (non-Anthropic) model', async () => {
+    const user = userEvent.setup()
+    const catalog: ModelDefinition[] = [
+      ...CATALOG,
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD },
+    ]
+    render(<Harness catalog={catalog} initialModel="gpt-5.6-sol" />)
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    expect(await screen.findByTestId('speed-option-slow')).toBeInTheDocument()
+    expect(screen.getByTestId('speed-option-normal')).toBeInTheDocument()
+    expect(screen.getByTestId('speed-option-fast')).toBeInTheDocument()
+  })
 })

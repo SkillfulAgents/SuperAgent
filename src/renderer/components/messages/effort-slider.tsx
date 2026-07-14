@@ -43,6 +43,9 @@ interface EffortSliderProps {
    *  should follow it (EffortSection feeds it back) so the thumb tracks the
    *  finger — nothing is persisted until onChange settles. */
   onPreview?: (level: EffortLevel | null) => void
+  /** True while a pointer drag is in flight (down → up/cancel). Lets the host
+   *  swap its header for the Faster/Smarter poles only during the drag. */
+  onInteractingChange?: (interacting: boolean) => void
 }
 
 /**
@@ -51,7 +54,7 @@ interface EffortSliderProps {
  * `data-testid="effort-option-<level>"` and selects that level on click, so it's a
  * drop-in for the old button list. Purely controlled — keeps no state of its own.
  */
-export function EffortSlider({ levels, value, onChange, onPreview }: EffortSliderProps) {
+export function EffortSlider({ levels, value, onChange, onPreview, onInteractingChange }: EffortSliderProps) {
   const trackRef = useRef<HTMLDivElement>(null)
   const dragging = useRef(false)
   // Last level previewed during the current gesture: dedups pointermove (which
@@ -89,6 +92,7 @@ export function EffortSlider({ levels, value, onChange, onPreview }: EffortSlide
   const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     dragging.current = true
+    onInteractingChange?.(true)
     // Seed with the current value so pressing at the thumb's own stop previews nothing.
     lastPreview.current = value
     e.currentTarget.setPointerCapture?.(e.pointerId)
@@ -105,6 +109,7 @@ export function EffortSlider({ levels, value, onChange, onPreview }: EffortSlide
   const handlePointerUp = () => {
     if (!dragging.current) return
     dragging.current = false
+    onInteractingChange?.(false)
     const settled = lastPreview.current
     lastPreview.current = null
     if (settled !== null) onChange(settled)
@@ -117,6 +122,7 @@ export function EffortSlider({ levels, value, onChange, onPreview }: EffortSlide
   const handlePointerCancel = () => {
     if (!dragging.current) return
     dragging.current = false
+    onInteractingChange?.(false)
     lastPreview.current = null
     onPreview?.(null)
   }
@@ -135,20 +141,11 @@ export function EffortSlider({ levels, value, onChange, onPreview }: EffortSlide
 
   return (
     <div className="px-2 pt-1 pb-2" data-testid="effort-slider">
-      {/* Only the two poles are labeled — the ticks below carry the levels.
-          Each pole pairs the speed/quality trade-off with its cost ($ vs $$$),
-          slightly dimmer so the words stay primary. Color matches the section
-          headers (e.g. "Effort · Medium"). */}
-      <div className="mb-2 flex items-center justify-between text-[11px] text-muted-foreground/70">
-        <span>
-          Faster <span className="text-muted-foreground/50">· $</span>
-        </span>
-        <span>
-          Smarter <span className="text-muted-foreground/50">· $$$</span>
-        </span>
-      </div>
       {/* Track + thumb. The track is a pill slightly taller than the knob, so the
-          knob nestles inside it (toggle style) rather than riding a thin rail. */}
+          knob nestles inside it (toggle style) rather than riding a thin rail.
+          The Faster/Smarter poles used to sit above the track; they now live in
+          EffortSection's header, surfaced only mid-drag where they replace the
+          "Effort · level" label + help toggle to keep the block compact. */}
       <div
         ref={trackRef}
         onPointerDown={handlePointerDown}
@@ -272,39 +269,72 @@ export function EffortSection({
   const [preview, setPreview] = useState<EffortLevel | null>(null)
   useEffect(() => setPreview(null), [value])
   const shown = preview ?? value
+  // While a drag is in flight the header row becomes the Faster/Smarter poles;
+  // at rest it's the "Effort · level" label + help toggle. One row either way —
+  // the poles no longer take a permanent second line above the track.
+  const [dragging, setDragging] = useState(false)
 
   return (
     // A real wrapper (not a fragment): hosts reverse the popover column to keep
     // this section nearest the trigger, and a fragment's children would get
     // reordered individually (slider above its own header).
     <div>
-      <div className="flex items-center justify-between px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground/70">
-        <span>
-          <span>Effort</span>
-          <span className="text-[#007DED] dark:text-[#4EB3FF]"> · {EFFORT_LABELS[shown]}</span>
-        </span>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                aria-label="About effort"
-                data-testid="effort-help"
-                className="inline-flex shrink-0 hover:text-foreground"
-              >
-                <HelpCircle className="h-3 w-3" aria-hidden="true" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-60">
-              Higher effort means more thorough responses, but takes longer and is more expensive.
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+      {/* One row, two stacked layers that cross-fade + slide as `dragging` flips.
+          Both stay mounted so the motion plays in both directions: the resting
+          layer sits in flow (defining the row height) and slides up + out; the
+          poles overlay it, sliding up from the slider bar below into its place. */}
+      <div className="relative px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground/70">
+        <div
+          className={cn(
+            'flex items-center justify-between transition-[transform,opacity] duration-200 ease-out',
+            dragging ? '-translate-y-1 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100',
+          )}
+        >
+          <span>
+            <span>Effort</span>
+            <span className="text-[#007DED] dark:text-[#4EB3FF]"> · {EFFORT_LABELS[shown]}</span>
+          </span>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="About effort"
+                  data-testid="effort-help"
+                  className="inline-flex shrink-0 hover:text-foreground"
+                >
+                  <HelpCircle className="h-3 w-3" aria-hidden="true" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-60">
+                Higher effort means more thorough responses, but takes longer and is more expensive.
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+        {/* Poles: pair the speed/quality trade-off with its cost ($ vs $$$), the
+            cost dimmer so the words stay primary. Decorative (the slider thumb
+            carries the real semantics), so aria-hidden while at rest. */}
+        <div
+          aria-hidden={!dragging}
+          className={cn(
+            'absolute inset-x-2 top-1 flex items-center justify-between transition-[transform,opacity] duration-200 ease-out',
+            dragging ? 'translate-y-0 opacity-100' : 'translate-y-1 opacity-0 pointer-events-none',
+          )}
+        >
+          <span>
+            Faster <span className="text-muted-foreground/50">· $</span>
+          </span>
+          <span>
+            Smarter <span className="text-muted-foreground/50">· $$$</span>
+          </span>
+        </div>
       </div>
       <EffortSlider
         levels={levels}
         value={shown}
         onPreview={setPreview}
+        onInteractingChange={setDragging}
         onChange={(level) => {
           setPreview(level)
           // The slider can't no-op-guard settles itself (its value prop tracks
