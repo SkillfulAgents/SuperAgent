@@ -311,10 +311,9 @@ function buildSettingsResponse(
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
-    // Raw stored value (undefined = unset, or a pin); the effective id is the vendor the agent will
-    // actually use - it differs from the raw id when the pinned vendor's credential is gone. The UI
-    // pre-selects it (marked "(default)"), warns when the two disagree, and the model-picker warning
-    // reads it.
+    // Raw stored value (undefined = unset, or a pin); effective is what the agent runs (pin when
+    // set; Platform-if-login / native when unset). The UI pre-selects it (marked "(default)" when
+    // unset) and the model-picker warning reads it.
     webProvider: appSettings.webProvider,
     effectiveWebProvider: resolveEffectiveWebVendor(),
     apiKeyStatus: {

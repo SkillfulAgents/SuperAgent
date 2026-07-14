@@ -1849,18 +1849,19 @@ describe('settings route', () => {
       expect(body).toHaveProperty('effectiveWebProvider')
     })
 
-    // The raw id is what the user pinned; the effective id is what the agent will actually run.
-    // The UI reads both (pre-select + "(default)" marker + the fell-back notice), so a GET that
-    // stops returning one of them, or conflates the two, breaks that contract silently.
+    // The raw id is what the user pinned (or unset); the effective id is what the agent will run.
+    // Sticky: a pin stays the effective id even when its credential is gone. The UI reads both
+    // (pre-select + "(default)" when unset), so a GET that stops returning one, or conflates them,
+    // breaks that contract silently.
     describe('webProvider: raw vs effective', () => {
-      it('unset -> raw is absent and effective is the auto-resolved vendor', async () => {
+      it('unset -> raw is absent and effective is Platform when a Gamut login is present', async () => {
         mockGetSettings.mockReturnValue({ ...defaultSettings(), webProvider: undefined })
         const body = await (await app.request('http://localhost/api/settings')).json()
         expect(body.webProvider).toBeUndefined()
         expect(body.effectiveWebProvider).toBe('platform')
       })
 
-      it('pinned vendor whose credential is gone -> raw keeps the pin, effective falls back', async () => {
+      it('pinned vendor stays effective even when its credential is gone (no silent fallback)', async () => {
         mockGetSettings.mockReturnValue({
           ...defaultSettings(),
           webProvider: 'exa',
@@ -1868,7 +1869,7 @@ describe('settings route', () => {
         })
         const body = await (await app.request('http://localhost/api/settings')).json()
         expect(body.webProvider).toBe('exa')
-        expect(body.effectiveWebProvider).toBe('platform')
+        expect(body.effectiveWebProvider).toBe('exa')
       })
     })
   })

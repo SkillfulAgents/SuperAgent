@@ -220,7 +220,7 @@ export interface AppSettings {
   container: ContainerSettings
   apiKeys?: ApiKeySettings
   llmProvider?: LlmProviderId
-  webProvider?: WebProviderId // unset = automatic (resolveDefaultWebVendor: first configured of platform > exa, else native). One stored vendor backs both search + fetch.
+  webProvider?: WebProviderId // unset = Platform when Gamut login present, else native. A stored pin is sticky (no silent fallback). One vendor backs both search + fetch.
   webAllowedSites?: string[] // operator allow list; empty = allow all (host-side must-enforce, §8)
   webBlockedSites?: string[] // operator deny list; wins over allow
   app?: AppPreferences
@@ -295,8 +295,8 @@ export interface GlobalSettingsResponse {
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
   // Raw stored id: undefined = unset. `effectiveWebProvider` is the vendor the agent will actually
-  // use when the raw id is unset (see resolveDefaultWebVendor); the UI pre-selects that effective
-  // vendor and marks it "(default)", and the model-picker web-tools warning reads it.
+  // use (the pin when set; Platform-if-login / native when unset). The UI pre-selects it and marks
+  // unset as "(default)"; the model-picker web-tools warning reads it.
   webProvider?: WebProviderId
   effectiveWebProvider: WebProviderId
   apiKeyStatus: {

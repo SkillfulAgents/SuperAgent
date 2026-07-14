@@ -15,9 +15,8 @@ import { ProviderApiKeyInput } from './provider-api-key-input'
 // One "Web" tab with a single Web Provider select backing one `webProvider` setting. One vendor
 // backs both search and fetch; whether each tool is host-routed or native is derived host-side from
 // the vendor's capabilities. The select always shows a concrete vendor: an explicit choice if the
-// user made one, otherwise the server's resolved best-available vendor (`effectiveWebProvider`)
-// marked "(default)". Leaving it on the default keeps the stored field unset, so the server keeps
-// resolving the best vendor as the user's Gamut/key state changes; picking a vendor pins it.
+// user made one, otherwise the server's default (`effectiveWebProvider`) marked "(default)".
+// Leaving it on the default keeps the stored field unset; picking a vendor pins it sticky.
 // A `usesExaKey` flag marks vendors backed by the shared Exa key (settings.apiKeys.exaApiKey), so the
 // key input renders once and adding an Exa-backed vendor stays a data entry, not new JSX.
 // `platformOnly` marks the Gamut-provided vendor, which is login-gated (selectable only when signed
@@ -31,8 +30,6 @@ type ProviderOption<T extends string> = {
   platformOnly?: boolean
 }
 
-// Listed best-first, matching the order the server would pick them in: the vendor included with the
-// plan, then the one the user pays for, then the model's own tools as the floor.
 const WEB_PROVIDERS: ProviderOption<WebProviderId>[] = [
   {
     value: 'platform',
@@ -137,18 +134,9 @@ export function WebTab() {
   const { data: platformAuth } = usePlatformAuthStatus()
   const isPlatformConnected = platformAuth?.connected ?? false
 
-  // Always show a concrete vendor: the explicit choice if one is stored, else the server's resolved
-  // best-available vendor (effective id). Never an abstract "automatic" row.
+  // Always show a concrete vendor: the explicit choice if one is stored, else the server's default.
   const selected: WebProviderId = settings?.webProvider ?? settings?.effectiveWebProvider ?? 'native'
-  // No explicit choice stored -> the shown vendor is the auto-resolved default (adaptive, not pinned).
   const isDefault = settings?.webProvider == null
-
-  // A pinned vendor whose credential has gone (Exa key deleted, signed out of Gamut) falls back
-  // host-side. The raw and effective ids disagreeing IS that condition, for every vendor - so this
-  // one gate replaces a per-vendor warning.
-  const effective = settings?.effectiveWebProvider
-  const fellBack = !isDefault && effective != null && effective !== selected
-  const label = (id: WebProviderId) => WEB_PROVIDERS.find((p) => p.value === id)?.label ?? id
 
   // The Exa key field shows only when Exa is the active vendor (explicit or resolved-default).
   const needsExaKey = WEB_PROVIDERS.find((p) => p.value === selected)?.usesExaKey ?? false
@@ -158,7 +146,7 @@ export function WebTab() {
       <ProviderSelect
         id="web-provider"
         heading="Web Provider"
-        description="How your agents search the web and read pages. If you don't pick one, the best option available to you is used automatically."
+        description="How your agents search the web and read pages. If you don't pick one, Platform is used when you're signed into Gamut; otherwise Native."
         options={WEB_PROVIDERS}
         value={selected}
         isDefault={isDefault}
@@ -166,13 +154,6 @@ export function WebTab() {
         onChange={(value) => updateSettings.mutate({ webProvider: value })}
         disabled={isLoading}
       />
-
-      {fellBack && (
-        <p className="text-xs text-muted-foreground">
-          {label(selected)} is selected but not available right now. Using {label(effective)} until it
-          is set up again.
-        </p>
-      )}
 
       {needsExaKey && (
         <div className="pt-4 border-t space-y-4">

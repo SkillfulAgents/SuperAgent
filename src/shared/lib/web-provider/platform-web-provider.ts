@@ -15,7 +15,6 @@ import type {
   WebProviderId,
   WebSearchOptions,
   WebSearchResponse,
-  WebVendorTier,
 } from './types'
 
 const PROXY_SEARCH_PATH = '/v1/exa/search'
@@ -60,7 +59,6 @@ export function mapPlatformWebError(err: unknown, surface: 'search' | 'fetch'): 
 export class PlatformWebProvider extends BaseWebProvider {
   readonly id: WebProviderId = 'platform'
   readonly name = 'Platform'
-  readonly tier: WebVendorTier = 'included' // covered by the user's Gamut plan; costs them nothing
 
   // Not used — both credential methods are overridden to read the platform token.
   protected readonly settingsKeyField: keyof ApiKeySettings = 'exaApiKey'

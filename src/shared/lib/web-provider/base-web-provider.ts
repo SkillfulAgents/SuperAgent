@@ -6,7 +6,6 @@ import type {
   WebProviderId,
   WebSearchOptions,
   WebSearchResponse,
-  WebVendorTier,
 } from './types'
 
 // Shared host limits for every web vendor (search + fetch). Vendors bill per request and native
@@ -39,8 +38,6 @@ const MAX_FETCH_CHARS = 100_000
 export abstract class BaseWebProvider {
   abstract readonly name: string
   abstract readonly id: WebProviderId
-  /** What this vendor costs the user; the sole input to automatic precedence (see WebVendorTier). */
-  abstract readonly tier: WebVendorTier
   protected abstract readonly settingsKeyField: keyof ApiKeySettings
   protected abstract readonly envVarName: string
 

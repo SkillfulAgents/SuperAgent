@@ -8,7 +8,6 @@ import type {
   WebProviderId,
   WebSearchOptions,
   WebSearchResponse,
-  WebVendorTier,
 } from './types'
 
 const EXA_SEARCH_URL = 'https://api.exa.ai/search'
@@ -101,7 +100,6 @@ export function buildExaContentsBody(url: string, maxChars: number | undefined):
 export class ExaWebProvider extends BaseWebProvider {
   readonly id: WebProviderId = 'exa'
   readonly name = 'Exa'
-  readonly tier: WebVendorTier = 'byok' // spends the user's own Exa key
 
   protected readonly settingsKeyField: keyof ApiKeySettings = 'exaApiKey'
   protected readonly envVarName = 'EXA_API_KEY'

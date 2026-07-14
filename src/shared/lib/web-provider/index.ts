@@ -16,5 +16,4 @@ export type {
   WebSearchHit,
   WebSearchOptions,
   WebSearchResponse,
-  WebVendorTier,
 } from './types'

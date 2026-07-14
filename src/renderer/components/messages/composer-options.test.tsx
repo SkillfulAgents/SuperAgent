@@ -176,11 +176,9 @@ describe('useComposerOptions default adoption', () => {
 // who never chose a vendor has webProvider unset yet resolves to a real one host-side, and reading
 // the raw id would warn them their web tools are missing while the agent has them.
 describe('useComposerOptions web provider', () => {
-  // Raw and effective deliberately disagree: this fails both if the hook reads the raw pin and if it
-  // stops reading the effective id at all.
-  it('exposes the effective vendor, not the raw stored pin', () => {
-    state.settings = { ...LOADED_SETTINGS, webProvider: 'exa', effectiveWebProvider: 'native' }
+  it('exposes the effective vendor when the raw pin is unset', () => {
+    state.settings = { ...LOADED_SETTINGS, webProvider: undefined, effectiveWebProvider: 'platform' }
     const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
-    expect(result.current.webProvider).toBe('native')
+    expect(result.current.webProvider).toBe('platform')
   })
 })
