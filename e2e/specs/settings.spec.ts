@@ -66,8 +66,27 @@ async function settings(request: APIRequestContext) {
 }
 
 async function saveSettings(request: APIRequestContext, data: Record<string, unknown>) {
+  // Settings PUT blocks while any running agent is mid-turn. Parallel e2e
+  // workers share one server, so clear busy agents before saving.
+  const agentsRes = await request.get('/api/agents')
+  if (agentsRes.ok()) {
+    const agents = await agentsRes.json() as Array<{
+      slug: string
+      status: string
+      hasActiveSessions?: boolean
+    }>
+    for (const agent of agents) {
+      if (agent.status === 'running' && agent.hasActiveSessions) {
+        await request.post(`/api/agents/${agent.slug}/stop`)
+      }
+    }
+  }
+
   const res = await request.put('/api/settings', { data })
-  expect(res.ok()).toBe(true)
+  if (!res.ok()) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(`PUT /api/settings failed (${res.status()}): ${JSON.stringify(body)}`)
+  }
   return await res.json() as GlobalSettingsSnapshot
 }
 
