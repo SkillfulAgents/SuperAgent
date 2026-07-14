@@ -61,6 +61,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   }),
   updateSessionMetadata: vi.fn(),
   getSessionMetadata: vi.fn().mockResolvedValue(null),
+  finalizeAutomationStatus: vi.fn(() => Promise.resolve('not-automation')),
 }))
 
 // Mock settings

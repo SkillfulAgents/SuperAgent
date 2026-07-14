@@ -59,8 +59,9 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
     mockResolvePlatformMemberForCandidates(...args),
 }))
 
+const mockRegisterSession = vi.fn().mockResolvedValue(undefined)
 vi.mock('@shared/lib/services/session-service', () => ({
-  registerSession: vi.fn().mockResolvedValue(undefined),
+  registerSession: (...args: unknown[]) => mockRegisterSession(...args),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
 }))
 
@@ -197,6 +198,17 @@ describe('TriggerManager', () => {
 
       // Verify trigger was marked as fired
       expect(mockMarkTriggerFired).toHaveBeenCalledWith('trigger_1', 'session_123')
+      expect(mockRegisterSession).toHaveBeenCalledWith(
+        'test-agent',
+        'session_123',
+        'Email Handler',
+        expect.objectContaining({
+          isWebhookExecution: true,
+          webhookTriggerId: 'trigger_1',
+          webhookInvocationCount: 1,
+          automationStatus: 'running',
+        }),
+      )
 
       // Verify events were acknowledged
       expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
@@ -234,6 +246,16 @@ describe('TriggerManager', () => {
       expect(prompt).toContain('Event 1:')
       expect(prompt).toContain('Event 2:')
       expect(prompt).toContain('Event 3:')
+      expect(mockRegisterSession).toHaveBeenCalledWith(
+        'test-agent',
+        'session_123',
+        'Batch Test',
+        expect.objectContaining({
+          webhookTriggerId: 'trigger_1',
+          webhookInvocationCount: 3,
+          automationStatus: 'running',
+        }),
+      )
 
       // All 3 events acknowledged
       expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1', 'whe_2', 'whe_3'], 'sub_test_member')
@@ -283,6 +305,7 @@ describe('TriggerManager', () => {
       expect(mockMarkTriggerFailed).toHaveBeenCalledWith('trigger_1', 'Agent no longer exists')
       expect(mockAcknowledgeEvents).toHaveBeenCalledWith(['whe_1'], 'sub_test_member')
       expect(mockCreateSession).not.toHaveBeenCalled()
+      expect(mockRegisterSession).not.toHaveBeenCalled()
 
       triggerManager.stop()
       mockAgentExists.mockResolvedValue(true) // restore for other tests

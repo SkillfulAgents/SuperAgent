@@ -11,6 +11,8 @@ import { formatDistanceToNow } from 'date-fns'
 import { safeDate } from '@renderer/components/connections/utils'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { FeaturedServicesStack } from '@renderer/components/connections/featured-services-stack'
+import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
+import { ActivitySparkChart, ActivitySparkChartSkeleton } from '@renderer/components/activity/activity-spark-chart'
 
 interface HomeConnectionsProps {
   agentSlug: string
@@ -33,6 +35,7 @@ interface ConnectionRow {
 export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) {
   const { data: accountsData } = useAgentConnectedAccounts(agentSlug)
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
+  const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
   const navigate = useNavigate()
 
   const connections = useMemo<ConnectionRow[]>(() => {
@@ -106,12 +109,22 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
               }}
               ariaLabel={`Open ${conn.name} connection details`}
               right={
-                <span
-                  aria-hidden="true"
-                  className="flex justify-center overflow-hidden w-0 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:opacity-100"
-                >
-                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                </span>
+                <>
+                  {activityStats?.connectionById[conn.id] !== undefined ? (
+                    <ActivitySparkChart
+                      label={`${conn.name} activity`}
+                      data={activityStats.connectionById[conn.id]}
+                    />
+                  ) : activityPending ? (
+                    <ActivitySparkChartSkeleton />
+                  ) : null}
+                  <span
+                    aria-hidden="true"
+                    className="flex justify-center overflow-hidden w-0 opacity-0 transition-all duration-200 ease-out group-hover:w-4 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:opacity-100"
+                  >
+                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </span>
+                </>
               }
             />
           ))}

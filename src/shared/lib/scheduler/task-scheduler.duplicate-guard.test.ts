@@ -135,7 +135,7 @@ function existingScheduledSession(sessionId = 'container-session-1') {
   }
 }
 
-describe('TaskScheduler duplicate execution guard (SUP-243)', () => {
+describe('TaskScheduler duplicate execution guard', () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
@@ -201,6 +201,7 @@ describe('TaskScheduler duplicate execution guard (SUP-243)', () => {
         scheduledTaskId: 'task-1',
         scheduledTaskName: 'Daily report',
         scheduledExecutionAt: scheduledExecutionAt.toISOString(),
+        automationStatus: 'running',
       }),
     )
     expect(mockUpdateSessionMetadata).not.toHaveBeenCalled()

@@ -1,10 +1,11 @@
-import { execSync, spawn } from 'child_process'
+import { execFile, execSync, spawn } from 'child_process'
+import { promisify } from 'util'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile } from './base-container-client'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
-import type { ContainerConfig } from './types'
+import type { ContainerConfig, HostPortProbeResult } from './types'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import {
@@ -120,6 +121,46 @@ function collectWSL2Diagnostics(): Record<string, unknown> {
 }
 
 export const WSL2_DISTRO_NAME = 'superagent'
+
+const execFileAsync = promisify(execFile)
+
+/**
+ * Map a curl exit code from the in-distro reachability probe to a verdict.
+ * Only "couldn't connect" (7) and "timed out" (28) prove the path is blocked —
+ * a firewall silently dropping WSL2→host traffic surfaces as 28. Anything else
+ * (curl missing, wsl broken, HTTP-level errors, mid-transfer resets) is
+ * 'unknown' so a broken probe can never fail a working setup.
+ */
+export function classifyProbeCurlExit(exitCode: number | null | undefined): HostPortProbeResult {
+  if (exitCode === 0) return 'reachable'
+  if (exitCode === 7 || exitCode === 28) return 'unreachable'
+  return 'unknown'
+}
+
+/**
+ * Map a busybox-wget probe result to a verdict. The bundled Alpine distro
+ * ships busybox wget but no curl, so this is the fallback classifier. Busybox
+ * wget exits 1 for nearly every failure, so the verdict comes from stderr
+ * (messages observed against busybox v1.37.0 in the shipped distro):
+ *   - "Connection refused" → nothing listening: unreachable
+ *   - "timed out" ("download timed out" / kernel "Connection timed out") —
+ *     how a firewall silently dropping WSL2→host traffic surfaces: unreachable
+ *   - "server returned error: HTTP/..." → TCP+HTTP round-trip completed, so
+ *     the port is reachable (matches curl-without--f semantics)
+ * Anything else (wget missing, bad address, wsl broken) is 'unknown' so a
+ * broken probe can never fail a working setup.
+ */
+export function classifyProbeWgetResult(
+  exitCode: number | null | undefined,
+  stderr: string,
+): HostPortProbeResult {
+  if (exitCode === 0) return 'reachable'
+  if (exitCode !== 1) return 'unknown'
+  if (/connection refused/i.test(stderr)) return 'unreachable'
+  if (/timed out/i.test(stderr)) return 'unreachable'
+  if (/server returned error/i.test(stderr)) return 'reachable'
+  return 'unknown'
+}
 
 /**
  * Pre-flight: check if hardware virtualization is enabled in firmware (BIOS).
@@ -316,6 +357,48 @@ export class WSL2ContainerClient extends BaseContainerClient {
       console.warn('Failed to detect host IP for WSL2 distro:', e)
     }
     return null
+  }
+
+  /**
+   * Probe a host-side TCP endpoint from inside the WSL2 distro. Containers are
+   * NATed through the distro's eth0, so distro→host traffic crosses the same
+   * Windows Firewall boundary (the vEthernet (WSL) interface) as
+   * container→host traffic — a block here is exactly what the container will
+   * hit when it tries to connect.
+   */
+  async probeHostPortFromRunner(host: string, port: number): Promise<HostPortProbeResult> {
+    const url = `http://${host}:${port}/json/version`
+    let curlExit: number | null
+    try {
+      await execFileAsync(
+        'wsl',
+        [
+          '-d', WSL2_DISTRO_NAME, '--',
+          'curl', '--silent', '--output', '/dev/null', '--max-time', '4',
+          url,
+        ],
+        { timeout: 15000 },
+      )
+      return 'reachable'
+    } catch (err) {
+      const code = (err as { code?: number | string }).code
+      curlExit = typeof code === 'number' ? code : null
+    }
+    // 126/127 = curl absent or not executable in the distro. The bundled
+    // Alpine rootfs ships no curl, so this is the common case — fall back to
+    // busybox wget (no -q: the verdict is classified from its stderr).
+    if (curlExit !== 126 && curlExit !== 127) return classifyProbeCurlExit(curlExit)
+    try {
+      await execFileAsync(
+        'wsl',
+        ['-d', WSL2_DISTRO_NAME, '--', 'wget', '-O', '/dev/null', '-T', '4', url],
+        { timeout: 15000 },
+      )
+      return 'reachable'
+    } catch (err) {
+      const { code, stderr } = err as { code?: number | string; stderr?: string }
+      return classifyProbeWgetResult(typeof code === 'number' ? code : null, stderr ?? '')
+    }
   }
 
   /**

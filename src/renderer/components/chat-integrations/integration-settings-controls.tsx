@@ -146,6 +146,9 @@ export function IntegrationModelEffort({ integration }: { integration: ChatInteg
       includeEffort
       effort={(integration.effort as EffortLevel) ?? 'medium'}
       onEffortChange={(e) => updateIntegration.mutate({ id: integration.id, effort: e })}
+      // Left-aligned in its DetailCard, so the LEFT edge is the fixed one —
+      // anchoring 'end' would slide the popover on every pick.
+      align="start"
     />
   )
 }

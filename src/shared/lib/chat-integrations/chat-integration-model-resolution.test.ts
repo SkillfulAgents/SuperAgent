@@ -57,6 +57,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   registerSession: vi.fn().mockResolvedValue(undefined),
   updateSessionMetadata: vi.fn().mockResolvedValue(undefined),
   getSessionMetadata: vi.fn().mockResolvedValue(null),
+  finalizeAutomationStatus: vi.fn().mockResolvedValue('not-automation'),
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({

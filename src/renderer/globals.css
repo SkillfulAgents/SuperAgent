@@ -280,6 +280,116 @@ html[data-keyboard-open] [data-composer-footer] {
   animation: browser-glow-pulse 4s ease-in-out infinite;
 }
 
+/* Effort slider — animated rainbow mesh overlaid on the right of the maxed-out
+   ("Max") fill. The mesh lives on a double-width ::before whose background tiles
+   every container-width; translating it by exactly one tile per loop (marquee
+   trick) gives a seamless, ALWAYS-LEFTWARD flow — emanating from the thumb, never
+   reversing, no hard line at the loop point. hue-rotate cycles the colors on top
+   (0deg == 360deg, also seamless). A left-fading mask on the host keeps the
+   rainbow from running the full width — it fades out around the Med–High marks.
+   GPU-friendly (transform + filter only). */
+@keyframes effort-rainbow-hue {
+  from { filter: hue-rotate(0deg) saturate(1.15); }
+  to   { filter: hue-rotate(360deg) saturate(1.15); }
+}
+@keyframes effort-rainbow-drift {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); } /* one tile — wraps invisibly */
+}
+/* Entry sweep, shared by the rainbow and the gray fill's inverse fade: both
+   masks are 200%-wide no-repeat gradients, so sliding mask-position 0%→100%
+   sweeps the reveal leftward from the thumb. At 0% the element reads the mask's
+   left half (rainbow: all transparent = hidden; gray: all opaque = untouched);
+   at 100% the right half = the steady-state fade profile (28%→58%). Runs once
+   per mount — the overlay mounts on selecting Max, so picking Max replays it. */
+@keyframes effort-mask-sweep {
+  from { -webkit-mask-position: 0% 0; mask-position: 0% 0; }
+  to   { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+}
+
+.effort-rainbow {
+  overflow: hidden;
+  /* Stops at 64%/79% of the 200%-wide mask == 28%/58% of the element once the
+     sweep lands at mask-position 100%. */
+  -webkit-mask-image: linear-gradient(to right, transparent 64%, #000 79%);
+  mask-image: linear-gradient(to right, transparent 64%, #000 79%);
+  -webkit-mask-size: 200% 100%;
+  mask-size: 200% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  will-change: filter;
+  /* Finite loop counts (~50s), not infinite: the popovers never dismiss on
+     pick, so an abandoned-open picker at Max would otherwise composite these
+     layers every frame indefinitely. Both loops end exactly where they start
+     (360deg == 0deg, one tile == origin), so the stop is a seamless freeze to
+     the static rainbow, never a visible jump. */
+  animation:
+    effort-rainbow-hue 6s linear 8,
+    effort-mask-sweep 4s cubic-bezier(0.22, 0.6, 0.36, 1) both;
+}
+
+.effort-rainbow::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 200%;
+  /* One full 360° hue sweep per tile, in wheel order — every neighboring pair
+     (including the wrap, magenta→magenta) is analogous, so blends stay clean:
+     no complementary adjacencies like red→green that mud into brown. The white
+     radial blobs add the organic vapor depth; white only tints, never muddies.
+     Blob extents stay inside [0%,100%] of the tile so tiles join seamlessly. */
+  background-image:
+    radial-gradient(20% 80% at 22% 30%, rgba(255, 255, 255, 0.28), transparent),
+    radial-gradient(18% 75% at 58% 70%, rgba(255, 255, 255, 0.22), transparent),
+    radial-gradient(15% 70% at 85% 35%, rgba(255, 255, 255, 0.18), transparent),
+    linear-gradient(
+      90deg,
+      #ff0080 0%,
+      #ff8c00 14%,
+      #ffd300 28%,
+      #35d435 42%,
+      #00cfcf 56%,
+      #2b6cff 70%,
+      #8a2be2 85%,
+      #ff0080 100%
+    );
+  /* Tile = half this double-width layer = one container width. */
+  background-size: 50% 100%;
+  background-repeat: repeat;
+  will-change: transform;
+  /* Matches the host's ~50s animation budget — see the comment there. */
+  animation: effort-rainbow-drift 5s linear 10;
+}
+
+/* Inverse of the rainbow's mask, applied to the gray base fill at Max: gray
+   fades out exactly where the rainbow fades in, a clean crossfade instead of
+   the rainbow blending over gray (which muddied its colors). Shares the entry
+   sweep so the crossfade travels leftward with the rainbow instead of the gray
+   vanishing instantly. */
+.effort-fill-fade {
+  -webkit-mask-image: linear-gradient(to right, #000 64%, transparent 79%);
+  mask-image: linear-gradient(to right, #000 64%, transparent 79%);
+  -webkit-mask-size: 200% 100%;
+  mask-size: 200% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  animation: effort-mask-sweep 4s cubic-bezier(0.22, 0.6, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .effort-rainbow,
+  .effort-rainbow::before,
+  .effort-fill-fade {
+    animation: none;
+    /* The sweep normally lands the mask here; without it, pin the end state so
+       the rainbow isn't stuck hidden behind the sweep's start position. */
+    -webkit-mask-position: 100% 0;
+    mask-position: 100% 0;
+  }
+}
+
 /* Voice agent orb — glowing sphere with radial depth and amp-driven reactivity.
    --orb-amp (0..1) is set on the element via JS, driven by the active analyser
    when speaking or a slow sinusoidal breath when idle. */

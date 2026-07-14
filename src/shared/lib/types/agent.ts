@@ -89,6 +89,11 @@ export interface SessionMetadata {
   isWebhookExecution?: boolean
   webhookTriggerId?: string
   webhookTriggerName?: string
+  // Lifecycle outcome for cron/webhook sessions. Set to running at session
+  // creation and finalized from the runtime's terminal result event.
+  automationStatus?: 'running' | 'succeeded' | 'failed'
+  // One webhook session can represent a batch of several claimed deliveries.
+  webhookInvocationCount?: number
   // Chat integration fields - present when session was created from an external chat
   isChatIntegrationSession?: boolean
   chatIntegrationId?: string

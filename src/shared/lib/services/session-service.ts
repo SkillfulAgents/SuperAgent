@@ -125,6 +125,39 @@ export async function updateSessionMetadata(
   })
 }
 
+export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-final'
+
+/**
+ * Record the terminal outcome of a cron/webhook session's automation turn.
+ *
+ * Guard rules live inside the serialized mutator (single locked
+ * read-then-maybe-write, no TOCTOU):
+ * - non-automation sessions are untouched — callers can cache the
+ *   'not-automation' result and skip future calls for that session;
+ * - promoted sessions that never tracked an outcome predate automation
+ *   status — a later interactive turn's result is not the automation's;
+ * - a finalized outcome (anything but 'running') is never overwritten.
+ */
+export async function finalizeAutomationStatus(
+  agentSlug: string,
+  sessionId: string,
+  automationStatus: 'succeeded' | 'failed'
+): Promise<AutomationStatusResult> {
+  let result: AutomationStatusResult = 'not-automation'
+  await mutateSessionMetadata(agentSlug, (metadata) => {
+    const meta = metadata[sessionId]
+    if (!meta?.isScheduledExecution && !meta?.isWebhookExecution) return false
+    if (meta.promotedToInteractive && !meta.automationStatus) return false
+    if (meta.automationStatus && meta.automationStatus !== 'running') {
+      result = 'already-final'
+      return false
+    }
+    metadata[sessionId] = { ...meta, automationStatus }
+    result = 'updated'
+  })
+  return result
+}
+
 /**
  * Get metadata for a single session
  */

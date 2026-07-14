@@ -222,6 +222,7 @@ class TaskScheduler {
       scheduledTaskId: task.id,
       scheduledTaskName: task.name || undefined,
       scheduledExecutionAt: task.nextExecutionAt.toISOString(),
+      automationStatus: 'running',
     })
 
     // Subscribe to the session for SSE updates

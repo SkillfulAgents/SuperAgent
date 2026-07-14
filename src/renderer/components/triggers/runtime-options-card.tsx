@@ -82,6 +82,9 @@ export function RuntimeOptionsCard({ model, effort, disabled, onUpdate }: Runtim
           effort={localEffort}
           onEffortChange={handleSetEffort}
           disabled={disabled}
+          // This trigger is left-aligned in its card, so its LEFT edge is the
+          // stable anchor while picks rewrite the label width.
+          align="start"
         />
         {!hasCustom && <span className="text-xs text-muted-foreground">Using defaults</span>}
       </div>

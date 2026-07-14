@@ -35,6 +35,7 @@ import auditLogRouter from './routes/audit-log'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
 import agentBootstrap from './routes/agent-bootstrap'
+import activityRouter from './routes/activity'
 import { initializeServices } from '@shared/lib/startup'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { sql } from 'drizzle-orm'
@@ -170,6 +171,7 @@ app.get('/api/llm/anthropic-sdk.js', (c) => {
 
 // Mount route handlers
 app.route('/api/agents', agents)
+app.route('/api/activity', activityRouter)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/web-search', webSearch)

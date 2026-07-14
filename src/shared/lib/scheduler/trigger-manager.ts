@@ -28,10 +28,7 @@ import {
 } from '@shared/lib/services/webhook-trigger-service'
 import type { WebhookTrigger } from '@shared/lib/services/webhook-trigger-service'
 import type { EffortLevel } from '@shared/lib/container/types'
-import {
-  registerSession,
-  updateSessionMetadata,
-} from '@shared/lib/services/session-service'
+import { registerSession } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import {
@@ -336,7 +333,7 @@ class TriggerManager {
     ]
     const resolved = resolvePlatformMemberForCandidates(candidates)
     const ownerUserId = resolved?.userId ?? candidates.find((c) => c) ?? null
-    return runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
+    await runWithOptionalUser(ownerUserId, () => this.spawnSessionInner(trigger, events))
   }
 
   private async spawnSessionInner(
@@ -376,11 +373,12 @@ class TriggerManager {
     const sessionId = containerSession.id
     const sessionName = trigger.name || `Webhook: ${trigger.triggerType}`
 
-    await registerSession(trigger.agentSlug, sessionId, sessionName)
-    await updateSessionMetadata(trigger.agentSlug, sessionId, {
+    await registerSession(trigger.agentSlug, sessionId, sessionName, {
       isWebhookExecution: true,
       webhookTriggerId: trigger.id,
       webhookTriggerName: trigger.name || undefined,
+      webhookInvocationCount: events.length,
+      automationStatus: 'running',
     })
 
     await messagePersister.subscribeToSession(

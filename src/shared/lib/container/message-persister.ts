@@ -56,7 +56,7 @@ import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
-import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
@@ -91,6 +91,13 @@ interface StreamingState {
   isInterrupted: boolean // True after user interrupts, prevents race conditions
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug?: string // The agent slug for this session
+  notAutomationSession?: boolean // Cached "not a cron/webhook session" verdict; skips the automation-status metadata write on later results
+  // True when the most recent result was a clean success (not error-shaped,
+  // not an interrupt, not a resume-exit). Consumed by finalizeIdle: a success
+  // result alone is NOT terminal — queued messages or background work can keep
+  // the session running and a later turn can still fail — so the automation
+  // outcome is persisted as succeeded only when the session truly settles.
+  lastResultCleanSuccess: boolean
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
   completedSubagentIds: Set<string> // agentIds of subagents that have completed (to avoid re-discovery)
@@ -298,6 +305,7 @@ class MessagePersister {
       pendingDeliverFiles: new Map(),
       stateEventsAuthority: prior?.stateEventsAuthority ?? false,
       lastResultSubtype: null,
+      lastResultCleanSuccess: false,
       isRetrying: false,
     })
 
@@ -340,6 +348,14 @@ class MessagePersister {
   // listeners. Used by the result handler (legacy result-driven idle), the
   // session_state_changed handler (authoritative idle), and markSessionInactive.
   private finalizeIdle(sessionId: string, state: StreamingState): void {
+    // The session is truly settled: persist the automation outcome for a turn
+    // that ended in a clean success. (Failures were already persisted at their
+    // result — an error ends the turn immediately. Interrupts never set the
+    // flag, and markSessionInterrupted doesn't route through here anyway.)
+    if (state.lastResultCleanSuccess) {
+      state.lastResultCleanSuccess = false
+      this.persistAutomationStatus(sessionId, state, 'succeeded')
+    }
     state.isActive = false
     this.broadcastToSSE(sessionId, { type: 'session_idle', isActive: false })
     this.broadcastGlobal({
@@ -703,6 +719,7 @@ class MessagePersister {
       state.isStreaming = false
       state.isActive = false
       state.isAwaitingInput = false
+      state.lastResultCleanSuccess = false
       state.currentText = ''
       state.currentToolUse = null
       state.currentToolInput = ''
@@ -775,6 +792,7 @@ class MessagePersister {
         pendingDeliverFiles: new Map(),
         stateEventsAuthority: false,
         lastResultSubtype: null,
+      lastResultCleanSuccess: false,
         isRetrying: false,
       }
       this.streamingStates.set(sessionId, state)
@@ -798,6 +816,7 @@ class MessagePersister {
     // already-finished (or interrupted) run can't fire a stale "success"
     // completion notification against the turn this message is starting.
     state.lastResultSubtype = null
+    state.lastResultCleanSuccess = false
     if (agentSlug) {
       state.agentSlug = agentSlug
     }
@@ -863,6 +882,25 @@ class MessagePersister {
       sessionId,
       agentSlug,
     })
+  }
+
+  private persistAutomationStatus(
+    sessionId: string,
+    state: StreamingState,
+    automationStatus: 'succeeded' | 'failed',
+  ): void {
+    // Guard logic lives in finalizeAutomationStatus (one serialized
+    // read-then-maybe-write). Interactive sessions pay the metadata read only
+    // once: 'not-automation' is cached for the rest of the subscription.
+    if (!state.agentSlug || state.notAutomationSession) return
+    const agentSlug = state.agentSlug
+    void finalizeAutomationStatus(agentSlug, sessionId, automationStatus)
+      .then((result) => {
+        if (result === 'not-automation') state.notAutomationSession = true
+      })
+      .catch((err) => {
+        console.error('[MessagePersister] Failed to persist automation status:', err)
+      })
   }
 
   // Broadcast an arbitrary event to all SSE clients for a session (public)
@@ -1439,6 +1477,19 @@ class MessagePersister {
 
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)
+        // Automation outcome. A failure is terminal the moment its result
+        // arrives — persist it now. A clean success is NOT terminal: queued
+        // messages or background work can keep the session running and a
+        // later turn can still fail, so only record the flag here and let
+        // finalizeIdle persist success once the session truly settles.
+        // Interrupts (user Stop, container-internal restart) and resume-exits
+        // finalize nothing — the turn continues, or the dead-session downgrade
+        // in activity-stats settles a run that never does.
+        state.lastResultCleanSuccess =
+          !isError && !classification.isInterrupt && content.subtype !== 'resume'
+        if (isError) {
+          this.persistAutomationStatus(sessionId, state, 'failed')
+        }
 
         // A deliberately stopped turn (terminal_reason aborted_tools /
         // aborted_streaming — a graceful interrupt) arrives error-SHAPED but

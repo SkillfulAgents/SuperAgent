@@ -67,20 +67,20 @@ test.describe('Per-agent default model', () => {
     await expect(card).toBeVisible()
     await expect(page.locator('[data-testid="home-default-model-reset"]')).not.toBeVisible()
 
-    // One click on the family header selects that family's latest (bare alias)
-    // and keeps the popover open...
+    // Picks keep the popover open, so alias, pin, and effort all happen in ONE
+    // visit. The "Haiku" row (and its Latest chip) stores the bare alias …
     await card.locator('[data-testid="settings-model-trigger"]').click()
-    await page.locator('[data-testid="model-family-haiku"]').click()
+    await page.locator('[data-testid="model-latest-haiku"]').click()
     await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText('Haiku · latest')
 
-    // ...with the versions expanded, so pinning a concrete one is one tap away.
+    // … its version chip pins the concrete release …
     await page.locator(`[data-testid="model-pinned-${HAIKU_PINNED}"]`).click()
     await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText('Haiku 4.5')
 
-    // Pick a default effort too.
-    await card.locator('[data-testid="settings-model-trigger"]').click()
+    // … and the effort slider sets the default effort. Then dismiss.
     await page.locator('[data-testid="effort-option-high"]').click()
     await expect(card.locator('[data-testid="settings-model-trigger"]')).toContainText('High')
+    await page.keyboard.press('Escape')
 
     // A custom default surfaces the reset-to-global affordance.
     await expect(page.locator('[data-testid="home-default-model-reset"]')).toBeVisible()

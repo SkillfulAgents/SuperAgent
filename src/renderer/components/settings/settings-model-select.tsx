@@ -1,12 +1,12 @@
-import { memo, useEffect, useMemo, useState } from 'react'
-import { Check, ChevronDown } from 'lucide-react'
+import { memo, useMemo } from 'react'
+import { ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { ModelFamilyList, findCatalogModel, familyDisplayName } from '@renderer/components/messages/model-family-list'
-import { cn } from '@shared/lib/utils'
+import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
@@ -19,47 +19,25 @@ interface SettingsModelSelectProps {
   effort?: EffortLevel
   onEffortChange?: (effort: EffortLevel) => void
   disabled?: boolean
-}
-
-const EFFORT_LABEL: Record<EffortLevel, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Extra High',
-  max: 'Max',
-}
-
-function EffortRow({ label, isSelected, onClick, testId }: {
-  label: string
-  isSelected: boolean
-  onClick: () => void
-  testId: string
-}) {
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      onClick={onClick}
-      className={cn(
-        'flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-accent',
-        isSelected && 'bg-accent'
-      )}
-    >
-      <span className="truncate">{label}</span>
-      {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-foreground" />}
-    </button>
-  )
+  /**
+   * Which trigger edge the popover anchors to. Picks rewrite the trigger label
+   * live, so its width changes while the popover is open — anchor to the edge
+   * the host layout keeps FIXED or the popover slides on every selection.
+   * 'end' (default) for right-aligned rows (settings rows, the agent-home
+   * card); 'start' for left-aligned hosts (the trigger/cron runtime card).
+   */
+  align?: 'start' | 'end'
 }
 
 /**
- * The two-layered model picker used by saved-setting selectors (default model,
+ * The flat model picker used by saved-setting selectors (default model,
  * summarizer, browser, scheduled-job/trigger, chat integration).
  *
- * The grouped family/version list is the shared {@link ModelFamilyList}, here
- * with `offerLatest` on: each family expands to **Latest** (stores the bare
- * alias, rides upgrades) plus **specific versions** (store the concrete id,
- * pinned), labeled `· latest` / `· pinned`. Reads and writes the raw selection
- * string — resolution happens host-side.
+ * The list is the shared {@link ModelFamilyList}, here with `offerLatest` on:
+ * a family's **Latest** chip stores the bare alias (rides upgrades) and its
+ * version chips store concrete ids (pinned); latest-vs-pinned reads from the
+ * lit chip, and only the trigger label spells out `· latest` / `· pinned`.
+ * Reads and writes the raw selection string — resolution happens host-side.
  */
 function SettingsModelSelectImpl({
   model,
@@ -68,9 +46,9 @@ function SettingsModelSelectImpl({
   effort = 'medium',
   onEffortChange,
   disabled,
+  align = 'end',
 }: SettingsModelSelectProps) {
   const { data: settings } = useSettings()
-  const [open, setOpen] = useState(false)
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const catalog = useMemo(
     () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
@@ -82,13 +60,7 @@ function SettingsModelSelectImpl({
   const isLatestSelected = model !== undefined && catalog.some((m) => m.family === model)
   const selectedFamily = isLatestSelected ? model : resolved?.family
 
-  // Reset to Medium when the resolved model can't do the current effort.
-  const supportsCurrentEffort = resolved?.supportedEfforts.includes(effort) ?? true
-  useEffect(() => {
-    if (includeEffort && onEffortChange && resolved && !supportsCurrentEffort) {
-      onEffortChange('medium')
-    }
-  }, [includeEffort, onEffortChange, resolved, supportsCurrentEffort])
+  useEffortClamp(includeEffort ? resolved : undefined, effort, onEffortChange)
 
   const visibleEfforts = EFFORT_LEVELS.filter((level) =>
     resolved ? resolved.supportedEfforts.includes(level) : true
@@ -99,13 +71,11 @@ function SettingsModelSelectImpl({
   else if (resolved?.family) triggerLabel = `${resolved.label} · pinned`
   else if (resolved) triggerLabel = resolved.label
 
-  const pick = (value: string) => {
-    onModelChange(value)
-    setOpen(false)
-  }
-
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    // Uncontrolled: picks never dismiss (matching the composer) — model and
+    // effort get set in one visit and the popover closes on outside click /
+    // Escape / trigger toggle — so Radix owns the open state.
+    <Popover>
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -121,47 +91,37 @@ function SettingsModelSelectImpl({
             {triggerLabel ?? 'Select model'}
             {includeEffort && (
               <span className="text-muted-foreground">
-                {' · '}{EFFORT_LABEL[effort]}
+                {' · '}{EFFORT_LABELS[effort]}
               </span>
             )}
           </span>
           <ChevronDown className="h-3.5 w-3.5" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-80 px-1 py-2" align="start">
-        <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Model
-        </div>
+      <PopoverContent
+        className="flex w-64 flex-col px-1 py-2 data-[side=bottom]:flex-col-reverse"
+        align={align}
+        collisionPadding={8}
+        // Don't auto-focus the first element (a vendor tab) on open — focusing
+        // it pops its name tooltip instantly. Keyboard users can Tab in.
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
         <ModelFamilyList
+          header="Model"
           catalog={catalog}
           value={model}
-          onPick={pick}
+          onPick={onModelChange}
           offerLatest
-          // Family click = that family's latest, stored as the bare alias (same
-          // as the "· latest" row). Stays open so a pinned version is one tap away.
-          onSelectFamilyLatest={(_latestId, family) => onModelChange(family)}
           webProvider={settings?.webProvider}
         />
         {includeEffort && (
           <>
-            <Separator className="my-2" />
-            <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              Effort
-            </div>
-            <div className="flex flex-col gap-0.5">
-              {visibleEfforts.map((level) => (
-                <EffortRow
-                  key={level}
-                  label={EFFORT_LABEL[level]}
-                  isSelected={effort === level}
-                  onClick={() => {
-                    onEffortChange?.(level)
-                    setOpen(false)
-                  }}
-                  testId={`effort-option-${level}`}
-                />
-              ))}
-            </div>
+            <Separator className="my-2 bg-border/50" />
+            <EffortSection
+              levels={visibleEfforts}
+              value={effort}
+              onChange={(level) => onEffortChange?.(level)}
+            />
           </>
         )}
       </PopoverContent>
