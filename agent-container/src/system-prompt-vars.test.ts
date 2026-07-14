@@ -40,6 +40,18 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('platform-dependent')).toBe(!composio && !webhook)    // disconnected fallback
   })
 
+  // The pause/resume guidance must always render: without it agents reach for
+  // schedule_task ("new session") when they mean "continue THIS conversation
+  // later", which loses the context the wait was for.
+  it('always teaches schedule_resume and how it differs from schedule_task', () => {
+    const out = generateSystemPrompt()
+    expect(out).toContain('## Pausing and Resuming This Session')
+    expect(out).toContain('mcp__user-input__schedule_resume')
+    // The decision rule both directions
+    expect(out).toContain('THIS SAME conversation')
+    expect(out).toContain('Use `schedule_task` only for genuinely independent work')
+  })
+
   // A heading whose body is entirely gated renders as a title with the next
   // heading directly beneath it. Some headings (`## File Handling`) are static
   // containers of subheadings and are bodyless in every render, which is fine --
