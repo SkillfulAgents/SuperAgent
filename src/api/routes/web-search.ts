@@ -14,10 +14,7 @@ const MAX_SNIPPET_CHARS = 2000
 
 const webSearch = new Hono()
 
-// Own proxy-token gate. The local-mode-auth bypass for this container-facing route only skips the
-// IP check; it does NOT authenticate, and nothing is inherited from sibling routers — so this
-// router must declare its own gate or it ships open (design §4 auth must-do). IsAgent also opens the
-// agent owner's attribution scope, which the platform vendor's proxy calls are billed under.
+// IsAgent: proxy-token gate + agent-owner attribution scope for billed proxy calls.
 webSearch.use('*', IsAgent())
 
 // POST /search — run the active vendor's search, enforce the operator allow/deny policy host-side.

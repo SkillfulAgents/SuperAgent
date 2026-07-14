@@ -55,10 +55,9 @@ export function mapExaContentsResponse(raw: unknown, fetchedAt: string): WebFetc
 }
 
 /**
- * The Exa POST /search request body. Shared with PlatformWebProvider, which reaches the same Exa
- * API through the platform proxy — the vendors differ only in URL and auth, so the body (and its
- * two load-bearing choices below) lives in one place rather than being kept in sync by hand.
- * `numResults` arrives pre-clamped by the caller's BaseWebProvider.
+ * Shared Exa POST /search body (also used by PlatformWebProvider via the proxy).
+ * `numResults` arrives pre-clamped. Request both highlights + text (~2× content cost) for
+ * snippet quality in v1; drop to one source later if optimizing spend.
  */
 export function buildExaSearchBody(query: string, opts: WebSearchOptions, numResults: number): string {
   return JSON.stringify({
@@ -68,26 +67,18 @@ export function buildExaSearchBody(query: string, opts: WebSearchOptions, numRes
     excludeDomains: opts.excludeDomains,
     startPublishedDate: opts.startPublishedDate,
     endPublishedDate: opts.endPublishedDate,
-    // Request BOTH content types: highlights (the snippet source) + text (fallback when a page
-    // returns no highlights). Exa bills ~$1/1k pages PER content type, so this roughly doubles
-    // content cost. Kept intentionally for v1 (snippet quality over spend); to cost-optimize
-    // later, drop to a single source — likely highlights-only, which fits search=relevance-preview
-    // while web_fetch owns full content. Verified live 2026-06-30: both come back, body accepted.
     contents: { highlights: true, text: { maxCharacters: 800 } },
   })
 }
 
 /**
- * The Exa POST /contents request body. Shared with PlatformWebProvider (see above).
- * `maxChars` arrives pre-clamped by the caller's BaseWebProvider; undefined means no cap.
+ * Shared Exa POST /contents body. `maxChars` pre-clamped; undefined = no cap.
+ * filterEmptyResults MUST stay false: Exa defaults true and silently drops failed URLs.
  */
 export function buildExaContentsBody(url: string, maxChars: number | undefined): string {
   return JSON.stringify({
     urls: [url],
-    // A bare `true` returns full text; a cap object bounds it when the caller asked for maxChars.
     text: maxChars != null ? { maxCharacters: maxChars } : true,
-    // ALWAYS false: Exa defaults this to true, which silently DROPS a failed/empty URL from
-    // results[] and breaks one-doc-per-URL mapping (§15). false keeps it so we map empty content.
     filterEmptyResults: false,
   })
 }

@@ -13,16 +13,12 @@ const MAX_CONTENT_CHARS = 100_000
 
 const webFetch = new Hono()
 
-// Own proxy-token gate. The local-mode-auth bypass for this container-facing route only skips the
-// IP check; it does NOT authenticate, and nothing is inherited from sibling routers — so this
-// router must declare its own gate or it ships open (design §4 auth must-do). IsAgent also opens the
-// agent owner's attribution scope, which the platform vendor's proxy calls are billed under.
+// IsAgent: proxy-token gate + agent-owner attribution scope for billed proxy calls.
 webFetch.use('*', IsAgent())
 
-// POST /fetch — fetch one URL's content via the active vendor, enforcing the operator allow/deny
-// policy on the TARGET host BEFORE dispatch. The host's only egress is the fixed vendor host
-// (api.exa.ai fetches the target server-side), so the internal-range DNS/SSRF guard does not apply
-// to the Exa reference and is deferred until a direct/in-container fetch backend lands (design §SSRF).
+// POST /fetch — allow/deny on the TARGET host before dispatch. Host egress is the fixed vendor
+// host (api.exa.ai / platform proxy), so the internal-range SSRF guard is deferred until a
+// direct/in-container fetch backend lands.
 webFetch.post('/fetch', async (c) => {
   let raw: unknown
   try {

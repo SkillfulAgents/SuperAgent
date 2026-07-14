@@ -12,23 +12,13 @@ import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { WebProviderId } from '@shared/lib/config/settings'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 
-// One "Web" tab with a single Web Provider select. GET `webProvider` is always the concrete vendor
-// the agent runs; `webProviderIsDefault` marks the unset/auto case as "(default)". Picking a vendor
-// pins it sticky via PUT.
-// A `usesExaKey` flag marks vendors backed by the shared Exa key (settings.apiKeys.exaApiKey), so the
-// key input renders once and adding an Exa-backed vendor stays a data entry, not new JSX.
-// `platformOnly` marks the Gamut-provided vendor, which is login-gated (selectable only when signed
-// into Gamut).
-type ProviderOption<T extends string> = {
-  value: T
+const WEB_PROVIDERS: {
+  value: WebProviderId
   label: string
   note: string
   docsUrl?: string
-  usesExaKey?: boolean
   platformOnly?: boolean
-}
-
-const WEB_PROVIDERS: ProviderOption<WebProviderId>[] = [
+}[] = [
   {
     value: 'platform',
     label: 'Platform',
@@ -40,7 +30,6 @@ const WEB_PROVIDERS: ProviderOption<WebProviderId>[] = [
     label: 'Exa',
     note: 'Web search and full page reading through Exa. Works with every model. You bring your own Exa API key and are billed by Exa.',
     docsUrl: 'https://docs.exa.ai',
-    usesExaKey: true,
   },
   {
     value: 'native',
@@ -48,83 +37,6 @@ const WEB_PROVIDERS: ProviderOption<WebProviderId>[] = [
     note: 'Uses whatever web tools the model already has built in. Nothing to set up, but not every model has them.',
   },
 ]
-
-function ProviderSelect<T extends string>({
-  id,
-  heading,
-  description,
-  options,
-  value,
-  isDefault,
-  onChange,
-  disabled,
-  isPlatformConnected,
-}: {
-  id: string
-  heading: string
-  description: string
-  options: ProviderOption<T>[]
-  value: T
-  // The shown vendor is the unset default (Platform-if-login / native), not an explicit pin: mark it "(default)".
-  isDefault?: boolean
-  onChange: (value: T) => void
-  disabled?: boolean
-  isPlatformConnected?: boolean
-}) {
-  const selectedInfo = options.find((p) => p.value === value)
-  return (
-    <div className="space-y-4">
-      <div>
-        <h3 className="text-sm font-medium">{heading}</h3>
-        <p className="text-xs text-muted-foreground mt-1">{description}</p>
-      </div>
-      <div className="space-y-2">
-        <div className="flex items-center gap-1.5">
-          <Label htmlFor={id}>Provider</Label>
-          {isDefault && <span className="text-xs text-muted-foreground">(default)</span>}
-        </div>
-        <Select value={value} onValueChange={(v) => onChange(v as T)} disabled={disabled}>
-          <SelectTrigger id={id}>
-            <SelectValue placeholder="Select a provider" />
-          </SelectTrigger>
-          <SelectContent>
-            {options.map((p) => {
-              const gated = !!p.platformOnly && !isPlatformConnected
-              return (
-                <SelectItem key={p.value} value={p.value} disabled={gated}>
-                  {p.label}
-                  {gated && (
-                    <span className="text-muted-foreground ml-2">(requires Gamut login)</span>
-                  )}
-                </SelectItem>
-              )
-            })}
-          </SelectContent>
-        </Select>
-
-        {selectedInfo && (
-          <p className="text-xs text-muted-foreground">
-            {selectedInfo.note}
-            {selectedInfo.docsUrl && (
-              <>
-                {' '}
-                <a
-                  href={selectedInfo.docsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary hover:underline inline-flex items-center gap-0.5"
-                >
-                  View docs
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </>
-            )}
-          </p>
-        )}
-      </div>
-    </div>
-  )
-}
 
 export function WebTab() {
   const { data: settings, isLoading } = useSettings()
@@ -134,25 +46,68 @@ export function WebTab() {
 
   const selected: WebProviderId = settings?.webProvider ?? 'native'
   const isDefault = settings?.webProviderIsDefault ?? true
-
-  // The Exa key field shows only when Exa is the selected vendor (always an explicit pin — Exa is never the unset default).
-  const needsExaKey = WEB_PROVIDERS.find((p) => p.value === selected)?.usesExaKey ?? false
+  const selectedInfo = WEB_PROVIDERS.find((p) => p.value === selected)
 
   return (
     <div className="space-y-6">
-      <ProviderSelect
-        id="web-provider"
-        heading="Web Provider"
-        description="How your agents search the web and read pages. If you don't pick one, Platform is used when you're signed into Gamut; otherwise Native."
-        options={WEB_PROVIDERS}
-        value={selected}
-        isDefault={isDefault}
-        isPlatformConnected={isPlatformConnected}
-        onChange={(value) => updateSettings.mutate({ webProvider: value })}
-        disabled={isLoading}
-      />
+      <div className="space-y-4">
+        <div>
+          <h3 className="text-sm font-medium">Web Provider</h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            How your agents search the web and read pages. If you don&apos;t pick one, Platform is used when you&apos;re signed into Gamut; otherwise Native.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5">
+            <Label htmlFor="web-provider">Provider</Label>
+            {isDefault && <span className="text-xs text-muted-foreground">(default)</span>}
+          </div>
+          <Select
+            value={selected}
+            onValueChange={(v) => updateSettings.mutate({ webProvider: v as WebProviderId })}
+            disabled={isLoading}
+          >
+            <SelectTrigger id="web-provider">
+              <SelectValue placeholder="Select a provider" />
+            </SelectTrigger>
+            <SelectContent>
+              {WEB_PROVIDERS.map((p) => {
+                const gated = !!p.platformOnly && !isPlatformConnected
+                return (
+                  <SelectItem key={p.value} value={p.value} disabled={gated}>
+                    {p.label}
+                    {gated && (
+                      <span className="text-muted-foreground ml-2">(requires Gamut login)</span>
+                    )}
+                  </SelectItem>
+                )
+              })}
+            </SelectContent>
+          </Select>
 
-      {needsExaKey && (
+          {selectedInfo && (
+            <p className="text-xs text-muted-foreground">
+              {selectedInfo.note}
+              {selectedInfo.docsUrl && (
+                <>
+                  {' '}
+                  <a
+                    href={selectedInfo.docsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline inline-flex items-center gap-0.5"
+                  >
+                    View docs
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </>
+              )}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {selected === 'exa' && (
         <div className="pt-4 border-t space-y-4">
           <h3 className="text-sm font-medium">Exa API Key</h3>
           <p className="text-xs text-muted-foreground">

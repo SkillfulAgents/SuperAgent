@@ -1,13 +1,3 @@
-// Normalized web-search seam types (v1, locked minimal cut). One shape the host sees
-// regardless of vendor. The fuller multi-vendor surface (capability-gated option knobs,
-// gated hit fields, usage/requestId) is a Slice-2 extension, added per field when a
-// consumer needs it — each is a pure, non-breaking widening.
-
-// 'native' is the default sentinel (Anthropic server-side tools / Claude's built-in tools, no host
-// provider); 'exa' is the reference vendor; 'platform' is the Gamut-provided vendor (same Exa shape,
-// routed through the platform proxy on the user's login). One id union for the whole web seam — the
-// same vendor backs both search and fetch, and advertises which it supports via its optional
-// search()/fetch() methods. Other vendors join the union as they are built.
 export type WebProviderId = 'native' | 'exa' | 'platform'
 
 export interface WebSearchOptions {

@@ -40,7 +40,6 @@ import {
   findWebProvider,
   getWebProvider,
   resolveEffectiveWebVendor,
-  WebProviderIdSchema,
 } from '@shared/lib/web-provider'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
@@ -74,6 +73,8 @@ import {
   apiScopePolicies,
 } from '@shared/lib/db/schema'
 import fs from 'fs'
+
+const WEB_PROVIDER_IDS = ['native', 'exa', 'platform'] as const
 
 const settings = new Hono()
 
@@ -311,8 +312,6 @@ function buildSettingsResponse(
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
-    // GET `webProvider` is what the agent runs; `webProviderIsDefault` means stored was unset.
-    // PUT `webProvider` still writes the pin (null clears). Same name, read vs write roles.
     webProvider: resolveEffectiveWebVendor(),
     webProviderIsDefault: appSettings.webProvider == null,
     apiKeyStatus: {
@@ -367,13 +366,10 @@ settings.put('/', async (c) => {
   try {
     const body = await c.req.json()
 
-    // Validate the web provider id at the boundary (repo Zod-at-boundary rule): reject an unknown
-    // id. `null` (clear to automatic) and `undefined` (field omitted) are both allowed and handled
-    // when building newSettings below.
     if (
       body.webProvider !== undefined &&
       body.webProvider !== null &&
-      !WebProviderIdSchema.safeParse(body.webProvider).success
+      !(WEB_PROVIDER_IDS as readonly string[]).includes(body.webProvider)
     ) {
       return c.json({ error: `Invalid webProvider: ${String(body.webProvider)}` }, 400)
     }
@@ -549,7 +545,7 @@ settings.put('/', async (c) => {
       },
       apiKeys: currentSettings.apiKeys,
       llmProvider: body.llmProvider !== undefined ? body.llmProvider : currentSettings.llmProvider,
-      // null = clear to automatic (stored as undefined); a concrete id sets it; omitted preserves.
+      // null clears to automatic (undefined); omitted preserves.
       webProvider: body.webProvider === null ? undefined
         : body.webProvider !== undefined ? body.webProvider : currentSettings.webProvider,
       webAllowedSites: body.webAllowedSites !== undefined ? body.webAllowedSites : currentSettings.webAllowedSites,
@@ -933,8 +929,6 @@ settings.post('/validate-web-key', async (c) => {
     if (!provider || typeof provider !== 'string' || provider === 'native') {
       return c.json({ valid: false, error: 'A web vendor is required' }, 400)
     }
-    // Platform is login-based, so there is no key to validate. Answer 400 here rather than dispatch
-    // into the registry, where the provider would have to report a client error as a 200 body.
     if (provider === 'platform') {
       return c.json({ valid: false, error: 'Platform uses your Gamut login, not an API key.' }, 400)
     }

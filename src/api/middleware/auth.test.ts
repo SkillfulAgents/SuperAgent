@@ -44,9 +44,6 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (token: string) => mockValidateProxyToken(token),
 }))
 
-// IsAgent opens an attribution scope for the agent's owner; that behavior is proven end to end,
-// against the real AsyncLocalStorage, in is-agent-attribution.test.ts. These stubs only keep the
-// import graph light for the authorization tests below.
 vi.mock('@shared/lib/platform-attribution', () => ({
   runWithRequestUser: (_userId: string, fn: () => unknown) => fn(),
   runWithOptionalUser: (_userId: string | null | undefined, fn: () => unknown) => fn(),

@@ -17,29 +17,20 @@ import type {
   WebSearchResponse,
 } from './types'
 
-const PROXY_SEARCH_PATH = '/v1/exa/search'
-const PROXY_CONTENTS_PATH = '/v1/exa/contents'
-
-/**
- * Proxy status → user remedy. 401/403/402 must not share copy (proxy auth.ts, billing/gate.ts).
- */
+/** Proxy status → user remedy. 401/403/402 must not share copy (proxy auth.ts, billing/gate.ts). */
 const PROXY_REMEDIES: Record<number, string> = {
   401: 'your Gamut session has expired or is invalid. Sign in again, or pick a different provider under the Web provider setting in Settings.',
   403: 'your Gamut account does not have access to it (the trial may have ended, or the membership is inactive). Check your account, or pick a different provider under the Web provider setting in Settings.',
   402: 'your Gamut account has a billing issue. Resolve billing, or switch to Native or Exa under the Web provider setting in Settings.',
 }
 
-/** Map a rejected proxy call to actionable copy; other errors pass through. */
-export function mapPlatformWebError(err: unknown, surface: 'search' | 'fetch'): unknown {
+function mapPlatformWebError(err: unknown, surface: 'search' | 'fetch'): unknown {
   const remedy = err instanceof NonRetryableError && err.status ? PROXY_REMEDIES[err.status] : undefined
   if (!remedy) return err
   return new Error(`Platform web ${surface} is unavailable: ${remedy}`)
 }
 
-/**
- * Gamut-provided web vendor: Exa shape via platform proxy (Bearer), same mappers as ExaWebProvider.
- * Credential is the platform login — overrides mirror PlatformLlmProvider.
- */
+/** Gamut web vendor: Exa shape via platform proxy (Bearer). Credential is the platform login. */
 export class PlatformWebProvider extends BaseWebProvider {
   readonly id: WebProviderId = 'platform'
   readonly name = 'Platform'
@@ -79,7 +70,7 @@ export class PlatformWebProvider extends BaseWebProvider {
     const token = this.requireToken('search')
     const body = buildExaSearchBody(query, opts, this.clampNumResults(opts.numResults))
     try {
-      return mapExaSearchResponse(await this.postToProxy(PROXY_SEARCH_PATH, token, body))
+      return mapExaSearchResponse(await this.postToProxy('/v1/exa/search', token, body))
     } catch (err) {
       throw mapPlatformWebError(err, 'search')
     }
@@ -89,14 +80,13 @@ export class PlatformWebProvider extends BaseWebProvider {
     const token = this.requireToken('fetch')
     const body = buildExaContentsBody(url, this.clampMaxChars(opts.maxChars))
     try {
-      const json = await this.postToProxy(PROXY_CONTENTS_PATH, token, body)
+      const json = await this.postToProxy('/v1/exa/contents', token, body)
       return mapExaContentsResponse(json, new Date().toISOString())
     } catch (err) {
       throw mapPlatformWebError(err, 'fetch')
     }
   }
 
-  // Login-based; /validate-web-key rejects platform before this runs.
   async validateKey(): Promise<{ valid: boolean; error?: string }> {
     return { valid: false, error: 'Platform uses your Gamut login, not an API key.' }
   }

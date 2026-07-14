@@ -171,8 +171,6 @@ describe('useComposerOptions default adoption', () => {
   })
 })
 
-// The composer surfaces the picker's "no web tools on this model" warning off GET webProvider
-// (always the active vendor, including the unset default).
 describe('useComposerOptions web provider', () => {
   it('exposes the active webProvider from settings', () => {
     state.settings = { ...LOADED_SETTINGS, webProvider: 'platform', webProviderIsDefault: true }

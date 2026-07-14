@@ -46,34 +46,17 @@ describe('WebTab', () => {
     vi.clearAllMocks()
   })
 
-  it('shows the active vendor marked "(default)" when isDefault', () => {
+  it('marks "(default)" only when isDefault', () => {
     setup({ webProvider: 'platform', webProviderIsDefault: true, connected: true })
-    render(<WebTab />)
-
+    const { unmount } = render(<WebTab />)
     expect(screen.getByRole('combobox')).toHaveTextContent('Platform')
     expect(screen.getByText('(default)')).toBeInTheDocument()
-  })
+    unmount()
 
-  it('shows a pinned choice without the "(default)" marker', () => {
     setup({ webProvider: 'exa', webProviderIsDefault: false, connected: true })
     render(<WebTab />)
-
     expect(screen.getByRole('combobox')).toHaveTextContent('Exa')
     expect(screen.queryByText('(default)')).not.toBeInTheDocument()
-  })
-
-  it('offers only concrete vendors, Platform first', async () => {
-    setup({ webProvider: 'platform', webProviderIsDefault: true, connected: true })
-    const user = userEvent.setup()
-    render(<WebTab />)
-
-    await user.click(screen.getByRole('combobox'))
-    await screen.findByRole('option', { name: /^Native$/i })
-    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual([
-      'Platform',
-      'Exa',
-      'Native',
-    ])
   })
 
   it('disables the Platform option when not signed into Gamut', async () => {

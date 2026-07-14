@@ -53,15 +53,12 @@ import {
 } from '@shared/lib/platform-attribution/install-fetch-interceptor'
 import { IsAgent } from './auth'
 
-// An org-scoped runtime JWT: three segments with an `orgId` claim. Only this shape makes the proxy
-// require an acting member, so it is the only shape that can expose a missing attribution scope.
 function orgJwt(orgId: string): string {
   const header = Buffer.from('{"alg":"none"}').toString('base64url')
   const payload = Buffer.from(JSON.stringify({ orgId })).toString('base64url')
   return `${header}.${payload}.sig`
 }
 
-/** Run a request through the gate and report what the handler sees as its acting bearer. */
 async function bearerSeenByHandler(): Promise<string | undefined> {
   let seen: string | undefined
   const app = new Hono()
@@ -91,15 +88,12 @@ afterEach(() => {
 })
 
 describe('IsAgent attribution scope', () => {
-  // The proxy bills an org-scoped bearer against the acting member encoded as `<token>::<memberId>`.
-  // A container-facing route has no session, so the gate has to supply that member from the agent's
-  // owner; without it the platform proxy sees an org token with no seat.
   it('runs the handler under the agent owner attribution scope (org token gets ::memberId)', async () => {
     mockIsAuthMode.mockReturnValue(true)
     mockGetPlatformAccessToken.mockReturnValue(orgJwt('org_1'))
     mockDbAll
-      .mockReturnValueOnce([{ userId: 'user_alice' }]) // agent_acl owner
-      .mockReturnValueOnce([{ accountId: 'sub_member_1' }]) // alice's platform member
+      .mockReturnValueOnce([{ userId: 'user_alice' }])
+      .mockReturnValueOnce([{ accountId: 'sub_member_1' }])
 
     expect(await bearerSeenByHandler()).toBe(`${orgJwt('org_1')}::sub_member_1`)
   })
@@ -108,7 +102,6 @@ describe('IsAgent attribution scope', () => {
     mockIsAuthMode.mockReturnValue(false)
     mockGetPlatformAccessToken.mockReturnValue('plat_sa_opaque_key')
 
-    // No attribution scope is opened, so the provider's own bearer stands.
     expect(await bearerSeenByHandler()).toBeUndefined()
     expect(mockDbAll).not.toHaveBeenCalled()
   })
@@ -116,14 +109,11 @@ describe('IsAgent attribution scope', () => {
   it('opens no scope when the agent has no owner row', async () => {
     mockIsAuthMode.mockReturnValue(true)
     mockGetPlatformAccessToken.mockReturnValue(orgJwt('org_1'))
-    mockDbAll.mockReturnValueOnce([]) // no owner
+    mockDbAll.mockReturnValueOnce([])
 
     expect(await bearerSeenByHandler()).toBeUndefined()
   })
 
-  // Closes the wire the two sibling suites leave open: IsAgent opens the owner scope, and the
-  // global interceptor must stamp that acting member onto the outbound proxy Authorization.
-  // Without this, ALS bearerToken() can look right while container→proxy calls still go unattributed.
   it('stamps ::memberId onto outbound platform-proxy fetches made inside the handler', async () => {
     mockIsAuthMode.mockReturnValue(true)
     const token = orgJwt('org_1')

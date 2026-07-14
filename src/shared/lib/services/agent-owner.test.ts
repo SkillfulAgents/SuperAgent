@@ -46,28 +46,12 @@ beforeEach(() => {
 })
 
 describe('getAgentOwnerUserId', () => {
-  it('returns the owner user id in auth mode', () => {
+  it('returns the first owner by createdAt, filtered to owner role + agent', () => {
     mockIsAuthMode.mockReturnValue(true)
     mockAll.mockReturnValue([{ userId: 'user_alice' }])
     expect(getAgentOwnerUserId('my-agent')).toBe('user_alice')
-  })
-
-  // agent_acl also holds 'user' and 'viewer' rows; attributing spend to a viewer would be wrong.
-  it('filters on the owner role and the requested agent', () => {
-    mockIsAuthMode.mockReturnValue(true)
-    mockAll.mockReturnValue([{ userId: 'user_alice' }])
-    getAgentOwnerUserId('my-agent')
     expect(whereArgs.join(' ')).toContain('acl.agent_slug=my-agent')
     expect(whereArgs.join(' ')).toContain('acl.role=owner')
-  })
-
-  // An agent can have several owners. The FIRST one is the acting member on billed proxy calls, and
-  // the billing gate reads a per-seat subscription — so an unordered pick could silently flip a
-  // request to a 402 when a co-owner is added or removed.
-  it('picks the first owner by createdAt, not an arbitrary row', () => {
-    mockIsAuthMode.mockReturnValue(true)
-    mockAll.mockReturnValue([{ userId: 'user_alice' }])
-    getAgentOwnerUserId('my-agent')
     expect(orderByArgs).toEqual(['asc(acl.created_at)'])
   })
 
@@ -77,8 +61,6 @@ describe('getAgentOwnerUserId', () => {
     expect(getAgentOwnerUserId('orphan-agent')).toBeNull()
   })
 
-  // A single-user install has no agent_acl rows at all; it must not pay for a query, and its
-  // platform credential is already member-scoped so it wants no acting member anyway.
   it('short-circuits without querying outside auth mode', () => {
     mockIsAuthMode.mockReturnValue(false)
     expect(getAgentOwnerUserId('my-agent')).toBeNull()

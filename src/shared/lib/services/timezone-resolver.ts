@@ -21,13 +21,11 @@ export function resolveTimezoneForAgent(agentSlug: string): string {
     return getUserTimezone('local')
   }
 
-  // Auth mode: find the first owner of this agent
   const ownerUserId = getAgentOwnerUserId(agentSlug)
   if (ownerUserId) {
     return getUserTimezone(ownerUserId)
   }
 
-  // Fallback: system timezone
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone
   } catch {

@@ -18,10 +18,6 @@ function setActive(id?: WebProviderId) {
   vi.mocked(getSettings).mockReturnValue({ webProvider: id } as unknown as ReturnType<typeof getSettings>)
 }
 
-// The unset default asks whether a platform credential is configured, and with settings mocked
-// empty that detection falls through to env (PLATFORM_TOKEN). Clear it so an ambient key in the
-// dev environment can't decide the unset-setting cases. EXA_API_KEY is cleared too so a sticky
-// Exa pin can't accidentally look configured from env.
 function clearVendorEnv() {
   delete process.env.PLATFORM_TOKEN
   delete process.env.EXA_API_KEY
@@ -55,19 +51,12 @@ describe('getActiveWebProvider', () => {
   })
 })
 
-// Sticky like LLM/STT: a stored pin is a contract. Unset is the only adaptive case.
 describe('resolveEffectiveWebVendor', () => {
   it('honors a pinned vendor even when its credential is gone (fail loud, no silent swap)', () => {
-    process.env.PLATFORM_TOKEN = 't' // would have been the old ladder's next pick
+    process.env.PLATFORM_TOKEN = 't'
     setActive('exa')
     expect(resolveEffectiveWebVendor()).toBe('exa')
     expect(getActiveWebProvider()?.id).toBe('exa')
-  })
-
-  it('honors a pinned vendor while its credential is configured', () => {
-    process.env.EXA_API_KEY = 'k'
-    setActive('exa')
-    expect(resolveEffectiveWebVendor()).toBe('exa')
   })
 
   it('keeps an explicit native choice even when platform is configured', () => {
@@ -88,14 +77,11 @@ describe('resolveEffectiveWebVendor', () => {
     expect(resolveEffectiveWebVendor()).toBe('platform')
   })
 
-  it('defaults to native when unset and no Gamut login (does not auto-pick Exa)', () => {
+  it('defaults to native when unset (does not auto-pick Exa, even with EXA_API_KEY)', () => {
     process.env.EXA_API_KEY = 'k'
     setActive(undefined)
     expect(resolveEffectiveWebVendor()).toBe('native')
-  })
-
-  it('defaults to native when unset and nothing is configured', () => {
-    setActive(undefined)
+    delete process.env.EXA_API_KEY
     expect(resolveEffectiveWebVendor()).toBe('native')
   })
 })

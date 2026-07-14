@@ -1846,10 +1846,8 @@ describe('settings route', () => {
       expect(body).toHaveProperty('voice')
       expect(body).toHaveProperty('tenantId')
       expect(body).toHaveProperty('shareAnalytics')
-      expect(body).toHaveProperty('webProviderIsDefault')
     })
 
-    // GET webProvider is always the concrete vendor that runs; isDefault means stored was unset.
     describe('webProvider: active vendor + isDefault', () => {
       it('unset -> webProvider is the default vendor and isDefault is true', async () => {
         mockGetSettings.mockReturnValue({ ...defaultSettings(), webProvider: undefined })
