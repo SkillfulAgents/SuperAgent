@@ -757,6 +757,54 @@ describe('containerManager.ensureImageReady — state machine', () => {
     expect(readiness.message).toContain('Network timeout pulling image')
   })
 
+  it('retries a stalled pull and reaches READY when the retry succeeds', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage)
+      .mockRejectedValueOnce(new Error('Image pull stalled: no progress output for 120s while pulling img'))
+      .mockResolvedValueOnce(undefined)
+
+    // Fake timers to skip the retry backoff delay
+    vi.useFakeTimers()
+    try {
+      const promise = containerManager.ensureImageReady()
+      await vi.advanceTimersByTimeAsync(10_000)
+      await promise
+    } finally {
+      vi.useRealTimers()
+    }
+
+    expect(pullImage).toHaveBeenCalledTimes(2)
+    expect(containerManager.getReadiness().status).toBe('READY')
+  })
+
+  it('transitions to ERROR when the pull keeps stalling after all retries', async () => {
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },
+    ])
+    vi.mocked(checkImageExists).mockResolvedValue(false)
+    vi.mocked(canBuildImage).mockReturnValue(false)
+    vi.mocked(pullImage).mockRejectedValue(new Error('Image pull stalled: no progress output for 120s while pulling img'))
+
+    vi.useFakeTimers()
+    try {
+      const promise = containerManager.ensureImageReady()
+      await vi.advanceTimersByTimeAsync(20_000)
+      await promise
+    } finally {
+      vi.useRealTimers()
+    }
+
+    // Initial attempt + MAX_PULL_RETRIES retries
+    expect(pullImage).toHaveBeenCalledTimes(3)
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('ERROR')
+    expect(readiness.message).toContain('Image pull stalled')
+  })
+
   it('transitions to ERROR when build fails', async () => {
     vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
       { runner: 'docker', installed: true, running: true, available: true, canStart: false, supportsCustomAgentImage: true },

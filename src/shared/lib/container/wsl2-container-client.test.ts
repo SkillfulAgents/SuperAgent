@@ -77,6 +77,7 @@ import {
   WSL2ContainerClient,
   classifyProbeCurlExit,
   classifyProbeWgetResult,
+  killWSL2PullProcesses,
 } from './wsl2-container-client'
 
 const mockedFs = vi.mocked(fs)
@@ -991,5 +992,33 @@ describe('WSL2ContainerClient.probeHostPortFromRunner', () => {
     )
 
     expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unknown')
+  })
+})
+
+// ============================================================================
+// killWSL2PullProcesses — clears in-distro nerdctl pulls that outlive their
+// host-side wsl.exe parent (they hold containerd's ingest lock, wedging any
+// subsequent pull of the same image). Called by the pull stall watchdog.
+// ============================================================================
+
+describe('killWSL2PullProcesses', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('pkills nerdctl pull processes inside the distro', async () => {
+    vi.mocked(execWithPath).mockResolvedValue({ stdout: '', stderr: '' })
+
+    await killWSL2PullProcesses()
+
+    expect(execWithPath).toHaveBeenCalledWith(
+      `wsl -d ${WSL2_DISTRO_NAME} -- pkill -f "nerdctl [p]ull"`
+    )
+  })
+
+  it('resolves quietly when no pull process matched (pkill exit 1)', async () => {
+    vi.mocked(execWithPath).mockRejectedValue(new Error('Command failed: pkill -f "nerdctl [p]ull"'))
+
+    await expect(killWSL2PullProcesses()).resolves.toBeUndefined()
   })
 })

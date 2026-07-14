@@ -1028,6 +1028,14 @@ class ContainerManager {
       return msg.includes('exit code 255') || msg.includes('kex_exchange_identification') || msg.includes('Connection reset by peer')
     }
 
+    // Pulls killed by the stall watchdog (pullImage in client-factory) are
+    // retryable: the registry content store keeps completed layers, so a
+    // retry resumes roughly where the wedged download stopped.
+    const isRetryablePullError = (error: unknown): boolean => {
+      const msg = error instanceof Error ? error.message : String(error)
+      return isTransientSshError(error) || msg.includes('Image pull stalled')
+    }
+
     const doImageAction = (onProgress: (progress: ImagePullProgress) => void) => {
       const imageAction = shouldBuild ? buildImage : pullImage
       return imageAction(effectiveRunner, image, onProgress)
@@ -1069,8 +1077,8 @@ class ContainerManager {
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error)
 
-        // Only retry transient SSH errors for pull operations (not builds)
-        if (!shouldBuild && attempt < MAX_PULL_RETRIES && isTransientSshError(error)) {
+        // Only retry transient errors for pull operations (not builds)
+        if (!shouldBuild && attempt < MAX_PULL_RETRIES && isRetryablePullError(error)) {
           console.warn(`[ContainerManager] Image pull failed (attempt ${attempt + 1}/${MAX_PULL_RETRIES + 1}), retrying in ${RETRY_DELAY_MS}ms:`, errMsg)
           addErrorBreadcrumb({ category: 'container', message: 'Image pull transient failure, will retry', data: { attempt, errMsg, runner: effectiveRunner } })
 

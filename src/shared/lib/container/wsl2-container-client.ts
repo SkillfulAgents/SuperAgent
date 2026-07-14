@@ -280,6 +280,21 @@ function execWSL(args: string): Promise<{ stdout: string; stderr: string }> {
 }
 
 /**
+ * Kill any nerdctl pull processes running inside the distro. A pull spawned
+ * through the wrapper outlives its host-side wsl.exe parent, and a wedged one
+ * keeps holding containerd's ingest lock, so every subsequent pull hangs
+ * silently behind it. The pull stall watchdog calls this before retrying.
+ * The [p] regex trick stops pkill from matching its own command line.
+ */
+export async function killWSL2PullProcesses(): Promise<void> {
+  try {
+    await execWSL('pkill -f "nerdctl [p]ull"')
+  } catch {
+    // pkill exits 1 when no process matched — nothing to kill is fine.
+  }
+}
+
+/**
  * Parse wsl --list --verbose output into distro status objects.
  * WSL outputs UTF-16LE on Windows, so we strip null bytes.
  */

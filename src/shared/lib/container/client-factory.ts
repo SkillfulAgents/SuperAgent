@@ -4,7 +4,7 @@ import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
 import { AppleContainerClient } from './apple-container-client'
 import { LimaContainerClient, getNerdctlWrapperPath, ensureLimaReady, stopLimaVm } from './lima-container-client'
-import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro } from './wsl2-container-client'
+import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro, killWSL2PullProcesses } from './wsl2-container-client'
 import { PlatformK8sRuntimeClient } from './platform-k8s-runtime'
 import { LambdaMicroVmRuntimeClient } from './lambda-microvm-runtime'
 import { RunnerSetupError, type RunnerSetupRemediation } from './wsl2-setup-errors'
@@ -16,6 +16,14 @@ import * as fs from 'fs'
 import { statfs } from 'fs/promises'
 
 export type ContainerRunner = 'docker' | 'podman' | 'apple-container' | 'lima' | 'wsl2' | 'kubernetes' | 'lambda-microvm'
+
+/**
+ * How long a pull may go without any CLI output before the stall watchdog
+ * kills it (only on runners that opt in via pullStallTimeoutMs). Observed
+ * failure mode: a half-dead HTTPS connection to the registry CDN that stops
+ * delivering bytes but never times out, freezing the pull forever mid-layer.
+ */
+export const PULL_STALL_TIMEOUT_MS = 120_000
 
 export interface RunnerAvailability {
   runner: ContainerRunner
@@ -52,12 +60,26 @@ const ALL_RUNNERS: {
   isRunning: () => Promise<boolean>
   /** Optional cleanup when the app is shutting down (e.g., stop a VM). */
   shutdownRuntime?: () => Promise<void>
+  /**
+   * For CLIs that stream continuous progress output (nerdctl): max output
+   * silence before a pull is declared stalled, killed, and left to the caller
+   * to retry. Leave unset for CLIs that are legitimately quiet for minutes
+   * mid-layer (docker, podman print nothing between layer status changes).
+   */
+  pullStallTimeoutMs?: number
+  /**
+   * Kill pull processes that outlive the host-side CLI process (e.g. nerdctl
+   * inside the WSL2 distro survives its wsl.exe parent and keeps holding
+   * containerd's ingest lock, wedging every later pull of that image).
+   * Invoked by the stall watchdog before killing the local process.
+   */
+  killStalledPull?: () => Promise<void>
 }[] = [
   { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning(), shutdownRuntime: () => execWithPath('container system stop').then(() => {}) },
   { name: 'docker', cliCommand: 'docker', isEligible: () => DockerContainerClient.isEligible(), isAvailable: () => DockerContainerClient.isAvailable(), isRunning: () => DockerContainerClient.isRunning() },
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
   { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), reconcileRuntimeState: () => LimaContainerClient.reconcileRuntimeState(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
-  { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro() },
+  { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro(), pullStallTimeoutMs: PULL_STALL_TIMEOUT_MS, killStalledPull: () => killWSL2PullProcesses() },
   { name: 'kubernetes', cliCommand: 'kubernetes', isEligible: () => PlatformK8sRuntimeClient.isEligible(), isAvailable: () => PlatformK8sRuntimeClient.isAvailable(), isRunning: () => PlatformK8sRuntimeClient.isRunning() },
   { name: 'lambda-microvm', cliCommand: 'lambda-microvm', isEligible: () => LambdaMicroVmRuntimeClient.isEligible(), isAvailable: () => LambdaMicroVmRuntimeClient.isAvailable(), isRunning: () => LambdaMicroVmRuntimeClient.isRunning() },
 ]
@@ -457,7 +479,54 @@ function doPullImage(
     // eslint-disable-next-line no-control-regex
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '')
 
+    // Stall watchdog. nerdctl redraws its progress bars continuously, so
+    // prolonged output silence means the download is wedged (observed in the
+    // field: a half-dead registry-CDN connection that stops delivering bytes
+    // but never times out, freezing the pull mid-layer forever). Only runners
+    // that opt in via pullStallTimeoutMs get the watchdog — docker/podman
+    // print nothing between layer status changes, so silence is normal there.
+    const runnerEntry = ALL_RUNNERS.find((r) => r.name === runner)
+    const stallTimeoutMs = runnerEntry?.pullStallTimeoutMs
+    let stallTimer: ReturnType<typeof setTimeout> | undefined
+    let stallError: Error | undefined
+    const onStall = async () => {
+      // sentryCaptured: canonical event for the failure, like the exit-code
+      // path below — callers up the stack must not re-capture it.
+      stallError = Object.assign(
+        new Error(`Image pull stalled: no progress output for ${Math.round(stallTimeoutMs! / 1000)}s while pulling ${image}`),
+        { sentryCaptured: true }
+      )
+      captureException(stallError, {
+        tags: { component: 'container', operation: 'image-pull-stall' },
+        extra: {
+          image,
+          runner,
+          stallTimeoutMs,
+          completedLayers: completedLayers.size,
+          totalLayers: allLayers.size,
+        },
+      })
+      // Kill the runner-side pull first: for wsl2 the real nerdctl runs inside
+      // the distro and survives proc.kill() of the host-side wrapper, keeping
+      // containerd's ingest lock held — a retry would wedge behind it.
+      try {
+        await runnerEntry?.killStalledPull?.()
+      } catch (err) {
+        console.warn(`[pullImage] killStalledPull failed for ${runner}:`, err)
+      }
+      proc.kill()
+      reject(stallError)
+    }
+    const armStallTimer = () => {
+      if (!stallTimeoutMs) return
+      clearTimeout(stallTimer)
+      stallTimer = setTimeout(() => { void onStall() }, stallTimeoutMs)
+    }
+    armStallTimer()
+
     const handleData = (data: Buffer) => {
+      if (stallError) return
+      armStallTimer()
       const text = stripAnsi(data.toString())
       const lines = text.split('\n')
       for (const line of lines) {
@@ -508,6 +577,12 @@ function doPullImage(
     })
 
     proc.on('close', (code) => {
+      clearTimeout(stallTimer)
+      if (stallError) {
+        // The watchdog already rejected and reported; this exit is just the
+        // kill landing.
+        return
+      }
       if (code === 0) {
         addErrorBreadcrumb({ category: 'container', message: 'Image pull completed', data: { image, runner } })
         resolve()
@@ -533,6 +608,7 @@ function doPullImage(
       }
     })
     proc.on('error', (err) => {
+      clearTimeout(stallTimer)
       captureException(err, {
         tags: { component: 'container', operation: 'image-pull-spawn' },
         extra: { image, runner },
