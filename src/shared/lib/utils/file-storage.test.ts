@@ -28,6 +28,7 @@ import {
   getAgentEnvPath,
   getAgentSessionMetadataPath,
   getAgentClaudeConfigDir,
+  readAgentDisplayNameSync,
   getAgentSessionsDir,
   getSessionJsonlPath,
 } from './file-storage'
@@ -107,6 +108,45 @@ describe('displaySlug', () => {
   it('returns legacy folder ids verbatim — never re-prettified (would break resolution)', () => {
     expect(displaySlug('Renamed Agent', 'untitled-h45k3n')).toBe('untitled-h45k3n')
     expect(displaySlug('Renamed Agent', 'abc123')).toBe('abc123')
+  })
+})
+
+describe('readAgentDisplayNameSync', () => {
+  let prevDataDir: string | undefined
+
+  beforeEach(async () => {
+    prevDataDir = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = testDir
+    await ensureDirectory(getAgentsDir())
+  })
+
+  afterEach(() => {
+    if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = prevDataDir
+  })
+
+  const writeClaudeMd = async (slug: string, frontmatterName: string) => {
+    await ensureDirectory(getAgentWorkspaceDir(slug))
+    await writeFile(getAgentClaudeMdPath(slug), `---\nname: ${frontmatterName}\n---\nBody`)
+  }
+
+  it('reads the display name from frontmatter', async () => {
+    await writeClaudeMd('agent1', 'My Agent')
+    expect(readAgentDisplayNameSync('agent1')).toBe('My Agent')
+  })
+
+  it('coerces YAML-ambiguous names the parser turned into number/boolean', async () => {
+    await writeClaudeMd('agent2', '123')
+    expect(readAgentDisplayNameSync('agent2')).toBe('123')
+    await writeClaudeMd('agent3', 'true')
+    expect(readAgentDisplayNameSync('agent3')).toBe('true')
+  })
+
+  it('returns undefined when the file or name is missing', async () => {
+    expect(readAgentDisplayNameSync('nonexistent')).toBeUndefined()
+    await ensureDirectory(getAgentWorkspaceDir('agent4'))
+    await writeFile(getAgentClaudeMdPath('agent4'), '---\ndescription: no name\n---\nBody')
+    expect(readAgentDisplayNameSync('agent4')).toBeUndefined()
   })
 })
 

@@ -23,6 +23,7 @@ import { startTabPolling, stopTabPolling } from './tab-poll';
 import { runBrowserUpload } from './browser-upload';
 import { runBrowserDownload } from './browser-download';
 import { updateEnvFileEntry, healEnvFilePermissions } from './env-file-store';
+import { isAgentIdentityEnvKey } from './attribution-headers';
 
 import { getEditingCommands } from './cdp-editing-commands';
 
@@ -398,6 +399,14 @@ app.post('/env', async (c) => {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(body.key)) {
       console.error(`[ENV] Invalid env var name: ${body.key}`);
       return c.json({ error: 'Invalid environment variable name' }, 400);
+    }
+
+    // The boot-time agent identity must stay immutable — header composition
+    // reads a boot snapshot anyway, but reject the write outright so the env
+    // never lies about which agent this container is.
+    if (isAgentIdentityEnvKey(body.key)) {
+      console.error(`[ENV] Rejected write to reserved identity env var: ${body.key}`);
+      return c.json({ error: `${body.key} is reserved and cannot be modified` }, 403);
     }
 
     // Set the environment variable in process.env (for Node.js code)

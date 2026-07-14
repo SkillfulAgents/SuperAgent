@@ -455,9 +455,14 @@ export function readAgentDisplayNameSync(slug: string): string | undefined {
   try {
     const content = fs.readFileSync(getAgentClaudeMdPath(slug), 'utf-8')
     const { frontmatter } = parseMarkdownWithFrontmatter<{ name?: unknown }>(content)
-    return typeof frontmatter.name === 'string' && frontmatter.name.trim()
-      ? frontmatter.name
+    // The frontmatter parser coerces YAML-ambiguous scalars ("123", "true") to
+    // number/boolean; those are still legitimate display names, so coerce back.
+    const raw = frontmatter.name
+    const name =
+      typeof raw === 'string' ? raw
+      : typeof raw === 'number' || typeof raw === 'boolean' ? String(raw)
       : undefined
+    return name?.trim() ? name : undefined
   } catch {
     return undefined
   }
