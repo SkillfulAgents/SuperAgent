@@ -32,12 +32,15 @@ import {
 } from '@renderer/components/ui/sidebar'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import {
+  FirewallBlockedSidebarBanner,
   OfflineSidebarBanner,
   RuntimeUnavailableSidebarBanner,
   RuntimeCheckingSidebarBanner,
   RuntimePullingSidebarBanner,
   SidebarBannerStack,
+  type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
+import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
 import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
@@ -747,6 +750,18 @@ export function AppSidebar() {
 
   const isOnline = useIsOnline()
 
+  // Windows-only: firewall Block rules against our exe silently kill every
+  // container→host connection (browser launch, tool proxies) while the rest
+  // of the app works, so surface it here rather than waiting for a failure.
+  const { data: firewallStatus } = useFirewallStatus()
+  const fixFirewall = useFixFirewall()
+  const isFirewallBlocked = !!firewallStatus?.blocked
+  const firewallFixState: FirewallFixUiState = fixFirewall.isPending
+    ? 'fixing'
+    : fixFirewall.data && !fixFirewall.data.ok
+      ? fixFirewall.data.reason === 'uac-declined' ? 'declined' : 'failed'
+      : 'idle'
+
   const readiness = runtimeStatus?.runtimeReadiness
   const isRuntimeUnavailable = readiness?.status === 'RUNTIME_UNAVAILABLE' || readiness?.status === 'ERROR'
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
@@ -842,7 +857,7 @@ export function AppSidebar() {
                 SidebarBannerStack wrapper owns horizontal padding, inter-banner
                 gap, and trailing space; render it only when at least one banner
                 is visible to avoid a stray padded div. */}
-            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding) && (
+            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding || isFirewallBlocked) && (
               <SidebarBannerStack>
                 {!isOnline && <OfflineSidebarBanner />}
                 {isRuntimeUnavailable && (
@@ -856,6 +871,12 @@ export function AppSidebar() {
                   <RuntimePullingSidebarBanner
                     message={readiness?.message}
                     percent={readiness?.pullProgress?.percent}
+                  />
+                )}
+                {isFirewallBlocked && (
+                  <FirewallBlockedSidebarBanner
+                    fixState={firewallFixState}
+                    onFix={() => fixFirewall.mutate()}
                   />
                 )}
               </SidebarBannerStack>
