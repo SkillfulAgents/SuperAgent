@@ -81,6 +81,20 @@ describe('agent-hooks-service', () => {
       ])
     })
 
+    it('flattens prompt-type hooks (no command field)', async () => {
+      writeSettings({
+        hooks: {
+          UserPromptSubmit: [
+            { matcher: '', hooks: [{ type: 'prompt', prompt: 'Reject messages starting with hey' }] },
+          ],
+        },
+      })
+      const hooks = await readAgentHooks(AGENT)
+      expect(hooks).toEqual([
+        { event: 'UserPromptSubmit', matcher: '', type: 'prompt', prompt: 'Reject messages starting with hey' },
+      ])
+    })
+
     it('tolerates unknown hook fields (loose parse)', async () => {
       writeSettings({
         hooks: {
@@ -153,6 +167,25 @@ describe('agent-hooks-service', () => {
       const remaining = await removeAgentHook(AGENT, { event: 'UserPromptSubmit', command: 'echo a' })
       expect(remaining).toEqual([
         { event: 'UserPromptSubmit', type: 'command', command: 'echo b' },
+      ])
+    })
+
+    it('removes a prompt-type hook by prompt', async () => {
+      writeSettings({
+        hooks: {
+          UserPromptSubmit: [
+            { matcher: '', hooks: [{ type: 'prompt', prompt: 'Reject hey' }] },
+            { matcher: '', hooks: [{ type: 'command', command: 'echo gate' }] },
+          ],
+        },
+      })
+      const remaining = await removeAgentHook(AGENT, {
+        event: 'UserPromptSubmit',
+        matcher: '',
+        prompt: 'Reject hey',
+      })
+      expect(remaining).toEqual([
+        { event: 'UserPromptSubmit', matcher: '', type: 'command', command: 'echo gate' },
       ])
     })
 

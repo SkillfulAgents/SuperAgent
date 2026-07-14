@@ -50,15 +50,16 @@ export function HomeHooks({ agentSlug, isOwner, className }: HomeHooksProps) {
       <div className="mt-2 divide-y divide-border/50">
         {hooks.map((hook, index) => (
           <HookRow
-            key={`${hook.event}-${hook.matcher ?? ''}-${hook.command ?? ''}-${index}`}
+            key={`${hook.event}-${hook.matcher ?? ''}-${hook.command ?? hook.prompt ?? ''}-${index}`}
             hook={hook}
             isOwner={isOwner}
             onRemove={() => {
-              if (!hook.command) return
+              if (hook.command === undefined && hook.prompt === undefined) return
               removeHook.mutate({
                 event: hook.event,
-                command: hook.command,
                 ...(hook.matcher !== undefined && { matcher: hook.matcher }),
+                ...(hook.command !== undefined && { command: hook.command }),
+                ...(hook.prompt !== undefined && { prompt: hook.prompt }),
               })
             }}
             isRemoving={removeHook.isPending}
@@ -66,8 +67,8 @@ export function HomeHooks({ agentSlug, isOwner, className }: HomeHooksProps) {
         ))}
       </div>
       <p className="mt-2 px-4 text-xs text-muted-foreground">
-        Hooks are shell commands from this agent&apos;s workspace settings, run automatically at
-        lifecycle events. They are usually written by the agent itself.
+        Hooks come from this agent&apos;s workspace settings and run automatically at lifecycle
+        events — as shell commands or model prompts. They are usually written by the agent itself.
       </p>
     </HomeCollapsible>
   )
@@ -84,6 +85,9 @@ function HookRow({ hook, isOwner, onRemove, isRemoving }: HookRowProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const isBlocking = BLOCKING_HOOK_EVENTS.has(hook.event)
+  // Command hooks run a shell command; prompt hooks run a model prompt.
+  const detail = hook.command ?? hook.prompt
+  const removable = detail !== undefined
 
   const handleDelete = () => {
     onRemove()
@@ -100,16 +104,24 @@ function HookRow({ hook, isOwner, onRemove, isRemoving }: HookRowProps) {
             <Webhook className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           )}
           <span className="text-xs font-medium truncate">{hook.event}</span>
+          {hook.type === 'prompt' && (
+            <span className="text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
+              prompt
+            </span>
+          )}
           {hook.matcher && (
             <span className="text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground truncate" title={hook.matcher}>
               {hook.matcher}
             </span>
           )}
         </div>
-        <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1 font-mono" title={hook.command}>
-          {hook.command || '(no command)'}
+        <div
+          className={`text-xs text-muted-foreground mt-0.5 line-clamp-1 ${hook.command !== undefined ? 'font-mono' : ''}`}
+          title={detail}
+        >
+          {detail || '(empty hook)'}
         </div>
-        {isOwner && hook.command && (
+        {isOwner && removable && (
           <div className="absolute right-3 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
             <Popover open={menuOpen} onOpenChange={setMenuOpen}>
               <PopoverTrigger asChild>
@@ -145,8 +157,8 @@ function HookRow({ hook, isOwner, onRemove, isRemoving }: HookRowProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove Hook</AlertDialogTitle>
             <AlertDialogDescription>
-              Remove the {hook.event} hook from this agent&apos;s settings? The command it runs
-              will no longer execute. Other settings are untouched.
+              Remove the {hook.event} hook from this agent&apos;s settings? It will no longer run.
+              Other settings are untouched.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -1728,5 +1728,38 @@ describe('parseCommandMessage', () => {
       const result = transformMessages(entries)
       expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1', 'info-2'])
     })
+
+    it('dedupes informational entries sharing a uuid (CLI copy + host copy)', () => {
+      // continue:false hooks: the CLI persists the banner itself AND the host
+      // appends its own copy from the stream — both carry the frame's uuid.
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createInformational('info-dup', 'Operation stopped by hook: no hey'),
+        createInformational('info-dup', 'Operation stopped by hook: no hey', '2026-01-24T10:00:01.000Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.filter((r) => r.type === 'informational')).toHaveLength(1)
+    })
+
+    it('hides the synthetic stop-reason user entry that mirrors the banner', () => {
+      // The CLI records the stop text as a user entry right before the banner.
+      const stopText = "Operation stopped by hook: Messages starting with 'hey' are not allowed."
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createUserMessage('user-2', stopText, '2026-01-24T10:00:01.000Z'),
+        createInformational('info-1', stopText, '2026-01-24T10:00:01.100Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1'])
+    })
+
+    it('keeps a preceding user message whose content differs from the banner', () => {
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createInformational('info-1', 'Operation stopped by hook: nope'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1'])
+    })
   })
 })

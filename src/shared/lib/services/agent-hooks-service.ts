@@ -30,6 +30,7 @@ function flattenHooks(config: ClaudeHooksConfig): AgentHook[] {
           ...(group.matcher !== undefined && { matcher: group.matcher }),
           ...(hook.type !== undefined && { type: hook.type }),
           ...(hook.command !== undefined && { command: hook.command }),
+          ...(hook.prompt !== undefined && { prompt: hook.prompt }),
           ...(hook.timeout !== undefined && { timeout: hook.timeout }),
         })
       }
@@ -60,7 +61,7 @@ export async function readAgentHooks(agentSlug: string): Promise<AgentHook[]> {
 }
 
 /**
- * Remove every hook command matching the target (event + command + matcher)
+ * Remove every hook matching the target (event + matcher + command/prompt)
  * from the agent's workspace settings file. Matcher-less groups match a
  * matcher-less target. Empty matcher groups and empty event arrays are pruned;
  * all other settings keys round-trip untouched. Throws when the settings file
@@ -84,6 +85,10 @@ export async function removeAgentHook(
   if (!settings.hooks) return []
 
   const targetMatcher = target.matcher ?? ''
+  // Every provided discriminator must match (schema guarantees at least one).
+  const matchesTarget = (hook: { command?: string; prompt?: string }): boolean =>
+    (target.command === undefined || hook.command === target.command) &&
+    (target.prompt === undefined || hook.prompt === target.prompt)
   const updatedHooks: ClaudeHooksConfig = {}
   for (const [event, groups] of Object.entries(settings.hooks)) {
     if (event !== target.event) {
@@ -95,7 +100,7 @@ export async function removeAgentHook(
         if ((group.matcher ?? '') !== targetMatcher) return group
         return {
           ...group,
-          hooks: (group.hooks ?? []).filter((hook) => hook.command !== target.command),
+          hooks: (group.hooks ?? []).filter((hook) => !matchesTarget(hook)),
         }
       })
       .filter((group) => (group.hooks ?? []).length > 0)

@@ -528,9 +528,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             }} />
             <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
-            <HomeHooks className="intro-step intro-step-8" agentSlug={agent.slug} isOwner={isOwner} />
             <HomeDefaultModel className="intro-step intro-step-9" agentSlug={agent.slug} />
             <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
+            <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />
           </div>
         )}
       </div>

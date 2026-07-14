@@ -7,10 +7,11 @@ interface InformationalItemProps {
   item: ApiInformational
 }
 
-/** The SDK's hook-feedback banners all carry this phrasing (e.g.
- * "UserPromptSubmit operation blocked by hook: ..."). */
+/** The SDK's hook-feedback banners carry one of two phrasings depending on the
+ * hook's output shape: "... operation blocked by hook: ..." (decision:block)
+ * or "Operation stopped by hook: ..." (continue:false, incl. prompt hooks). */
 function isHookBlock(content: string): boolean {
-  return /blocked by hook/i.test(content)
+  return /(blocked|stopped) by hook/i.test(content)
 }
 
 /**
@@ -36,6 +37,11 @@ export function InformationalItem({ item }: InformationalItemProps) {
           <h4 className="text-sm font-medium text-foreground">
             {hookBlock ? 'Message blocked by a hook' : 'Agent notice'}
           </h4>
+          {hookBlock && (
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              The agent never saw this message.
+            </p>
+          )}
           <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap break-words">
             {item.content}
           </p>

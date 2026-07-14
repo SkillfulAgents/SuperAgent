@@ -174,8 +174,27 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       memoryRecalls.set(i, entry as JsonlSystemEntry)
       skipIndices.add(i)
     } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'informational') {
-      informationals.set(i, entry as JsonlSystemEntry)
+      const sysEntry = entry as JsonlSystemEntry
       skipIndices.add(i)
+      // Dedupe by uuid: for some hook shapes (continue:false) the CLI persists
+      // the banner itself with the SAME uuid it streamed, and the host appends
+      // its own copy from the stream — keep whichever landed first.
+      const isDuplicate = [...informationals.values()].some((e) => e.uuid === sysEntry.uuid)
+      if (!isDuplicate) {
+        informationals.set(i, sysEntry)
+        // The CLI also records a synthetic user entry carrying the same stop
+        // text just before the banner ("Operation stopped by hook: ...") —
+        // hide it; the banner is the user-facing surface.
+        const prev = i > 0 ? entries[i - 1] : null
+        if (
+          prev &&
+          prev.type === 'user' &&
+          typeof (prev as JsonlMessageEntry).message.content === 'string' &&
+          (prev as JsonlMessageEntry).message.content === sysEntry.content
+        ) {
+          skipIndices.add(i - 1)
+        }
+      }
     } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary') {
       const sysEntry = entry as JsonlSystemEntry
       let summaryContent = ''

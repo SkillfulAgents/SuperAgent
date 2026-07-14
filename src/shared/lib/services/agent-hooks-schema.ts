@@ -12,7 +12,10 @@ import { z } from 'zod'
 
 export const hookCommandSchema = z.looseObject({
   type: z.string().optional(),
+  // `type: "command"` hooks run a shell command; `type: "prompt"` hooks run a
+  // single-turn model evaluation of `prompt`. Either field identifies the hook.
   command: z.string().optional(),
+  prompt: z.string().optional(),
   timeout: z.number().optional(),
 })
 
@@ -31,26 +34,36 @@ export const claudeSettingsWithHooksSchema = z.looseObject({
 
 export type ClaudeHooksConfig = z.infer<typeof claudeHooksConfigSchema>
 
-/** One configured hook command, flattened for display. */
+/** One configured hook, flattened for display. */
 export interface AgentHook {
   /** Lifecycle event, e.g. "UserPromptSubmit", "PreToolUse". */
   event: string
   /** Tool-name matcher (PreToolUse/PostToolUse); empty for events without one. */
   matcher?: string
-  /** Hook implementation type; command hooks are the only kind the CLI runs from settings. */
+  /** Hook implementation type, e.g. "command" or "prompt". */
   type?: string
   command?: string
+  prompt?: string
   timeout?: number
 }
 
 /** Events that can veto work outright — worth a louder UI treatment. */
 export const BLOCKING_HOOK_EVENTS = new Set(['UserPromptSubmit'])
 
-/** Body of a hook-removal request: identifies hook entries by content, not index. */
-export const removeAgentHookSchema = z.object({
-  event: z.string().min(1),
-  command: z.string().min(1),
-  matcher: z.string().optional(),
-})
+/**
+ * Body of a hook-removal request: identifies hook entries by content, not
+ * index (the file can change between list and remove). At least one of
+ * command/prompt is required — a bare event would wipe unrelated hooks.
+ */
+export const removeAgentHookSchema = z
+  .object({
+    event: z.string().min(1),
+    matcher: z.string().optional(),
+    command: z.string().optional(),
+    prompt: z.string().optional(),
+  })
+  .refine((t) => t.command !== undefined || t.prompt !== undefined, {
+    message: 'command or prompt is required',
+  })
 
 export type RemoveAgentHookTarget = z.infer<typeof removeAgentHookSchema>

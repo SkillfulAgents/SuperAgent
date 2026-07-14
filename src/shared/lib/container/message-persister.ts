@@ -1528,14 +1528,14 @@ class MessagePersister {
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
 
-        // A clean success with zero turns and zero API time means the model
-        // was never called — the signature of a settings-file hook blocking
-        // the prompt. The informational banner (persisted above, when the SDK
-        // emitted one) is the user-facing surface; this is the operator
-        // breadcrumb for shapes that arrive without one.
-        if (!isError && !classification.isInterrupt && content.num_turns === 0 && content.duration_api_ms === 0) {
+        // A clean success with zero turns means the main loop never ran — the
+        // signature of a settings-file hook blocking the prompt. (duration_api_ms
+        // can still be non-zero: prompt-type hooks spend API time on their
+        // model evaluation.) The informational banner is the user-facing
+        // surface; this is the operator breadcrumb.
+        if (!isError && !classification.isInterrupt && content.num_turns === 0 && content.subtype === 'success') {
           console.warn(
-            `[MessagePersister] Session ${sessionId}: turn ended with no model call (num_turns=0) — possible hook-blocked prompt`
+            `[MessagePersister] Session ${sessionId}: turn ended with no model turns (num_turns=0) — possible hook-blocked prompt`
           )
         }
 
