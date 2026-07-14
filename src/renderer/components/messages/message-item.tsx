@@ -327,12 +327,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
             >
               {/* Slash command display */}
               {isSlashCommand && hasText && (
-                <div className="flex items-baseline gap-1.5">
-                  <span className="font-mono font-semibold text-sm">
+                <div className="text-sm">
+                  <span className="font-mono font-semibold">
                     {text.split(' ')[0]}
                   </span>
                   {text.includes(' ') && (
-                    <span className="text-sm opacity-80">
+                    <span className="opacity-80">
+                      {' '}
                       {text.slice(text.indexOf(' ') + 1)}
                     </span>
                   )}
