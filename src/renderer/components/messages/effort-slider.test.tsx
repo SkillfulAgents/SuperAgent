@@ -9,11 +9,13 @@ const ALL = [...EFFORT_LEVELS] as EffortLevel[]
 const STD: EffortLevel[] = ['low', 'medium', 'high']
 
 describe('EffortSlider', () => {
-  it('renders a tick per allowed level, labeling only the Faster/Smarter poles', () => {
+  it('renders a tick per allowed level, with no text labels on the bar itself', () => {
     render(<EffortSlider levels={ALL} value="medium" onChange={vi.fn()} />)
     for (const level of ALL) expect(screen.getByTestId(`effort-option-${level}`)).toBeInTheDocument()
-    expect(screen.getByText('Faster')).toBeInTheDocument()
-    expect(screen.getByText('Smarter')).toBeInTheDocument()
+    // The Faster/Smarter poles moved to EffortSection's header (shown mid-drag),
+    // so the bar carries no pole text of its own.
+    expect(screen.queryByText('Faster')).not.toBeInTheDocument()
+    expect(screen.queryByText('Smarter')).not.toBeInTheDocument()
     // No per-level names on the bar — they live in aria labels only, spelled
     // out in full for screen readers.
     expect(screen.queryByText('Medium')).not.toBeInTheDocument()
@@ -144,6 +146,37 @@ describe('EffortSlider', () => {
     fireEvent.pointerUp(track)
     expect(onChange).toHaveBeenCalledTimes(1)
     expect(onChange).toHaveBeenCalledWith('max')
+  })
+
+  it('EffortSection: the poles cross-fade in over the Effort header while dragging', () => {
+    render(<EffortSection levels={ALL} value="high" onChange={vi.fn()} />)
+    const track = screen.getByTestId('effort-slider').querySelector('.touch-none') as HTMLElement
+    vi.spyOn(track, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 120 } as DOMRect)
+    // Both layers stay mounted (so the motion can play both ways) — the swap is
+    // an opacity/transform cross-fade, not a mount/unmount.
+    const restingLayer = () => screen.getByText('Effort').closest('div') as HTMLElement
+    const polesLayer = () => screen.getByText('Faster').closest('div') as HTMLElement
+    // At rest the header is opaque and the poles are transparent.
+    expect(restingLayer().className).toContain('opacity-100')
+    expect(polesLayer().className).toContain('opacity-0')
+    // Mid-drag the opacities swap.
+    fireEvent.pointerDown(track, { clientX: 60 })
+    expect(restingLayer().className).toContain('opacity-0')
+    expect(polesLayer().className).toContain('opacity-100')
+    // Release restores the resting header.
+    fireEvent.pointerUp(track)
+    expect(restingLayer().className).toContain('opacity-100')
+    expect(polesLayer().className).toContain('opacity-0')
+  })
+
+  it('EffortSection: a cancelled drag fades the resting header back in', () => {
+    render(<EffortSection levels={ALL} value="high" onChange={vi.fn()} />)
+    const track = screen.getByTestId('effort-slider').querySelector('.touch-none') as HTMLElement
+    const restingLayer = () => screen.getByText('Effort').closest('div') as HTMLElement
+    fireEvent.pointerDown(track, { clientX: 0 })
+    expect(restingLayer().className).toContain('opacity-0')
+    fireEvent.pointerCancel(track)
+    expect(restingLayer().className).toContain('opacity-100')
   })
 
   it('EffortSection: releasing back where the drag started persists nothing', () => {
