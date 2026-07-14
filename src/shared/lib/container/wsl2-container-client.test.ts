@@ -1017,8 +1017,26 @@ describe('killWSL2PullProcesses', () => {
   })
 
   it('resolves quietly when no pull process matched (pkill exit 1)', async () => {
-    vi.mocked(execWithPath).mockRejectedValue(new Error('Command failed: pkill -f "nerdctl [p]ull"'))
+    vi.mocked(execWithPath).mockRejectedValue(
+      Object.assign(new Error('Command failed: pkill -f "nerdctl [p]ull"'), { code: 1 })
+    )
 
     await expect(killWSL2PullProcesses()).resolves.toBeUndefined()
+  })
+
+  it('rethrows failures other than pkill no-match (e.g. WSL not responding)', async () => {
+    vi.mocked(execWithPath).mockRejectedValue(
+      Object.assign(new Error('The Windows Subsystem for Linux instance has terminated.'), { code: 4294967295 })
+    )
+
+    await expect(killWSL2PullProcesses()).rejects.toThrow('has terminated')
+  })
+
+  it('rethrows spawn failures without a numeric exit code', async () => {
+    vi.mocked(execWithPath).mockRejectedValue(
+      Object.assign(new Error('spawn wsl ENOENT'), { code: 'ENOENT' })
+    )
+
+    await expect(killWSL2PullProcesses()).rejects.toThrow('ENOENT')
   })
 })

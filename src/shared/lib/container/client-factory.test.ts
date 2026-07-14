@@ -117,6 +117,7 @@ import {
   clearRunnerAvailabilityCache,
   pullImage,
   PULL_STALL_TIMEOUT_MS,
+  KILL_STALLED_PULL_TIMEOUT_MS,
   reconcileRunnerState,
   restartRunner,
   shutdownActiveRunner,
@@ -476,6 +477,33 @@ describe('pullImage stall watchdog', () => {
     await assertion
 
     expect(mockCaptureException).toHaveBeenCalledOnce()
+  })
+
+  it('settles the pull even when killStalledPull hangs forever', async () => {
+    // Unresponsive WSL: the cleanup promise never settles
+    mockKillWSL2PullProcesses.mockReturnValue(new Promise(() => {}))
+
+    const promise = pullImage('wsl2', 'ghcr.io/acme/agent:stall-6')
+    const assertion = expect(promise).rejects.toThrow('Image pull stalled')
+
+    await vi.advanceTimersByTimeAsync(PULL_STALL_TIMEOUT_MS + 1)
+    // Pull must not be settled yet — cleanup is still within its time cap
+    expect(proc.kill).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(KILL_STALLED_PULL_TIMEOUT_MS + 1)
+    await assertion
+    expect(proc.kill).toHaveBeenCalled()
+  })
+
+  it('rejects with the stall error even when killStalledPull fails', async () => {
+    mockKillWSL2PullProcesses.mockRejectedValue(new Error('WSL has terminated'))
+
+    const promise = pullImage('wsl2', 'ghcr.io/acme/agent:stall-7')
+    const assertion = expect(promise).rejects.toThrow('Image pull stalled')
+
+    await vi.advanceTimersByTimeAsync(PULL_STALL_TIMEOUT_MS + 1)
+    await assertion
+    expect(proc.kill).toHaveBeenCalled()
   })
 
   it('still rejects with the exit-code error when a wsl2 pull fails before the timeout', async () => {

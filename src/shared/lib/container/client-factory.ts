@@ -25,6 +25,13 @@ export type ContainerRunner = 'docker' | 'podman' | 'apple-container' | 'lima' |
  */
 export const PULL_STALL_TIMEOUT_MS = 120_000
 
+/**
+ * Hard cap on killStalledPull() cleanup. An unresponsive runtime (e.g. a hung
+ * wsl.exe) must not wedge the pull promise — and with it the retry loop —
+ * forever; the watchdog settles the pull once this expires.
+ */
+export const KILL_STALLED_PULL_TIMEOUT_MS = 10_000
+
 export interface RunnerAvailability {
   runner: ContainerRunner
   /** Whether the CLI is installed and found in PATH */
@@ -508,14 +515,27 @@ function doPullImage(
       })
       // Kill the runner-side pull first: for wsl2 the real nerdctl runs inside
       // the distro and survives proc.kill() of the host-side wrapper, keeping
-      // containerd's ingest lock held — a retry would wedge behind it.
+      // containerd's ingest lock held — a retry would wedge behind it. The
+      // cleanup itself is time-capped: if the runtime is unresponsive, the
+      // pull must still settle so the retry loop isn't stuck forever.
+      let killTimer: ReturnType<typeof setTimeout> | undefined
       try {
-        await runnerEntry?.killStalledPull?.()
+        await Promise.race([
+          Promise.resolve(runnerEntry?.killStalledPull?.()),
+          new Promise<never>((_, rejectTimeout) => {
+            killTimer = setTimeout(
+              () => rejectTimeout(new Error(`killStalledPull timed out after ${KILL_STALLED_PULL_TIMEOUT_MS}ms`)),
+              KILL_STALLED_PULL_TIMEOUT_MS
+            )
+          }),
+        ])
       } catch (err) {
         console.warn(`[pullImage] killStalledPull failed for ${runner}:`, err)
+      } finally {
+        clearTimeout(killTimer)
+        proc.kill()
+        reject(stallError)
       }
-      proc.kill()
-      reject(stallError)
     }
     const armStallTimer = () => {
       if (!stallTimeoutMs) return

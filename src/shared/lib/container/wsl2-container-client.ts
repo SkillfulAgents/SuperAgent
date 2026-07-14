@@ -289,8 +289,12 @@ function execWSL(args: string): Promise<{ stdout: string; stderr: string }> {
 export async function killWSL2PullProcesses(): Promise<void> {
   try {
     await execWSL('pkill -f "nerdctl [p]ull"')
-  } catch {
-    // pkill exits 1 when no process matched — nothing to kill is fine.
+  } catch (err) {
+    // pkill exits 1 when no process matched — nothing to kill is fine. Any
+    // other failure (WSL not responding, pkill missing, permissions) must
+    // surface to the caller so it isn't silently mistaken for a clean kill.
+    if ((err as { code?: number | string })?.code === 1) return
+    throw err
   }
 }
 
