@@ -42,6 +42,7 @@ vi.mock('./base-container-client', () => ({
   BaseContainerClient: class {
     config: any
     constructor(config: any) { this.config = config }
+    protected agentIdentityForEnv() { return { id: this.config.agentId } }
   },
   checkCommandAvailable: vi.fn(),
   execWithPath: vi.fn(),

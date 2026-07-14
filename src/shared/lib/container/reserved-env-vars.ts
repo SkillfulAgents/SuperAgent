@@ -23,6 +23,10 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   'SUPERAGENT_AGENT_SLUG',
   // Host→container API auth (never agent-visible)
   'SUPERAGENT_HOST_TOKEN',
+  // Agent identity for LLM-usage attribution (platform provider injects these;
+  // the container folds them into ANTHROPIC_CUSTOM_HEADERS)
+  'SUPERAGENT_AGENT_ID',
+  'SUPERAGENT_AGENT_NAME',
   // Account + MCP metadata
   'CONNECTED_ACCOUNTS',
   'REMOTE_MCPS',

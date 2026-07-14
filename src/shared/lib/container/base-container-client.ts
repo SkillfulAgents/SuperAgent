@@ -24,6 +24,8 @@ import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
+import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
+import { readAgentDisplayNameSync } from '@shared/lib/utils/file-storage'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -1544,12 +1546,22 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
+  // Who this container belongs to, for providers that attribute LLM usage per
+  // agent. The display name is re-read from disk on every env build (i.e. each
+  // container start), so a rename takes effect on the next restart.
+  protected agentIdentityForEnv(): AgentIdentity {
+    return {
+      id: this.config.agentId,
+      name: readAgentDisplayNameSync(this.config.agentId),
+    }
+  }
+
   // The final agent env, transport-agnostic; subclasses only serialize it.
   // Merge order: provider defaults < runtime constants < config.envVars < extra.
   protected buildAgentEnv(extra?: Record<string, string>): Record<string, string> {
     const settings = getSettings()
     const merged: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(),
+      ...getActiveLlmProvider().getContainerEnvVars(this.agentIdentityForEnv()),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ENABLE_TOOL_SEARCH: settings.enableToolSearch !== false ? 'true' : 'false',
       ...this.config.envVars,

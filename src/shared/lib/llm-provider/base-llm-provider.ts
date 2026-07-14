@@ -6,6 +6,18 @@ export type LlmProviderId = 'anthropic' | 'openrouter' | 'bedrock' | 'platform' 
 
 export type ModelPurpose = 'agent' | 'summarizer' | 'browser' | 'dashboard'
 
+/**
+ * Identity of the agent a container belongs to, resolved at env-build time.
+ * Providers that attribute usage per agent (the platform proxy) fold it into
+ * the container env; others ignore it.
+ */
+export interface AgentIdentity {
+  /** The agent's unique id (folder slug, minted [a-z0-9]). */
+  id: string
+  /** Display name from frontmatter; free text, may be missing on parse failure. */
+  name?: string
+}
+
 export abstract class BaseLlmProvider {
   abstract readonly id: LlmProviderId
   abstract readonly name: string
@@ -78,7 +90,7 @@ export abstract class BaseLlmProvider {
   }
 
   /** Get env vars to inject into agent containers. */
-  abstract getContainerEnvVars(): Record<string, string | undefined>
+  abstract getContainerEnvVars(agent?: AgentIdentity): Record<string, string | undefined>
 
   /**
    * Validate an API key. `opts.baseUrl` is only meaningful for providers whose

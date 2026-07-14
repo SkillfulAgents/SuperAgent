@@ -43,6 +43,7 @@ function mcpToolNames(
 }
 import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
+import { withAgentAttributionHeaders } from './attribution-headers';
 import { renderPrompt } from './render-prompt';
 import type { AgentCapabilityPolicies } from './types';
 import {
@@ -586,7 +587,10 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...(this.maxTurns && { maxTurns: this.maxTurns }),
         ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
         ...(this.effort && { effort: this.effort }),
-        env: {
+        // withAgentAttributionHeaders folds the host-injected agent identity env
+        // vars into ANTHROPIC_CUSTOM_HEADERS (composed here, after the custom-env
+        // merge, so a user-set ANTHROPIC_CUSTOM_HEADERS is appended to, not lost).
+        env: withAgentAttributionHeaders({
           // Agent SDK 0.2.113+ replaces process.env with options.env instead of
           // overlaying it, so we must spread process.env explicitly or the Claude
           // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
@@ -601,7 +605,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
           // Explicit maxOutputTokens setting takes precedence over custom env var
           ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
-        },
+        }),
         mcpServers: {
           'user-input': createUserInputMcpServer(),
           'browser': createBrowserMcpServer(browserMcpTools),
