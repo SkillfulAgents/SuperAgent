@@ -3,7 +3,8 @@ import { AtSign, Check, FileIcon, FolderOpen, Loader2, Search } from 'lucide-rea
 import { cn } from '@shared/lib/utils'
 import { ModelFamilyList } from '@renderer/components/messages/model-family-list'
 import { findCatalogModel, type ComposerOptionsState } from '@renderer/components/messages/composer-options'
-import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
+import { EffortSection } from '@renderer/components/messages/effort-slider'
+import { EFFORT_LEVELS } from '@shared/lib/container/types'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
@@ -12,14 +13,6 @@ import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
 // app's floating popovers, these render INSIDE the panel's flex column so the
 // frameless window grows to fit them (Raycast-style) — the whole frosted area
 // is filled by the menu, never an empty frosted surround.
-
-export const EFFORT_LABELS: Record<EffortLevel, string> = {
-  low: 'Low',
-  medium: 'Medium',
-  high: 'High',
-  xhigh: 'Extra High',
-  max: 'Max',
-}
 
 function SectionHeader({ children }: { children: ReactNode }) {
   return (
@@ -107,10 +100,10 @@ export function ModelEffortMenu({ state, maxHeight }: { state: ComposerOptionsSt
   const efforts = EFFORT_LEVELS.filter((l) => (selected ? selected.supportedEfforts.includes(l) : true))
 
   return (
-    // Only the model list scrolls; the effort row is pinned to the bottom so
+    // Only the model list scrolls; the effort section is pinned to the bottom so
     // it's always reachable however long the catalog is. `maxHeight` (not a
     // fixed height) keeps the menu content-sized when short — no dead gap above
-    // the pinned effort row; `min-h-0` lets the list actually shrink to scroll.
+    // the pinned effort section; `min-h-0` lets the list actually shrink to scroll.
     <div className="flex flex-col" style={{ maxHeight }}>
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pt-2">
         {/* webProvider silences the web-tools warning when a configured host
@@ -119,23 +112,7 @@ export function ModelEffortMenu({ state, maxHeight }: { state: ComposerOptionsSt
         <ModelFamilyList header="Model" catalog={catalog} value={model} onPick={setModel} webProvider={webProvider} />
       </div>
       <div className="shrink-0 px-1 pb-1 pt-2">
-        <SectionHeader>Effort</SectionHeader>
-        <div className="flex flex-wrap gap-1 px-2">
-          {efforts.map((l) => (
-            <button
-              key={l}
-              type="button"
-              onClick={() => setEffort(l)}
-              data-testid={`effort-option-${l}`}
-              className={cn(
-                'rounded-md px-2.5 py-1 text-xs hover:bg-accent',
-                effort === l ? 'bg-accent font-medium' : 'text-muted-foreground',
-              )}
-            >
-              {EFFORT_LABELS[l]}
-            </button>
-          ))}
-        </div>
+        <EffortSection levels={efforts} value={effort} onChange={setEffort} />
       </div>
     </div>
   )

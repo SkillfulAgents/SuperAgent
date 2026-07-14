@@ -73,7 +73,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
         </Button>
       </PopoverTrigger>
       <PopoverContent
-        className="w-64 px-1 py-2"
+        className="flex w-64 flex-col px-1 py-2 data-[side=bottom]:flex-col-reverse"
         align="start"
         // Don't auto-focus the first element (a vendor tab) on open — focusing
         // it pops its name tooltip instantly. Keyboard users can Tab in.
