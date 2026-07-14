@@ -1,4 +1,4 @@
-import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { HelpCircle } from 'lucide-react'
 import {
   Tooltip,
@@ -33,9 +33,16 @@ interface EffortSliderProps {
   levels: EffortLevel[]
   /** Current value; must be one of `levels` (caller resets out-of-range values). */
   value: EffortLevel
-  /** Value change — fires on click, arrow key, and once per level a drag crosses
-   *  (never per pointer event: the settings hosts persist each call). */
+  /** A SETTLED change — tick click, arrow key, or drag release. Fires at most
+   *  once per drag gesture: hosts persist each call, and per-level writes from
+   *  one drag would race (an intermediate write finishing last would overwrite
+   *  the final selection). */
   onChange: (level: EffortLevel) => void
+  /** Transient level while a drag is in flight, deduped to once per level
+   *  crossed; `null` = gesture aborted, discard the preview. The value prop
+   *  should follow it (EffortSection feeds it back) so the thumb tracks the
+   *  finger — nothing is persisted until onChange settles. */
+  onPreview?: (level: EffortLevel | null) => void
 }
 
 /**
@@ -44,13 +51,12 @@ interface EffortSliderProps {
  * `data-testid="effort-option-<level>"` and selects that level on click, so it's a
  * drop-in for the old button list. Purely controlled — keeps no state of its own.
  */
-export function EffortSlider({ levels, value, onChange }: EffortSliderProps) {
+export function EffortSlider({ levels, value, onChange, onPreview }: EffortSliderProps) {
   const trackRef = useRef<HTMLDivElement>(null)
   const dragging = useRef(false)
-  // Last level emitted during the current gesture. Pointermove fires per pixel,
-  // not per stop — without this dedup, hosts that persist on every onChange
-  // (the settings selects PATCH live) get a mutation storm from one drag.
-  const lastSent = useRef<EffortLevel | null>(null)
+  // Last level previewed during the current gesture: dedups pointermove (which
+  // fires per pixel, not per stop) and is what settles into onChange on release.
+  const lastPreview = useRef<EffortLevel | null>(null)
 
   const n = levels.length
   const activeIndex = Math.max(0, levels.indexOf(value))
@@ -74,30 +80,45 @@ export function EffortSlider({ levels, value, onChange }: EffortSliderProps) {
     return Math.min(n - 1, Math.max(0, Math.round(t * (n - 1))))
   }
 
-  const emitFromPointer = (clientX: number) => {
+  const previewFromPointer = (clientX: number) => {
     const level = levels[indexFromClientX(clientX)]
-    if (level === lastSent.current) return
-    lastSent.current = level
-    onChange(level)
+    if (level === lastPreview.current) return
+    lastPreview.current = level
+    onPreview?.(level)
   }
   const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     dragging.current = true
-    // Seed with the current value so pressing at the thumb's own stop is a no-op.
-    lastSent.current = value
+    // Seed with the current value so pressing at the thumb's own stop previews nothing.
+    lastPreview.current = value
     e.currentTarget.setPointerCapture?.(e.pointerId)
-    emitFromPointer(e.clientX)
+    previewFromPointer(e.clientX)
   }
   const handlePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!dragging.current) return
-    emitFromPointer(e.clientX)
+    previewFromPointer(e.clientX)
   }
-  // Ends a drag, including aborted gestures (touch interruption, OS gesture)
-  // that never deliver pointerup. Without the reset, `dragging` sticks true and
-  // plain hovers keep changing the effort until the next press.
-  const endDrag = () => {
+  // Release settles the gesture: the last previewed level becomes the ONE
+  // onChange of the whole drag. (The caller no-op-guards it against its own
+  // authoritative value — this component's `value` prop already follows the
+  // preview, so it can't tell whether anything actually changed.)
+  const handlePointerUp = () => {
+    if (!dragging.current) return
     dragging.current = false
-    lastSent.current = null
+    const settled = lastPreview.current
+    lastPreview.current = null
+    if (settled !== null) onChange(settled)
+  }
+  // An aborted gesture (touch interruption, OS gesture) never delivers
+  // pointerup: discard the preview and settle nothing. Also fires as
+  // onLostPointerCapture after a normal release — the dragging guard makes
+  // that a no-op. Without the reset, `dragging` sticks true and plain hovers
+  // keep changing the preview until the next press.
+  const handlePointerCancel = () => {
+    if (!dragging.current) return
+    dragging.current = false
+    lastPreview.current = null
+    onPreview?.(null)
   }
 
   const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -132,9 +153,9 @@ export function EffortSlider({ levels, value, onChange }: EffortSliderProps) {
         ref={trackRef}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        onLostPointerCapture={endDrag}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        onLostPointerCapture={handlePointerCancel}
         className="relative h-5 cursor-pointer touch-none"
       >
         <div className="absolute inset-0 rounded-full bg-[#E1F6FF] dark:bg-[#15384F]" />
@@ -200,14 +221,16 @@ export function EffortSlider({ levels, value, onChange }: EffortSliderProps) {
 }
 
 /**
- * Snap the effort back to Medium whenever the selected model disallows the
- * current one (e.g. Opus at Max, then switching to a 3-effort model). Medium is
- * the default effort and every model supports it. Shared by every surface that
- * pairs a model pick with an effort (composer popover, settings select,
- * quick-dispatch menu) so no host drifts out of the clamp — an unclamped host
- * renders the slider at Low (out-of-range values pin to index 0) while the
- * header and the dispatched request still carry the unsupported level.
- * Pass `model` as undefined to disable (model-only pickers).
+ * Snap the effort to an allowed level whenever the selected model disallows the
+ * current one (e.g. Opus at Max, then switching to a 3-effort model): Medium
+ * (the default) when the model supports it, else the model's first listed
+ * level — custom models may declare subsets like `['low']`, so clamping to a
+ * hardcoded Medium could itself dispatch an unsupported effort. Shared by
+ * every surface that pairs a model pick with an effort (composer popover,
+ * settings select, quick-dispatch menu) so no host drifts out of the clamp —
+ * an unclamped host renders the slider at Low (out-of-range values pin to
+ * index 0) while the header and the dispatched request still carry the
+ * unsupported level. Pass `model` as undefined to disable (model-only pickers).
  */
 export function useEffortClamp(
   model: { supportedEfforts: EffortLevel[] } | undefined,
@@ -216,15 +239,18 @@ export function useEffortClamp(
 ) {
   const supported = model?.supportedEfforts.includes(effort) ?? true
   useEffect(() => {
-    if (model && !supported) onEffortChange?.('medium')
+    if (!model || supported || model.supportedEfforts.length === 0) return
+    const target = model.supportedEfforts.includes('medium') ? 'medium' : model.supportedEfforts[0]
+    onEffortChange?.(target)
   }, [model, supported, onEffortChange])
 }
 
 /**
  * The complete effort block shared by every picker popover/menu: a header row
  * naming the selection ("Effort · Medium", value in the accent blue) with a
- * help tooltip explaining the trade-off, above the slider. No commit concept —
- * changes apply live and never dismiss the surface that hosts it.
+ * help tooltip explaining the trade-off, above the slider. The header and
+ * thumb follow drags live via a local preview; onChange fires once per settled
+ * change and never dismisses the surface that hosts it.
  */
 export function EffortSection({
   levels,
@@ -235,6 +261,18 @@ export function EffortSection({
   value: EffortLevel
   onChange: (level: EffortLevel) => void
 }) {
+  // Transient drag preview: the slider reports levels crossed mid-gesture here
+  // and only the settled level on release reaches onChange, so hosts that
+  // persist per change get ONE write per drag instead of racing writes per
+  // crossed stop (an intermediate write finishing last would win). It also
+  // keeps the header and thumb live in hosts whose `value` only updates after
+  // a mutation refetch. Settled changes seed it too, so the UI holds the
+  // picked level through that refetch gap; any authoritative `value` change
+  // then supersedes it.
+  const [preview, setPreview] = useState<EffortLevel | null>(null)
+  useEffect(() => setPreview(null), [value])
+  const shown = preview ?? value
+
   return (
     // A real wrapper (not a fragment): hosts reverse the popover column to keep
     // this section nearest the trigger, and a fragment's children would get
@@ -243,7 +281,7 @@ export function EffortSection({
       <div className="flex items-center justify-between px-2 pt-1 pb-1 text-[11px] font-medium text-muted-foreground/70">
         <span>
           <span>Effort</span>
-          <span className="text-[#007DED] dark:text-[#4EB3FF]"> · {EFFORT_LABELS[value]}</span>
+          <span className="text-[#007DED] dark:text-[#4EB3FF]"> · {EFFORT_LABELS[shown]}</span>
         </span>
         <TooltipProvider>
           <Tooltip>
@@ -263,7 +301,17 @@ export function EffortSection({
           </Tooltip>
         </TooltipProvider>
       </div>
-      <EffortSlider levels={levels} value={value} onChange={onChange} />
+      <EffortSlider
+        levels={levels}
+        value={shown}
+        onPreview={setPreview}
+        onChange={(level) => {
+          setPreview(level)
+          // The slider can't no-op-guard settles itself (its value prop tracks
+          // the preview), so guard here against the authoritative value.
+          if (level !== value) onChange(level)
+        }}
+      />
     </div>
   )
 }

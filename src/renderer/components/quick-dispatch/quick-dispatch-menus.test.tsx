@@ -11,6 +11,8 @@ const STD: EffortLevel[] = ['low', 'medium', 'high']
 const CATALOG: ModelDefinition[] = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'openai/gpt-5.5', label: 'GPT-5.5', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, supportsWebSearch: false },
+  // Custom models can declare effort subsets that exclude medium.
+  { id: 'custom/tiny', label: 'Tiny', isLatest: true, supportedEfforts: ['low'] },
 ]
 
 function makeState(overrides: Partial<ComposerOptionsState>): ComposerOptionsState {
@@ -39,6 +41,15 @@ describe('ModelEffortMenu', () => {
     const setEffort = vi.fn()
     render(<ModelEffortMenu state={makeState({ effort: 'high', setEffort })} maxHeight={400} />)
     expect(setEffort).not.toHaveBeenCalled()
+  })
+
+  it('clamps to the model\'s first allowed level when it does not support medium', () => {
+    // Regression: the clamp once hardcoded 'medium', which a custom model with
+    // supportedEfforts ['low'] doesn't allow — the "clamped" value would still
+    // dispatch an unsupported effort to the provider.
+    const setEffort = vi.fn()
+    render(<ModelEffortMenu state={makeState({ model: 'custom/tiny', effort: 'high', setEffort })} maxHeight={400} />)
+    expect(setEffort).toHaveBeenCalledWith('low')
   })
 
   it('shows the web-tools warning for a searchless model when no web vendor is set', () => {

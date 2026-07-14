@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { EffortSlider } from './effort-slider'
+import { EffortSlider, EffortSection } from './effort-slider'
 import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
 
 const ALL = [...EFFORT_LEVELS] as EffortLevel[]
@@ -79,45 +79,83 @@ describe('EffortSlider', () => {
     expect(screen.getByTestId('effort-fill-rainbow').className).toContain('pointer-events-none')
   })
 
-  it('a drag emits once per level crossed, never per pointermove', () => {
+  it('a drag previews once per level crossed and settles ONE onChange on release', () => {
     const onChange = vi.fn()
-    render(<EffortSlider levels={ALL} value="low" onChange={onChange} />)
+    const onPreview = vi.fn()
+    render(<EffortSlider levels={ALL} value="low" onChange={onChange} onPreview={onPreview} />)
     const track = screen.getByTestId('effort-slider').querySelector('.touch-none') as HTMLElement
     // jsdom has no layout; 120px wide − 2×10px track-radius = stops at x=10,35,60,85,110.
     vi.spyOn(track, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 120 } as DOMRect)
-    fireEvent.pointerDown(track, { clientX: 10 }) // the current stop — no emit
+    fireEvent.pointerDown(track, { clientX: 10 }) // the current stop — no preview
     fireEvent.pointerMove(track, { clientX: 12 }) // still 'low'
-    expect(onChange).not.toHaveBeenCalled()
+    expect(onPreview).not.toHaveBeenCalled()
     fireEvent.pointerMove(track, { clientX: 60 }) // 'high'
     fireEvent.pointerMove(track, { clientX: 61 }) // still 'high' — deduped
-    expect(onChange).toHaveBeenCalledTimes(1)
-    expect(onChange).toHaveBeenLastCalledWith('high')
+    expect(onPreview).toHaveBeenCalledTimes(1)
+    expect(onPreview).toHaveBeenLastCalledWith('high')
     fireEvent.pointerMove(track, { clientX: 110 }) // 'max'
-    expect(onChange).toHaveBeenCalledTimes(2)
-    expect(onChange).toHaveBeenLastCalledWith('max')
+    expect(onPreview).toHaveBeenCalledTimes(2)
+    // Nothing persisted mid-drag — intermediate writes would race the final one.
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.pointerUp(track)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith('max')
   })
 
   it('a drag can start on a tick dot — the press bubbles to the track', () => {
     const onChange = vi.fn()
-    render(<EffortSlider levels={ALL} value="medium" onChange={onChange} />)
+    const onPreview = vi.fn()
+    render(<EffortSlider levels={ALL} value="medium" onChange={onChange} onPreview={onPreview} />)
     const track = screen.getByTestId('effort-slider').querySelector('.touch-none') as HTMLElement
     vi.spyOn(track, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 120 } as DOMRect)
     // Press ON the medium tick (x=35 == its stop), then drag to the far end.
     fireEvent.pointerDown(screen.getByTestId('effort-option-medium'), { clientX: 35 })
     fireEvent.pointerMove(track, { clientX: 110 })
+    expect(onPreview).toHaveBeenLastCalledWith('max')
+    fireEvent.pointerUp(track)
     expect(onChange).toHaveBeenCalledTimes(1)
     expect(onChange).toHaveBeenLastCalledWith('max')
   })
 
-  it('a cancelled drag stops tracking — later hovers no longer change the value', () => {
+  it('a cancelled drag discards the preview and settles nothing', () => {
     const onChange = vi.fn()
-    render(<EffortSlider levels={ALL} value="medium" onChange={onChange} />)
+    const onPreview = vi.fn()
+    render(<EffortSlider levels={ALL} value="medium" onChange={onChange} onPreview={onPreview} />)
     const track = screen.getByTestId('effort-slider').querySelector('.touch-none')!
     fireEvent.pointerDown(track, { clientX: 0 })
-    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onPreview).toHaveBeenLastCalledWith('low') // unmocked 0-width rect → leftmost stop
     fireEvent.pointerCancel(track)
-    fireEvent.pointerMove(track, { clientX: 50 })
-    expect(onChange).toHaveBeenCalledTimes(1) // the post-cancel hover changed nothing
+    expect(onPreview).toHaveBeenLastCalledWith(null) // aborted → discard
+    fireEvent.pointerMove(track, { clientX: 50 }) // post-cancel hover changes nothing
+    fireEvent.pointerUp(track)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('EffortSection: the header tracks the drag preview but persists only the release', () => {
+    const onChange = vi.fn()
+    render(<EffortSection levels={ALL} value="low" onChange={onChange} />)
+    const track = screen.getByTestId('effort-slider').querySelector('.touch-none') as HTMLElement
+    vi.spyOn(track, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 120 } as DOMRect)
+    fireEvent.pointerDown(track, { clientX: 60 }) // 'high'
+    expect(screen.getByRole('slider')).toHaveAttribute('aria-valuetext', 'High')
+    fireEvent.pointerMove(track, { clientX: 110 }) // 'max'
+    expect(screen.getByRole('slider')).toHaveAttribute('aria-valuetext', 'Max')
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.pointerUp(track)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith('max')
+  })
+
+  it('EffortSection: releasing back where the drag started persists nothing', () => {
+    const onChange = vi.fn()
+    render(<EffortSection levels={ALL} value="low" onChange={onChange} />)
+    const track = screen.getByTestId('effort-slider').querySelector('.touch-none') as HTMLElement
+    vi.spyOn(track, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 120 } as DOMRect)
+    fireEvent.pointerDown(track, { clientX: 10 })
+    fireEvent.pointerMove(track, { clientX: 110 }) // out to 'max'…
+    fireEvent.pointerMove(track, { clientX: 10 }) // …and back to 'low'
+    fireEvent.pointerUp(track)
+    expect(onChange).not.toHaveBeenCalled()
   })
 
   it('does not step past the ends', async () => {
