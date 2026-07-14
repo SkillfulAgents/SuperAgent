@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 
 const mockGetAgentActivityStats = vi.fn()
 const mockGetConnectionActivityStats = vi.fn()
-const mockIsSubscribed = vi.fn()
+const mockIsSessionActive = vi.fn()
 
 vi.mock('@shared/lib/services/activity-stats-service', () => ({
   getAgentActivityStats: (...args: unknown[]) => mockGetAgentActivityStats(...args),
@@ -12,7 +12,7 @@ vi.mock('@shared/lib/services/activity-stats-service', () => ({
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
-    isSubscribed: (...args: unknown[]) => mockIsSubscribed(...args),
+    isSessionActive: (...args: unknown[]) => mockIsSessionActive(...args),
   },
 }))
 
@@ -55,15 +55,20 @@ describe('activity API', () => {
     })
   })
 
-  it('probes session liveness through the message persister', async () => {
+  it('probes execution liveness (isSessionActive, not subscription) through the message persister', async () => {
     await createApp().request('http://localhost/api/activity/agents/agent-a')
 
     const { isSessionLive } = mockGetAgentActivityStats.mock.calls[0][1] as {
       isSessionLive: (sessionId: string) => boolean
     }
-    mockIsSubscribed.mockReturnValue(true)
+    mockIsSessionActive.mockReturnValue(true)
     expect(isSessionLive('session-1')).toBe(true)
-    expect(mockIsSubscribed).toHaveBeenCalledWith('session-1')
+    expect(mockIsSessionActive).toHaveBeenCalledWith('session-1')
+
+    // An idle-but-still-subscribed session is NOT live — a persisted
+    // 'running' for it must downgrade instead of pulsing forever.
+    mockIsSessionActive.mockReturnValue(false)
+    expect(isSessionLive('session-1')).toBe(false)
   })
 
   it.each([

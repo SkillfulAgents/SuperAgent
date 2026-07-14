@@ -2858,7 +2858,9 @@ describe('MessagePersister', () => {
       })
     }
 
-    it('finalizes a successful result as succeeded', async () => {
+    it('finalizes a successful result as succeeded once the session settles (legacy result-driven idle)', async () => {
+      // No state-events authority and no background work: the result itself
+      // settles the session, so success persists in the same flow.
       sendResult(false)
 
       await vi.waitFor(() => {
@@ -2868,6 +2870,68 @@ describe('MessagePersister', () => {
           'succeeded',
         )
       })
+    })
+
+    it('defers success past open background work and persists only at the settled idle', async () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_started', task_type: 'local_workflow',
+        task_id: 'bg1', tool_use_id: 'bg-tool', workflow_name: 'demo', description: 'demo workflow',
+      })
+
+      // The turn's result is a clean success, but the background task keeps
+      // the session running — the outcome must NOT be finalized yet, or a
+      // later failure could never correct it.
+      sendResult(false)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(finalizeAutomationStatus).not.toHaveBeenCalled()
+
+      // Premature turn-end idle while the task still runs: still not settled.
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(finalizeAutomationStatus).not.toHaveBeenCalled()
+
+      // Task settles, then the truly-settled idle persists the success.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'task_notification', task_id: 'bg1', tool_use_id: 'bg-tool', status: 'completed',
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+
+      await vi.waitFor(() => {
+        expect(finalizeAutomationStatus).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          'succeeded',
+        )
+      })
+      expect(finalizeAutomationStatus).toHaveBeenCalledTimes(1)
+    })
+
+    it('lets a later failure win over an earlier unsettled success', async () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+
+      // First (merged-turn) result succeeds but the runtime never goes idle —
+      // a queued message continues the turn.
+      sendResult(false)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(finalizeAutomationStatus).not.toHaveBeenCalled()
+
+      // The continuation fails: the failure is terminal immediately.
+      sendResult(true)
+      await vi.waitFor(() => {
+        expect(finalizeAutomationStatus).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          'failed',
+        )
+      })
+
+      // The settling idle must not resurrect the stale success.
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(finalizeAutomationStatus).toHaveBeenCalledTimes(1)
     })
 
     it('finalizes an errored result as failed', async () => {
