@@ -1846,30 +1846,27 @@ describe('settings route', () => {
       expect(body).toHaveProperty('voice')
       expect(body).toHaveProperty('tenantId')
       expect(body).toHaveProperty('shareAnalytics')
-      expect(body).toHaveProperty('effectiveWebProvider')
+      expect(body).toHaveProperty('webProviderIsDefault')
     })
 
-    // The raw id is what the user pinned (or unset); the effective id is what the agent will run.
-    // Sticky: a pin stays the effective id even when its credential is gone. The UI reads both
-    // (pre-select + "(default)" when unset), so a GET that stops returning one, or conflates them,
-    // breaks that contract silently.
-    describe('webProvider: raw vs effective', () => {
-      it('unset -> raw is absent and effective is Platform when a Gamut login is present', async () => {
+    // GET webProvider is always the concrete vendor that runs; isDefault means stored was unset.
+    describe('webProvider: active vendor + isDefault', () => {
+      it('unset -> webProvider is the default vendor and isDefault is true', async () => {
         mockGetSettings.mockReturnValue({ ...defaultSettings(), webProvider: undefined })
         const body = await (await app.request('http://localhost/api/settings')).json()
-        expect(body.webProvider).toBeUndefined()
-        expect(body.effectiveWebProvider).toBe('platform')
+        expect(body.webProvider).toBe('platform')
+        expect(body.webProviderIsDefault).toBe(true)
       })
 
-      it('pinned vendor stays effective even when its credential is gone (no silent fallback)', async () => {
+      it('pinned vendor -> webProvider is the pin and isDefault is false', async () => {
         mockGetSettings.mockReturnValue({
           ...defaultSettings(),
           webProvider: 'exa',
-          apiKeys: { anthropicApiKey: 'sk-existing' }, // no exaApiKey
+          apiKeys: { anthropicApiKey: 'sk-existing' },
         })
         const body = await (await app.request('http://localhost/api/settings')).json()
         expect(body.webProvider).toBe('exa')
-        expect(body.effectiveWebProvider).toBe('exa')
+        expect(body.webProviderIsDefault).toBe(false)
       })
     })
   })

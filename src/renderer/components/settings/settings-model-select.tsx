@@ -112,7 +112,7 @@ function SettingsModelSelectImpl({
           value={model}
           onPick={onModelChange}
           offerLatest
-          webProvider={settings?.effectiveWebProvider}
+          webProvider={settings?.webProvider}
         />
         {includeEffort && (
           <>

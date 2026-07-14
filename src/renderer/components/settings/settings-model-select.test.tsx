@@ -22,7 +22,7 @@ const CATALOG = [
   { id: 'glm-4-6', label: 'GLM 4.6', family: 'glm', icon: 'anthropic', supportedEfforts: STD, supportsWebSearch: false },
 ]
 
-function settingsWith(web: { webProvider?: string; effectiveWebProvider: string }) {
+function settingsWith(web: { webProvider: string; webProviderIsDefault?: boolean }) {
   return {
     data: {
       llmProvider: 'anthropic',
@@ -115,12 +115,9 @@ describe('SettingsModelSelect (flat picker)', () => {
     expect(screen.queryByTestId('effort-option-max')).not.toBeInTheDocument()
   })
 
-  // The picker must warn based on the vendor the agent will actually run, not the raw stored pin.
-  // A user who never chose a vendor has webProvider unset but resolves to a real one host-side, so
-  // reading the raw id here would warn them that web tools are missing while the agent has them.
-  describe('web-tools warning reads the effective vendor', () => {
-    it('stays hidden when no vendor is pinned but one is resolved', async () => {
-      useSettingsMock.mockReturnValue(settingsWith({ effectiveWebProvider: 'platform' }))
+  describe('web-tools warning reads the active vendor', () => {
+    it('stays hidden when a host vendor is active', async () => {
+      useSettingsMock.mockReturnValue(settingsWith({ webProvider: 'platform', webProviderIsDefault: true }))
       const user = userEvent.setup()
       render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
 
@@ -128,8 +125,8 @@ describe('SettingsModelSelect (flat picker)', () => {
       expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
     })
 
-    it('shows when the resolved vendor is native and the model has no web tools', async () => {
-      useSettingsMock.mockReturnValue(settingsWith({ effectiveWebProvider: 'native' }))
+    it('shows when the active vendor is native and the model has no web tools', async () => {
+      useSettingsMock.mockReturnValue(settingsWith({ webProvider: 'native', webProviderIsDefault: true }))
       const user = userEvent.setup()
       render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
 

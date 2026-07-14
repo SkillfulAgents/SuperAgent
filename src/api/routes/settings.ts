@@ -311,11 +311,10 @@ function buildSettingsResponse(
     llmProvider: appSettings.llmProvider ?? 'anthropic',
     llmProviderStatus: getAllProviderInfo(),
     modelCatalog: appSettings.modelCatalog ?? {},
-    // Raw stored value (undefined = unset, or a pin); effective is what the agent runs (pin when
-    // set; Platform-if-login / native when unset). The UI pre-selects it (marked "(default)" when
-    // unset) and the model-picker warning reads it.
-    webProvider: appSettings.webProvider,
-    effectiveWebProvider: resolveEffectiveWebVendor(),
+    // GET `webProvider` is what the agent runs; `webProviderIsDefault` means stored was unset.
+    // PUT `webProvider` still writes the pin (null clears). Same name, read vs write roles.
+    webProvider: resolveEffectiveWebVendor(),
+    webProviderIsDefault: appSettings.webProvider == null,
     apiKeyStatus: {
       anthropic: getLlmProvider('anthropic').getApiKeyStatus(),
       openrouter: getLlmProvider('openrouter').getApiKeyStatus(),

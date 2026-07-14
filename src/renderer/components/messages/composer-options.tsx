@@ -218,9 +218,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       model,
       setModel,
       catalog,
-      // The warning must reflect the vendor the agent will actually use (the resolved effective id),
-      // not the raw stored id — an unset-but-auto-resolved-to-a-vendor user has web tools available.
-      webProvider: settings?.effectiveWebProvider,
+      webProvider: settings?.webProvider,
       toRuntimeOptions,
     }),
     [effort, setEffort, model, setModel, catalog, settings, toRuntimeOptions],

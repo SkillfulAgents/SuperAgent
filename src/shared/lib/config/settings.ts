@@ -294,11 +294,10 @@ export interface GlobalSettingsResponse {
   llmProvider: LlmProviderId
   llmProviderStatus: LlmProviderInfo[]
   modelCatalog?: ModelCatalogSettings
-  // Raw stored id: undefined = unset. `effectiveWebProvider` is the vendor the agent will actually
-  // use (the pin when set; Platform-if-login / native when unset). The UI pre-selects it and marks
-  // unset as "(default)"; the model-picker web-tools warning reads it.
-  webProvider?: WebProviderId
-  effectiveWebProvider: WebProviderId
+  // GET: always the vendor the agent runs (pin when set; Platform-if-login / native when unset).
+  // PUT still writes the stored pin (or null to clear). `webProviderIsDefault` is true iff stored unset.
+  webProvider: WebProviderId
+  webProviderIsDefault: boolean
   apiKeyStatus: {
     anthropic: ApiKeyStatus
     openrouter: ApiKeyStatus

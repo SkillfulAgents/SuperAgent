@@ -21,15 +21,7 @@ const PROXY_SEARCH_PATH = '/v1/exa/search'
 const PROXY_CONTENTS_PATH = '/v1/exa/contents'
 
 /**
- * What the user can actually DO about each status the proxy rejects us with. Telling someone to do
- * the wrong one is worse than saying nothing, so the three never share copy
- * (proxy: apps/proxy/src/auth.ts, billing/gate.ts):
- *
- *   401 — token expired / invalid / revoked / superseded  -> signing in again fixes it
- *   403 — trial ended / member inactive / wrong org        -> signing in again does NOT fix it
- *   402 — blocked / past due / insufficient balance        -> billing fixes it
- *
- * Each names where to fix it, since a failed search or fetch is the user's only touchpoint.
+ * Proxy status → user remedy. 401/403/402 must not share copy (proxy auth.ts, billing/gate.ts).
  */
 const PROXY_REMEDIES: Record<number, string> = {
   401: 'your Gamut session has expired or is invalid. Sign in again, or pick a different provider under the Web provider setting in Settings.',
@@ -37,10 +29,7 @@ const PROXY_REMEDIES: Record<number, string> = {
   402: 'your Gamut account has a billing issue. Resolve billing, or switch to Native or Exa under the Web provider setting in Settings.',
 }
 
-/**
- * Turn a rejected proxy call into an actionable message. The provider pre-guards an ABSENT token, so
- * by here a token was sent and the proxy refused it. Any other error passes through unchanged.
- */
+/** Map a rejected proxy call to actionable copy; other errors pass through. */
 export function mapPlatformWebError(err: unknown, surface: 'search' | 'fetch'): unknown {
   const remedy = err instanceof NonRetryableError && err.status ? PROXY_REMEDIES[err.status] : undefined
   if (!remedy) return err
@@ -48,19 +37,13 @@ export function mapPlatformWebError(err: unknown, surface: 'search' | 'fetch'): 
 }
 
 /**
- * The Gamut-provided web vendor. Same Exa request/response shape as ExaWebProvider, but routed
- * through the platform proxy on the shared Gamut key: a Bearer platform token instead of a per-user
- * x-api-key. The proxy is a transparent passthrough, so both responses parse with the same Exa
- * schemas and reuse Exa's mappers.
- *
- * The credential is the platform login, not a stored key, so getApiKeyStatus/getEffectiveApiKey are
- * overridden inline exactly as PlatformLlmProvider does it.
+ * Gamut-provided web vendor: Exa shape via platform proxy (Bearer), same mappers as ExaWebProvider.
+ * Credential is the platform login — overrides mirror PlatformLlmProvider.
  */
 export class PlatformWebProvider extends BaseWebProvider {
   readonly id: WebProviderId = 'platform'
   readonly name = 'Platform'
 
-  // Not used — both credential methods are overridden to read the platform token.
   protected readonly settingsKeyField: keyof ApiKeySettings = 'exaApiKey'
   protected readonly envVarName = 'PLATFORM_TOKEN'
 
@@ -74,7 +57,6 @@ export class PlatformWebProvider extends BaseWebProvider {
     return getPlatformAccessToken() ?? process.env[this.envVarName] ?? undefined
   }
 
-  /** The Bearer token, or a sign-in error naming where to fix it (an absent token never hits the proxy). */
   private requireToken(surface: 'search' | 'fetch'): string {
     const token = this.getEffectiveApiKey()
     if (!token) {
@@ -114,9 +96,7 @@ export class PlatformWebProvider extends BaseWebProvider {
     }
   }
 
-  // Platform is login-based, not key-based: /validate-web-key rejects 'platform' before this runs,
-  // so there is nothing to validate. Return the login message rather than fire a live, billable
-  // proxy probe from an otherwise-unreachable path.
+  // Login-based; /validate-web-key rejects platform before this runs.
   async validateKey(): Promise<{ valid: boolean; error?: string }> {
     return { valid: false, error: 'Platform uses your Gamut login, not an API key.' }
   }

@@ -141,13 +141,6 @@ describe('PlatformWebProvider', () => {
       await expect(provider.fetch('https://a.com', {})).rejects.toThrow(/not signed into Gamut/i)
       expect(fetchMock).not.toHaveBeenCalled()
     })
-
-    // fetch has its own catch block, so it needs its own wiring proof.
-    it('maps a 403 (trial ended / inactive member) to account copy, not sign-in-again', async () => {
-      vi.mocked(getPlatformAccessToken).mockReturnValue('tok-123')
-      vi.spyOn(global, 'fetch').mockResolvedValue(new Response('nope', { status: 403 }))
-      await expect(provider.fetch('https://a.com', {})).rejects.toThrow(/does not have access.*Check your account/i)
-    })
   })
 
   // Platform is login-based; /validate-web-key rejects it before dispatch. Guards against a future

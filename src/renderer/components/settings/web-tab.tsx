@@ -12,11 +12,9 @@ import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import type { WebProviderId } from '@shared/lib/config/settings'
 import { ProviderApiKeyInput } from './provider-api-key-input'
 
-// One "Web" tab with a single Web Provider select backing one `webProvider` setting. One vendor
-// backs both search and fetch; whether each tool is host-routed or native is derived host-side from
-// the vendor's capabilities. The select always shows a concrete vendor: an explicit choice if the
-// user made one, otherwise the server's default (`effectiveWebProvider`) marked "(default)".
-// Leaving it on the default keeps the stored field unset; picking a vendor pins it sticky.
+// One "Web" tab with a single Web Provider select. GET `webProvider` is always the concrete vendor
+// the agent runs; `webProviderIsDefault` marks the unset/auto case as "(default)". Picking a vendor
+// pins it sticky via PUT.
 // A `usesExaKey` flag marks vendors backed by the shared Exa key (settings.apiKeys.exaApiKey), so the
 // key input renders once and adding an Exa-backed vendor stays a data entry, not new JSX.
 // `platformOnly` marks the Gamut-provided vendor, which is login-gated (selectable only when signed
@@ -134,9 +132,8 @@ export function WebTab() {
   const { data: platformAuth } = usePlatformAuthStatus()
   const isPlatformConnected = platformAuth?.connected ?? false
 
-  // Always show a concrete vendor: the explicit choice if one is stored, else the server's default.
-  const selected: WebProviderId = settings?.webProvider ?? settings?.effectiveWebProvider ?? 'native'
-  const isDefault = settings?.webProvider == null
+  const selected: WebProviderId = settings?.webProvider ?? 'native'
+  const isDefault = settings?.webProviderIsDefault ?? true
 
   // The Exa key field shows only when Exa is the selected vendor (always an explicit pin — Exa is never the unset default).
   const needsExaKey = WEB_PROVIDERS.find((p) => p.value === selected)?.usesExaKey ?? false

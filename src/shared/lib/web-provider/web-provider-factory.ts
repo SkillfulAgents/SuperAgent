@@ -36,8 +36,7 @@ export function findWebProvider(id: string): BaseWebProvider | null {
 
 /**
  * The vendor that will actually serve web calls right now — the single source of truth for both the
- * runtime (getActiveWebProvider) and the settings response's `effectiveWebProvider`, so the UI can
- * never claim a vendor the agent isn't using.
+ * runtime (getActiveWebProvider) and the settings GET `webProvider` field.
  *
  * Sticky like LLM/STT: a stored pin is a contract (broken credential = broken service, no silent
  * swap to another vendor). Unset is the only adaptive case — Platform when a Gamut login is
