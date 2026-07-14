@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
-import { Session, SDKMessage, CreateSessionRequest, EffortLevel } from './types';
+import { Session, SDKMessage, CreateSessionRequest, EffortLevel, AgentCapabilityPolicies } from './types';
+import { agentCapabilityPoliciesSchema } from './capability-policies';
 import { ClaudeCodeProcess } from './claude-code';
 import { SessionPersistence } from './session-persistence';
 import { EventEmitter } from 'events';
@@ -169,6 +170,10 @@ export class SessionManager extends EventEmitter {
     // All sessions share the same working directory
     const workingDirectory = request.workingDirectory || this.baseWorkingDirectory;
 
+    // Boundary validation: a malformed policy must fail the request loudly,
+    // never silently degrade a block to allow.
+    const capabilityPolicies = agentCapabilityPoliciesSchema.parse(request.capabilityPolicies);
+
     // Ensure working directory exists
     if (!fs.existsSync(workingDirectory)) {
       fs.mkdirSync(workingDirectory, { recursive: true });
@@ -191,6 +196,7 @@ export class SessionManager extends EventEmitter {
       maxBudgetUsd: request.maxBudgetUsd,
       customEnvVars: request.customEnvVars,
       effort: request.effort,
+      capabilityPolicies,
     });
 
     // Promise to capture Claude's session ID and slash commands (emitted after first message is sent)
@@ -292,6 +298,11 @@ export class SessionManager extends EventEmitter {
       console.log(`Session ${sessionId} exited with code ${code}`);
     });
 
+    // Session-scoped review grants must survive eviction+resume.
+    process.on('capability-grant', ({ capability }: { capability: 'subagents' | 'workflows' }) => {
+      this.persistence.addSessionCapabilityGrant(sessionId, capability);
+    });
+
     // Persist the session
     this.persistence.saveSession({
       sessionId,
@@ -313,6 +324,7 @@ export class SessionManager extends EventEmitter {
       maxBudgetUsd: request.maxBudgetUsd,
       customEnvVars: request.customEnvVars,
       effort: request.effort,
+      capabilityPolicies,
       metadata: request.metadata,
     });
 
@@ -371,6 +383,8 @@ export class SessionManager extends EventEmitter {
         maxBudgetUsd: persisted.maxBudgetUsd,
         customEnvVars: persisted.customEnvVars,
         effort: persisted.effort,
+        capabilityPolicies: persisted.capabilityPolicies,
+        sessionCapabilityGrants: persisted.sessionCapabilityGrants,
       });
 
       const session: Session = {
@@ -420,6 +434,10 @@ export class SessionManager extends EventEmitter {
 
       process.on('exit', (code: number | null) => {
         console.log(`Resumed session ${sessionId} exited with code ${code}`);
+      });
+
+      process.on('capability-grant', ({ capability }: { capability: 'subagents' | 'workflows' }) => {
+        this.persistence.addSessionCapabilityGrant(sessionId, capability);
       });
 
       // Start the process (which will resume the Claude session)
@@ -495,7 +513,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { effort?: EffortLevel; model?: string; shouldQuery?: boolean }
+    options?: { effort?: EffortLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -538,6 +556,9 @@ export class SessionManager extends EventEmitter {
     }
     if (options?.model !== undefined) {
       this.persistence.updateModel(sessionId, options.model);
+    }
+    if (options?.capabilityPolicies !== undefined) {
+      this.persistence.updateCapabilityPolicies(sessionId, options.capabilityPolicies);
     }
 
     // Send to Claude Code process (messages are stored via handleMessage)

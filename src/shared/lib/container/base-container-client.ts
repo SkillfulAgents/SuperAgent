@@ -21,7 +21,7 @@ import type {
 import type { RuntimeOptions } from './runtime-options'
 import { getAgentWorkspaceDir } from '@shared/lib/config/data-dir'
 import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
-import { getSettings } from '@shared/lib/config/settings'
+import { getAgentCapabilitySettings, getSettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import { resolveContainerModel, getContainerModelPromptHints } from './resolve-model'
 import { getActiveWebProvider } from '../web-provider'
@@ -1011,6 +1011,11 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const activeWebProvider = getActiveWebProvider()
     const webSearchProvider = activeWebProvider?.search ? activeWebProvider.id : undefined
     const webFetchProvider = activeWebProvider?.fetch ? activeWebProvider.id : undefined
+    // Host-authoritative launch policies (allow/review/block for subagents and
+    // workflows), resolved from global settings here so every session-creation
+    // caller inherits them. Never taken from the request — a caller (or the
+    // agent itself) must not be able to loosen its own policy.
+    const capabilityPolicies = getAgentCapabilitySettings()
 
     try {
       const controller = new AbortController()
@@ -1038,6 +1043,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           customEnvVars: options.customEnvVars,
           maxBrowserTabs: options.maxBrowserTabs,
           effort: options.effort,
+          capabilityPolicies,
         }),
         signal: controller.signal,
       })
@@ -1135,6 +1141,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const effort = options?.effort
     const model = resolveContainerModel(options?.model, 'agent')
     const shouldQuery = options?.shouldQuery
+    // Refreshed on every message so a long-lived session tracks settings
+    // changes; the container restarts its query only on a block-boundary flip.
+    const capabilityPolicies = getAgentCapabilitySettings()
 
     try {
       const controller = new AbortController()
@@ -1151,6 +1160,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             ...(effort ? { effort } : {}),
             ...(model ? { model } : {}),
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
+            capabilityPolicies,
           }),
           signal: controller.signal,
         }

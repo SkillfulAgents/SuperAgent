@@ -21,6 +21,7 @@ const SETTINGS_TAB_TITLES = {
   runtime: 'Runtime',
   browser: 'Browser Use',
   web: 'Web',
+  capabilities: 'Agent Capabilities',
   'computer-use': 'Computer Use',
   'account-provider': 'Account Provider',
   voice: 'Voice',

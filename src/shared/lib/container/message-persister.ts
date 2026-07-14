@@ -59,7 +59,7 @@ import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpressio
 import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
-import { VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { getActiveLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { resolveAppFromWindowRef } from '@shared/lib/computer-use/executor'
@@ -210,6 +210,11 @@ export function redactStreamedToolInput(toolName: string | undefined, partialInp
 // TODO this file is too big, this class is HUGE. Needs breaking up
 class MessagePersister {
   private streamingStates: Map<string, StreamingState> = new Map()
+  // "Allow for this session" capability grants, keyed by sessionId. Display
+  // bookkeeping ONLY — enforcement lives in the container (which persists its
+  // copy with the session). Once granted, launches auto-allow container-side
+  // with no pending entry, so we must stop broadcasting review cards for them.
+  private sessionCapabilityGrants: Map<string, Set<'subagents' | 'workflows'>> = new Map()
   private subscriptions: Map<string, () => void> = new Map()
   private sseClients: Map<string, Set<(data: unknown) => void>> = new Map()
   // Per-run journal tailers driving the live workflow drawer, keyed `${sessionId}::${runId}`
@@ -470,6 +475,19 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     if (!state) return []
     return Array.from(state.pendingInputRequests.values())
+  }
+
+  // Record an "Allow for this session" capability grant (decision route calls
+  // this when the user picks session scope) so later launches in the session
+  // don't produce review cards the container will never wait on.
+  grantSessionCapability(sessionId: string, capability: 'subagents' | 'workflows'): void {
+    const grants = this.sessionCapabilityGrants.get(sessionId) ?? new Set()
+    grants.add(capability)
+    this.sessionCapabilityGrants.set(sessionId, grants)
+  }
+
+  hasSessionCapabilityGrant(sessionId: string, capability: 'subagents' | 'workflows'): boolean {
+    return this.sessionCapabilityGrants.get(sessionId)?.has(capability) ?? false
   }
 
   // Clear a pending computer use request (after approval/rejection)
@@ -839,6 +857,7 @@ class MessagePersister {
     'remote_mcp_request',
     'script_run_request',
     'browser_input_request',
+    'capability_review_request',
   ])
 
   // Broadcast to SSE clients
@@ -2007,6 +2026,18 @@ class MessagePersister {
             )
           }
 
+          // A nested launch from inside a subagent pauses in canUseTool too —
+          // it needs the same approval card as a top-level one.
+          if (['Task', 'Agent', 'Workflow'].includes(sub.currentToolUse.name)) {
+            this.handleCapabilityReviewTool(
+              sessionId,
+              sub.currentToolUse.id,
+              sub.currentToolUse.name,
+              sub.currentToolInput,
+              state.agentSlug
+            )
+          }
+
           this.broadcastToSSE(sessionId, {
             type: 'subagent_tool_use_ready',
             parentToolId,
@@ -2274,6 +2305,19 @@ class MessagePersister {
 
           if (state.currentToolUse.name.startsWith('mcp__computer-use__')) {
             this.handleComputerUseRequestTool(
+              sessionId,
+              state.currentToolUse.id,
+              state.currentToolUse.name,
+              state.currentToolInput,
+              state.agentSlug
+            )
+          }
+
+          // Subagent/workflow launches pause in the container under a 'review'
+          // policy — surface the approval card. The handler itself checks the
+          // policy and session grants (no-op under allow/block/granted).
+          if (['Task', 'Agent', 'Workflow'].includes(state.currentToolUse.name)) {
+            this.handleCapabilityReviewTool(
               sessionId,
               state.currentToolUse.id,
               state.currentToolUse.name,
@@ -3526,6 +3570,51 @@ ${continuation}`
       }
     } catch (error) {
       console.error('[MessagePersister] Error handling AskUserQuestion:', error)
+    }
+  }
+
+  // Handle a subagent (Task/Agent) or workflow (Workflow) launch under a
+  // 'review' policy: broadcast the approval card. The container's canUseTool
+  // has paused the launch on a pending input keyed by the same toolUseId; the
+  // decision route answers it via /inputs/:toolUseId/resolve|reject. Under
+  // 'allow' or an active session grant the container never pauses, and under
+  // 'block' it denies outright — no card in any of those cases.
+  private handleCapabilityReviewTool(
+    sessionId: string,
+    toolUseId: string,
+    toolName: string,
+    toolInput: string,
+    agentSlug?: string
+  ): void {
+    try {
+      const capability = toolName === 'Workflow' ? 'workflows' : 'subagents'
+      if (getAgentCapabilitySettings()[capability] !== 'review') return
+      if (this.hasSessionCapabilityGrant(sessionId, capability)) return
+
+      let input: Record<string, unknown> = {}
+      try {
+        input = JSON.parse(toolInput)
+      } catch {
+        // Launches with unparseable input still need a decision — show the card with what we have.
+      }
+
+      this.broadcastToSSE(sessionId, {
+        type: 'capability_review_request',
+        toolUseId,
+        capability,
+        toolName,
+        input,
+        agentSlug,
+      })
+      this.markSessionAwaitingInput(sessionId)
+
+      if (agentSlug) {
+        notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'capability_review').catch((err) => {
+          console.error('[MessagePersister] Failed to trigger waiting input notification:', err)
+        })
+      }
+    } catch (error) {
+      console.error('[MessagePersister] Error handling capability review:', error)
     }
   }
 

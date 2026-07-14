@@ -31,6 +31,7 @@ import {
   type ContainerSettings,
   type GlobalSettingsResponse,
 } from '@shared/lib/config/settings'
+import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
 import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
 import { isValidAccelerator } from '@shared/lib/config/shortcuts'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
@@ -336,6 +337,7 @@ function buildSettingsResponse(
     analyticsTargets: appSettings.analyticsTargets,
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
+    agentCapabilities: appSettings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES,
   }
 }
 
@@ -412,6 +414,14 @@ settings.put('/', async (c) => {
     // Validate agentEffort if provided
     if (body.models?.agentEffort !== undefined && !EFFORT_LEVELS.includes(body.models.agentEffort)) {
       return c.json({ error: `agentEffort must be one of: ${EFFORT_LEVELS.join(', ')}` }, 400)
+    }
+
+    // Validate agentCapabilities if provided (partial patch of allow/review/block tiers)
+    if (body.agentCapabilities !== undefined) {
+      const parsed = agentCapabilitySettingsPatchSchema.safeParse(body.agentCapabilities)
+      if (!parsed.success) {
+        return c.json({ error: 'agentCapabilities values must be one of: allow, review, block' }, 400)
+      }
     }
 
     // Validate the quick-dispatch global shortcut accelerator. Empty string is
@@ -542,6 +552,9 @@ settings.put('/', async (c) => {
       computerUse: body.computerUse !== undefined
         ? { ...currentSettings.computerUse, ...body.computerUse }
         : currentSettings.computerUse,
+      agentCapabilities: body.agentCapabilities !== undefined
+        ? { ...DEFAULT_AGENT_CAPABILITIES, ...currentSettings.agentCapabilities, ...body.agentCapabilities }
+        : currentSettings.agentCapabilities,
       analyticsTargets: body.analyticsTargets !== undefined ? body.analyticsTargets : currentSettings.analyticsTargets,
     }
 

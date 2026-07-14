@@ -44,6 +44,17 @@ function mcpToolNames(
 import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 import { renderPrompt } from './render-prompt';
+import type { AgentCapabilityPolicies } from './types';
+import {
+  applyCapabilityPolicies,
+  blockBoundaryChanged,
+  blockedCapabilityMessage,
+  capabilityGateFor,
+  parseReviewDecisionScope,
+  policyFor,
+  reviewDeclinedMessage,
+  type Capability,
+} from './capability-policies';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -199,6 +210,7 @@ export interface SystemPromptVars {
   CLAUDE_CONFIG_DIR: string;
   webSearchToolName: string;
   webFetchToolName: string;
+  subagentsEnabled: boolean;
   composioTriggers: boolean;
   webhookEndpoints: boolean;
   anyTriggers: boolean;
@@ -226,6 +238,7 @@ export function buildSystemPromptVars(
   modelPromptHints?: string[],
   webSearchProvider?: string,
   webFetchProvider?: string,
+  capabilityPolicies?: AgentCapabilityPolicies,
 ): SystemPromptVars {
   const composioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true';
   const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
@@ -238,6 +251,9 @@ export function buildSystemPromptVars(
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
     webSearchToolName: webSearchProvider ? 'mcp__web__web_search' : 'WebSearch',
     webFetchToolName: webFetchProvider ? 'mcp__web__web_fetch' : 'WebFetch',
+    // Blocked subagents must not be advertised anywhere in the prompt; review
+    // still advertises them (the gate happens at call time).
+    subagentsEnabled: policyFor(capabilityPolicies, 'subagents') !== 'block',
     composioTriggers,
     webhookEndpoints,
     anyTriggers: composioTriggers || webhookEndpoints,
@@ -265,8 +281,9 @@ export function generateSystemPrompt(
   modelPromptHints?: string[],
   webSearchProvider?: string,
   webFetchProvider?: string,
+  capabilityPolicies?: AgentCapabilityPolicies,
 ): string {
-  const vars = buildSystemPromptVars(availableEnvVars, userSystemPrompt, modelPromptHints, webSearchProvider, webFetchProvider);
+  const vars = buildSystemPromptVars(availableEnvVars, userSystemPrompt, modelPromptHints, webSearchProvider, webFetchProvider, capabilityPolicies);
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
 
@@ -360,6 +377,8 @@ export interface ClaudeCodeProcessOptions {
   maxBudgetUsd?: number;
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
+  capabilityPolicies?: AgentCapabilityPolicies;
+  sessionCapabilityGrants?: Capability[];
 }
 
 export class ClaudeCodeProcess extends EventEmitter {
@@ -381,6 +400,17 @@ export class ClaudeCodeProcess extends EventEmitter {
   private maxBudgetUsd: number | undefined;
   private customEnvVars: Record<string, string> | undefined;
   private effort: EffortLevel | undefined;
+  private capabilityPolicies: AgentCapabilityPolicies | undefined;
+  // Session-scoped review grants ("Allow for this session"). Scoped to the
+  // SESSION, not the process: they must survive idle-eviction + resume (the
+  // session-manager persists them via the 'capability-grant' event), or the
+  // host's grant record diverges and a gated launch hangs with no card.
+  private sessionCapabilityGrants: Set<Capability>;
+  // Kept so the system prompt can be regenerated when a capability block
+  // boundary flips mid-session (the prompt gates delegation sections on it).
+  private availableEnvVars: string[] | undefined;
+  private userSystemPrompt: string | undefined;
+  private modelPromptHints: string[] | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
   // Monotonic id of the current query; bumped by initializeQuery. A previous
@@ -427,12 +457,18 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.customEnvVars = options.customEnvVars;
     this.effort = options.effort;
+    this.capabilityPolicies = options.capabilityPolicies;
+    this.sessionCapabilityGrants = new Set(options.sessionCapabilityGrants ?? []);
+    this.availableEnvVars = options.availableEnvVars;
+    this.userSystemPrompt = options.userSystemPrompt;
+    this.modelPromptHints = options.modelPromptHints;
     this.systemPrompt = generateSystemPrompt(
       options.availableEnvVars,
       options.userSystemPrompt,
       options.modelPromptHints,
       options.webSearchProvider,
-      options.webFetchProvider
+      options.webFetchProvider,
+      options.capabilityPolicies
     );
     // Set module-level reference for tools that need access to the process
     currentProcess = this;
@@ -503,6 +539,23 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     console.log(`[Session ${this.sessionId}] createQuery: model=${this.model ?? '(default)'}, effort=${this.effort ?? '(default)'}`);
 
+    // Block-tier policies remove the capability at the source: the tool is
+    // stripped from the query (and the system prompt stops advertising it)
+    // rather than denied call-by-call. Review-tier gating happens in canUseTool.
+    const capabilityTools = applyCapabilityPolicies(this.capabilityPolicies, {
+      allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
+      disallowedTools: [
+        'TaskOutput', 'Monitor', 'DesignSync',
+        'CronCreate', 'CronDelete', 'CronList',
+        'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
+        'EnterWorktree', 'ExitWorktree',
+        // Suppress native WebSearch only when a host vendor is active; it's replaced by mcp__web__web_search.
+        ...(this.webSearchProvider ? ['WebSearch'] : []),
+        // Same for native WebFetch → mcp__web__web_fetch when a host fetch vendor is active.
+        ...(this.webFetchProvider ? ['WebFetch'] : []),
+      ],
+    });
+
     return query({
       prompt: this.messageQueue!,
       options: {
@@ -520,19 +573,10 @@ export class ClaudeCodeProcess extends EventEmitter {
         // the `settings` flag layer (`enableWorkflows` is a Settings field, not a
         // top-level Option). Without it the model can't see a Workflow tool at all
         // and falls back to simulating with Agent subagents.
-        settings: { enableWorkflows: true },
+        settings: { enableWorkflows: capabilityTools.enableWorkflows },
         settingSources: ['user', 'project'],
-        allowedTools: ['Skill', 'Task', 'Agent', ...remoteMcpToolPatterns],
-        disallowedTools: [
-          'TaskOutput', 'Monitor', 'DesignSync',
-          'CronCreate', 'CronDelete', 'CronList',
-          'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
-          'EnterWorktree', 'ExitWorktree',
-          // Suppress native WebSearch only when a host vendor is active; it's replaced by mcp__web__web_search.
-          ...(this.webSearchProvider ? ['WebSearch'] : []),
-          // Same for native WebFetch → mcp__web__web_fetch when a host fetch vendor is active.
-          ...(this.webFetchProvider ? ['WebFetch'] : []),
-        ],
+        allowedTools: capabilityTools.allowedTools,
+        disallowedTools: capabilityTools.disallowedTools,
         // Request summarized thinking so reasoning text streams to the UI. Without an
         // explicit `display`, Opus 4.8/4.7 default to `omitted` — thinking_delta events
         // arrive empty (only a signature), so the UI can show "Thinking" but no text.
@@ -704,6 +748,68 @@ export class ClaudeCodeProcess extends EventEmitter {
                     inputManager.setCurrentToolUseId(toolUseId, this.sessionId);
                   }
                   return {};
+                },
+              ],
+            },
+            {
+              // Three-tier launch policy for subagents (Task/Agent) and
+              // workflows (Workflow). This MUST be a PreToolUse hook, not a
+              // canUseTool branch: under permissionMode 'bypassPermissions'
+              // the SDK auto-approves every regular tool call before
+              // canUseTool is consulted (CLAUDE_SDK_CAN_USE_TOOL_SHADOWED) —
+              // only hook denies still apply. Review parks the launch on a
+              // pending input (same round-trip as AskUserQuestion): the host
+              // renders the approval card and answers via
+              // /inputs/:toolUseId/resolve|reject. Block is enforced at query
+              // creation (tools stripped); the deny here is the backstop for
+              // a policy that tightened mid-session.
+              matcher: '^(Task|Agent|Workflow)$',
+              hooks: [
+                async (input, toolUseId) => {
+                  const hookToolName = (input as any).tool_name as string | undefined;
+                  const gate = capabilityGateFor(hookToolName ?? '', this.capabilityPolicies, this.sessionCapabilityGrants);
+                  if (!gate) return {};
+                  if (gate.policy === 'block') {
+                    console.log(`[PreToolUse] Denying ${hookToolName} (${gate.capability} blocked)`);
+                    return {
+                      hookSpecificOutput: {
+                        hookEventName: 'PreToolUse' as const,
+                        permissionDecision: 'deny' as const,
+                        permissionDecisionReason: blockedCapabilityMessage(gate.capability),
+                      },
+                    };
+                  }
+
+                  const requestId = toolUseId || `capability-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+                  console.log(`[PreToolUse] Capability review for ${hookToolName} (${gate.capability}), toolUseId: ${requestId}`);
+                  try {
+                    // Park until the user decides via the approval card
+                    const decision = await inputManager.createPendingWithType<Record<string, string>>(
+                      requestId,
+                      'capability_review',
+                      { capability: gate.capability, toolName: hookToolName },
+                      this.sessionId
+                    );
+                    if (parseReviewDecisionScope(decision) === 'session') {
+                      console.log(`[PreToolUse] Session-scoped grant for ${gate.capability}`);
+                      this.sessionCapabilityGrants.add(gate.capability);
+                      // Session-manager persists it so the grant survives eviction+resume.
+                      this.emit('capability-grant', { capability: gate.capability });
+                    }
+                    return {};
+                  } catch (error) {
+                    console.log(`[PreToolUse] Capability launch declined:`, error);
+                    return {
+                      hookSpecificOutput: {
+                        hookEventName: 'PreToolUse' as const,
+                        permissionDecision: 'deny' as const,
+                        permissionDecisionReason: reviewDeclinedMessage(
+                          gate.capability,
+                          error instanceof Error ? error.message : undefined
+                        ),
+                      },
+                    };
+                  }
                 },
               ],
             },
@@ -956,7 +1062,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; model?: string; shouldQuery?: boolean }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
     const effort = options?.effort;
     const model = options?.model;
 
@@ -969,6 +1075,27 @@ export class ClaudeCodeProcess extends EventEmitter {
     // compare ids directly. Switching between two pinned versions of a family
     // (e.g. opus-4-6 -> opus-4-7) is now a real, intentional switch.
     const modelChanged = model !== undefined && model !== this.model;
+
+    // Capability policies follow the host's CURRENT settings, refreshed on
+    // every message so a long-lived session tracks settings changes. Review
+    // and the block backstop read the field at call time; only a block
+    // boundary flip needs a re-query (tool lists + prompt are baked in).
+    const nextPolicies = options?.capabilityPolicies;
+    const capabilityBlockChanged = nextPolicies !== undefined && blockBoundaryChanged(this.capabilityPolicies, nextPolicies);
+    if (nextPolicies !== undefined) {
+      this.capabilityPolicies = nextPolicies;
+      if (capabilityBlockChanged) {
+        this.systemPrompt = generateSystemPrompt(
+          this.availableEnvVars,
+          this.userSystemPrompt,
+          this.modelPromptHints,
+          this.webSearchProvider,
+          this.webFetchProvider,
+          nextPolicies
+        );
+      }
+      this.reconcilePendingCapabilityReviews();
+    }
 
     if (effortChanged) {
       this.effort = effort;
@@ -986,11 +1113,15 @@ export class ClaudeCodeProcess extends EventEmitter {
         await this.currentStop.catch(() => undefined);
       }
       await this.restart();
-    } else if (effortChanged) {
+    } else if (effortChanged || capabilityBlockChanged) {
       // Effort can only be set at query creation time — the SDK has no setEffort
       // facility — so any effort change forces an interrupt + re-query. The new
-      // model (if also changed) is picked up by the same restart.
-      const reasons: string[] = [`effort ${currentEffort} -> ${effort}`];
+      // model (if also changed) is picked up by the same restart. A capability
+      // block boundary flip re-queries for the same reason: the tool lists and
+      // system prompt only apply at query creation.
+      const reasons: string[] = [];
+      if (effortChanged) reasons.push(`effort ${currentEffort} -> ${effort}`);
+      if (capabilityBlockChanged) reasons.push('capability block boundary changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);
       console.log(`[Session ${this.sessionId}] Restarting query (${reasons.join(', ')})`);
       await this.interrupt();
@@ -1039,6 +1170,29 @@ export class ClaudeCodeProcess extends EventEmitter {
     // the tracker reads settled leaves the reaper free to kill the turn it
     // just started.
     this.emit('outbound-message', { expectsResponse: shouldQuery !== false });
+  }
+
+  /**
+   * Settles pending capability reviews that a policy change made moot: a
+   * capability now on 'allow' auto-approves them (one-time), one now on
+   * 'block' rejects them. Without this, loosening the policy would strand
+   * the paused launch — the host stops rendering a card the container is
+   * still waiting on.
+   */
+  private reconcilePendingCapabilityReviews(): void {
+    for (const pending of inputManager.getAllPending()) {
+      if (pending.inputType !== 'capability_review' || pending.sessionId !== this.sessionId) continue;
+      const capability = (pending.metadata as { capability?: Capability } | undefined)?.capability;
+      if (capability !== 'subagents' && capability !== 'workflows') continue;
+      const policy = policyFor(this.capabilityPolicies, capability);
+      if (policy === 'allow') {
+        console.log(`[Session ${this.sessionId}] Auto-approving pending ${capability} review ${pending.toolUseId} (policy now allow)`);
+        inputManager.resolve(pending.toolUseId, { scope: 'once' });
+      } else if (policy === 'block') {
+        console.log(`[Session ${this.sessionId}] Rejecting pending ${capability} review ${pending.toolUseId} (policy now block)`);
+        inputManager.reject(pending.toolUseId, blockedCapabilityMessage(capability));
+      }
+    }
   }
 
   /**

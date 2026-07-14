@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import { writeFileAtomicSync } from './atomic-file';
-import type { EffortLevel } from './types';
+import type { AgentCapabilityPolicies, EffortLevel } from './types';
 
 interface SessionMetadata {
   sessionId: string;
@@ -22,6 +22,12 @@ interface SessionMetadata {
   maxBudgetUsd?: number;
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
+  // Must survive resume: doResumeSession starts the query straight from these
+  // options, so an unpersisted block policy would briefly re-expose the tools.
+  capabilityPolicies?: AgentCapabilityPolicies;
+  // "Allow for this session" review grants — session-scoped, so they must
+  // survive eviction+resume (the host's grant record assumes they do).
+  sessionCapabilityGrants?: Array<'subagents' | 'workflows'>;
   // Session classification (e.g. isAutomated) — must survive resume so the
   // idle-eviction class and browser-lock-on-result behavior stay correct.
   metadata?: Record<string, unknown>;
@@ -128,6 +134,22 @@ export class SessionPersistence {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.model = model;
+      this.save();
+    }
+  }
+
+  updateCapabilityPolicies(sessionId: string, policies: AgentCapabilityPolicies | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.capabilityPolicies = policies;
+      this.save();
+    }
+  }
+
+  addSessionCapabilityGrant(sessionId: string, capability: 'subagents' | 'workflows'): void {
+    const session = this.sessions.get(sessionId);
+    if (session && !session.sessionCapabilityGrants?.includes(capability)) {
+      session.sessionCapabilityGrants = [...(session.sessionCapabilityGrants ?? []), capability];
       this.save();
     }
   }

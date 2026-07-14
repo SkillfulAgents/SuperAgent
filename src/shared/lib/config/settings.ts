@@ -19,6 +19,13 @@ import {
   modelCatalogSettingsSchema,
   type ModelCatalogSettings,
 } from '../llm-provider/model-catalog-schema'
+import {
+  agentCapabilitySettingsSchema,
+  DEFAULT_AGENT_CAPABILITIES,
+  type AgentCapabilitySettings,
+} from './capability-policy-schema'
+
+export type { AgentCapabilitySettings, CapabilityPolicy } from './capability-policy-schema'
 
 export interface ContainerSettings {
   containerRunner: string
@@ -237,6 +244,8 @@ export interface AppSettings {
   platformNotifications?: PlatformNotificationsSettings
   /** Anthropic SDK tool search — defaults on; passed as `ENABLE_TOOL_SEARCH` to the container. */
   enableToolSearch?: boolean
+  /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
+  agentCapabilities?: AgentCapabilitySettings
 }
 
 export interface PlatformNotificationsSettings {
@@ -317,6 +326,7 @@ export interface GlobalSettingsResponse {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports: boolean
   enableToolSearch: boolean
+  agentCapabilities: AgentCapabilitySettings
 }
 
 /**
@@ -363,6 +373,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     agentEffort: 'medium',
   },
   enableToolSearch: true,
+  agentCapabilities: DEFAULT_AGENT_CAPABILITIES,
   skillsets: [DEFAULT_PUBLIC_SKILLSET],
 }
 
@@ -489,6 +500,15 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     platformAuth: loaded.platformAuth,
     platformNotifications: loaded.platformNotifications,
     enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
+    // Sanitize per-field: an unknown tier (hand-edited file, future version)
+    // falls back to that field's default instead of poisoning the section.
+    agentCapabilities: (() => {
+      const merged = { ...DEFAULT_AGENT_CAPABILITIES, ...loaded.agentCapabilities }
+      const parsed = agentCapabilitySettingsSchema.safeParse(merged)
+      if (parsed.success) return parsed.data
+      console.warn('Invalid agentCapabilities in settings.json; using defaults:', parsed.error.message)
+      return structuredClone(DEFAULT_AGENT_CAPABILITIES)
+    })(),
   }
 }
 
@@ -814,6 +834,12 @@ export function getCustomEnvVars(): Record<string, string> {
 export function getVoiceSettings(): VoiceSettings {
   const settings = getSettings()
   return settings.voice ?? {}
+}
+
+/** Resolved launch policies for subagents/workflows (defaults applied). */
+export function getAgentCapabilitySettings(): AgentCapabilitySettings {
+  const settings = getSettings()
+  return settings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES
 }
 
 export { DEFAULT_SETTINGS }

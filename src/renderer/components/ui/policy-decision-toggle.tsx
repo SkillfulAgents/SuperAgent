@@ -13,6 +13,11 @@ interface PolicyDecisionToggleProps {
   value: PolicyDecision
   onChange: (value: PolicyDecision) => void
   size?: 'sm' | 'md'
+  /**
+   * When false, clicking the active option is a no-op instead of resetting to
+   * 'default' — for strict three-way policies with no inherit tier.
+   */
+  allowDeselect?: boolean
 }
 
 const options = [
@@ -43,6 +48,7 @@ export function PolicyDecisionToggle({
   value,
   onChange,
   size = 'sm',
+  allowDeselect = true,
 }: PolicyDecisionToggleProps) {
   const iconSize = size === 'sm' ? 'h-3.5 w-3.5' : 'h-4 w-4'
   const btnSize = size === 'sm' ? 'h-6 w-7' : 'h-7 w-8'
@@ -62,7 +68,10 @@ export function PolicyDecisionToggle({
                   data-active={isActive}
                   aria-label={opt.label}
                   aria-pressed={isActive}
-                  onClick={() => onChange(isActive ? 'default' : opt.value)}
+                  onClick={() => {
+                    if (isActive && !allowDeselect) return
+                    onChange(isActive ? 'default' : opt.value)
+                  }}
                   className={cn(
                     'inline-flex items-center justify-center rounded-sm transition-colors',
                     btnSize,
@@ -73,7 +82,7 @@ export function PolicyDecisionToggle({
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-xs">
-                {isActive ? `Remove ${opt.label.toLowerCase()} (set to default)` : opt.label}
+                {isActive && allowDeselect ? `Remove ${opt.label.toLowerCase()} (set to default)` : opt.label}
               </TooltipContent>
             </Tooltip>
           )

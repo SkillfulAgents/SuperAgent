@@ -7,6 +7,7 @@ import { FileRequestItem } from './file-request-item'
 import { BrowserInputRequestItem } from './browser-input-request-item'
 import { ScriptRunRequestItem } from './script-run-request-item'
 import { ComputerUseRequestItem } from './computer-use-request-item'
+import { CapabilityReviewRequestItem } from './capability-review-request-item'
 import { ProxyReviewRequestItem } from './proxy-review-request-item'
 import { XAgentReviewRequestItem } from './x-agent-review-request-item'
 import type { PendingRequestDescriptor } from './use-pending-requests'
@@ -124,6 +125,20 @@ export function renderPendingRequest(
           params={d.params}
           permissionLevel={d.permissionLevel}
           appName={d.appName}
+          sessionId={ctx.sessionId}
+          agentSlug={ctx.agentSlug}
+          readOnly={ctx.readOnly}
+          onComplete={d.onComplete}
+        />
+      )
+    case 'capability_review':
+      return (
+        <CapabilityReviewRequestItem
+          key={d.key}
+          toolUseId={d.toolUseId}
+          capability={d.capability}
+          toolName={d.toolName}
+          input={d.input}
           sessionId={ctx.sessionId}
           agentSlug={ctx.agentSlug}
           readOnly={ctx.readOnly}

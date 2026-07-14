@@ -51,6 +51,16 @@ export interface FileTree {
   children?: FileTree[];
 }
 
+// Three-tier launch policy for a delegation capability. 'review' holds each
+// launch until the user approves it; 'block' removes the capability from the
+// session entirely (tools + prompt), with a call-time deny as backstop.
+export type CapabilityPolicy = 'allow' | 'review' | 'block';
+
+export interface AgentCapabilityPolicies {
+  subagents?: CapabilityPolicy;
+  workflows?: CapabilityPolicy;
+}
+
 export interface CreateSessionRequest {
   metadata?: Record<string, any>;
   workingDirectory?: string;
@@ -72,6 +82,7 @@ export interface CreateSessionRequest {
   customEnvVars?: Record<string, string>; // User-defined env vars for the agent process
   maxBrowserTabs?: number; // Max browser tabs allowed (default 10)
   effort?: EffortLevel; // Initial thinking effort level
+  capabilityPolicies?: AgentCapabilityPolicies; // Launch policies for subagents/workflows (absent = allow)
 }
 
 export interface SendMessageRequest {
@@ -81,4 +92,5 @@ export interface SendMessageRequest {
   effort?: EffortLevel; // If set and different from current session effort, triggers interrupt+restart with new effort
   model?: string; // If set and different from current session model, triggers interrupt+restart with new model
   shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
+  capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart
 }

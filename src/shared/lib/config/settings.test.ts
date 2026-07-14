@@ -1537,3 +1537,33 @@ describe('runtimeSettings migration', () => {
     expect(reloaded.container.runtimeSettings?.lima?.vmMemory).toBe('16GiB')
   })
 })
+
+// ============================================================================
+// agentCapabilities (subagent/workflow launch policies)
+// ============================================================================
+
+describe('agentCapabilities', () => {
+  it('defaults to allow subagents / review workflows when the file is absent', () => {
+    mockNoSettingsFile()
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
+  })
+
+  it('fills a partial stored section from the defaults', () => {
+    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'block' } }))
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'block', workflows: 'review' })
+  })
+
+  it('preserves a fully customized section', () => {
+    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'review', workflows: 'allow' } }))
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'review', workflows: 'allow' })
+  })
+
+  it('falls back to defaults when a stored tier is invalid', () => {
+    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'maybe', workflows: 'review' } }))
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
+  })
+
+  it('DEFAULT_SETTINGS carries the section so new files persist it', () => {
+    expect(DEFAULT_SETTINGS.agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
+  })
+})

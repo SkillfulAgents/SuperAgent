@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { SessionManager } from './session-manager';
 import { CreateSessionRequest, SendMessageRequest } from './types';
+import { agentCapabilityPoliciesSchema } from './capability-policies';
 import type { UUID } from 'crypto';
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -147,6 +148,7 @@ app.post('/sessions/:id/messages', async (c) => {
       effort: body.effort,
       model: body.model,
       shouldQuery: body.shouldQuery,
+      capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
     });
 
     return c.json({ success: true }, 201);
@@ -1766,6 +1768,7 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
       await sessionManager.sendMessage(sessionId, content, payload.uuid, {
         effort: payload.effort,
         model: payload.model,
+        capabilityPolicies: agentCapabilityPoliciesSchema.parse(payload.capabilityPolicies),
       });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);

@@ -26,6 +26,7 @@ const mockStreamState = {
   pendingBrowserInputRequests: [] as Array<{ toolUseId: string; message: string; requirements: string[] }>,
   pendingScriptRunRequests: [] as Array<{ toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }>,
   pendingComputerUseRequests: [] as Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }>,
+  pendingCapabilityReviewRequests: [] as Array<{ toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown> }>,
   streamingToolUses: [] as Array<{ id: string; name: string; partialInput: string; ready?: boolean }>,
   autoApprovedScriptRunIds: new Set<string>(),
   autoApprovedComputerUseIds: new Set<string>(),
@@ -40,6 +41,7 @@ const mockRemovers = {
   removeBrowserInputRequest: vi.fn(),
   removeScriptRunRequest: vi.fn(),
   removeComputerUseRequest: vi.fn(),
+  removeCapabilityReviewRequest: vi.fn(),
 }
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -52,6 +54,7 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   removeBrowserInputRequest: (...args: unknown[]) => mockRemovers.removeBrowserInputRequest(...args),
   removeScriptRunRequest: (...args: unknown[]) => mockRemovers.removeScriptRunRequest(...args),
   removeComputerUseRequest: (...args: unknown[]) => mockRemovers.removeComputerUseRequest(...args),
+  removeCapabilityReviewRequest: (...args: unknown[]) => mockRemovers.removeCapabilityReviewRequest(...args),
 }))
 
 // Mock proxy reviews — mutable per test
@@ -106,6 +109,7 @@ describe('usePendingRequests', () => {
       pendingBrowserInputRequests: [],
       pendingScriptRunRequests: [],
       pendingComputerUseRequests: [],
+      pendingCapabilityReviewRequests: [],
       streamingToolUses: [],
       autoApprovedScriptRunIds: new Set<string>(),
       autoApprovedComputerUseIds: new Set<string>(),
@@ -851,5 +855,41 @@ describe('usePendingRequests', () => {
       'tu-file',
       'tu-secret-2',
     ])
+  })
+
+  it('returns SSE-based capability review requests while active', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockStreamState.pendingCapabilityReviewRequests = [
+      { toolUseId: 'tu-cap-1', capability: 'workflows', toolName: 'Workflow', input: { name: 'audit' } },
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'capability_review')
+    expect(matches).toHaveLength(1)
+    expect(matches[0].capability).toBe('workflows')
+    expect(matches[0].input).toEqual({ name: 'audit' })
+  })
+
+  it('does NOT derive capability reviews from message history — a running Task without a result is not an approval', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-task',
+            name: 'Task',
+            input: { subagent_type: 'Explore', prompt: 'look around' },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'capability_review')).toHaveLength(0)
   })
 })
