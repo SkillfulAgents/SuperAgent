@@ -114,18 +114,18 @@ export async function getItemsFromDataTransfer(
 }
 
 /**
- * In Electron, File objects from <input> have a non-standard .path property
- * with the absolute filesystem path. Extract the folder's absolute path
- * by stripping inner path components from the first file's absolute path.
+ * In Electron, resolve a file's absolute path via webUtils.getPathForFile
+ * (exposed on the preload bridge — File.path was removed in Electron 32),
+ * then extract the folder's absolute path by stripping inner path components.
  * Works on macOS, Linux, and Windows (handles both / and \ separators).
  */
 function getElectronFolderPath(firstFile: File, relativePath?: string): string | null {
-  const f = firstFile as File & { path?: string }
-  const rel = relativePath ?? f.webkitRelativePath
-  if (!f.path || !rel) return null
+  const rel = relativePath ?? firstFile.webkitRelativePath
+  const absPath = window.electronAPI?.getPathForFile(firstFile)
+  if (!absPath || !rel) return null
 
   const relParts = rel.split('/')
-  let folderPath = f.path
+  let folderPath = absPath
   for (let i = relParts.length - 1; i >= 1; i--) {
     const lastSep = Math.max(folderPath.lastIndexOf('/'), folderPath.lastIndexOf('\\'))
     if (lastSep === -1) return null

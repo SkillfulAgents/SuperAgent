@@ -30,6 +30,9 @@ export function useAddMount() {
 
   return useMutation({
     mutationFn: async (data: { agentSlug: string; hostPath: string; restart?: boolean }) => {
+      if (!data.hostPath) {
+        throw new Error('Could not determine the folder’s location on disk. Try dragging the folder in, or attach it as an upload.')
+      }
       const res = await apiFetch(`/api/agents/${data.agentSlug}/mounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

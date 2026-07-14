@@ -73,6 +73,14 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     setAttachments((prev) => [...prev, ...newAttachments])
   }, [])
 
+  const setAttachmentError = useCallback((id: string, error: string | undefined) => {
+    setAttachments((prev) => prev.map((a) => (a.id === id ? { ...a, error } : a)))
+  }, [])
+
+  const clearAttachmentErrors = useCallback(() => {
+    setAttachments((prev) => (prev.some((a) => a.error) ? prev.map((a) => (a.error ? { ...a, error: undefined } : a)) : prev))
+  }, [])
+
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => {
       const removed = prev.find((a) => a.id === id)
@@ -158,6 +166,8 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     addFiles,
     addFolders,
     addMounts,
+    setAttachmentError,
+    clearAttachmentErrors,
     removeAttachment,
     clearAttachments,
     handleFileSelect,

@@ -94,7 +94,23 @@ function createMockFileEntry(
 // ============================================================================
 
 describe('getFolderFromDirectoryInput — Electron folderPath', () => {
-  it('extracts folderPath on macOS/Linux when File has .path (Electron)', () => {
+  let originalElectronAPI: typeof window.electronAPI
+
+  beforeEach(() => {
+    originalElectronAPI = window.electronAPI
+    // Electron resolves absolute paths via the preload's webUtils.getPathForFile
+    // (File.path was removed in Electron 32). The mock reads back the `path`
+    // stamped on the test File objects.
+    window.electronAPI = {
+      getPathForFile: vi.fn((f: File) => (f as File & { path?: string }).path ?? ''),
+    } as any
+  })
+
+  afterEach(() => {
+    window.electronAPI = originalElectronAPI
+  })
+
+  it('extracts folderPath on macOS/Linux via getPathForFile (Electron)', () => {
     const fileList = createMockFileList([
       {
         name: 'index.ts',
@@ -114,7 +130,7 @@ describe('getFolderFromDirectoryInput — Electron folderPath', () => {
     expect(result!.folderName).toBe('my-project')
   })
 
-  it('extracts folderPath on Windows when File has .path (Electron)', () => {
+  it('extracts folderPath on Windows via getPathForFile (Electron)', () => {
     const fileList = createMockFileList([
       {
         name: 'index.ts',
@@ -141,7 +157,9 @@ describe('getFolderFromDirectoryInput — Electron folderPath', () => {
     expect(result!.folderPath).toBe('/Users/joe/my-project')
   })
 
-  it('returns undefined folderPath when File has no .path (browser)', () => {
+  it('returns undefined folderPath when electronAPI is not available (browser)', () => {
+    window.electronAPI = undefined
+
     const fileList = createMockFileList([
       { name: 'index.ts', webkitRelativePath: 'my-project/src/index.ts' },
     ])
@@ -150,6 +168,21 @@ describe('getFolderFromDirectoryInput — Electron folderPath', () => {
     expect(result).not.toBeNull()
     expect(result!.folderPath).toBeUndefined()
     // Files should still be enumerated for zip fallback
+    expect(result!.files).toHaveLength(1)
+  })
+
+  it('returns undefined folderPath when getPathForFile returns empty string', () => {
+    window.electronAPI = {
+      getPathForFile: vi.fn(() => ''),
+    } as any
+
+    const fileList = createMockFileList([
+      { name: 'index.ts', webkitRelativePath: 'my-project/src/index.ts' },
+    ])
+
+    const result = getFolderFromDirectoryInput(fileList)
+    expect(result).not.toBeNull()
+    expect(result!.folderPath).toBeUndefined()
     expect(result!.files).toHaveLength(1)
   })
 })

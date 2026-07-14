@@ -72,6 +72,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     addFiles,
     addFolders: addFoldersDirectly,
     addMounts,
+    setAttachmentError,
+    clearAttachmentErrors,
     removeAttachment,
     clearAttachments,
     handleFileSelect,
@@ -93,10 +95,17 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     if (choice === 'upload') {
       addFoldersDirectly(pendingFolders)
     } else if (choice === 'mount') {
-      addMounts(pendingFolders.map((f) => ({
+      // A folder without a resolved absolute path can't be mounted — fall back
+      // to upload for it rather than POSTing a mount with no hostPath.
+      const mountable = pendingFolders.filter((f) => f.folderPath)
+      const pathless = pendingFolders.filter((f) => !f.folderPath)
+      addMounts(mountable.map((f) => ({
         folderName: f.folderName,
         hostPath: f.folderPath!,
       })))
+      if (pathless.length > 0) {
+        addFoldersDirectly(pathless)
+      }
     }
     setPendingFolders([])
   }, [pendingFolders, addFoldersDirectly, addMounts])
@@ -140,11 +149,15 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     if (attachments.length > 0) {
       setIsUploading(true)
       setUploadError(null)
+      clearAttachmentErrors()
+      // Tracks the attachment being processed so the catch can flag its chip
+      let inFlightAttachment: Attachment | null = null
       try {
         const uploadResults: { path: string }[] = []
         const mountResults: { containerPath: string; hostPath: string }[] = []
 
         for (const a of attachments) {
+          inFlightAttachment = a
           if (a.type === 'mount') {
             const result = await addMountMutation.mutateAsync({ agentSlug, hostPath: a.hostPath, restart: true })
             mountResults.push({ containerPath: result.containerPath, hostPath: a.hostPath })
@@ -171,7 +184,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       } catch (error) {
         console.error('Failed to upload attachments:', error)
         captureRendererException(error, { tags: { source: 'attachment-upload' }, extra: { agentSlug } })
-        setUploadError(error instanceof Error ? error.message : 'Upload failed. Please try again.')
+        const message = error instanceof Error ? error.message : 'Upload failed. Please try again.'
+        if (inFlightAttachment) {
+          setAttachmentError(inFlightAttachment.id, message)
+        }
+        setUploadError(message)
         setIsUploading(false)
         return
       }
