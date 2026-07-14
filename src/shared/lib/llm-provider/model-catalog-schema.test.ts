@@ -88,6 +88,16 @@ describe('modelDefinitionSchema', () => {
     expect(() => modelDefinitionSchema.parse({ ...base, promptHints: [''] })).toThrow()
   })
 
+  it('accepts supportsWebFetch independently of supportsWebSearch', () => {
+    expect(
+      modelDefinitionSchema.parse({
+        ...base,
+        supportsWebSearch: true,
+        supportsWebFetch: false,
+      }),
+    ).toMatchObject({ supportsWebSearch: true, supportsWebFetch: false })
+  })
+
   it('validates a catalog array', () => {
     expect(modelCatalogSchema.parse([base])).toHaveLength(1)
   })

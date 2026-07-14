@@ -28,14 +28,16 @@ describe('EffortSlider', () => {
     expect(screen.queryByTestId('effort-option-max')).not.toBeInTheDocument()
   })
 
-  it('clicking a stop fires onChange then onCommit for that level', async () => {
-    const user = userEvent.setup()
+  it('activating a stop (keyboard/AT click) fires onChange for that level, but not for the current one', () => {
     const onChange = vi.fn()
-    const onCommit = vi.fn()
-    render(<EffortSlider levels={ALL} value="medium" onChange={onChange} onCommit={onCommit} />)
-    await user.click(screen.getByTestId('effort-option-max'))
+    render(<EffortSlider levels={ALL} value="medium" onChange={onChange} />)
+    // fireEvent.click = a bare click with no pointer gesture, i.e. keyboard/AT
+    // activation (a real pointer press is captured by the track, which
+    // retargets the click away from the tick).
+    fireEvent.click(screen.getByTestId('effort-option-max'))
     expect(onChange).toHaveBeenCalledWith('max')
-    expect(onCommit).toHaveBeenCalledWith('max')
+    fireEvent.click(screen.getByTestId('effort-option-medium'))
+    expect(onChange).toHaveBeenCalledTimes(1) // re-activating the current value is a no-op
   })
 
   it('exposes the thumb as a slider with the active index and label', () => {
@@ -46,18 +48,16 @@ describe('EffortSlider', () => {
     expect(thumb).toHaveAttribute('aria-valuetext', 'High')
   })
 
-  it('arrow keys step the value via onChange without committing (popover stays open)', async () => {
+  it('arrow keys step the value via onChange', async () => {
     const user = userEvent.setup()
     const onChange = vi.fn()
-    const onCommit = vi.fn()
-    render(<EffortSlider levels={ALL} value="medium" onChange={onChange} onCommit={onCommit} />)
+    render(<EffortSlider levels={ALL} value="medium" onChange={onChange} />)
     const thumb = screen.getByRole('slider')
     thumb.focus()
     await user.keyboard('{ArrowRight}')
     expect(onChange).toHaveBeenLastCalledWith('high')
     await user.keyboard('{ArrowLeft}{ArrowLeft}')
     expect(onChange).toHaveBeenLastCalledWith('low')
-    expect(onCommit).not.toHaveBeenCalled()
   })
 
   it('keeps a blue fill, overlaying the rainbow only at Max', () => {
@@ -77,6 +77,36 @@ describe('EffortSlider', () => {
     // Decorative only — without this, the overlay covers every tick at Max and
     // intercepts clicks targeted at the effort-option-* buttons.
     expect(screen.getByTestId('effort-fill-rainbow').className).toContain('pointer-events-none')
+  })
+
+  it('a drag emits once per level crossed, never per pointermove', () => {
+    const onChange = vi.fn()
+    render(<EffortSlider levels={ALL} value="low" onChange={onChange} />)
+    const track = screen.getByTestId('effort-slider').querySelector('.touch-none') as HTMLElement
+    // jsdom has no layout; 120px wide − 2×10px track-radius = stops at x=10,35,60,85,110.
+    vi.spyOn(track, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 120 } as DOMRect)
+    fireEvent.pointerDown(track, { clientX: 10 }) // the current stop — no emit
+    fireEvent.pointerMove(track, { clientX: 12 }) // still 'low'
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.pointerMove(track, { clientX: 60 }) // 'high'
+    fireEvent.pointerMove(track, { clientX: 61 }) // still 'high' — deduped
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenLastCalledWith('high')
+    fireEvent.pointerMove(track, { clientX: 110 }) // 'max'
+    expect(onChange).toHaveBeenCalledTimes(2)
+    expect(onChange).toHaveBeenLastCalledWith('max')
+  })
+
+  it('a drag can start on a tick dot — the press bubbles to the track', () => {
+    const onChange = vi.fn()
+    render(<EffortSlider levels={ALL} value="medium" onChange={onChange} />)
+    const track = screen.getByTestId('effort-slider').querySelector('.touch-none') as HTMLElement
+    vi.spyOn(track, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 120 } as DOMRect)
+    // Press ON the medium tick (x=35 == its stop), then drag to the far end.
+    fireEvent.pointerDown(screen.getByTestId('effort-option-medium'), { clientX: 35 })
+    fireEvent.pointerMove(track, { clientX: 110 })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenLastCalledWith('max')
   })
 
   it('a cancelled drag stops tracking — later hovers no longer change the value', () => {

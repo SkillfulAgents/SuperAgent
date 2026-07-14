@@ -239,9 +239,12 @@ export const OPENROUTER_CATALOG: ModelDefinition[] = [
 
 /**
  * Non-Claude models the Platform proxy can serve. Unlike OpenRouter these use
- * BARE ids (`gpt-5.5`): the proxy's routing/pricing all key off bare ids, so a
- * vendor-prefixed slug would miss every match.
+ * BARE ids (`gpt-5.5`, `grok-4.5`): the proxy's routing/pricing all key off bare
+ * ids, so a vendor-prefixed slug would miss every match.
  */
+// Responses hosts web_search but not web_fetch — fetch needs a Settings → Web vendor (Exa).
+const PLATFORM_RESPONSES_WEB = { supportsWebSearch: true, supportsWebFetch: false } as const
+
 const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
   {
     id: 'gpt-5.4',
@@ -250,9 +253,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     family: 'gpt',
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
-    // Platform serves gpt over the OpenAI Responses wire, which maps the agent's
-    // web_search server tool to the native web_search tool — so search works.
-    supportsWebSearch: true,
+    ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
     contextWindow: 1_050_000,
@@ -266,7 +267,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     family: 'gpt',
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
-    supportsWebSearch: true,
+    ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
     contextWindow: 1_050_000,
@@ -280,7 +281,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     family: 'gpt',
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
-    supportsWebSearch: true,
+    ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 1, outputPerMtok: 6 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-luna).
     contextWindow: 1_050_000,
@@ -294,7 +295,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     family: 'gpt',
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
-    supportsWebSearch: true,
+    ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-terra).
     contextWindow: 1_050_000,
@@ -310,16 +311,29 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     isLatest: true,
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
-    supportsWebSearch: true,
+    ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-sol).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
   },
+  {
+    // Bare id matches the platform proxy's grok-* → xai-responses route.
+    id: 'grok-4.5',
+    label: 'Grok 4.5',
+    blurb: 'xAI Grok, served via Platform',
+    family: 'grok',
+    isLatest: true,
+    icon: 'xai',
+    supportedEfforts: NON_CLAUDE_EFFORTS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+    contextWindow: 500_000,
+  },
 ]
 
-/** Platform — bare Claude models plus the GPT models the proxy serves. */
+/** Platform — bare Claude models plus the GPT/Grok models the proxy serves. */
 export const PLATFORM_CATALOG: ModelDefinition[] = [
   ...CLAUDE_BARE_CATALOG,
   ...PLATFORM_EXTRA_MODELS,

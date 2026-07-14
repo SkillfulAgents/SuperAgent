@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react'
+import { memo } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -7,7 +7,7 @@ import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { EFFORT_LEVELS } from '@shared/lib/container/types'
 import { type ComposerOptionsState } from './composer-options'
 import { ModelFamilyList, findCatalogModel } from './model-family-list'
-import { EFFORT_LABELS, EffortSection } from './effort-slider'
+import { EFFORT_LABELS, EffortSection, useEffortClamp } from './effort-slider'
 
 interface ComposerOptionsPopoverProps {
   state: ComposerOptionsState
@@ -18,7 +18,6 @@ interface ComposerOptionsPopoverProps {
 
 function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: ComposerOptionsPopoverProps) {
   const { effort, setEffort, model, setModel, catalog, webProvider } = state
-  const [open, setOpen] = useState(false)
 
   // Trigger display fallback for the brief window before useComposerOptions
   // seeds `model`. Order: resolve the selection against the catalog (exact id
@@ -29,14 +28,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
     ?? catalog.find((m) => m.family === 'sonnet' && m.isLatest)
     ?? catalog[0]
 
-  // Reset to Medium whenever the selected model disallows the current effort.
-  // Medium is the default effort and every model supports it, so it's safe.
-  const supportsCurrentEffort = selectedModel?.supportedEfforts.includes(effort) ?? true
-  useEffect(() => {
-    if (includeEffort && selectedModel && !supportsCurrentEffort) {
-      setEffort('medium')
-    }
-  }, [includeEffort, selectedModel, supportsCurrentEffort, setEffort])
+  useEffortClamp(includeEffort ? selectedModel : undefined, effort, setEffort)
 
   const visibleEfforts = EFFORT_LEVELS.filter((level) =>
     selectedModel ? selectedModel.supportedEfforts.includes(level) : true
@@ -49,7 +41,9 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true }: C
     : (selectedModelLabel ?? 'Model')
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    // Uncontrolled: nothing closes the popover programmatically anymore (picks
+    // never dismiss), so Radix owns the open state.
+    <Popover>
       <PopoverTrigger asChild>
         <Button
           type="button"

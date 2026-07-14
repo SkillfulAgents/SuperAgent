@@ -318,8 +318,13 @@ html[data-keyboard-open] [data-composer-footer] {
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   will-change: filter;
+  /* Finite loop counts (~50s), not infinite: the popovers never dismiss on
+     pick, so an abandoned-open picker at Max would otherwise composite these
+     layers every frame indefinitely. Both loops end exactly where they start
+     (360deg == 0deg, one tile == origin), so the stop is a seamless freeze to
+     the static rainbow, never a visible jump. */
   animation:
-    effort-rainbow-hue 6s linear infinite,
+    effort-rainbow-hue 6s linear 8,
     effort-mask-sweep 4s cubic-bezier(0.22, 0.6, 0.36, 1) both;
 }
 
@@ -354,7 +359,8 @@ html[data-keyboard-open] [data-composer-footer] {
   background-size: 50% 100%;
   background-repeat: repeat;
   will-change: transform;
-  animation: effort-rainbow-drift 5s linear infinite;
+  /* Matches the host's ~50s animation budget — see the comment there. */
+  animation: effort-rainbow-drift 5s linear 10;
 }
 
 /* Inverse of the rainbow's mask, applied to the gray base fill at Max: gray

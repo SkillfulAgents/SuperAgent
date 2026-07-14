@@ -1630,6 +1630,11 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return null
   }
 
+  // No runner network to probe from in mock mode.
+  async probeHostPortFromRunner(_host: string, _port: number): Promise<'reachable' | 'unreachable' | 'unknown'> {
+    return 'unknown'
+  }
+
   // Lifecycle management
 
   async start(options?: StartOptions): Promise<void> {

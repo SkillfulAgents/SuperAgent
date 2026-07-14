@@ -105,6 +105,7 @@ describe('getProviderCatalog', () => {
       family: 'gpt',
       icon: 'openai',
       supportsWebSearch: true,
+      supportsWebFetch: false,
       pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     })
     expect(gpt.isLatest).toBeFalsy()
@@ -112,25 +113,39 @@ describe('getProviderCatalog', () => {
     expect(catalog.find((m) => m.id === 'gpt-5.6-luna')).toMatchObject({
       family: 'gpt',
       supportsWebSearch: true,
+      supportsWebFetch: false,
       pricing: { inputPerMtok: 1, outputPerMtok: 6 },
     })
     expect(catalog.find((m) => m.id === 'gpt-5.6-terra')).toMatchObject({
       family: 'gpt',
       supportsWebSearch: true,
+      supportsWebFetch: false,
       pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
     })
     expect(catalog.find((m) => m.id === 'gpt-5.6-sol')).toMatchObject({
       family: 'gpt',
       isLatest: true,
       supportsWebSearch: true,
+      supportsWebFetch: false,
       pricing: { inputPerMtok: 5, outputPerMtok: 30 },
     })
     const gptLatest = catalog.filter((m) => m.family === 'gpt' && m.isLatest)
     expect(gptLatest.map((m) => m.id)).toEqual(['gpt-5.6-sol'])
+    // Grok rides the same Responses wire (xai-responses upstream); bare id only.
+    expect(catalog.find((m) => m.id === 'grok-4.5')).toMatchObject({
+      family: 'grok',
+      isLatest: true,
+      icon: 'xai',
+      supportsWebSearch: true,
+      supportsWebFetch: false,
+      pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+      contextWindow: 500_000,
+    })
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
     expect(catalog.some((m) => m.id === 'openai/gpt-5.5')).toBe(false)
     expect(catalog.some((m) => m.id === 'z-ai/glm-5.2')).toBe(false)
     expect(catalog.some((m) => m.id === 'glm-5.2')).toBe(false)
+    expect(catalog.some((m) => m.id === 'x-ai/grok-4.5')).toBe(false)
   })
 })
 
@@ -323,6 +338,10 @@ describe('getModelContextWindow', () => {
     expect(getModelContextWindow('gpt-5.6-sol', 'platform')).toBe(1_050_000)
   })
 
+  it('returns the catalog window for Platform Grok models', () => {
+    expect(getModelContextWindow('grok-4.5', 'platform')).toBe(500_000)
+  })
+
   it('returns the catalog window for OpenRouter GPT models', () => {
     expect(getModelContextWindow('openai/gpt-5.5', 'openrouter')).toBe(1_050_000)
     expect(getModelContextWindow('z-ai/glm-5.2', 'openrouter')).toBeUndefined()
@@ -404,10 +423,12 @@ describe('resolveModelForProvider', () => {
     expect(resolveModelForProvider('x-ai/grok-4.5', 'openrouter', 'agent')).toBe('x-ai/grok-4.5')
   })
 
-  it('resolves Platform GPT models to bare ids and falls back for unsupported glm', () => {
+  it('resolves Platform GPT/Grok models to bare ids and falls back for unsupported glm', () => {
     expect(resolveModelForProvider('gpt', 'platform', 'agent')).toBe('gpt-5.6-sol')
     expect(resolveModelForProvider('gpt-5.4', 'platform', 'agent')).toBe('gpt-5.4')
     expect(resolveModelForProvider('gpt-5.6-luna', 'platform', 'agent')).toBe('gpt-5.6-luna')
+    expect(resolveModelForProvider('grok', 'platform', 'agent')).toBe('grok-4.5')
+    expect(resolveModelForProvider('grok-4.5', 'platform', 'agent')).toBe('grok-4.5')
     expect(resolveModelForProvider('glm', 'platform', 'agent')).toBe('claude-opus-4-8')
   })
 

@@ -52,6 +52,9 @@ export function BrowserTab() {
             model={settings?.models?.browserModel}
             onModelChange={(value) => updateSettings.mutate({ models: { browserModel: value } })}
             disabled={isLoading}
+            // The trigger is left-aligned in its block, so its LEFT edge is the
+            // fixed one — anchoring 'end' would slide the popover on every pick.
+            align="start"
           />
         </div>
         <p className="text-xs text-muted-foreground">

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useMemo } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -6,7 +6,7 @@ import { Separator } from '@renderer/components/ui/separator'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { ModelFamilyList, findCatalogModel, familyDisplayName } from '@renderer/components/messages/model-family-list'
-import { EFFORT_LABELS, EffortSection } from '@renderer/components/messages/effort-slider'
+import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
@@ -30,14 +30,14 @@ interface SettingsModelSelectProps {
 }
 
 /**
- * The two-layered model picker used by saved-setting selectors (default model,
+ * The flat model picker used by saved-setting selectors (default model,
  * summarizer, browser, scheduled-job/trigger, chat integration).
  *
- * The flat model list is the shared {@link ModelFamilyList}, here with
- * `offerLatest` on: each family shows a **Latest** row (stores the bare alias,
- * rides upgrades) plus its **specific versions** (store the concrete id, pinned),
- * labeled `· latest` / `· pinned`. Reads and writes the raw selection string —
- * resolution happens host-side.
+ * The list is the shared {@link ModelFamilyList}, here with `offerLatest` on:
+ * a family's **Latest** chip stores the bare alias (rides upgrades) and its
+ * version chips store concrete ids (pinned); latest-vs-pinned reads from the
+ * lit chip, and only the trigger label spells out `· latest` / `· pinned`.
+ * Reads and writes the raw selection string — resolution happens host-side.
  */
 function SettingsModelSelectImpl({
   model,
@@ -49,7 +49,6 @@ function SettingsModelSelectImpl({
   align = 'end',
 }: SettingsModelSelectProps) {
   const { data: settings } = useSettings()
-  const [open, setOpen] = useState(false)
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const catalog = useMemo(
     () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
@@ -61,13 +60,7 @@ function SettingsModelSelectImpl({
   const isLatestSelected = model !== undefined && catalog.some((m) => m.family === model)
   const selectedFamily = isLatestSelected ? model : resolved?.family
 
-  // Reset to Medium when the resolved model can't do the current effort.
-  const supportsCurrentEffort = resolved?.supportedEfforts.includes(effort) ?? true
-  useEffect(() => {
-    if (includeEffort && onEffortChange && resolved && !supportsCurrentEffort) {
-      onEffortChange('medium')
-    }
-  }, [includeEffort, onEffortChange, resolved, supportsCurrentEffort])
+  useEffortClamp(includeEffort ? resolved : undefined, effort, onEffortChange)
 
   const visibleEfforts = EFFORT_LEVELS.filter((level) =>
     resolved ? resolved.supportedEfforts.includes(level) : true
@@ -78,14 +71,11 @@ function SettingsModelSelectImpl({
   else if (resolved?.family) triggerLabel = `${resolved.label} · pinned`
   else if (resolved) triggerLabel = resolved.label
 
-  // Picks never dismiss (matching the composer): model and effort get set in
-  // one visit; the popover closes on outside click / Escape / trigger toggle.
-  const pick = (value: string) => {
-    onModelChange(value)
-  }
-
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    // Uncontrolled: picks never dismiss (matching the composer) — model and
+    // effort get set in one visit and the popover closes on outside click /
+    // Escape / trigger toggle — so Radix owns the open state.
+    <Popover>
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -120,7 +110,7 @@ function SettingsModelSelectImpl({
           header="Model"
           catalog={catalog}
           value={model}
-          onPick={pick}
+          onPick={onModelChange}
           offerLatest
           webProvider={settings?.webProvider}
         />

@@ -3,7 +3,7 @@ import { AtSign, Check, FileIcon, FolderOpen, Loader2, Search } from 'lucide-rea
 import { cn } from '@shared/lib/utils'
 import { ModelFamilyList } from '@renderer/components/messages/model-family-list'
 import { findCatalogModel, type ComposerOptionsState } from '@renderer/components/messages/composer-options'
-import { EffortSection } from '@renderer/components/messages/effort-slider'
+import { EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { EFFORT_LEVELS } from '@shared/lib/container/types'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
@@ -98,6 +98,9 @@ export function ModelEffortMenu({ state, maxHeight }: { state: ComposerOptionsSt
   const selected =
     findCatalogModel(model, catalog) ?? catalog.find((m) => m.family === 'sonnet' && m.isLatest) ?? catalog[0]
   const efforts = EFFORT_LEVELS.filter((l) => (selected ? selected.supportedEfforts.includes(l) : true))
+  // Without the clamp this menu kept (and dispatched) an unsupported effort
+  // after a model switch, while the slider silently rendered at Low.
+  useEffortClamp(selected, effort, setEffort)
 
   return (
     // Only the model list scrolls; the effort section is pinned to the bottom so

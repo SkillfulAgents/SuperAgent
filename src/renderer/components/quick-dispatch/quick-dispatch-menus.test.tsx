@@ -26,6 +26,21 @@ function makeState(overrides: Partial<ComposerOptionsState>): ComposerOptionsSta
 }
 
 describe('ModelEffortMenu', () => {
+  it('clamps an effort the selected model does not support back to medium', () => {
+    // Regression: this menu once had no clamp (unlike the composer popover and
+    // settings select), so Opus @ Max followed by a 3-effort model kept
+    // dispatching 'max' while the slider silently rendered at Low.
+    const setEffort = vi.fn()
+    render(<ModelEffortMenu state={makeState({ effort: 'max', setEffort })} maxHeight={400} />)
+    expect(setEffort).toHaveBeenCalledWith('medium')
+  })
+
+  it('leaves a supported effort alone', () => {
+    const setEffort = vi.fn()
+    render(<ModelEffortMenu state={makeState({ effort: 'high', setEffort })} maxHeight={400} />)
+    expect(setEffort).not.toHaveBeenCalled()
+  })
+
   it('shows the web-tools warning for a searchless model when no web vendor is set', () => {
     render(<ModelEffortMenu state={makeState({ model: 'openai/gpt-5.5' })} maxHeight={400} />)
     expect(screen.getByTestId('model-no-websearch-warning')).toBeInTheDocument()

@@ -1,4 +1,4 @@
-import { useRef, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { HelpCircle } from 'lucide-react'
 import {
   Tooltip,
@@ -33,12 +33,9 @@ interface EffortSliderProps {
   levels: EffortLevel[]
   /** Current value; must be one of `levels` (caller resets out-of-range values). */
   value: EffortLevel
-  /** Live value change — fires on every click, drag step, and arrow key. */
+  /** Value change — fires on click, arrow key, and once per level a drag crosses
+   *  (never per pointer event: the settings hosts persist each call). */
   onChange: (level: EffortLevel) => void
-  /** Settle — fires on click and on drag release, NOT on keyboard. The composer
-   *  closes its popover here so arrow-keying doesn't dismiss it mid-adjust. */
-  onCommit?: (level: EffortLevel) => void
-  labels?: Record<EffortLevel, string>
 }
 
 /**
@@ -47,15 +44,13 @@ interface EffortSliderProps {
  * `data-testid="effort-option-<level>"` and selects that level on click, so it's a
  * drop-in for the old button list. Purely controlled — keeps no state of its own.
  */
-export function EffortSlider({
-  levels,
-  value,
-  onChange,
-  onCommit,
-  labels = EFFORT_LABELS,
-}: EffortSliderProps) {
+export function EffortSlider({ levels, value, onChange }: EffortSliderProps) {
   const trackRef = useRef<HTMLDivElement>(null)
   const dragging = useRef(false)
+  // Last level emitted during the current gesture. Pointermove fires per pixel,
+  // not per stop — without this dedup, hosts that persist on every onChange
+  // (the settings selects PATCH live) get a mutation storm from one drag.
+  const lastSent = useRef<EffortLevel | null>(null)
 
   const n = levels.length
   const activeIndex = Math.max(0, levels.indexOf(value))
@@ -79,26 +74,30 @@ export function EffortSlider({
     return Math.min(n - 1, Math.max(0, Math.round(t * (n - 1))))
   }
 
+  const emitFromPointer = (clientX: number) => {
+    const level = levels[indexFromClientX(clientX)]
+    if (level === lastSent.current) return
+    lastSent.current = level
+    onChange(level)
+  }
   const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault()
     dragging.current = true
+    // Seed with the current value so pressing at the thumb's own stop is a no-op.
+    lastSent.current = value
     e.currentTarget.setPointerCapture?.(e.pointerId)
-    onChange(levels[indexFromClientX(e.clientX)])
+    emitFromPointer(e.clientX)
   }
   const handlePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!dragging.current) return
-    onChange(levels[indexFromClientX(e.clientX)])
+    emitFromPointer(e.clientX)
   }
-  const handlePointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragging.current) return
+  // Ends a drag, including aborted gestures (touch interruption, OS gesture)
+  // that never deliver pointerup. Without the reset, `dragging` sticks true and
+  // plain hovers keep changing the effort until the next press.
+  const endDrag = () => {
     dragging.current = false
-    onCommit?.(levels[indexFromClientX(e.clientX)])
-  }
-  // An aborted gesture (touch interruption, OS gesture) never delivers pointerup.
-  // Without this reset, `dragging` sticks true and plain hovers keep changing the
-  // effort until the next press. No commit — onChange already applied the value.
-  const handlePointerCancel = () => {
-    dragging.current = false
+    lastSent.current = null
   }
 
   const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -133,9 +132,9 @@ export function EffortSlider({
         ref={trackRef}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerCancel}
-        onLostPointerCapture={handlePointerCancel}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
         className="relative h-5 cursor-pointer touch-none"
       >
         <div className="absolute inset-0 rounded-full bg-[#E1F6FF] dark:bg-[#15384F]" />
@@ -153,18 +152,18 @@ export function EffortSlider({
         {/* Tick dots: one per level, each a small click target for that level.
             They sit UNDER the rainbow overlay so they don't show through it —
             the opaque rainbow covers them, and they re-emerge where it fades
-            out toward the left. stopPropagation keeps the track's pointer
-            handler from double-firing on the same press. */}
+            out toward the left. A press on a tick deliberately bubbles to the
+            track, which owns the whole gesture (emit at the pointer's stop,
+            capture, drag) — the capture also retargets the resulting click to
+            the track, so onClick only fires for keyboard/AT activation. */}
         {levels.map((level, i) => (
           <button
             key={level}
             type="button"
             data-testid={`effort-option-${level}`}
-            aria-label={labels[level]}
-            onPointerDown={(e) => e.stopPropagation()}
+            aria-label={EFFORT_LABELS[level]}
             onClick={() => {
-              onChange(level)
-              onCommit?.(level)
+              if (level !== value) onChange(level)
             }}
             style={{ left: pos(i) }}
             className="group/tick absolute top-1/2 flex h-4 w-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center"
@@ -190,7 +189,7 @@ export function EffortSlider({
           aria-valuemin={0}
           aria-valuemax={n - 1}
           aria-valuenow={activeIndex}
-          aria-valuetext={labels[value]}
+          aria-valuetext={EFFORT_LABELS[value]}
           onKeyDown={handleKeyDown}
           style={{ left: pos(activeIndex) }}
           className="absolute top-1/2 h-[18px] w-[18px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-border bg-background shadow-md ring-offset-background transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -198,6 +197,27 @@ export function EffortSlider({
       </div>
     </div>
   )
+}
+
+/**
+ * Snap the effort back to Medium whenever the selected model disallows the
+ * current one (e.g. Opus at Max, then switching to a 3-effort model). Medium is
+ * the default effort and every model supports it. Shared by every surface that
+ * pairs a model pick with an effort (composer popover, settings select,
+ * quick-dispatch menu) so no host drifts out of the clamp — an unclamped host
+ * renders the slider at Low (out-of-range values pin to index 0) while the
+ * header and the dispatched request still carry the unsupported level.
+ * Pass `model` as undefined to disable (model-only pickers).
+ */
+export function useEffortClamp(
+  model: { supportedEfforts: EffortLevel[] } | undefined,
+  effort: EffortLevel,
+  onEffortChange: ((level: EffortLevel) => void) | undefined,
+) {
+  const supported = model?.supportedEfforts.includes(effort) ?? true
+  useEffect(() => {
+    if (model && !supported) onEffortChange?.('medium')
+  }, [model, supported, onEffortChange])
 }
 
 /**

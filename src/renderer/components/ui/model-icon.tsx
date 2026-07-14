@@ -12,6 +12,13 @@ interface ModelIconProps {
 
 const UPLOADED_ICON_PREFIX = 'uploaded:'
 
+/** Whether an icon key names a user-uploaded icon (data-dir asset) rather than
+ *  a bundled brand glyph. Shared so consumers grouping by brand (the model
+ *  picker's vendor tabs) can't drift from how ModelIcon itself renders. */
+export function isUploadedIcon(icon: string): boolean {
+  return icon.startsWith(UPLOADED_ICON_PREFIX)
+}
+
 function getModelIconSrc(icon: string): string {
   if (icon.startsWith(UPLOADED_ICON_PREFIX)) {
     const fileName = icon.slice(UPLOADED_ICON_PREFIX.length)
@@ -38,7 +45,7 @@ export function ModelIcon({ icon, className }: ModelIconProps) {
       aria-hidden="true"
       // Bundled brand icons are monochrome dark glyphs; invert them in dark
       // mode so they stay visible. Uploaded icons keep their own colors.
-      className={cn('object-contain', !icon.startsWith(UPLOADED_ICON_PREFIX) && 'dark:invert', className)}
+      className={cn('object-contain', !isUploadedIcon(icon) && 'dark:invert', className)}
       onError={() => setFailed(true)}
     />
   )
