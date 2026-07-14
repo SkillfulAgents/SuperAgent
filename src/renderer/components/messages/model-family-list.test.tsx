@@ -235,9 +235,12 @@ describe('ModelFamilyList', () => {
     expect(screen.queryByTestId('model-long-context-cliff-warning')).not.toBeInTheDocument()
   })
 
-  it('labels a lineage row "· latest" in settings mode, where the row stores the alias', () => {
+  it('marks alias semantics with the Latest chip in settings mode, not a "· latest" label suffix', () => {
+    // The chip replaced the interim text suffix — the row label must stay bare
+    // so the chip is the single latest-vs-pin signal.
     render(<ModelFamilyList catalog={CATALOG} value="opus" onPick={vi.fn()} offerLatest />)
-    expect(screen.getByTestId('model-latest-opus')).toHaveTextContent('Opus · latest')
+    expect(screen.getByTestId('model-latest-opus')).not.toHaveTextContent('· latest')
+    expect(screen.getByTestId('model-latest-chip-opus')).toBeInTheDocument()
   })
 
   it('hides version chips on touch, where a gear on the selected row opens a nested version menu', async () => {
