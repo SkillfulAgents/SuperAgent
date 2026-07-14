@@ -438,12 +438,39 @@ function isExpectedGitDriftError(msg: string): boolean {
 }
 
 /**
+ * Git errors that mean the remote is unavailable to us right now — offline,
+ * DNS/connect failures, timeouts, or auth problems. These are environmental,
+ * not a sign the local cache is corrupt, so they must never trigger a
+ * nuke-and-reclone and are not worth reporting to Sentry per-refresh.
+ */
+function isRemoteUnavailableGitError(msg: string): boolean {
+  return /Could not resolve host|unable to access|Connection (timed out|refused|reset)|Network is unreachable|Could not read from remote|Failed to connect|Operation timed out|timed? ?out|Permission denied|Could not access repository|remote is unreachable/i.test(msg)
+}
+
+/**
+ * Thrown when the remote is reachable but the cache is unusable as a git
+ * clone (no resolvable origin/HEAD). Signals `refreshSkillsetCache` to nuke
+ * the directory and re-clone instead of failing every refresh forever.
+ */
+class SkillsetCacheCorruptError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SkillsetCacheCorruptError'
+  }
+}
+
+type DefaultBranchResolution =
+  | { branch: string }
+  | { branch: null; reason: 'offline' | 'unresolvable'; detail: string }
+
+/**
  * Resolve the repo's real default branch from its origin remote. Falls back to
  * `set-head --auto` (which queries the remote's HEAD) when the local
  * `refs/remotes/origin/HEAD` symref is missing — common on shallow clones.
- * Returns null if it can't be determined.
+ * When it can't be determined, says whether that's because the remote is
+ * unavailable (offline/auth) or the cache itself is unresolvable.
  */
-async function resolveDefaultBranch(repoDir: string): Promise<string | null> {
+async function resolveDefaultBranch(repoDir: string): Promise<DefaultBranchResolution> {
   const readSymref = async (): Promise<string | null> => {
     try {
       const { stdout } = await execFileAsync(
@@ -458,37 +485,56 @@ async function resolveDefaultBranch(repoDir: string): Promise<string | null> {
   }
 
   const existing = await readSymref()
-  if (existing) return existing
+  if (existing) return { branch: existing }
 
   // The symref isn't set locally — ask the remote for its HEAD once, then
-  // re-read. `set-head --auto` is a no-op if it can't reach the remote.
+  // re-read. The failure detail matters: it tells offline apart from a cache
+  // whose origin/HEAD genuinely can't be resolved (half-clone, empty repo).
+  let setHeadError: string | null = null
   try {
     await execFileAsync('git', ['remote', 'set-head', 'origin', '--auto'], {
       cwd: repoDir, timeout: 10000, env: GIT_ENV,
     })
-  } catch {
-    // Ignore — readSymref below will return null and the caller handles it.
+  } catch (err) {
+    setHeadError = err instanceof Error ? err.message : String(err)
+    console.warn(`[resolveDefaultBranch] set-head --auto failed in ${repoDir}:`, setHeadError)
   }
-  return readSymref()
+
+  const branch = await readSymref()
+  if (branch) return { branch }
+
+  if (setHeadError && isRemoteUnavailableGitError(setHeadError)) {
+    return { branch: null, reason: 'offline', detail: setHeadError }
+  }
+  return {
+    branch: null,
+    reason: 'unresolvable',
+    detail: setHeadError ?? 'origin/HEAD still unset after set-head --auto',
+  }
 }
 
-async function gitPull(repoDir: string): Promise<void> {
+type GitPullResult = 'pulled' | 'skipped-offline'
+
+async function gitPull(repoDir: string): Promise<GitPullResult> {
   // Resolve the repo's real default branch instead of guessing main/master.
   // After a PR flow the repo may be left on a detached HEAD, a stale branch,
   // or with a drifted branch.<name>.merge config.
-  const defaultBranch = await resolveDefaultBranch(repoDir)
+  const resolved = await resolveDefaultBranch(repoDir)
 
-  if (!defaultBranch) {
-    // Without a known default branch we can't deterministically refresh. This
-    // happens on caches whose origin/HEAD can't be resolved (offline, etc.).
-    const msg = `[gitPull] Could not resolve default branch in ${repoDir}`
-    console.warn(msg)
-    captureException(new Error(msg), {
-      tags: { area: 'skillset-git', op: 'resolve-default-branch' },
-      extra: { repoDir },
-    })
-    return
+  if (resolved.branch === null) {
+    if (resolved.reason === 'offline') {
+      // Remote unavailable — the cache is stale but usable; skip quietly.
+      console.warn(`[gitPull] Remote unavailable; skipping refresh in ${repoDir}:`, resolved.detail)
+      return 'skipped-offline'
+    }
+    // The remote answered (or the symref is simply broken) yet origin/HEAD is
+    // unresolvable — a half-cloned or corrupted cache that will never heal on
+    // its own. Let the caller nuke and re-clone.
+    throw new SkillsetCacheCorruptError(
+      `Could not resolve default branch in ${repoDir}: ${resolved.detail}`,
+    )
   }
+  const defaultBranch = resolved.branch
 
   try {
     await execFileAsync('git', ['checkout', defaultBranch], {
@@ -523,11 +569,17 @@ async function gitPull(repoDir: string): Promise<void> {
       // Expected drift on shallow single-branch caches — already handled, no
       // user-facing impact, so don't report to Sentry.
       console.warn(`[gitPull] fetch/reset drift (recoverable) in ${repoDir}:`, msg)
-      return
+      return 'pulled'
+    }
+    if (isRemoteUnavailableGitError(msg)) {
+      // Offline/auth — the stale cache remains usable; skip quietly.
+      console.warn(`[gitPull] Remote unavailable; keeping stale cache in ${repoDir}:`, msg)
+      return 'skipped-offline'
     }
     captureException(error, { tags: { area: 'skillset-git', op: 'fetch-reset' }, extra: { repoDir } })
     throw error
   }
+  return 'pulled'
 }
 
 async function isGitRepo(dir: string): Promise<boolean> {
@@ -684,6 +736,25 @@ export async function refreshSkillset(ref: SkillsetRef): Promise<SkillsetIndex> 
   }
 }
 
+/**
+ * Nuke a corrupt git cache and re-clone it from scratch. A half-cloned cache
+ * (no resolvable origin/HEAD, or `.git` present with an empty tree) makes
+ * every refresh fail forever; the cache holds nothing of value, so recovery
+ * is a fresh clone. Throws a distinct error if the freshly cloned repo still
+ * has no index.json — that means the remote content itself is broken, not
+ * the cache.
+ */
+async function recloneSkillsetCache(ref: SkillsetRef, repoDir: string, cause: string): Promise<void> {
+  console.warn(`[refreshSkillset] Re-cloning corrupt skillset cache at ${repoDir}: ${cause}`)
+  await fs.promises.rm(repoDir, { recursive: true, force: true })
+  await ensureSkillsetCached(ref)
+  if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+    throw new Error(
+      `Skillset repository has no index.json at its root (re-cloned ${repoDir} after: ${cause})`,
+    )
+  }
+}
+
 async function refreshSkillsetCache(
   ref: SkillsetRef,
   hostingProvider: ReturnType<typeof getSkillsetProvider>,
@@ -702,9 +773,33 @@ async function refreshSkillsetCache(
     await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
       cwd: repoDir, timeout: 5000, env: GIT_ENV,
     })
-    await gitPull(repoDir)
+
+    let pullResult: GitPullResult
+    try {
+      pullResult = await gitPull(repoDir)
+    } catch (error) {
+      if (!(error instanceof SkillsetCacheCorruptError)) throw error
+      await recloneSkillsetCache(ref, repoDir, error.message)
+      return readIndexJson(repoDir)
+    }
+
+    if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+      if (pullResult === 'skipped-offline') {
+        // The cache is incomplete but we can't re-clone right now. Don't nuke
+        // it while offline — retry on the next refresh instead.
+        throw new Error(
+          `Skillset cache at ${repoDir} has no index.json and the remote is unreachable; will retry on next refresh`,
+        )
+      }
+      await recloneSkillsetCache(ref, repoDir, 'index.json missing after successful pull')
+    }
   } else {
     await ensureSkillsetCached(ref)
+    if (!fs.existsSync(path.join(repoDir, 'index.json'))) {
+      throw new Error(
+        `Skillset repository has no index.json at its root (fresh clone at ${repoDir})`,
+      )
+    }
   }
 
   return readIndexJson(repoDir)
@@ -1062,7 +1157,7 @@ export async function refreshAgentSkills(
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
       const msg = error instanceof Error ? error.message : String(error)
-      if (!isExpectedGitDriftError(msg)) {
+      if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableGitError(msg)) {
         captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
       }
     }
@@ -1121,7 +1216,7 @@ export async function refreshAgentSkills(
             await refreshSkillset(toSkillsetRefFromMeta(meta))
           } catch (error) {
             const msg = error instanceof Error ? error.message : String(error)
-            if (!isExpectedGitDriftError(msg)) {
+            if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableGitError(msg)) {
               captureException(error, { tags: { area: 'skillset-refresh', op: 'queue-merged-pull' }, extra: { skillsetId: meta.skillsetId } })
             }
           }
