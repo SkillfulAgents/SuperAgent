@@ -752,12 +752,60 @@ describe('WSL2ContainerClient.handleRunError', () => {
     expect(result).toBe(true)
   })
 
-  it('returns false on unrecognized error (e.g., network error)', async () => {
+  /** Health-probe (static isRunning) sequence: wsl --list --verbose, then nerdctl version. */
+  function mockHealthProbe(distroState: 'Running' | 'Stopped') {
+    const header = '  NAME                   STATE           VERSION'
+    const line = `  ${WSL2_DISTRO_NAME.padEnd(23)}${distroState}         2`
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: `${header}\n${line}`, stderr: '' })
+    if (distroState === 'Running') {
+      mockedExecWithPath.mockResolvedValueOnce({ stdout: 'ok', stderr: '' })
+    }
+  }
+
+  it('returns false on unrecognized error when the distro is healthy (probe decides)', async () => {
+    mockHealthProbe('Running')
     const client = createClient()
     const result = await client.testHandleRunError(new Error('Connection refused'))
     expect(result).toBe(false)
-    // Should not have called ensureWSL2Ready
-    expect(mockedExecWithPath).not.toHaveBeenCalled()
+    // Only the two probe commands ran — no provisioning.
+    expect(mockedExecWithPath).toHaveBeenCalledTimes(2)
+  })
+
+  it('provisions on an unrecognized error when the probe finds the distro down', async () => {
+    mockHealthProbe('Stopped')
+    mockEnsureWSL2ReadySuccess()
+    const client = createClient()
+    const result = await client.testHandleRunError(new Error('Connection refused'))
+    expect(result).toBe(true)
+  })
+
+  it('provisions on a tagged image-create failure when the distro died mid-pull', async () => {
+    // The pull error text ("not running") would string-match, but tagged
+    // errors defer to the probe — which finds the distro genuinely down.
+    mockHealthProbe('Stopped')
+    mockEnsureWSL2ReadySuccess()
+    const client = createClient()
+    const result = await client.testHandleRunError(
+      Object.assign(new Error('Image pull failed with exit code 1: The distro is not running'), {
+        isImageCreateError: true,
+        sentryCaptured: true,
+      })
+    )
+    expect(result).toBe(true)
+  })
+
+  it('never provisions for a registry "not found" create failure on a healthy distro', async () => {
+    mockHealthProbe('Running')
+    const client = createClient()
+    const result = await client.testHandleRunError(
+      Object.assign(new Error('Image pull failed with exit code 1: ghcr.io/x/y:9.9.9: not found'), {
+        isImageCreateError: true,
+        sentryCaptured: true,
+      })
+    )
+    expect(result).toBe(false)
+    // Only the two probe commands ran — no provisioning for a registry 404.
+    expect(mockedExecWithPath).toHaveBeenCalledTimes(2)
   })
 
   it('returns false when provisioning fails', async () => {
