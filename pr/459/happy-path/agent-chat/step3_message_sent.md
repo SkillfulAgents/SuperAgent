@@ -1,0 +1,96 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - generic [ref=e9]:
+            - generic [ref=e10]: Gamut
+            - button "Search" [ref=e12] [cursor=pointer]:
+              - img [ref=e13]
+          - list [ref=e17]:
+            - listitem [ref=e18]:
+              - link "Home" [ref=e19] [cursor=pointer]:
+                - /url: /
+                - img [ref=e20]
+                - generic [ref=e25]: Home
+            - listitem [ref=e26]:
+              - link "Notifications" [ref=e27] [cursor=pointer]:
+                - /url: /notifications
+                - img [ref=e28]
+                - generic [ref=e31]: Notifications
+            - listitem [ref=e133]:
+              - button "Explore" [ref=e134] [cursor=pointer]:
+                - img [ref=e135]
+                - generic [ref=e138]: Explore
+            - listitem [ref=e32]:
+              - button "New Agent" [ref=e33] [cursor=pointer]:
+                - img [ref=e34]
+                - generic [ref=e35]: New Agent
+        - generic [ref=e36]:
+          - generic [ref=e37]: Your Agents
+          - list [ref=e39]:
+            - button "QA-20260714-020015-8qzz idle" [ref=e40] [cursor=pointer]:
+              - link "QA-20260714-020015-8qzz idle" [ref=e42]:
+                - /url: /agents/qa-20260714-020015-8qzz-zs7yex7b8s
+                - generic [ref=e44]: QA-20260714-020015-8qzz
+                - img "idle" [ref=e45]:
+                  - img [ref=e46]
+            - button "QA-20260714-020014-duek working Collapse" [ref=e318] [cursor=pointer]:
+              - generic [ref=e56]:
+                - link "QA-20260714-020014-duek working" [ref=e319]:
+                  - /url: /agents/qa-20260714-020014-duek-0uojlocp0b
+                  - generic [ref=e59]: QA-20260714-020014-duek
+                  - img "working" [ref=e320]:
+                    - img "working" [ref=e321]
+                - button "Collapse" [expanded] [ref=e325]:
+                  - img [ref=e326]
+              - list [ref=e329]
+            - status [ref=e139]
+      - generic [ref=e71]:
+        - button "Settings" [ref=e72] [cursor=pointer]:
+          - img [ref=e73]
+          - generic [ref=e76]: Settings
+        - button "v0.4.11" [ref=e77] [cursor=pointer]:
+          - generic [ref=e78]: v0.4.11
+      - button "Toggle Sidebar" [ref=e79]
+    - main [ref=e80]:
+      - generic [ref=e140]:
+        - generic [ref=e141]:
+          - button "Toggle Sidebar" [ref=e142] [cursor=pointer]:
+            - img
+            - generic [ref=e143]: Toggle Sidebar
+          - link "QA-20260714-020014-duek" [ref=e146] [cursor=pointer]:
+            - /url: /agents/qa-20260714-020014-duek-0uojlocp0b
+          - generic [ref=e147]:
+            - generic [ref=e148]:
+              - img "working" [ref=e330]
+              - generic [ref=e158]: working
+            - button "Stop Agent" [ref=e160] [cursor=pointer]:
+              - img
+        - generic [ref=e336]:
+          - paragraph [ref=e345]: Hello! What is 2+2?
+          - generic [ref=e346]:
+            - generic [ref=e348]:
+              - textbox "Type a message..." [ref=e350]
+              - generic [ref=e351]:
+                - generic [ref=e352]:
+                  - button "Add files" [ref=e353] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 4.8 · Medium. Click to change." [ref=e354] [cursor=pointer]':
+                    - img [ref=e355]
+                    - generic [ref=e356]:
+                      - text: Opus 4.8
+                      - generic [ref=e357]: · Medium
+                    - img
+                - generic [ref=e358]:
+                  - button "Set up voice input" [ref=e359] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e362]:
+              - generic [ref=e363]: ↵
+              - generic [ref=e364]: Send
+              - generic [ref=e365]: ·
+              - generic [ref=e366]: ⇧↵
+              - generic [ref=e367]: New line
+  - region "Notifications alt+T"
