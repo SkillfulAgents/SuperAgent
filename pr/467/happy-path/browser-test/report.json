@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: n\".\"\n\nThe agent successfully used the browser tools to open a browser session, navigate to https://example.com, extract the page title, and return the correct result. All tool calls showed green checkmarks indicating successful execution (ToolSearch, Open Browser, Browser Get State, Close Browser).\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 98376,
+  "sessionId": "20241058-40f3-4e0c-928d-7b3a8a86bb59",
+  "cost": {
+    "inputTokens": 410,
+    "outputTokens": 12845,
+    "cacheCreationTokens": 80211,
+    "cacheReadTokens": 1190807,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.283979
+  }
+}
