@@ -67,7 +67,7 @@ function ProviderSelect<T extends string>({
   description: string
   options: ProviderOption<T>[]
   value: T
-  // The shown vendor is the auto-resolved default, not an explicit choice: mark it "(default)".
+  // The shown vendor is the unset default (Platform-if-login / native), not an explicit pin: mark it "(default)".
   isDefault?: boolean
   onChange: (value: T) => void
   disabled?: boolean
@@ -138,7 +138,7 @@ export function WebTab() {
   const selected: WebProviderId = settings?.webProvider ?? settings?.effectiveWebProvider ?? 'native'
   const isDefault = settings?.webProvider == null
 
-  // The Exa key field shows only when Exa is the active vendor (explicit or resolved-default).
+  // The Exa key field shows only when Exa is the selected vendor (always an explicit pin — Exa is never the unset default).
   const needsExaKey = WEB_PROVIDERS.find((p) => p.value === selected)?.usesExaKey ?? false
 
   return (
