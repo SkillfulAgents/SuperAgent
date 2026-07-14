@@ -202,6 +202,12 @@
       "cacheRead": 0.5
     }
   },
+  "grok-4.5": {
+    "input": 2,
+    "output": 6,
+    "cacheCreation": 2,
+    "cacheRead": 0.2
+  },
   "openai/gpt-5.4": {
     "input": 2.5,
     "output": 15,

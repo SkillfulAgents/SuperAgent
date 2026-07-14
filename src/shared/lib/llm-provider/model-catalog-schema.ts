@@ -29,17 +29,11 @@ export const modelDefinitionSchema = z.object({
   family: z.string().optional(),
   /** This id is what the bare `family` alias resolves to (newest in the family). */
   isLatest: z.boolean().optional(),
-  /**
-   * Whether this model supports the agent's web search / fetch path (the
-   * Anthropic-native server tools, which only work when Anthropic serves the
-   * request). Omit/undefined ⇒ supported (all Claude models). Set `false` for
-   * non-Claude models routed via OpenRouter so the picker can warn.
-   */
+  // Omit/undefined ⇒ supported (Claude). false ⇒ OpenRouter non-Claude, etc.
   supportsWebSearch: z.boolean().optional(),
-  /**
-   * Whether the model accepts image input (vision). Populated from a provider's
-   * advertised input modalities during model search. Omit/undefined ⇒ unknown.
-   */
+  // Omit/undefined ⇒ follow supportsWebSearch. false when search works but fetch does not (Platform Responses).
+  supportsWebFetch: z.boolean().optional(),
+  // Vision. Populated from provider modalities during model search; omit ⇒ unknown.
   supportsImageInput: z.boolean().optional(),
   /** Extra system-prompt guidance needed by model families with weaker tool priors. */
   promptHints: z.array(z.string().min(1)).optional(),

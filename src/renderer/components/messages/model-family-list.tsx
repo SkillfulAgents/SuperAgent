@@ -23,19 +23,19 @@ export function formatTokenThreshold(tokens: number): string {
   return String(tokens)
 }
 
-/**
- * Warning copy for a model that can't do web tools, or null when they work (no banner). Native web
- * tools depend on the model's own support (Claude, and GPT over the Platform); a configured host vendor exposes the `mcp__web__*` tools to ANY model, so
- * they are "unavailable" only when the model lacks native support AND no vendor is set - the caller
- * passes that one boolean. INVARIANT: the single boolean assumes every registered vendor implements
- * BOTH operations (Exa does). The backend seam is per-tool (optional search?()/fetch?(), the MCP
- * gate, the container derivation), but the client only knows the vendor *id*, not its capabilities.
- * If a search-only or fetch-only vendor is ever added, re-split this into per-tool booleans and
- * plumb the vendor's capabilities to the client - else this banner would misreport the missing side.
- */
-export function webToolsWarning(unavailable: boolean): string | null {
-  if (!unavailable) return null
-  return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web to use them on any model.'
+// Picker banner for missing native web tools. A host vendor (Exa) covers both; omit/undefined fetch follows search.
+export function webToolsWarning(
+  model: ModelDefinition | undefined,
+  webVendorSet: boolean,
+): string | null {
+  if (!model || webVendorSet) return null
+  if (model.supportsWebSearch === false) {
+    return 'Web search and fetch aren’t available on this model. Set a provider under Settings → Web to use them on any model.'
+  }
+  if (model.supportsWebFetch === false) {
+    return 'Native web fetch isn’t available on this model. Set a provider under Settings → Web to use fetch (search still works).'
+  }
+  return null
 }
 
 type LongContextCliff = NonNullable<ModelDefinition['longContextPriceCliff']>
@@ -93,10 +93,8 @@ interface ModelFamilyListProps {
    */
   onSelectFamilyLatest?: (latestId: string, family: string) => void
   /**
-   * Active host web-provider id from global settings. Native web search/fetch depend on the model
-   * (the `supportsWebSearch` flag; Claude and GPT-over-Platform have them); a configured vendor
-   * exposes the `mcp__web__*` tools to ANY model, so the
-   * "not available" warning clears once a vendor is set. Undefined / 'native' = no host vendor.
+   * Active host web-provider id. Native gaps come from supportsWebSearch / supportsWebFetch;
+   * a vendor (Exa) clears the warning. Undefined / 'native' = no host vendor.
    */
   webProvider?: string
 }
@@ -186,12 +184,9 @@ export function ModelFamilyList({
   const [expanded, setExpanded] = useState<string | null | undefined>(undefined)
   const openFamily = expanded === undefined ? selectedFamily : expanded
 
-  // Native web tools depend on the model's own support (Claude, GPT-over-Platform); a configured host vendor makes them work on ANY model, so web
-  // tools are unavailable only when the model lacks native support AND no vendor is set.
-  // `native`/undefined means no host vendor.
-  const nativeWebUnavailable = resolved?.supportsWebSearch === false
+  // `native`/undefined means no host vendor — only then surface the model's native gap.
   const webVendorSet = !!webProvider && webProvider !== 'native'
-  const webWarning = webToolsWarning(nativeWebUnavailable && !webVendorSet)
+  const webWarning = webToolsWarning(resolved, webVendorSet)
 
   return (
     <div className="flex flex-col gap-0.5">
