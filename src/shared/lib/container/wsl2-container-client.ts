@@ -138,6 +138,31 @@ export function classifyProbeCurlExit(exitCode: number | null | undefined): Host
 }
 
 /**
+ * Map a busybox-wget probe result to a verdict. The bundled Alpine distro
+ * ships busybox wget but no curl, so this is the fallback classifier. Busybox
+ * wget exits 1 for nearly every failure, so the verdict comes from stderr
+ * (messages observed against busybox v1.37.0 in the shipped distro):
+ *   - "Connection refused" → nothing listening: unreachable
+ *   - "timed out" ("download timed out" / kernel "Connection timed out") —
+ *     how a firewall silently dropping WSL2→host traffic surfaces: unreachable
+ *   - "server returned error: HTTP/..." → TCP+HTTP round-trip completed, so
+ *     the port is reachable (matches curl-without--f semantics)
+ * Anything else (wget missing, bad address, wsl broken) is 'unknown' so a
+ * broken probe can never fail a working setup.
+ */
+export function classifyProbeWgetResult(
+  exitCode: number | null | undefined,
+  stderr: string,
+): HostPortProbeResult {
+  if (exitCode === 0) return 'reachable'
+  if (exitCode !== 1) return 'unknown'
+  if (/connection refused/i.test(stderr)) return 'unreachable'
+  if (/timed out/i.test(stderr)) return 'unreachable'
+  if (/server returned error/i.test(stderr)) return 'reachable'
+  return 'unknown'
+}
+
+/**
  * Pre-flight: check if hardware virtualization is enabled in firmware (BIOS).
  * Returns null if enabled or undetermined; returns a typed error if we can
  * confirm it's disabled. WSL2 cannot run without this, so fail fast with
@@ -342,20 +367,37 @@ export class WSL2ContainerClient extends BaseContainerClient {
    * hit when it tries to connect.
    */
   async probeHostPortFromRunner(host: string, port: number): Promise<HostPortProbeResult> {
+    const url = `http://${host}:${port}/json/version`
+    let curlExit: number | null
     try {
       await execFileAsync(
         'wsl',
         [
           '-d', WSL2_DISTRO_NAME, '--',
           'curl', '--silent', '--output', '/dev/null', '--max-time', '4',
-          `http://${host}:${port}/json/version`,
+          url,
         ],
         { timeout: 15000 },
       )
       return 'reachable'
     } catch (err) {
       const code = (err as { code?: number | string }).code
-      return classifyProbeCurlExit(typeof code === 'number' ? code : null)
+      curlExit = typeof code === 'number' ? code : null
+    }
+    // 126/127 = curl absent or not executable in the distro. The bundled
+    // Alpine rootfs ships no curl, so this is the common case — fall back to
+    // busybox wget (no -q: the verdict is classified from its stderr).
+    if (curlExit !== 126 && curlExit !== 127) return classifyProbeCurlExit(curlExit)
+    try {
+      await execFileAsync(
+        'wsl',
+        ['-d', WSL2_DISTRO_NAME, '--', 'wget', '-O', '/dev/null', '-T', '4', url],
+        { timeout: 15000 },
+      )
+      return 'reachable'
+    } catch (err) {
+      const { code, stderr } = err as { code?: number | string; stderr?: string }
+      return classifyProbeWgetResult(typeof code === 'number' ? code : null, stderr ?? '')
     }
   }
 

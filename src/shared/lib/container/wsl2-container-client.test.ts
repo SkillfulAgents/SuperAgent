@@ -76,6 +76,7 @@ import {
   stopWSL2Distro,
   WSL2ContainerClient,
   classifyProbeCurlExit,
+  classifyProbeWgetResult,
 } from './wsl2-container-client'
 
 const mockedFs = vi.mocked(fs)
@@ -809,6 +810,40 @@ describe('classifyProbeCurlExit', () => {
   })
 })
 
+describe('classifyProbeWgetResult', () => {
+  // stderr strings below are verbatim busybox v1.37.0 output from the shipped distro
+  it('maps exit 0 to reachable', () => {
+    expect(classifyProbeWgetResult(0, '')).toBe('reachable')
+  })
+
+  it('maps connection-refused stderr to unreachable', () => {
+    const stderr =
+      "Connecting to 127.0.0.1:1 (127.0.0.1:1)\nwget: can't connect to remote host (127.0.0.1): Connection refused"
+    expect(classifyProbeWgetResult(1, stderr)).toBe('unreachable')
+  })
+
+  it('maps timeout stderr (firewall drop) to unreachable', () => {
+    expect(classifyProbeWgetResult(1, 'wget: download timed out')).toBe('unreachable')
+    expect(
+      classifyProbeWgetResult(1, "wget: can't connect to remote host: Connection timed out"),
+    ).toBe('unreachable')
+  })
+
+  it('maps an HTTP error response to reachable (the server answered)', () => {
+    expect(
+      classifyProbeWgetResult(1, 'wget: server returned error: HTTP/1.1 404 Not Found'),
+    ).toBe('reachable')
+  })
+
+  it('maps everything else to unknown so a broken probe cannot fail a working setup', () => {
+    expect(classifyProbeWgetResult(127, 'wget: not found')).toBe('unknown') // wget missing too
+    expect(classifyProbeWgetResult(1, "wget: bad address 'no-such-host:1'")).toBe('unknown')
+    expect(classifyProbeWgetResult(1, '')).toBe('unknown')
+    expect(classifyProbeWgetResult(null, '')).toBe('unknown')
+    expect(classifyProbeWgetResult(undefined, '')).toBe('unknown')
+  })
+})
+
 describe('WSL2ContainerClient.probeHostPortFromRunner', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -818,45 +853,94 @@ describe('WSL2ContainerClient.probeHostPortFromRunner', () => {
     return new WSL2ContainerClient({ agentId: 'test-agent' } as any)
   }
 
-  function mockCurlResult(err: Error | null) {
-    mockExecFile.mockImplementation((...args: any[]) => {
-      const cb = args[args.length - 1]
-      cb(err, err ? undefined : { stdout: '', stderr: '' })
-    })
+  function mockProbeResults(...errs: (Error | null)[]) {
+    for (const err of errs) {
+      mockExecFile.mockImplementationOnce((...args: any[]) => {
+        const cb = args[args.length - 1]
+        cb(err, err ? undefined : { stdout: '', stderr: '' })
+      })
+    }
   }
 
+  const curlMissing = () =>
+    Object.assign(new Error('curl: not found'), { code: 127, stderr: '/bin/sh: curl: not found' })
+
   it('probes the endpoint via curl inside the distro', async () => {
-    mockCurlResult(null)
+    mockProbeResults(null)
 
     const result = await createClient().probeHostPortFromRunner('172.22.192.1', 9222)
 
     expect(result).toBe('reachable')
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
     const [file, cmdArgs] = mockExecFile.mock.calls[0]
     expect(file).toBe('wsl')
     expect(cmdArgs).toContain(WSL2_DISTRO_NAME)
+    expect(cmdArgs).toContain('curl')
     expect(cmdArgs).toContain('http://172.22.192.1:9222/json/version')
   })
 
-  it('reports unreachable when curl times out (firewall drop)', async () => {
-    mockCurlResult(Object.assign(new Error('curl timed out'), { code: 28 }))
+  it('reports unreachable when curl times out (firewall drop) without falling back', async () => {
+    mockProbeResults(Object.assign(new Error('curl timed out'), { code: 28 }))
 
     expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unreachable')
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
   })
 
   it('reports unreachable when the connection is refused', async () => {
-    mockCurlResult(Object.assign(new Error('connection refused'), { code: 7 }))
+    mockProbeResults(Object.assign(new Error('connection refused'), { code: 7 }))
 
     expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unreachable')
   })
 
-  it('reports unknown when curl is missing from the distro', async () => {
-    mockCurlResult(Object.assign(new Error('curl: not found'), { code: 127 }))
+  it('reports unknown when wsl itself cannot run (non-numeric error code)', async () => {
+    mockProbeResults(Object.assign(new Error('spawn wsl ENOENT'), { code: 'ENOENT' }))
 
     expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unknown')
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
   })
 
-  it('reports unknown when wsl itself cannot run (non-numeric error code)', async () => {
-    mockCurlResult(Object.assign(new Error('spawn wsl ENOENT'), { code: 'ENOENT' }))
+  it('falls back to busybox wget when curl is missing and reports reachable on success', async () => {
+    mockProbeResults(curlMissing(), null)
+
+    const result = await createClient().probeHostPortFromRunner('172.22.192.1', 9222)
+
+    expect(result).toBe('reachable')
+    expect(mockExecFile).toHaveBeenCalledTimes(2)
+    const [file, cmdArgs] = mockExecFile.mock.calls[1]
+    expect(file).toBe('wsl')
+    expect(cmdArgs).toContain('wget')
+    expect(cmdArgs).toContain('http://172.22.192.1:9222/json/version')
+    // -q would swallow the stderr the classifier needs
+    expect(cmdArgs).not.toContain('-q')
+  })
+
+  it('reports unreachable when the wget fallback is refused', async () => {
+    mockProbeResults(
+      curlMissing(),
+      Object.assign(new Error('wget failed'), {
+        code: 1,
+        stderr:
+          "Connecting to 172.22.192.1:9222 (172.22.192.1:9222)\nwget: can't connect to remote host (172.22.192.1): Connection refused",
+      }),
+    )
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unreachable')
+  })
+
+  it('reports unreachable when the wget fallback times out (firewall drop)', async () => {
+    mockProbeResults(
+      curlMissing(),
+      Object.assign(new Error('wget failed'), { code: 1, stderr: 'wget: download timed out' }),
+    )
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unreachable')
+  })
+
+  it('reports unknown when wget is missing as well', async () => {
+    mockProbeResults(
+      curlMissing(),
+      Object.assign(new Error('wget: not found'), { code: 127, stderr: '/bin/sh: wget: not found' }),
+    )
 
     expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unknown')
   })
