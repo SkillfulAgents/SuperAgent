@@ -8,6 +8,7 @@ const mockUpdateNextExecution = vi.fn()
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: (...args: unknown[]) => mockGetDueTasks(...args),
+  getScheduledTask: vi.fn(() => Promise.resolve(null)),
   markTaskExecuted: (...args: unknown[]) => mockMarkTaskExecuted(...args),
   markTaskFailed: (...args: unknown[]) => mockMarkTaskFailed(...args),
   updateNextExecution: (...args: unknown[]) => mockUpdateNextExecution(...args),
@@ -59,6 +60,7 @@ const mockGetSessionForScheduledExecution = vi.fn()
 const mockRegisterSession = vi.fn()
 
 vi.mock('@shared/lib/services/session-service', () => ({
+  getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   getSessionForScheduledExecution: (...args: unknown[]) =>
     mockGetSessionForScheduledExecution(...args),
   registerSession: (...args: unknown[]) => mockRegisterSession(...args),

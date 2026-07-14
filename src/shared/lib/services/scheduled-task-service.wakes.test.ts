@@ -186,6 +186,70 @@ describe('scheduled-task-service session wakes', () => {
       expect(regular!.status).toBe('pending')
     })
 
+    it('rejects an invalid wakeTime without touching the existing wake', async () => {
+      const first = await createSessionWake({
+        agentSlug: 'test-agent',
+        scheduleExpression: 'at now + 24 hours',
+        note: 'Valid wake',
+        sessionId: 'session-abc',
+      })
+
+      await expect(
+        createSessionWake({
+          agentSlug: 'test-agent',
+          scheduleExpression: 'at total gibberish %%%',
+          note: 'Broken wake',
+          sessionId: 'session-abc',
+        })
+      ).rejects.toThrow()
+
+      // The valid wake must survive a failed replacement attempt
+      const existing = await getScheduledTask(first.taskId)
+      expect(existing!.status).toBe('pending')
+      expect(await getPendingWakeForSession('test-agent', 'session-abc')).not.toBeNull()
+    })
+
+    it('rejects a past wakeTime without touching the existing wake', async () => {
+      const first = await createSessionWake({
+        agentSlug: 'test-agent',
+        scheduleExpression: 'at now + 24 hours',
+        note: 'Valid wake',
+        sessionId: 'session-abc',
+      })
+
+      await expect(
+        createSessionWake({
+          agentSlug: 'test-agent',
+          scheduleExpression: 'at 2020-01-01 09:00',
+          note: 'Time traveler',
+          sessionId: 'session-abc',
+        })
+      ).rejects.toThrow(/past/)
+
+      const existing = await getScheduledTask(first.taskId)
+      expect(existing!.status).toBe('pending')
+    })
+
+    it('never leaves more than one pending wake under concurrent creation', async () => {
+      const results = await Promise.allSettled(
+        Array.from({ length: 5 }, (_, i) =>
+          createSessionWake({
+            agentSlug: 'test-agent',
+            scheduleExpression: 'at now + 24 hours',
+            note: `Concurrent wake ${i}`,
+            sessionId: 'session-abc',
+          })
+        )
+      )
+
+      // At least one creation must succeed; a loser rejected by the uniqueness
+      // guard is acceptable, silent duplication is not.
+      expect(results.some((r) => r.status === 'fulfilled')).toBe(true)
+
+      const pending = await listPendingWakesByAgent('test-agent')
+      expect(pending).toHaveLength(1)
+    })
+
     it('does not treat cancelled or executed wakes as replaceable', async () => {
       const first = await createSessionWake({
         agentSlug: 'test-agent',

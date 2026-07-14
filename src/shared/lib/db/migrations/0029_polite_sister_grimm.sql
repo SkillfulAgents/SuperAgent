@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `scheduled_tasks_pending_wake_unique` ON `scheduled_tasks` (`resume_session_id`) WHERE status = 'pending' AND resume_session_id IS NOT NULL;

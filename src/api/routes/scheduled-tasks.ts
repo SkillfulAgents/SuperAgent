@@ -38,8 +38,7 @@ import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
 import type { EffortLevel } from '@shared/lib/container/types'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { buildWakeMessage } from '@shared/lib/scheduler/wake-message'
-import { randomUUID } from 'crypto'
+import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
 import { Authenticated, EntityAgentRole } from '../middleware/auth'
 
 const scheduledTasksRouter = new Hono()
@@ -283,37 +282,26 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     }
 
     // Session wake ("Wake now"): resume the target session instead of creating
-    // a new one — the manual mirror of the scheduler's wake branch.
+    // a new one. deliverSessionWake is the same claimed path the scheduler
+    // uses, so a poll firing at the same instant can never double-deliver.
     if (task.resumeSessionId) {
-      const sessionId = task.resumeSessionId
-      const client = await containerManager.ensureRunning(task.agentSlug)
+      const result = await deliverSessionWake(task, 'manual')
 
-      if (!messagePersister.isSubscribed(sessionId)) {
-        await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug)
+      if (result.outcome === 'delivered' || result.outcome === 'reconciled') {
+        const updated = await getScheduledTask(task.id)
+        return c.json({ sessionId: result.sessionId, agentSlug: task.agentSlug, task: updated }, 201)
       }
-      // Clear any stale blocking user-input request so the wake message starts
-      // a fresh turn instead of deadlocking behind it.
-      await messagePersister.cancelAwaitingInput(sessionId, task.agentSlug)
-      messagePersister.markSessionActive(sessionId, task.agentSlug)
-
-      await client.sendMessage(sessionId, buildWakeMessage(task, 'manual'), randomUUID(), {
-        shouldQuery: true,
-      })
-
-      await updateSessionMetadata(task.agentSlug, sessionId, {
-        lastWake: { taskId: task.id, executionAt: task.nextExecutionAt.toISOString() },
-      })
-      await markTaskExecuted(task.id, sessionId)
-
-      messagePersister.broadcastGlobal({
-        type: 'session_updated',
-        sessionId,
-        agentSlug: task.agentSlug,
-      })
-      messagePersister.broadcastSessionUpdate(sessionId)
-
-      const updated = await getScheduledTask(task.id)
-      return c.json({ sessionId, agentSlug: task.agentSlug, task: updated }, 201)
+      if (result.outcome === 'in-flight') {
+        return c.json({ error: 'This wake is already being delivered' }, 409)
+      }
+      if (result.outcome === 'session-missing') {
+        return c.json({ error: 'The session this wake resumes no longer exists' }, 404)
+      }
+      if (result.outcome === 'agent-missing') {
+        return c.json({ error: 'Agent no longer exists' }, 404)
+      }
+      // not-pending: a concurrent delivery just finished, or the wake was cancelled
+      return c.json({ error: 'Task is not pending' }, 400)
     }
 
     const client = await containerManager.ensureRunning(task.agentSlug)

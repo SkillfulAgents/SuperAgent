@@ -32,11 +32,26 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
 const mockGetSessionsByScheduledTask = vi.fn()
 const mockRegisterSession = vi.fn()
 const mockUpdateSessionMetadata = vi.fn()
+const mockGetSessionMetadata = vi.fn((..._args: unknown[]) => Promise.resolve({ name: 'Sleeping session' }))
 
 vi.mock('@shared/lib/services/session-service', () => ({
   getSessionsByScheduledTask: (...args: unknown[]) => mockGetSessionsByScheduledTask(...args),
   registerSession: (...args: unknown[]) => mockRegisterSession(...args),
   updateSessionMetadata: (...args: unknown[]) => mockUpdateSessionMetadata(...args),
+  getSessionMetadata: (...args: unknown[]) => mockGetSessionMetadata(...args),
+}))
+
+vi.mock('@shared/lib/services/agent-service', () => ({
+  agentExists: () => Promise.resolve(true),
+}))
+
+const mockTriggerScheduledSessionResumed = vi.fn((..._args: unknown[]) => Promise.resolve())
+
+vi.mock('@shared/lib/notifications/notification-manager', () => ({
+  notificationManager: {
+    triggerScheduledSessionResumed: (...args: unknown[]) =>
+      mockTriggerScheduledSessionResumed(...args),
+  },
 }))
 
 const mockGetSecretEnvVars = vi.fn()
@@ -58,6 +73,7 @@ const mockMessagePersister = vi.hoisted(() => ({
   isSessionActive: vi.fn(),
   subscribeToSession: vi.fn(),
   markSessionActive: vi.fn(),
+  markSessionIdle: vi.fn(),
   isSubscribed: vi.fn(() => false),
   cancelAwaitingInput: vi.fn(() => Promise.resolve()),
   broadcastGlobal: vi.fn(),

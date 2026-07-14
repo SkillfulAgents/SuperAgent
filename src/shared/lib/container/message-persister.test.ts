@@ -1677,6 +1677,31 @@ describe('MessagePersister', () => {
   })
 
   // ============================================================================
+  // markSessionIdle (optimistic-active revert)
+  // ============================================================================
+
+  describe('markSessionIdle', () => {
+    it('flips an active session back to idle and broadcasts session_idle', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(true)
+      sseEvents.length = 0
+
+      messagePersister.markSessionIdle(SESSION_ID)
+
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(1)
+    })
+
+    it('is a no-op on an already-idle session', () => {
+      sseEvents.length = 0
+
+      messagePersister.markSessionIdle(SESSION_ID)
+
+      expect(sseEvents).toHaveLength(0)
+    })
+  })
+
+  // ============================================================================
   // schedule_resume tool handling
   // ============================================================================
 

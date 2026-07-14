@@ -112,26 +112,74 @@ export async function createScheduledTask(
  * it fires. A session can hold at most one pending wake — creating a new one
  * cancels and replaces any existing pending wake for the same session, and the
  * replaced task is returned so callers can surface the swap.
+ *
+ * The schedule expression is validated BEFORE any mutation (a bad wakeTime
+ * must never cancel the session's valid wake), and the cancel+insert pair runs
+ * in a transaction so concurrent calls can't interleave into duplicate pending
+ * wakes. A partial unique index on pending wakes backstops both.
  */
 export async function createSessionWake(
   params: CreateSessionWakeParams
 ): Promise<{ taskId: string; replaced: ScheduledTask | null }> {
-  const existing = await getPendingWakeForSession(params.agentSlug, params.sessionId)
-  const replaced = existing && (await cancelScheduledTask(existing.id)) ? existing : null
+  // Throws on unparseable/past expressions — before existing state is touched.
+  const nextExecutionAt = parseAtSyntax(params.scheduleExpression, params.timezone || undefined)
 
-  const taskId = await createScheduledTask({
+  const id = crypto.randomUUID()
+  const now = new Date()
+  const newTask: NewScheduledTask = {
+    id,
     agentSlug: params.agentSlug,
     scheduleType: 'at',
     scheduleExpression: params.scheduleExpression,
     prompt: params.note,
     name: params.name,
+    status: 'pending',
+    nextExecutionAt,
+    isRecurring: false,
+    executionCount: 0,
+    createdAt: now,
     createdBySessionId: params.sessionId,
     createdByUserId: params.createdByUserId,
-    timezone: params.timezone,
+    timezone: params.timezone || null,
     resumeSessionId: params.sessionId,
+  }
+
+  // Synchronous better-sqlite3 transaction: read-existing → cancel → insert is
+  // one atomic unit, so no other caller can observe (or create) an
+  // intermediate state.
+  const replaced = db.transaction((tx) => {
+    const existing = tx
+      .select()
+      .from(scheduledTasks)
+      .where(
+        and(
+          eq(scheduledTasks.agentSlug, params.agentSlug),
+          eq(scheduledTasks.resumeSessionId, params.sessionId),
+          eq(scheduledTasks.status, 'pending')
+        )
+      )
+      .all()
+
+    for (const wake of existing) {
+      tx.update(scheduledTasks)
+        .set({ status: 'cancelled', cancelledAt: now })
+        .where(eq(scheduledTasks.id, wake.id))
+        .run()
+    }
+
+    tx.insert(scheduledTasks).values(newTask).run()
+
+    return existing[0] ?? null
   })
 
-  return { taskId, replaced }
+  trackServerEvent('task_scheduled', {
+    scheduleType: 'at',
+    isRecurring: false,
+    scheduleExpression: params.scheduleExpression,
+    agentSlug: params.agentSlug,
+  })
+
+  return { taskId: id, replaced }
 }
 
 // ============================================================================

@@ -22,15 +22,12 @@ import type { EffortLevel } from '@shared/lib/container/types'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import {
   getSessionForScheduledExecution,
-  getSessionMetadata,
   registerSession,
-  updateSessionMetadata,
 } from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
-import { buildWakeMessage } from './wake-message'
-import { randomUUID } from 'crypto'
+import { deliverSessionWake } from './wake-delivery'
 
 /**
  * How long an overdue session wake keeps retrying (via the normal poll loop)
@@ -276,84 +273,46 @@ class TaskScheduler {
 
   /**
    * Fire a session wake: resume the existing target session with a system
-   * message instead of creating a new session. The wake message starts a real
-   * turn (shouldQuery) so the agent acts on its own note; the [SYSTEM] prefix
-   * keeps it from counting as a human message.
+   * message instead of creating a new session. Delivery (claim, guards, send,
+   * record) lives in deliverSessionWake, shared with the manual "Wake now"
+   * route so the two paths can never double-deliver. Transient delivery
+   * errors propagate to the caller's retry handling.
    */
   private async executeSessionWake(task: ScheduledTask, sessionId: string): Promise<void> {
-    // Session-exists guard: the wake outlives most session lifecycles, so the
-    // target may have been deleted while sleeping.
-    const sessionMeta = await getSessionMetadata(task.agentSlug, sessionId)
-    if (!sessionMeta) {
-      console.error(
-        `[TaskScheduler] Wake ${task.id} target session ${sessionId} no longer exists`
-      )
-      await markTaskFailed(task.id, 'Session no longer exists')
-      return
+    const result = await deliverSessionWake(task, 'scheduled')
+
+    switch (result.outcome) {
+      case 'delivered':
+        console.log(`[TaskScheduler] Wake ${task.id} resumed session ${sessionId}`)
+        break
+      case 'reconciled':
+        console.log(
+          `[TaskScheduler] Wake ${task.id} already delivered to session ${sessionId}; reconciled task status`
+        )
+        break
+      case 'in-flight':
+        // Another delivery (e.g. a "Wake now" click) holds the claim — its
+        // completion records the execution; nothing to do here.
+        console.log(`[TaskScheduler] Wake ${task.id} delivery already in flight; skipping`)
+        break
+      case 'not-pending':
+        // Fresh read shows the task already reached a terminal state (a manual
+        // wake won the race) — the due-task batch was just stale.
+        console.log(`[TaskScheduler] Wake ${task.id} is ${result.status}; skipping`)
+        break
+      case 'session-missing':
+        console.error(
+          `[TaskScheduler] Wake ${task.id} target session ${sessionId} no longer exists`
+        )
+        await markTaskFailed(task.id, 'Session no longer exists')
+        break
+      case 'agent-missing':
+        console.error(
+          `[TaskScheduler] Agent ${task.agentSlug} no longer exists, marking wake as failed`
+        )
+        await markTaskFailed(task.id, 'Agent no longer exists')
+        break
     }
-
-    // Duplicate-fire guard (mirrors getSessionForScheduledExecution on the
-    // create path): if this exact wake slot was already delivered, the send
-    // succeeded but recording the execution didn't — just reconcile.
-    const executionAt = task.nextExecutionAt.toISOString()
-    if (
-      sessionMeta.lastWake?.taskId === task.id &&
-      sessionMeta.lastWake.executionAt === executionAt
-    ) {
-      console.log(
-        `[TaskScheduler] Wake ${task.id} already delivered to session ${sessionId}; reconciling task status`
-      )
-      await this.recordTaskExecution(task, sessionId)
-      return
-    }
-
-    if (!(await agentExists(task.agentSlug))) {
-      console.error(
-        `[TaskScheduler] Agent ${task.agentSlug} no longer exists, marking wake as failed`
-      )
-      await markTaskFailed(task.id, 'Agent no longer exists')
-      return
-    }
-
-    // Cold start is fine: sendMessage into a session with no live process
-    // resumes it from the container's session descriptor.
-    const client = await containerManager.ensureRunning(task.agentSlug)
-
-    if (!messagePersister.isSubscribed(sessionId)) {
-      await messagePersister.subscribeToSession(sessionId, client, sessionId, task.agentSlug)
-    }
-
-    // If the session went to sleep with a blocking user-input request still
-    // open (agent asked, nobody answered), cancel it so the wake message
-    // starts a fresh turn instead of deadlocking behind the blocked tool.
-    await messagePersister.cancelAwaitingInput(sessionId, task.agentSlug)
-
-    const wakeMessage = buildWakeMessage(task, 'scheduled')
-
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
-
-    await client.sendMessage(sessionId, wakeMessage, randomUUID(), { shouldQuery: true })
-
-    // Side effect landed; record the slot so a crash between here and
-    // recordTaskExecution can't double-deliver on the next poll.
-    await updateSessionMetadata(task.agentSlug, sessionId, {
-      lastWake: { taskId: task.id, executionAt },
-    })
-
-    console.log(
-      `[TaskScheduler] Wake ${task.id} resumed session ${sessionId}`
-    )
-
-    notificationManager.triggerScheduledSessionResumed(
-      sessionId,
-      task.agentSlug,
-      task.id,
-      sessionMeta.name
-    ).catch((err) => {
-      console.error('[TaskScheduler] Failed to trigger resume notification:', err)
-    })
-
-    await this.recordTaskExecution(task, sessionId)
   }
 
   private async recordTaskExecution(task: ScheduledTask, sessionId: string): Promise<void> {

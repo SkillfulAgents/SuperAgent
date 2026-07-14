@@ -2,12 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
 
 const mockGetDueTasks = vi.fn()
+const mockGetScheduledTask = vi.fn()
 const mockMarkTaskExecuted = vi.fn()
 const mockMarkTaskFailed = vi.fn()
 const mockUpdateNextExecution = vi.fn()
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   getDueTasks: (...args: unknown[]) => mockGetDueTasks(...args),
+  getScheduledTask: (...args: unknown[]) => mockGetScheduledTask(...args),
   markTaskExecuted: (...args: unknown[]) => mockMarkTaskExecuted(...args),
   markTaskFailed: (...args: unknown[]) => mockMarkTaskFailed(...args),
   updateNextExecution: (...args: unknown[]) => mockUpdateNextExecution(...args),
@@ -37,15 +39,21 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
 
 const mockSubscribeToSession = vi.fn()
 const mockMarkSessionActive = vi.fn()
+const mockMarkSessionIdle = vi.fn()
 const mockIsSubscribed = vi.fn()
 const mockCancelAwaitingInput = vi.fn()
+const mockBroadcastGlobal = vi.fn()
+const mockBroadcastSessionUpdate = vi.fn()
 
 vi.mock('@shared/lib/container/message-persister', () => ({
   messagePersister: {
     subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
     markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
+    markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),
     isSubscribed: (...args: unknown[]) => mockIsSubscribed(...args),
     cancelAwaitingInput: (...args: unknown[]) => mockCancelAwaitingInput(...args),
+    broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
+    broadcastSessionUpdate: (...args: unknown[]) => mockBroadcastSessionUpdate(...args),
   },
 }))
 
@@ -144,6 +152,11 @@ describe('TaskScheduler session wake (resume) branch', () => {
     vi.setSystemTime(new Date('2026-06-26T17:05:00.000Z'))
 
     mockGetDueTasks.mockResolvedValue([])
+    // The delivery path re-reads the task under its claim; serve the same task
+    // the due-batch returned so each test primes one place.
+    mockGetScheduledTask.mockImplementation(
+      async (id: string) => ((await mockGetDueTasks()) as ScheduledTask[]).find((t) => t.id === id) ?? null
+    )
     mockEnsureRunning.mockResolvedValue({
       createSession: mockCreateSession,
       sendMessage: mockSendMessage,
@@ -320,6 +333,9 @@ describe('TaskScheduler session wake (resume) branch', () => {
 
     expect(mockMarkTaskFailed).not.toHaveBeenCalled()
     expect(mockMarkTaskExecuted).not.toHaveBeenCalled()
+    // The optimistic active flag is reverted — a failed delivery must not
+    // leave the session looking busy until the retry lands.
+    expect(mockMarkSessionIdle).toHaveBeenCalledWith('sleeping-session-1')
   })
 
   it('fails a wake once it has been retrying past the retry window', async () => {

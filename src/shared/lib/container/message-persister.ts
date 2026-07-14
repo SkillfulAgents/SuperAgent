@@ -358,6 +358,16 @@ class MessagePersister {
     })
   }
 
+  // Revert an optimistic markSessionActive when a host-initiated send fails
+  // before reaching the container (e.g. a scheduled wake delivery error). The
+  // session never actually started a turn, so flip it back to idle rather than
+  // leaving a phantom "working" state until some later retry succeeds.
+  markSessionIdle(sessionId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (!state?.isActive) return
+    this.finalizeIdle(sessionId, state)
+  }
+
   // Check if a session is currently active (processing user request)
   isSessionActive(sessionId: string): boolean {
     const state = this.streamingStates.get(sessionId)
