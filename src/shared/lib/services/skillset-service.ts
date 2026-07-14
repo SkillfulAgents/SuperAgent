@@ -444,7 +444,38 @@ function isExpectedGitDriftError(msg: string): boolean {
  * nuke-and-reclone and are not worth reporting to Sentry per-refresh.
  */
 function isRemoteUnavailableGitError(msg: string): boolean {
-  return /Could not resolve host|unable to access|Connection (timed out|refused|reset)|Network is unreachable|Could not read from remote|Failed to connect|Operation timed out|timed? ?out|Permission denied|Could not access repository|remote is unreachable/i.test(msg)
+  return /Could not resolve host|unable to access|Connection (timed out|refused|reset)|Network is unreachable|Could not read from remote|Failed to connect|Operation timed out|timed? ?out|Permission denied|Could not access repository|remote is unreachable|fetch failed|Failed to get platform Git URL: (401|403|407|408|429|5\d\d)|Not authorized to download platform skillset|Platform not connected|Platform server error while downloading/i.test(msg)
+}
+
+const NETWORK_ERROR_CODES = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT',
+  'ENETUNREACH', 'ENETDOWN', 'EHOSTUNREACH', 'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET',
+])
+
+/** Walk error → cause → AggregateError.errors looking for a network errno. */
+function hasNetworkErrorCode(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== 'object' || depth > 4) return false
+  const e = error as { code?: unknown; cause?: unknown; errors?: unknown }
+  if (typeof e.code === 'string' && NETWORK_ERROR_CODES.has(e.code)) return true
+  if (Array.isArray(e.errors) && e.errors.some((sub) => hasNetworkErrorCode(sub, depth + 1))) return true
+  return hasNetworkErrorCode(e.cause, depth + 1)
+}
+
+/**
+ * Object-aware remote-unavailability check. The message alone is not enough:
+ * an execFile timeout kills the child (`killed`/`signal` set) with a bare
+ * "Command failed: git …" message, and undici surfaces DNS failures as
+ * "fetch failed" with the errno only on `cause`.
+ */
+function isRemoteUnavailableError(error: unknown): boolean {
+  if (error && typeof error === 'object') {
+    const e = error as { killed?: unknown; signal?: unknown }
+    if (e.killed === true || (typeof e.signal === 'string' && e.signal.length > 0)) return true
+    if (hasNetworkErrorCode(error)) return true
+  }
+  const msg = error instanceof Error ? error.message : String(error)
+  return isRemoteUnavailableGitError(msg)
 }
 
 /**
@@ -488,29 +519,33 @@ async function resolveDefaultBranch(repoDir: string): Promise<DefaultBranchResol
   if (existing) return { branch: existing }
 
   // The symref isn't set locally — ask the remote for its HEAD once, then
-  // re-read. The failure detail matters: it tells offline apart from a cache
-  // whose origin/HEAD genuinely can't be resolved (half-clone, empty repo).
-  let setHeadError: string | null = null
+  // re-read. The failure matters: it tells offline apart from a cache whose
+  // origin/HEAD genuinely can't be resolved (half-clone, empty repo). Keep
+  // the error object, not just its message — a hung set-head killed by the
+  // execFile timeout only carries `killed`/`signal`, not a network message.
+  let setHeadError: unknown = null
   try {
     await execFileAsync('git', ['remote', 'set-head', 'origin', '--auto'], {
       cwd: repoDir, timeout: 10000, env: GIT_ENV,
     })
   } catch (err) {
-    setHeadError = err instanceof Error ? err.message : String(err)
-    console.warn(`[resolveDefaultBranch] set-head --auto failed in ${repoDir}:`, setHeadError)
+    setHeadError = err
+    console.warn(
+      `[resolveDefaultBranch] set-head --auto failed in ${repoDir}:`,
+      err instanceof Error ? err.message : String(err),
+    )
   }
 
   const branch = await readSymref()
   if (branch) return { branch }
 
-  if (setHeadError && isRemoteUnavailableGitError(setHeadError)) {
-    return { branch: null, reason: 'offline', detail: setHeadError }
+  const detail = setHeadError instanceof Error
+    ? setHeadError.message
+    : setHeadError ? String(setHeadError) : 'origin/HEAD still unset after set-head --auto'
+  if (setHeadError && isRemoteUnavailableError(setHeadError)) {
+    return { branch: null, reason: 'offline', detail }
   }
-  return {
-    branch: null,
-    reason: 'unresolvable',
-    detail: setHeadError ?? 'origin/HEAD still unset after set-head --auto',
-  }
+  return { branch: null, reason: 'unresolvable', detail }
 }
 
 type GitPullResult = 'pulled' | 'skipped-offline'
@@ -571,8 +606,8 @@ async function gitPull(repoDir: string): Promise<GitPullResult> {
       console.warn(`[gitPull] fetch/reset drift (recoverable) in ${repoDir}:`, msg)
       return 'pulled'
     }
-    if (isRemoteUnavailableGitError(msg)) {
-      // Offline/auth — the stale cache remains usable; skip quietly.
+    if (isRemoteUnavailableError(error)) {
+      // Offline/auth/timeout — the stale cache remains usable; skip quietly.
       console.warn(`[gitPull] Remote unavailable; keeping stale cache in ${repoDir}:`, msg)
       return 'skipped-offline'
     }
@@ -770,16 +805,22 @@ async function refreshSkillsetCache(
     // For platform, the URL embeds a short-lived token that needs refreshing.
     // For github, set-url is a cheap no-op when unchanged.
     const freshUrl = await hostingProvider.resolveCloneUrl(ref.skillsetUrl, ref)
-    await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
-      cwd: repoDir, timeout: 5000, env: GIT_ENV,
-    })
 
     let pullResult: GitPullResult
     try {
+      // A cache whose `origin` remote is missing entirely (interrupted clone,
+      // mangled config) fails set-url with "No such remote" — that's the same
+      // corrupt-cache shape as an unresolvable origin/HEAD, so it recovers
+      // through the same nuke-and-reclone.
+      await execFileAsync('git', ['remote', 'set-url', 'origin', freshUrl], {
+        cwd: repoDir, timeout: 5000, env: GIT_ENV,
+      })
       pullResult = await gitPull(repoDir)
     } catch (error) {
-      if (!(error instanceof SkillsetCacheCorruptError)) throw error
-      await recloneSkillsetCache(ref, repoDir, error.message)
+      const msg = error instanceof Error ? error.message : String(error)
+      const isCorrupt = error instanceof SkillsetCacheCorruptError || /No such remote/i.test(msg)
+      if (!isCorrupt) throw error
+      await recloneSkillsetCache(ref, repoDir, msg)
       return readIndexJson(repoDir)
     }
 
@@ -1157,7 +1198,7 @@ export async function refreshAgentSkills(
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
       const msg = error instanceof Error ? error.message : String(error)
-      if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableGitError(msg)) {
+      if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableError(error)) {
         captureException(error, { tags: { area: 'skillset-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })
       }
     }
@@ -1216,7 +1257,7 @@ export async function refreshAgentSkills(
             await refreshSkillset(toSkillsetRefFromMeta(meta))
           } catch (error) {
             const msg = error instanceof Error ? error.message : String(error)
-            if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableGitError(msg)) {
+            if (!isExpectedGitDriftError(msg) && !isRemoteUnavailableError(error)) {
               captureException(error, { tags: { area: 'skillset-refresh', op: 'queue-merged-pull' }, extra: { skillsetId: meta.skillsetId } })
             }
           }
