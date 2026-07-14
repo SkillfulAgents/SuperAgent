@@ -1,4 +1,5 @@
-import { and, eq, gte, inArray } from 'drizzle-orm'
+import { and, eq, gte, inArray, sql, type SQL } from 'drizzle-orm'
+import type { SQLiteColumn } from 'drizzle-orm/sqlite-core'
 import { db } from '@shared/lib/db'
 import {
   agentConnectedAccounts,
@@ -18,21 +19,33 @@ import type {
 } from '@shared/lib/types/activity'
 import { DEFAULT_CRON_ACTIVITY_SLOTS } from '@shared/lib/types/activity'
 import {
+  activityDayKey,
   buildCronActivitySeries,
   buildDailyActivitySeries,
-  classifyRequestOutcome,
+  FAILURE_POLICY_DECISIONS,
   getActivityWindowStart,
+  normalizeAutomationStatus,
   type DailyActivityEvent,
 } from './activity-aggregation'
 import { readSessionMetadata } from './session-service'
 
-interface ActivityStatsOptions {
+export interface ActivityStatsOptions {
   days: number
+  /** Viewer's `Date.prototype.getTimezoneOffset()`; buckets days locally. */
+  tzOffsetMinutes?: number
   now?: Date
   cronSlots?: number
+  /**
+   * Whether a session's container subscription is currently live (the message
+   * persister's view). A persisted 'running' automationStatus with no live
+   * session is a run that died without a terminal result (container killed,
+   * app quit mid-run) — it is reported as failed instead of pulsing forever.
+   * Defaults to trusting the persisted status when no probe is supplied.
+   */
+  isSessionLive?: (sessionId: string) => boolean
 }
 
-interface ConnectionStatsOptions extends ActivityStatsOptions {
+export interface ConnectionStatsOptions extends ActivityStatsOptions {
   /** Undefined in local/single-user mode; set to the acting user in auth mode. */
   ownerId?: string
 }
@@ -60,21 +73,27 @@ function pushEvent(
 
 function webhookEvents(
   metadata: SessionMetadataMap,
+  options: ActivityStatsOptions,
 ): Map<string, DailyActivityEvent[]> {
   const events = new Map<string, DailyActivityEvent[]>()
 
-  for (const meta of Object.values(metadata)) {
+  for (const [sessionId, meta] of Object.entries(metadata)) {
     if (!meta.isWebhookExecution || !meta.webhookTriggerId || !meta.createdAt) continue
     // In-flight runs are neither a success nor a failure yet — leave them out
     // of the daily bars until the terminal result finalizes automationStatus.
-    // Legacy sessions without a status predate outcome tracking and count as
-    // succeeded.
-    if (meta.automationStatus === 'running') continue
+    // A 'running' session with no live subscription died without a result and
+    // counts as failed. Legacy sessions without a status predate outcome
+    // tracking and count as succeeded.
+    let status = normalizeAutomationStatus(meta.automationStatus)
+    if (status === 'running') {
+      if (!options.isSessionLive || options.isSessionLive(sessionId)) continue
+      status = 'failed'
+    }
     const createdAt = new Date(meta.createdAt)
     if (!Number.isFinite(createdAt.getTime())) continue
     pushEvent(events, meta.webhookTriggerId, {
-      createdAt,
-      outcome: meta.automationStatus === 'failed' ? 'failed' : 'succeeded',
+      day: activityDayKey(createdAt, options.tzOffsetMinutes ?? 0),
+      outcome: status === 'failed' ? 'failed' : 'succeeded',
       count: Number.isInteger(meta.webhookInvocationCount) && meta.webhookInvocationCount! > 0
         ? meta.webhookInvocationCount
         : 1,
@@ -84,47 +103,70 @@ function webhookEvents(
   return events
 }
 
-// Only the columns the aggregation needs — audit rows carry more (paths,
-// scopes) that would be wasted I/O at this volume.
-const proxyAuditColumns = {
-  accountId: proxyAuditLog.accountId,
-  statusCode: proxyAuditLog.statusCode,
-  errorMessage: proxyAuditLog.errorMessage,
-  policyDecision: proxyAuditLog.policyDecision,
-  createdAt: proxyAuditLog.createdAt,
+// Audit tables grow with every proxied call and have no time-based retention,
+// so the per-day/outcome rollup happens in SQL — the app only ever
+// materializes at most (connections × days × 2) aggregate rows, never the raw
+// request log.
+function auditDayExpr(createdAt: SQLiteColumn, tzOffsetMinutes: number): SQL<string> {
+  return sql<string>`date((${createdAt} / 1000) - ${tzOffsetMinutes * 60}, 'unixepoch')`
 }
 
-const mcpAuditColumns = {
-  remoteMcpId: mcpAuditLog.remoteMcpId,
-  statusCode: mcpAuditLog.statusCode,
-  errorMessage: mcpAuditLog.errorMessage,
-  policyDecision: mcpAuditLog.policyDecision,
-  createdAt: mcpAuditLog.createdAt,
+// SQL twin of the outcome rules (failure policy decisions, non-2xx/3xx or
+// missing status, explicit error message). FAILURE_POLICY_DECISIONS is shared
+// with activity-aggregation so the lists cannot drift.
+function auditOutcomeExpr(table: typeof proxyAuditLog | typeof mcpAuditLog): SQL<string> {
+  return sql<string>`case
+    when ${table.errorMessage} is not null and ${table.errorMessage} <> '' then 'failed'
+    when ${inArray(table.policyDecision, [...FAILURE_POLICY_DECISIONS])} then 'failed'
+    when ${table.statusCode} is null then 'failed'
+    when ${table.statusCode} >= 200 and ${table.statusCode} < 400 then 'succeeded'
+    else 'failed'
+  end`
 }
 
-type ProxyAuditRow = { [K in keyof typeof proxyAuditColumns]: (typeof proxyAuditLog.$inferSelect)[K] }
-type McpAuditRow = { [K in keyof typeof mcpAuditColumns]: (typeof mcpAuditLog.$inferSelect)[K] }
+interface AuditRollupRow {
+  id: string
+  day: string
+  outcome: string
+  count: number
+}
+
+function auditRollupQuery(
+  table: typeof proxyAuditLog | typeof mcpAuditLog,
+  idColumn: SQLiteColumn,
+  where: SQL | undefined,
+  tzOffsetMinutes: number,
+): Promise<AuditRollupRow[]> {
+  const day = auditDayExpr(table.createdAt, tzOffsetMinutes)
+  const outcome = auditOutcomeExpr(table)
+  return db
+    .select({
+      id: idColumn,
+      day,
+      outcome,
+      count: sql<number>`count(*)`,
+    })
+    .from(table)
+    .where(where)
+    .groupBy(idColumn, day, outcome) as Promise<AuditRollupRow[]>
+}
 
 function requestEventsByConnection(
-  proxyRows: ProxyAuditRow[],
-  mcpRows: McpAuditRow[],
-  allowedAccountIds?: Set<string>,
-  allowedMcpIds?: Set<string>,
+  proxyRows: AuditRollupRow[],
+  mcpRows: AuditRollupRow[],
 ): Map<string, DailyActivityEvent[]> {
   const events = new Map<string, DailyActivityEvent[]>()
-  for (const row of proxyRows) {
-    if (allowedAccountIds && !allowedAccountIds.has(row.accountId)) continue
-    pushEvent(events, `account-${row.accountId}`, {
-      createdAt: row.createdAt,
-      outcome: classifyRequestOutcome(row),
-    })
-  }
-  for (const row of mcpRows) {
-    if (allowedMcpIds && !allowedMcpIds.has(row.remoteMcpId)) continue
-    pushEvent(events, `mcp-${row.remoteMcpId}`, {
-      createdAt: row.createdAt,
-      outcome: classifyRequestOutcome(row),
-    })
+  for (const { rows, prefix } of [
+    { rows: proxyRows, prefix: 'account' },
+    { rows: mcpRows, prefix: 'mcp' },
+  ]) {
+    for (const row of rows) {
+      pushEvent(events, `${prefix}-${row.id}`, {
+        day: row.day,
+        outcome: row.outcome === 'succeeded' ? 'succeeded' : 'failed',
+        count: row.count,
+      })
+    }
   }
   return events
 }
@@ -134,7 +176,8 @@ export async function getAgentActivityStats(
   options: ActivityStatsOptions,
 ): Promise<AgentActivityStats> {
   const now = options.now ?? new Date()
-  const from = getActivityWindowStart(options.days, now)
+  const tzOffsetMinutes = options.tzOffsetMinutes ?? 0
+  const from = getActivityWindowStart(options.days, now, tzOffsetMinutes)
 
   const [
     tasks,
@@ -154,23 +197,39 @@ export async function getAgentActivityStats(
     db.select({ id: agentRemoteMcps.remoteMcpId })
       .from(agentRemoteMcps)
       .where(eq(agentRemoteMcps.agentSlug, agentSlug)),
-    db.select(proxyAuditColumns).from(proxyAuditLog).where(and(
+    auditRollupQuery(proxyAuditLog, proxyAuditLog.accountId, and(
       eq(proxyAuditLog.agentSlug, agentSlug),
       gte(proxyAuditLog.createdAt, from),
-    )),
-    db.select(mcpAuditColumns).from(mcpAuditLog).where(and(
+    ), tzOffsetMinutes),
+    auditRollupQuery(mcpAuditLog, mcpAuditLog.remoteMcpId, and(
       eq(mcpAuditLog.agentSlug, agentSlug),
       gte(mcpAuditLog.createdAt, from),
-    )),
+    ), tzOffsetMinutes),
   ])
 
-  const sessionMetadata = Object.values(metadata)
+  // One pass over the metadata map, grouped by task; a persisted 'running'
+  // with no live session is downgraded to failed (see isSessionLive).
+  const sessionsByTaskId = new Map<string, Array<{
+    scheduledExecutionAt?: string
+    automationStatus?: 'running' | 'succeeded' | 'failed'
+  }>>()
+  for (const [sessionId, meta] of Object.entries(metadata)) {
+    if (!meta.scheduledTaskId) continue
+    let status = normalizeAutomationStatus(meta.automationStatus)
+    if (status === 'running' && options.isSessionLive && !options.isSessionLive(sessionId)) {
+      status = 'failed'
+    }
+    const sessions = sessionsByTaskId.get(meta.scheduledTaskId) ?? []
+    sessions.push({ scheduledExecutionAt: meta.scheduledExecutionAt, automationStatus: status })
+    sessionsByTaskId.set(meta.scheduledTaskId, sessions)
+  }
+
   const cronByTaskId = Object.fromEntries(
     tasks
       .filter((task) => task.scheduleType === 'cron')
       .map((task) => [task.id, buildCronActivitySeries({
         task,
-        sessions: sessionMetadata.filter((meta) => meta.scheduledTaskId === task.id),
+        sessions: sessionsByTaskId.get(task.id) ?? [],
         now,
         slots: options.cronSlots ?? DEFAULT_CRON_ACTIVITY_SLOTS,
       })]),
@@ -179,8 +238,8 @@ export async function getAgentActivityStats(
   const webhookIds = triggers.map((trigger) => trigger.id)
   const webhookByTriggerId = dailyEventsById(
     webhookIds,
-    webhookEvents(metadata),
-    { ...options, now },
+    webhookEvents(metadata, { ...options, tzOffsetMinutes }),
+    { ...options, now, tzOffsetMinutes },
   )
 
   const accountIds = new Set(accountMappings.map((mapping) => mapping.id))
@@ -189,11 +248,11 @@ export async function getAgentActivityStats(
     ...[...accountIds].map((id) => `account-${id}`),
     ...[...mcpIds].map((id) => `mcp-${id}`),
   ]
-  const connectionById = dailyEventsById(
-    connectionIds,
-    requestEventsByConnection(proxyRows, mcpRows, accountIds, mcpIds),
-    { ...options, now },
+  const requestEvents = requestEventsByConnection(
+    proxyRows.filter((row) => accountIds.has(row.id)),
+    mcpRows.filter((row) => mcpIds.has(row.id)),
   )
+  const connectionById = dailyEventsById(connectionIds, requestEvents, { ...options, now, tzOffsetMinutes })
 
   return {
     days: options.days,
@@ -208,7 +267,8 @@ export async function getConnectionActivityStats(
   options: ConnectionStatsOptions,
 ): Promise<ConnectionActivityStats> {
   const now = options.now ?? new Date()
-  const from = getActivityWindowStart(options.days, now)
+  const tzOffsetMinutes = options.tzOffsetMinutes ?? 0
+  const from = getActivityWindowStart(options.days, now, tzOffsetMinutes)
   const accountCondition = options.ownerId
     ? eq(connectedAccounts.userId, options.ownerId)
     : undefined
@@ -229,16 +289,16 @@ export async function getConnectionActivityStats(
 
   const [proxyRows, mcpRows] = await Promise.all([
     accountIds.length > 0
-      ? db.select(proxyAuditColumns).from(proxyAuditLog).where(and(
+      ? auditRollupQuery(proxyAuditLog, proxyAuditLog.accountId, and(
           inArray(proxyAuditLog.accountId, accountIds),
           gte(proxyAuditLog.createdAt, from),
-        ))
+        ), tzOffsetMinutes)
       : Promise.resolve([]),
     mcpIds.length > 0
-      ? db.select(mcpAuditColumns).from(mcpAuditLog).where(and(
+      ? auditRollupQuery(mcpAuditLog, mcpAuditLog.remoteMcpId, and(
           inArray(mcpAuditLog.remoteMcpId, mcpIds),
           gte(mcpAuditLog.createdAt, from),
-        ))
+        ), tzOffsetMinutes)
       : Promise.resolve([]),
   ])
 
@@ -248,13 +308,8 @@ export async function getConnectionActivityStats(
   ]
   const connectionById = dailyEventsById(
     connectionIds,
-    requestEventsByConnection(
-      proxyRows,
-      mcpRows,
-      new Set(accountIds),
-      new Set(mcpIds),
-    ),
-    { ...options, now },
+    requestEventsByConnection(proxyRows, mcpRows),
+    { ...options, now, tzOffsetMinutes },
   )
 
   return {

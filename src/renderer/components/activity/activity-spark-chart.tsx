@@ -9,6 +9,21 @@ const WIDTH = 96
 const HEIGHT = 26
 const BAR_GAP = 1.5
 
+/**
+ * Same footprint as the charts (h-7 w-24) so rows don't shift when the
+ * activity query resolves. Rendered while the query is pending; an errored
+ * query renders nothing (rows stay usable, width collapses once, no retry churn).
+ */
+export function ActivitySparkChartSkeleton({ className }: { className?: string }) {
+  return (
+    <div
+      data-testid="activity-chart-skeleton"
+      aria-hidden="true"
+      className={cn('h-7 w-24 rounded-sm bg-muted/40 animate-pulse', className)}
+    />
+  )
+}
+
 interface ActivitySparkChartProps {
   label: string
   data: DailyActivityPoint[]

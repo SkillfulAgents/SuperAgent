@@ -1,31 +1,52 @@
 import { describe, expect, it } from 'vitest'
 import {
+  activityDayKey,
   buildCronActivitySeries,
   buildDailyActivitySeries,
-  classifyRequestOutcome,
   CRON_SLOT_GRACE_MS,
+  getActivityWindowStart,
+  normalizeAutomationStatus,
 } from './activity-aggregation'
 
 const NOW = new Date('2026-07-09T12:00:30.000Z')
 
 describe('activity aggregation', () => {
-  describe('request outcomes', () => {
+  describe('automation status narrowing', () => {
     it.each([
-      [{ statusCode: 200, errorMessage: null, policyDecision: 'allow' }, 'succeeded'],
-      [{ statusCode: 302, errorMessage: null, policyDecision: 'allow' }, 'succeeded'],
-      [{ statusCode: 400, errorMessage: null, policyDecision: 'allow' }, 'failed'],
-      [{ statusCode: null, errorMessage: 'network timeout', policyDecision: 'allow' }, 'failed'],
-      [{ statusCode: 200, errorMessage: 'tool returned an error', policyDecision: 'allow' }, 'failed'],
-      [{ statusCode: 200, errorMessage: null, policyDecision: 'block' }, 'failed'],
-      [{ statusCode: 200, errorMessage: null, policyDecision: 'denied_by_user' }, 'failed'],
-      [{ statusCode: 200, errorMessage: null, policyDecision: 'review_timeout' }, 'failed'],
-    ] as const)('classifies %o as %s', (event, expected) => {
-      expect(classifyRequestOutcome(event)).toBe(expected)
+      ['running', 'running'],
+      ['succeeded', 'succeeded'],
+      ['failed', 'failed'],
+      // Lenient metadata schema: a newer build's unknown status narrows to
+      // undefined instead of corrupting rank comparisons.
+      ['cancelled', undefined],
+      ['', undefined],
+      [42, undefined],
+      [null, undefined],
+      [undefined, undefined],
+    ])('narrows %o to %o', (value, expected) => {
+      expect(normalizeAutomationStatus(value)).toBe(expected)
+    })
+  })
+
+  describe('day bucketing', () => {
+    it('buckets by the viewer\'s clock via the tz offset', () => {
+      const instant = new Date('2026-07-09T02:00:00.000Z')
+      expect(activityDayKey(instant)).toBe('2026-07-09')
+      // UTC-5 viewer (offset +300): 02:00Z is still the previous local day.
+      expect(activityDayKey(instant, 300)).toBe('2026-07-08')
+      // UTC+9 viewer (offset -540): 20:00Z is already the next local day.
+      expect(activityDayKey(new Date('2026-07-09T20:00:00.000Z'), -540)).toBe('2026-07-10')
+    })
+
+    it('starts the window at the UTC instant the oldest local day began', () => {
+      expect(getActivityWindowStart(3, NOW).toISOString()).toBe('2026-07-07T00:00:00.000Z')
+      // UTC-5 viewer: local July 7 starts at 05:00Z.
+      expect(getActivityWindowStart(3, NOW, 300).toISOString()).toBe('2026-07-07T05:00:00.000Z')
     })
   })
 
   describe('daily series', () => {
-    it('zero-fills every UTC day and preserves chronological order', () => {
+    it('zero-fills every day and preserves chronological order', () => {
       expect(buildDailyActivitySeries([], { days: 3, now: NOW })).toEqual([
         { date: '2026-07-07', succeeded: 0, failed: 0 },
         { date: '2026-07-08', succeeded: 0, failed: 0 },
@@ -33,11 +54,11 @@ describe('activity aggregation', () => {
       ])
     })
 
-    it('sums invocation volume by UTC day and outcome', () => {
+    it('sums pre-bucketed volume by day and outcome', () => {
       const series = buildDailyActivitySeries([
-        { createdAt: new Date('2026-07-08T00:00:00.000Z'), outcome: 'succeeded', count: 3 },
-        { createdAt: new Date('2026-07-08T23:59:59.999Z'), outcome: 'failed', count: 2 },
-        { createdAt: new Date('2026-07-09T00:00:00.000Z'), outcome: 'succeeded' },
+        { day: '2026-07-08', outcome: 'succeeded', count: 3 },
+        { day: '2026-07-08', outcome: 'failed', count: 2 },
+        { day: '2026-07-09', outcome: 'succeeded' },
       ], { days: 2, now: NOW })
 
       expect(series).toEqual([
@@ -46,12 +67,25 @@ describe('activity aggregation', () => {
       ])
     })
 
+    it('labels buckets with local days when a tz offset is given', () => {
+      // UTC-5 viewer at 12:00:30Z on July 9 → local today is July 9; an
+      // event bucketed to local July 8 lands in yesterday's bar.
+      const series = buildDailyActivitySeries([
+        { day: activityDayKey(new Date('2026-07-09T02:00:00.000Z'), 300), outcome: 'succeeded' },
+      ], { days: 2, now: NOW, tzOffsetMinutes: 300 })
+
+      expect(series).toEqual([
+        { date: '2026-07-08', succeeded: 1, failed: 0 },
+        { date: '2026-07-09', succeeded: 0, failed: 0 },
+      ])
+    })
+
     it('ignores malformed, future, and out-of-window events without corrupting buckets', () => {
       const series = buildDailyActivitySeries([
-        { createdAt: new Date('invalid'), outcome: 'succeeded' },
-        { createdAt: new Date('2026-07-06T23:59:59.999Z'), outcome: 'succeeded', count: 100 },
-        { createdAt: new Date('2026-07-10T00:00:00.000Z'), outcome: 'failed', count: 100 },
-        { createdAt: new Date('2026-07-09T08:00:00.000Z'), outcome: 'succeeded', count: -4 },
+        { day: 'not-a-day', outcome: 'succeeded' },
+        { day: '2026-07-06', outcome: 'succeeded', count: 100 },
+        { day: '2026-07-10', outcome: 'failed', count: 100 },
+        { day: '2026-07-09', outcome: 'succeeded', count: -4 },
       ], { days: 3, now: NOW })
 
       expect(series).toEqual([

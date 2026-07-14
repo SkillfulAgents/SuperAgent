@@ -39,7 +39,7 @@ import { formatDistanceToNow } from 'date-fns'
 import { HomeCollapsible } from './home-collapsible'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
-import { ActivitySparkChart, CronSparkChart } from '@renderer/components/activity/activity-spark-chart'
+import { ActivitySparkChart, ActivitySparkChartSkeleton, CronSparkChart } from '@renderer/components/activity/activity-spark-chart'
 import type { CronActivityPoint, DailyActivityPoint } from '@shared/lib/types/activity'
 
 interface HomeTriggersProps {
@@ -64,7 +64,7 @@ export function HomeTriggers({
   const { data: webhookTriggersData } = useWebhookTriggers(agentSlug, 'active')
   const { data: cancelledWebhooksData } = useWebhookTriggers(agentSlug, 'cancelled')
   const { data: cancelledTasksData } = useScheduledTasks(agentSlug, 'cancelled')
-  const { data: activityStats } = useAgentActivityStats(agentSlug)
+  const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
   const [showDeleted, setShowDeleted] = useState(false)
 
   const items = useMemo<TriggerItem[]>(() => {
@@ -109,6 +109,7 @@ export function HomeTriggers({
                 agentSlug={agentSlug}
                 onSelect={() => onSelectTask(item.task.id)}
                 activity={activityStats?.cronByTaskId[item.task.id]}
+                activityPending={activityPending}
               />
             ) : (
               <WebhookRow
@@ -117,6 +118,7 @@ export function HomeTriggers({
                 agentSlug={agentSlug}
                 onSelect={() => onSelectWebhook(item.trigger.id)}
                 activity={activityStats?.webhookByTriggerId[item.trigger.id]}
+                activityPending={activityPending}
               />
             ),
           )}
@@ -138,6 +140,7 @@ export function HomeTriggers({
                       agentSlug={agentSlug}
                       onSelect={() => onSelectTask(item.task.id)}
                       activity={activityStats?.cronByTaskId[item.task.id]}
+                      activityPending={activityPending}
                     />
                   </div>
                 ) : (
@@ -147,6 +150,7 @@ export function HomeTriggers({
                       agentSlug={agentSlug}
                       onSelect={() => onSelectWebhook(item.trigger.id)}
                       activity={activityStats?.webhookByTriggerId[item.trigger.id]}
+                      activityPending={activityPending}
                     />
                   </div>
                 ),
@@ -348,11 +352,13 @@ function CronRow({
   agentSlug,
   onSelect,
   activity,
+  activityPending,
 }: {
   task: ApiScheduledTask
   agentSlug: string
   onSelect: () => void
   activity?: CronActivityPoint[]
+  activityPending?: boolean
 }) {
   const runNow = useRunScheduledTaskNow()
   const cancelTask = useCancelScheduledTask()
@@ -393,6 +399,8 @@ function CronRow({
       runNowPending={runNow.isPending}
       activityChart={activity !== undefined ? (
         <CronSparkChart label={`${task.name ?? 'Scheduled Task'} schedule`} data={activity} />
+      ) : activityPending ? (
+        <ActivitySparkChartSkeleton />
       ) : undefined}
     />
   )
@@ -403,11 +411,13 @@ function WebhookRow({
   agentSlug,
   onSelect,
   activity,
+  activityPending,
 }: {
   trigger: WebhookTrigger
   agentSlug: string
   onSelect: () => void
   activity?: DailyActivityPoint[]
+  activityPending?: boolean
 }) {
   const cancelTrigger = useCancelWebhookTrigger()
   const pauseTrigger = usePauseWebhookTrigger()
@@ -454,6 +464,8 @@ function WebhookRow({
       deletePending={cancelTrigger.isPending}
       activityChart={activity !== undefined ? (
         <ActivitySparkChart label={`${displayName} activity`} data={activity} />
+      ) : activityPending ? (
+        <ActivitySparkChartSkeleton />
       ) : undefined}
     />
   )

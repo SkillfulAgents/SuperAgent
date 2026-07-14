@@ -104,6 +104,14 @@ describe('global Connections activity charts', () => {
     })).toBeInTheDocument()
   })
 
+  it('reserves chart space while activity is loading so rows do not shift', () => {
+    mockUseConnectionActivityStats.mockReturnValue({ data: undefined, isPending: true })
+    renderWithProviders(<ConnectionsTab />)
+
+    expect(screen.getAllByTestId('activity-chart-skeleton')).toHaveLength(2)
+    expect(screen.queryByRole('img', { name: /activity/i })).not.toBeInTheDocument()
+  })
+
   it('does not let activity failure remove connection management rows', () => {
     mockUseConnectionActivityStats.mockReturnValue({ data: undefined, isError: true })
     renderWithProviders(<ConnectionsTab />)
@@ -111,5 +119,6 @@ describe('global Connections activity charts', () => {
     expect(screen.getByText('Work GitHub')).toBeInTheDocument()
     expect(screen.getByText('Docs MCP')).toBeInTheDocument()
     expect(screen.queryByRole('img', { name: /activity/i })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('activity-chart-skeleton')).not.toBeInTheDocument()
   })
 })

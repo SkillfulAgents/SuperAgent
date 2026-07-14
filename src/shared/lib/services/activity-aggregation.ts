@@ -7,27 +7,34 @@ import type {
 
 export const CRON_SLOT_GRACE_MS = 60_000
 
-const FAILURE_POLICY_DECISIONS = new Set([
+// Policy decisions that mean the request never reached (or was rejected by)
+// the upstream service. Shared with the SQL outcome classifier in
+// activity-stats-service — keep the two in sync.
+export const FAILURE_POLICY_DECISIONS = [
   'block',
   'denied_by_user',
   'review_timeout',
-])
+] as const
 
-export interface RequestOutcomeInput {
-  statusCode: number | null
-  errorMessage?: string | null
-  policyDecision?: string | null
-}
+const AUTOMATION_STATUSES = new Set(['running', 'succeeded', 'failed'])
 
-export function classifyRequestOutcome(input: RequestOutcomeInput): ActivityOutcome {
-  if (input.errorMessage) return 'failed'
-  if (input.policyDecision && FAILURE_POLICY_DECISIONS.has(input.policyDecision)) return 'failed'
-  if (input.statusCode === null || !Number.isFinite(input.statusCode)) return 'failed'
-  return input.statusCode >= 200 && input.statusCode < 400 ? 'succeeded' : 'failed'
+export type AutomationStatus = 'running' | 'succeeded' | 'failed'
+
+/**
+ * The metadata schema is deliberately lenient (bare string), so a file written
+ * by a newer build can carry a status this reader doesn't know. Unknown values
+ * narrow to undefined, which downstream treats like a legacy pre-tracking
+ * session rather than corrupting rank comparisons.
+ */
+export function normalizeAutomationStatus(value: unknown): AutomationStatus | undefined {
+  return typeof value === 'string' && AUTOMATION_STATUSES.has(value)
+    ? (value as AutomationStatus)
+    : undefined
 }
 
 export interface DailyActivityEvent {
-  createdAt: Date
+  /** Calendar-day bucket key (YYYY-MM-DD) in the requested display timezone. */
+  day: string
   outcome: ActivityOutcome
   count?: number
 }
@@ -35,16 +42,29 @@ export interface DailyActivityEvent {
 export interface DailySeriesOptions {
   days: number
   now?: Date
+  /**
+   * Minutes to subtract from UTC to reach the viewer's local clock, as
+   * reported by `Date.prototype.getTimezoneOffset()`. A fixed offset is a
+   * deliberate approximation: events within an hour of a DST transition can
+   * land one bucket off, which is acceptable for daily spark bars.
+   */
+  tzOffsetMinutes?: number
 }
 
-function utcDay(date: Date): string {
-  return date.toISOString().slice(0, 10)
+/** Bucket an instant into a calendar day for the given fixed UTC offset. */
+export function activityDayKey(date: Date, tzOffsetMinutes = 0): string {
+  return new Date(date.getTime() - tzOffsetMinutes * 60_000).toISOString().slice(0, 10)
 }
 
-export function getActivityWindowStart(days: number, now: Date = new Date()): Date {
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-  start.setUTCDate(start.getUTCDate() - Math.max(0, Math.floor(days) - 1))
-  return start
+/** UTC instant when the oldest local calendar day of the window began. */
+export function getActivityWindowStart(
+  days: number,
+  now: Date = new Date(),
+  tzOffsetMinutes = 0,
+): Date {
+  const localToday = new Date(`${activityDayKey(now, tzOffsetMinutes)}T00:00:00.000Z`)
+  localToday.setUTCDate(localToday.getUTCDate() - Math.max(0, Math.floor(days) - 1))
+  return new Date(localToday.getTime() + tzOffsetMinutes * 60_000)
 }
 
 export function buildDailyActivitySeries(
@@ -53,20 +73,21 @@ export function buildDailyActivitySeries(
 ): DailyActivityPoint[] {
   const days = Math.max(1, Math.floor(options.days))
   const now = options.now ?? new Date()
-  const start = getActivityWindowStart(days, now)
+  const tzOffsetMinutes = options.tzOffsetMinutes ?? 0
+  const todayKey = activityDayKey(now, tzOffsetMinutes)
   const buckets = new Map<string, DailyActivityPoint>()
 
+  const day = new Date(`${todayKey}T00:00:00.000Z`)
+  day.setUTCDate(day.getUTCDate() - (days - 1))
   for (let offset = 0; offset < days; offset += 1) {
-    const date = new Date(start)
-    date.setUTCDate(date.getUTCDate() + offset)
-    const key = utcDay(date)
+    const key = day.toISOString().slice(0, 10)
     buckets.set(key, { date: key, succeeded: 0, failed: 0 })
+    day.setUTCDate(day.getUTCDate() + 1)
   }
 
   for (const event of events) {
-    const time = event.createdAt.getTime()
-    if (!Number.isFinite(time) || time > now.getTime()) continue
-    const bucket = buckets.get(utcDay(event.createdAt))
+    if (event.day > todayKey) continue
+    const bucket = buckets.get(event.day)
     if (!bucket) continue
     const count = Number.isInteger(event.count) && event.count! > 0 ? event.count! : 1
     bucket[event.outcome] += count
@@ -86,7 +107,7 @@ interface CronTaskInput {
 
 interface CronSessionInput {
   scheduledExecutionAt?: string
-  automationStatus?: 'running' | 'succeeded' | 'failed'
+  automationStatus?: AutomationStatus
 }
 
 export interface CronActivityInput {

@@ -22,6 +22,7 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
 vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
+  finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: vi.fn(() => 'UTC'),
@@ -156,7 +157,7 @@ vi.mock('./container-manager', () => ({
 
 // Import after mocks are set up
 import { messagePersister, redactStreamedToolInput } from './message-persister'
-import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 
 describe('redactStreamedToolInput', () => {
   it('masks the secret in create/update_webhook_endpoint streamed input', () => {
@@ -2830,122 +2831,84 @@ describe('MessagePersister', () => {
   })
 
   describe('automation outcome metadata', () => {
-    it('marks a scheduled session succeeded when its result completes', async () => {
-      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
-        isScheduledExecution: true,
-        scheduledTaskId: 'task-1',
-        automationStatus: 'running',
-      })
-
-      mockClient._sendMessage({
-        type: 'result',
-        subtype: 'success',
-        is_error: false,
-        duration_ms: 100,
-        num_turns: 1,
-        usage: { input_tokens: 1, output_tokens: 1 },
-      })
-
-      await vi.waitFor(() => {
-        expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
-          SESSION_ID,
-          { automationStatus: 'succeeded' },
-        )
-      })
+    // Guard rules (regular session, promoted legacy session, already-final
+    // outcome) live inside finalizeAutomationStatus and are covered by
+    // session-service.metadata.test.ts against real files. Here we cover the
+    // wiring: result → status mapping, and the not-automation caching that
+    // spares interactive sessions repeat metadata reads.
+    beforeEach(() => {
+      vi.mocked(finalizeAutomationStatus).mockResolvedValue('updated')
     })
 
-    it('marks a webhook session failed when its result errors', async () => {
-      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
-        isWebhookExecution: true,
-        webhookTriggerId: 'trigger-1',
-        webhookInvocationCount: 3,
-        automationStatus: 'running',
-      })
-
-      mockClient._sendMessage({
+    function sendResult(isError: boolean) {
+      mockClient._sendMessage(isError ? {
         type: 'result',
         subtype: 'error_during_execution',
-        error: 'Webhook execution failed',
-        is_error: true,
-        duration_ms: 100,
-        num_turns: 0,
-        usage: { input_tokens: 1, output_tokens: 0 },
-      })
-
-      await vi.waitFor(() => {
-        expect(updateSessionMetadata).toHaveBeenCalledWith(
-          AGENT_SLUG,
-          SESSION_ID,
-          { automationStatus: 'failed' },
-        )
-      })
-    })
-
-    it('does not add automation status to a regular session', async () => {
-      vi.mocked(getSessionMetadata).mockResolvedValueOnce({ name: 'Regular session' })
-
-      mockClient._sendMessage({
-        type: 'result',
-        subtype: 'success',
-        is_error: false,
-        duration_ms: 100,
-        num_turns: 1,
-        usage: { input_tokens: 1, output_tokens: 1 },
-      })
-
-      await vi.waitFor(() => {
-        expect(getSessionMetadata).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID)
-      })
-      expect(updateSessionMetadata).not.toHaveBeenCalled()
-    })
-
-    it('does not overwrite a finalized automation outcome on a later turn', async () => {
-      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
-        isScheduledExecution: true,
-        scheduledTaskId: 'task-1',
-        promotedToInteractive: true,
-        automationStatus: 'failed',
-      })
-
-      mockClient._sendMessage({
-        type: 'result',
-        subtype: 'success',
-        is_error: false,
-        duration_ms: 100,
-        num_turns: 1,
-        usage: { input_tokens: 1, output_tokens: 1 },
-      })
-
-      await vi.waitFor(() => {
-        expect(getSessionMetadata).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID)
-      })
-      expect(updateSessionMetadata).not.toHaveBeenCalled()
-    })
-
-    it('does not attribute an interactive-turn result to a promoted legacy automation session', async () => {
-      // Sessions from before outcome tracking have no automationStatus; once
-      // promoted, a later interactive turn's result is not the automation's.
-      vi.mocked(getSessionMetadata).mockResolvedValueOnce({
-        isWebhookExecution: true,
-        webhookTriggerId: 'trigger-1',
-        promotedToInteractive: true,
-      })
-
-      mockClient._sendMessage({
-        type: 'result',
-        subtype: 'error_during_execution',
-        error: 'Interactive turn failed',
+        error: 'Execution failed',
         is_error: true,
         duration_ms: 100,
         num_turns: 1,
         usage: { input_tokens: 1, output_tokens: 0 },
+      } : {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        duration_ms: 100,
+        num_turns: 1,
+        usage: { input_tokens: 1, output_tokens: 1 },
       })
+    }
+
+    it('finalizes a successful result as succeeded', async () => {
+      sendResult(false)
 
       await vi.waitFor(() => {
-        expect(getSessionMetadata).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID)
+        expect(finalizeAutomationStatus).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          'succeeded',
+        )
       })
-      expect(updateSessionMetadata).not.toHaveBeenCalled()
+    })
+
+    it('finalizes an errored result as failed', async () => {
+      sendResult(true)
+
+      await vi.waitFor(() => {
+        expect(finalizeAutomationStatus).toHaveBeenCalledWith(
+          AGENT_SLUG,
+          SESSION_ID,
+          'failed',
+        )
+      })
+    })
+
+    it('stops asking after a session is known not to be an automation session', async () => {
+      vi.mocked(finalizeAutomationStatus).mockResolvedValue('not-automation')
+
+      sendResult(false)
+      await vi.waitFor(() => {
+        expect(finalizeAutomationStatus).toHaveBeenCalledTimes(1)
+      })
+
+      sendResult(false)
+      // A second turn's result must not trigger another metadata read.
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(finalizeAutomationStatus).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps consulting the metadata while the session is an automation session', async () => {
+      vi.mocked(finalizeAutomationStatus).mockResolvedValue('updated')
+
+      sendResult(false)
+      await vi.waitFor(() => {
+        expect(finalizeAutomationStatus).toHaveBeenCalledTimes(1)
+      })
+
+      sendResult(true)
+      await vi.waitFor(() => {
+        expect(finalizeAutomationStatus).toHaveBeenCalledTimes(2)
+      })
     })
   })
 

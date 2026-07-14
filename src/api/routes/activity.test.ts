@@ -3,10 +3,17 @@ import { Hono } from 'hono'
 
 const mockGetAgentActivityStats = vi.fn()
 const mockGetConnectionActivityStats = vi.fn()
+const mockIsSubscribed = vi.fn()
 
 vi.mock('@shared/lib/services/activity-stats-service', () => ({
   getAgentActivityStats: (...args: unknown[]) => mockGetAgentActivityStats(...args),
   getConnectionActivityStats: (...args: unknown[]) => mockGetConnectionActivityStats(...args),
+}))
+
+vi.mock('@shared/lib/container/message-persister', () => ({
+  messagePersister: {
+    isSubscribed: (...args: unknown[]) => mockIsSubscribed(...args),
+  },
 }))
 
 vi.mock('../middleware/auth', () => ({
@@ -41,7 +48,22 @@ describe('activity API', () => {
     const response = await createApp().request('http://localhost/api/activity/agents/display-agent')
 
     expect(response.status).toBe(200)
-    expect(mockGetAgentActivityStats).toHaveBeenCalledWith('canonical-agent-id', { days: 14 })
+    expect(mockGetAgentActivityStats).toHaveBeenCalledWith('canonical-agent-id', {
+      days: 14,
+      tzOffsetMinutes: 0,
+      isSessionLive: expect.any(Function),
+    })
+  })
+
+  it('probes session liveness through the message persister', async () => {
+    await createApp().request('http://localhost/api/activity/agents/agent-a')
+
+    const { isSessionLive } = mockGetAgentActivityStats.mock.calls[0][1] as {
+      isSessionLive: (sessionId: string) => boolean
+    }
+    mockIsSubscribed.mockReturnValue(true)
+    expect(isSessionLive('session-1')).toBe(true)
+    expect(mockIsSubscribed).toHaveBeenCalledWith('session-1')
   })
 
   it.each([
@@ -51,14 +73,29 @@ describe('activity API', () => {
     ['?days=nope', 14],
   ])('normalizes the requested window %s to %i days', async (query, days) => {
     await createApp().request(`http://localhost/api/activity/agents/agent-a${query}`)
-    expect(mockGetAgentActivityStats).toHaveBeenCalledWith('agent-a', { days })
+    expect(mockGetAgentActivityStats).toHaveBeenCalledWith('agent-a', expect.objectContaining({ days }))
+  })
+
+  it.each([
+    ['?tz=300', 300],
+    ['?tz=-540', -540],
+    ['?tz=99999', 840],
+    ['?tz=-99999', -840],
+    ['?tz=abc', 0],
+  ])('normalizes the requested tz offset %s to %i minutes', async (query, tzOffsetMinutes) => {
+    await createApp().request(`http://localhost/api/activity/agents/agent-a${query}`)
+    expect(mockGetAgentActivityStats).toHaveBeenCalledWith('agent-a', expect.objectContaining({ tzOffsetMinutes }))
   })
 
   it('scopes global connection stats to the authenticated owner', async () => {
-    const response = await createApp().request('http://localhost/api/activity/connections?days=10')
+    const response = await createApp().request('http://localhost/api/activity/connections?days=10&tz=300')
 
     expect(response.status).toBe(200)
-    expect(mockGetConnectionActivityStats).toHaveBeenCalledWith({ days: 10, ownerId: 'user-123' })
+    expect(mockGetConnectionActivityStats).toHaveBeenCalledWith({
+      days: 10,
+      tzOffsetMinutes: 300,
+      ownerId: 'user-123',
+    })
   })
 
   it('returns a sanitized error when aggregation fails', async () => {

@@ -55,9 +55,10 @@ describe('HomeConnections — row navigation', () => {
       if (path === '/api/agents/test-agent/remote-mcps' && method === 'GET') {
         return Promise.resolve(jsonResponse({ mcps: [] }))
       }
-      if (path === '/api/activity/agents/test-agent?days=14' && method === 'GET') {
+      if (path.startsWith('/api/activity/agents/test-agent?days=14&tz=') && method === 'GET') {
         return Promise.resolve(jsonResponse({
           days: 2,
+          generatedAt: '2026-07-09T12:00:00.000Z',
           cronByTaskId: {},
           webhookByTriggerId: {},
           connectionById: {
@@ -107,6 +108,8 @@ describe('HomeConnections — row navigation', () => {
     expect(await screen.findByRole('img', {
       name: 'GitHub activity: 4 calls over 2 days, 3 succeeded and 1 failed.',
     })).toBeInTheDocument()
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/activity/agents/test-agent?days=14')
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      `/api/activity/agents/test-agent?days=14&tz=${new Date().getTimezoneOffset()}`,
+    )
   })
 })

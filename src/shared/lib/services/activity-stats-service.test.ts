@@ -228,4 +228,145 @@ describe('activity stats data pathways', () => {
       { date: '2026-07-09', succeeded: 0, failed: 0 },
     ])
   })
+
+  it('classifies outcomes in SQL: policy failures, error messages, and status ranges', async () => {
+    await insertAccount('account-a')
+
+    const base = { agentSlug: 'agent-a', accountId: 'account-a', toolkit: 'github', targetHost: 'api.github.com', targetPath: 'repos', method: 'GET', createdAt: new Date('2026-07-09T10:00:00.000Z') }
+    await testDb.insert(schema.proxyAuditLog).values([
+      { ...base, id: 'redirect-ok', statusCode: 302 },
+      { ...base, id: 'client-error', statusCode: 400 },
+      { ...base, id: 'no-status-with-error', statusCode: null, errorMessage: 'network timeout' },
+      { ...base, id: 'ok-status-with-error', statusCode: 200, errorMessage: 'tool returned an error' },
+      { ...base, id: 'denied', statusCode: 200, policyDecision: 'denied_by_user' },
+      { ...base, id: 'blocked', statusCode: 200, policyDecision: 'block' },
+      { ...base, id: 'timed-out-review', statusCode: 200, policyDecision: 'review_timeout' },
+      { ...base, id: 'allowed-ok', statusCode: 200, policyDecision: 'allow' },
+    ])
+
+    const result = await getConnectionActivityStats({ days: 1, now: NOW })
+
+    expect(result.connectionById['account-account-a']).toEqual([
+      { date: '2026-07-09', succeeded: 2, failed: 6 },
+    ])
+  })
+
+  it('buckets audit rows into the viewer\'s local days via the tz offset', async () => {
+    await insertAccount('account-a')
+    await testDb.insert(schema.proxyAuditLog).values([
+      // 02:00Z on July 9 = 21:00 on July 8 for a UTC-5 viewer (offset +300).
+      { id: 'late-evening', agentSlug: 'agent-a', accountId: 'account-a', toolkit: 'github', targetHost: 'api.github.com', targetPath: 'repos', method: 'GET', statusCode: 200, createdAt: new Date('2026-07-09T02:00:00.000Z') },
+      { id: 'same-local-day', agentSlug: 'agent-a', accountId: 'account-a', toolkit: 'github', targetHost: 'api.github.com', targetPath: 'repos', method: 'GET', statusCode: 200, createdAt: new Date('2026-07-09T10:00:00.000Z') },
+    ])
+
+    const result = await getConnectionActivityStats({ days: 2, tzOffsetMinutes: 300, now: NOW })
+
+    expect(result.connectionById['account-account-a']).toEqual([
+      { date: '2026-07-08', succeeded: 1, failed: 0 },
+      { date: '2026-07-09', succeeded: 1, failed: 0 },
+    ])
+  })
+
+  it('downgrades a persisted running status to failed when the session is not live', async () => {
+    await testDb.insert(schema.scheduledTasks).values({
+      id: 'cron-a',
+      agentSlug: 'agent-a',
+      scheduleType: 'cron',
+      scheduleExpression: '0 * * * *',
+      prompt: 'report',
+      name: 'Hourly report',
+      status: 'pending',
+      nextExecutionAt: new Date('2026-07-09T13:00:00.000Z'),
+      isRecurring: true,
+      executionCount: 1,
+      timezone: 'UTC',
+      createdAt: new Date('2026-07-09T09:30:00.000Z'),
+    })
+    await testDb.insert(schema.webhookTriggers).values({
+      id: 'webhook-a',
+      agentSlug: 'agent-a',
+      kind: 'custom',
+      triggerType: 'CUSTOM_WEBHOOK',
+      prompt: 'handle',
+      status: 'active',
+      fireCount: 2,
+      createdAt: new Date('2026-07-01T00:00:00.000Z'),
+    })
+    mockReadSessionMetadata.mockResolvedValue({
+      'cron-dead': {
+        isScheduledExecution: true,
+        scheduledTaskId: 'cron-a',
+        scheduledExecutionAt: '2026-07-09T10:00:00.000Z',
+        automationStatus: 'running',
+        createdAt: '2026-07-09T10:00:00.000Z',
+      },
+      'cron-live': {
+        isScheduledExecution: true,
+        scheduledTaskId: 'cron-a',
+        scheduledExecutionAt: '2026-07-09T11:00:00.000Z',
+        automationStatus: 'running',
+        createdAt: '2026-07-09T11:00:00.000Z',
+      },
+      'webhook-dead': {
+        isWebhookExecution: true,
+        webhookTriggerId: 'webhook-a',
+        webhookInvocationCount: 2,
+        automationStatus: 'running',
+        createdAt: '2026-07-09T01:00:00.000Z',
+      },
+    })
+
+    const result = await getAgentActivityStats('agent-a', {
+      days: 1,
+      now: NOW,
+      cronSlots: 2,
+      isSessionLive: (sessionId) => sessionId === 'cron-live',
+    })
+
+    expect(result.cronByTaskId['cron-a']).toEqual([
+      { scheduledAt: '2026-07-09T10:00:00.000Z', status: 'failed' },
+      { scheduledAt: '2026-07-09T11:00:00.000Z', status: 'running' },
+    ])
+    // A dead 'running' webhook batch is a failure, not an invisible in-flight run.
+    expect(result.webhookByTriggerId['webhook-a']).toEqual([
+      { date: '2026-07-09', succeeded: 0, failed: 2 },
+    ])
+  })
+
+  it('treats an unknown automation status from a newer build as a legacy success', async () => {
+    await testDb.insert(schema.scheduledTasks).values({
+      id: 'cron-a',
+      agentSlug: 'agent-a',
+      scheduleType: 'cron',
+      scheduleExpression: '0 * * * *',
+      prompt: 'report',
+      name: 'Hourly report',
+      status: 'pending',
+      nextExecutionAt: new Date('2026-07-09T13:00:00.000Z'),
+      isRecurring: true,
+      executionCount: 1,
+      timezone: 'UTC',
+      createdAt: new Date('2026-07-09T10:30:00.000Z'),
+    })
+    mockReadSessionMetadata.mockResolvedValue({
+      'future-status': {
+        isScheduledExecution: true,
+        scheduledTaskId: 'cron-a',
+        scheduledExecutionAt: '2026-07-09T11:00:00.000Z',
+        automationStatus: 'some-status-from-the-future',
+        createdAt: '2026-07-09T11:00:00.000Z',
+      },
+    })
+
+    const result = await getAgentActivityStats('agent-a', {
+      days: 1,
+      now: NOW,
+      cronSlots: 2,
+      isSessionLive: () => false,
+    })
+
+    expect(result.cronByTaskId['cron-a']).toEqual([
+      { scheduledAt: '2026-07-09T11:00:00.000Z', status: 'succeeded' },
+    ])
+  })
 })

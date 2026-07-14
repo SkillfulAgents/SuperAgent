@@ -53,7 +53,7 @@ import { connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
-import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
@@ -87,6 +87,7 @@ interface StreamingState {
   isInterrupted: boolean // True after user interrupts, prevents race conditions
   isCompacting: boolean // True while compaction is in progress, cleared on compact completion
   agentSlug?: string // The agent slug for this session
+  notAutomationSession?: boolean // Cached "not a cron/webhook session" verdict; skips the automation-status metadata write on later results
   lastContextWindow: number // Last known context window size (default 200k)
   lastAssistantUsage: SessionUsage | null // Per-call usage from most recent assistant message
   completedSubagentIds: Set<string> // agentIds of subagents that have completed (to avoid re-discovery)
@@ -813,17 +814,17 @@ class MessagePersister {
 
   private persistAutomationStatus(
     sessionId: string,
-    agentSlug: string,
+    state: StreamingState,
     automationStatus: 'succeeded' | 'failed',
   ): void {
-    void getSessionMetadata(agentSlug, sessionId)
-      .then((meta) => {
-        if (!meta?.isScheduledExecution && !meta?.isWebhookExecution) return
-        // Promoted sessions that never tracked an outcome predate automation
-        // status — a later interactive turn's result is not the automation's.
-        if (meta.promotedToInteractive && !meta.automationStatus) return
-        if (meta.automationStatus && meta.automationStatus !== 'running') return
-        return updateSessionMetadata(agentSlug, sessionId, { automationStatus })
+    // Guard logic lives in finalizeAutomationStatus (one serialized
+    // read-then-maybe-write). Interactive sessions pay the metadata read only
+    // once: 'not-automation' is cached for the rest of the subscription.
+    if (!state.agentSlug || state.notAutomationSession) return
+    const agentSlug = state.agentSlug
+    void finalizeAutomationStatus(agentSlug, sessionId, automationStatus)
+      .then((result) => {
+        if (result === 'not-automation') state.notAutomationSession = true
       })
       .catch((err) => {
         console.error('[MessagePersister] Failed to persist automation status:', err)
@@ -1360,13 +1361,7 @@ class MessagePersister {
 
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)
-        if (state.agentSlug) {
-          this.persistAutomationStatus(
-            sessionId,
-            state.agentSlug,
-            isError ? 'failed' : 'succeeded',
-          )
-        }
+        this.persistAutomationStatus(sessionId, state, isError ? 'failed' : 'succeeded')
 
         // Check if this is an error result. Errors end the user-visible work
         // immediately in both lifecycle modes. (isActive + the working emit were

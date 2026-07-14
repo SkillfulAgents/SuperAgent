@@ -46,8 +46,12 @@ export const sessionMetadataSchema = z
     isWebhookExecution: z.boolean().optional(),
     webhookTriggerId: z.string().optional(),
     webhookTriggerName: z.string().optional(),
-    automationStatus: z.enum(['running', 'succeeded', 'failed']).optional(),
-    webhookInvocationCount: z.number().int().positive().optional(),
+    // Bare string/number (not enum / positive-int) for the same reason as
+    // `effort`/`model` below: a status value added by a newer build must not
+    // fail the whole map for an older reader. Consumers narrow at the point
+    // of use (see normalizeAutomationStatus in activity-aggregation).
+    automationStatus: z.string().optional(),
+    webhookInvocationCount: z.number().optional(),
     isChatIntegrationSession: z.boolean().optional(),
     chatIntegrationId: z.string().optional(),
     promotedToInteractive: z.boolean().optional(),

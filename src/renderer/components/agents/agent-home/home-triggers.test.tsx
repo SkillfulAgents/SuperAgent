@@ -103,6 +103,19 @@ describe('HomeTriggers activity charts', () => {
     })).toBeInTheDocument()
   })
 
+  it('reserves chart space while activity is loading so rows do not shift', () => {
+    mockUseAgentActivityStats.mockReturnValue({ data: undefined, isPending: true })
+    renderWithProviders(<HomeTriggers
+      agentSlug="agent-a"
+      scheduledTasks={[task]}
+      onSelectTask={vi.fn()}
+      onSelectWebhook={vi.fn()}
+    />)
+
+    expect(screen.getAllByTestId('activity-chart-skeleton')).toHaveLength(2)
+    expect(screen.queryByRole('img', { name: /activity|schedule/i })).not.toBeInTheDocument()
+  })
+
   it('leaves rows usable when activity is unavailable', () => {
     mockUseAgentActivityStats.mockReturnValue({ data: undefined, isError: true })
     renderWithProviders(<HomeTriggers
@@ -115,5 +128,6 @@ describe('HomeTriggers activity charts', () => {
     expect(screen.getByText('Hourly report')).toBeInTheDocument()
     expect(screen.getByText('Inbound webhook')).toBeInTheDocument()
     expect(screen.queryByRole('img', { name: /activity|schedule/i })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('activity-chart-skeleton')).not.toBeInTheDocument()
   })
 })
