@@ -171,22 +171,31 @@ describe('chat integration model and effort resolution', () => {
   it('uses the global default when neither integration nor agent set one', async () => {
     const args = await startSession()
     expect(args.model).toBe('claude-sonnet-4-20250514')
-    // Effort must be omitted entirely, not sent as undefined.
+    // Effort/speed must be omitted entirely, not sent as undefined.
     expect('effort' in args).toBe(false)
+    expect('speed' in args).toBe(false)
   })
 
   it('falls back to the agent default over the global default', async () => {
-    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
+    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
     const args = await startSession()
     expect(mockReadAgentPreferences).toHaveBeenCalledWith('test-agent')
     expect(args.model).toBe('opus')
     expect(args.effort).toBe('high')
+    expect(args.speed).toBe('slow')
   })
 
   it('prefers the integration override over the agent default', async () => {
-    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
-    const args = await startSession({ model: 'claude-haiku-4-5-20251001', effort: 'low' })
+    mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'fast' })
+    const args = await startSession({ model: 'claude-haiku-4-5-20251001', effort: 'low', speed: 'slow' })
     expect(args.model).toBe('claude-haiku-4-5-20251001')
     expect(args.effort).toBe('low')
+    expect(args.speed).toBe('slow')
+  })
+
+  it('a stored normal integration speed beats a non-normal agent default', async () => {
+    mockReadAgentPreferences.mockResolvedValue({ defaultSpeed: 'fast' })
+    const args = await startSession({ speed: 'normal' })
+    expect(args.speed).toBe('normal')
   })
 })

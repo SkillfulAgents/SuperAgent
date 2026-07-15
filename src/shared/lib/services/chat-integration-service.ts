@@ -32,6 +32,7 @@ export interface CreateChatIntegrationParams {
   sessionTimeout?: number | null
   model?: string | null
   effort?: string | null
+  speed?: string | null
   createdByUserId?: string
 }
 
@@ -43,6 +44,7 @@ export interface UpdateChatIntegrationParams {
   sessionTimeout?: number | null
   model?: string | null
   effort?: string | null
+  speed?: string | null
   status?: 'active' | 'paused' | 'error' | 'disconnected'
   errorMessage?: string | null
 }
@@ -74,6 +76,7 @@ export function createChatIntegration(params: CreateChatIntegrationParams): stri
     sessionTimeout: params.sessionTimeout ?? null,
     model: params.model ?? null,
     effort: params.effort ?? null,
+    speed: params.speed ?? null,
     createdByUserId: params.createdByUserId ?? null,
     createdAt: now,
     updatedAt: now,
@@ -240,6 +243,7 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
   if (params.sessionTimeout !== undefined) updates.sessionTimeout = params.sessionTimeout
   if (params.model !== undefined) updates.model = params.model
   if (params.effort !== undefined) updates.effort = params.effort
+  if (params.speed !== undefined) updates.speed = params.speed
   if (params.status !== undefined) updates.status = params.status
   if (params.errorMessage !== undefined) updates.errorMessage = params.errorMessage
 

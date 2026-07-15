@@ -179,6 +179,7 @@ function createTask(overrides: Record<string, unknown> = {}) {
     isRecurring: true,
     model: null,
     effort: null,
+    speed: null,
     ...overrides,
   }
 }
@@ -365,7 +366,7 @@ describe('scheduled-tasks route', () => {
     })
   })
 
-  describe('run-now model and effort resolution', () => {
+  describe('run-now model, effort, and speed resolution', () => {
     // Preference order: task override > agent default > global default.
     async function runNow(overrides: Record<string, unknown> = {}) {
       task = createTask(overrides)
@@ -381,21 +382,78 @@ describe('scheduled-tasks route', () => {
       const args = await runNow()
       expect(args.model).toBe('claude-agent')
       expect(args.effort).toBeUndefined()
+      expect(args.speed).toBeUndefined()
     })
 
     it('falls back to the agent default over the global default', async () => {
-      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
+      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
       const args = await runNow()
       expect(mockReadAgentPreferences).toHaveBeenCalledWith('agent-one')
       expect(args.model).toBe('opus')
       expect(args.effort).toBe('high')
+      expect(args.speed).toBe('slow')
     })
 
     it('prefers the task override over the agent default', async () => {
-      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
-      const args = await runNow({ model: 'claude-haiku-4-5-20251001', effort: 'low' })
+      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'fast' })
+      const args = await runNow({ model: 'claude-haiku-4-5-20251001', effort: 'low', speed: 'slow' })
       expect(args.model).toBe('claude-haiku-4-5-20251001')
       expect(args.effort).toBe('low')
+      expect(args.speed).toBe('slow')
+    })
+
+    it('a stored normal speed override beats a non-normal agent default', async () => {
+      mockReadAgentPreferences.mockResolvedValue({ defaultSpeed: 'fast' })
+      const args = await runNow({ speed: 'normal' })
+      expect(args.speed).toBe('normal')
+    })
+  })
+
+  describe('runtime-options PATCH contract', () => {
+    async function patchRuntimeOptions(body: Record<string, unknown>) {
+      return app.request('http://localhost/api/scheduled-tasks/task-1/runtime-options', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    }
+
+    it('updates model, effort, and speed', async () => {
+      mockUpdateTaskRuntimeOptions.mockResolvedValue(true)
+
+      const res = await patchRuntimeOptions({ model: 'claude-haiku-4-5', effort: 'low', speed: 'slow' })
+
+      expect(res.status).toBe(200)
+      expect(mockUpdateTaskRuntimeOptions).toHaveBeenCalledWith('task-1', {
+        model: 'claude-haiku-4-5',
+        effort: 'low',
+        speed: 'slow',
+      })
+    })
+
+    it('accepts a speed-only update', async () => {
+      mockUpdateTaskRuntimeOptions.mockResolvedValue(true)
+
+      const res = await patchRuntimeOptions({ speed: 'fast' })
+
+      expect(res.status).toBe(200)
+      expect(mockUpdateTaskRuntimeOptions).toHaveBeenCalledWith('task-1', { speed: 'fast' })
+    })
+
+    it('clears speed back to the default via null', async () => {
+      mockUpdateTaskRuntimeOptions.mockResolvedValue(true)
+
+      const res = await patchRuntimeOptions({ speed: null })
+
+      expect(res.status).toBe(200)
+      expect(mockUpdateTaskRuntimeOptions).toHaveBeenCalledWith('task-1', { speed: null })
+    })
+
+    it('rejects an invalid speed value', async () => {
+      const res = await patchRuntimeOptions({ speed: 'ludicrous' })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateTaskRuntimeOptions).not.toHaveBeenCalled()
     })
   })
 

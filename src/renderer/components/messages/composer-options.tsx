@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { ComposerOptionsPopover } from './composer-options-popover'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
@@ -19,10 +19,13 @@ import type { LlmProviderId } from '@shared/lib/config/settings'
  */
 
 const DEFAULT_EFFORT: EffortLevel = 'medium'
+const DEFAULT_SPEED: SpeedLevel = 'normal'
 
 export interface ComposerOptionsState {
   effort: EffortLevel
   setEffort: (e: EffortLevel) => void
+  speed: SpeedLevel
+  setSpeed: (s: SpeedLevel) => void
   /** Raw selection — a concrete model id or a bare family alias; undefined while settings load. */
   model: string | undefined
   setModel: (m: string) => void
@@ -39,7 +42,7 @@ export interface ComposerOptionsState {
    * a still-loading preferences query — and would override the actual model of
    * a session that carries none in its metadata (e.g. trigger-created).
    */
-  toRuntimeOptions(): { effort?: EffortLevel; model?: string }
+  toRuntimeOptions(): { effort?: EffortLevel; speed?: SpeedLevel; model?: string }
 }
 
 /**
@@ -61,12 +64,16 @@ export function findCatalogModel(
 export interface UseComposerOptionsArgs {
   /** Effort last used on this session, seeds the selector once if provided. */
   initialEffort?: EffortLevel
+  /** Speed last used on this session, seeds the selector once if provided. */
+  initialSpeed?: SpeedLevel
   /** Model last used on this session, seeds the selector once if provided. */
   initialModel?: string
   /** The agent's own default model, if set. Slots between a session's initial model and the app-wide default. */
   agentDefaultModel?: string
   /** The agent's own default effort, if set. Slots between a session's initial effort and the app-wide default. */
   agentDefaultEffort?: EffortLevel
+  /** The agent's own default speed, if set. Slots between a session's initial speed and the built-in 'normal'. */
+  agentDefaultSpeed?: SpeedLevel
   /**
    * Identity of the agent the defaults belong to. When it changes (quick-dispatch
    * switching agents) a locked, untouched selection unlocks and re-adopts the new
@@ -93,9 +100,11 @@ export interface UseComposerOptionsArgs {
 export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerOptionsState {
   const {
     initialEffort,
+    initialSpeed,
     initialModel,
     agentDefaultModel,
     agentDefaultEffort,
+    agentDefaultSpeed,
     agentKey,
     agentDefaultsReady = true,
     followDefaults = false,
@@ -118,6 +127,20 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const setEffort = useCallback((e: EffortLevel) => {
     effortSeededRef.current = true
     setEffortState(e)
+  }, [])
+
+  // ---- Speed ---- (same seeding/locking shape as effort)
+  const [speed, setSpeedState] = useState<SpeedLevel>(initialSpeed ?? DEFAULT_SPEED)
+  const speedSeededRef = useRef(initialSpeed !== undefined)
+  useEffect(() => {
+    if (!speedSeededRef.current && initialSpeed !== undefined) {
+      setSpeedState(initialSpeed)
+      speedSeededRef.current = true
+    }
+  }, [initialSpeed])
+  const setSpeed = useCallback((sp: SpeedLevel) => {
+    speedSeededRef.current = true
+    setSpeedState(sp)
   }, [])
 
   // ---- Catalog from active provider ----
@@ -169,6 +192,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const adoptionKeyRef = useRef(agentKey)
   const fallbackEffort =
     agentDefaultEffort ?? settings?.models?.agentEffort ?? (settings ? DEFAULT_EFFORT : undefined)
+  const fallbackSpeed = agentDefaultSpeed ?? (settings ? DEFAULT_SPEED : undefined)
   useEffect(() => {
     if (adoptionKeyRef.current !== agentKey) {
       adoptionKeyRef.current = agentKey
@@ -186,6 +210,14 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     ) {
       setEffortState(fallbackEffort)
     }
+    if (
+      !speedSeededRef.current &&
+      initialSpeed === undefined &&
+      fallbackSpeed &&
+      speed !== fallbackSpeed
+    ) {
+      setSpeedState(fallbackSpeed)
+    }
     if (!followDefaults && settings && agentDefaultsReady) {
       adoptionLockedRef.current = true
     }
@@ -196,6 +228,9 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     effort,
     fallbackEffort,
     initialEffort,
+    speed,
+    fallbackSpeed,
+    initialSpeed,
     settings,
     agentDefaultsReady,
     followDefaults,
@@ -206,22 +241,25 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const toRuntimeOptions = useCallback(
     () => ({
       ...(effortSeededRef.current ? { effort } : {}),
+      ...(speedSeededRef.current ? { speed } : {}),
       ...(modelSeededRef.current && model ? { model } : {}),
     }),
-    [effort, model],
+    [effort, speed, model],
   )
 
   return useMemo(
     () => ({
       effort,
       setEffort,
+      speed,
+      setSpeed,
       model,
       setModel,
       catalog,
       webProvider: settings?.webProvider,
       toRuntimeOptions,
     }),
-    [effort, setEffort, model, setModel, catalog, settings, toRuntimeOptions],
+    [effort, setEffort, speed, setSpeed, model, setModel, catalog, settings, toRuntimeOptions],
   )
 }
 

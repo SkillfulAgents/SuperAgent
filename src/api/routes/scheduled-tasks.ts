@@ -34,8 +34,8 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
-import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
-import type { EffortLevel } from '@shared/lib/container/types'
+import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
@@ -245,19 +245,20 @@ scheduledTasksRouter.patch('/:taskId/timezone', TaskAgentRole('user'), async (c)
   }
 })
 
-// PATCH /api/scheduled-tasks/:taskId/runtime-options - Update model and/or effort
+// PATCH /api/scheduled-tasks/:taskId/runtime-options - Update model, effort, and/or speed
 scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), async (c) => {
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const body = await c.req.json().catch(() => ({}))
-    const parsed = RuntimeOptionsSchema.partial().safeParse(body)
+    const parsed = RuntimeOptionsPatchSchema.safeParse(body)
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { model?: string | null; effort?: string | null } = {}
+    const updates: { model?: string | null; effort?: string | null; speed?: string | null } = {}
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
+    if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
     const updated = await updateTaskRuntimeOptions(task!.id, updates)
     if (!updated) {
@@ -306,10 +307,11 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
 
     const client = await containerManager.ensureRunning(task.agentSlug)
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
-    // Model/effort preference order: task override > agent default > global default.
+    // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
     const effort = task.effort ?? agentPrefs.defaultEffort
+    const speed = task.speed ?? agentPrefs.defaultSpeed
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
@@ -318,6 +320,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       ...(effort ? { effort: effort as EffortLevel } : {}),
+      ...(speed ? { speed: speed as SpeedLevel } : {}),
     })
 
     const sessionId = containerSession.id

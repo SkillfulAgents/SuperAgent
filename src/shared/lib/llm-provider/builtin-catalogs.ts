@@ -1,4 +1,4 @@
-import type { EffortLevel } from '../container/types'
+import type { EffortLevel, SpeedLevel } from '../container/types'
 import type { ModelDefinition } from './model-catalog-schema'
 import { GPT_TOOL_USE_PROMPT_HINTS } from './model-prompt-hints'
 import { pricingFor } from './model-pricing-lookup'
@@ -18,6 +18,46 @@ const ALL_EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STANDARD_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
 // xhigh/max are Anthropic-only reasoning tiers; non-Claude models get the standard three.
 const NON_CLAUDE_EFFORTS: EffortLevel[] = ['low', 'medium', 'high']
+
+/**
+ * Processing-speed tiers, normalized to slow/normal/fast. `supportedSpeeds`
+ * reflects what OUR serving path can honor, not the vendor's raw feature list:
+ * the agent signals speed via the X-Superagent-Speed custom header, which only
+ * the Platform proxy consumes (mapping it to OpenAI/xAI `service_tier` or
+ * Anthropic fast mode). Direct Anthropic (body param + gated beta on the
+ * user's own key), OpenRouter (ignores our header; Anthropic fast exists there
+ * only as separate `-fast` model slugs), and Bedrock (no fast mode) can't
+ * honor a pick, so their entries omit speeds entirely.
+ *
+ * Vendor mapping, verified 2026-07-14:
+ *   - OpenAI GPT-5.x: `service_tier` flex (0.5x price, slower) / priority
+ *     (2x, 2.5x on gpt-5.5) → slow/normal/fast.
+ *   - xAI grok-4.5: `service_tier` priority only (2x when granted) → normal/fast.
+ *   - Anthropic: fast mode (research preview) on Opus 4.8 only → normal/fast.
+ *   - Z.AI GLM: no request-level tier → normal only.
+ */
+const FLEX_AND_PRIORITY_SPEEDS: SpeedLevel[] = ['slow', 'normal', 'fast']
+const PRIORITY_ONLY_SPEEDS: SpeedLevel[] = ['normal', 'fast']
+
+/**
+ * Served-tier billing multipliers, mirroring the Platform proxy's pricing:
+ * OpenAI flex bills 0.5x and priority 2x (2.5x on gpt-5.5); xAI priority and
+ * Anthropic fast mode bill 2x. Standard tier (absent speed) is always 1x.
+ * Claude entries get theirs from model-pricing.json via pricingFor().
+ */
+const GPT_SPEED_MULTIPLIERS = { slow: 0.5, fast: 2 } as const
+const GPT_55_SPEED_MULTIPLIERS = { slow: 0.5, fast: 2.5 } as const
+const PRIORITY_2X_MULTIPLIERS = { fast: 2 } as const
+
+// Anthropic fast mode is Opus 4.8 only (4.7's is deprecated, removal 2026-07-24).
+const FAST_MODE_CLAUDE_IDS = new Set(['claude-opus-4-8'])
+
+/** Claude entries with the speed tiers the Platform proxy can request. */
+function withPlatformClaudeSpeeds(catalog: ModelDefinition[]): ModelDefinition[] {
+  return catalog.map((m) =>
+    FAST_MODE_CLAUDE_IDS.has(m.id) ? { ...m, supportedSpeeds: PRIORITY_ONLY_SPEEDS } : m,
+  )
+}
 
 // OpenAI GPT-5.x reprice the whole request 2x input / 1.5x output once prompt
 // input crosses 272K tokens. Shared by every GPT entry so the picker can warn.
@@ -253,8 +293,9 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     family: 'gpt',
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
+    pricing: { inputPerMtok: 2.5, outputPerMtok: 15, speedMultipliers: GPT_SPEED_MULTIPLIERS },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.4).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -267,8 +308,9 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     family: 'gpt',
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 5, outputPerMtok: 30 },
+    pricing: { inputPerMtok: 5, outputPerMtok: 30, speedMultipliers: GPT_55_SPEED_MULTIPLIERS },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.5).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -281,8 +323,9 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     family: 'gpt',
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 1, outputPerMtok: 6 },
+    pricing: { inputPerMtok: 1, outputPerMtok: 6, speedMultipliers: GPT_SPEED_MULTIPLIERS },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-luna).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -295,8 +338,9 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     family: 'gpt',
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 2.5, outputPerMtok: 15 },
+    pricing: { inputPerMtok: 2.5, outputPerMtok: 15, speedMultipliers: GPT_SPEED_MULTIPLIERS },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-terra).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -311,8 +355,9 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     isLatest: true,
     icon: 'openai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 5, outputPerMtok: 30 },
+    pricing: { inputPerMtok: 5, outputPerMtok: 30, speedMultipliers: GPT_SPEED_MULTIPLIERS },
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-sol).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
@@ -327,14 +372,16 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     isLatest: true,
     icon: 'xai',
     supportedEfforts: NON_CLAUDE_EFFORTS,
+    // xAI offers priority but no flex tier — cost-sensitive work goes to their Batch API.
+    supportedSpeeds: PRIORITY_ONLY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
-    pricing: { inputPerMtok: 2, outputPerMtok: 6 },
+    pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
     contextWindow: 500_000,
   },
 ]
 
 /** Platform — bare Claude models plus the GPT/Grok models the proxy serves. */
 export const PLATFORM_CATALOG: ModelDefinition[] = [
-  ...CLAUDE_BARE_CATALOG,
+  ...withPlatformClaudeSpeeds(CLAUDE_BARE_CATALOG),
   ...PLATFORM_EXTRA_MODELS,
 ]

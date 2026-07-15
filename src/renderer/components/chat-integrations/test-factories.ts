@@ -13,6 +13,7 @@ export function makeChatIntegration(overrides: Partial<ChatIntegration> = {}): C
     sessionTimeout: null,
     model: null,
     effort: null,
+    speed: null,
     status: 'active',
     errorMessage: null,
     createdByUserId: null,

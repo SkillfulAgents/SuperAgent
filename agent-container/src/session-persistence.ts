@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import { writeFileAtomicSync } from './atomic-file';
-import type { AgentCapabilityPolicies, EffortLevel } from './types';
+import type { AgentCapabilityPolicies, EffortLevel, SpeedLevel } from './types';
 
 interface SessionMetadata {
   sessionId: string;
@@ -22,6 +22,7 @@ interface SessionMetadata {
   maxBudgetUsd?: number;
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
+  speed?: SpeedLevel;
   // Must survive resume: doResumeSession starts the query straight from these
   // options, so an unpersisted block policy would briefly re-expose the tools.
   capabilityPolicies?: AgentCapabilityPolicies;
@@ -118,6 +119,14 @@ export class SessionPersistence {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.effort = effort;
+      this.save();
+    }
+  }
+
+  updateSpeed(sessionId: string, speed: SpeedLevel | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.speed = speed;
       this.save();
     }
   }

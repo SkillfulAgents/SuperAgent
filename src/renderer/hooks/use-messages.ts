@@ -2,7 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 
 // Re-export for convenience
@@ -45,13 +45,14 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
 
 export function useSendMessage() {
   return useMutation({
-    mutationFn: async (data: { sessionId: string; agentSlug: string; content: string; effort?: EffortLevel; model?: string }) => {
+    mutationFn: async (data: { sessionId: string; agentSlug: string; content: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions/${data.sessionId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           content: data.content,
           ...(data.effort ? { effort: data.effort } : {}),
+          ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
         }),
       })

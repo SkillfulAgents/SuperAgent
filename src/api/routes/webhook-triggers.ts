@@ -15,7 +15,7 @@ import {
   updateWebhookTriggerRuntimeOptions,
 } from '@shared/lib/services/webhook-trigger-service'
 import { promptUpdateSchema } from './trigger-prompt-schema'
-import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
+import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import {
   getSessionsByWebhookTrigger,
 } from '@shared/lib/services/session-service'
@@ -120,19 +120,20 @@ webhookTriggersRouter.patch('/:triggerId/prompt', TriggerAgentRole('user'), asyn
   }
 })
 
-// PATCH /api/webhook-triggers/:triggerId/runtime-options - Update model and/or effort
+// PATCH /api/webhook-triggers/:triggerId/runtime-options - Update model, effort, and/or speed
 webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('user'), async (c) => {
   try {
     const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
     const body = await c.req.json().catch(() => ({}))
-    const parsed = RuntimeOptionsSchema.partial().safeParse(body)
+    const parsed = RuntimeOptionsPatchSchema.safeParse(body)
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { model?: string | null; effort?: string | null } = {}
+    const updates: { model?: string | null; effort?: string | null; speed?: string | null } = {}
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
+    if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
     const updated = await updateWebhookTriggerRuntimeOptions(trigger!.id, updates)
     if (!updated) {

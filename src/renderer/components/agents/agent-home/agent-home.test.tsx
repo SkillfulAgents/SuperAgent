@@ -506,7 +506,7 @@ describe('AgentHome', () => {
       file: new File(['hello'], 'hello.txt', { type: 'text/plain' }),
     }
     renderWithProviders(
-      <CarryoverSeeder value={{ attachments: [attachment], model: 'opus', effort: 'high' }}>
+      <CarryoverSeeder value={{ attachments: [attachment], model: 'opus', effort: 'high', speed: 'normal' }}>
         <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
       </CarryoverSeeder>,
     )
@@ -518,6 +518,8 @@ describe('AgentHome', () => {
       message: 'Continue in a new session',
       model: 'opus',
       effort: 'high',
+      // A carried speed is an explicit (session-seeded) value, so it rides along.
+      speed: 'normal',
     })
   })
 

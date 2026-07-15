@@ -65,6 +65,7 @@ describe('useStaleSession', () => {
       attachments: [],
       model: 'sonnet',
       effort: 'high',
+      speed: 'normal',
     })))
     act(() => result.current.stale.startFresh())
 
@@ -73,6 +74,7 @@ describe('useStaleSession', () => {
       attachments: [],
       model: 'sonnet',
       effort: 'high',
+      speed: 'normal',
     })
     expect(result.current.store.get('session:session-1')).toBeUndefined()
     expect(navigate).toHaveBeenCalledWith({

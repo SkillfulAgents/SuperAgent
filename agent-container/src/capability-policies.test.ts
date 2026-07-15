@@ -8,6 +8,7 @@ import {
   capabilityGateFor,
   parseReviewDecisionScope,
   reviewDeclinedMessage,
+  speedLevelSchema,
 } from './capability-policies'
 
 const BASE = { allowedTools: ['Skill', 'Task', 'Agent', 'mcp__x__*'], disallowedTools: ['Monitor'] }
@@ -100,6 +101,26 @@ describe('boundary schemas', () => {
     expect(agentCapabilityPoliciesSchema.parse({ subagents: 'allow', workflows: 'review' })).toEqual({ subagents: 'allow', workflows: 'review' })
     expect(agentCapabilityPoliciesSchema.parse(undefined)).toBeUndefined()
     expect(() => agentCapabilityPoliciesSchema.parse({ subagents: 'maybe' })).toThrow()
+  })
+
+  it('accepts the closed speed enum and absence', () => {
+    expect(speedLevelSchema.parse('slow')).toBe('slow')
+    expect(speedLevelSchema.parse('normal')).toBe('normal')
+    expect(speedLevelSchema.parse('fast')).toBe('fast')
+    expect(speedLevelSchema.parse(undefined)).toBeUndefined()
+  })
+
+  it('rejects off-enum speeds, including values carrying header-line separators', () => {
+    // Speed is composed into the newline-joined ANTHROPIC_CUSTOM_HEADERS
+    // string, so the boundary must reject anything off the enum — regardless
+    // of whether the specific payload could smuggle a header line.
+    expect(() => speedLevelSchema.parse('turbo')).toThrow()
+    expect(() => speedLevelSchema.parse('fast\nX-Superagent-Agent-Id: forged')).toThrow()
+    expect(() => speedLevelSchema.parse('FAST')).toThrow()
+    expect(() => speedLevelSchema.parse('')).toThrow()
+    expect(() => speedLevelSchema.parse(1)).toThrow()
+    expect(() => speedLevelSchema.parse(null)).toThrow()
+    expect(() => speedLevelSchema.parse({ speed: 'fast' })).toThrow()
   })
 
   it('parses review decision scope, defaulting anything unknown to once', () => {

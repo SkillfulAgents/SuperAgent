@@ -498,6 +498,151 @@ describe('usage-service', () => {
     })
   })
 
+  describe('loadDailyUsageData — served speed tiers', () => {
+    let seq = 0
+
+    interface EntryOpts {
+      speed?: string
+      costUSD?: number
+      input?: number
+      output?: number
+      cacheCreation?: number
+      cacheRead?: number
+    }
+
+    function makeEntry(model: string, opts: EntryOpts = {}) {
+      seq += 1
+      return {
+        timestamp: '2026-07-01T12:00:00.000Z',
+        requestId: `req-${seq}`,
+        ...(opts.costUSD !== undefined ? { costUSD: opts.costUSD } : {}),
+        message: {
+          id: `msg-${seq}`,
+          model,
+          usage: {
+            input_tokens: opts.input ?? 100_000,
+            output_tokens: opts.output ?? 1_000,
+            ...(opts.cacheCreation !== undefined
+              ? { cache_creation_input_tokens: opts.cacheCreation }
+              : {}),
+            ...(opts.cacheRead !== undefined ? { cache_read_input_tokens: opts.cacheRead } : {}),
+            ...(opts.speed !== undefined ? { speed: opts.speed } : {}),
+          },
+        },
+      }
+    }
+
+    /** Load a single synthetic entry and return its total cost. */
+    async function costOf(
+      model: string,
+      opts: EntryOpts = {},
+      providerId?: 'platform' | 'anthropic',
+    ): Promise<number> {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-speed-'))
+      try {
+        mkdirSync(path.join(dir, 'projects'), { recursive: true })
+        writeFileSync(
+          path.join(dir, 'projects', 'session.jsonl'),
+          `${JSON.stringify(makeEntry(model, opts))}\n`,
+        )
+        const result = await loadDailyUsageDataLightweight({
+          claudePath: dir,
+          ...(providerId ? { providerId } : {}),
+        })
+        expect(result).toHaveLength(1)
+        return result[0].totalCost
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+
+    // gpt-5.4 base: $2.5/Mtok input, $15/Mtok output.
+    const GPT54_BASE = (100_000 * 2.5 + 1_000 * 15) / 1_000_000
+
+    it('bills a fast row at exactly 2x its no-speed twin (platform catalog)', async () => {
+      expect(await costOf('gpt-5.4', {}, 'platform')).toBeCloseTo(GPT54_BASE, 9)
+      expect(await costOf('gpt-5.4', { speed: 'fast' }, 'platform')).toBeCloseTo(GPT54_BASE * 2, 9)
+    })
+
+    it('bills a slow row at exactly 0.5x its no-speed twin', async () => {
+      expect(await costOf('gpt-5.4', { speed: 'slow' }, 'platform')).toBeCloseTo(GPT54_BASE * 0.5, 9)
+    })
+
+    it('bills unknown speed values at 1x (forward-compat)', async () => {
+      expect(await costOf('gpt-5.4', { speed: 'turbo' }, 'platform')).toBeCloseTo(GPT54_BASE, 9)
+    })
+
+    it('applies the multiplier via the static pricing table too (no provider), across all four rates', async () => {
+      // gpt-5.4 static: input 2.5, output 15, cacheCreation 2.5, cacheRead 0.25.
+      const base =
+        (100_000 * 2.5 + 1_000 * 15 + 10_000 * 2.5 + 50_000 * 0.25) / 1_000_000
+      expect(await costOf('gpt-5.4', { cacheCreation: 10_000, cacheRead: 50_000 })).toBeCloseTo(
+        base,
+        9,
+      )
+      expect(
+        await costOf('gpt-5.4', { speed: 'fast', cacheCreation: 10_000, cacheRead: 50_000 }),
+      ).toBeCloseTo(base * 2, 9)
+    })
+
+    it('composes the multiplier on top of the long-context cliff rates', async () => {
+      // 300K input trips the 272K cliff: gpt-5.4 reprices to $5 in / $22.5 out,
+      // then the fast tier doubles the whole thing.
+      const cliffed = (300_000 * 5 + 2_000 * 22.5) / 1_000_000
+      expect(await costOf('gpt-5.4', { input: 300_000, output: 2_000 }, 'platform')).toBeCloseTo(
+        cliffed,
+        9,
+      )
+      expect(
+        await costOf('gpt-5.4', { input: 300_000, output: 2_000, speed: 'fast' }, 'platform'),
+      ).toBeCloseTo(cliffed * 2, 9)
+    })
+
+    it('bills gpt-5.5 fast at 2.5x and Opus 4.8 / Grok fast at 2x', async () => {
+      const gpt55Base = (100_000 * 5 + 1_000 * 30) / 1_000_000
+      expect(await costOf('gpt-5.5', { speed: 'fast' }, 'platform')).toBeCloseTo(
+        gpt55Base * 2.5,
+        9,
+      )
+      const opusBase = (100_000 * 5 + 1_000 * 25) / 1_000_000
+      expect(await costOf('claude-opus-4-8', { speed: 'fast' }, 'platform')).toBeCloseTo(
+        opusBase * 2,
+        9,
+      )
+      // Anthropic serves fast mode natively, so its catalog carries the multiplier too.
+      expect(await costOf('claude-opus-4-8', { speed: 'fast' }, 'anthropic')).toBeCloseTo(
+        opusBase * 2,
+        9,
+      )
+      const grokBase = (100_000 * 2 + 1_000 * 6) / 1_000_000
+      expect(await costOf('grok-4.5', { speed: 'fast' }, 'platform')).toBeCloseTo(grokBase * 2, 9)
+    })
+
+    it('prefers the local computation over tier-blind costUSD when a multiplier applies', async () => {
+      expect(await costOf('gpt-5.4', { speed: 'fast', costUSD: 9.99 }, 'platform')).toBeCloseTo(
+        GPT54_BASE * 2,
+        9,
+      )
+    })
+
+    it('keeps costUSD precedence when speed is absent or the model has no multipliers', async () => {
+      expect(await costOf('gpt-5.4', { costUSD: 9.99 }, 'platform')).toBeCloseTo(9.99, 9)
+      // claude-sonnet-5 has no speedMultipliers → costUSD still wins even with speed set.
+      expect(
+        await costOf('claude-sonnet-5', { speed: 'fast', costUSD: 9.99 }, 'platform'),
+      ).toBeCloseTo(9.99, 9)
+    })
+
+    it('bills a model with no speedMultipliers at 1x even for fast rows', async () => {
+      // claude-sonnet-5: $3/Mtok input, $15/Mtok output, no fast tier.
+      const sonnetBase = (100_000 * 3 + 1_000 * 15) / 1_000_000
+      expect(await costOf('claude-sonnet-5', { speed: 'fast' }, 'platform')).toBeCloseTo(
+        sonnetBase,
+        9,
+      )
+    })
+  })
+
   describe('loadDailyUsageData — provider catalog pricing (per-line)', () => {
     it('prices a custom catalog model via the once-built map, and 0 without a provider', async () => {
       settingsMock.mockReturnValue({

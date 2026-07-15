@@ -1,19 +1,21 @@
 import { useEffect, useState } from 'react'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import { useDraftsStore } from '@renderer/context/drafts-context'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 
 export interface ComposerSnapshot {
   text: string
   attachments: Attachment[]
   model: string | undefined
   effort: EffortLevel
+  speed: SpeedLevel
 }
 
 export interface NewSessionCarryover {
   attachments: Attachment[]
   model: string | undefined
   effort: EffortLevel
+  speed: SpeedLevel
 }
 
 export const newSessionCarryoverKey = (agentSlug: string) => `new-session-carryover:${agentSlug}`
@@ -38,6 +40,7 @@ export function splitComposerSnapshot(snapshot: ComposerSnapshot | undefined): {
       attachments: stripObjectUrls(snapshot.attachments),
       model: snapshot.model,
       effort: snapshot.effort,
+      speed: snapshot.speed,
     },
   }
 }

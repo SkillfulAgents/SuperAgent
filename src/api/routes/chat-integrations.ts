@@ -30,8 +30,12 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, AgentUser, EntityAgentRole, ResolveAgent, getAgentId } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
+import { SPEED_LEVELS } from '@shared/lib/container/types'
 
 const SENTRY_TAGS = { component: 'chat-integration' } as const
+
+// Speed override carried on create/update bodies: a level, null to clear, or absent.
+const speedOverrideSchema = z.enum(SPEED_LEVELS).nullable().optional()
 
 const chatIntegrationsRouter = new Hono()
 
@@ -131,6 +135,10 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
     const agentSlug = getAgentId(c)
     const body = await c.req.json()
     const { provider, name, config, showToolCalls, sessionTimeout, model, effort } = body
+    const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
+    if (!parsedSpeed.success) {
+      return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
+    }
     // requireApproval is intentionally NOT accepted here: making a bot public is
     // owner-only and must go through PATCH /:integrationId/require-approval. New
     // integrations default to requireApproval=true (private).
@@ -196,6 +204,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
         sessionTimeout: sessionTimeout ?? null,
         model: model ?? null,
         effort: effort ?? null,
+        speed: parsedSpeed.data ?? null,
         createdByUserId,
       })
     } catch (err) {
@@ -245,6 +254,10 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     const id = c.req.param('integrationId')
     const body = await c.req.json()
     const { name, config, showToolCalls, sessionTimeout, model, effort, status } = body
+    const parsedSpeed = speedOverrideSchema.safeParse(body.speed)
+    if (!parsedSpeed.success) {
+      return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
+    }
 
     // Validate config if provided
     if (config !== undefined) {
@@ -267,6 +280,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     if (sessionTimeout !== undefined) updates.sessionTimeout = sessionTimeout
     if (model !== undefined) updates.model = model
     if (effort !== undefined) updates.effort = effort
+    if (body.speed !== undefined) updates.speed = parsedSpeed.data ?? null
 
     if (Object.keys(updates).length > 0) {
       updateChatIntegration(id, updates)

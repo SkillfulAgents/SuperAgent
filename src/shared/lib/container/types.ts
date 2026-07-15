@@ -7,6 +7,12 @@ export type ContainerStatus = 'stopped' | 'running'
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export type EffortLevel = typeof EFFORT_LEVELS[number]
 
+// Normalized processing-speed tiers across providers. 'fast' maps to
+// Anthropic fast mode / OpenAI priority; 'slow' maps to OpenAI flex.
+// 'normal' is the universal default and the only tier every model supports.
+export const SPEED_LEVELS = ['slow', 'normal', 'fast'] as const
+export type SpeedLevel = typeof SPEED_LEVELS[number]
+
 // Info returned from Docker
 export interface ContainerInfo {
   status: ContainerStatus
@@ -57,6 +63,7 @@ export interface CreateSessionOptions {
   customEnvVars?: Record<string, string> // User-defined env vars for the agent process
   maxBrowserTabs?: number // Max browser tabs allowed (default 10)
   effort?: EffortLevel // Initial thinking effort level
+  speed?: SpeedLevel // Initial processing speed tier
 }
 
 export interface StartOptions {

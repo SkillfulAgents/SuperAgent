@@ -172,6 +172,10 @@ Use get_available_triggers first to discover what triggers are available for an 
       .enum(['low', 'medium', 'high', 'xhigh', 'max'])
       .optional()
       .describe('Optional effort level when this trigger fires. If not specified, uses the global default.'),
+    speed: z
+      .enum(['slow', 'normal', 'fast'])
+      .optional()
+      .describe('Optional processing-speed tier when this trigger fires. If not specified, uses the global default.'),
   },
   async (args) => {
     console.log(`[setup_trigger] Setting up ${args.trigger_type} trigger`)
@@ -203,6 +207,7 @@ Use get_available_triggers first to discover what triggers are available for an 
           trigger_config: args.trigger_config,
           model: args.model,
           effort: args.effort,
+          speed: args.speed,
         },
       )
 
@@ -243,6 +248,10 @@ If the service reveals a signing secret only AFTER registration, attach it after
       .enum(['low', 'medium', 'high', 'xhigh', 'max'])
       .optional()
       .describe('Optional effort level when this endpoint fires. If not specified, uses the global default.'),
+    speed: z
+      .enum(['slow', 'normal', 'fast'])
+      .optional()
+      .describe('Optional processing-speed tier when this endpoint fires. If not specified, uses the global default.'),
   },
   async (args) => {
     console.log(`[create_webhook_endpoint] Minting endpoint "${args.name}"`)
@@ -273,6 +282,7 @@ If the service reveals a signing secret only AFTER registration, attach it after
           filter_exp: args.filter_exp,
           model: args.model,
           effort: args.effort,
+          speed: args.speed,
         },
       )
 

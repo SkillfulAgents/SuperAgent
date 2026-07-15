@@ -2610,6 +2610,7 @@ class MessagePersister {
         timezone?: string
         model?: string
         effort?: string
+        speed?: string
       }
       try {
         input = JSON.parse(toolInput)
@@ -2651,6 +2652,7 @@ class MessagePersister {
           timezone,
           model: input.model,
           effort: input.effort,
+          speed: input.speed,
         })
       } catch (error) {
         console.error('[MessagePersister] Error handling schedule task:', error)
@@ -3191,6 +3193,7 @@ ${continuation}`
           trigger_config?: Record<string, unknown>
           model?: string
           effort?: string
+          speed?: string
         }
         try {
           input = JSON.parse(toolInput)
@@ -3253,6 +3256,7 @@ ${continuation}`
             createdByUserId: triggerOwnerId ?? undefined,
             model: input.model,
             effort: input.effort,
+            speed: input.speed,
           })
         } catch (dbError) {
           // Rollback Composio trigger
@@ -3373,6 +3377,7 @@ ${continuation}`
             createdByUserId: triggerOwnerId ?? undefined,
             model: input.model,
             effort: input.effort,
+            speed: input.speed,
           })
         } catch (dbError) {
           console.error('[MessagePersister] SQLite save failed, disabling platform endpoint:', dbError)

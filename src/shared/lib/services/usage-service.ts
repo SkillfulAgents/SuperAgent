@@ -32,6 +32,10 @@ interface UsageEntry {
       output_tokens?: number
       cache_creation_input_tokens?: number
       cache_read_input_tokens?: number
+      // Served speed tier echoed into the transcript ('slow'/'fast'; natively
+      // by Anthropic fast mode, by the platform proxy for translated OpenAI/xAI
+      // usage). Absent ⇒ standard tier.
+      speed?: string
     }
   }
   requestId?: string
@@ -67,10 +71,19 @@ interface RateCard {
   cacheRead: number
 }
 
+interface SpeedMultipliers {
+  slow?: number
+  fast?: number
+}
+
 interface PricingEntry extends RateCard {
   // OpenAI GPT-5.x 272K cliff: above `thresholdTokens` of prompt input the whole
   // request reprices at these rates. Mirror of the proxy's pricing table.
   longContext?: RateCard & { thresholdTokens: number }
+  // Served-tier billing multipliers (flex/priority/fast mode). Applied on top
+  // of whichever rate set (base or longContext) a request lands on; an absent
+  // tier bills standard (1x). Mirror of the proxy's pricing table.
+  speedMultipliers?: SpeedMultipliers
 }
 
 function deriveInputRelatedRate(
@@ -95,6 +108,12 @@ function rateCardFromCatalogModel(
   const cacheCreation = deriveInputRelatedRate(input, staticPricing, 'cacheCreation')
   const cacheRead = deriveInputRelatedRate(input, staticPricing, 'cacheRead')
   const pricing: PricingEntry = { input, output, cacheCreation, cacheRead }
+
+  // Catalog-declared multipliers win; fall back to the static table's (same
+  // pattern as the cache rates above) so a pricing patch that only overrides
+  // the per-Mtok rates keeps billing speed tiers correctly.
+  const speedMultipliers = model.pricing.speedMultipliers ?? staticPricing?.speedMultipliers
+  if (speedMultipliers) pricing.speedMultipliers = speedMultipliers
 
   if (model.longContextPriceCliff) {
     pricing.longContext = {
@@ -148,6 +167,7 @@ function costFromRateCard(
   outputTokens: number,
   cacheCreationTokens: number,
   cacheReadTokens: number,
+  speed?: keyof SpeedMultipliers,
 ): number {
   if (!pricing) return 0
 
@@ -158,11 +178,17 @@ function costFromRateCard(
       ? pricing.longContext
       : pricing
 
+  // Served-tier multiplier scales all four rates ON TOP of the base-vs-cliff
+  // selection above — same composition as the platform's computeCost. A tier
+  // with no configured multiplier bills standard (1x).
+  const multiplier = (speed !== undefined ? pricing.speedMultipliers?.[speed] : undefined) ?? 1
+
   return (
-    (inputTokens * rates.input +
-      outputTokens * rates.output +
-      cacheCreationTokens * rates.cacheCreation +
-      cacheReadTokens * rates.cacheRead) /
+    (multiplier *
+      (inputTokens * rates.input +
+        outputTokens * rates.output +
+        cacheCreationTokens * rates.cacheCreation +
+        cacheReadTokens * rates.cacheRead)) /
     1_000_000
   )
 }
@@ -364,14 +390,23 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
     const outputTokens = usage.output_tokens || 0
     const cacheCreationTokens = usage.cache_creation_input_tokens || 0
     const cacheReadTokens = usage.cache_read_input_tokens || 0
-    const cost = entry.costUSD ??
-      costFromRateCard(
-        resolveRateCard(model, catalogPricing),
-        inputTokens,
-        outputTokens,
-        cacheCreationTokens,
-        cacheReadTokens,
-      )
+
+    // Only the exact tier strings select a multiplier; anything else (absent,
+    // unknown future tiers) bills standard.
+    const speed = usage.speed === 'slow' || usage.speed === 'fast' ? usage.speed : undefined
+    const rateCard = resolveRateCard(model, catalogPricing)
+    const speedMultiplier = speed !== undefined ? rateCard?.speedMultipliers?.[speed] : undefined
+    const computedCost = costFromRateCard(
+      rateCard,
+      inputTokens,
+      outputTokens,
+      cacheCreationTokens,
+      cacheReadTokens,
+      speed,
+    )
+    // entry.costUSD is the CLI's own estimate and is tier-blind, so a row
+    // served on a tier we can price locally must not use it.
+    const cost = speedMultiplier !== undefined ? computedCost : (entry.costUSD ?? computedCost)
 
     const countedUsage: CountedUsage = {
       date,

@@ -4,7 +4,7 @@ import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { EffortLevel } from './types';
+import type { EffortLevel, SpeedLevel } from './types';
 import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
@@ -43,7 +43,7 @@ function mcpToolNames(
 }
 import { inputManager } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
-import { withAgentAttributionHeaders } from './attribution-headers';
+import { withAgentAttributionHeaders, withSpeedHeader } from './attribution-headers';
 import { renderPrompt } from './render-prompt';
 import type { AgentCapabilityPolicies } from './types';
 import {
@@ -378,6 +378,7 @@ export interface ClaudeCodeProcessOptions {
   maxBudgetUsd?: number;
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
+  speed?: SpeedLevel;
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
 }
@@ -401,6 +402,7 @@ export class ClaudeCodeProcess extends EventEmitter {
   private maxBudgetUsd: number | undefined;
   private customEnvVars: Record<string, string> | undefined;
   private effort: EffortLevel | undefined;
+  private speed: SpeedLevel | undefined;
   private capabilityPolicies: AgentCapabilityPolicies | undefined;
   // Session-scoped review grants ("Allow for this session"). Scoped to the
   // SESSION, not the process: they must survive idle-eviction + resume (the
@@ -458,6 +460,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.customEnvVars = options.customEnvVars;
     this.effort = options.effort;
+    this.speed = options.speed;
     this.capabilityPolicies = options.capabilityPolicies;
     this.sessionCapabilityGrants = new Set(options.sessionCapabilityGrants ?? []);
     this.availableEnvVars = options.availableEnvVars;
@@ -538,7 +541,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // shared across sessions stranded browser calls on the ownership lock.
     const browserMcpTools = createBrowserTools(() => this.sessionId);
 
-    console.log(`[Session ${this.sessionId}] createQuery: model=${this.model ?? '(default)'}, effort=${this.effort ?? '(default)'}`);
+    console.log(`[Session ${this.sessionId}] createQuery: model=${this.model ?? '(default)'}, effort=${this.effort ?? '(default)'}, speed=${this.speed ?? '(default)'}`);
 
     // Block-tier policies remove the capability at the source: the tool is
     // stripped from the query (and the system prompt stops advertising it)
@@ -590,7 +593,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         // withAgentAttributionHeaders folds the host-injected agent identity env
         // vars into ANTHROPIC_CUSTOM_HEADERS (composed here, after the custom-env
         // merge, so a user-set ANTHROPIC_CUSTOM_HEADERS is appended to, not lost).
-        env: withAgentAttributionHeaders({
+        // withSpeedHeader then appends X-Superagent-Speed for non-normal tiers.
+        env: withSpeedHeader(withAgentAttributionHeaders({
           // Agent SDK 0.2.113+ replaces process.env with options.env instead of
           // overlaying it, so we must spread process.env explicitly or the Claude
           // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
@@ -605,7 +609,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
           // Explicit maxOutputTokens setting takes precedence over custom env var
           ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
-        }),
+        }), this.speed),
         mcpServers: {
           'user-input': createUserInputMcpServer(),
           'browser': createBrowserMcpServer(browserMcpTools),
@@ -1066,14 +1070,20 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
     const effort = options?.effort;
+    const speed = options?.speed;
     const model = options?.model;
 
     // Treat undefined stored effort as 'high' so pre-existing sessions (created before
     // this feature) don't trigger a spurious restart on their first post-upgrade message.
     const currentEffort: EffortLevel = this.effort ?? 'high';
     const effortChanged = effort !== undefined && effort !== currentEffort;
+
+    // Same undefined-vs-default trick: an unset speed IS 'normal' on the wire
+    // (no header), so an explicit 'normal' on a pre-speed session is a no-op.
+    const currentSpeed: SpeedLevel = this.speed ?? 'normal';
+    const speedChanged = speed !== undefined && speed !== currentSpeed;
 
     // The host resolves selections to concrete wire ids before sending, so
     // compare ids directly. Switching between two pinned versions of a family
@@ -1104,6 +1114,9 @@ export class ClaudeCodeProcess extends EventEmitter {
     if (effortChanged) {
       this.effort = effort;
     }
+    if (speedChanged) {
+      this.speed = speed;
+    }
     if (modelChanged) {
       this.model = model;
     }
@@ -1117,14 +1130,16 @@ export class ClaudeCodeProcess extends EventEmitter {
         await this.currentStop.catch(() => undefined);
       }
       await this.restart();
-    } else if (effortChanged || capabilityBlockChanged) {
+    } else if (effortChanged || speedChanged || capabilityBlockChanged) {
       // Effort can only be set at query creation time — the SDK has no setEffort
-      // facility — so any effort change forces an interrupt + re-query. The new
-      // model (if also changed) is picked up by the same restart. A capability
-      // block boundary flip re-queries for the same reason: the tool lists and
-      // system prompt only apply at query creation.
+      // facility — so any effort change forces an interrupt + re-query. Speed
+      // lives in the query env (ANTHROPIC_CUSTOM_HEADERS), which is likewise
+      // baked at query creation. The new model (if also changed) is picked up by
+      // the same restart. A capability block boundary flip re-queries for the
+      // same reason: the tool lists and system prompt only apply at query creation.
       const reasons: string[] = [];
       if (effortChanged) reasons.push(`effort ${currentEffort} -> ${effort}`);
+      if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);
       console.log(`[Session ${this.sessionId}] Restarting query (${reasons.join(', ')})`);

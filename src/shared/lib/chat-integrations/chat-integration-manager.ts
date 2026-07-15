@@ -37,7 +37,7 @@ import {
 } from '@shared/lib/services/chat-integration-session-service'
 import { assertPathWithinDir, isPathWithinDir, sanitizeUploadFilename } from '@shared/lib/utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '@shared/lib/utils/url-safety'
-import type { EffortLevel, ContainerClient } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel, ContainerClient } from '@shared/lib/container/types'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
@@ -923,10 +923,11 @@ class ChatIntegrationManager {
     const { readAgentPreferences } = await import('@shared/lib/services/agent-preferences-service')
 
     const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
-    // Model/effort preference order: integration override > agent default > global default.
+    // Model/effort/speed preference order: integration override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(integration.agentSlug)
     const effort = integration.effort ?? agentPrefs.defaultEffort
+    const speed = integration.speed ?? agentPrefs.defaultSpeed
 
     const containerSession = await client.createSession({
       availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
@@ -935,6 +936,7 @@ class ChatIntegrationManager {
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       ...(effort ? { effort: effort as EffortLevel } : {}),
+      ...(speed ? { speed: speed as SpeedLevel } : {}),
       ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
     })
 

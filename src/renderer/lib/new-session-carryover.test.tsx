@@ -17,6 +17,7 @@ describe('splitComposerSnapshot', () => {
       attachments: [attachment],
       model: 'sonnet',
       effort: 'high',
+      speed: 'fast',
     })
 
     expect(result.draftText).toBe('  keep this text  ')
@@ -24,6 +25,7 @@ describe('splitComposerSnapshot', () => {
       attachments: [{ ...attachment, preview: undefined }],
       model: 'sonnet',
       effort: 'high',
+      speed: 'fast',
     })
     expect(attachment.preview).toBe('blob:source-preview')
   })
@@ -34,6 +36,7 @@ describe('splitComposerSnapshot', () => {
       attachments: [],
       model: 'opus',
       effort: 'medium',
+      speed: 'normal',
     }).draftText).toBeUndefined()
   })
 })

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { EFFORT_LEVELS, type EffortLevel } from './types'
+import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from './types'
 
 /**
  * Runtime options sent alongside a message: the per-invocation knobs that
@@ -12,12 +12,27 @@ import { EFFORT_LEVELS, type EffortLevel } from './types'
 export const RuntimeOptionsSchema = z
   .object({
     effort: z.enum(EFFORT_LEVELS).optional(),
+    speed: z.enum(SPEED_LEVELS).optional(),
     model: z.string().optional(),
     shouldQuery: z.boolean().optional(),
   })
   .strict()
 
 export type RuntimeOptions = z.infer<typeof RuntimeOptionsSchema>
+
+/**
+ * PATCH-body shape for stored per-entity runtime overrides (scheduled tasks,
+ * webhook triggers): each field may carry a value, be null (explicitly clears
+ * the override back to the default), or be absent (left untouched). Strict so
+ * an unsupported knob fails loudly instead of 200-ing as a silent no-op.
+ */
+export const RuntimeOptionsPatchSchema = z
+  .object({
+    effort: z.enum(EFFORT_LEVELS).nullish(),
+    speed: z.enum(SPEED_LEVELS).nullish(),
+    model: z.string().nullish(),
+  })
+  .strict()
 
 /**
  * Lenient parser: returns whatever fields are individually valid and drops
@@ -31,6 +46,9 @@ export function parseRuntimeOptions(raw: unknown): RuntimeOptions {
   const result: RuntimeOptions = {}
   const effortResult = z.enum(EFFORT_LEVELS).safeParse(obj.effort)
   if (effortResult.success) result.effort = effortResult.data as EffortLevel
+
+  const speedResult = z.enum(SPEED_LEVELS).safeParse(obj.speed)
+  if (speedResult.success) result.speed = speedResult.data as SpeedLevel
 
   if (typeof obj.model === 'string' && obj.model.length > 0) {
     result.model = obj.model

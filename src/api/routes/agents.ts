@@ -1350,7 +1350,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // the client can materialize its optimistic copy by exact id match.
     const initialMessageUuid = randomUUID()
 
-    // Model/effort preference order: explicit per-session pick > agent default > global default.
+    // Model/effort/speed preference order: explicit per-session pick > agent default > global default.
     const agentPrefs = await readAgentPreferences(slug)
     const sessionModel = runtimeOptions.model ?? agentPrefs.defaultModel ?? getEffectiveModels().agentModel
 
@@ -1368,6 +1368,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
       maxBrowserTabs: getSettings().app?.maxBrowserTabs,
       effort: runtimeOptions.effort ?? agentPrefs.defaultEffort,
+      speed: runtimeOptions.speed ?? agentPrefs.defaultSpeed,
     })
     const sessionId = containerSession.id
 
@@ -1406,6 +1407,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     // reflected when the composer reloads.
     const initialMetadata: Parameters<typeof updateSessionMetadata>[2] = {}
     if (runtimeOptions.effort) initialMetadata.effort = runtimeOptions.effort
+    if (runtimeOptions.speed) initialMetadata.speed = runtimeOptions.speed
     if (runtimeOptions.model) initialMetadata.model = runtimeOptions.model
     if (isAuthMode()) initialMetadata.createdByUserId = getCurrentUserId(c)
     if (Object.keys(initialMetadata).length > 0) {
@@ -1643,13 +1645,14 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
 
     messagePersister.markSessionActive(sessionId, agentSlug)
 
-    // A mid-turn send must not carry model/effort: the container treats a
+    // A mid-turn send must not carry model/effort/speed: the container treats a
     // parameter change as interrupt/restart of the in-flight query. The
     // composer strips these client-side, but its view of "active" comes from
     // SSE and can be stale (reconnect, second window, shared-session peer) —
     // the server's check is authoritative.
     if (wasQueued) {
       delete runtimeOptions.effort
+      delete runtimeOptions.speed
       delete runtimeOptions.model
     }
 
@@ -1686,6 +1689,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     await client.sendMessage(sessionId, content.trim(), messageUuid, runtimeOptions)
     const updates: Parameters<typeof updateSessionMetadata>[2] = {}
     if (runtimeOptions.effort) updates.effort = runtimeOptions.effort
+    if (runtimeOptions.speed) updates.speed = runtimeOptions.speed
     if (runtimeOptions.model) updates.model = runtimeOptions.model
     if (Object.keys(updates).length > 0) {
       updateSessionMetadata(agentSlug, sessionId, updates).catch(console.error)
@@ -1765,6 +1769,7 @@ agents.get('/:id/sessions/:sessionId', AgentRead(), async (c) => {
       webhookTriggerId: metadata?.webhookTriggerId,
       webhookTriggerName: metadata?.webhookTriggerName,
       effort: metadata?.effort,
+      speed: metadata?.speed,
       model: metadata?.model,
       ...(pendingWake
         ? {

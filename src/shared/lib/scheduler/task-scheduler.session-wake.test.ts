@@ -131,6 +131,7 @@ function createWakeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     timezone: 'America/Los_Angeles',
     model: null,
     effort: null,
+    speed: null,
     resumeSessionId: 'sleeping-session-1',
     createdAt: new Date('2026-06-25T16:00:00.000Z'),
     cancelledAt: null,

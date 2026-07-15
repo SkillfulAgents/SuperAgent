@@ -237,16 +237,17 @@ export function useUpdateScheduledTaskName() {
 }
 
 /**
- * Update a scheduled task's runtime options (model and/or effort)
+ * Update a scheduled task's runtime options (model, effort, and/or speed)
  */
 export function useUpdateScheduledTaskRuntimeOptions() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ taskId, model, effort }: { taskId: string; agentSlug: string; model?: string | null; effort?: string | null }) => {
+    mutationFn: async ({ taskId, model, effort, speed }: { taskId: string; agentSlug: string; model?: string | null; effort?: string | null; speed?: string | null }) => {
       const body: Record<string, string | null> = {}
       if (model !== undefined) body.model = model
       if (effort !== undefined) body.effort = effort
+      if (speed !== undefined) body.speed = speed
       const res = await apiFetch(`/api/scheduled-tasks/${taskId}/runtime-options`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },

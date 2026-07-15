@@ -4,7 +4,7 @@ import { Button } from '@renderer/components/ui/button'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 
 interface HomeDefaultModelProps {
   agentSlug: string
@@ -22,9 +22,10 @@ export function HomeDefaultModel({ agentSlug, className }: HomeDefaultModelProps
   const { data: prefs } = useAgentPreferences(agentSlug)
   const updatePreferences = useUpdateAgentPreferences(agentSlug)
 
-  const hasCustom = Boolean(prefs?.defaultModel || prefs?.defaultEffort)
+  const hasCustom = Boolean(prefs?.defaultModel || prefs?.defaultEffort || prefs?.defaultSpeed)
   const displayModel = prefs?.defaultModel ?? settings?.models?.agentModel
   const displayEffort = prefs?.defaultEffort ?? settings?.models?.agentEffort ?? 'medium'
+  const displaySpeed = prefs?.defaultSpeed ?? 'normal'
 
   return (
     <div
@@ -41,7 +42,7 @@ export function HomeDefaultModel({ agentSlug, className }: HomeDefaultModelProps
             aria-label="Reset to global default"
             title="Reset to global default"
             data-testid="home-default-model-reset"
-            onClick={() => updatePreferences.mutate({ defaultModel: null, defaultEffort: null })}
+            onClick={() => updatePreferences.mutate({ defaultModel: null, defaultEffort: null, defaultSpeed: null })}
           >
             <RotateCcw className="h-3.5 w-3.5" />
           </Button>
@@ -54,6 +55,12 @@ export function HomeDefaultModel({ agentSlug, className }: HomeDefaultModelProps
           includeEffort
           effort={displayEffort as EffortLevel}
           onEffortChange={(e) => updatePreferences.mutate({ defaultEffort: e })}
+          includeSpeed
+          speed={displaySpeed as SpeedLevel}
+          // 'normal' is the built-in default, not an override: store null (clear
+          // the key, like reset does) so it never flips the Custom badge on —
+          // including when useSpeedClamp auto-fires after a model switch.
+          onSpeedChange={(s) => updatePreferences.mutate({ defaultSpeed: s === 'normal' ? null : s })}
           disabled={updatePreferences.isPending}
         />
       </div>

@@ -19,6 +19,13 @@ export const agentCapabilityPoliciesSchema = z
   })
   .optional()
 
+// Boundary schema for the processing-speed tier arriving over HTTP (create-
+// session / send-message bodies). The value is interpolated into the
+// newline-joined ANTHROPIC_CUSTOM_HEADERS string (withSpeedHeader), so
+// anything off the closed enum — a newline especially — must fail the request
+// instead of reaching header composition.
+export const speedLevelSchema = z.enum(['slow', 'normal', 'fast']).optional()
+
 // Boundary schema for the resolve payload of a capability review (host answers
 // via POST /inputs/:toolUseId/resolve). Unknown shapes count as a plain
 // one-time approval — the approval itself was explicit, only the scope is soft.
