@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title, and report back with the correct title \"Example Domain\"",
+  "reason": "Successfully verified that the agent can execute browser tools, open a webpage, retrieve the page title, and return the expected \"Example Domain\" result.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing two agents in the sidebar",
-    "Step 2: Found and clicked the \"QA-20260714-231339-cxoc\" agent in the sidebar — Successfully opened the agent's chat interface and created a new session titled \"Browser Navigation and Page Title Check\"",
-    "Step 3: Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully sent to the agent; agent status changed to \"working\"",
-    "Step 4: Waited for the response (waited 30 seconds, within the 3-minute timeout) — Agent completed the task successfully in 15 seconds",
-    "Step 5: Verified the response mentions \"Example Domain\" — Response clearly states both \"The page title is \\\"Example Domain\\\"\" and \"Its title/heading is \\\"Example Domain\\\"\". The agent successfully:"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the agent dashboard with sidebar containing available agents.",
+    "Clicked the \"QA-20260715-002244-dzb8\" agent in the sidebar — Successfully navigated to the agent's chat session with empty chat interface and message input field ready.",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the message input field — Message appeared in the textbox and was ready to send.",
+    "Clicked the \"Send message\" button — Message was successfully sent, agent status changed from \"idle\" to \"working\", and a new session titled \"Browser Page Title Retrieval Request\" was created.",
+    "Waited up to 3 minutes for a response — Agent completed processing within approximately 12 seconds. Response was detected containing the text \"Example Domain\".",
+    "Verified the response mentions \"Example Domain\" and took a screenshot — Response clearly displays:"
   ],
   "bugs": [],
-  "durationMs": 97342,
-  "sessionId": "1b9fc862-eea8-44d4-a94a-44c5b063b185",
+  "durationMs": 62770,
+  "sessionId": "e7c64566-d993-4df9-a0b3-f4f63e3898bc",
   "cost": {
-    "inputTokens": 430,
-    "outputTokens": 9680,
-    "cacheCreationTokens": 76489,
-    "cacheReadTokens": 1228789,
+    "inputTokens": 344,
+    "outputTokens": 9575,
+    "cacheCreationTokens": 65158,
+    "cacheReadTokens": 941117,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.26732
+    "totalCostUsd": 0.223778
   }
 }
