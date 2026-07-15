@@ -28,9 +28,22 @@ export const modelDefinitionSchema = z.object({
   /**
    * Processing-speed tiers this model accepts on its serving path (normalized
    * to slow/normal/fast). Omit ⇒ ['normal'] — a speed knob is the exception,
-   * not the rule, so absence means "no speed choice".
+   * not the rule, so absence means "no speed choice". An explicit list MUST
+   * include 'normal': the speed UI treats it as the always-available reset
+   * target (useSpeedClamp snaps unsupported picks to it), so a list like
+   * ['fast'] would clamp to a speed the model rejects while the picker hides.
    */
-  supportedSpeeds: z.array(z.enum(SPEED_LEVELS)).min(1).optional(),
+  supportedSpeeds: z
+    .array(z.enum(SPEED_LEVELS))
+    .min(1)
+    .refine((speeds) => speeds.includes('normal'), {
+      message:
+        "supportedSpeeds must include 'normal' — the speed UI clamps unsupported picks to 'normal', so it must always be a valid choice",
+    })
+    .refine((speeds) => new Set(speeds).size === speeds.length, {
+      message: 'supportedSpeeds must not contain duplicate entries',
+    })
+    .optional(),
   /** Grouping key and bare alias for this lineage, e.g. 'opus'. */
   family: z.string().optional(),
   /** This id is what the bare `family` alias resolves to (newest in the family). */

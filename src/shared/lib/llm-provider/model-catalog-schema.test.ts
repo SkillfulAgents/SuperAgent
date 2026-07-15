@@ -39,6 +39,33 @@ describe('modelDefinitionSchema', () => {
     expect(() => modelDefinitionSchema.parse({ ...base, supportedEfforts: ['turbo'] })).toThrow()
   })
 
+  it('accepts supportedSpeeds that include normal, and omits cleanly', () => {
+    expect(
+      modelDefinitionSchema.parse({ ...base, supportedSpeeds: ['normal', 'fast'] }),
+    ).toMatchObject({ supportedSpeeds: ['normal', 'fast'] })
+    expect(modelDefinitionSchema.parse(base).supportedSpeeds).toBeUndefined()
+  })
+
+  it("rejects supportedSpeeds without 'normal'", () => {
+    // The speed UI clamps unsupported picks to 'normal' and hides the section
+    // at one visible option — a list like ['fast'] would clamp to a speed the
+    // model rejects with no way to see or fix it.
+    expect(() => modelDefinitionSchema.parse({ ...base, supportedSpeeds: ['fast'] })).toThrow(
+      /must include 'normal'/,
+    )
+    expect(() =>
+      modelDefinitionSchema.parse({ ...base, supportedSpeeds: ['slow', 'fast'] }),
+    ).toThrow(/must include 'normal'/)
+  })
+
+  it('rejects duplicate, empty, and off-enum supportedSpeeds', () => {
+    expect(() =>
+      modelDefinitionSchema.parse({ ...base, supportedSpeeds: ['normal', 'fast', 'fast'] }),
+    ).toThrow(/duplicate/)
+    expect(() => modelDefinitionSchema.parse({ ...base, supportedSpeeds: [] })).toThrow()
+    expect(() => modelDefinitionSchema.parse({ ...base, supportedSpeeds: ['turbo'] })).toThrow()
+  })
+
   it('rejects negative pricing', () => {
     expect(() =>
       modelDefinitionSchema.parse({ ...base, pricing: { inputPerMtok: -1, outputPerMtok: 25 } }),
@@ -125,6 +152,15 @@ describe('catalogOverrideEntrySchema', () => {
   it('rejects wrong-typed fields and invalid effort values', () => {
     expect(() => catalogOverrideEntrySchema.parse({ id: 'x', pricing: 'cheap' })).toThrow()
     expect(() => catalogOverrideEntrySchema.parse({ id: 'x', supportedEfforts: ['turbo'] })).toThrow()
+  })
+
+  it("applies the supportedSpeeds 'normal' rule to override patches too", () => {
+    expect(() => catalogOverrideEntrySchema.parse({ id: 'x', supportedSpeeds: ['fast'] })).toThrow(
+      /must include 'normal'/,
+    )
+    expect(
+      catalogOverrideEntrySchema.parse({ id: 'x', supportedSpeeds: ['normal', 'fast'] }),
+    ).toMatchObject({ supportedSpeeds: ['normal', 'fast'] })
   })
 })
 

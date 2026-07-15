@@ -157,6 +157,15 @@ describe('useComposerOptions default adoption', () => {
     })
   })
 
+  it('serializes an explicitly picked speed so the dispatch payload carries it', () => {
+    const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
+    expect(result.current.toRuntimeOptions()).toEqual({})
+    act(() => {
+      result.current.setSpeed('fast')
+    })
+    expect(result.current.toRuntimeOptions()).toEqual({ speed: 'fast' })
+  })
+
   it('session-seeded initial values win over defaults', () => {
     const { result } = render({
       initialModel: 'claude-opus-4-6',

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { ModelEffortMenu } from './quick-dispatch-menus'
 import type { ComposerOptionsState } from '@renderer/components/messages/composer-options'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
@@ -10,7 +10,7 @@ const STD: EffortLevel[] = ['low', 'medium', 'high']
 
 const CATALOG: ModelDefinition[] = [
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
-  { id: 'openai/gpt-5.5', label: 'GPT-5.5', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, supportsWebSearch: false },
+  { id: 'openai/gpt-5.5', label: 'GPT-5.5', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, supportedSpeeds: ['slow', 'normal', 'fast'] },
   // Custom models can declare effort subsets that exclude medium.
   { id: 'custom/tiny', label: 'Tiny', isLatest: true, supportedEfforts: ['low'] },
 ]
@@ -66,5 +66,40 @@ describe('ModelEffortMenu', () => {
       <ModelEffortMenu state={makeState({ model: 'openai/gpt-5.5', webProvider: 'exa' })} maxHeight={400} />
     )
     expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+  })
+
+  it('shows the catalog-declared speeds for a speed-capable model', () => {
+    render(<ModelEffortMenu state={makeState({ model: 'openai/gpt-5.5' })} maxHeight={400} />)
+    expect(screen.getByTestId('speed-option-slow')).toBeInTheDocument()
+    expect(screen.getByTestId('speed-option-normal')).toBeInTheDocument()
+    expect(screen.getByTestId('speed-option-fast')).toBeInTheDocument()
+  })
+
+  it('hides the speed section for a model with no declared speeds (normal-only)', () => {
+    render(<ModelEffortMenu state={makeState({ model: 'claude-sonnet-4-6' })} maxHeight={400} />)
+    expect(screen.queryByText('Speed')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('speed-option-normal')).not.toBeInTheDocument()
+  })
+
+  it('picking a speed forwards it to setSpeed (dispatch payload rides toRuntimeOptions)', () => {
+    const setSpeed = vi.fn()
+    render(<ModelEffortMenu state={makeState({ model: 'openai/gpt-5.5', setSpeed })} maxHeight={400} />)
+    fireEvent.click(screen.getByTestId('speed-option-fast'))
+    expect(setSpeed).toHaveBeenCalledWith('fast')
+  })
+
+  it('clamps a speed the selected model does not support back to normal', () => {
+    // Parity with the composer popover: without the clamp this menu would keep
+    // (and dispatch) a stale 'fast' after switching to a normal-only model,
+    // with the section hidden so there'd be no way to see or fix it.
+    const setSpeed = vi.fn()
+    render(<ModelEffortMenu state={makeState({ model: 'claude-sonnet-4-6', speed: 'fast', setSpeed })} maxHeight={400} />)
+    expect(setSpeed).toHaveBeenCalledWith('normal')
+  })
+
+  it('leaves a supported speed alone', () => {
+    const setSpeed = vi.fn()
+    render(<ModelEffortMenu state={makeState({ model: 'openai/gpt-5.5', speed: 'fast', setSpeed })} maxHeight={400} />)
+    expect(setSpeed).not.toHaveBeenCalled()
   })
 })

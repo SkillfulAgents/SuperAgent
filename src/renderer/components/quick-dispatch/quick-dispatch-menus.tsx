@@ -4,6 +4,7 @@ import { cn } from '@shared/lib/utils'
 import { ModelFamilyList } from '@renderer/components/messages/model-family-list'
 import { findCatalogModel, type ComposerOptionsState } from '@renderer/components/messages/composer-options'
 import { EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
+import { SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
 import { EFFORT_LEVELS } from '@shared/lib/container/types'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
@@ -94,13 +95,18 @@ export function AgentMenu({
 }
 
 export function ModelEffortMenu({ state, maxHeight }: { state: ComposerOptionsState; maxHeight: number }) {
-  const { effort, setEffort, model, setModel, catalog, webProvider } = state
+  const { effort, setEffort, speed, setSpeed, model, setModel, catalog, webProvider } = state
   const selected =
     findCatalogModel(model, catalog) ?? catalog.find((m) => m.family === 'sonnet' && m.isLatest) ?? catalog[0]
   const efforts = EFFORT_LEVELS.filter((l) => (selected ? selected.supportedEfforts.includes(l) : true))
   // Without the clamp this menu kept (and dispatched) an unsupported effort
   // after a model switch, while the slider silently rendered at Low.
   useEffortClamp(selected, effort, setEffort)
+  // Speed mirrors the composer popover exactly: catalog-declared options,
+  // hidden for normal-only models, snap back to Normal on a model switch that
+  // drops the pick — otherwise a stale 'fast' (2x price) would dispatch silently.
+  const speeds = availableSpeeds(selected)
+  useSpeedClamp(selected, speed, setSpeed)
 
   return (
     // Only the model list scrolls; the effort section is pinned to the bottom so
@@ -116,6 +122,8 @@ export function ModelEffortMenu({ state, maxHeight }: { state: ComposerOptionsSt
       </div>
       <div className="shrink-0 px-1 pb-1 pt-2">
         <EffortSection levels={efforts} value={effort} onChange={setEffort} />
+        {/* Same gate and Effort → Speed order as the composer popover. */}
+        {speeds.length > 1 && <SpeedSection speeds={speeds} value={speed} onChange={setSpeed} />}
       </div>
     </div>
   )
