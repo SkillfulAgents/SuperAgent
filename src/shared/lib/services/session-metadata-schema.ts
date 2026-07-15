@@ -59,9 +59,10 @@ export const sessionMetadataSchema = z
     // here risks false-rejecting a valid file and refusing to persist names.
     lastUsage: sessionUsageSchema.optional(),
     slashCommands: z.array(slashCommandInfoSchema).optional(),
-    // `effort`/`model` are intentionally bare strings (not the EffortLevel enum)
+    // `effort`/`speed`/`model` are intentionally bare strings (not the enums)
     // so a newly-added level/id from a newer build never fails an older reader.
     effort: z.string().optional(),
+    speed: z.string().optional(),
     model: z.string().optional(),
     invokedByAgentSlug: z.string().optional(),
   })

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { EFFORT_LEVELS } from '../container/types'
+import { EFFORT_LEVELS, SPEED_LEVELS } from '../container/types'
 
 /**
  * A concrete, versioned model offered by a provider's catalog.
@@ -25,6 +25,12 @@ export const modelDefinitionSchema = z.object({
    * family-keyed EFFORT_FAMILY_REQUIREMENTS — now declared per model.
    */
   supportedEfforts: z.array(z.enum(EFFORT_LEVELS)).min(1),
+  /**
+   * Processing-speed tiers this model accepts on its serving path (normalized
+   * to slow/normal/fast). Omit ⇒ ['normal'] — a speed knob is the exception,
+   * not the rule, so absence means "no speed choice".
+   */
+  supportedSpeeds: z.array(z.enum(SPEED_LEVELS)).min(1).optional(),
   /** Grouping key and bare alias for this lineage, e.g. 'opus'. */
   family: z.string().optional(),
   /** This id is what the bare `family` alias resolves to (newest in the family). */

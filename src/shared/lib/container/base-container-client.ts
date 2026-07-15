@@ -1135,6 +1135,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           customEnvVars: options.customEnvVars,
           maxBrowserTabs: options.maxBrowserTabs,
           effort: options.effort,
+          speed: options.speed,
           capabilityPolicies,
         }),
         signal: controller.signal,
@@ -1232,6 +1233,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const port = await this.getPortOrThrow()
     const timeoutMs = 30000 // 30 second timeout
     const effort = options?.effort
+    const speed = options?.speed
     const model = resolveContainerModel(options?.model, 'agent')
     const shouldQuery = options?.shouldQuery
     // Refreshed on every message so a long-lived session tracks settings
@@ -1251,6 +1253,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
             content,
             ...(uuid ? { uuid } : {}),
             ...(effort ? { effort } : {}),
+            ...(speed ? { speed } : {}),
             ...(model ? { model } : {}),
             ...(shouldQuery !== undefined ? { shouldQuery } : {}),
             capabilityPolicies,

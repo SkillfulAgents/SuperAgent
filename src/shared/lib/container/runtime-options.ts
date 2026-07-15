@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { EFFORT_LEVELS, type EffortLevel } from './types'
+import { EFFORT_LEVELS, SPEED_LEVELS, type EffortLevel, type SpeedLevel } from './types'
 
 /**
  * Runtime options sent alongside a message: the per-invocation knobs that
@@ -12,6 +12,7 @@ import { EFFORT_LEVELS, type EffortLevel } from './types'
 export const RuntimeOptionsSchema = z
   .object({
     effort: z.enum(EFFORT_LEVELS).optional(),
+    speed: z.enum(SPEED_LEVELS).optional(),
     model: z.string().optional(),
     shouldQuery: z.boolean().optional(),
   })
@@ -31,6 +32,9 @@ export function parseRuntimeOptions(raw: unknown): RuntimeOptions {
   const result: RuntimeOptions = {}
   const effortResult = z.enum(EFFORT_LEVELS).safeParse(obj.effort)
   if (effortResult.success) result.effort = effortResult.data as EffortLevel
+
+  const speedResult = z.enum(SPEED_LEVELS).safeParse(obj.speed)
+  if (speedResult.success) result.speed = speedResult.data as SpeedLevel
 
   if (typeof obj.model === 'string' && obj.model.length > 0) {
     result.model = obj.model

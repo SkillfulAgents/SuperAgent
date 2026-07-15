@@ -91,6 +91,7 @@ export function QuickDispatch() {
   const composerOptions = useComposerOptions({
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultEffort: agentPrefs?.defaultEffort,
+    agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
   })

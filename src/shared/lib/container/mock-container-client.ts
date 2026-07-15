@@ -1453,21 +1453,25 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     sessionId: string
     content: string
     effort?: string
+    speed?: string
     model?: string
   } | null = null
   static sendMessageCalls: Array<{
     sessionId: string
     content: string
     effort?: string
+    speed?: string
     model?: string
   }> = []
   static lastCreateSessionCall: {
     effort?: string
+    speed?: string
     model?: string
     initialMessage?: string
   } | null = null
   static createSessionCalls: Array<{
     effort?: string
+    speed?: string
     model?: string
     initialMessage?: string
   }> = []
@@ -1873,11 +1877,13 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     // Record for E2E test assertions
     MockContainerClient.lastCreateSessionCall = {
       effort: options.effort,
+      speed: options.speed,
       model,
       initialMessage: options.initialMessage,
     }
     MockContainerClient.createSessionCalls.push({
       effort: options.effort,
+      speed: options.speed,
       model,
       initialMessage: options.initialMessage,
     })
@@ -1885,6 +1891,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       type: 'createSession',
       agentSlug: this.config.agentId,
       effort: options.effort,
+      speed: options.speed,
       model,
       initialMessage: options.initialMessage,
       // Secret env var NAMES the host resolved from the agent .env and passed to
@@ -1986,12 +1993,14 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       sessionId,
       content,
       effort: options?.effort,
+      speed: options?.speed,
       model,
     }
     MockContainerClient.sendMessageCalls.push({
       sessionId,
       content,
       effort: options?.effort,
+      speed: options?.speed,
       model,
     })
     this.writeMockRecord({
@@ -2000,6 +2009,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       sessionId,
       content,
       effort: options?.effort,
+      speed: options?.speed,
       model,
       timestamp: new Date().toISOString(),
     })

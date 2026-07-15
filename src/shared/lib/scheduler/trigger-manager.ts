@@ -368,6 +368,7 @@ class TriggerManager {
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },
       ...(effort ? { effort: effort as EffortLevel } : {}),
+      ...(agentPrefs.defaultSpeed ? { speed: agentPrefs.defaultSpeed } : {}),
     })
 
     const sessionId = containerSession.id

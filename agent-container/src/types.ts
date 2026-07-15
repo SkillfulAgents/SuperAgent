@@ -1,6 +1,13 @@
 import type { UUID } from 'crypto';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
 
+// Normalized processing-speed tiers (slow/normal/fast). Not an SDK concept:
+// the speed is signaled upstream via the X-Superagent-Speed custom header,
+// which the platform proxy maps to the provider's tier (OpenAI/xAI
+// service_tier, Anthropic fast mode). Keep in sync with
+// src/shared/lib/container/types.ts SPEED_LEVELS.
+export type SpeedLevel = 'slow' | 'normal' | 'fast';
+
 // Re-export types from Claude Agent SDK
 export type {
   SDKMessage,
@@ -82,6 +89,7 @@ export interface CreateSessionRequest {
   customEnvVars?: Record<string, string>; // User-defined env vars for the agent process
   maxBrowserTabs?: number; // Max browser tabs allowed (default 10)
   effort?: EffortLevel; // Initial thinking effort level
+  speed?: SpeedLevel; // Initial processing-speed tier (emitted as X-Superagent-Speed)
   capabilityPolicies?: AgentCapabilityPolicies; // Launch policies for subagents/workflows (absent = allow)
 }
 
@@ -90,6 +98,7 @@ export interface SendMessageRequest {
   type?: 'user' | 'system';
   uuid?: UUID;
   effort?: EffortLevel; // If set and different from current session effort, triggers interrupt+restart with new effort
+  speed?: SpeedLevel; // If set and different from current session speed, triggers interrupt+restart with new speed
   model?: string; // If set and different from current session model, triggers interrupt+restart with new model
   shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
   capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart

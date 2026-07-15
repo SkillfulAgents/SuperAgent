@@ -5,7 +5,7 @@ import { serve } from '@hono/node-server';
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
 import { SessionManager } from './session-manager';
 import { CreateSessionRequest, SendMessageRequest } from './types';
-import { agentCapabilityPoliciesSchema } from './capability-policies';
+import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import type { UUID } from 'crypto';
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -172,6 +172,7 @@ app.post('/sessions/:id/messages', async (c) => {
 
     await sessionManager.sendMessage(sessionId, content, body.uuid, {
       effort: body.effort,
+      speed: speedLevelSchema.parse(body.speed),
       model: body.model,
       shouldQuery: body.shouldQuery,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
@@ -1841,6 +1842,7 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
 
       await sessionManager.sendMessage(sessionId, content, payload.uuid, {
         effort: payload.effort,
+        speed: speedLevelSchema.parse(payload.speed),
         model: payload.model,
         capabilityPolicies: agentCapabilityPoliciesSchema.parse(payload.capabilityPolicies),
       });

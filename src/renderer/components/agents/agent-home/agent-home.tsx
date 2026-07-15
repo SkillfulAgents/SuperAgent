@@ -94,8 +94,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const composerOptions = useComposerOptions({
     initialModel: carryover?.model,
     initialEffort: carryover?.effort,
+    initialSpeed: carryover?.speed,
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultEffort: agentPrefs?.defaultEffort,
+    agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: agent.slug,
     // The default-model card sits next to this composer; an untouched selection
     // must visibly track it, including a reset back to the global default.

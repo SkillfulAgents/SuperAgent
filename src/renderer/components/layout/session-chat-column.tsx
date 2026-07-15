@@ -12,7 +12,7 @@ import { useFileDeliveryWatcher } from '@renderer/hooks/use-file-delivery-watche
 import { useStaleSession } from '@renderer/hooks/use-stale-session'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
 import type { SessionUsage } from '@shared/lib/types/agent'
 
@@ -26,6 +26,7 @@ interface SessionChatColumnProps {
   isViewOnly: boolean
   contextPercent: number | null
   effort?: EffortLevel
+  speed?: SpeedLevel
   model?: string
   onPendingMessageAppeared: (localId: string) => void
   onMessageSent: (content: string, localId: string, queued: boolean) => void
@@ -47,6 +48,7 @@ export function SessionChatColumn({
   isViewOnly,
   contextPercent,
   effort,
+  speed,
   model,
   onPendingMessageAppeared,
   onMessageSent,
@@ -137,6 +139,7 @@ export function SessionChatColumn({
               onMessageUuidAssigned={onMessageUuidAssigned}
               onMessageFailed={onMessageFailed}
               initialEffort={effort}
+              initialSpeed={speed}
               initialModel={model}
               registerSnapshot={staleSession.registerSnapshot}
             />

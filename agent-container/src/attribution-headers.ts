@@ -15,6 +15,7 @@
 
 const AGENT_ID_HEADER = 'X-Superagent-Agent-Id';
 const AGENT_NAME_HEADER = 'X-Superagent-Agent-Name';
+const SPEED_HEADER = 'X-Superagent-Speed';
 
 /** Env keys carrying the boot-time agent identity. Rejected by POST /env. */
 export const AGENT_IDENTITY_ENV_KEYS = ['SUPERAGENT_AGENT_ID', 'SUPERAGENT_AGENT_NAME'] as const;
@@ -90,6 +91,44 @@ export function withAgentAttributionHeaders(
       const capped = Array.from(wellFormed).slice(0, MAX_NAME_CODE_POINTS).join('');
       lines.push(`${AGENT_NAME_HEADER}: ${encodeURIComponent(capped)}`);
     }
+  }
+
+  if (lines.length > 0) {
+    out.ANTHROPIC_CUSTOM_HEADERS = lines.join('\n');
+  } else {
+    delete out.ANTHROPIC_CUSTOM_HEADERS;
+  }
+  return out;
+}
+
+// Like the attribution namespace above, X-Superagent-Speed is reserved: a
+// pre-existing line (user-configured ANTHROPIC_CUSTOM_HEADERS, or a stale
+// value from a previous query generation) is dropped before the current
+// session speed is appended.
+const SPEED_HEADER_LINE = /^\s*x-superagent-speed\s*:/i;
+
+/**
+ * Return a copy of `env` with ANTHROPIC_CUSTOM_HEADERS carrying the session's
+ * processing-speed tier. 'normal' (or unset) is the wire default and emits no
+ * header — the absence of X-Superagent-Speed means standard processing. The
+ * platform proxy maps the header to the provider's mechanism (OpenAI/xAI
+ * `service_tier`, Anthropic fast mode); other upstreams ignore it harmlessly.
+ * Values are a closed enum, so no encoding is needed.
+ */
+export function withSpeedHeader(
+  env: Record<string, string | undefined>,
+  speed: 'slow' | 'normal' | 'fast' | undefined
+): Record<string, string | undefined> {
+  const out = { ...env };
+
+  const preserved = (env.ANTHROPIC_CUSTOM_HEADERS ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !SPEED_HEADER_LINE.test(line));
+
+  const lines = [...preserved];
+  if (speed && speed !== 'normal') {
+    lines.push(`${SPEED_HEADER}: ${speed}`);
   }
 
   if (lines.length > 0) {

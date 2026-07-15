@@ -250,7 +250,10 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
   try {
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const body = await c.req.json().catch(() => ({}))
-    const parsed = RuntimeOptionsSchema.partial().safeParse(body)
+    // Per-task speed overrides are a deliberate non-feature: omit speed so a
+    // PATCH carrying it fails validation (strict schema) instead of returning
+    // 200 while silently dropping it.
+    const parsed = RuntimeOptionsSchema.omit({ speed: true }).partial().safeParse(body)
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
@@ -318,6 +321,7 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       browserModel: models.browserModel,
       dashboardBuilderModel: models.dashboardBuilderModel,
       ...(effort ? { effort: effort as EffortLevel } : {}),
+      ...(agentPrefs.defaultSpeed ? { speed: agentPrefs.defaultSpeed } : {}),
     })
 
     const sessionId = containerSession.id

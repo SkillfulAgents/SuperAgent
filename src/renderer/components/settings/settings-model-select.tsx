@@ -7,7 +7,8 @@ import { ModelIcon } from '@renderer/components/ui/model-icon'
 import { useSettings } from '@renderer/hooks/use-settings'
 import { ModelFamilyList, findCatalogModel, familyDisplayName } from '@renderer/components/messages/model-family-list'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
-import { EFFORT_LEVELS, type EffortLevel } from '@shared/lib/container/types'
+import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
+import { EFFORT_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
 interface SettingsModelSelectProps {
@@ -18,6 +19,10 @@ interface SettingsModelSelectProps {
   includeEffort?: boolean
   effort?: EffortLevel
   onEffortChange?: (effort: EffortLevel) => void
+  /** Show the speed picker (only renders when the model offers a choice). Off by default. */
+  includeSpeed?: boolean
+  speed?: SpeedLevel
+  onSpeedChange?: (speed: SpeedLevel) => void
   disabled?: boolean
   /**
    * Which trigger edge the popover anchors to. Picks rewrite the trigger label
@@ -45,6 +50,9 @@ function SettingsModelSelectImpl({
   includeEffort = false,
   effort = 'medium',
   onEffortChange,
+  includeSpeed = false,
+  speed = 'normal',
+  onSpeedChange,
   disabled,
   align = 'end',
 }: SettingsModelSelectProps) {
@@ -61,10 +69,12 @@ function SettingsModelSelectImpl({
   const selectedFamily = isLatestSelected ? model : resolved?.family
 
   useEffortClamp(includeEffort ? resolved : undefined, effort, onEffortChange)
+  useSpeedClamp(includeSpeed ? resolved : undefined, speed, onSpeedChange)
 
   const visibleEfforts = EFFORT_LEVELS.filter((level) =>
     resolved ? resolved.supportedEfforts.includes(level) : true
   )
+  const visibleSpeeds = availableSpeeds(resolved)
 
   let triggerLabel: string | undefined
   if (isLatestSelected && selectedFamily) triggerLabel = `${familyDisplayName(selectedFamily)} · latest`
@@ -92,6 +102,7 @@ function SettingsModelSelectImpl({
             {includeEffort && (
               <span className="text-muted-foreground">
                 {' · '}{EFFORT_LABELS[effort]}
+                {includeSpeed && speed !== 'normal' ? ` · ${SPEED_LABELS[speed]}` : ''}
               </span>
             )}
           </span>
@@ -121,6 +132,17 @@ function SettingsModelSelectImpl({
               levels={visibleEfforts}
               value={effort}
               onChange={(level) => onEffortChange?.(level)}
+            />
+          </>
+        )}
+        {/* Hidden entirely for models whose serving path offers no speed choice. */}
+        {includeSpeed && visibleSpeeds.length > 1 && (
+          <>
+            <Separator className="my-2 bg-border/50" />
+            <SpeedSection
+              speeds={visibleSpeeds}
+              value={speed}
+              onChange={(level) => onSpeedChange?.(level)}
             />
           </>
         )}

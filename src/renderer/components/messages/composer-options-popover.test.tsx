@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { ComposerOptionsPopover } from './composer-options-popover'
 import type { ComposerOptionsState } from './composer-options'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 
 const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 const STD: EffortLevel[] = ['low', 'medium', 'high']
@@ -15,11 +15,13 @@ const CATALOG: ModelDefinition[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
   { id: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
-  { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL },
+  // Speeds are catalog-declared per model: Opus 4.8 offers fast mode.
+  { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL, supportedSpeeds: ['normal', 'fast'] },
 ]
 
 interface HarnessProps {
   initialEffort?: EffortLevel
+  initialSpeed?: SpeedLevel
   initialModel?: string
   catalog?: ModelDefinition[]
   onState?: (state: ComposerOptionsState) => void
@@ -30,20 +32,24 @@ interface HarnessProps {
 // transitions need a real React state holder to observe correctly.
 function Harness({
   initialEffort = 'high',
+  initialSpeed = 'normal',
   initialModel,
   catalog = CATALOG,
   onState,
   disabled,
 }: HarnessProps) {
   const [effort, setEffort] = useState<EffortLevel>(initialEffort)
+  const [speed, setSpeed] = useState<SpeedLevel>(initialSpeed)
   const [model, setModel] = useState<string | undefined>(initialModel)
   const state: ComposerOptionsState = {
     effort,
     setEffort,
+    speed,
+    setSpeed,
     model,
     setModel,
     catalog,
-    toRuntimeOptions: () => ({ effort, ...(model ? { model } : {}) }),
+    toRuntimeOptions: () => ({ effort, speed, ...(model ? { model } : {}) }),
   }
   onState?.(state)
   return <ComposerOptionsPopover state={state} disabled={disabled} />
@@ -87,6 +93,8 @@ describe('ComposerOptionsPopover', () => {
         state={{
           effort: 'high',
           setEffort: vi.fn(),
+          speed: 'normal',
+          setSpeed: vi.fn(),
           model: 'claude-sonnet-4-6',
           setModel,
           catalog: CATALOG,
@@ -109,6 +117,8 @@ describe('ComposerOptionsPopover', () => {
         state={{
           effort: 'high',
           setEffort,
+          speed: 'normal',
+          setSpeed: vi.fn(),
           model: 'claude-opus-4-8',
           setModel: vi.fn(),
           catalog: CATALOG,
@@ -176,7 +186,7 @@ describe('ComposerOptionsPopover', () => {
     expect(effort.compareDocumentPosition(speed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('offers only Normal/Fast speeds for an Anthropic model', async () => {
+  it('offers exactly the catalog-declared speeds for the selected model', async () => {
     const user = userEvent.setup()
     render(<Harness initialModel="claude-opus-4-8" />)
     await user.click(screen.getByTestId('composer-options-trigger'))
@@ -185,16 +195,36 @@ describe('ComposerOptionsPopover', () => {
     expect(screen.queryByTestId('speed-option-slow')).not.toBeInTheDocument()
   })
 
-  it('adds the Slow speed for a GPT (non-Anthropic) model', async () => {
+  it('shows all three speeds for a model declaring slow/normal/fast', async () => {
     const user = userEvent.setup()
     const catalog: ModelDefinition[] = [
       ...CATALOG,
-      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, supportedSpeeds: ['slow', 'normal', 'fast'] },
     ]
     render(<Harness catalog={catalog} initialModel="gpt-5.6-sol" />)
     await user.click(screen.getByTestId('composer-options-trigger'))
     expect(await screen.findByTestId('speed-option-slow')).toBeInTheDocument()
     expect(screen.getByTestId('speed-option-normal')).toBeInTheDocument()
     expect(screen.getByTestId('speed-option-fast')).toBeInTheDocument()
+  })
+
+  it('hides the Speed section for a model with no declared speeds (normal-only)', async () => {
+    const user = userEvent.setup()
+    render(<Harness initialModel="claude-sonnet-4-6" />)
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    expect(await screen.findByText('Effort')).toBeInTheDocument()
+    expect(screen.queryByText('Speed')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('speed-option-normal')).not.toBeInTheDocument()
+  })
+
+  it('auto-resets speed to Normal when switching to a model without the current speed', async () => {
+    const user = userEvent.setup()
+    render(<Harness initialModel="claude-opus-4-8" initialSpeed="fast" />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Opus 4.8 · High · Fast')
+    await user.click(screen.getByTestId('composer-options-trigger'))
+    await user.click(await screen.findByTestId('model-pinned-claude-sonnet-4-6'))
+    // Sonnet declares no speeds → the pick snaps back to Normal (no suffix).
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('Sonnet 4.6 · High')
+    expect(screen.getByTestId('composer-options-trigger')).not.toHaveTextContent('Fast')
   })
 })

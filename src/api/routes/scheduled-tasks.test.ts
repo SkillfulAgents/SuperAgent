@@ -399,6 +399,37 @@ describe('scheduled-tasks route', () => {
     })
   })
 
+  describe('runtime-options PATCH contract', () => {
+    async function patchRuntimeOptions(body: Record<string, unknown>) {
+      return app.request('http://localhost/api/scheduled-tasks/task-1/runtime-options', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    }
+
+    it('updates model and effort', async () => {
+      mockUpdateTaskRuntimeOptions.mockResolvedValue(true)
+
+      const res = await patchRuntimeOptions({ model: 'claude-haiku-4-5', effort: 'low' })
+
+      expect(res.status).toBe(200)
+      expect(mockUpdateTaskRuntimeOptions).toHaveBeenCalledWith('task-1', {
+        model: 'claude-haiku-4-5',
+        effort: 'low',
+      })
+    })
+
+    it('rejects a speed override instead of silently dropping it', async () => {
+      // Per-task speed is a deliberate non-feature; the schema must say so
+      // rather than 200-ing a no-op.
+      const res = await patchRuntimeOptions({ speed: 'fast' })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateTaskRuntimeOptions).not.toHaveBeenCalled()
+    })
+  })
+
   it('does not start a container for non-runnable task statuses', async () => {
     task = createTask({ status: 'cancelled' })
 

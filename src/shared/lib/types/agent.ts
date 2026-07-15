@@ -4,7 +4,7 @@
  * Type definitions for file-based agent storage
  */
 
-import type { EffortLevel, SlashCommandInfo } from '../container/types'
+import type { EffortLevel, SlashCommandInfo, SpeedLevel } from '../container/types'
 
 // ============================================================================
 // Agent Roles
@@ -109,6 +109,8 @@ export interface SessionMetadata {
   slashCommands?: SlashCommandInfo[]
   // Last effort level used by the user on this session (seeds the composer on reload)
   effort?: EffortLevel
+  // Last processing speed used by the user on this session (seeds the composer on reload)
+  speed?: SpeedLevel
   // Last model used by the user on this session (seeds the composer on reload).
   // Stored as the provider's pinned ID, not the family.
   model?: string

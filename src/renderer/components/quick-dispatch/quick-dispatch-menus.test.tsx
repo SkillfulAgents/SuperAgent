@@ -19,6 +19,8 @@ function makeState(overrides: Partial<ComposerOptionsState>): ComposerOptionsSta
   return {
     effort: 'medium',
     setEffort: vi.fn(),
+    speed: 'normal',
+    setSpeed: vi.fn(),
     model: 'claude-sonnet-4-6',
     setModel: vi.fn(),
     catalog: CATALOG,

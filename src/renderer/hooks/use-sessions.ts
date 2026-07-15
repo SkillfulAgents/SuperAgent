@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tansta
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import type { ApiSession } from '@shared/lib/types/api'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 
 // Re-export for convenience
 export type { ApiSession }
@@ -62,13 +62,14 @@ export function useCreateSession() {
   const { track } = useAnalyticsTracking()
 
   return useMutation({
-    mutationFn: async (data: { agentSlug: string; message: string; effort?: EffortLevel; model?: string }) => {
+    mutationFn: async (data: { agentSlug: string; message: string; effort?: EffortLevel; speed?: SpeedLevel; model?: string }) => {
       const res = await apiFetch(`/api/agents/${data.agentSlug}/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: data.message,
           ...(data.effort ? { effort: data.effort } : {}),
+          ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
         }),
       })

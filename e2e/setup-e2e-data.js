@@ -150,6 +150,18 @@ const settings = {
   app: { setupCompleted: true },
   // E2E runs must never emit real analytics events.
   shareAnalytics: false,
+  // The direct-Anthropic builtin catalog deliberately declares no
+  // supportedSpeeds (no proxy maps the X-Superagent-Speed header in direct
+  // mode), so the composer's Speed section would never render under the mock.
+  // Expose one via a user-level catalog override — E2E data only, the builtin
+  // catalog stays speed-free.
+  modelCatalog: {
+    anthropic: {
+      overrides: [
+        { id: 'claude-opus-4-8', supportedSpeeds: ['slow', 'normal', 'fast'] },
+      ],
+    },
+  },
   skillsets: [
     {
       id: SKILLSET_ID,

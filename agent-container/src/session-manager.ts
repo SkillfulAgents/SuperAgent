@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
-import { Session, SDKMessage, CreateSessionRequest, EffortLevel, AgentCapabilityPolicies } from './types';
-import { agentCapabilityPoliciesSchema } from './capability-policies';
+import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
+import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import { ClaudeCodeProcess } from './claude-code';
 import { SessionPersistence } from './session-persistence';
 import { EventEmitter } from 'events';
@@ -171,8 +171,10 @@ export class SessionManager extends EventEmitter {
     const workingDirectory = request.workingDirectory || this.baseWorkingDirectory;
 
     // Boundary validation: a malformed policy must fail the request loudly,
-    // never silently degrade a block to allow.
+    // never silently degrade a block to allow. Speed likewise — it ends up
+    // interpolated into the ANTHROPIC_CUSTOM_HEADERS string.
     const capabilityPolicies = agentCapabilityPoliciesSchema.parse(request.capabilityPolicies);
+    const speed = speedLevelSchema.parse(request.speed);
 
     // Ensure working directory exists
     if (!fs.existsSync(workingDirectory)) {
@@ -196,6 +198,7 @@ export class SessionManager extends EventEmitter {
       maxBudgetUsd: request.maxBudgetUsd,
       customEnvVars: request.customEnvVars,
       effort: request.effort,
+      speed,
       capabilityPolicies,
     });
 
@@ -324,6 +327,7 @@ export class SessionManager extends EventEmitter {
       maxBudgetUsd: request.maxBudgetUsd,
       customEnvVars: request.customEnvVars,
       effort: request.effort,
+      speed,
       capabilityPolicies,
       metadata: request.metadata,
     });
@@ -383,6 +387,7 @@ export class SessionManager extends EventEmitter {
         maxBudgetUsd: persisted.maxBudgetUsd,
         customEnvVars: persisted.customEnvVars,
         effort: persisted.effort,
+        speed: persisted.speed,
         capabilityPolicies: persisted.capabilityPolicies,
         sessionCapabilityGrants: persisted.sessionCapabilityGrants,
       });
@@ -513,7 +518,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { effort?: EffortLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
+    options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -553,6 +558,9 @@ export class SessionManager extends EventEmitter {
     // Persist runtime-options changes so resume after eviction uses the latest values
     if (options?.effort !== undefined) {
       this.persistence.updateEffort(sessionId, options.effort);
+    }
+    if (options?.speed !== undefined) {
+      this.persistence.updateSpeed(sessionId, options.speed);
     }
     if (options?.model !== undefined) {
       this.persistence.updateModel(sessionId, options.model);

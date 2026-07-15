@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   withAgentAttributionHeaders,
+  withSpeedHeader,
   captureAgentIdentity,
   isAgentIdentityEnvKey,
 } from './attribution-headers'
@@ -106,6 +107,71 @@ describe('withAgentAttributionHeaders', () => {
   it('does not mutate the input env', () => {
     const env = { OTHER: 'v' }
     const out = withAgentAttributionHeaders(env, { id: 'abc123' })
+    expect(env).not.toHaveProperty('ANTHROPIC_CUSTOM_HEADERS')
+    expect(out.OTHER).toBe('v')
+  })
+})
+
+describe('withSpeedHeader', () => {
+  it('adds no header for undefined speed', () => {
+    const env = { PATH: '/usr/bin' }
+    expect(withSpeedHeader(env, undefined)).toEqual(env)
+  })
+
+  it("adds no header for 'normal' — absence IS the wire default", () => {
+    const out = withSpeedHeader({}, 'normal')
+    expect(out).not.toHaveProperty('ANTHROPIC_CUSTOM_HEADERS')
+  })
+
+  it('emits the speed header for fast and slow', () => {
+    expect(withSpeedHeader({}, 'fast').ANTHROPIC_CUSTOM_HEADERS).toBe('X-Superagent-Speed: fast')
+    expect(withSpeedHeader({}, 'slow').ANTHROPIC_CUSTOM_HEADERS).toBe('X-Superagent-Speed: slow')
+  })
+
+  it('appends after existing lines, preserving them', () => {
+    const out = withSpeedHeader(
+      { ANTHROPIC_CUSTOM_HEADERS: 'X-Superagent-Agent-Id: abc123' },
+      'fast'
+    )
+    expect(out.ANTHROPIC_CUSTOM_HEADERS).toBe(
+      'X-Superagent-Agent-Id: abc123\nX-Superagent-Speed: fast'
+    )
+  })
+
+  it('strips pre-existing speed lines case-insensitively before appending', () => {
+    const out = withSpeedHeader(
+      { ANTHROPIC_CUSTOM_HEADERS: 'x-superagent-speed: fast\nX-User-Header: keep-me' },
+      'slow'
+    )
+    expect(out.ANTHROPIC_CUSTOM_HEADERS).toBe('X-User-Header: keep-me\nX-Superagent-Speed: slow')
+  })
+
+  it("strips a stale speed line when reverting to 'normal'", () => {
+    const out = withSpeedHeader(
+      { ANTHROPIC_CUSTOM_HEADERS: 'X-Superagent-Speed: fast\nX-User-Header: keep-me' },
+      'normal'
+    )
+    expect(out.ANTHROPIC_CUSTOM_HEADERS).toBe('X-User-Header: keep-me')
+  })
+
+  it('removes ANTHROPIC_CUSTOM_HEADERS entirely when nothing remains', () => {
+    const out = withSpeedHeader({ ANTHROPIC_CUSTOM_HEADERS: 'X-Superagent-Speed: fast' }, 'normal')
+    expect(out).not.toHaveProperty('ANTHROPIC_CUSTOM_HEADERS')
+  })
+
+  it('composes with withAgentAttributionHeaders', () => {
+    const out = withSpeedHeader(
+      withAgentAttributionHeaders({}, { id: 'abc123', name: 'Bot' }),
+      'fast'
+    )
+    expect(out.ANTHROPIC_CUSTOM_HEADERS).toBe(
+      'X-Superagent-Agent-Id: abc123\nX-Superagent-Agent-Name: Bot\nX-Superagent-Speed: fast'
+    )
+  })
+
+  it('does not mutate the input env', () => {
+    const env = { OTHER: 'v' }
+    const out = withSpeedHeader(env, 'fast')
     expect(env).not.toHaveProperty('ANTHROPIC_CUSTOM_HEADERS')
     expect(out.OTHER).toBe('v')
   })

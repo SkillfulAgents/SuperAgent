@@ -159,6 +159,88 @@ describe('ClaudeCodeProcess effort handling', () => {
   })
 })
 
+describe('ClaudeCodeProcess speed handling', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  const speedHeaderOf = (call: MockQueryCall): string | undefined => {
+    const env = call.options.env as Record<string, string | undefined>
+    return env.ANTHROPIC_CUSTOM_HEADERS?.split('\n').find((l) => l.startsWith('X-Superagent-Speed:'))
+  }
+
+  it('bakes the speed header into the query env at creation', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-1',
+      workingDirectory: '/tmp',
+      speed: 'fast',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(speedHeaderOf(calls[0])).toBe('X-Superagent-Speed: fast')
+  })
+
+  it("emits no speed header for 'normal' or unset speed", async () => {
+    const p1 = new ClaudeCodeProcess({ sessionId: 'test-speed-2a', workingDirectory: '/tmp', speed: 'normal' })
+    await p1.start()
+    const p2 = new ClaudeCodeProcess({ sessionId: 'test-speed-2b', workingDirectory: '/tmp' })
+    await p2.start()
+    expect(calls).toHaveLength(2)
+    expect(speedHeaderOf(calls[0])).toBeUndefined()
+    expect(speedHeaderOf(calls[1])).toBeUndefined()
+  })
+
+  it('rebuilds the query with the new header when speed changes', { timeout: 15000 }, async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-3',
+      workingDirectory: '/tmp',
+      speed: 'normal',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello', undefined, { speed: 'fast' })
+
+    expect(calls).toHaveLength(2)
+    expect(speedHeaderOf(calls[1])).toBe('X-Superagent-Speed: fast')
+  })
+
+  it('does not rebuild the query when the same speed is passed', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-4',
+      workingDirectory: '/tmp',
+      speed: 'fast',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello', undefined, { speed: 'fast' })
+    expect(calls).toHaveLength(1)
+  })
+
+  it("treats undefined stored speed as 'normal' so a first normal message does not restart", { timeout: 15000 }, async () => {
+    // Simulates a session created before this feature (no persisted speed).
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-5',
+      workingDirectory: '/tmp',
+      // speed intentionally omitted
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello', undefined, { speed: 'normal' })
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello again', undefined, { speed: 'slow' })
+    expect(calls).toHaveLength(2)
+    expect(speedHeaderOf(calls[1])).toBe('X-Superagent-Speed: slow')
+  })
+})
+
 describe('ClaudeCodeProcess model handling', () => {
   beforeEach(() => {
     calls.length = 0

@@ -561,7 +561,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   const agentLimits = getEffectiveAgentLimits()
   const customEnvVars = getCustomEnvVars()
 
-  // Model/effort preference order: target agent's default > global default.
+  // Model/effort/speed preference order: target agent's default > global default.
   const targetPrefs = await readAgentPreferences(targetSlug)
 
   const containerSession = await client.createSession({
@@ -571,6 +571,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     browserModel: getEffectiveModels().browserModel,
     dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
     ...(targetPrefs.defaultEffort ? { effort: targetPrefs.defaultEffort } : {}),
+    ...(targetPrefs.defaultSpeed ? { speed: targetPrefs.defaultSpeed } : {}),
     maxOutputTokens: agentLimits.maxOutputTokens,
     maxThinkingTokens: agentLimits.maxThinkingTokens,
     maxTurns: agentLimits.maxTurns,

@@ -18,7 +18,7 @@ import { ChatComposerBox } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
 import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
 
 interface MessageInputProps {
@@ -32,13 +32,15 @@ interface MessageInputProps {
   onMessageFailed?: (localId: string) => void
   /** Effort level last used on this session; seeds the composer selector. Defaults to 'high' when absent. */
   initialEffort?: EffortLevel
+  /** Speed last used on this session; seeds the composer selector. Defaults to 'normal' when absent. */
+  initialSpeed?: SpeedLevel
   /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
   initialModel?: string
   /** Registers a getter so the stale-session prompt can move the live draft. */
   registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialModel, registerSnapshot }: MessageInputProps) {
+export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, registerSnapshot }: MessageInputProps) {
   useRenderTracker('MessageInput')
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
@@ -48,9 +50,11 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
   const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
   const composerOptions = useComposerOptions({
     initialEffort,
+    initialSpeed,
     initialModel,
     agentDefaultModel: agentPrefs?.defaultModel,
     agentDefaultEffort: agentPrefs?.defaultEffort,
+    agentDefaultSpeed: agentPrefs?.defaultSpeed,
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
   })
@@ -119,12 +123,14 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     attachments: [],
     model: undefined,
     effort: composerOptions.effort,
+    speed: composerOptions.speed,
   })
   snapshotRef.current = {
     text: composer.message,
     attachments: composer.attachments,
     model: composerOptions.model,
     effort: composerOptions.effort,
+    speed: composerOptions.speed,
   }
   useEffect(() => {
     if (!registerSnapshot) return
