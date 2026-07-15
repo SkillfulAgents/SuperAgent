@@ -134,6 +134,11 @@ vi.mock('@shared/lib/db', () => ({
   db: { delete: () => ({ run: vi.fn() }) },
 }))
 
+const mockLogAuditEvent = vi.hoisted(() => vi.fn())
+vi.mock('@shared/lib/services/audit-log-service', () => ({
+  logAuditEvent: mockLogAuditEvent,
+}))
+
 vi.mock('@shared/lib/db/schema', () => ({
   proxyAuditLog: {},
   proxyTokens: {},
@@ -518,6 +523,37 @@ describe('settings route', () => {
       const saved = mockUpdateSettings.mock.calls[0][0]
       // apiKeys preserved as-is from current settings
       expect(saved.apiKeys).toEqual({ anthropicApiKey: 'sk-existing' })
+    })
+  })
+
+  // =========================================================================
+  // Audit details
+  // =========================================================================
+  describe('audit details', () => {
+    it('logs which fields changed, with API key values redacted', async () => {
+      const res = await putSettings({
+        llmProvider: 'openrouter',
+        apiKeys: { anthropicApiKey: 'sk-brand-new' },
+      })
+
+      expect(res.status).toBe(200)
+      expect(mockLogAuditEvent).toHaveBeenCalledTimes(1)
+      const call = mockLogAuditEvent.mock.calls[0][0]
+      expect(call.object).toBe('settings')
+      expect(call.action).toBe('updated')
+      expect(call.details.sections).toContain('LLM Provider')
+      expect(call.details.changes['llmProvider']).toEqual({ from: null, to: 'openrouter' })
+      expect(call.details.changes['apiKeys.anthropicApiKey']).toBe('updated')
+      expect(JSON.stringify(call.details)).not.toContain('sk-brand-new')
+      expect(JSON.stringify(call.details)).not.toContain('sk-existing')
+    })
+
+    it('omits details when the update is a no-op', async () => {
+      const res = await putSettings({ app: { showMenuBarIcon: true } })
+
+      expect(res.status).toBe(200)
+      expect(mockLogAuditEvent).toHaveBeenCalledTimes(1)
+      expect(mockLogAuditEvent.mock.calls[0][0].details).toBeUndefined()
     })
   })
 

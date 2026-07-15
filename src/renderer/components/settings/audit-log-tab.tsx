@@ -35,13 +35,22 @@ function formatTimestamp(date: Date | string | number): string {
   })
 }
 
+function formatDetailValue(value: unknown): string {
+  if (Array.isArray(value)) return value.join(', ')
+  if (typeof value === 'object' && value !== null) {
+    const obj = value as Record<string, unknown>
+    if ('from' in obj && 'to' in obj) return `${obj.from ?? '(unset)'} → ${obj.to ?? '(unset)'}`
+    return Object.entries(obj)
+      .map(([k, v]) => `${k}: ${formatDetailValue(v)}`)
+      .join(', ')
+  }
+  return String(value)
+}
+
 function formatDetails(details: string | null): string {
   if (!details) return ''
   try {
-    const parsed = JSON.parse(details)
-    return Object.entries(parsed)
-      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : typeof v === 'object' && v !== null ? JSON.stringify(v) : v}`)
-      .join(', ')
+    return formatDetailValue(JSON.parse(details))
   } catch {
     return details
   }
@@ -188,7 +197,7 @@ export function AuditLogTab() {
                 <TableCell className="text-xs text-muted-foreground truncate max-w-[180px] font-mono">
                   {entry.objectId}
                 </TableCell>
-                <TableCell className="text-xs text-muted-foreground truncate max-w-[240px]">
+                <TableCell className="text-xs text-muted-foreground truncate max-w-[240px]" title={formatDetails(entry.details)}>
                   {formatDetails(entry.details)}
                 </TableCell>
               </TableRow>
