@@ -84,7 +84,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     const activeMap = new Map(activeSubagents.map(s => [s.parentToolId, s]))
     const items: { id: string; name: string; description: string; status: 'running' | 'completed'; progressSummary: string | null }[] = []
     for (const msg of messages) {
-      if (msg.type === 'compact_boundary' || msg.type === 'memory_recall') continue
+      if (msg.type !== 'user' && msg.type !== 'assistant') continue
       for (const tc of msg.toolCalls || []) {
         if ((tc.name === 'Agent' || tc.name === 'Task') && activeMap.has(tc.id)) {
           if (tc.isError) continue
@@ -125,7 +125,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     let taskCounter = 0
 
     for (const message of messages) {
-      if (message.type === 'compact_boundary' || message.type === 'memory_recall') continue
+      if (message.type !== 'user' && message.type !== 'assistant') continue
       for (const tc of message.toolCalls || []) {
         if (tc.name === 'TaskCreate') {
           taskCounter++
@@ -158,7 +158,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
     if (!list) {
       for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i]
-        if (message.type === 'compact_boundary' || message.type === 'memory_recall') continue
+        if (message.type !== 'user' && message.type !== 'assistant') continue
         const toolCalls = message.toolCalls || []
         for (let j = toolCalls.length - 1; j >= 0; j--) {
           const toolCall = toolCalls[j]

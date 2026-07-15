@@ -43,6 +43,8 @@ import {
 } from '@shared/lib/services/session-service'
 import { getSessionJsonlPath, readFileOrNull, getAgentSessionsDir, readJsonlFile, getTempUploadsDir, ensureDirectory, removeDirectory, writeJsonFileAtomic, displaySlug } from '@shared/lib/utils/file-storage'
 import { getMountsWithHealth, addMount, removeMount } from '@shared/lib/services/mount-service'
+import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
+import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
   listUserSecrets,
   getSecret,
@@ -5148,6 +5150,40 @@ agents.put('/:id/bookmarks', AgentAdmin(), async (c) => {
   } catch (error) {
     console.error('Failed to update bookmarks:', error)
     return c.json({ error: 'Failed to update bookmarks' }, 500)
+  }
+})
+
+// GET /api/agents/:id/hooks - List Claude Code hooks configured in the agent's
+// workspace settings file. Agents can self-install hooks (they own the file),
+// and a UserPromptSubmit hook can silently block all input — so the host
+// surfaces whatever is configured.
+agents.get('/:id/hooks', AgentRead(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const hooks = await readAgentHooks(agentSlug)
+    return c.json({ hooks })
+  } catch (error) {
+    console.error('Failed to read agent hooks:', error)
+    return c.json({ hooks: [] })
+  }
+})
+
+// DELETE /api/agents/:id/hooks - Remove one configured hook (identified by
+// event + command + matcher) from the workspace settings file, preserving
+// every other settings key.
+agents.delete('/:id/hooks', AgentAdmin(), async (c) => {
+  const agentSlug = getAgentId(c)
+  const parsed = removeAgentHookSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid hook removal target' }, 400)
+  }
+  try {
+    const hooks = await removeAgentHook(agentSlug, parsed.data)
+    return c.json({ hooks })
+  } catch (error) {
+    console.error('Failed to remove agent hook:', error)
+    // Includes the unparseable-settings case: never rewrite a file we couldn't parse.
+    return c.json({ error: 'Failed to update the agent settings file' }, 500)
   }
 })
 

@@ -58,6 +58,7 @@ import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
@@ -70,6 +71,7 @@ import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 import { WorkflowJournalTailer } from './workflow-journal-tailer'
 import { SubagentCapture } from './subagent-capture'
 import * as path from 'path'
+import { randomUUID } from 'crypto'
 // Per-subagent streaming state (supports multiple concurrent background agents)
 interface SubagentStreamingState {
   agentId: string | null
@@ -914,6 +916,44 @@ class MessagePersister {
       })
   }
 
+  /**
+   * SDK `system`/`informational` banner — the loop's generic text channel
+   * (status lines, hook feedback, slash-command output). The one shape that
+   * MUST surface is a hook block (e.g. a workspace-authored UserPromptSubmit
+   * hook rejecting a prompt): the model never sees the prompt, the CLI writes
+   * nothing to the transcript, and without this the session just goes idle —
+   * an agent that silently ignores input. Persist warning-level banners to the
+   * transcript JSONL (reload-safe), then nudge clients to refetch.
+   */
+  private handleInformational(
+    sessionId: string,
+    state: StreamingState,
+    content: { uuid?: string; content?: string; level?: string; prevent_continuation?: boolean },
+  ): void {
+    const isBlocking = content.prevent_continuation === true
+    const isWarning = content.level === 'warning' || content.level === 'error'
+    // Info-level chatter (non-blocking status lines) stays stream-only.
+    if (!isBlocking && !isWarning) return
+    const text = typeof content.content === 'string' ? content.content : ''
+    if (!text) return
+    if (!state.agentSlug) {
+      console.warn(`[MessagePersister] Dropping informational banner for ${sessionId}: no agent slug`)
+      return
+    }
+    void appendInformationalEntry(state.agentSlug, sessionId, {
+      uuid: content.uuid || randomUUID(),
+      content: text,
+      level: content.level,
+    })
+      .then(() => {
+        // The banner lives in the transcript now — refetch materializes it.
+        this.broadcastToSSE(sessionId, { type: 'messages_updated' })
+      })
+      .catch((err) => {
+        console.error('[MessagePersister] Failed to persist informational banner:', err)
+      })
+  }
+
   // Broadcast an arbitrary event to all SSE clients for a session (public)
   broadcastSessionEvent(sessionId: string, data: unknown): void {
     this.broadcastToSSE(sessionId, data)
@@ -1000,6 +1040,17 @@ class MessagePersister {
     // SDK emitted format uses parent_tool_use_id (non-null for subagent messages)
     if (content.parent_tool_use_id != null) {
       this.handleSidechainMessage(sessionId, content, state)
+      return
+    }
+
+    // Container late-join catch-up: the runtime replays the last turn's
+    // terminal frames (informational/result/idle, marked `replayed: true`)
+    // when a WebSocket attaches after the turn already ended — e.g. a
+    // hook-blocked prompt completing before createSession's subscriber
+    // exists. Only act on them when this session actually missed the turn
+    // (still marked active); a settled session already processed the live
+    // copies, and replaying them would re-fire terminal broadcasts.
+    if (content.replayed && !state.isActive) {
       return
     }
 
@@ -1449,6 +1500,8 @@ class MessagePersister {
             type: 'memory_recall',
             memoryPaths: content.memory_paths || [],
           })
+        } else if (content.subtype === 'informational') {
+          this.handleInformational(sessionId, state, content)
         }
         break
 
@@ -1485,6 +1538,17 @@ class MessagePersister {
         if (isError || classification.isInterrupt) state.isActive = false
         state.currentText = ''
         state.lastResultSubtype = typeof content.subtype === 'string' ? content.subtype : null
+
+        // A clean success with zero turns means the main loop never ran — the
+        // signature of a settings-file hook blocking the prompt. (duration_api_ms
+        // can still be non-zero: prompt-type hooks spend API time on their
+        // model evaluation.) The informational banner is the user-facing
+        // surface; this is the operator breadcrumb.
+        if (!isError && !classification.isInterrupt && content.num_turns === 0 && content.subtype === 'success') {
+          console.warn(
+            `[MessagePersister] Session ${sessionId}: turn ended with no model turns (num_turns=0) — possible hook-blocked prompt`
+          )
+        }
 
         // Extract and persist context usage from result event
         this.handleResultUsage(sessionId, state, content)

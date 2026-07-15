@@ -33,6 +33,7 @@ import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
 import { HomeChatIntegrations } from './home-chat-integrations'
 import { HomeVolumes } from './home-volumes'
+import { HomeHooks } from './home-hooks'
 import { HomeBookmarks } from './home-bookmarks'
 import { DashboardCard } from '@renderer/components/home/dashboard-card'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
@@ -531,6 +532,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
             <HomeDefaultModel className="intro-step intro-step-9" agentSlug={agent.slug} />
             <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
+            <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />
           </div>
         )}
       </div>

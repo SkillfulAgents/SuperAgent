@@ -211,9 +211,21 @@ export interface ApiMemoryRecall {
 }
 
 /**
+ * Host-persisted informational banner in API response (e.g. a hook blocked a
+ * prompt before it reached the model)
+ */
+export interface ApiInformational {
+  id: string
+  type: 'informational'
+  content: string
+  level?: string
+  createdAt: Date
+}
+
+/**
  * Union type for all message-like items in the API response
  */
-export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational
 
 // ============================================================================
 // Secret API Types

@@ -200,6 +200,9 @@ export interface JsonlSystemEntry {
     preTokens: number
   }
   memory_paths?: string[]
+  // Severity for `informational` entries (host-persisted loop banners, e.g. a
+  // hook blocking a prompt). Mirrors the SDK's informational message `level`.
+  level?: string
 }
 
 /**

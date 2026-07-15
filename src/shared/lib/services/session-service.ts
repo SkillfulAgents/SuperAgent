@@ -514,7 +514,7 @@ function isMessageOrSystemDisplayEntry(
   if (entry.type === 'user' || entry.type === 'assistant') return true
   if (entry.type === 'system') {
     const subtype = (entry as JsonlSystemEntry).subtype
-    return subtype === 'compact_boundary' || subtype === 'memory_recall'
+    return subtype === 'compact_boundary' || subtype === 'memory_recall' || subtype === 'informational'
   }
   return false
 }

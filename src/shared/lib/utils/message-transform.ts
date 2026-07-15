@@ -60,7 +60,20 @@ export interface TransformedMemoryRecall {
   createdAt: Date
 }
 
-export type TransformedItem = TransformedMessage | TransformedCompactBoundary | TransformedMemoryRecall
+/**
+ * Host-persisted informational banner (e.g. "prompt blocked by hook"). The CLI
+ * emits these on the live stream only; the host appends them to the transcript
+ * so they survive reloads.
+ */
+export interface TransformedInformational {
+  id: string
+  type: 'informational'
+  content: string
+  level?: string
+  createdAt: Date
+}
+
+export type TransformedItem = TransformedMessage | TransformedCompactBoundary | TransformedMemoryRecall | TransformedInformational
 
 /**
  * Parse a user message that may contain SDK-injected slash command XML tags.
@@ -152,6 +165,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // Pre-pass: identify compact boundaries, memory recalls, and pair them with their summary messages
   const compactBoundaries = new Map<number, { boundary: JsonlSystemEntry; summaryContent: string }>()
   const memoryRecalls = new Map<number, JsonlSystemEntry>()
+  const informationals = new Map<number, JsonlSystemEntry>()
   const skipIndices = new Set<number>()
 
   for (let i = 0; i < entries.length; i++) {
@@ -159,6 +173,30 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'memory_recall') {
       memoryRecalls.set(i, entry as JsonlSystemEntry)
       skipIndices.add(i)
+    } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'informational') {
+      const sysEntry = entry as JsonlSystemEntry
+      skipIndices.add(i)
+      // Dedupe by uuid: for some hook shapes (continue:false) the CLI persists
+      // the banner itself with the SAME uuid it streamed, and the host appends
+      // its own copy from the stream — keep whichever landed first.
+      const isDuplicate = [...informationals.values()].some((e) => e.uuid === sysEntry.uuid)
+      if (!isDuplicate) {
+        informationals.set(i, sysEntry)
+      }
+      // The CLI also records a synthetic user entry carrying the same stop
+      // text just before the banner ("Operation stopped by hook: ...") —
+      // hide it; the banner is the user-facing surface. Checked for duplicate
+      // copies too: when the host's appended banner lands before the CLI's,
+      // the synthetic user entry precedes the CLI copy that dedupe drops.
+      const prev = i > 0 ? entries[i - 1] : null
+      if (
+        prev &&
+        prev.type === 'user' &&
+        typeof (prev as JsonlMessageEntry).message.content === 'string' &&
+        (prev as JsonlMessageEntry).message.content === sysEntry.content
+      ) {
+        skipIndices.add(i - 1)
+      }
     } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary') {
       const sysEntry = entry as JsonlSystemEntry
       let summaryContent = ''
@@ -310,9 +348,11 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // This allows us to insert boundaries/recalls at the correct position in the output
   const boundaryBeforeUuid = new Map<string, TransformedCompactBoundary>()
   const recallBeforeUuid = new Map<string, TransformedMemoryRecall[]>()
+  const informationalBeforeUuid = new Map<string, TransformedInformational[]>()
   // Also track items that appear at the very end (no following message)
   const trailingBoundaries: TransformedCompactBoundary[] = []
   const trailingRecalls: TransformedMemoryRecall[] = []
+  const trailingInformationals: TransformedInformational[] = []
 
   for (const [idx, { boundary, summaryContent }] of compactBoundaries) {
     const item: TransformedCompactBoundary = {
@@ -369,6 +409,34 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     }
   }
 
+  for (const [idx, sysEntry] of informationals) {
+    const item: TransformedInformational = {
+      id: sysEntry.uuid,
+      type: 'informational',
+      content: sysEntry.content || '',
+      level: sysEntry.level,
+      createdAt: new Date(sysEntry.timestamp),
+    }
+
+    let nextUuid: string | null = null
+    for (let j = idx + 1; j < entries.length; j++) {
+      if (skipIndices.has(j)) continue
+      const nextEntry = entries[j]
+      if (nextEntry.type === 'user' || nextEntry.type === 'assistant') {
+        nextUuid = (nextEntry as JsonlMessageEntry).uuid
+        break
+      }
+    }
+
+    if (nextUuid) {
+      const existing = informationalBeforeUuid.get(nextUuid) || []
+      existing.push(item)
+      informationalBeforeUuid.set(nextUuid, existing)
+    } else {
+      trailingInformationals.push(item)
+    }
+  }
+
   // Transform merged message entries, inserting boundaries at correct positions
   const result: TransformedItem[] = []
 
@@ -383,6 +451,12 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     const boundary = boundaryBeforeUuid.get(entry.uuid)
     if (boundary) {
       result.push(boundary)
+    }
+
+    // Insert any informational banners that precede this message
+    const infos = informationalBeforeUuid.get(entry.uuid)
+    if (infos) {
+      result.push(...infos)
     }
 
     // Skip user messages that only contain tool results
@@ -462,6 +536,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // Append any system items that appear after all messages
   result.push(...trailingRecalls)
   result.push(...trailingBoundaries)
+  result.push(...trailingInformationals)
 
   return result
 }

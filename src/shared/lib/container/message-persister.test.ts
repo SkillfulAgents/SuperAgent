@@ -28,6 +28,10 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
 }))
+const mockAppendInformationalEntry = vi.fn((..._args: unknown[]) => Promise.resolve())
+vi.mock('@shared/lib/services/session-transcript-append', () => ({
+  appendInformationalEntry: (...args: unknown[]) => mockAppendInformationalEntry(...args),
+}))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({
   resolveTimezoneForAgent: vi.fn(() => 'UTC'),
 }))
@@ -279,6 +283,139 @@ describe('MessagePersister', () => {
     sseCleanup()
     messagePersister.unsubscribeFromSession(SESSION_ID)
     vi.clearAllMocks()
+  })
+
+  // ============================================================================
+  // Informational banners (hook feedback, e.g. UserPromptSubmit blocks)
+  // ============================================================================
+
+  describe('informational system messages', () => {
+    it('persists a warning banner to the transcript and broadcasts messages_updated', async () => {
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'informational',
+        uuid: 'info-uuid-1',
+        content: 'UserPromptSubmit operation blocked by hook:\nCircuit breaker\n\nOriginal prompt: hello',
+        level: 'warning',
+        prevent_continuation: true,
+      })
+
+      expect(mockAppendInformationalEntry).toHaveBeenCalledWith(AGENT_SLUG, SESSION_ID, {
+        uuid: 'info-uuid-1',
+        content: 'UserPromptSubmit operation blocked by hook:\nCircuit breaker\n\nOriginal prompt: hello',
+        level: 'warning',
+      })
+      await vi.waitFor(() => {
+        expect(sseEvents).toContainEqual({ type: 'messages_updated' })
+      })
+    })
+
+    it('persists a blocking banner even without a warning level', async () => {
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'informational',
+        uuid: 'info-uuid-2',
+        content: 'Operation blocked by hook',
+        prevent_continuation: true,
+      })
+
+      expect(mockAppendInformationalEntry).toHaveBeenCalledTimes(1)
+    })
+
+    it('ignores info-level chatter (non-blocking status lines)', () => {
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'informational',
+        uuid: 'info-uuid-3',
+        content: 'Loaded 3 skills',
+        level: 'info',
+      })
+
+      expect(mockAppendInformationalEntry).not.toHaveBeenCalled()
+      expect(sseEvents).not.toContainEqual({ type: 'messages_updated' })
+    })
+
+    it('ignores warning banners with no content', () => {
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'informational',
+        uuid: 'info-uuid-4',
+        level: 'warning',
+      })
+
+      expect(mockAppendInformationalEntry).not.toHaveBeenCalled()
+    })
+  })
+
+  // ============================================================================
+  // Late-join replay (turn ended before the WebSocket attached)
+  // ============================================================================
+
+  describe('late-join replayed frames', () => {
+    const sendCapabilities = () =>
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+
+    it('settles a session whose blocked first turn ended before the socket attached', async () => {
+      // The wedge signature: the route marked the session active, but no live
+      // turn frames ever arrived (they fired into the WS attach gap).
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+      sendCapabilities()
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'informational',
+        uuid: 'replay-info-1',
+        content: 'Operation stopped by hook: no hey allowed',
+        level: 'warning',
+        prevent_continuation: true,
+        replayed: true,
+      })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 20, num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        replayed: true,
+      })
+      mockClient._sendMessage({
+        type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true,
+      })
+
+      expect(mockAppendInformationalEntry).toHaveBeenCalledTimes(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(sseEvents.some((e) => e.type === 'session_idle')).toBe(true)
+    })
+
+    it('ignores replayed frames when the live copies were already processed', () => {
+      // A full live turn settles the session…
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sendCapabilities()
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      sseEvents.length = 0
+      vi.clearAllMocks()
+
+      // …then a reconnect replays the same terminal frames: all ignored.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'informational', uuid: 'replay-info-2',
+        content: 'Operation stopped by hook: x', level: 'warning', replayed: true,
+      })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 20, num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        replayed: true,
+      })
+      mockClient._sendMessage({
+        type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true,
+      })
+
+      expect(mockAppendInformationalEntry).not.toHaveBeenCalled()
+      expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(0)
+      expect(sseEvents.filter((e) => e.type === 'turn_output_complete')).toHaveLength(0)
+    })
   })
 
   // ============================================================================

@@ -1834,6 +1834,19 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
     }
   });
 
+  // Catch-up for turns that ended before this socket attached. createSession
+  // returns at `init`, so an instant turn (e.g. a UserPromptSubmit hook
+  // blocking the prompt) emits informational/result/idle into the attach gap
+  // and nothing re-delivers them — the host would show the session as working
+  // forever. Frames are marked `replayed: true`; the host ignores them when it
+  // already processed the live copies. Sent after the subscription so a turn
+  // starting mid-replay still delivers its live frames afterwards (WS is FIFO).
+  for (const frame of sessionManager.getLateJoinReplay(sessionId)) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(frame));
+    }
+  }
+
   // Handle incoming messages
   ws.on('message', async (data: Buffer) => {
     try {

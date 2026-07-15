@@ -6,7 +6,7 @@ import {
   parseCommandMessage,
   TransformedMessage,
 } from './message-transform'
-import { JsonlMessageEntry, ContentBlock } from '@shared/lib/types/agent'
+import { JsonlMessageEntry, JsonlSystemEntry, ContentBlock } from '@shared/lib/types/agent'
 
 /** Helper to narrow TransformedItem to TransformedMessage in tests */
 function asMessage(item: unknown): TransformedMessage {
@@ -1670,6 +1670,111 @@ describe('parseCommandMessage', () => {
       ])
       const result = transformMessages([entry])
       expect(asMessage(result[0]).apiError).toBeUndefined()
+    })
+  })
+
+  // ============================================================================
+  // Informational banners (host-persisted, e.g. hook-blocked prompts)
+  // ============================================================================
+
+  describe('informational entries', () => {
+    function createInformational(
+      uuid: string,
+      content: string,
+      timestamp: string = '2026-01-24T10:00:00.500Z'
+    ): JsonlSystemEntry {
+      return {
+        type: 'system',
+        subtype: 'informational',
+        uuid,
+        content,
+        level: 'warning',
+        isMeta: false,
+        timestamp,
+      }
+    }
+
+    it('emits a trailing informational item when nothing follows it (blocked prompt)', () => {
+      const entries = [
+        createUserMessage('user-1', 'Hello'),
+        createAssistantMessage('asst-1', 'msg-1', [{ type: 'text', text: 'Hi!' }]),
+        createInformational('info-1', 'UserPromptSubmit operation blocked by hook:\nCircuit breaker'),
+      ]
+      const result = transformMessages(entries)
+      expect(result).toHaveLength(3)
+      const last = result[2] as { type: string; content: string; level?: string; id: string }
+      expect(last.type).toBe('informational')
+      expect(last.content).toContain('blocked by hook')
+      expect(last.level).toBe('warning')
+      expect(last.id).toBe('info-1')
+    })
+
+    it('anchors an informational item before the next message', () => {
+      const entries = [
+        createUserMessage('user-1', 'First'),
+        createInformational('info-1', 'Prompt blocked'),
+        createUserMessage('user-2', 'iman please respond', '2026-01-24T10:00:02.000Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.type)).toEqual(['user', 'informational', 'user'])
+    })
+
+    it('preserves multiple trailing informational items in order', () => {
+      const entries = [
+        createUserMessage('user-1', 'Hello'),
+        createInformational('info-1', 'Blocked once'),
+        createInformational('info-2', 'Blocked twice', '2026-01-24T10:00:01.000Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1', 'info-2'])
+    })
+
+    it('dedupes informational entries sharing a uuid (CLI copy + host copy)', () => {
+      // continue:false hooks: the CLI persists the banner itself AND the host
+      // appends its own copy from the stream — both carry the frame's uuid.
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createInformational('info-dup', 'Operation stopped by hook: no hey'),
+        createInformational('info-dup', 'Operation stopped by hook: no hey', '2026-01-24T10:00:01.000Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.filter((r) => r.type === 'informational')).toHaveLength(1)
+    })
+
+    it('hides the synthetic stop-reason user entry that mirrors the banner', () => {
+      // The CLI records the stop text as a user entry right before the banner.
+      const stopText = "Operation stopped by hook: Messages starting with 'hey' are not allowed."
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createUserMessage('user-2', stopText, '2026-01-24T10:00:01.000Z'),
+        createInformational('info-1', stopText, '2026-01-24T10:00:01.100Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1'])
+    })
+
+    it('hides the synthetic stop-reason user entry even when it precedes the duplicate banner copy', () => {
+      // Write-order race: the host's appended banner lands BEFORE the CLI's
+      // own copy, so the CLI's synthetic user entry sits next to the copy
+      // that uuid-dedupe drops — it must still be hidden.
+      const stopText = "Operation stopped by hook: Messages starting with 'hey' are not allowed."
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createInformational('info-dup', stopText, '2026-01-24T10:00:01.000Z'),
+        createUserMessage('user-2', stopText, '2026-01-24T10:00:01.100Z'),
+        createInformational('info-dup', stopText, '2026-01-24T10:00:01.200Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-dup'])
+    })
+
+    it('keeps a preceding user message whose content differs from the banner', () => {
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createInformational('info-1', 'Operation stopped by hook: nope'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1'])
     })
   })
 })
