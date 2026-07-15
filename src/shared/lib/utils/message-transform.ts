@@ -182,18 +182,20 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       const isDuplicate = [...informationals.values()].some((e) => e.uuid === sysEntry.uuid)
       if (!isDuplicate) {
         informationals.set(i, sysEntry)
-        // The CLI also records a synthetic user entry carrying the same stop
-        // text just before the banner ("Operation stopped by hook: ...") —
-        // hide it; the banner is the user-facing surface.
-        const prev = i > 0 ? entries[i - 1] : null
-        if (
-          prev &&
-          prev.type === 'user' &&
-          typeof (prev as JsonlMessageEntry).message.content === 'string' &&
-          (prev as JsonlMessageEntry).message.content === sysEntry.content
-        ) {
-          skipIndices.add(i - 1)
-        }
+      }
+      // The CLI also records a synthetic user entry carrying the same stop
+      // text just before the banner ("Operation stopped by hook: ...") —
+      // hide it; the banner is the user-facing surface. Checked for duplicate
+      // copies too: when the host's appended banner lands before the CLI's,
+      // the synthetic user entry precedes the CLI copy that dedupe drops.
+      const prev = i > 0 ? entries[i - 1] : null
+      if (
+        prev &&
+        prev.type === 'user' &&
+        typeof (prev as JsonlMessageEntry).message.content === 'string' &&
+        (prev as JsonlMessageEntry).message.content === sysEntry.content
+      ) {
+        skipIndices.add(i - 1)
       }
     } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary') {
       const sysEntry = entry as JsonlSystemEntry

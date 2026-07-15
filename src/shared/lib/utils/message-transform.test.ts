@@ -1753,6 +1753,21 @@ describe('parseCommandMessage', () => {
       expect(result.map((r) => r.id)).toEqual(['user-1', 'info-1'])
     })
 
+    it('hides the synthetic stop-reason user entry even when it precedes the duplicate banner copy', () => {
+      // Write-order race: the host's appended banner lands BEFORE the CLI's
+      // own copy, so the CLI's synthetic user entry sits next to the copy
+      // that uuid-dedupe drops — it must still be hidden.
+      const stopText = "Operation stopped by hook: Messages starting with 'hey' are not allowed."
+      const entries = [
+        createUserMessage('user-1', 'hey'),
+        createInformational('info-dup', stopText, '2026-01-24T10:00:01.000Z'),
+        createUserMessage('user-2', stopText, '2026-01-24T10:00:01.100Z'),
+        createInformational('info-dup', stopText, '2026-01-24T10:00:01.200Z'),
+      ]
+      const result = transformMessages(entries)
+      expect(result.map((r) => r.id)).toEqual(['user-1', 'info-dup'])
+    })
+
     it('keeps a preceding user message whose content differs from the banner', () => {
       const entries = [
         createUserMessage('user-1', 'hey'),
