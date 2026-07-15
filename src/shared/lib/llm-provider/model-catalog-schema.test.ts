@@ -72,6 +72,40 @@ describe('modelDefinitionSchema', () => {
     ).toThrow()
   })
 
+  it('accepts pricing with speedMultipliers (full or partial) and omits cleanly', () => {
+    expect(
+      modelDefinitionSchema.parse({
+        ...base,
+        pricing: { inputPerMtok: 5, outputPerMtok: 25, speedMultipliers: { slow: 0.5, fast: 2 } },
+      }),
+    ).toMatchObject({ pricing: { speedMultipliers: { slow: 0.5, fast: 2 } } })
+    expect(
+      modelDefinitionSchema.parse({
+        ...base,
+        pricing: { inputPerMtok: 5, outputPerMtok: 25, speedMultipliers: { fast: 2 } },
+      }),
+    ).toMatchObject({ pricing: { speedMultipliers: { fast: 2 } } })
+    expect(
+      modelDefinitionSchema.parse({ ...base, pricing: { inputPerMtok: 5, outputPerMtok: 25 } })
+        .pricing?.speedMultipliers,
+    ).toBeUndefined()
+  })
+
+  it('rejects zero or negative speedMultipliers', () => {
+    expect(() =>
+      modelDefinitionSchema.parse({
+        ...base,
+        pricing: { inputPerMtok: 5, outputPerMtok: 25, speedMultipliers: { fast: 0 } },
+      }),
+    ).toThrow()
+    expect(() =>
+      modelDefinitionSchema.parse({
+        ...base,
+        pricing: { inputPerMtok: 5, outputPerMtok: 25, speedMultipliers: { slow: -0.5 } },
+      }),
+    ).toThrow()
+  })
+
   it('accepts an optional positive-int contextWindow and omits cleanly', () => {
     expect(modelDefinitionSchema.parse({ ...base, contextWindow: 1_050_000 })).toMatchObject({
       contextWindow: 1_050_000,

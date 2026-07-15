@@ -64,6 +64,18 @@ export const modelDefinitionSchema = z.object({
     .object({
       inputPerMtok: z.number().nonnegative(),
       outputPerMtok: z.number().nonnegative(),
+      /**
+       * Served-tier billing multipliers for the slow/fast speed tiers (e.g.
+       * OpenAI flex 0.5x / priority 2x, Anthropic fast mode 2x). Applied on
+       * top of whichever rate set (base or long-context) a request lands on.
+       * An absent tier bills standard (1x).
+       */
+      speedMultipliers: z
+        .object({
+          slow: z.number().positive().optional(),
+          fast: z.number().positive().optional(),
+        })
+        .optional(),
     })
     .optional(),
   // Static context window (tokens) for non-Claude models. The SDK reports a
