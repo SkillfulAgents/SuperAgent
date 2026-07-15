@@ -11,6 +11,7 @@ import { Authenticated, IsAdmin } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { buildSettingsAuditDetails } from '@shared/lib/services/settings-audit'
 import {
   getSettings,
   loadSettingsStrict,
@@ -626,7 +627,13 @@ settings.put('/', async (c) => {
     }
 
     const runnerAvailability = await checkAllRunnersAvailability()
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'settings', objectId: 'global', action: 'updated' })
+    logAuditEvent({
+      userId: getCurrentUserId(c),
+      object: 'settings',
+      objectId: 'global',
+      action: 'updated',
+      details: buildSettingsAuditDetails(currentSettings, newSettings),
+    })
     return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
   } catch (error) {
     console.error('Failed to update settings:', error)
