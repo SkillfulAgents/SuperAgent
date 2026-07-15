@@ -348,6 +348,77 @@ describe('MessagePersister', () => {
   })
 
   // ============================================================================
+  // Late-join replay (turn ended before the WebSocket attached)
+  // ============================================================================
+
+  describe('late-join replayed frames', () => {
+    const sendCapabilities = () =>
+      mockClient._sendMessage({ type: 'system', subtype: 'capabilities', session_state_events: true })
+
+    it('settles a session whose blocked first turn ended before the socket attached', async () => {
+      // The wedge signature: the route marked the session active, but no live
+      // turn frames ever arrived (they fired into the WS attach gap).
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sseEvents.length = 0
+      sendCapabilities()
+
+      mockClient._sendMessage({
+        type: 'system',
+        subtype: 'informational',
+        uuid: 'replay-info-1',
+        content: 'Operation stopped by hook: no hey allowed',
+        level: 'warning',
+        prevent_continuation: true,
+        replayed: true,
+      })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 20, num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        replayed: true,
+      })
+      mockClient._sendMessage({
+        type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true,
+      })
+
+      expect(mockAppendInformationalEntry).toHaveBeenCalledTimes(1)
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      expect(sseEvents.some((e) => e.type === 'session_idle')).toBe(true)
+    })
+
+    it('ignores replayed frames when the live copies were already processed', () => {
+      // A full live turn settles the session…
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+      sendCapabilities()
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 100, num_turns: 1,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+      mockClient._sendMessage({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+      expect(messagePersister.isSessionActive(SESSION_ID)).toBe(false)
+      sseEvents.length = 0
+      vi.clearAllMocks()
+
+      // …then a reconnect replays the same terminal frames: all ignored.
+      mockClient._sendMessage({
+        type: 'system', subtype: 'informational', uuid: 'replay-info-2',
+        content: 'Operation stopped by hook: x', level: 'warning', replayed: true,
+      })
+      mockClient._sendMessage({
+        type: 'result', subtype: 'success', is_error: false, duration_ms: 20, num_turns: 0,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        replayed: true,
+      })
+      mockClient._sendMessage({
+        type: 'system', subtype: 'session_state_changed', state: 'idle', replayed: true,
+      })
+
+      expect(mockAppendInformationalEntry).not.toHaveBeenCalled()
+      expect(sseEvents.filter((e) => e.type === 'session_idle')).toHaveLength(0)
+      expect(sseEvents.filter((e) => e.type === 'turn_output_complete')).toHaveLength(0)
+    })
+  })
+
+  // ============================================================================
   // Sidechain message filtering
   // ============================================================================
 

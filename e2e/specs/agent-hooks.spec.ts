@@ -131,4 +131,15 @@ test.describe('Agent hooks', () => {
     await page.reload()
     await expect(page.getByTestId('informational-item')).toBeVisible({ timeout: 15000 })
   })
+
+  test('a hook-blocked prompt settles the session (no stuck working state)', async ({ page }) => {
+    await agentPage.createAgent(`HookSettle ${Date.now()}`)
+
+    await sessionPage.sendMessage('please trip the breaker now')
+    await expect(page.getByTestId('informational-item')).toBeVisible({ timeout: 15000 })
+
+    // The runtime emits result + idle after the block; the session must settle —
+    // a lingering "Working..." here is the wedged-agent bug.
+    await expect(page.getByText('Working...')).not.toBeVisible({ timeout: 10000 })
+  })
 })

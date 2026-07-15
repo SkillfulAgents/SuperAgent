@@ -1043,6 +1043,17 @@ class MessagePersister {
       return
     }
 
+    // Container late-join catch-up: the runtime replays the last turn's
+    // terminal frames (informational/result/idle, marked `replayed: true`)
+    // when a WebSocket attaches after the turn already ended — e.g. a
+    // hook-blocked prompt completing before createSession's subscriber
+    // exists. Only act on them when this session actually missed the turn
+    // (still marked active); a settled session already processed the live
+    // copies, and replaying them would re-fire terminal broadcasts.
+    if (content.replayed && !state.isActive) {
+      return
+    }
+
     switch (content.type) {
       case 'assistant': {
         // Complete assistant message - JSONL is the source of truth

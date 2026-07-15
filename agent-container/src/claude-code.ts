@@ -1,4 +1,4 @@
-import { query, Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
@@ -436,6 +436,17 @@ export class ClaudeCodeProcess extends EventEmitter {
   private disposed = false;
   private userMessageCount: number = 0;
   private isResumedSession: boolean;
+  // Late-join replay state. A turn can complete before the host's WebSocket
+  // attaches (createSession returns at `init`; an instant turn — e.g. a
+  // UserPromptSubmit hook blocking the prompt — emits its result and idle in
+  // the attach gap). Nothing buffers relayed frames, so a late subscriber
+  // would never learn the turn ended and the host would show the session as
+  // working forever. Track the most recent turn's terminal frames so the WS
+  // handler can replay them to late joiners (see getLateJoinReplay).
+  private currentTurnInformationals: SDKMessage[] = [];
+  private lastTurnInformationals: SDKMessage[] = [];
+  private lastResultMessage: SDKMessage | null = null;
+  private lastSessionState: string | null = null;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
 
   constructor(options: ClaudeCodeProcessOptions) {
@@ -1008,6 +1019,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           console.log(`[Session ${this.sessionId}] Query completed`);
         }
 
+        this.trackForLateJoinReplay(message);
         this.emit('message', message);
       }
     } catch (error: any) {
@@ -1317,6 +1329,48 @@ export class ClaudeCodeProcess extends EventEmitter {
 
   isRunning(): boolean {
     return this.isReady && this.isProcessing;
+  }
+
+  /** Record the frames a late-joining WebSocket subscriber must not miss. */
+  private trackForLateJoinReplay(message: SDKMessage): void {
+    const msg = message as { type: string; subtype?: string; state?: string };
+    if (msg.type === 'system' && msg.subtype === 'informational') {
+      this.currentTurnInformationals.push(message);
+    } else if (msg.type === 'result') {
+      this.lastResultMessage = message;
+      this.lastTurnInformationals = this.currentTurnInformationals;
+      this.currentTurnInformationals = [];
+    } else if (msg.type === 'system' && msg.subtype === 'session_state_changed') {
+      this.lastSessionState = msg.state ?? null;
+    }
+  }
+
+  /**
+   * Terminal frames of the most recent turn, for WebSocket subscribers that
+   * attached after the turn already ended. createSession returns at `init`,
+   * so an instant turn (e.g. a UserPromptSubmit hook blocking the prompt)
+   * finishes — result and idle included — before the host's socket exists;
+   * without a replay the host never learns the turn ended and shows the
+   * session as working forever.
+   *
+   * Only replays when the session is currently idle (a running turn will
+   * deliver its own frames live), and marks every frame `replayed: true` so
+   * the host can ignore the catch-up when it already saw the live copies.
+   */
+  getLateJoinReplay(): unknown[] {
+    if (this.lastSessionState !== 'idle' || !this.lastResultMessage) {
+      return [];
+    }
+    return [
+      ...this.lastTurnInformationals,
+      this.lastResultMessage,
+      {
+        type: 'system',
+        subtype: 'session_state_changed',
+        state: 'idle',
+        session_id: this.claudeSessionId || this.sessionId,
+      },
+    ].map((m) => ({ ...(m as Record<string, unknown>), replayed: true }));
   }
 
   async interrupt(): Promise<InterruptOutcome> {

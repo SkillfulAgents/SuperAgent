@@ -689,6 +689,17 @@ export class SessionManager extends EventEmitter {
     return sessionData.process.isRunning();
   }
 
+  /**
+   * Terminal frames of the session's most recent turn, for a WebSocket
+   * subscriber that attached after the turn already ended. Empty when the
+   * session is live mid-turn (frames arrive normally) or cold.
+   */
+  getLateJoinReplay(sessionId: string): unknown[] {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData) return [];
+    return sessionData.process.getLateJoinReplay();
+  }
+
   // Reads persistence only — never resumes an evicted session the way
   // getSession does. null = unknown session.
   getSessionCapabilityGrants(sessionId: string): Array<'subagents' | 'workflows'> | null {

@@ -20,6 +20,11 @@ export async function appendInformationalEntry(
   entry: { uuid: string; content: string; level?: string }
 ): Promise<void> {
   const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  // Idempotent by uuid: some hook shapes (continue:false) make the CLI persist
+  // the banner itself with the streamed uuid, and the container's late-join
+  // replay can deliver the same frame twice — never write a duplicate line.
+  const existing = await fs.promises.readFile(jsonlPath, 'utf-8').catch(() => null)
+  if (existing?.includes(`"${entry.uuid}"`)) return
   const jsonlEntry: JsonlSystemEntry = {
     uuid: entry.uuid,
     type: 'system',
