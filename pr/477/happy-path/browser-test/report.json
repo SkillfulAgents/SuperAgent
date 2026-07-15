@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature test: Agent successfully opened browser, navigated to https://example.com, retrieved page title \"Example Domain\", and reported results correctly.",
+  "reason": "Verified browser-use feature: agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported results in chat with tool call cards.",
   "steps": [
-    "Navigated to http://localhost:47891 — Application loaded successfully, showing Gamut interface with agent list in sidebar",
-    "Clicked on \"QA-20260715-203129-yari\" agent in sidebar — Agent page loaded with chat interface and configuration options",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message appeared in input field, Send button became enabled",
-    "Clicked Send button — Message sent successfully, agent status changed to \"working\", new session created with title \"Browser Navigation and Page Title Retrieval\"",
-    "Waited up to 3 minutes for response — Response arrived within 12 seconds with complete browser activity",
-    "Verified response mentions \"Example Domain\" and took screenshot — Response clearly shows:"
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut application with sidebar containing agents list.",
+    "Clicked on \"QA-20260715-214854-ct4p\" agent in sidebar — Successfully navigated to agent chat page with URL /agents/qa-20260715-214854-ct4p-kdkcdmdn5a.",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed in input field and sent with Send button.",
+    "Waited up to 3 minutes for response — Agent completed task in 12 seconds with status changing from \"working\" back to \"idle\".",
+    "Verified response mentions \"Example Domain\" — Response clearly displays:",
+    "Took screenshot of final response — Full-page screenshot captured showing the complete agent response with all tool calls and results visible in the chat interface."
   ],
   "bugs": [],
-  "durationMs": 92759,
-  "sessionId": "92ae138b-2907-43c7-bcad-830e17f106ac",
+  "durationMs": 84359,
+  "sessionId": "f1fb8275-2510-46df-bb47-c861fa7a6734",
   "cost": {
-    "inputTokens": 314,
-    "outputTokens": 8471,
-    "cacheCreationTokens": 102349,
-    "cacheReadTokens": 725145,
+    "inputTokens": 320,
+    "outputTokens": 10320,
+    "cacheCreationTokens": 65699,
+    "cacheReadTokens": 843410,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.24312
+    "totalCostUsd": 0.218385
   }
 }
