@@ -18,7 +18,7 @@ import {
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import {
   getSessionForScheduledExecution,
@@ -219,10 +219,11 @@ class TaskScheduler {
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
 
     // Create a new session with the scheduled prompt.
-    // Model/effort preference order: task override > agent default > global default.
+    // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
     const effort = task.effort ?? agentPrefs.defaultEffort
+    const speed = task.speed ?? agentPrefs.defaultSpeed
     const containerSession = await client.createSession({
       availableEnvVars:
         availableEnvVars.length > 0 ? availableEnvVars : undefined,
@@ -232,7 +233,7 @@ class TaskScheduler {
       dashboardBuilderModel: models.dashboardBuilderModel,
       metadata: { isAutomated: true },
       ...(effort ? { effort: effort as EffortLevel } : {}),
-      ...(agentPrefs.defaultSpeed ? { speed: agentPrefs.defaultSpeed } : {}),
+      ...(speed ? { speed: speed as SpeedLevel } : {}),
     })
 
     const sessionId = containerSession.id

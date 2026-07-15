@@ -327,6 +327,7 @@ export interface ApiScheduledTask {
   timezone: string | null
   model: string | null
   effort: string | null
+  speed: string | null
   createdAt: Date
   cancelledAt: Date | null
   pausedAt: Date | null

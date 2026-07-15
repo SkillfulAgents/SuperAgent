@@ -150,6 +150,7 @@ export interface CreateWebhookTriggerParams {
   createdByUserId?: string
   model?: string
   effort?: string
+  speed?: string
 }
 
 // ============================================================================
@@ -175,6 +176,7 @@ export async function createWebhookTrigger(params: CreateWebhookTriggerParams): 
     createdByUserId: params.createdByUserId ?? null,
     model: params.model ?? null,
     effort: params.effort ?? null,
+    speed: params.speed ?? null,
     createdAt: new Date(),
   }
 
@@ -574,12 +576,12 @@ export async function updateWebhookTriggerName(
 }
 
 /**
- * Update a webhook trigger's runtime options (model and/or effort).
+ * Update a webhook trigger's runtime options (model, effort, and/or speed).
  * Pass null to clear a field back to the global default.
  */
 export async function updateWebhookTriggerRuntimeOptions(
   triggerId: string,
-  options: { model?: string | null; effort?: string | null },
+  options: { model?: string | null; effort?: string | null; speed?: string | null },
 ): Promise<boolean> {
   const trigger = await getWebhookTrigger(triggerId)
   if (!trigger || trigger.status === 'cancelled') return false
@@ -587,6 +589,7 @@ export async function updateWebhookTriggerRuntimeOptions(
   const updates: Record<string, string | null> = {}
   if ('model' in options) updates.model = options.model ?? null
   if ('effort' in options) updates.effort = options.effort ?? null
+  if ('speed' in options) updates.speed = options.speed ?? null
 
   const result = await db
     .update(webhookTriggers)

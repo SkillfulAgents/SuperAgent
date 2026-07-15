@@ -163,6 +163,7 @@ export function useCreateChatIntegration() {
       sessionTimeout?: number | null
       model?: string | null
       effort?: string | null
+      speed?: string | null
     }) => {
       const { agentSlug, ...body } = params
       const res = await apiFetch(`/api/chat-integrations/${agentSlug}`, {
@@ -211,6 +212,7 @@ export function useUpdateChatIntegration() {
       sessionTimeout?: number | null
       model?: string | null
       effort?: string | null
+      speed?: string | null
       status?: 'active' | 'paused'
     }) => {
       const res = await apiFetch(`/api/chat-integrations/${id}`, {

@@ -211,6 +211,13 @@
       "when": 1784054072546,
       "tag": "0029_polite_sister_grimm",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1784149867035,
+      "tag": "0030_spooky_earthquake",
+      "breakpoints": true
     }
   ]
 }

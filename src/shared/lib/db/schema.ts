@@ -171,6 +171,7 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   // Runtime options (override global defaults when set)
   model: text('model'),
   effort: text('effort'),
+  speed: text('speed'),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -419,6 +420,7 @@ export const webhookTriggers = sqliteTable('webhook_triggers', {
   // Runtime options (override global defaults when set)
   model: text('model'),
   effort: text('effort'),
+  speed: text('speed'),
 
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
@@ -446,6 +448,7 @@ export const chatIntegrations = sqliteTable('chat_integrations', {
   sessionTimeout: integer('session_timeout'), // Hours; null/0 = single persistent session
   model: text('model'), // Claude model override; null = use default
   effort: text('effort'), // Effort level override; null = use default
+  speed: text('speed'), // Speed level override; null = use default
 
   // Status
   status: text('status', { enum: ['active', 'paused', 'error', 'disconnected'] })

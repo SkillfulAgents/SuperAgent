@@ -12,7 +12,7 @@ const STD: EffortLevel[] = ['low', 'medium', 'high']
 
 const CATALOG: ModelDefinition[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD, supportedSpeeds: ['slow', 'normal', 'fast'] },
   { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL },
 ]
 
@@ -96,6 +96,26 @@ describe('IntegrationModelEffort', () => {
     await user.click(await screen.findByTestId('effort-option-low'))
 
     expect(mutateMock).toHaveBeenCalledWith({ id: 'int-1', effort: 'low' })
+  })
+
+  it('calls mutate with speed when user selects a speed', async () => {
+    const user = userEvent.setup()
+    render(<IntegrationModelEffort integration={makeIntegration({ model: 'sonnet' })} />)
+
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    await user.click(await screen.findByTestId('speed-option-slow'))
+
+    expect(mutateMock).toHaveBeenCalledWith({ id: 'int-1', speed: 'slow' })
+  })
+
+  it('hides the speed picker for models without a speed choice', async () => {
+    const user = userEvent.setup()
+    render(<IntegrationModelEffort integration={makeIntegration({ model: 'opus' })} />)
+
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    await screen.findByTestId('effort-option-low')
+
+    expect(screen.queryByTestId('speed-option-normal')).not.toBeInTheDocument()
   })
 
   it('uses the correct integration id in mutation calls', async () => {

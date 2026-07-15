@@ -21,6 +21,20 @@ export const RuntimeOptionsSchema = z
 export type RuntimeOptions = z.infer<typeof RuntimeOptionsSchema>
 
 /**
+ * PATCH-body shape for stored per-entity runtime overrides (scheduled tasks,
+ * webhook triggers): each field may carry a value, be null (explicitly clears
+ * the override back to the default), or be absent (left untouched). Strict so
+ * an unsupported knob fails loudly instead of 200-ing as a silent no-op.
+ */
+export const RuntimeOptionsPatchSchema = z
+  .object({
+    effort: z.enum(EFFORT_LEVELS).nullish(),
+    speed: z.enum(SPEED_LEVELS).nullish(),
+    model: z.string().nullish(),
+  })
+  .strict()
+
+/**
  * Lenient parser: returns whatever fields are individually valid and drops
  * the rest. Used at request boundaries where we'd rather honor the well-formed
  * pieces than reject the whole call.

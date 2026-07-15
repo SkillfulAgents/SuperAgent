@@ -29,6 +29,7 @@ export interface CreateScheduledTaskParams {
   timezone?: string
   model?: string
   effort?: string
+  speed?: string
   // When set, firing this task resumes the referenced session instead of
   // creating a new one. Prefer createSessionWake(), which also enforces the
   // one-pending-wake-per-session invariant.
@@ -92,6 +93,7 @@ export async function createScheduledTask(
     timezone: params.timezone || null,
     model: params.model || null,
     effort: params.effort || null,
+    speed: params.speed || null,
     resumeSessionId: params.resumeSessionId || null,
   }
 
@@ -602,12 +604,12 @@ export async function recordManualExecution(
 }
 
 /**
- * Update a task's runtime options (model and/or effort).
+ * Update a task's runtime options (model, effort, and/or speed).
  * Pass null to clear a field back to the global default.
  */
 export async function updateTaskRuntimeOptions(
   taskId: string,
-  options: { model?: string | null; effort?: string | null },
+  options: { model?: string | null; effort?: string | null; speed?: string | null },
 ): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
@@ -615,6 +617,7 @@ export async function updateTaskRuntimeOptions(
   const updates: Record<string, string | null> = {}
   if ('model' in options) updates.model = options.model ?? null
   if ('effort' in options) updates.effort = options.effort ?? null
+  if ('speed' in options) updates.speed = options.speed ?? null
 
   const result = await db
     .update(scheduledTasks)

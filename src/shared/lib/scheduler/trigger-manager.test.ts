@@ -354,7 +354,7 @@ describe('TriggerManager', () => {
     })
   })
 
-  describe('model and effort resolution', () => {
+  describe('model, effort, and speed resolution', () => {
     // Preference order: trigger override > agent default > global default.
     async function fireTrigger(overrides: Record<string, unknown> = {}) {
       mockPollAndClaimEvents.mockResolvedValue({
@@ -372,6 +372,7 @@ describe('TriggerManager', () => {
         fireCount: 0,
         model: null,
         effort: null,
+        speed: null,
         ...overrides,
       }])
       await triggerManager.start()
@@ -384,21 +385,30 @@ describe('TriggerManager', () => {
       const args = await fireTrigger()
       expect(args.model).toBe('claude-sonnet-4-20250514')
       expect(args.effort).toBeUndefined()
+      expect(args.speed).toBeUndefined()
     })
 
     it('falls back to the agent default over the global default', async () => {
-      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
+      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' })
       const args = await fireTrigger()
       expect(mockReadAgentPreferences).toHaveBeenCalledWith('test-agent')
       expect(args.model).toBe('opus')
       expect(args.effort).toBe('high')
+      expect(args.speed).toBe('slow')
     })
 
     it('prefers the trigger override over the agent default', async () => {
-      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high' })
-      const args = await fireTrigger({ model: 'claude-haiku-4-5-20251001', effort: 'low' })
+      mockReadAgentPreferences.mockResolvedValue({ defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'fast' })
+      const args = await fireTrigger({ model: 'claude-haiku-4-5-20251001', effort: 'low', speed: 'slow' })
       expect(args.model).toBe('claude-haiku-4-5-20251001')
       expect(args.effort).toBe('low')
+      expect(args.speed).toBe('slow')
+    })
+
+    it('a stored normal trigger speed beats a non-normal agent default', async () => {
+      mockReadAgentPreferences.mockResolvedValue({ defaultSpeed: 'fast' })
+      const args = await fireTrigger({ speed: 'normal' })
+      expect(args.speed).toBe('normal')
     })
   })
 

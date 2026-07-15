@@ -58,6 +58,7 @@ const task: ApiScheduledTask = {
   timezone: 'UTC',
   model: null,
   effort: null,
+  speed: null,
   createdAt: new Date('2026-07-01T00:00:00.000Z'),
   cancelledAt: null,
   pausedAt: null,
