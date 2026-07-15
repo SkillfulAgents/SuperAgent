@@ -601,7 +601,8 @@ describe('LocalAuthForwardProxy', () => {
     const client = net.connect(port, '127.0.0.1', () => {
       client.write(
         'GET /sessions/s1/stream HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
-          'Sec-WebSocket-Key: thekey\r\nSec-WebSocket-Version: 13\r\n\r\n',
+          'Sec-WebSocket-Key: thekey\r\nSec-WebSocket-Version: 13\r\n' +
+          'x-superagent-host-token: hostc_secret\r\n\r\n',
       )
     })
     await ready
@@ -611,6 +612,8 @@ describe('LocalAuthForwardProxy', () => {
     expect(written.toLowerCase()).toContain('sec-websocket-key: thekey')
     expect(written.toLowerCase()).toContain('x-aws-proxy-auth: tokws')
     expect(written.toLowerCase()).toContain('x-aws-proxy-port: 3000')
+    // Host→agent auth must survive the upgrade pipe (HTTP path already forwards it).
+    expect(written.toLowerCase()).toContain('x-superagent-host-token: hostc_secret')
   })
 
   it('sets an idle timeout on the upstream request to guard against a silent hang', async () => {

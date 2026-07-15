@@ -390,12 +390,22 @@ export class LocalAuthForwardProxy {
     }
     const upstream = tls.connect({ host: this.options.endpoint, port: 443, servername: this.options.endpoint }, () => {
       clearConnectTimer()
+      // Keep WS handshake headers (HOP_BY_HOP would drop upgrade/connection) and
+      // forward the same application headers HTTP uses — especially
+      // x-superagent-host-token. Stripping it makes the agent return 401 on
+      // upgrade while createSession (HTTP) still succeeds.
       const headerLines = [`GET ${req.url} HTTP/1.1`, `Host: ${this.options.endpoint}`]
       for (const [key, value] of Object.entries(req.headers)) {
         const lower = key.toLowerCase()
-        if (lower.startsWith('sec-websocket') || lower === 'upgrade' || lower === 'connection' || lower === 'origin') {
-          headerLines.push(`${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
-        }
+        if (value === undefined) continue
+        const keep =
+          lower.startsWith('sec-websocket') ||
+          lower === 'upgrade' ||
+          lower === 'connection' ||
+          lower === 'origin' ||
+          !HOP_BY_HOP.has(lower)
+        if (!keep) continue
+        headerLines.push(`${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
       }
       for (const [key, value] of Object.entries(auth)) headerLines.push(`${key}: ${value}`)
       upstream.write(headerLines.join('\r\n') + '\r\n\r\n')
