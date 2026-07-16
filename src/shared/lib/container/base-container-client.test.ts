@@ -29,6 +29,9 @@ class TestContainerClient extends BaseContainerClient {
   public testBuildAgentEnv(extra?: Record<string, string>): Record<string, string> {
     return this.buildAgentEnv(extra)
   }
+  public testAttachStreamKeepalive(ws: import('ws').default): () => void {
+    return this.attachStreamKeepalive(ws)
+  }
 }
 
 describe('buildAgentEnv', () => {
@@ -649,6 +652,16 @@ class StoppedTestClient extends BaseContainerClient {
 function makeStoppedClient(): StoppedTestClient {
   return new StoppedTestClient({ agentId: 'test-agent' } as ContainerConfig)
 }
+
+describe('attachStreamKeepalive (base default)', () => {
+  it('is a no-op for non-MicroVM runtimes', () => {
+    const client = new TestContainerClient({ agentId: 'test-agent' })
+    const ping = vi.fn()
+    const dispose = client.testAttachStreamKeepalive({ ping, readyState: 1 } as import('ws').default)
+    dispose()
+    expect(ping).not.toHaveBeenCalled()
+  })
+})
 
 describe('subscribeToStream failure handling', () => {
   it('does not throw or emit an unhandled error when no error listener is attached', async () => {

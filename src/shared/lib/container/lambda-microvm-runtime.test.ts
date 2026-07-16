@@ -48,9 +48,11 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ app: { autoSleepTimeoutMinutes: autoSleepTimeoutMinutes() }, enableToolSearch: true }),
 }))
 
+import WebSocket from 'ws'
 import {
   LambdaMicroVmRuntimeClient,
   LocalAuthForwardProxy,
+  MICROVM_STREAM_KEEPALIVE_MS,
   resetMicrovmRuntimeForTests,
   resolveMicrovmRuntimeConfigOrNull,
   isMicrovmRuntimeConfigured,
@@ -671,5 +673,49 @@ describe('LocalAuthForwardProxy', () => {
     })
     await closed
     expect(true).toBe(true)
+  })
+})
+
+describe('LambdaMicroVmRuntimeClient stream keepalive', () => {
+  class KeepaliveClient extends LambdaMicroVmRuntimeClient {
+    attach(ws: WebSocket): () => void {
+      return this.attachStreamKeepalive(ws)
+    }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('pings an open stream on the MicroVM keepalive interval', () => {
+    const client = new KeepaliveClient({ agentId: 'keepalive-agent' })
+    const ping = vi.fn()
+    const ws = { ping, readyState: WebSocket.OPEN } as unknown as WebSocket
+    const dispose = client.attach(ws)
+
+    vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS - 1)
+    expect(ping).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(ping).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS)
+    expect(ping).toHaveBeenCalledTimes(2)
+
+    dispose()
+    vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS * 2)
+    expect(ping).toHaveBeenCalledTimes(2)
+  })
+
+  it('skips ping when the socket is not OPEN', () => {
+    const client = new KeepaliveClient({ agentId: 'keepalive-agent' })
+    const ping = vi.fn()
+    const ws = { ping, readyState: WebSocket.CLOSED } as unknown as WebSocket
+    const dispose = client.attach(ws)
+    vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS)
+    expect(ping).not.toHaveBeenCalled()
+    dispose()
   })
 })

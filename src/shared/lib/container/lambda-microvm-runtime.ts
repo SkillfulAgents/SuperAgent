@@ -3,6 +3,7 @@ import https from 'https'
 import tls from 'tls'
 import net, { AddressInfo } from 'net'
 import { randomUUID } from 'crypto'
+import WebSocket from 'ws'
 import { z } from 'zod'
 import {
   LambdaMicrovmsClient,
@@ -606,6 +607,9 @@ async function createMicrovmAuthToken(
   return out.authToken
 }
 
+// Quiet session streams through MicroVM ingress die at ~60s without traffic.
+export const MICROVM_STREAM_KEEPALIVE_MS = 25_000
+
 export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   static readonly runnerName = 'lambda-microvm'
   // Image is built once via create-microvm-image and run by AWS; nothing local.
@@ -619,6 +623,19 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   protected getRunnerCommand(): string {
     return 'lambda-microvm'
+  }
+
+  protected attachStreamKeepalive(ws: WebSocket): () => void {
+    const timer = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return
+      try {
+        ws.ping()
+      } catch (error) {
+        console.warn('[LambdaMicroVmRuntimeClient] WebSocket ping failed:', error)
+      }
+    }, MICROVM_STREAM_KEEPALIVE_MS)
+    timer.unref?.()
+    return () => clearInterval(timer)
   }
 
   static isEligible(): boolean {
