@@ -8,7 +8,7 @@
  * node centers, mind-map style.
  */
 
-import type { CSSProperties, KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { Handle, NodeToolbar, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowUpRight, Webhook, Timer } from 'lucide-react'
@@ -16,6 +16,12 @@ import { cn } from '@shared/lib/utils/cn'
 import { getAgentActivityStatus, type AgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
+import {
+  ActivitySparkChart,
+  ActivitySparkChartSkeleton,
+  CronSparkChart,
+} from '@renderer/components/activity/activity-spark-chart'
 import type { AgentNodeData, GraphNodeData, ResourceKind, ResourceNodeData, ResourceTone } from './use-graph-data'
 
 const centerHandleStyle: CSSProperties = {
@@ -158,7 +164,7 @@ export function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData, 'agent'>>
       aria-label={`Agent ${agent.name}`}
       onKeyDown={activateOnKey}
       className={cn(
-        'group relative flex h-20 w-44 cursor-pointer flex-col items-center justify-center rounded-xl border-[0.5px] bg-card px-3 text-center shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg',
+        'group relative flex h-20 w-44 cursor-pointer flex-col rounded-xl border-[0.5px] bg-card px-3 py-2.5 shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg',
         agentBorder[
           getAgentActivityStatus(
             agent.status,
@@ -171,16 +177,17 @@ export function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData, 'agent'>>
     >
       <OpenToolbar data={data} />
       <ConnectPorts connectable />
-      {/* Icon-only status (sidebar-style) floated at the card's top,
-          tucked just inside the edge */}
-      <AgentStatus
-        status={agent.status}
-        hasActiveSessions={agent.hasActiveSessions ?? false}
-        hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
-        iconOnly
-        className="absolute left-1/2 top-2 -translate-x-1/2"
-      />
-      <span className="line-clamp-2 max-w-full break-words text-center text-xs">{agent.name}</span>
+      {/* Traditional card header: title top-left, icon-only status top-right */}
+      <div className="flex w-full items-start justify-between gap-2">
+        <span className="line-clamp-2 min-w-0 break-words text-left text-xs">{agent.name}</span>
+        <AgentStatus
+          status={agent.status}
+          hasActiveSessions={agent.hasActiveSessions ?? false}
+          hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
+          iconOnly
+          className="mt-0.5 shrink-0"
+        />
+      </div>
       <CenterHandles />
     </div>
   )
@@ -234,6 +241,31 @@ export function ResourceGraphNode({ data, selected }: NodeProps<Node<ResourceNod
   const navigate = useNavigate()
   // Card pins open on selection, or globally via the details-view toggle.
   const pinned = selected || !!data.showDetails
+  // Hover-open state with a short grace period, so the cursor can cross the
+  // gap from the chip onto the card (and click Settings there) without the
+  // card fading out mid-journey.
+  const [hoverOpen, setHoverOpen] = useState(false)
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const openHover = () => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current)
+    setHoverOpen(true)
+  }
+  const scheduleCloseHover = () => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current)
+    hoverTimer.current = setTimeout(() => setHoverOpen(false), 150)
+  }
+  useEffect(() => () => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current)
+  }, [])
+  const shown = pinned || hoverOpen
+  // Activity spark charts (crons + webhooks) — same rollup the agent
+  // homepage sidebar cards use. Keyed per owning agent, so react-query
+  // dedupes the fetch across all of that agent's trigger nodes; other
+  // resource kinds pass null and never fetch.
+  const wantsActivity = data.kind === 'cron' || data.kind === 'webhook'
+  const { data: activityStats, isPending: activityPending } = useAgentActivityStats(
+    wantsActivity ? (data.agentSlug ?? null) : null,
+  )
   // Counter-scale the detail pill so it renders at true text size at every
   // zoom level (transform[2] = zoom; selecting just it skips pan re-renders).
   const zoom = useStore((s) => s.transform[2])
@@ -248,53 +280,82 @@ export function ResourceGraphNode({ data, selected }: NodeProps<Node<ResourceNod
       className="relative flex w-32 cursor-pointer flex-col items-center gap-1"
       data-testid={`graph-node-${data.kind}-${data.resourceId}`}
     >
-      {/* Only the chip is the hover zone: it's its own `group` (port dots)
-          and a `peer` for the sibling label — hovering the label's empty
-          layout slot below must not light anything up. */}
-      <div className="group peer relative flex h-10 w-10 items-center justify-center rounded-full border-[0.5px] border-border/60 bg-card shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg">
+      {/* Only the chip (not the node's empty label slot) opens the hover
+          card; the card itself keeps it open via the same grace-period
+          handlers so Settings is reachable. */}
+      <div
+        className="group relative flex h-10 w-10 items-center justify-center rounded-lg border-[0.5px] border-border/60 bg-card shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg"
+        onMouseEnter={openHover}
+        onMouseLeave={scheduleCloseHover}
+      >
         {/* Webhooks/crons/chats are owned by their agent and created through
             forms — you can't draw one, so their ports stay decorative. */}
         <ConnectPorts connectable={data.kind === 'account' || data.kind === 'mcp'} />
         <ResourceIcon data={data} />
+        <span className={cn('absolute right-0.5 top-0.5 h-[5px] w-[5px] rounded-full', toneDot[data.tone])} />
       </div>
       {/* Details float ABOVE the chip, absolutely positioned so they never
           occupy layout (edge anchors and collision footprints stay put).
-          Hover = frosted preview; selection pins it on a solid card with a
-          drop shadow until you click away. mb-3 clears the top port dot. */}
+          Hover = quiet frosted fade; pinning (selection / details toggle)
+          POPS: the inner card scales up from the chip with a slight
+          overshoot, staggered per resource so details-mode ripples across
+          the canvas. Outer shell owns positioning + the zoom counter-scale
+          (inline transform), inner owns the visual card + the pop — the two
+          transforms can't share one element. mb-3 clears the top port dot. */}
       <div
         className={cn(
-          'absolute bottom-full left-1/2 mb-3 flex w-48 flex-col rounded-lg border px-3 py-2 transition-opacity duration-200',
-          pinned
-            ? 'pointer-events-auto border-border/60 bg-card opacity-100 shadow-md'
-            : 'pointer-events-none border-transparent bg-card/40 opacity-0 backdrop-blur-sm peer-hover:opacity-100',
+          'absolute bottom-full left-1/2 mb-3 w-48 transition-opacity duration-200',
+          shown ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
         )}
         style={{ transform: `translateX(-50%) scale(${1 / zoom})`, transformOrigin: 'bottom center' }}
+        onMouseEnter={openHover}
+        onMouseLeave={scheduleCloseHover}
+      >
+      <div
+        className={cn(
+          'flex w-full flex-col rounded-lg border px-3 py-2 transition-[transform,background-color,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]',
+          pinned
+            ? 'translate-y-0 scale-100 border-border/60 bg-card shadow-md'
+            : 'translate-y-1 scale-90 border-transparent bg-card/40 backdrop-blur-sm',
+        )}
+        style={{
+          transformOrigin: 'bottom center',
+          // Deterministic per-resource stagger (0–140ms) on the way IN only.
+          transitionDelay: pinned
+            ? `${([...data.resourceId].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) % 997, 0) % 5) * 35}ms`
+            : '0ms',
+        }}
       >
         <span className="block w-full truncate text-[9px] uppercase tracking-wider text-muted-foreground">
           {KIND_LABEL[data.kind]}
         </span>
-        {/* Header: name + open */}
-        <div className="flex w-full items-center justify-between gap-2">
-          <span className="min-w-0 truncate text-xs font-medium">{data.label}</span>
-          {pinned && (
-            <button
-              type="button"
-              title="Open"
-              className="-mr-1 shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              onClick={(event) => {
-                event.stopPropagation()
-                openGraphNode(navigate, data)
-              }}
-              data-testid="graph-node-open"
-            >
-              <ArrowUpRight className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
+        <span className="block w-full truncate text-xs font-medium">{data.label}</span>
         {data.sublabel && (
           <span className="mt-0.5 block w-full truncate text-xs text-muted-foreground">{data.sublabel}</span>
         )}
-        {/* Footer: status badge left, usage right */}
+        {data.kind === 'cron' && (
+          <div className="mt-1.5">
+            {activityStats?.cronByTaskId[data.resourceId] !== undefined ? (
+              <CronSparkChart label={`${data.label} schedule`} data={activityStats.cronByTaskId[data.resourceId]} />
+            ) : activityPending ? (
+              <ActivitySparkChartSkeleton />
+            ) : null}
+          </div>
+        )}
+        {data.kind === 'webhook' && (
+          <div className="mt-1.5">
+            {activityStats?.webhookByTriggerId[data.resourceId] !== undefined ? (
+              <ActivitySparkChart
+                label={`${data.label} activity`}
+                data={activityStats.webhookByTriggerId[data.resourceId]}
+              />
+            ) : activityPending ? (
+              <ActivitySparkChartSkeleton />
+            ) : null}
+          </div>
+        )}
+        {/* Footer: status badge left, settings link right (counts live on
+            the connector chips now) */}
         <div className="mt-1.5 flex w-full items-center justify-between gap-2">
           <span
             className={cn(
@@ -305,10 +366,22 @@ export function ResourceGraphNode({ data, selected }: NodeProps<Node<ResourceNod
             <span className={cn('h-1 w-1 shrink-0 rounded-full', toneDot[data.tone])} />
             <span className="truncate">{data.status}</span>
           </span>
-          {data.usage && (
-            <span className="min-w-0 shrink truncate text-2xs text-muted-foreground">{data.usage}</span>
+          {shown && (
+            <button
+              type="button"
+              className="-mr-1 flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-2xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              onClick={(event) => {
+                event.stopPropagation()
+                openGraphNode(navigate, data)
+              }}
+              data-testid="graph-node-open"
+            >
+              Settings
+              <ArrowUpRight className="h-3 w-3" />
+            </button>
           )}
         </div>
+      </div>
       </div>
       <CenterHandles />
     </div>

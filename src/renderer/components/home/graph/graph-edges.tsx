@@ -80,6 +80,8 @@ const STUB = 20
 const MIN_GRAB_SEGMENT = 20
 /** Route-complexity cap: stop spawning stub bends past this many coords. */
 const MAX_COORDS = 9
+/** Default count-chip distance from the target node along the route. */
+const CHIP_NODE_OFFSET = 28
 
 /** Endpoint drags snap to a cardinal anchor within this many degrees;
  *  in between, the dot rides the perimeter freely. */
@@ -126,7 +128,8 @@ function visualBox(node: InternalNode): Box {
     right: left + RESOURCE_CHIP,
     top: y,
     bottom: y + RESOURCE_CHIP,
-    shape: 'circle',
+    // Rounded square, like the agent cards — anchors ride the box perimeter.
+    shape: 'rect',
   }
 }
 
@@ -276,13 +279,17 @@ function elbowGeometry(
     })
   }
   // Toolbar/chip anchor: a user-draggable fraction of the route's total
-  // length (default: halfway) — always ON the line, so the floating actions
-  // never drift from it. Its segment's axis lets the toolbar offset
-  // perpendicular to the line.
-  const chipT = Math.min(1, Math.max(0, override.chipT ?? 0.5))
+  // length — always ON the line, so the floating actions never drift from
+  // it. Default: a fixed distance in from the TARGET end (the resource the
+  // count describes), so chips hug their node instead of floating mid-air
+  // on long routes; short routes fall back toward the middle. Its segment's
+  // axis lets the toolbar offset perpendicular to the line.
+  const total = segments.reduce((sum, s) => sum + s.length, 0)
+  const defaultChipT = total > 0 ? Math.max(0.5, 1 - CHIP_NODE_OFFSET / total) : 0.5
+  const chipT = Math.min(1, Math.max(0, override.chipT ?? defaultChipT))
   let anchor = pts[0]
   let anchorAxis: Axis = 'h'
-  let remaining = segments.reduce((sum, s) => sum + s.length, 0) * chipT
+  let remaining = total * chipT
   for (let i = 0; i + 1 < pts.length; i++) {
     const a = pts[i]
     const b = pts[i + 1]

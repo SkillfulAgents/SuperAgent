@@ -39,11 +39,6 @@ export type ResourceNodeData = {
   sublabel?: string
   /** Short status word for the hover badge ("connected", "expired", "listening") */
   status: string
-  /**
-   * Usage across all this resource's edges ("23 API calls", "never fired"),
-   * shown as the pill's fine print on hover. Absent while topology loads.
-   */
-  usage?: string
   tone: ResourceTone
   statusLabel: string
   /** Service icon slug (account toolkit / chat provider), when one exists */
@@ -137,26 +132,6 @@ const AUTOMATION_TONE: Record<string, ResourceTone> = {
  * when no activity line already occupies it. So pair-level state is keyed
  * unordered.
  */
-function countLabel(n: number, unit: string): string {
-  return `${n} ${unit}${n === 1 ? '' : 's'}`
-}
-
-// Node-hover usage line, per resource kind.
-const USAGE_UNIT: Record<ResourceKind, string> = {
-  account: 'API call',
-  mcp: 'tool call',
-  chat: 'session',
-  webhook: 'fire',
-  cron: 'run',
-}
-const USAGE_IDLE: Record<ResourceKind, string> = {
-  account: 'no calls yet',
-  mcp: 'no calls yet',
-  chat: 'no sessions yet',
-  webhook: 'never fired',
-  cron: 'never run',
-}
-
 function pairKey(a: string, b: string): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`
 }
@@ -392,20 +367,6 @@ export function buildGraph(input: {
       deletable: true,
       policyAgentSlug: caller,
     })
-  }
-
-  // Node-level usage: aggregate each resource's edge weights (a shared
-  // account may serve several agents) — the hover pill's fine print.
-  const weightByNode = new Map<string, number>()
-  for (const edge of edges) {
-    if (!edge.weight) continue
-    weightByNode.set(edge.source, (weightByNode.get(edge.source) ?? 0) + edge.weight)
-    weightByNode.set(edge.target, (weightByNode.get(edge.target) ?? 0) + edge.weight)
-  }
-  for (const node of nodes) {
-    if (node.data.kind === 'agent') continue
-    const total = weightByNode.get(node.id) ?? 0
-    node.data.usage = total ? countLabel(total, USAGE_UNIT[node.data.kind]) : USAGE_IDLE[node.data.kind]
   }
 
   return { nodes, edges }
