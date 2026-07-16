@@ -657,7 +657,7 @@ describe('attachStreamKeepalive (base default)', () => {
   it('is a no-op for non-MicroVM runtimes', () => {
     const client = new TestContainerClient({ agentId: 'test-agent' })
     const ping = vi.fn()
-    const dispose = client.testAttachStreamKeepalive({ ping, readyState: 1 } as import('ws').default)
+    const dispose = client.testAttachStreamKeepalive({ ping, readyState: 1 } as unknown as import('ws').default)
     dispose()
     expect(ping).not.toHaveBeenCalled()
   })
