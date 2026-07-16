@@ -152,7 +152,10 @@ describe('ensureAppleContainerReady', () => {
     expect(appleContainerProvisionIO.downloadToFile).toHaveBeenCalledOnce()
     expect(mockRunWithAdminPrivileges).toHaveBeenCalledOnce()
     const elevateCmd = mockRunWithAdminPrivileges.mock.calls[0]?.[0] as string
-    expect(elevateCmd).toContain('/usr/bin/mktemp')
+    // macOS mktemp only randomizes trailing X's; .pkg must not follow the template.
+    expect(elevateCmd).toContain('/usr/bin/mktemp -d /tmp/superagent-container-XXXXXX)')
+    expect(elevateCmd).not.toContain('XXXXXX.pkg')
+    expect(elevateCmd).toContain('TMP="$DIR/installer.pkg"')
     expect(elevateCmd).toContain('trap ')
     expect(elevateCmd).toContain('/usr/bin/shasum -a 256')
     expect(elevateCmd).toContain('/usr/sbin/installer -pkg')
