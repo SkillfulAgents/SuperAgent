@@ -7,11 +7,12 @@
  * Typing indicator via emoji reactions (Slack doesn't support bot typing).
  */
 
-import { App as SlackApp } from '@slack/bolt'
+import { App as SlackApp, SocketModeReceiver } from '@slack/bolt'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
+import { isUnrecoverableSlackError } from './slack-error'
 import { captureException } from '@shared/lib/error-reporting'
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -256,8 +257,24 @@ export class SlackConnector extends ChatClientConnector {
   readonly provider = 'slack' as const
 
   private app: SlackApp | null = null
+  private receiver: SocketModeReceiver | null = null
   private connected = false
   private botUserId: string | null = null
+
+  // Own reconnect loop (mirrors IMessageConnector). The receiver is built with
+  // autoReconnectEnabled: false, so every socket drop lands here instead of in
+  // @slack/socket-mode's internal loop — which leaks unrecoverable reconnect
+  // failures as unhandled promise rejections (delayReconnectAttempt's
+  // `cb.apply(this).then(res)` has no .catch), fatal at the app level.
+  private disconnecting = false
+  // Only reconnect a socket that fully started once: a failed INITIAL connect
+  // is the manager's to retry — its late 'disconnected' event must not start a
+  // zombie loop on a connector object the manager already discarded.
+  private started = false
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempts = 0
+  private static readonly BASE_RECONNECT_DELAY_MS = 1_000
+  private static readonly MAX_RECONNECT_DELAY_MS = 60_000
 
   // Track action_id → toolUseId mappings for interactive responses
   private actionDataMap: Map<string, { toolUseId: string; value: unknown; ts: number }> = new Map()
@@ -293,11 +310,25 @@ export class SlackConnector extends ChatClientConnector {
   // ── Lifecycle ───────────────────────────────────────────────────────
 
   async connect(): Promise<void> {
+    this.disconnecting = false
+    this.started = false
+    this.reconnectAttempts = 0
+
+    // Fail fast on the underlying API calls (auth.test, apps.connections.open):
+    // retry pacing belongs to our loop below and to the manager's health-check
+    // backstop, not to a WebClient silently retrying for half an hour while the
+    // manager waits on connect().
+    this.receiver = new SocketModeReceiver({
+      appToken: this.config.appToken,
+      autoReconnectEnabled: false,
+      logLevel: 'warn' as any,
+      installerOptions: { clientOptions: { retryConfig: { retries: 2 } } },
+    })
     this.app = new SlackApp({
       token: this.config.botToken,
-      appToken: this.config.appToken,
-      socketMode: true,
+      receiver: this.receiver,
       logLevel: 'warn' as any,
+      clientOptions: { retryConfig: { retries: 2 } },
     })
 
     // Catch-all for events we don't explicitly handle (Bolt requires ack for all events)
@@ -448,6 +479,18 @@ export class SlackConnector extends ChatClientConnector {
       throw new Error(`Slack bot token invalid: ${msg}`)
     }
 
+    // Track the real socket state so isConnected() is honest — the manager's
+    // health check is blind without this.
+    const client = this.receiver.client
+    client.on('connected', () => {
+      this.connected = true
+      this.reconnectAttempts = 0
+    })
+    client.on('disconnected', () => {
+      this.connected = false
+      if (!this.disconnecting && this.started) this.scheduleReconnect()
+    })
+
     // Start Socket Mode (requires valid app-level token with connections:write)
     try {
       await this.app.start()
@@ -455,12 +498,54 @@ export class SlackConnector extends ChatClientConnector {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`Slack Socket Mode failed to start (check app-level token and connections:write scope): ${msg}`)
     }
+    this.started = true
     this.connected = true
     console.log('[SlackConnector] Socket Mode connected')
   }
 
+  /**
+   * Restart the Socket Mode client with exponential backoff after an
+   * unexpected disconnect. Transient failures re-schedule; unrecoverable auth
+   * failures (dead workspace / revoked tokens) stop the loop and surface via
+   * onError so the manager can badge the integration and eventually auto-pause.
+   */
+  private scheduleReconnect(): void {
+    if (this.disconnecting || this.reconnectTimer) return
+    this.reconnectAttempts++
+    const delay = Math.min(
+      SlackConnector.BASE_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempts - 1),
+      SlackConnector.MAX_RECONNECT_DELAY_MS,
+    )
+    console.log(`[SlackConnector] Socket closed — reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      if (this.disconnecting || !this.receiver) return
+      this.receiver.client.start()
+        .then(() => {
+          // The 'connected' listener already restored state.
+          console.log('[SlackConnector] Socket Mode reconnected')
+        })
+        .catch((err: unknown) => {
+          if (this.disconnecting) return
+          if (isUnrecoverableSlackError(err)) {
+            console.error('[SlackConnector] Unrecoverable Slack error — stopping reconnect loop:', err)
+            this.emitError(err instanceof Error ? err : new Error(String(err)))
+            return
+          }
+          console.warn(`[SlackConnector] Reconnect attempt ${this.reconnectAttempts} failed:`, err instanceof Error ? err.message : err)
+          this.scheduleReconnect()
+        })
+    }, delay)
+  }
+
   async disconnect(): Promise<void> {
+    this.disconnecting = true
     this.connected = false
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
 
     // Remove any active reactions (before clearing thread context needed to resolve channels)
     for (const key of this.activeReactions) {
@@ -481,6 +566,7 @@ export class SlackConnector extends ChatClientConnector {
       await this.app.stop()
       this.app = null
     }
+    this.receiver = null
     console.log('[SlackConnector] Disconnected')
   }
 

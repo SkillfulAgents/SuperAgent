@@ -164,6 +164,16 @@ class ChatIntegrationManager {
   private globalNotificationUnsubscribe: (() => void) | null = null
   private disconnectedSince: Map<string, number> = new Map()
   private consecutiveFailures: Map<string, number> = new Map()
+  // Integrations with a rebuild in flight. Reconcile passes (5-min tick, resume,
+  // resume follow-ups) can overlap when a connect hangs; this keeps any one
+  // integration from being torn down by one pass while another is mid-connect.
+  private reconcilingIds: Set<string> = new Set()
+  // In-flight system-resume pass; concurrent reconnectAll calls coalesce onto it.
+  private resumeReconcile: Promise<void> | null = null
+  // Follow-up delays after the resume force pass, while anything is still down.
+  private static readonly RESUME_RETRY_DELAYS_MS = [15_000, 30_000, 60_000]
+  // Upper bound on waiting for an old connector to tear down before rebuilding.
+  private static readonly DISCONNECT_TIMEOUT_MS = 5_000
   // Per-(integration,chat) serialized tail promise. Entries self-evict once their
   // chain settles (see scheduleQueueEviction), so the map stays bounded.
   private messageQueues: Map<string, Promise<void>> = new Map()
@@ -225,13 +235,14 @@ class ChatIntegrationManager {
     }
     this.chatSessions.clear()
 
-    // Disconnect all integrations
+    // Disconnect all integrations (fire-and-forget: stop() is shutdown-path sync)
     for (const [, conn] of this.connections) {
-      this.disconnectConnection(conn)
+      void this.disconnectConnection(conn)
     }
     this.connections.clear()
     this.disconnectedSince.clear()
     this.consecutiveFailures.clear()
+    this.reconcilingIds.clear()
     this.messageQueues.clear()
     this.isRunning = false
   }
@@ -240,22 +251,36 @@ class ChatIntegrationManager {
 
   async reconnectAll(): Promise<void> {
     if (!this.isRunning) return
-    console.log('[ChatIntegrationManager] Reconnecting all integrations (system resume)')
+    // Overlap guard: resume events can fire in quick bursts (short lid cycles);
+    // racing two full teardown/rebuild passes produced concurrent connect/stop
+    // on the same integration. Coalesce onto the in-flight pass.
+    if (this.resumeReconcile) return this.resumeReconcile
 
-    const entries = [...this.connections.entries()]
-    for (const [id, conn] of entries) {
+    console.log('[ChatIntegrationManager] Reconnecting all integrations (system resume)')
+    this.resumeReconcile = (async () => {
       try {
-        const integration = getChatIntegration(id)
-        if (!integration || integration.status === 'paused') continue
-        await this.removeIntegration(id)
-        await this.connectIntegration(integration)
-        this.disconnectedSince.delete(id)
-        this.consecutiveFailures.delete(id)
-      } catch (err) {
-        console.error(`[ChatIntegrationManager] Resume reconnect failed for ${id}:`, err)
-        reportError(err, 'resume-reconnect', { integrationId: id, provider: conn.integration.provider })
+        await this.reconcileIntegrations({ force: true })
+        // The force pass races the network coming back up, so failures are
+        // expected; they're no longer orphans, but the next regular tick is up
+        // to 5 minutes out — too long right after opening the lid. Run a few
+        // quick follow-ups while anything is still down.
+        for (const delayMs of ChatIntegrationManager.RESUME_RETRY_DELAYS_MS) {
+          if (!this.hasDisconnectedIntegrations()) break
+          await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+          if (!this.isRunning) return
+          await this.reconcileIntegrations({ force: false })
+        }
+      } finally {
+        this.resumeReconcile = null
       }
-    }
+    })()
+    return this.resumeReconcile
+  }
+
+  private hasDisconnectedIntegrations(): boolean {
+    return listStartupChatIntegrations().some(
+      (i) => !(this.connections.get(i.id)?.connector.isConnected() ?? false),
+    )
   }
 
   async addIntegration(id: string): Promise<void> {
@@ -272,11 +297,17 @@ class ChatIntegrationManager {
         this.chatSessions.delete(key)
       }
     }
-    // Remove the connection
+    // Remove the connection. The teardown is awaited (bounded) so a rebuild
+    // can't start while the old socket is still live — gateways that allow one
+    // connection per identity kick whichever side loses the race (the iMessage
+    // code=4000 "replaced by another connection" fights).
     const conn = this.connections.get(id)
     if (conn) {
-      this.disconnectConnection(conn)
       this.connections.delete(id)
+      await Promise.race([
+        this.disconnectConnection(conn),
+        new Promise<void>((resolve) => setTimeout(resolve, ChatIntegrationManager.DISCONNECT_TIMEOUT_MS)),
+      ])
     }
     this.disconnectedSince.delete(id)
     this.consecutiveFailures.delete(id)
@@ -427,6 +458,13 @@ class ChatIntegrationManager {
       await this.removeIntegration(integration.id)
       throw err
     }
+    // A pause/remove that raced the connect owns the teardown now: don't
+    // resurrect subscriptions for a connection the user just removed, and tear
+    // down the freshly opened, now-ownerless socket.
+    if (this.connections.get(integration.id) !== conn) {
+      connector.disconnect().catch(() => {})
+      return
+    }
     this.disconnectedSince.delete(integration.id)
     breadcrumb('Integration connected', { integrationId: integration.id, provider: integration.provider })
     this.emitNotification(integration, 'connected')
@@ -469,12 +507,12 @@ class ChatIntegrationManager {
     }
   }
 
-  private disconnectConnection(conn: IntegrationConnection): void {
+  private disconnectConnection(conn: IntegrationConnection): Promise<void> {
     conn.messageUnsubscribe?.()
     conn.interactiveUnsubscribe?.()
     conn.errorUnsubscribe?.()
     conn.typingHintUnsubscribe?.()
-    conn.connector.disconnect().catch((err) => {
+    return conn.connector.disconnect().catch((err) => {
       console.error(`[ChatIntegrationManager] Error disconnecting:`, err)
       reportError(err, 'disconnect', { integrationId: conn.integration.id, provider: conn.integration.provider })
     })
@@ -562,8 +600,6 @@ class ChatIntegrationManager {
   // ── Health monitoring ───────────────────────────────────────────────
 
   private async runHealthChecks(): Promise<void> {
-    const now = Date.now()
-
     // Backstop: re-arm any subscribed session that reads busy but has no tick — an
     // unforeseen missed wake (e.g. a process restart that re-subscribed mid-turn). Rides
     // this existing timer, so it adds NO new timer, and leaves idle sessions asleep (zero
@@ -575,49 +611,100 @@ class ChatIntegrationManager {
       armIndicatorIfBusy(session, sessionId, messagePersister.getSessionActivity(sessionId))
     }
 
-    for (const [id, conn] of this.connections) {
-      const connected = conn.connector.isConnected()
+    await this.reconcileIntegrations({ force: false })
+  }
 
-      if (connected) {
+  /**
+   * Reconcile live connections against the DB work list.
+   *
+   * The DB (every startup-eligible integration: status active/error) is the
+   * source of truth, NOT the in-memory connections map — an integration whose
+   * reconnect failed has no map entry, and iterating the map is exactly what
+   * used to orphan it forever. Here a missing entry just means "rebuild now",
+   * so every failure is retried on the next pass.
+   *
+   * force=false (health tick): rebuild orphans immediately; give a present-but-
+   * disconnected connector a grace window first, so its own faster reconnect
+   * loop (iMessage backoff, Slack socket restart) wins when the outage is short.
+   * force=true (system resume): rebuild everything — sockets are suspect after
+   * sleep and honest isConnected() may lag a half-open TCP connection by up to
+   * a ping cycle.
+   *
+   * Rebuilds run serially: connects fail fast (connector-level timeouts), and
+   * one integration hammering a dead network shouldn't be parallelized anyway.
+   */
+  private async reconcileIntegrations(opts: { force: boolean }): Promise<void> {
+    const now = Date.now()
+    for (const integration of listStartupChatIntegrations()) {
+      // A stop() mid-pass (app shutdown) must not resurrect connections it
+      // just tore down.
+      if (!this.isRunning) return
+      const id = integration.id
+      if (this.reconcilingIds.has(id)) continue
+
+      const conn = this.connections.get(id)
+      const connected = conn?.connector.isConnected() ?? false
+
+      if (connected && !opts.force) {
         this.disconnectedSince.delete(id)
         this.consecutiveFailures.delete(id)
+        if (integration.status === 'error') {
+          // The connector recovered on its own — clear the stale error badge.
+          try { updateChatIntegrationStatus(id, 'active', null) } catch { /* best-effort */ }
+        }
         continue
       }
 
-      if (!this.disconnectedSince.has(id)) {
-        this.disconnectedSince.set(id, now)
+      if (conn && !connected && !opts.force) {
+        if (!this.disconnectedSince.has(id)) this.disconnectedSince.set(id, now)
+        if (now - this.disconnectedSince.get(id)! < HEALTH_CHECK_ERROR_THRESHOLD_MS) continue
       }
 
-      const disconnectedFor = now - this.disconnectedSince.get(id)!
+      await this.rebuildIntegration(id, opts.force ? 'resume-reconnect' : 'health-check-reconnect')
+    }
+  }
 
-      if (disconnectedFor >= HEALTH_CHECK_ERROR_THRESHOLD_MS) {
-        const integration = getChatIntegration(id)
-        if (!integration || integration.status === 'paused') continue
+  /** Tear down and reconnect one integration, with retry/auto-pause accounting. */
+  private async rebuildIntegration(id: string, operation: string): Promise<void> {
+    this.reconcilingIds.add(id)
+    try {
+      // Fresh read: the user may have paused or deleted it since the list snapshot.
+      const integration = getChatIntegration(id)
+      if (!integration || integration.status === 'paused') return
 
-        const failures = (this.consecutiveFailures.get(id) ?? 0) + 1
+      // removeIntegration wipes the failure counter (correct for user-initiated
+      // removal); capture it first so retry accounting survives the teardown.
+      const prevFailures = this.consecutiveFailures.get(id) ?? 0
+      try {
+        await this.removeIntegration(id)
+        await this.connectIntegration(integration)
+        this.disconnectedSince.delete(id)
+        this.consecutiveFailures.delete(id)
+        if (integration.status === 'error') {
+          try { updateChatIntegrationStatus(id, 'active', null) } catch { /* best-effort */ }
+        }
+      } catch (err) {
+        const failures = prevFailures + 1
         this.consecutiveFailures.set(id, failures)
+        console.error(`[ChatIntegrationManager] Reconnect failed for ${id} (attempt ${failures}):`, err)
+        reportError(err, operation, { integrationId: id, provider: integration.provider, attempt: failures })
 
         if (failures >= HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES) {
           console.error(`[ChatIntegrationManager] ${id}: ${failures} consecutive reconnect failures — pausing`)
-          reportError(new Error(`Auto-paused after ${failures} failures`), 'health-check-auto-pause', { integrationId: id, provider: conn.integration.provider, failures }, 'warning')
-          try { await this.removeIntegration(id) } catch { /* best-effort */ }
+          reportError(new Error(`Auto-paused after ${failures} failures`), 'health-check-auto-pause', { integrationId: id, provider: integration.provider, failures }, 'warning')
           try { updateChatIntegrationStatus(id, 'paused', `Auto-paused after ${failures} failed reconnection attempts`) } catch { /* best-effort */ }
-          this.emitNotification(conn.integration, 'error', `Auto-paused after ${failures} failed reconnect attempts`)
-          continue
+          this.emitNotification(integration, 'error', `Auto-paused after ${failures} failed reconnect attempts`)
+          this.disconnectedSince.delete(id)
+          this.consecutiveFailures.delete(id)
+          return
         }
 
-        try { updateChatIntegrationStatus(id, 'error', 'Connection lost — attempting reconnect') } catch { /* best-effort */ }
-        this.emitNotification(conn.integration, 'error', 'Connection lost')
-
-        try {
-          await this.removeIntegration(id)
-          await this.connectIntegration(integration)
-        } catch (err) {
-          console.error(`[ChatIntegrationManager] Reconnect failed for ${id} (attempt ${failures}):`, err)
-          reportError(err, 'health-check-reconnect', { integrationId: id, provider: conn.integration.provider, attempt: failures })
-          try { updateChatIntegrationStatus(id, 'error', `Reconnect failed (attempt ${failures}): ${err}`) } catch { /* best-effort */ }
-        }
+        try { updateChatIntegrationStatus(id, 'error', `Reconnect failed (attempt ${failures}): ${err}`) } catch { /* best-effort */ }
+        // Notify once per outage, not once per 5-minute tick.
+        if (failures === 1) this.emitNotification(integration, 'error', 'Connection lost')
       }
+    } finally {
+      this.reconcilingIds.delete(id)
     }
   }
 
