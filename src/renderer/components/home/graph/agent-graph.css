@@ -1,54 +1,88 @@
-/* Traveling tracer on active (solid) graph edges — the FlowPulse overlay in
-   graph-edges.tsx. Each edge sets its own animation-duration inline (faster
-   = more traffic). The -80px offset equals one TRACER_PERIOD, so the loop
-   is seamless. */
-@keyframes graph-edge-flow {
-  to {
-    stroke-dashoffset: -80;
-  }
-}
-
-/* Perimeter connection ports: hidden until their node (agent circle) or
-   chip (resource) is hovered. The pointer-events gate rides visibility so
+/* Perimeter connection ports: shown when their node is SELECTED (click;
+   pane click deselects). The handle itself is an invisible hit zone ~2× the
+   dot; the visible dot is a child so proximity (zone hover) and direct (dot
+   hover) can stage differently. The pointer-events gate rides visibility so
    hidden ports never intercept node drags; dropping a connection still
-   snaps to them via connectionRadius, which uses positions, not hit tests. */
+   snaps via connectionRadius, which uses positions, not hit tests. */
 .react-flow__handle.graph-port {
-  width: 9px;
-  height: 9px;
+  width: 24px;
+  height: 24px;
   min-width: 0;
   min-height: 0;
   border-radius: 9999px;
-  background: hsl(var(--card));
-  border: 1.5px solid rgb(59 130 246);
+  background: none;
+  border: none;
   opacity: 0;
   pointer-events: none;
   transition: opacity 150ms;
 }
-.group:hover > .react-flow__handle.graph-port,
+/* Rest state: visible at 50%; any hover (or an active connection) goes full. */
+.react-flow__node.selected .react-flow__handle.graph-port {
+  opacity: 0.5;
+  pointer-events: all;
+}
+.react-flow__node.selected .react-flow__handle.graph-port:hover,
 .react-flow__handle.graph-port.connectingfrom,
 .react-flow__handle.graph-port.connectingto {
   opacity: 1;
   pointer-events: all;
 }
 
-/* FigJam-style anchor states on connectable ports: plain dot (node hover) →
-   grown circle with an outward arrow (port hover) → filled blue with a white
-   arrow while grabbing/drawing. RF's translate(±50%) centering keeps the
-   growth centered on the node edge. */
-.react-flow__handle.graph-port.connectable {
-  transition:
-    opacity 150ms,
-    width 120ms,
-    height 120ms,
-    background-color 120ms;
+/* Port zones center a few px clear of the element's edge instead of
+   straddling it. Connectors still dock on the perimeter itself. */
+.react-flow__handle-top.graph-port {
+  top: -6px;
 }
-.react-flow__handle.graph-port.connectable::before {
-  content: '→';
+.react-flow__handle-bottom.graph-port {
+  bottom: -6px;
+}
+.react-flow__handle-left.graph-port {
+  left: -6px;
+}
+.react-flow__handle-right.graph-port {
+  right: -6px;
+}
+
+/* Fixed-size invisible core: the DIRECT-hover trigger. The visible dot is
+   pointer-transparent — if the dot itself were the trigger, its proximity
+   growth would swallow the cursor and instantly cascade into the direct
+   state, collapsing the two stages. */
+.graph-port .port-hit {
   position: absolute;
-  inset: 0;
+  left: 50%;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: 9999px;
+  z-index: 1;
+}
+
+/* The visible dot. Rest: blue with a white border. Proximity (zone hover):
+   grows into a circled blue outward arrow. Direct (core hover) / drawing:
+   fills blue with a white arrow. */
+.graph-port .port-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7.5px;
+  height: 7.5px;
+  transform: translate(-50%, -50%);
+  border-radius: 9999px;
+  background: rgb(59 130 246);
+  border: 1.5px solid #fff;
   display: flex;
   align-items: center;
   justify-content: center;
+  pointer-events: none;
+  transition:
+    width 120ms,
+    height 120ms,
+    background-color 120ms,
+    border-color 120ms;
+}
+.graph-port .port-dot::before {
+  content: '→';
   font-size: 11px;
   line-height: 1;
   font-weight: 600;
@@ -56,60 +90,79 @@
   opacity: 0;
   transition: opacity 120ms;
 }
-.react-flow__handle-top.graph-port.connectable::before {
+.react-flow__handle-top.graph-port .port-dot::before {
   transform: rotate(-90deg);
 }
-.react-flow__handle-bottom.graph-port.connectable::before {
+.react-flow__handle-bottom.graph-port .port-dot::before {
   transform: rotate(90deg);
 }
-.react-flow__handle-left.graph-port.connectable::before {
+.react-flow__handle-left.graph-port .port-dot::before {
   transform: rotate(180deg);
 }
-.react-flow__handle.graph-port.connectable:hover,
-.react-flow__handle.graph-port.connectingfrom {
-  width: 20px;
-  height: 20px;
+.graph-port.connectable:hover .port-dot {
+  width: 16px;
+  height: 16px;
+  background: hsl(var(--card));
+  border-color: rgb(59 130 246);
 }
-.react-flow__handle.graph-port.connectable:hover::before {
+.graph-port.connectable:hover .port-dot::before {
   opacity: 1;
 }
-.react-flow__handle.graph-port.connectable:active,
-.react-flow__handle.graph-port.connectingfrom {
+.graph-port.connectable .port-hit:hover ~ .port-dot,
+.graph-port.connectingfrom .port-dot {
+  width: 20px;
+  height: 20px;
   background: rgb(59 130 246);
+  border-color: rgb(59 130 246);
 }
-.react-flow__handle.graph-port.connectable:active::before,
-.react-flow__handle.graph-port.connectingfrom::before {
+.graph-port.connectable .port-hit:hover ~ .port-dot::before,
+.graph-port.connectingfrom .port-dot::before {
   opacity: 1;
   color: #fff;
 }
 
-/* Hover hint on connectable ports: an arrow + what the dot is for. Appears
-   after a beat so passing over a node doesn't flash it; hidden the moment a
-   drag actually starts. Decorative (non-connectable) ports never show it. */
-.react-flow__handle.graph-port.connectable::after {
-  content: '↗ Click and drag to connect';
+/* Ghost connector: a dashed run-out with an arrowhead, previewing the drag.
+   Only on DIRECT dot hover; hidden once a real connection line is out.
+   translateX after the per-side rotation pushes the start clear of the dot. */
+.graph-port .port-ghost {
   position: absolute;
-  bottom: calc(100% + 8px);
   left: 50%;
-  transform: translateX(-50%);
-  white-space: nowrap;
-  padding: 3px 8px;
-  border-radius: 6px;
-  background: hsl(var(--card));
-  border: 0.5px solid hsl(var(--border) / 0.6);
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.08);
-  color: hsl(var(--foreground) / 0.75);
-  font-size: 10px;
-  font-weight: 500;
+  top: 50%;
+  width: 48px;
+  height: 0;
+  border-top: 1.5px dashed rgb(59 130 246 / 0.45);
+  transform-origin: 0 0;
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms;
 }
-.react-flow__handle.graph-port.connectable:hover::after {
-  opacity: 1;
-  transition-delay: 250ms;
+.graph-port .port-ghost::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: -4.5px;
+  width: 8px;
+  height: 8px;
+  border-top: 1.5px solid rgb(59 130 246 / 0.6);
+  border-right: 1.5px solid rgb(59 130 246 / 0.6);
+  transform: rotate(45deg);
 }
-.react-flow__handle.graph-port.connectingfrom::after {
+.react-flow__handle-right.graph-port .port-ghost {
+  transform: rotate(0deg) translateX(14px);
+}
+.react-flow__handle-bottom.graph-port .port-ghost {
+  transform: rotate(90deg) translateX(14px);
+}
+.react-flow__handle-left.graph-port .port-ghost {
+  transform: rotate(180deg) translateX(14px);
+}
+.react-flow__handle-top.graph-port .port-ghost {
+  transform: rotate(270deg) translateX(14px);
+}
+.graph-port.connectable .port-hit:hover ~ .port-ghost {
+  opacity: 1;
+}
+.graph-port.connectingfrom .port-ghost {
   opacity: 0 !important;
 }
 
@@ -121,13 +174,5 @@
 @keyframes elbow-handle-in {
   from {
     opacity: 0;
-  }
-}
-
-/* Reduced motion: hide the pulse entirely (a frozen pulse reads as random
-   bright specks) — usage still shows via the solid blue line + hover label. */
-@media (prefers-reduced-motion: reduce) {
-  .graph-edge-pulse {
-    display: none;
   }
 }

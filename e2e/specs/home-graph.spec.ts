@@ -66,8 +66,10 @@ test.describe('home connections graph', () => {
     const [a, b] = [`agent:${caller.slug}`, `agent:${target.slug}`].sort()
     await expect(page.locator(`[data-id="${a}~${b}"]`)).toBeAttached()
 
-    // Click-through: agent node → agent page; back → graph view intact.
+    // Click selects the node (revealing its Open toolbar); Open navigates to
+    // the agent page; back → graph view intact.
     await page.getByTestId(`graph-node-agent-${caller.slug}`).click()
+    await page.getByTestId('graph-node-open').click()
     await expect(page).toHaveURL(/\/agents\//)
     await page.goBack()
     await expect(page).toHaveURL(/view=graph/)

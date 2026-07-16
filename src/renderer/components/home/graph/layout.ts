@@ -35,7 +35,7 @@ export interface XY {
   y: number
 }
 
-// Collision radii cover the rendered footprint (agent circle ~112×112,
+// Collision radii cover the rendered footprint (agent card ~176×80,
 // resource chip + label ~128×80) plus breathing room.
 const AGENT_COLLIDE_RADIUS = 135
 const RESOURCE_COLLIDE_RADIUS = 85

@@ -45,6 +45,8 @@ export const userSettingsSchema = z.object({
       coords: z.array(z.number()).optional(),
       sourceAngle: z.number().optional(),
       targetAngle: z.number().optional(),
+      // Count-chip position as a fraction of the route's length
+      chipT: z.number().optional(),
     }),
   ).optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
