@@ -263,7 +263,6 @@ export function parseMemoryValue(value: string): number {
 export abstract class BaseContainerClient extends EventEmitter implements ContainerClient {
   protected config: ContainerConfig
   private wsConnections: Map<string, WebSocket> = new Map()
-  private streamKeepaliveDisposers = new WeakMap<WebSocket, () => void>()
 
   /** Whether this runner is eligible on the current platform. Override for platform-specific runners. */
   static isEligible(): boolean {
@@ -818,21 +817,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     }
   }
 
-  // MicroVM ingress idle-cuts quiet WS ~60s; override to send protocol pings.
-  protected attachStreamKeepalive(_ws: WebSocket): () => void {
-    return () => {}
-  }
-
-  private disposeStreamKeepalive(ws: WebSocket): void {
-    const dispose = this.streamKeepaliveDisposers.get(ws)
-    if (!dispose) return
-    dispose()
-    this.streamKeepaliveDisposers.delete(ws)
-  }
-
   protected terminateWebSocketConnections(): void {
     for (const ws of this.wsConnections.values()) {
-      this.disposeStreamKeepalive(ws)
       ws.removeAllListeners()
       try {
         ws.terminate()
@@ -1376,7 +1362,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       ws.on('open', () => {
         console.log(`WebSocket connected for session ${sessionId}`)
-        this.streamKeepaliveDisposers.set(ws, this.attachStreamKeepalive(ws))
         resolveReady()
       })
 
@@ -1407,7 +1392,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
 
       ws.on('close', () => {
         console.log(`WebSocket closed for session ${sessionId}`)
-        this.disposeStreamKeepalive(ws)
         this.wsConnections.delete(sessionId)
         // Notify the callback that the connection was lost
         // This allows the message persister to handle the disconnection
@@ -1443,7 +1427,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     const unsubscribe = () => {
       const ws = this.wsConnections.get(sessionId)
       if (ws) {
-        this.disposeStreamKeepalive(ws)
         ws.close()
         this.wsConnections.delete(sessionId)
       }

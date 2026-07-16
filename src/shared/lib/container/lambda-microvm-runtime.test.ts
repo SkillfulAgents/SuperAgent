@@ -48,11 +48,12 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ app: { autoSleepTimeoutMinutes: autoSleepTimeoutMinutes() }, enableToolSearch: true }),
 }))
 
-import WebSocket from 'ws'
 import {
   LambdaMicroVmRuntimeClient,
   LocalAuthForwardProxy,
   MICROVM_STREAM_KEEPALIVE_MS,
+  MICROVM_WS_PING_FRAME,
+  attachMicrovmUpstreamKeepalive,
   resetMicrovmRuntimeForTests,
   resolveMicrovmRuntimeConfigOrNull,
   isMicrovmRuntimeConfigured,
@@ -676,13 +677,7 @@ describe('LocalAuthForwardProxy', () => {
   })
 })
 
-describe('LambdaMicroVmRuntimeClient stream keepalive', () => {
-  class KeepaliveClient extends LambdaMicroVmRuntimeClient {
-    attach(ws: WebSocket): () => void {
-      return this.attachStreamKeepalive(ws)
-    }
-  }
-
+describe('attachMicrovmUpstreamKeepalive', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -691,31 +686,30 @@ describe('LambdaMicroVmRuntimeClient stream keepalive', () => {
     vi.useRealTimers()
   })
 
-  it('pings an open stream on the MicroVM keepalive interval', () => {
-    const client = new KeepaliveClient({ agentId: 'keepalive-agent' })
-    const ping = vi.fn()
-    const ws = { ping, readyState: WebSocket.OPEN } as unknown as WebSocket
-    const dispose = client.attach(ws)
+  it('writes a WS ping frame on the MicroVM keepalive interval', () => {
+    const write = vi.fn()
+    const upstream = { destroyed: false, write } as unknown as import('net').Socket
+    const dispose = attachMicrovmUpstreamKeepalive(upstream)
 
     vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS - 1)
-    expect(ping).not.toHaveBeenCalled()
+    expect(write).not.toHaveBeenCalled()
     vi.advanceTimersByTime(1)
-    expect(ping).toHaveBeenCalledTimes(1)
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(write.mock.calls[0][0]).toEqual(MICROVM_WS_PING_FRAME)
     vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS)
-    expect(ping).toHaveBeenCalledTimes(2)
+    expect(write).toHaveBeenCalledTimes(2)
 
     dispose()
     vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS * 2)
-    expect(ping).toHaveBeenCalledTimes(2)
+    expect(write).toHaveBeenCalledTimes(2)
   })
 
-  it('skips ping when the socket is not OPEN', () => {
-    const client = new KeepaliveClient({ agentId: 'keepalive-agent' })
-    const ping = vi.fn()
-    const ws = { ping, readyState: WebSocket.CLOSED } as unknown as WebSocket
-    const dispose = client.attach(ws)
+  it('skips write when the upstream socket is destroyed', () => {
+    const write = vi.fn()
+    const upstream = { destroyed: true, write } as unknown as import('net').Socket
+    const dispose = attachMicrovmUpstreamKeepalive(upstream)
     vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS)
-    expect(ping).not.toHaveBeenCalled()
+    expect(write).not.toHaveBeenCalled()
     dispose()
   })
 })
