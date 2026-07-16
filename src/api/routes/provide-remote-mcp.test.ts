@@ -147,7 +147,7 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(),
 }))
 
-// Must not be used for REMOTE_MCPS proxyUrl — MicroVMs cannot resolve this host.
+// Must not be used for REMOTE_MCPS proxyUrl — runtime talk-back goes through getHostApiBaseUrl.
 vi.mock('@shared/lib/proxy/host-url', () => ({
   getContainerHostUrl: () => 'host.docker.internal',
   getAppPort: () => 3000,

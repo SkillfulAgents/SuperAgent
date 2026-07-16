@@ -3409,8 +3409,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       await db.insert(agentRemoteMcps).values(newMappings)
     }
 
-    // Same talk-back base as container start (MicroVM private IP / HOST_PUBLIC_URL),
-    // not getContainerHostUrl() — host.docker.internal does not resolve in MicroVMs.
+    // Same talk-back base as container start — not getContainerHostUrl().
     const hostApiBaseUrl = await client.getHostApiBaseUrl()
     const mcpMappings = await db
       .select({ mcp: remoteMcpServers })
