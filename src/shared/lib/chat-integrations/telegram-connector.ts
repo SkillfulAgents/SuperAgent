@@ -13,8 +13,9 @@ import { Marked, Renderer } from 'marked'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatClientConnector, type OutgoingMessage } from './base-connector'
+import type { UpdateDeduplicator } from './update-deduplicator'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
-import { captureException } from '@shared/lib/error-reporting'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
 
@@ -117,7 +118,7 @@ export class TelegramConnector extends ChatClientConnector {
   private startupError: Error | null = null
 
   // First-poll batching: accumulate messages before sending them all at once
-  private pendingFirstPollMessages: Map<string, { texts: string[]; timer: ReturnType<typeof setTimeout> | null; userName?: string; chatName?: string; chatType?: 'private' | 'group' | 'supergroup' }> = new Map()
+  private pendingFirstPollMessages: Map<string, { texts: string[]; updateIds: string[]; timer: ReturnType<typeof setTimeout> | null; userName?: string; chatName?: string; chatType?: 'private' | 'group' | 'supergroup' }> = new Map()
 
   // Track callback_query toolUseId mappings (Telegram callback_data is limited to 64 bytes)
   private callbackDataMap: Map<string, { toolUseId: string; value: unknown; ts: number }> = new Map()
@@ -166,7 +167,7 @@ export class TelegramConnector extends ChatClientConnector {
   // the current label even when it changes mid-turn (working → thinking → …).
   private workingActivity: Map<string, SessionActivity> = new Map()
 
-  constructor(private config: TelegramConfig) {
+  constructor(private config: TelegramConfig, private deduplicator?: UpdateDeduplicator) {
     super()
   }
 
@@ -176,6 +177,18 @@ export class TelegramConnector extends ChatClientConnector {
     this.disconnecting = false
     this.startupError = null
     this.bot = new Bot(this.config.botToken)
+
+    // Single gate for every update, before any handler: drop updates while tearing down, and
+    // drop at-least-once redeliveries. Centralized here rather than per-handler so any handler
+    // added later (message:video, voice, ...) is covered automatically. It only *checks* - an id
+    // is marked delivered by each handler once it has actually handed its message off (see
+    // markUpdateDelivered), so a message accepted but lost in a teardown window stays eligible
+    // for redelivery instead of being recorded and suppressed.
+    this.bot.use((ctx, next) => {
+      if (this.disconnecting) return
+      if (this.isDuplicateUpdate(ctx)) return
+      return next()
+    })
 
     // Handle text messages
     this.bot.on('message:text', (ctx) => this.handleTextMessage(ctx))
@@ -199,6 +212,11 @@ export class TelegramConnector extends ChatClientConnector {
         url = `https://api.telegram.org/file/bot${this.config.botToken}/${file.file_path}`
       } catch { /* fallback to file_id */ }
 
+      // Teardown may have landed during getFile: the manager has already unsubscribed, so
+      // emitting now would drop the message. Bail without recording, so the fresh connector's
+      // redelivery recovers it.
+      if (this.disconnecting) return
+
       const userName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || undefined
 
       this.emitMessage({
@@ -216,6 +234,7 @@ export class TelegramConnector extends ChatClientConnector {
         }],
         timestamp: new Date(ctx.message.date * 1000),
       })
+      this.markUpdateDelivered(this.updateIdOf(ctx))
     })
 
     // Handle document uploads (for file request resolution)
@@ -229,6 +248,11 @@ export class TelegramConnector extends ChatClientConnector {
         const file = await this.bot!.api.getFile(doc.file_id)
         url = `https://api.telegram.org/file/bot${this.config.botToken}/${file.file_path}`
       } catch { /* fallback */ }
+
+      // Teardown may have landed during getFile: the manager has already unsubscribed, so
+      // emitting now would drop the file. Bail without recording, so the fresh connector's
+      // redelivery recovers it.
+      if (this.disconnecting) return
 
       const userName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || ctx.from?.username || undefined
 
@@ -247,6 +271,7 @@ export class TelegramConnector extends ChatClientConnector {
         }],
         timestamp: new Date(ctx.message.date * 1000),
       })
+      this.markUpdateDelivered(this.updateIdOf(ctx))
     })
 
     // Start long polling
@@ -255,6 +280,13 @@ export class TelegramConnector extends ChatClientConnector {
     // A rejection here (e.g. grammY 409 Conflict from duplicate pollers) must
     // be caught — otherwise it bubbles up to process.unhandledRejection and
     // crashes the Electron app.
+    //
+    // grammY's built-in bot.start() processes updates SEQUENTIALLY (one at a time). The
+    // record-at-handoff dedup depends on this: a redelivered update never runs concurrently with
+    // its own first delivery, so the brief await gap in the photo/document handlers (getFile, before
+    // the id is recorded on emit) cannot produce a double-delivery. Switching to @grammyjs/runner
+    // (concurrent processing) would reopen that window - keep processing sequential, or record the
+    // id before the await.
     this.bot.start({
       allowed_updates: ['message', 'callback_query'],
       drop_pending_updates: false,
@@ -614,6 +646,12 @@ export class TelegramConnector extends ChatClientConnector {
    *  and only resolves on Done. The callback is answered inside each branch so the empty-Done
    *  toast can fire (a callback can be answered exactly once). */
   private async handleCallbackQuery(ctx: GrammyContext): Promise<void> {
+    // The gate middleware already dropped a redelivery and the teardown case; nothing has
+    // recorded this one yet. Record it up front - unlike the message handlers (which record at
+    // emit), a callback carries no buffered payload to lose in a teardown window, and a
+    // redelivered multiSelect toggle would flip a checkbox back off (its mapping isn't consumed
+    // on tap), so dropping the redelivery is exactly the goal.
+    this.markUpdateDelivered(this.updateIdOf(ctx))
     const data = ctx.callbackQuery?.data
     if (!data) { await ctx.answerCallbackQuery(); return }
     const mapping = this.callbackDataMap.get(data)
@@ -797,6 +835,40 @@ export class TelegramConnector extends ChatClientConnector {
 
   // ── First-poll batching ─────────────────────────────────────────────
 
+  /** This update's id as a string, or undefined when absent or no deduplicator is wired. */
+  private updateIdOf(ctx: GrammyContext): string | undefined {
+    if (!this.deduplicator) return undefined
+    const updateId = ctx.update?.update_id
+    return updateId === undefined ? undefined : String(updateId)
+  }
+
+  /**
+   * True if this update was already delivered (a redelivery to drop). Read-only: the gate
+   * middleware calls it before any handler runs, and a delivered id is recorded separately at
+   * handoff via markUpdateDelivered. Fail-open with no deduplicator.
+   */
+  private isDuplicateUpdate(ctx: GrammyContext): boolean {
+    const updateId = this.updateIdOf(ctx)
+    if (updateId === undefined) return false
+    if (this.deduplicator!.isDuplicate(updateId)) {
+      // Breadcrumb, not error: a redelivery is normal; recording it lets a wrongly-dropped
+      // message be traced (the one failure mode a dedup gate can introduce).
+      addErrorBreadcrumb({ category: 'chat-integration', message: 'Dropped duplicate Telegram update', data: { updateId } })
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Record an update as delivered, once a handler has actually handed its message off. Recording
+   * at handoff rather than at accept means a message lost in a teardown window is never marked, so
+   * the fresh connector's redelivery recovers it instead of being dropped as a duplicate.
+   */
+  private markUpdateDelivered(updateId: string | undefined): void {
+    if (!this.deduplicator || updateId === undefined) return
+    this.deduplicator.markDelivered(updateId)
+  }
+
   private handleTextMessage(ctx: GrammyContext): void {
     const text = ctx.message?.text
     if (!text || !ctx.chat) return
@@ -807,6 +879,7 @@ export class TelegramConnector extends ChatClientConnector {
     const chatId = String(ctx.chat.id)
     const fromId = String(ctx.from?.id || '')
     const messageId = String(ctx.message?.message_id || '')
+    const updateId = this.updateIdOf(ctx)
     const userName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ')
       || ctx.from?.username
       || undefined
@@ -817,10 +890,13 @@ export class TelegramConnector extends ChatClientConnector {
       // Buffer messages during first poll
       let pending = this.pendingFirstPollMessages.get(chatId)
       if (!pending) {
-        pending = { texts: [], timer: null, userName, chatName, chatType }
+        pending = { texts: [], updateIds: [], timer: null, userName, chatName, chatType }
         this.pendingFirstPollMessages.set(chatId, pending)
       }
       pending.texts.push(text)
+      // Carry the update id with its text so the batch records it only when it truly flushes to a
+      // subscribed manager (flushBatch), never on a teardown flush whose emit is lost.
+      if (updateId !== undefined) pending.updateIds.push(updateId)
 
       if (pending.timer) clearTimeout(pending.timer)
       pending.timer = setTimeout(() => {
@@ -840,6 +916,7 @@ export class TelegramConnector extends ChatClientConnector {
       chatName,
       timestamp: new Date((ctx.message?.date || 0) * 1000),
     })
+    this.markUpdateDelivered(updateId)
   }
 
   private flushBatch(chatId: string, userId: string, lastMessageId: string): void {
@@ -857,6 +934,13 @@ export class TelegramConnector extends ChatClientConnector {
       chatName: pending.chatName,
       timestamp: new Date(),
     })
+    // Record the batched updates as delivered only on a real handoff. A teardown flush
+    // (flushAllPendingBatches while disconnecting) emits into an unsubscribed manager, so leaving
+    // its ids unrecorded lets the fresh connector's redelivery recover them - recording at accept
+    // is exactly what turned this transient loss into a permanent one (finding 1).
+    if (!this.disconnecting) {
+      for (const id of pending.updateIds) this.markUpdateDelivered(id)
+    }
     this.pendingFirstPollMessages.delete(chatId)
   }
 

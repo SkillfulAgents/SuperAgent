@@ -16,6 +16,7 @@ import type { SessionActivity } from '@shared/lib/types/agent'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
 import { formatToolName } from '@shared/lib/tool-definitions/types'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
+import { UpdateDeduplicator } from './update-deduplicator'
 import { formatProviderName, formatSessionTimestamp } from './utils'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import {
@@ -102,6 +103,17 @@ const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
 const HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES = 15
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024 // 50 MB
+// Bound the wait for an old connector to stop before a reconnect starts the new poller.
+// A reconnect fires precisely when the connection is unhealthy, so bot.stop() can be slow;
+// cap the wait and proceed rather than wedge the reconnect on a hung teardown.
+const DISCONNECT_TIMEOUT_MS = 3000
+
+/** Resolve when `promise` settles or after `ms`, whichever comes first. `promise` must not reject. */
+function withTimeout(promise: Promise<unknown>, ms: number): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, ms) })
+  return Promise.race([promise, timeout]).finally(() => { if (timer) clearTimeout(timer) })
+}
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -168,6 +180,10 @@ class ChatIntegrationManager {
   // chain settles (see scheduleQueueEviction), so the map stays bounded.
   private messageQueues: Map<string, Promise<void>> = new Map()
   private lastSessionTouch: Map<string, number> = new Map()
+  // Per-integration dedup notepad, tagged with the bot token it was built for; owned here so it
+  // survives a connector reconnect (see UpdateDeduplicator). The token tag lets a bot-token change
+  // reset it (getOrCreateDeduplicator), since update-id sequences are per-bot.
+  private deduplicators: Map<string, { dedup: UpdateDeduplicator; botToken: string }> = new Map()
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -225,14 +241,16 @@ class ChatIntegrationManager {
     }
     this.chatSessions.clear()
 
-    // Disconnect all integrations
+    // Disconnect all integrations (fire-and-forget: the unsubscribes run synchronously and
+    // the bounded bot teardown finishes in the background, so app quit stays snappy).
     for (const [, conn] of this.connections) {
-      this.disconnectConnection(conn)
+      void this.disconnectConnection(conn)
     }
     this.connections.clear()
     this.disconnectedSince.clear()
     this.consecutiveFailures.clear()
     this.messageQueues.clear()
+    this.deduplicators.clear()
     this.isRunning = false
   }
 
@@ -242,19 +260,27 @@ class ChatIntegrationManager {
     if (!this.isRunning) return
     console.log('[ChatIntegrationManager] Reconnecting all integrations (system resume)')
 
+    // Reconnect integrations concurrently. The teardowns are independent and each is bounded at
+    // DISCONNECT_TIMEOUT_MS, so serial awaits made resume cost up to 3s × N before the last bot
+    // resumed polling. Each integration's own remove → reconnect stays awaited internally, so a
+    // single bot never runs two pollers; allSettled isolates a failure to its own integration.
     const entries = [...this.connections.entries()]
-    for (const [id, conn] of entries) {
-      try {
-        const integration = getChatIntegration(id)
-        if (!integration || integration.status === 'paused') continue
-        await this.removeIntegration(id)
-        await this.connectIntegration(integration)
-        this.disconnectedSince.delete(id)
-        this.consecutiveFailures.delete(id)
-      } catch (err) {
-        console.error(`[ChatIntegrationManager] Resume reconnect failed for ${id}:`, err)
-        reportError(err, 'resume-reconnect', { integrationId: id, provider: conn.integration.provider })
-      }
+    await Promise.allSettled(entries.map(([id, conn]) => this.reconnectOne(id, conn)))
+  }
+
+  /** Remove-then-reconnect a single integration (one resume step). Swallows its own error so one
+   *  integration's failure can't abort the others when reconnectAll runs them concurrently. */
+  private async reconnectOne(id: string, conn: IntegrationConnection): Promise<void> {
+    try {
+      const integration = getChatIntegration(id)
+      if (!integration || integration.status === 'paused') return
+      await this.removeIntegration(id)
+      await this.connectIntegration(integration)
+      this.disconnectedSince.delete(id)
+      this.consecutiveFailures.delete(id)
+    } catch (err) {
+      console.error(`[ChatIntegrationManager] Resume reconnect failed for ${id}:`, err)
+      reportError(err, 'resume-reconnect', { integrationId: id, provider: conn.integration.provider })
     }
   }
 
@@ -272,29 +298,43 @@ class ChatIntegrationManager {
         this.chatSessions.delete(key)
       }
     }
-    // Remove the connection
+    // Remove the connection. Await the teardown so a reconnect (removeIntegration →
+    // connectIntegration) fully stops the old poller before starting the new one.
     const conn = this.connections.get(id)
+    // Whether a concurrent reconnect swapped in a NEW connection for this id during the awaited
+    // teardown below. When it did, this teardown owns the OLD connection only and must not wipe
+    // the new one's sibling state. Stays false when there was no connection at all, so stale
+    // sibling state is still cleaned in that case.
+    let swappedIn = false
     if (conn) {
-      this.disconnectConnection(conn)
-      this.connections.delete(id)
+      await this.disconnectConnection(conn)
+      // Delete by identity, not key: the await above is a yield point, so a concurrent
+      // reconnect may have swapped in a new connector for this id — deleting by key would
+      // orphan that live, still-subscribed poller (same guard as the messageQueues eviction).
+      if (this.connections.get(id) === conn) this.connections.delete(id)
+      else swappedIn = true
     }
-    this.disconnectedSince.delete(id)
-    this.consecutiveFailures.delete(id)
-    // Drop any per-chat message/SSE queues for this integration. Keys are
-    // `${id}:${chatId}` and `sse:${id}:${chatId}`, so the old bare delete(id)
-    // never matched — iterate by prefix. The `:` delimiter plus UUID integration
-    // ids (which contain no `:` and are never the literal "sse") guarantee this
-    // can't false-match a sibling integration's keys.
-    //
-    // Settled chains already self-evict, so this only force-drops STILL-IN-FLIGHT
-    // chains. On a true teardown that is exactly what we want. On the reconnect
-    // path (runHealthChecks → removeIntegration → connectIntegration) it means a
-    // handler still running against the now-dead connection no longer serializes
-    // ahead of the first post-reconnect message — an accepted trade-off, since the
-    // stale connection is going away and new work should not block on it.
-    for (const key of [...this.messageQueues.keys()]) {
-      if (key.startsWith(`${id}:`) || key.startsWith(`sse:${id}:`)) {
-        this.messageQueues.delete(key)
+    // The sibling state below belongs to whichever connection currently holds this id. If a new
+    // one was swapped in, leave its state intact - same identity guard as the connection delete.
+    if (!swappedIn) {
+      this.disconnectedSince.delete(id)
+      this.consecutiveFailures.delete(id)
+      // Drop any per-chat message/SSE queues for this integration. Keys are
+      // `${id}:${chatId}` and `sse:${id}:${chatId}`, so the old bare delete(id)
+      // never matched — iterate by prefix. The `:` delimiter plus UUID integration
+      // ids (which contain no `:` and are never the literal "sse") guarantee this
+      // can't false-match a sibling integration's keys.
+      //
+      // Settled chains already self-evict, so this only force-drops STILL-IN-FLIGHT
+      // chains. On a true teardown that is exactly what we want. On the reconnect
+      // path (runHealthChecks → removeIntegration → connectIntegration) it means a
+      // handler still running against the now-dead connection no longer serializes
+      // ahead of the first post-reconnect message — an accepted trade-off, since the
+      // stale connection is going away and new work should not block on it.
+      for (const key of [...this.messageQueues.keys()]) {
+        if (key.startsWith(`${id}:`) || key.startsWith(`sse:${id}:`)) {
+          this.messageQueues.delete(key)
+        }
       }
     }
   }
@@ -442,6 +482,30 @@ class ChatIntegrationManager {
     }
   }
 
+  /**
+   * The per-integration dedup notepad, created on first use and reused across reconnects. Reset
+   * when the bot token changes: update-id sequences are per-bot, so a new bot must not inherit the
+   * old bot's ids (which could false-drop a real message). Retention is only meaningful for a
+   * same-bot reconnect.
+   */
+  private getOrCreateDeduplicator(integrationId: string, botToken: string): UpdateDeduplicator {
+    const existing = this.deduplicators.get(integrationId)
+    if (existing && existing.botToken === botToken) return existing.dedup
+    const dedup = new UpdateDeduplicator()
+    this.deduplicators.set(integrationId, { dedup, botToken })
+    return dedup
+  }
+
+  /**
+   * Permanently forget a deleted integration's dedup notepad. Only the delete path calls this -
+   * removeIntegration deliberately keeps the notepad so a reconnect still drops redeliveries, but a
+   * permanently deleted integration will never reconnect, so its notepad would otherwise leak for
+   * the process lifetime.
+   */
+  forgetDeduplicator(integrationId: string): void {
+    this.deduplicators.delete(integrationId)
+  }
+
   private async createConnector(integration: ChatIntegration): Promise<ChatClientConnector> {
     const config = parseChatIntegrationConfig(
       integration.provider as ChatProvider,
@@ -454,7 +518,11 @@ class ChatIntegrationManager {
     switch (integration.provider) {
       case 'telegram': {
         const { TelegramConnector } = await import('./telegram-connector')
-        return new TelegramConnector(config as import('./telegram-connector').TelegramConfig)
+        const telegramConfig = config as import('./telegram-connector').TelegramConfig
+        return new TelegramConnector(
+          telegramConfig,
+          this.getOrCreateDeduplicator(integration.id, telegramConfig.botToken),
+        )
       }
       case 'slack': {
         const { SlackConnector } = await import('./slack-connector')
@@ -469,15 +537,22 @@ class ChatIntegrationManager {
     }
   }
 
-  private disconnectConnection(conn: IntegrationConnection): void {
+  /**
+   * Unsubscribe and tear down a connector, awaiting the disconnect (bounded) so a reconnect
+   * never overlaps the old poller with the new one on the same token. Bounded because the
+   * reconnect trigger correlates with a slow/hung teardown.
+   */
+  private async disconnectConnection(conn: IntegrationConnection): Promise<void> {
     conn.messageUnsubscribe?.()
     conn.interactiveUnsubscribe?.()
     conn.errorUnsubscribe?.()
     conn.typingHintUnsubscribe?.()
-    conn.connector.disconnect().catch((err) => {
+    // `.catch` first so teardown never rejects — safe to race, no unhandled late rejection.
+    const teardown = conn.connector.disconnect().catch((err) => {
       console.error(`[ChatIntegrationManager] Error disconnecting:`, err)
       reportError(err, 'disconnect', { integrationId: conn.integration.id, provider: conn.integration.provider })
     })
+    await withTimeout(teardown, DISCONNECT_TIMEOUT_MS)
   }
 
   // ── Chat session management ────────────────────────────────────────

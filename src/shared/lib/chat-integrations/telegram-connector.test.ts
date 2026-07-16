@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TelegramConnector } from './telegram-connector'
 import type { IncomingMessage } from './base-connector'
+import { UpdateDeduplicator } from './update-deduplicator'
 
 // ── grammY mock ────────────────────────────────────────────────────────────────
 // The photo/document handlers are inline closures registered inside connect(),
@@ -8,15 +9,21 @@ import type { IncomingMessage } from './base-connector'
 // registry. We mock grammY's Bot to capture the handlers connect() registers and
 // to stub api.getFile. The text-handler describes never call connect(), so they
 // never touch the mock.
-const { capturedHandlers, getFileMock } = vi.hoisted(() => ({
+const { capturedHandlers, capturedMiddleware, registrationOrder, getFileMock } = vi.hoisted(() => ({
   capturedHandlers: {} as Record<string, (ctx: any) => unknown>,
+  capturedMiddleware: [] as Array<(ctx: any, next: () => Promise<void>) => unknown>,
+  // Registration order of use()/on() calls, so a test can pin that the gate is registered before
+  // any handler — grammY runs middleware in registration order, so a gate registered after a
+  // handler would silently stop gating it.
+  registrationOrder: [] as string[],
   getFileMock: vi.fn(),
 }))
 
 vi.mock('grammy', () => ({
   Bot: class {
     api = { getFile: getFileMock }
-    on(event: string, handler: (ctx: any) => unknown): void { capturedHandlers[event] = handler }
+    on(event: string, handler: (ctx: any) => unknown): void { capturedHandlers[event] = handler; registrationOrder.push(`on:${event}`) }
+    use(mw: (ctx: any, next: () => Promise<void>) => unknown): void { capturedMiddleware.push(mw); registrationOrder.push('use') }
     start(opts: { onStart?: () => void }): Promise<void> { opts?.onStart?.(); return Promise.resolve() }
     async stop(): Promise<void> {}
   },
@@ -102,6 +109,52 @@ function makeCbCtx(data: string, opts: { messageId?: number; chatId?: number; te
     answerCallbackQuery: vi.fn(async () => {}),
     editMessageReplyMarkup: vi.fn(async () => {}),
   }
+}
+
+/** Reset the module-level grammY capture registries between connect()-based tests. */
+function resetCaptured(): void {
+  for (const k of Object.keys(capturedHandlers)) delete capturedHandlers[k]
+  capturedMiddleware.length = 0
+  registrationOrder.length = 0
+}
+
+/**
+ * Drive an update through the connect()-registered gate middleware, then the matching handler -
+ * the real grammY order. This is what exercises the dedup / teardown drop: the gate runs first and
+ * only reaches the handler via next(), so a redelivery or a disconnecting connector is dropped
+ * exactly as in production, instead of being bypassed by calling the handler directly.
+ */
+async function dispatch(ctx: any, event: string): Promise<void> {
+  let idx = -1
+  const chain = async (): Promise<void> => {
+    idx++
+    if (idx < capturedMiddleware.length) {
+      await capturedMiddleware[idx](ctx, chain)
+    } else {
+      await capturedHandlers[event]?.(ctx)
+    }
+  }
+  await chain()
+}
+
+/**
+ * connect() a fresh connector so its gate + handlers register into the captured registries.
+ * Requires fake timers (drives the 100ms connect poll + the onStart first-poll timer). After this
+ * resolves, hasCompletedFirstPoll is true (normal flow); flip it back to false to test the
+ * first-poll buffering window.
+ */
+async function connectFresh(dedup?: UpdateDeduplicator): Promise<{ connector: TelegramConnector; emitted: IncomingMessage[] }> {
+  resetCaptured()
+  getFileMock.mockReset().mockResolvedValue({ file_path: 'files/x' })
+  const connector = dedup
+    ? new TelegramConnector({ botToken: 'fake:TOKEN' }, dedup)
+    : new TelegramConnector({ botToken: 'fake:TOKEN' })
+  const emitted: IncomingMessage[] = []
+  connector.onMessage((m) => emitted.push(m))
+  const p = connector.connect()
+  await vi.advanceTimersByTimeAsync(1100)
+  await p
+  return { connector, emitted }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -673,5 +726,188 @@ describe('TelegramConnector — secret/file requests route to the desktop-only f
     const md = sent[0].rich_message.markdown as string
     expect(md).toContain("isn't supported in chat")
     expect(md).not.toMatch(/please (upload|send) the file/i)
+  })
+})
+
+describe('TelegramConnector — update deduplication (record-at-handoff)', () => {
+  // Every case drives updates through the connect()-registered gate + handler (see dispatch),
+  // so the gate's redelivery/teardown drop is exercised, and a delivered id is recorded only
+  // once its handler actually hands the message off.
+
+  /** A text ctx carrying a raw Telegram update_id (the redelivery key). */
+  function makeTextCtxWithUpdate(updateId: number, opts: { chatId?: number; text?: string; messageId?: number } = {}): any {
+    const ctx = makeCtx({
+      type: 'private',
+      chatId: opts.chatId ?? 123,
+      text: opts.text ?? 'hello',
+      messageId: opts.messageId ?? 1,
+    }) as any
+    ctx.update = { update_id: updateId }
+    return ctx
+  }
+
+  function docCtxWithUpdate(updateId: number): any {
+    return {
+      chat: { id: 123, type: 'private' },
+      from: { id: 456, first_name: 'Bob' },
+      message: { document: { file_id: 'd1', file_name: 'report.pdf', mime_type: 'application/pdf' }, caption: '', message_id: 11, date: 0 },
+      update: { update_id: updateId },
+    }
+  }
+
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.clearAllTimers(); vi.useRealTimers() })
+
+  it('drops a redelivered update with the same update_id (emits once, not twice)', async () => {
+    const dedup = new UpdateDeduplicator(100)
+    const { emitted } = await connectFresh(dedup)
+    const ctx = makeTextCtxWithUpdate(5001, { text: 'hi', messageId: 100 })
+    await dispatch(ctx, 'message:text') // first delivery → records at handoff
+    await dispatch(ctx, 'message:text') // redelivery — same update_id, dropped by the gate
+    expect(emitted).toHaveLength(1)
+  })
+
+  it('emits both when the update_ids differ', async () => {
+    const dedup = new UpdateDeduplicator(100)
+    const { emitted } = await connectFresh(dedup)
+    await dispatch(makeTextCtxWithUpdate(5001, { text: 'one', messageId: 100 }), 'message:text')
+    await dispatch(makeTextCtxWithUpdate(5002, { text: 'two', messageId: 101 }), 'message:text')
+    expect(emitted).toHaveLength(2)
+  })
+
+  it('dedupes BEFORE first-poll batching, so a redelivered update never bleeds into the batch', async () => {
+    const dedup = new UpdateDeduplicator(100)
+    dedup.markDelivered('5001') // delivered by the old connector before the reconnect
+    const { connector, emitted } = await connectFresh(dedup)
+    ;(connector as any).hasCompletedFirstPoll = false // first-poll window, as on a reconnect
+
+    // Redelivered old update + a genuinely new one arrive in the same batch window.
+    await dispatch(makeTextCtxWithUpdate(5001, { chatId: 200, text: 'old message', messageId: 100 }), 'message:text')
+    await dispatch(makeTextCtxWithUpdate(5002, { chatId: 200, text: 'new message', messageId: 101 }), 'message:text')
+    ;(connector as any).flushBatch('200', '456', '101')
+
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0].text).toBe('new message')
+    expect(emitted[0].text).not.toContain('old message')
+  })
+
+  it('does not dedupe when no deduplicator is wired (back-compat)', async () => {
+    const { emitted } = await connectFresh() // no deduplicator
+    const ctx = makeTextCtxWithUpdate(5001, { text: 'hi', messageId: 100 })
+    await dispatch(ctx, 'message:text')
+    await dispatch(ctx, 'message:text')
+    expect(emitted).toHaveLength(2)
+  })
+
+  it('a disconnecting connector ignores updates (no emit, and does not record them)', async () => {
+    // During teardown the manager has already unsubscribed, so the gate drops the update before
+    // any handler runs; leaving it unrecorded lets the fresh connector re-read and deliver it.
+    const dedup = new UpdateDeduplicator(100)
+    const { connector, emitted } = await connectFresh(dedup)
+    ;(connector as any).disconnecting = true
+
+    await dispatch(makeTextCtxWithUpdate(9101, { text: 'hi', messageId: 100 }), 'message:text')
+
+    expect(emitted).toHaveLength(0)               // gated out by the tearing-down connector
+    expect(dedup.isDuplicate('9101')).toBe(false) // not recorded → a fresh connector will deliver it
+  })
+
+  // ── Record-at-handoff recovery: the finding 1 & 2 fix ──────────────────────────
+  // A message accepted but then lost in a teardown window must NOT be recorded, or its
+  // redelivery to the fresh connector would be dropped as a "duplicate" and lost for good.
+
+  it('finding 1: a first-poll message lost on a teardown flush is NOT recorded (redelivery recovers it)', async () => {
+    const dedup = new UpdateDeduplicator(100)
+    const { connector } = await connectFresh(dedup)
+    ;(connector as any).hasCompletedFirstPoll = false // first-poll buffering window
+
+    await dispatch(makeTextCtxWithUpdate(6001, { chatId: 300, text: 'buffered', messageId: 50 }), 'message:text')
+
+    // Teardown lands: disconnect() flushes buffered batches into an unsubscribed manager.
+    ;(connector as any).disconnecting = true
+    ;(connector as any).flushAllPendingBatches()
+
+    expect(dedup.isDuplicate('6001')).toBe(false) // stays unrecorded → recoverable
+  })
+
+  it('a first-poll message delivered on a normal flush IS recorded (redelivery then dropped)', async () => {
+    const dedup = new UpdateDeduplicator(100)
+    const { connector, emitted } = await connectFresh(dedup)
+    ;(connector as any).hasCompletedFirstPoll = false
+
+    await dispatch(makeTextCtxWithUpdate(6002, { chatId: 300, text: 'buffered', messageId: 51 }), 'message:text')
+    ;(connector as any).flushBatch('300', '456', '51') // real handoff (not disconnecting)
+
+    expect(emitted).toHaveLength(1)
+    expect(dedup.isDuplicate('6002')).toBe(true) // recorded only on the real delivery
+  })
+
+  it('finding 2: a document lost when teardown lands during getFile is NOT recorded (redelivery recovers it)', async () => {
+    const dedup = new UpdateDeduplicator(100)
+    const { connector, emitted } = await connectFresh(dedup)
+    // Teardown lands mid-getFile: flip disconnecting while the file round-trip is in flight.
+    getFileMock.mockReset().mockImplementation(async () => {
+      ;(connector as any).disconnecting = true
+      return { file_path: 'files/x' }
+    })
+
+    await dispatch(docCtxWithUpdate(7003), 'message:document')
+
+    expect(emitted).toHaveLength(0)               // post-getFile guard bailed before emit
+    expect(dedup.isDuplicate('7003')).toBe(false) // not recorded → recoverable
+  })
+
+  it('drops a redelivered document (emits once, no re-download)', async () => {
+    const dedup = new UpdateDeduplicator(100)
+    const { emitted } = await connectFresh(dedup)
+    const ctx = docCtxWithUpdate(7002)
+    await dispatch(ctx, 'message:document')
+    await dispatch(ctx, 'message:document') // redelivery — same update_id
+    expect(emitted).toHaveLength(1)
+    expect(getFileMock).toHaveBeenCalledTimes(1) // the second delivery never re-fetches
+  })
+
+  it('drops a redelivered callback (same update_id) so a toggle is not re-applied', async () => {
+    const dedup = new UpdateDeduplicator(100)
+    const { connector } = await connectFresh(dedup)
+    const cbSpy = vi.spyOn(connector as any, 'handleCallbackQuery')
+    const ctx = makeCbCtx('cb'); ctx.update = { update_id: 8001 }
+    await dispatch(ctx, 'callback_query:data') // first: handler runs, records 8001 at entry
+    await dispatch(ctx, 'callback_query:data') // redelivery: gate drops it
+    expect(cbSpy).toHaveBeenCalledTimes(1)     // handler ran exactly once
+  })
+
+  it('the gate covers every handler type: a redelivery of any update is dropped before its handler', async () => {
+    // Iddo's forcing invariant: the single bot.use gate covers text, photo, document, and
+    // callback, so a future handler is protected without opting in per-handler.
+    const dedup = new UpdateDeduplicator(100)
+    const { connector, emitted } = await connectFresh(dedup)
+    const cbSpy = vi.spyOn(connector as any, 'handleCallbackQuery')
+    for (const id of ['1001', '1002', '1003', '1004']) dedup.markDelivered(id) // already delivered
+
+    const photoCtx: any = { chat: { id: 123, type: 'private' }, from: { id: 456, first_name: 'A' }, message: { photo: [{ file_id: 'p' }], caption: '', message_id: 1, date: 0 }, update: { update_id: 1002 } }
+    const docCtx = docCtxWithUpdate(1003)
+    const cbCtx = makeCbCtx('x'); cbCtx.update = { update_id: 1004 }
+
+    await dispatch(makeTextCtxWithUpdate(1001), 'message:text')
+    await dispatch(photoCtx, 'message:photo')
+    await dispatch(docCtx, 'message:document')
+    await dispatch(cbCtx, 'callback_query:data')
+
+    expect(emitted).toHaveLength(0)            // no message handler emitted a redelivery
+    expect(getFileMock).not.toHaveBeenCalled() // photo/document never even fetched
+    expect(cbSpy).not.toHaveBeenCalled()       // callback handler never ran
+  })
+
+  it('registers the gate middleware BEFORE any handler (grammY runs middleware in registration order)', async () => {
+    // dispatch() runs middleware-then-handler by construction, so it cannot catch a mis-ordering
+    // where bot.use is registered after the handlers - grammY would then bypass the gate. Pin the
+    // real registration order directly.
+    await connectFresh(new UpdateDeduplicator(100))
+    const firstGate = registrationOrder.indexOf('use')
+    const firstHandler = registrationOrder.findIndex((r) => r.startsWith('on:'))
+    expect(firstGate).toBeGreaterThanOrEqual(0)     // a gate is registered
+    expect(firstHandler).toBeGreaterThanOrEqual(0)  // handlers are registered
+    expect(firstGate).toBeLessThan(firstHandler)    // gate before every handler, or it would not gate them
   })
 })

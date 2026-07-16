@@ -350,6 +350,9 @@ chatIntegrationsRouter.delete('/:integrationId', IntegrationAgentRole('user'), a
 
     // Disconnect first
     await chatIntegrationManager.removeIntegration(id)
+    // Permanent delete: no reconnect will recreate this integration, so drop its dedup notepad.
+    // (removeIntegration deliberately keeps it, for reconnect survival.)
+    chatIntegrationManager.forgetDeduplicator(id)
 
     // Clean up session mappings
     deleteChatIntegrationSessionsByIntegration(id)
