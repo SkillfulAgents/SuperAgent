@@ -2,7 +2,7 @@ import http from 'http'
 import https from 'https'
 import tls from 'tls'
 import net, { AddressInfo } from 'net'
-import { randomUUID } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { z } from 'zod'
 import {
   LambdaMicrovmsClient,
@@ -41,15 +41,18 @@ const UPSTREAM_IDLE_TIMEOUT_MS = 30_000
 const ECS_METADATA_TIMEOUT_MS = 2_000
 // Quiet session streams through MicroVM ingress die at ~60s without traffic.
 export const MICROVM_STREAM_KEEPALIVE_MS = 25_000
-// Empty WebSocket ping frame (FIN + opcode 0x9, zero-length payload).
-export const MICROVM_WS_PING_FRAME = Buffer.from([0x89, 0x00])
+
+export function createMicrovmWebSocketPingFrame(): Buffer {
+  // Client-to-server frames require a fresh masking key, even with no payload.
+  return Buffer.concat([Buffer.from([0x89, 0x80]), randomBytes(4)])
+}
 
 /** Keep MicroVM ingress from idle-cutting a quiet proxied WS stream. */
 export function attachMicrovmUpstreamKeepalive(upstream: net.Socket): () => void {
   const timer = setInterval(() => {
     if (upstream.destroyed) return
     try {
-      upstream.write(MICROVM_WS_PING_FRAME)
+      upstream.write(createMicrovmWebSocketPingFrame())
     } catch (error) {
       console.warn('[LocalAuthForwardProxy] WebSocket ping failed:', error)
     }
