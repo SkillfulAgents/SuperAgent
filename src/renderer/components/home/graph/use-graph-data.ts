@@ -50,6 +50,11 @@ export type ResourceNodeData = {
   iconSlug?: string
   /** Owning agent, for webhook/cron/chat navigation */
   agentSlug?: string
+  /**
+   * Presentation flag injected by AgentGraph (details view toggle), never
+   * set by buildGraph: pins the detail card open without selection.
+   */
+  showDetails?: boolean
 }
 
 export type GraphNodeData = AgentNodeData | ResourceNodeData
@@ -66,14 +71,8 @@ export interface GraphEdgeSpec {
   source: string
   target: string
   variant: GraphEdgeVariant
-  /** Interaction count (API calls, session invocations, trigger fires) — drives dash-march speed */
+  /** Interaction count (API calls, session invocations, trigger fires) — feeds node usage totals */
   weight?: number
-  /**
-   * Which way traffic moves relative to source→target: agents call out to
-   * accounts/MCPs, triggers fire in, chat integrations carry both ways.
-   * Sets the dash-march direction; omitted for permission edges.
-   */
-  flow?: 'out' | 'in' | 'both'
   /** Endpoint is in a broken state (needs re-auth, errored, disconnected) — line renders red */
   broken?: boolean
   /**
@@ -133,10 +132,10 @@ const AUTOMATION_TONE: Record<string, ResourceTone> = {
 // ── Graph assembly ───────────────────────────────────────────────────────
 
 /**
- * Agent↔agent edges render as one straight line per unordered pair —
- * activity in either direction shares the segment (direction shows only in
- * the dash march), and a permission line is drawn only when no activity
- * line already occupies it. So pair-level state is keyed unordered.
+ * Agent↔agent edges render as one line per unordered pair — activity in
+ * either direction shares the segment, and a permission line is drawn only
+ * when no activity line already occupies it. So pair-level state is keyed
+ * unordered.
  */
 function countLabel(n: number, unit: string): string {
   return `${n} ${unit}${n === 1 ? '' : 's'}`
@@ -233,7 +232,6 @@ export function buildGraph(input: {
       target,
       variant: 'resource',
       weight: calls,
-      flow: 'out',
       broken: problem !== undefined,
       deletable: true,
     })
@@ -252,7 +250,6 @@ export function buildGraph(input: {
       target,
       variant: 'resource',
       weight: calls,
-      flow: 'out',
       broken: problem !== undefined,
       deletable: true,
     })
@@ -283,8 +280,6 @@ export function buildGraph(input: {
       target: id,
       variant: 'trigger',
       weight: chat.sessionCount,
-      // Messages arrive and replies go back — the one genuinely two-way link.
-      flow: 'both',
       broken: problem !== undefined,
     })
   }
@@ -313,7 +308,6 @@ export function buildGraph(input: {
       target: id,
       variant: 'trigger',
       weight: webhook.fireCount,
-      flow: 'in',
       broken: problem !== undefined,
     })
   }
@@ -345,7 +339,6 @@ export function buildGraph(input: {
       target: id,
       variant: 'trigger',
       weight: task.executionCount,
-      flow: 'in',
       broken: problem !== undefined,
     })
   }
@@ -362,28 +355,22 @@ export function buildGraph(input: {
   }
 
   // Merge invocations onto unordered pairs (A→B and B→A are visually one
-  // line) but keep per-direction counts — the dash march runs toward the
-  // invoked agent, or runs both ways on the line when both directions have
-  // traffic. Then draw one activity edge per communicating pair…
-  const activityByPair = new Map<string, { aToB: number; bToA: number }>()
+  // line), then draw one activity edge per communicating pair…
+  const activityByPair = new Map<string, number>()
   for (const inv of topology.invocations) {
     if (inv.caller === inv.target) continue
     if (!agentSlugSet.has(inv.caller) || !agentSlugSet.has(inv.target)) continue
     const key = pairKey(inv.caller, inv.target)
-    const entry = activityByPair.get(key) ?? { aToB: 0, bToA: 0 }
-    if (inv.caller === key.split('|')[0]) entry.aToB += inv.count
-    else entry.bToA += inv.count
-    activityByPair.set(key, entry)
+    activityByPair.set(key, (activityByPair.get(key) ?? 0) + inv.count)
   }
-  for (const [key, { aToB, bToA }] of [...activityByPair].sort(([a], [b]) => a.localeCompare(b))) {
+  for (const [key, weight] of [...activityByPair].sort(([a], [b]) => a.localeCompare(b))) {
     const [a, b] = key.split('|')
     edges.push({
       id: `${nodeId.agent(a)}=${nodeId.agent(b)}`,
       source: nodeId.agent(a),
       target: nodeId.agent(b),
       variant: 'activity',
-      weight: aToB + bToA,
-      flow: aToB && bToA ? 'both' : aToB ? 'out' : 'in',
+      weight,
       // Activity is history — deleting the edge only revokes the standing
       // permission (when one exists); the recorded line stays.
       deletable: permissionCallerByPair.has(key),

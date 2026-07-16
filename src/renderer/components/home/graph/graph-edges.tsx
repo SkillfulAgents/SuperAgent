@@ -3,7 +3,7 @@
  * orthogonal connectors.
  *
  * Every node exposes four ports (the side midpoints of its VISIBLE shape:
- * the whole circle for agents, just the 40px icon chip for resource nodes —
+ * the rounded card for agents, just the 40px icon chip for resource nodes —
  * anchoring the full bounding box would leave connectors stopping short of
  * the artwork).
  *
@@ -17,25 +17,24 @@
  * Manipulation, visible on selection: a pill handle on each segment drags
  * it perpendicular (dragging an END segment first spawns a short stub bend
  * at the port, exactly like FigJam); endpoint dots slide freely around the
- * node's circular perimeter, magnetizing to the four cardinal anchors when
- * close. Live drags render locally and commit once, on release, through
+ * node's perimeter, magnetizing to the four cardinal anchors when close.
+ * Live drags render locally and commit once, on release, through
  * edge.data.onGeometryCommit.
- *
- * Bidirectional data flow renders on the single line: two tracer stacks
- * travel it in opposite directions.
  */
 
-import { useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import {
   BaseEdge,
   EdgeLabelRenderer,
   useInternalNode,
   useReactFlow,
+  useStore,
   type Edge,
   type EdgeProps,
   type InternalNode,
 } from '@xyflow/react'
 import { Network, Trash2 } from 'lucide-react'
+import { cn } from '@shared/lib/utils/cn'
 import type { GraphNodeData } from './use-graph-data'
 
 export type PortSide = 'top' | 'bottom' | 'left' | 'right'
@@ -48,20 +47,20 @@ export interface EdgeGeometryOverride {
   sourceAngle?: number
   /** Pinned anchor on the target node's perimeter; absent = auto */
   targetAngle?: number
-}
-
-export interface EdgeMotion {
-  /** Seconds per tracer cycle — smaller = faster traffic */
-  duration: number
-  /** Data direction: tracers run source→target ('out'), target→source
-   *  ('in'), or both ways at once on the same line ('both') */
-  flow?: 'out' | 'in' | 'both'
+  /** Count-chip position as a fraction of the route's length (default 0.5) */
+  chipT?: number
 }
 
 export interface ElbowEdgeData extends Record<string, unknown> {
   geometry?: EdgeGeometryOverride
-  /** Present on active edges: drives the traveling-pulse overlay */
-  motion?: EdgeMotion
+  /** Recorded interactions over this connection — shown as the count chip */
+  count?: number
+  /** Singular unit for the chip ("call", "fire", "run"…); pluralized here */
+  unit?: string
+  /** Edge is hovered (tracked by AgentGraph — the chip portal can't see :hover) */
+  hovered?: boolean
+  /** Details-view toggle: keep the count chip visible without hover */
+  showDetails?: boolean
   onGeometryCommit?: (edgeId: string, patch: EdgeGeometryOverride) => void
   /** Remove the relationship behind this edge (shown as a toolbar button when selected) */
   onDelete?: (edgeId: string) => void
@@ -103,6 +102,8 @@ interface Box {
   right: number
   top: number
   bottom: number
+  /** Which perimeter the anchors ride: chips are circles, agent cards are boxes */
+  shape: 'circle' | 'rect'
 }
 
 interface XYPoint {
@@ -115,7 +116,7 @@ function visualBox(node: InternalNode): Box {
   const w = node.measured?.width ?? 0
   const h = node.measured?.height ?? 0
   if ((node.data as GraphNodeData | undefined)?.kind === 'agent') {
-    return { cx: x + w / 2, cy: y + h / 2, left: x, right: x + w, top: y, bottom: y + h }
+    return { cx: x + w / 2, cy: y + h / 2, left: x, right: x + w, top: y, bottom: y + h, shape: 'rect' }
   }
   const left = x + (w - RESOURCE_CHIP) / 2
   return {
@@ -125,17 +126,29 @@ function visualBox(node: InternalNode): Box {
     right: left + RESOURCE_CHIP,
     top: y,
     bottom: y + RESOURCE_CHIP,
+    shape: 'circle',
   }
 }
 
-/** Perimeter anchor for an angle: the point on the node's circle plus the
- *  cardinal side whose axis the route should exit along. */
+/** Perimeter anchor for an angle: where a ray from the node's center exits
+ *  its visible shape, plus the cardinal side whose axis the route should
+ *  exit along. */
 function anchorFromAngle(box: Box, angleDeg: number): { point: XYPoint; side: PortSide } {
-  const radius = (box.right - box.left) / 2
   const rad = (angleDeg * Math.PI) / 180
+  const dx = Math.cos(rad)
+  const dy = Math.sin(rad)
+  let t: number
+  if (box.shape === 'circle') {
+    t = (box.right - box.left) / 2
+  } else {
+    // Ray–box intersection: distance to the first wall the ray hits.
+    const hw = (box.right - box.left) / 2
+    const hh = (box.bottom - box.top) / 2
+    t = Math.min(hw / Math.max(Math.abs(dx), 1e-9), hh / Math.max(Math.abs(dy), 1e-9))
+  }
   const norm = ((angleDeg % 360) + 360) % 360
   return {
-    point: { x: box.cx + radius * Math.cos(rad), y: box.cy + radius * Math.sin(rad) },
+    point: { x: box.cx + t * dx, y: box.cy + t * dy },
     side: norm < 45 || norm >= 315 ? 'right' : norm < 135 ? 'bottom' : norm < 225 ? 'left' : 'top',
   }
 }
@@ -195,8 +208,12 @@ interface RouteSegment {
 
 interface ElbowGeometry {
   path: string
-  /** Hover-label anchor — beside the longest segment, clear of its handle */
+  /** Route corner points, source → target (for projecting drags onto the path) */
+  points: XYPoint[]
+  /** On-path anchor (chipT of the route's length in) — the toolbar/chip anchor */
   labelX: number
+  /** Axis of the segment the anchor sits on (toolbar offsets perpendicular) */
+  anchorAxis: Axis
   labelY: number
   segments: RouteSegment[]
   /** Effective interior coords (validated stored coords, or the auto route) */
@@ -258,12 +275,33 @@ function elbowGeometry(
       length: Math.abs(a.x - b.x) + Math.abs(a.y - b.y),
     })
   }
-  const longest = segments.reduce((m, s) => (s.length > m.length ? s : m), segments[0])
+  // Toolbar/chip anchor: a user-draggable fraction of the route's total
+  // length (default: halfway) — always ON the line, so the floating actions
+  // never drift from it. Its segment's axis lets the toolbar offset
+  // perpendicular to the line.
+  const chipT = Math.min(1, Math.max(0, override.chipT ?? 0.5))
+  let anchor = pts[0]
+  let anchorAxis: Axis = 'h'
+  let remaining = segments.reduce((sum, s) => sum + s.length, 0) * chipT
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const a = pts[i]
+    const b = pts[i + 1]
+    const length = Math.abs(a.x - b.x) + Math.abs(a.y - b.y)
+    if (remaining <= length && length > 0) {
+      const f = remaining / length
+      anchor = { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f }
+      anchorAxis = a.y === b.y ? 'h' : 'v'
+      break
+    }
+    remaining -= length
+  }
 
   return {
     path: roundedPath(pts),
-    labelX: longest.axis === 'h' ? longest.mid.x : longest.mid.x + 16,
-    labelY: longest.axis === 'h' ? longest.mid.y - 16 : longest.mid.y,
+    points: pts,
+    labelX: anchor.x,
+    labelY: anchor.y,
+    anchorAxis,
     segments,
     coords,
     sourceSide,
@@ -275,22 +313,55 @@ function elbowGeometry(
   }
 }
 
+/** Where along the polyline (as a 0..1 fraction of its length) the point
+ *  projects most closely. */
+function pathFraction(points: XYPoint[], p: XYPoint): number {
+  let total = 0
+  const lengths: number[] = []
+  for (let i = 0; i + 1 < points.length; i++) {
+    const length = Math.abs(points[i + 1].x - points[i].x) + Math.abs(points[i + 1].y - points[i].y)
+    lengths.push(length)
+    total += length
+  }
+  if (total === 0) return 0.5
+  let bestFraction = 0.5
+  let bestDistance = Infinity
+  let walked = 0
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i]
+    const b = points[i + 1]
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const len2 = dx * dx + dy * dy
+    const t = len2 ? Math.min(1, Math.max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0
+    const cx = a.x + t * dx
+    const cy = a.y + t * dy
+    const d2 = (p.x - cx) ** 2 + (p.y - cy) ** 2
+    if (d2 < bestDistance) {
+      bestDistance = d2
+      bestFraction = (walked + t * lengths[i]) / total
+    }
+    walked += lengths[i]
+  }
+  return bestFraction
+}
+
 /** Pointer-capture drag plumbing shared by segment pills and endpoint dots. */
 function usePointerDrag(onStart: () => void, onMove: (p: XYPoint) => void, onEnd: () => void) {
   const { screenToFlowPosition } = useReactFlow()
   const dragging = useRef(false)
   return {
-    onPointerDown: (event: ReactPointerEvent<SVGElement>) => {
+    onPointerDown: (event: ReactPointerEvent<Element>) => {
       dragging.current = true
       event.currentTarget.setPointerCapture(event.pointerId)
       event.stopPropagation()
       onStart()
     },
-    onPointerMove: (event: ReactPointerEvent<SVGElement>) => {
+    onPointerMove: (event: ReactPointerEvent<Element>) => {
       if (!dragging.current) return
       onMove(screenToFlowPosition({ x: event.clientX, y: event.clientY }))
     },
-    onPointerUp: (event: ReactPointerEvent<SVGElement>) => {
+    onPointerUp: (event: ReactPointerEvent<Element>) => {
       if (!dragging.current) return
       dragging.current = false
       event.currentTarget.releasePointerCapture(event.pointerId)
@@ -301,92 +372,6 @@ function usePointerDrag(onStart: () => void, onMove: (p: XYPoint) => void, onEnd
 
 const HANDLE_FILL = 'hsl(var(--card))'
 const HANDLE_STROKE = 'rgb(59 130 246)' // blue-500, matching the port dots
-
-/** Tracer sliding along a solid active line — a bright comet head with a
- *  fading tail, built from stacked dash layers: each layer is a longer,
- *  dimmer dash, phase-shifted so every layer's leading edge rides with the
- *  head. One tracer per TRACER_PERIOD px of path; the keyframe offset in
- *  agent-graph.css must match the period for a seamless loop. */
-const TRACER_PERIOD = 80
-// Tail first (drawn underneath), head last. blue-300 tail, blue-100 head.
-const TRACER_LAYERS = [
-  { length: 30, opacity: 0.15, widthBoost: 0, color: 'rgb(147 197 253)' },
-  { length: 18, opacity: 0.35, widthBoost: 0.25, color: 'rgb(147 197 253)' },
-  { length: 10, opacity: 0.65, widthBoost: 0.5, color: 'rgb(147 197 253)' },
-  { length: 5, opacity: 1, widthBoost: 1, color: 'rgb(219 234 254)' },
-]
-const TRACER_HEAD = TRACER_LAYERS[TRACER_LAYERS.length - 1].length
-
-function TracerStack({
-  path,
-  duration,
-  reversed,
-  baseWidth,
-  baseOpacity,
-}: {
-  path: string
-  duration: number
-  reversed: boolean
-  baseWidth: number
-  baseOpacity: number
-}) {
-  return (
-    <>
-      {TRACER_LAYERS.map((layer, i) => (
-        <path
-          key={i}
-          className="graph-edge-pulse"
-          d={path}
-          fill="none"
-          stroke={layer.color}
-          strokeLinecap="round"
-          strokeDasharray={`${layer.length} ${TRACER_PERIOD - layer.length}`}
-          style={{
-            strokeWidth: baseWidth + layer.widthBoost,
-            opacity: layer.opacity * baseOpacity,
-            pointerEvents: 'none',
-            animationName: 'graph-edge-flow',
-            animationDuration: `${duration}s`,
-            animationTimingFunction: 'linear',
-            animationIterationCount: 'infinite',
-            animationDirection: reversed ? 'reverse' : 'normal',
-            // Forward motion leads with the dash END, so longer tail layers
-            // need a phase shift to ride behind the head; reverse motion
-            // leads with the dash START, where layers already align.
-            animationDelay: reversed
-              ? undefined
-              : `${((layer.length - TRACER_HEAD) / TRACER_PERIOD - 1) * duration}s`,
-          }}
-        />
-      ))}
-    </>
-  )
-}
-
-function FlowPulse({
-  path,
-  motion,
-  baseStyle,
-}: {
-  path: string
-  motion: EdgeMotion | undefined
-  baseStyle: CSSProperties | undefined
-}) {
-  if (!motion) return null
-  const baseWidth = (baseStyle?.strokeWidth as number | undefined) ?? 1.25
-  const baseOpacity = (baseStyle?.opacity as number | undefined) ?? 1
-  const flow = motion.flow ?? 'out'
-  return (
-    <>
-      {flow !== 'in' && (
-        <TracerStack path={path} duration={motion.duration} reversed={false} baseWidth={baseWidth} baseOpacity={baseOpacity} />
-      )}
-      {flow !== 'out' && (
-        <TracerStack path={path} duration={motion.duration} reversed={true} baseWidth={baseWidth} baseOpacity={baseOpacity} />
-      )}
-    </>
-  )
-}
 
 function SegmentHandle({
   segment,
@@ -515,10 +500,66 @@ function useElbow(id: string, source: string, target: string, data: ElbowEdgeDat
     endSource: () => (live?.sourceAngle !== undefined ? commit({ sourceAngle: live.sourceAngle }) : setLive(null)),
     dragTarget: (p: XYPoint) => setLive((prev) => ({ ...prev, targetAngle: angleForPoint(geometry.targetBox, p) })),
     endTarget: () => (live?.targetAngle !== undefined ? commit({ targetAngle: live.targetAngle }) : setLive(null)),
+    dragChip: (p: XYPoint) => setLive((prev) => ({ ...prev, chipT: pathFraction(geometry.points, p) })),
+    endChip: () => (live?.chipT !== undefined ? commit({ chipT: Math.round(live.chipT * 1000) / 1000 }) : setLive(null)),
   }
 }
 
 type UseElbowResult = NonNullable<ReturnType<typeof useElbow>>
+
+/** Count chip riding the connector's midpoint: the number of recorded runs
+ *  ("0 runs" = connected but never used). Shown on edge hover or while the
+ *  details view is on; counter-scaled so it reads at true size at any zoom,
+ *  like the node detail cards. */
+function CountChip({
+  geometry,
+  count,
+  unit,
+  visible,
+  onDragMove,
+  onDragEnd,
+}: {
+  geometry: ElbowGeometry
+  count: number
+  unit: string
+  visible: boolean
+  onDragMove: (p: XYPoint) => void
+  onDragEnd: () => void
+}) {
+  const zoom = useStore((s) => s.transform[2])
+  // Keep the chip alive mid-drag even when the pointer leaves the edge's
+  // hover band (pointer capture keeps the events coming regardless).
+  const [dragging, setDragging] = useState(false)
+  const handlers = usePointerDrag(
+    () => setDragging(true),
+    onDragMove,
+    () => {
+      setDragging(false)
+      onDragEnd()
+    },
+  )
+  const shown = visible || dragging
+  const amount = count >= 1000 ? `${(count / 1000).toFixed(1)}k` : `${count}`
+  return (
+    <EdgeLabelRenderer>
+      <div
+        className={cn(
+          'nodrag nopan absolute cursor-grab select-none rounded-full border border-border/60 bg-card px-1.5 text-2xs leading-4 text-muted-foreground shadow-sm transition-opacity duration-150 active:cursor-grabbing',
+          shown ? 'opacity-100' : 'opacity-0',
+        )}
+        style={{
+          transform: `translate(${geometry.labelX}px, ${geometry.labelY}px) translate(-50%, -50%) scale(${1 / zoom})`,
+          pointerEvents: shown ? 'all' : 'none',
+          zIndex: 1001,
+        }}
+        {...handlers}
+      >
+        {amount} {unit}
+        {count === 1 ? '' : 's'}
+      </div>
+    </EdgeLabelRenderer>
+  )
+}
 
 /** Floating action chip above a selected connector: delete / edit permissions. */
 function EdgeToolbar({
@@ -531,13 +572,20 @@ function EdgeToolbar({
   data: ElbowEdgeData | undefined
 }) {
   if (!data?.onDelete && !data?.onEditPermissions) return null
+  // Offset perpendicular to the anchor's segment — an "always above" offset
+  // would sit ON a vertical line, where the selected edge's elevated
+  // interaction band (z ~1000) swallows the clicks. zIndex keeps it above
+  // that band even where they still graze.
+  const dx = geometry.anchorAxis === 'v' ? 28 : 0
+  const dy = geometry.anchorAxis === 'v' ? 0 : -24
   return (
     <EdgeLabelRenderer>
       <div
         className="nodrag nopan absolute flex items-center gap-0.5 rounded-md border border-border/60 bg-card p-0.5 shadow-sm"
         style={{
-          transform: `translate(-50%, -50%) translate(${geometry.labelX}px, ${geometry.labelY - 24}px)`,
+          transform: `translate(-50%, -50%) translate(${geometry.labelX + dx}px, ${geometry.labelY + dy}px)`,
           pointerEvents: 'all',
+          zIndex: 1001,
         }}
       >
         {data.onEditPermissions && (
@@ -624,7 +672,16 @@ export function ElbowEdge({
         labelBgPadding={labelBgPadding}
         labelBgBorderRadius={labelBgBorderRadius}
       />
-      <FlowPulse path={geometry.path} motion={data?.motion} baseStyle={style} />
+      {data?.count !== undefined && (
+        <CountChip
+          geometry={geometry}
+          count={data.count}
+          unit={data.unit ?? 'run'}
+          visible={!!data.hovered || !!data.showDetails}
+          onDragMove={elbow.dragChip}
+          onDragEnd={elbow.endChip}
+        />
+      )}
       <ElbowControls elbow={elbow} selected={selected} />
       {selected && <EdgeToolbar id={id} geometry={geometry} data={data} />}
     </>

@@ -22,6 +22,7 @@ import {
   Panel,
   ReactFlow,
   useNodesState,
+  useStore,
   type EdgeMouseHandler,
   type IsValidConnection,
   type Node,
@@ -38,10 +39,10 @@ import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { Loader2, RotateCcw } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import { Button } from '@renderer/components/ui/button'
+import { Switch } from '@renderer/components/ui/switch'
 import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
-import { AgentGraphNode, ResourceGraphNode } from './graph-nodes'
+import { AgentGraphNode, ResourceGraphNode, openGraphNode } from './graph-nodes'
 import { ElbowEdge, type EdgeGeometryOverride, type GraphEdge } from './graph-edges'
-import { ResourcePanel, resourcePanelItems } from './resource-panel'
 import { computeLayout, type XY } from './layout'
 import { useGraphData, type GraphEdgeSpec, type GraphNodeData } from './use-graph-data'
 
@@ -50,33 +51,62 @@ type RfNode = Node<GraphNodeData>
 const nodeTypes = { agent: AgentGraphNode, resource: ResourceGraphNode }
 const edgeTypes = { elbow: ElbowEdge }
 
-// Dashed vs solid = "is traffic flowing": never-exercised connections (and
-// bare permissions) are static gray dashes, broken endpoints static red
-// dashes, and recorded traffic is a SOLID blue line with a brighter pulse
-// traveling along it (the FlowPulse overlay in graph-edges.tsx) — the more
-// interactions the faster the pulse, direction following the data flow.
-// Exact counts and problems show on hover.
+// Two-state line language: solid gray = connected (regardless of traffic
+// volume — counts live on the node pill), red dashes = broken endpoint.
 const EDGE_DASH = '6 4'
 
-// log2-scaled pulse cycle: 1 interaction ≈ a lazy 7s drift, ~100 ≈ the
-// 1.2s floor — so a 10,000-call edge doesn't strobe.
-function pulseDuration(weight: number): number {
-  return Math.max(1.2, 7.2 / Math.log2(1 + weight))
+// Count-chip unit (singular) by the edge's target kind. Resource edges are
+// always built agent → resource; agent targets mean invocation edges.
+const EDGE_UNIT: Record<string, string> = {
+  account: 'call',
+  mcp: 'tool call',
+  chat: 'session',
+  webhook: 'fire',
+  cron: 'run',
+  agent: 'invocation',
 }
 
 function edgeStyle(e: GraphEdgeSpec): CSSProperties {
-  // Broken endpoint (expired auth, errored server, disconnected chat): red
-  // dashes, no motion — traffic isn't flowing.
+  // Broken endpoint (expired auth, errored server, disconnected chat).
   if (e.broken) {
     return { stroke: 'rgb(239 68 68 / 0.7)', strokeWidth: 1.25, strokeDasharray: EDGE_DASH } // red-500, matching the error status dot
   }
-  if (!e.weight) {
-    return { stroke: 'hsl(var(--muted-foreground) / 0.4)', strokeWidth: 1.25, strokeDasharray: EDGE_DASH }
-  }
-  return { stroke: 'rgb(59 130 246 / 0.75)', strokeWidth: 1.25 } // blue-500, matching the unread-notification dot
+  return { stroke: 'hsl(var(--muted-foreground) / 0.45)', strokeWidth: 1.25 }
 }
 
 const PERSIST_DEBOUNCE_MS = 600
+
+/** Debug readout of the current viewport zoom. */
+function ZoomReadout() {
+  const zoom = useStore((s) => s.transform[2])
+  return (
+    <Panel position="bottom-center">
+      <div className="rounded border bg-card/80 px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
+        zoom {zoom.toFixed(2)}
+      </div>
+    </Panel>
+  )
+}
+
+/**
+ * Dot grid that survives zooming out: dots scale with the canvas, but each
+ * time zoom halves, the grid spacing doubles (staying anchored to flow
+ * coordinates) and the dot radius counter-scales — so the rendered pattern
+ * always sits between 10–20px spacing with ~1.5px dots. Must render as a
+ * ReactFlow child (useStore needs its context).
+ */
+function AdaptiveDotsBackground() {
+  const zoom = useStore((s) => s.transform[2])
+  const doublings = Math.max(0, Math.ceil(Math.log2(1 / zoom)))
+  return (
+    <Background
+      variant={BackgroundVariant.Dots}
+      gap={10 * 2 ** doublings}
+      size={1.5 / zoom}
+      color="hsl(var(--muted-foreground) / 0.3)"
+    />
+  )
+}
 
 // ── Drawing new connections ──────────────────────────────────────────────
 // A drawn edge must create the real relationship behind it: an invoke
@@ -261,6 +291,10 @@ export function AgentGraph() {
   // receive the connection fade while it's set (applied in the node sync).
   const [connectingFromId, setConnectingFromId] = useState<string | null>(null)
 
+  // Details view: pin every resource's detail card open (vs. the simple
+  // view's hover/select reveal).
+  const [showDetails, setShowDetails] = useState(false)
+
   // Render once data is settled (success OR error) — a failed settings fetch
   // degrades to a non-persisting canvas instead of an eternal spinner.
   const ready = !graph.isLoading && !settingsQuery.isLoading
@@ -269,40 +303,36 @@ export function AgentGraph() {
   // dragged/saved positions pin a node, the rest track the latest layout.
   useEffect(() => {
     if (!ready) return
-    setNodes(() =>
-      graph.nodes.map((spec) => ({
+    setNodes((prev) => {
+      // Rebuilds must not wipe click-selection (ports + Open toolbar ride it).
+      const selectedIds = new Set(prev.filter((n) => n.selected).map((n) => n.id))
+      return graph.nodes.map((spec) => ({
         id: spec.id,
         type: spec.data.kind === 'agent' ? ('agent' as const) : ('resource' as const),
         position:
           draggedPositionsRef.current[spec.id] ??
           savedPositionsRef.current?.[spec.id] ??
           layoutPositions[spec.id] ?? { x: 0, y: 0 },
-        data: spec.data,
-        // Clicks navigate; selection is a connector-only concept here.
-        selectable: false,
+        data: spec.data.kind === 'agent' ? spec.data : { ...spec.data, showDetails },
+        // Click selects (shows ports + the Open toolbar); navigation moved
+        // to the toolbar and double-click. Delete key must not touch nodes.
+        selectable: true,
+        deletable: false,
+        selected: selectedIds.has(spec.id),
         // Mid connection-drag, fade anything the drag can't legally land on.
         className:
           connectingFromId && spec.id !== connectingFromId && !drawnConnectionKind(connectingFromId, spec.id)
             ? 'opacity-25 transition-opacity duration-200'
             : 'transition-opacity duration-200',
-      })),
-    )
-  }, [ready, graph.nodes, layoutPositions, setNodes, connectingFromId])
+      }))
+    })
+  }, [ready, graph.nodes, layoutPositions, setNodes, connectingFromId, showDetails])
 
   // Hovering an edge surfaces the real numbers (label at the midpoint) and
   // thickens the stroke so it's clear which line is being read.
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
   const onEdgeMouseEnter: EdgeMouseHandler<GraphEdge> = useCallback((_event, edge) => setHoveredEdgeId(edge.id), [])
   const onEdgeMouseLeave: EdgeMouseHandler<GraphEdge> = useCallback(() => setHoveredEdgeId(null), [])
-
-  // Hovering a resource in the side panel spotlights its edges: they thicken
-  // while every unrelated line recedes, so the agents using that resource pop.
-  const [hoveredResourceId, setHoveredResourceId] = useState<string | null>(null)
-  const panelItems = useMemo(() => resourcePanelItems(graph.nodes, graph.edges), [graph.nodes, graph.edges])
-  const openConnectionSettings = useCallback(
-    () => void navigate({ to: '/settings/$tab', params: { tab: 'connections' } }),
-    [navigate],
-  )
 
   // Connector geometry (elbow offsets, pinned ports) dragged this mount,
   // merged over saved values for rendering and persisted alongside node
@@ -451,10 +481,8 @@ export function AgentGraph() {
     () =>
       graph.edges.map((e) => {
         const hovered = e.id === hoveredEdgeId
-        const inSpotlight = e.source === hoveredResourceId || e.target === hoveredResourceId
         let style = edgeStyle(e)
-        if (hovered || inSpotlight) style = { ...style, strokeWidth: 2.5 }
-        else if (hoveredResourceId) style = { ...style, opacity: 0.12 }
+        if (hovered) style = { ...style, strokeWidth: 2.5 }
         return {
           id: e.id,
           source: e.source,
@@ -472,9 +500,11 @@ export function AgentGraph() {
           deletable: !!e.deletable,
           data: {
             geometry: { ...savedEdgeGeometry?.[e.id], ...draggedEdgeGeometry[e.id] },
+            count: e.weight ?? 0,
+            unit: EDGE_UNIT[nodeKind(e.target)] ?? 'run',
+            hovered,
+            showDetails,
             onGeometryCommit: commitEdgeGeometry,
-            motion:
-              e.weight && !e.broken ? { duration: pulseDuration(e.weight), flow: e.flow } : undefined,
             onDelete: e.deletable ? deleteEdge : undefined,
             onEditPermissions: e.policyAgentSlug ? editEdgePermissions : undefined,
           },
@@ -483,13 +513,13 @@ export function AgentGraph() {
     [
       graph.edges,
       hoveredEdgeId,
-      hoveredResourceId,
       draggedEdgeGeometry,
       savedEdgeGeometry,
       commitEdgeGeometry,
       selectedEdgeIds,
       deleteEdge,
       editEdgePermissions,
+      showDetails,
     ],
   )
 
@@ -525,40 +555,9 @@ export function AgentGraph() {
     })
   }, [layoutPositions, setNodes, mutateSettings])
 
-  const onNodeClick: NodeMouseHandler<RfNode> = useCallback(
-    (_event, node) => {
-      const data = node.data
-      switch (data.kind) {
-        case 'agent':
-          void navigate({ to: '/agents/$slug', params: { slug: data.agent.displaySlug } })
-          return
-        case 'account':
-        case 'mcp':
-          void navigate({ to: '/settings/$tab', params: { tab: 'connections' } })
-          return
-        case 'webhook':
-          if (data.agentSlug)
-            void navigate({
-              to: '/agents/$slug/webhooks/$webhookId',
-              params: { slug: data.agentSlug, webhookId: data.resourceId },
-            })
-          return
-        case 'cron':
-          if (data.agentSlug)
-            void navigate({
-              to: '/agents/$slug/tasks/$taskId',
-              params: { slug: data.agentSlug, taskId: data.resourceId },
-            })
-          return
-        case 'chat':
-          if (data.agentSlug)
-            void navigate({
-              to: '/agents/$slug/chat/$integrationId',
-              params: { slug: data.agentSlug, integrationId: data.resourceId },
-            })
-          return
-      }
-    },
+  // Click = select; the page behind a node opens via its toolbar or double-click.
+  const onNodeDoubleClick: NodeMouseHandler<RfNode> = useCallback(
+    (_event, node) => openGraphNode(navigate, node.data),
     [navigate],
   )
 
@@ -588,7 +587,7 @@ export function AgentGraph() {
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        onNodeClick={onNodeClick}
+        onNodeDoubleClick={onNodeDoubleClick}
         onNodeDragStop={schedulePersist}
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
@@ -613,22 +612,35 @@ export function AgentGraph() {
         proOptions={{ hideAttribution: true }}
         nodeDragThreshold={4}
         minZoom={0.15}
-        maxZoom={1.75}
+        maxZoom={1.35}
         // Inline style, not a bg-* class: xyflow's style.css sets its own
         // background-color on .react-flow (loaded after Tailwind, same
-        // specificity), silently overriding any utility class. 3%
-        // muted-foreground over the app background ≈ a 98%-lightness wash in
-        // light mode — the faintest gray so the white nodes pop.
-        style={{ backgroundColor: 'hsl(var(--muted-foreground) / 0.03)' }}
+        // specificity), silently overriding any utility class. 5%
+        // muted-foreground over the app background ≈ a 97%-lightness wash in
+        // light mode — a faint gray so the white nodes pop.
+        style={{ backgroundColor: 'hsl(var(--muted-foreground) / 0.05)' }}
       >
-        <Background variant={BackgroundVariant.Dots} gap={14} size={1.5} color="hsl(var(--muted-foreground) / 0.3)" />
+        <AdaptiveDotsBackground />
+        <ZoomReadout />
         <Controls showInteractive={false} />
-        <Panel position="top-right" className="flex flex-col items-end gap-2">
+        <Panel position="top-right" className="flex items-center gap-2">
+          <label
+            htmlFor="graph-details-switch"
+            className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs shadow-sm"
+          >
+            Details
+            <Switch
+              id="graph-details-switch"
+              checked={showDetails}
+              onCheckedChange={setShowDetails}
+              className="scale-75"
+              data-testid="graph-toggle-details"
+            />
+          </label>
           <Button variant="outline" size="sm" onClick={resetLayout} data-testid="graph-reset-layout">
             <RotateCcw className="mr-1 h-3.5 w-3.5" />
             Reset layout
           </Button>
-          <ResourcePanel items={panelItems} onHover={setHoveredResourceId} onSelect={openConnectionSettings} />
         </Panel>
         {graph.topologyFailed && (
           <Panel position="top-left">
