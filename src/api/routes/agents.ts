@@ -99,7 +99,6 @@ import {
   replacePoliciesForCaller,
   replacePoliciesForCallerInputSchema,
 } from '@shared/lib/services/x-agent-policy-service'
-import { getContainerHostUrl, getAppPort } from '@shared/lib/proxy/host-url'
 import {
   exportAgentTemplate,
   exportAgentFull,
@@ -3410,9 +3409,9 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       await db.insert(agentRemoteMcps).values(newMappings)
     }
 
-    // Fetch updated remote MCPs for this agent
-    const hostUrl = getContainerHostUrl()
-    const appPort = getAppPort()
+    // Same talk-back base as container start (MicroVM private IP / HOST_PUBLIC_URL),
+    // not getContainerHostUrl() — host.docker.internal does not resolve in MicroVMs.
+    const hostApiBaseUrl = await client.getHostApiBaseUrl()
     const mcpMappings = await db
       .select({ mcp: remoteMcpServers })
       .from(agentRemoteMcps)
@@ -3430,7 +3429,7 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
         return {
           id: mcp.id,
           name: mcp.name,
-          proxyUrl: `http://${hostUrl}:${appPort}/api/mcp-proxy/${slug}/${mcp.id}`,
+          proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${slug}/${mcp.id}`,
           tools: toolNames,
         }
       })
