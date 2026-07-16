@@ -93,6 +93,44 @@ test.describe('Thinking Display', () => {
     await sessionPage.waitForInputEnabled(30000)
   })
 
+  test('interrupting mid-turn does not clump thinking cards below the interrupt marker', async ({ page, request }, testInfo) => {
+    // Chains a multi-pass thinking turn (~7s of scheduled streaming) with an
+    // interrupt landing mid-turn — needs headroom on a loaded CI runner.
+    test.slow()
+    const { sessionPage } = await setupThinkingTest(page, request, testInfo, 'Interrupt')
+
+    // Multi-pass mock scenario: three thinking blocks, each persisted to the
+    // transcript as its own assistant entry the moment it completes — so an
+    // interrupt leaves earlier passes persisted while later ones die.
+    await sessionPage.sendMessage('please think in passes about this')
+
+    // Wait for the second pass to start streaming: the first pass is then
+    // already persisted in the JSONL, giving the post-interrupt transcript
+    // both persisted thinking AND live blocks still held by the stream store.
+    await expect(page.getByTestId('thinking-block')).toHaveCount(2, { timeout: 15000 })
+
+    await sessionPage.getStopButton().click()
+    await expect(sessionPage.getStopButton()).not.toBeVisible({ timeout: 10000 })
+
+    // The CLI appends the interrupt marker as a user message ending the turn
+    const marker = sessionPage.getUserMessages().filter({ hasText: '[Request interrupted by user]' })
+    await expect(marker).toBeVisible({ timeout: 10000 })
+
+    // The persisted passes stay inline above the marker...
+    await expect(page.getByTestId('thinking-block').first()).toBeVisible()
+    // ...and nothing renders below it: the interrupted turn's live blocks must
+    // not re-render clumped at the end of the transcript (the marker is a user
+    // message, so the dedup scan must not mistake it for a new turn's start).
+    const cardsBelowMarker = page.locator(
+      'xpath=//*[@data-testid="message-user" and contains(., "Request interrupted by user")]/following::*[@data-testid="thinking-block"]'
+    )
+    await expect(cardsBelowMarker).toHaveCount(0)
+
+    // The interrupted turn's tail stays dead: the final answer never lands.
+    await sessionPage.waitForInputEnabled(15000)
+    await expect(page.getByText('Done with all thinking passes')).not.toBeVisible()
+  })
+
   test('thinking persists in the transcript across a reopen', async ({ page, request }, testInfo) => {
     const { appPage, sessionPage, agent, setupSession } = await setupThinkingTest(page, request, testInfo, 'Persist')
 

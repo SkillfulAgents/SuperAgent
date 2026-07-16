@@ -94,13 +94,16 @@ test.describe('Stop button interrupts the working agent', () => {
 
     // The aborted turn's tail never landed: no completion text, no steering
     // acknowledgements, no phantom reactivation, and the transcript holds
-    // exactly the warm-up turn and the two fresh follow-up turns.
+    // exactly the warm-up turn, the interrupted turn (its user message plus
+    // the "[Request interrupted by user]" marker the abort appended), and the
+    // two fresh follow-up turns.
     await expect(sessionPage.getAssistantMessages().filter({ hasText: 'Finished the slow work.' })).toHaveCount(0)
     await expect(sessionPage.getAssistantMessages().filter({ hasText: 'Adjusting based on:' })).toHaveCount(0)
     await expect(sessionPage.getAssistantMessages()).toHaveCount(3)
     await expect(sessionPage.getStopButton()).not.toBeVisible()
-    await sessionPage.waitForUserMessageCount(4)
+    await sessionPage.waitForUserMessageCount(5)
     await sessionPage.expectUserMessage('please work slowly for the stop test', 1)
+    await sessionPage.expectUserMessage('[Request interrupted by user]', 2)
   })
 
   test('stopping with a queued message rescues its text into the composer for resend', async ({ page }) => {
@@ -134,9 +137,11 @@ test.describe('Stop button interrupts the working agent', () => {
       .filter({ hasText: 'This is a delayed mock response.' })
     await sessionPage.getSendButton().click()
     await expect(delayedResponses).toHaveCount(1, { timeout: 15000 })
-    await sessionPage.waitForUserMessageCount(2, 15000)
+    // The abort appended the interrupt marker after the slow-work user message
+    await sessionPage.waitForUserMessageCount(3, 15000)
     await sessionPage.expectUserMessage('please work slowly for the draft rescue test', 0)
-    await sessionPage.expectUserMessage(queuedText, 1)
+    await sessionPage.expectUserMessage('[Request interrupted by user]', 1)
+    await sessionPage.expectUserMessage(queuedText, 2)
 
     // Chain two more 3s turns: with the resend gated on the 1.5s rescue grace,
     // finishing three chained turns is provably past both cancelled timers
@@ -152,10 +157,11 @@ test.describe('Stop button interrupts the working agent', () => {
     await expect(delayedResponses).toHaveCount(3, { timeout: 15000 })
 
     // Neither cancelled timer fired: no steering acknowledgement, no
-    // completion text, no duplicate of the rescued message.
+    // completion text, no duplicate of the rescued message. (5 = slow-work
+    // message + interrupt marker + rescued resend + the two check turns.)
     await expect(sessionPage.getAssistantMessages().filter({ hasText: 'Adjusting based on:' })).toHaveCount(0)
     await expect(sessionPage.getAssistantMessages().filter({ hasText: 'Finished the slow work.' })).toHaveCount(0)
-    await expect(sessionPage.getUserMessages()).toHaveCount(4)
+    await expect(sessionPage.getUserMessages()).toHaveCount(5)
     await expect(sessionPage.getStopButton()).not.toBeVisible()
   })
 
@@ -186,7 +192,8 @@ test.describe('Stop button interrupts the working agent', () => {
     await expect(composer).toHaveValue(new RegExp('first rescue candidate'), { timeout: 10000 })
     await expect(composer).toHaveValue(new RegExp('second rescue candidate'))
 
-    // Neither queued message ever reached the transcript.
-    await expect(sessionPage.getUserMessages()).toHaveCount(1)
+    // Neither queued message ever reached the transcript — only the original
+    // send and the interrupt marker the abort appended.
+    await expect(sessionPage.getUserMessages()).toHaveCount(2)
   })
 })
