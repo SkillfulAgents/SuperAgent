@@ -1,17 +1,24 @@
 {
   "storyId": "browser-test",
-  "passed": false,
-  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: or agent response (up to 3 minutes) — Response received within ~10 seconds\n\n**[STEP]** Verified response content — Screenshot confirms response contains \"The page title is \"Example Domain\".\" with tool call cards showing \"Open Browser\" and \"Browser MCP: Browser Get State\" both completed successfully\n",
-  "steps": [],
+  "passed": true,
+  "reason": "Browser-use feature successfully executes browser navigation and extracts page title from example.com",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut application with agent sidebar",
+    "Found and clicked \"QA-20260716-025218-jcmq\" agent in sidebar — Agent page loaded with chat interface",
+    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was sent successfully and agent status changed to \"working\"",
+    "Waited for agent response with 3-minute timeout — Agent completed task in 15 seconds",
+    "Verified response content — Response clearly shows:",
+    "Captured screenshot of final response — Screenshot shows complete agent response with \"Example Domain\" mentioned twice, confirming successful browser automation"
+  ],
   "bugs": [],
-  "durationMs": 132572,
-  "sessionId": "68bcd219-9ed2-4619-abac-6372ed6465f1",
+  "durationMs": 76389,
+  "sessionId": "9fdf36e9-7e6d-4375-96f1-3321f43776ee",
   "cost": {
-    "inputTokens": 488,
-    "outputTokens": 12551,
-    "cacheCreationTokens": 75018,
-    "cacheReadTokens": 1368949,
+    "inputTokens": 374,
+    "outputTokens": 10356,
+    "cacheCreationTokens": 68562,
+    "cacheReadTokens": 1021166,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.29391
+    "totalCostUsd": 0.239973
   }
 }
