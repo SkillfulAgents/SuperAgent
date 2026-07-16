@@ -10,7 +10,7 @@ import {
   clearPeerUserMessages,
   consumeDiscardedCommand,
 } from '@renderer/hooks/use-message-stream'
-import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
+import { isInterruptMarkerMessage, isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { MessageItem } from './message-item'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
@@ -434,8 +434,17 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   const unpersistedThinkingBlocks = useMemo(() => {
     if (!thinkingBlocks.length || !messages?.length) return thinkingBlocks
     const persisted: string[] = []
+    let interrupted = false
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
+      // The "[Request interrupted by user]" marker is a user message that ENDS
+      // the interrupted turn — breaking on it would collect none of that
+      // turn's persisted thinking and let every live block re-render at the
+      // end. Keep scanning into the turn it terminated.
+      if (isInterruptMarkerMessage(m)) {
+        interrupted = true
+        continue
+      }
       if (isTurnStartingUserMessage(m)) break
       if (m.type === 'assistant' && Array.isArray((m as ApiMessage).thinking)) {
         for (const t of (m as ApiMessage).thinking!) {
@@ -448,7 +457,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // streamed text diverged from the transcript (e.g. an SSE reconnect
     // dropped deltas) — text matching would miss them and the leftover card
     // would strand below the persisted message, appearing to "jump" there.
-    if (!isActive && persisted.length) return []
+    // An interrupted turn is over even when nothing persisted: the SDK
+    // discarded whatever the leftover live blocks hold, so they'd strand.
+    if (!isActive && (persisted.length || interrupted)) return []
     return thinkingBlocks.filter(b => {
       const t = b.text.trim()
       // Blocks with no streamed text (display option off) have no persisted

@@ -230,6 +230,101 @@ export class ThinkingResponseScenario implements MockScenario {
 }
 
 /**
+ * Multi-pass extended-thinking scenario — streams several thinking blocks in
+ * one turn, persisting each block's assistant JSONL entry as it completes
+ * (the real CLI writes one transcript entry per assistant message mid-turn).
+ * Interrupting mid-turn therefore leaves the earlier passes in the transcript
+ * while the later ones die with the scenario epoch — the transcript shape
+ * behind the "thinking cards clump below the interrupt marker" regression.
+ */
+export class MultiPassThinkingScenario implements MockScenario {
+  constructor(
+    private passes: string[],
+    private responseText: string,
+    /** Delay between thinking chunks — sets how long each pass streams. */
+    private chunkDelayMs = 200
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    setTimeout(() => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: userMessage },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, 10)
+
+    let offset = 20
+    for (const passText of this.passes) {
+      const passStart = offset
+      const chunks = passText.split(' ')
+      setTimeout(() => {
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'thinking' } } },
+        })
+      }, passStart)
+      chunks.forEach((word, i) => {
+        setTimeout(() => {
+          client.emitStreamMessage(sessionId, {
+            type: 'stream_event',
+            content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: (i > 0 ? ' ' : '') + word } } },
+          })
+        }, passStart + 10 + i * this.chunkDelayMs)
+      })
+      const passEnd = passStart + 20 + chunks.length * this.chunkDelayMs
+      setTimeout(() => {
+        client.emitStreamMessage(sessionId, {
+          type: 'stream_event',
+          content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+        })
+        // Each pass persists as its own assistant entry, like the real CLI
+        client.writeJsonlEntry(sessionId, {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'thinking', thinking: passText, signature: 'mock-signature' }],
+          },
+          timestamp: new Date().toISOString(),
+        })
+      }, passEnd)
+      offset = passEnd + 100
+    }
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'text' } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: this.responseText } } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'content_block_stop' } },
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_stop' } },
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: this.responseText }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, {
+        type: 'result',
+        content: { type: 'result', subtype: 'success' },
+      })
+    }, offset)
+  }
+}
+
+/**
  * Slow scenario for message-queueing E2E tests: holds the session in the
  * working state long enough for the test to send mid-turn messages, which the
  * mock records as queued_command attachments (mirroring the real CLI's
@@ -1169,6 +1264,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   static scenarios = new Map<string, MockScenario>([
     // Slow response window for message-queueing tests (send mid-turn → queued)
     ['work slowly', new SlowWorkScenario()],
+    // Several thinking passes persisted one-by-one — an interruptible thinking turn
+    ['think in passes', new MultiPassThinkingScenario(
+      [
+        'First pass: survey the problem space and list the moving parts before committing to anything.',
+        'Second pass: weigh the tradeoffs between the candidate approaches and pick the sturdiest one.',
+        'Third pass: sanity-check the chosen approach against the edge cases before answering.',
+      ],
+      'Done with all thinking passes — here is the answer.'
+    )],
     // Extended-thinking card in the transcript (expanded while streaming, then collapsed)
     ['think out loud', new ThinkingResponseScenario(
       'Let me reason about this. The user wants a demonstration of extended thinking, ' +
@@ -2185,11 +2289,26 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     const session = this.sessions.get(sessionId)
     if (!session) return false
 
+    const hadTurnInFlight = this.busySessions.has(sessionId)
+
     // Supersede the in-flight scenario so its pending timers can't finish the
     // turn after the abort (see scenarioView), and let the next send start a
     // fresh turn instead of taking the mid-turn steering path.
     this.interruptEpochs.set(sessionId, (this.interruptEpochs.get(sessionId) ?? 0) + 1)
     this.busySessions.delete(sessionId)
+
+    // Aborting an active turn appends a "[Request interrupted by user]" USER
+    // entry to the transcript in the real CLI — it renders as the interrupt
+    // bubble and, being a user message, exercises turn-boundary logic in the
+    // renderer (e.g. thinking-card dedup). Mirror it so E2E sees the real
+    // post-interrupt transcript shape.
+    if (hadTurnInFlight) {
+      this.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: '[Request interrupted by user]' },
+        timestamp: new Date().toISOString(),
+      })
+    }
 
     // Queued steering messages die with the turn — the real CLI never picks
     // them up after an abort. Mirror the real container: it names each dead

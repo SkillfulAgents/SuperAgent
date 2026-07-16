@@ -1889,6 +1889,43 @@ describe('MessageList', () => {
       expect(screen.queryByText('divergent streamed fragment')).not.toBeInTheDocument()
     })
 
+    it('drops leftover live cards after an interrupt instead of clumping them below the marker', () => {
+      // Interrupting a turn appends a "[Request interrupted by user]" USER
+      // message to the transcript. The dedup scan must not treat it as the
+      // start of a new turn — otherwise it collects no persisted thinking and
+      // every live block from the interrupted turn re-renders at the end.
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createAssistantMessage({ content: { text: '' }, thinking: [{ text: 'first reasoning pass' }] }),
+        createAssistantMessage({ content: { text: '' }, thinking: [{ text: 'second reasoning pass' }] }),
+        createUserMessage({ content: { text: '[Request interrupted by user]' } }),
+      ]
+      mockStreamState.isActive = false
+      mockStreamState.thinkingBlocks = [
+        { id: 1, text: 'first reasoning pass', startedAt: Date.now() - 9000, endedAt: Date.now() - 7000 },
+        { id: 2, text: 'second reasoning pass', startedAt: Date.now() - 6000, endedAt: Date.now() - 4000 },
+      ]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      // Only the two persisted cards — the live copies must not double-render.
+      expect(screen.getAllByTestId('thinking-block')).toHaveLength(2)
+    })
+
+    it('drops a live card at idle after an interrupt even when its thinking never persisted', () => {
+      // Interrupted mid-first-block: the SDK discards the partial thinking, so
+      // there is no persisted counterpart and the live card would strand below
+      // the interrupt marker forever.
+      mockMessagesData.data = [
+        createUserMessage({ content: { text: 'Question' } }),
+        createUserMessage({ content: { text: '[Request interrupted by user for tool use]' } }),
+      ]
+      mockStreamState.isActive = false
+      mockStreamState.thinkingBlocks = [liveBlock('partial discarded reasoning', Date.now())]
+
+      renderWithProviders(<MessageList sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.queryByTestId('thinking-block')).not.toBeInTheDocument()
+    })
+
     it('keeps an empty-text live block while active but drops it at idle', () => {
       mockMessagesData.data = [
         createUserMessage({ content: { text: 'Question' } }),

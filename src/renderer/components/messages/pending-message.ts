@@ -30,3 +30,13 @@ export interface PendingMessage {
 export function isTurnStartingUserMessage(m: { type: string; queued?: boolean }): boolean {
   return m.type === 'user' && !m.queued
 }
+
+/**
+ * True for the synthetic "[Request interrupted by user]" / "[Request
+ * interrupted by user for tool use]" user message the CLI appends when a turn
+ * is interrupted. It ENDS the interrupted turn rather than starting a new one.
+ */
+export function isInterruptMarkerMessage(m: { type: string; content?: { text?: string } | string }): boolean {
+  if (m.type !== 'user' || typeof m.content !== 'object') return false
+  return m.content?.text?.startsWith('[Request interrupted by user') ?? false
+}
