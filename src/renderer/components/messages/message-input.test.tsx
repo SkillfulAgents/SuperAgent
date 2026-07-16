@@ -19,11 +19,20 @@ const mockInterruptSession = {
   isPending: false,
 }
 
+const mockCreateSecret = {
+  mutateAsync: vi.fn(),
+  isPending: false,
+}
+
 vi.mock('@renderer/hooks/use-messages', () => ({
   useSendMessage: () => mockSendMessage,
   useUploadFile: () => mockUploadFile,
   useUploadFolder: () => mockUploadFolder,
   useInterruptSession: () => mockInterruptSession,
+}))
+
+vi.mock('@renderer/hooks/use-secrets', () => ({
+  useCreateSecret: () => mockCreateSecret,
 }))
 
 const mockStreamState = {
@@ -87,6 +96,13 @@ describe('MessageInput', () => {
     mockIsOnline = true
     mockRuntimeStatus.data.runtimeReadiness.status = 'READY'
     mockRuntimeStatus.isPending = false
+    mockCreateSecret.isPending = false
+    mockCreateSecret.mutateAsync.mockResolvedValue({
+      id: 'GITHUB_TOKEN',
+      key: 'GitHub Token',
+      envVar: 'GITHUB_TOKEN',
+      hasValue: true,
+    })
   })
 
   it('renders textarea with placeholder', () => {
@@ -259,6 +275,98 @@ describe('MessageInput', () => {
     await user.type(input, 'Hello')
 
     expect(screen.getByTestId('send-button')).toBeEnabled()
+  })
+
+  it('saves a detected key securely, masks it in the composer, and sends only a placeholder', async () => {
+    const user = userEvent.setup()
+    const key = ['gh', 'p_Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, `Use this token:\n${key}`)
+
+    expect(screen.getByTestId('potential-secret')).toHaveTextContent(key)
+    expect(screen.getByText('Is this a Key?')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Send securely to the agent' }))
+    expect(screen.getByRole('dialog', { name: 'Send key securely' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Key name')).toHaveValue('')
+    expect(screen.getByLabelText('Secret value')).toHaveValue(key)
+
+    await user.type(screen.getByLabelText('Key name'), 'GitHub Token')
+    await user.click(screen.getByRole('button', { name: 'Save securely' }))
+
+    await waitFor(() => {
+      expect(mockCreateSecret.mutateAsync).toHaveBeenCalledWith({
+        agentSlug: 'agent-1',
+        key: 'GitHub Token',
+        value: key,
+        location: 'composer',
+      })
+    })
+    expect(input).toHaveValue('Use this token:\n[GitHub Token | *********]')
+    expect(screen.getByTestId('secured-secret')).toHaveTextContent('[GitHub Token | *********]')
+    expect(screen.getByTestId('secured-secret')).toHaveClass(
+      'bg-amber-500/10',
+      'outline-amber-500/70'
+    )
+    expect(screen.queryByText('Is this a Key?')).not.toBeInTheDocument()
+
+    await user.click(screen.getByTestId('send-button'))
+
+    await waitFor(() => {
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+        content: 'Use this token:\n[Key saved to .env - GITHUB_TOKEN]',
+      }))
+    })
+    expect(mockSendMessage.mutateAsync).not.toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining(key) })
+    )
+  })
+
+  it.each([
+    { pressedKey: '{Backspace}', caretEdge: 'end' as const },
+    { pressedKey: '{Delete}', caretEdge: 'start' as const },
+  ])('removes a secured pill atomically with $pressedKey', async ({ pressedKey, caretEdge }) => {
+    const user = userEvent.setup()
+    const key = ['gh', 'p_Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
+    const pill = '[GitHub Token | *********]'
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    const input = screen.getByTestId('message-input') as HTMLTextAreaElement
+    await user.type(input, `Before ${key} after`)
+    await user.click(screen.getByRole('button', { name: 'Send securely to the agent' }))
+    await user.type(screen.getByLabelText('Key name'), 'GitHub Token')
+    await user.click(screen.getByRole('button', { name: 'Save securely' }))
+
+    await waitFor(() => expect(input).toHaveValue(`Before ${pill} after`))
+    const pillStart = input.value.indexOf(pill)
+    const caret = caretEdge === 'end' ? pillStart + pill.length : pillStart
+    input.focus()
+    input.setSelectionRange(caret, caret)
+    await user.keyboard(pressedKey)
+
+    expect(input).toHaveValue('Before  after')
+    expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
+  })
+
+  it('dismisses a key suggestion without changing the draft', async () => {
+    const user = userEvent.setup()
+    const key = ['sk-', 'proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, key)
+    await user.click(screen.getByRole('button', { name: 'Dismiss key suggestion' }))
+
+    expect(screen.queryByTestId('potential-secret')).not.toBeInTheDocument()
+    expect(input).toHaveValue(key)
   })
 
   it('registers a getter for the live composer and deregisters on unmount', async () => {
