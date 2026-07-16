@@ -32,6 +32,7 @@ export function useCreateSecret() {
       agentSlug: string
       key: string
       value: string
+      location?: 'settings' | 'composer'
     }) => {
       const res = await apiFetch(`/api/agents/${agentSlug}/secrets`, {
         method: 'POST',
@@ -45,7 +46,7 @@ export function useCreateSecret() {
       return res.json() as Promise<ApiSecretDisplay>
     },
     onSuccess: (_, variables) => {
-      track('secret_added', { location: 'settings' })
+      track('secret_added', { location: variables.location ?? 'settings' })
       queryClient.invalidateQueries({
         queryKey: ['agent-secrets', variables.agentSlug],
       })

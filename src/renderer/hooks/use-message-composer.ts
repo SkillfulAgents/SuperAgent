@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { useAttachments } from './use-attachments'
 import { useVoiceInput } from './use-voice-input'
@@ -7,6 +7,13 @@ import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
 import { zipFolderFiles, type FolderGroup } from '@renderer/lib/file-utils'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
+import {
+  findPotentialSecrets,
+  replaceSecuredSecrets,
+  secretDisplayText,
+  type PotentialSecret,
+  type SecuredSecret,
+} from '@renderer/lib/secret-detection'
 
 interface UseMessageComposerOptions {
   agentSlug: string
@@ -24,13 +31,21 @@ interface UseMessageComposerOptions {
   draftKey?: string
   /** One-shot attachment seed, used when moving a draft into a new session. */
   initialAttachments?: Attachment[]
+  /** One-shot secure-pill seed, used when moving a draft into a new session. */
+  initialSecuredSecrets?: SecuredSecret[]
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
   const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey } = options
 
   const [draft, setDraft] = useDraft<string>(draftKey)
+  const securedDraftKey = draftKey ? `${draftKey}:secured-secrets` : undefined
+  const [draftSecuredSecrets, setDraftSecuredSecrets] = useDraft<SecuredSecret[]>(securedDraftKey)
   const [message, setMessage] = useState(draft ?? '')
+  const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
+  const [securedSecrets, setSecuredSecrets] = useState<SecuredSecret[]>(
+    () => options.initialSecuredSecrets ?? draftSecuredSecrets ?? []
+  )
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const addMountMutation = useAddMount()
@@ -48,6 +63,10 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     setDraft(message || undefined)
   }, [message, setDraft])
 
+  useEffect(() => {
+    setDraftSecuredSecrets(securedSecrets.length > 0 ? securedSecrets : undefined)
+  }, [securedSecrets, setDraftSecuredSecrets])
+
   // Sync externally-injected drafts (e.g. voice feedback) into the local message.
   useEffect(() => {
     if (draft !== undefined && draft !== message) {
@@ -55,6 +74,56 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to external draft changes
   }, [draft])
+
+  // A dismissal lasts while that exact value remains in the draft. Removing it
+  // and pasting/typing it again is treated as a fresh safety signal.
+  useEffect(() => {
+    setDismissedSecretValues((current) => {
+      const next = new Set([...current].filter((value) => message.includes(value)))
+      if (next.size === current.size) return current
+      return next
+    })
+  }, [message])
+
+  const potentialSecrets = useMemo(
+    () => findPotentialSecrets(message).filter((candidate) => !dismissedSecretValues.has(candidate.value)),
+    [message, dismissedSecretValues]
+  )
+
+  const dismissPotentialSecret = useCallback((candidate: PotentialSecret) => {
+    setDismissedSecretValues((current) => {
+      const next = new Set(current)
+      next.add(candidate.value)
+      return next
+    })
+  }, [])
+
+  const securePotentialSecret = useCallback((
+    candidate: PotentialSecret,
+    savedSecret: { key: string; envVar: string }
+  ) => {
+    setMessage((current) => {
+      if (current.slice(candidate.start, candidate.end) !== candidate.value) return current
+      const displayText = secretDisplayText(savedSecret.key)
+      const securedSecret: SecuredSecret = {
+        id: `${candidate.id}:${savedSecret.envVar}`,
+        key: savedSecret.key,
+        envVar: savedSecret.envVar,
+        displayText,
+      }
+      setSecuredSecrets((existing) => [...existing, securedSecret])
+      return `${current.slice(0, candidate.start)}${displayText}${current.slice(candidate.end)}`
+    })
+  }, [])
+
+  const removeSecuredSecrets = useCallback((
+    secrets: SecuredSecret[],
+    range: { start: number; end: number }
+  ) => {
+    const secretIds = new Set(secrets.map((secret) => secret.id))
+    setMessage((current) => `${current.slice(0, range.start)}${current.slice(range.end)}`)
+    setSecuredSecrets((current) => current.filter((secret) => !secretIds.has(secret.id)))
+  }, [])
 
   // Mount choice dialog state
   const [pendingFolders, setPendingFolders] = useState<FolderGroup[]>([])
@@ -202,13 +271,16 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       clearAttachments()
     }
 
+    const editableContent = content
+    const submittedContent = replaceSecuredSecrets(content, securedSecrets)
+
     try {
-      await onSubmit(content)
+      await onSubmit(submittedContent)
     } catch (error) {
       console.error('Failed to submit:', error)
       if (!keepMessageUntilComplete) {
         // Restore message so the user doesn't lose their text
-        setMessage(content)
+        setMessage(editableContent)
       }
       return
     }
@@ -218,6 +290,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       setDraft(undefined)
       clearAttachments()
     }
+    setSecuredSecrets([])
   }
 
   const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !isUploading && !submitDisabled
@@ -226,6 +299,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     // Message state
     message,
     setMessage,
+    potentialSecrets,
+    securedSecrets,
+    dismissPotentialSecret,
+    securePotentialSecret,
+    removeSecuredSecrets,
 
     // Attachments
     attachments,

@@ -126,6 +126,45 @@ describe('useMessageComposer', () => {
     expect(result.current.canSubmit).toBe(true)
   })
 
+  it('detects, dismisses, and re-detects a potential secret after it is removed', () => {
+    const opts = defaultOptions()
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+    const key = ['sk-', 'proj-Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
+
+    act(() => result.current.setMessage(`Use ${key}`))
+    expect(result.current.potentialSecrets).toHaveLength(1)
+
+    act(() => result.current.dismissPotentialSecret(result.current.potentialSecrets[0]))
+    expect(result.current.potentialSecrets).toEqual([])
+
+    act(() => result.current.setMessage(''))
+    act(() => result.current.setMessage(key))
+    expect(result.current.potentialSecrets).toHaveLength(1)
+  })
+
+  it('replaces a secured key with a masked pill and submits only the .env placeholder', async () => {
+    const opts = defaultOptions()
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+    const key = ['gh', 'p_Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z'].join('')
+
+    act(() => result.current.setMessage(`Use ${key} please`))
+    act(() => result.current.securePotentialSecret(result.current.potentialSecrets[0], {
+      key: 'GitHub Token',
+      envVar: 'GITHUB_TOKEN',
+    }))
+
+    expect(result.current.message).toBe('Use [GitHub Token | *********] please')
+    expect(result.current.securedSecrets).toHaveLength(1)
+    expect(JSON.stringify(result.current.securedSecrets)).not.toContain(key)
+
+    await act(async () => {
+      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    })
+
+    expect(opts.onSubmit).toHaveBeenCalledWith('Use [Key saved to .env - GITHUB_TOKEN] please')
+    expect(opts.onSubmit).not.toHaveBeenCalledWith(expect.stringContaining(key))
+  })
+
   // --- canSubmit ---
 
   it('canSubmit is true when message has content', () => {

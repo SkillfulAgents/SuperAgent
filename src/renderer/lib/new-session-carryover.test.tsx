@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Attachment } from '@renderer/components/messages/attachment-preview'
 import { splitComposerSnapshot } from './new-session-carryover'
+import type { SecuredSecret } from './secret-detection'
 
 describe('splitComposerSnapshot', () => {
   it('moves text, attachments, model, and effort without retaining object URLs', () => {
@@ -38,5 +39,29 @@ describe('splitComposerSnapshot', () => {
       effort: 'medium',
       speed: 'normal',
     }).draftText).toBeUndefined()
+  })
+
+  it('carries secure-pill metadata so a moved draft still sends an environment placeholder', () => {
+    const securedSecret: SecuredSecret = {
+      id: 'secret-1',
+      key: 'GitHub Token',
+      envVar: 'GITHUB_TOKEN',
+      displayText: '[GitHub Token | *********]',
+    }
+
+    expect(splitComposerSnapshot({
+      text: 'Use [GitHub Token | *********]',
+      attachments: [],
+      model: 'sonnet',
+      effort: 'high',
+      speed: 'normal',
+      securedSecrets: [securedSecret],
+    }).carryover).toEqual({
+      attachments: [],
+      model: 'sonnet',
+      effort: 'high',
+      speed: 'normal',
+      securedSecrets: [securedSecret],
+    })
   })
 })
