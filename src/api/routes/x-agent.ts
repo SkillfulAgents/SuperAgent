@@ -44,7 +44,10 @@ import {
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { captureException } from '@shared/lib/error-reporting'
 import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+
+const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
 // Typed context variables for the x-agent router. Using Hono's generic instead
 // of `as never` casts gives us type safety on c.get/c.set.
@@ -471,8 +474,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
   const { slug: rawTargetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
 
-  // Resolve the model-supplied display slug to the canonical id and rebind, so
-  // the self-invoke guard and every ACL / policy / runtime call below use ids.
+  // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
   const targetSlug = await resolveAgentId(rawTargetSlug)
   if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
@@ -480,9 +482,7 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     return c.json({ error: 'Agent cannot invoke itself' }, 400)
   }
 
-  // One-hop rule: a session that was started by another agent cannot itself
-  // start invocations into other agents. Prevents A→B→C chains and A→B→A
-  // cycles transitively. Hoisted out so attribution lookup below can reuse it.
+  // One-hop rule: sessions started by another agent cannot invoke further.
   const callerMeta = _callerSessionId
     ? await getSessionMetadata(callerSlug, _callerSessionId)
     : null
@@ -515,127 +515,158 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  // Attribute to the originating user: caller session's creator → caller
-  // agent's first owner (legacy fallback for pre-attribution sessions).
+  // Attribute to session creator → caller agent's first owner (auth-mode fallback).
   let attributedUserId: string | undefined = callerMeta?.createdByUserId
   if (!attributedUserId && isAuthMode()) {
     attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
   }
 
   return runWithOptionalUser(attributedUserId, async () => {
-  // Existing session: must exist, must not be running
-  if (existingSessionId) {
-    if (messagePersister.isSessionActive(existingSessionId)) {
-      return c.json({ error: 'Target session is currently running' }, 409)
-    }
-    const client = await containerManager.ensureRunning(targetSlug)
-    if (!messagePersister.isSubscribed(existingSessionId)) {
-      await messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug)
-    }
-    messagePersister.markSessionActive(existingSessionId, targetSlug)
-    await client.sendMessage(existingSessionId, prompt)
+    // Stages for runtime 500s: ensure_running → create_session / send_message.
+    let stage = 'ensure_running'
+    try {
+      if (existingSessionId) {
+        if (messagePersister.isSessionActive(existingSessionId)) {
+          return c.json({ error: 'Target session is currently running' }, 409)
+        }
+        stage = 'ensure_running'
+        const client = await containerManager.ensureRunning(targetSlug)
+        stage = 'subscribe'
+        if (!messagePersister.isSubscribed(existingSessionId)) {
+          await messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug)
+        }
+        messagePersister.markSessionActive(existingSessionId, targetSlug)
+        stage = 'send_message'
+        await client.sendMessage(existingSessionId, prompt)
 
-    if (sync) {
+        if (sync) {
+          try {
+            stage = 'wait_for_idle'
+            await messagePersister.waitForIdle(existingSessionId)
+          } catch (error) {
+            return c.json({
+              sessionId: existingSessionId,
+              status: 'running',
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          const lastMessage = await readLastAssistantMessage(targetSlug, existingSessionId)
+          return c.json({
+            sessionId: existingSessionId,
+            status: 'completed',
+            lastMessage: lastMessage?.content,
+          })
+        }
+        return c.json({ sessionId: existingSessionId, status: 'running' })
+      }
+
+      stage = 'ensure_running'
+      const client = await containerManager.ensureRunning(targetSlug)
+      const availableEnvVars = await getSecretEnvVars(targetSlug)
+      const agentLimits = getEffectiveAgentLimits()
+      const customEnvVars = getCustomEnvVars()
+      const targetPrefs = await readAgentPreferences(targetSlug)
+
+      stage = 'create_session'
+      const containerSession = await client.createSession({
+        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: prompt,
+        model: targetPrefs.defaultModel ?? getEffectiveModels().agentModel,
+        browserModel: getEffectiveModels().browserModel,
+        dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
+        ...(targetPrefs.defaultEffort ? { effort: targetPrefs.defaultEffort } : {}),
+        ...(targetPrefs.defaultSpeed ? { speed: targetPrefs.defaultSpeed } : {}),
+        maxOutputTokens: agentLimits.maxOutputTokens,
+        maxThinkingTokens: agentLimits.maxThinkingTokens,
+        maxTurns: agentLimits.maxTurns,
+        maxBudgetUsd: agentLimits.maxBudgetUsd,
+        customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+        maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+      })
+      const newSessionId = containerSession.id
+      // Mark active before any await so waitForIdle sees state if result arrives early.
+      messagePersister.markSessionActive(newSessionId, targetSlug)
+
+      stage = 'register_session'
       try {
-        await messagePersister.waitForIdle(existingSessionId)
-      } catch (error) {
-        return c.json({
-          sessionId: existingSessionId,
-          status: 'running',
-          error: error instanceof Error ? error.message : String(error),
+        await registerSession(targetSlug, newSessionId, `Invoked by ${callerSlug}`)
+      } catch (registerErr) {
+        const message = registerErr instanceof Error ? registerErr.message : String(registerErr)
+        console.error('[x-agent] invoke failed', {
+          callerSlug,
+          targetSlug,
+          sessionId: newSessionId,
+          stage,
+          error: message,
+        })
+        captureException(registerErr, {
+          tags: { ...X_AGENT_SENTRY, stage },
+          extra: { callerSlug, targetSlug, sessionId: newSessionId },
+        })
+        await client.deleteSession(newSessionId).catch((cleanupErr) => {
+          console.error('[x-agent] failed to clean up orphaned container session', {
+            sessionId: newSessionId,
+            error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          })
+        })
+        messagePersister.unsubscribeFromSession(newSessionId)
+        return c.json({ error: `Failed to register invoked session: ${message}` }, 500)
+      }
+
+      try {
+        await updateSessionMetadata(targetSlug, newSessionId, {
+          invokedByAgentSlug: callerSlug,
+          ...(attributedUserId ? { createdByUserId: attributedUserId } : {}),
+        })
+      } catch (metaErr) {
+        console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', {
+          callerSlug,
+          targetSlug,
+          sessionId: newSessionId,
+          error: metaErr instanceof Error ? metaErr.message : String(metaErr),
         })
       }
-      const lastMessage = await readLastAssistantMessage(targetSlug, existingSessionId)
-      return c.json({
-        sessionId: existingSessionId,
-        status: 'completed',
-        lastMessage: lastMessage?.content,
+
+      stage = 'subscribe'
+      await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug)
+      if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
+        messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
+      }
+
+      if (sync) {
+        try {
+          stage = 'wait_for_idle'
+          await messagePersister.waitForIdle(newSessionId)
+        } catch (error) {
+          return c.json({
+            sessionId: newSessionId,
+            status: 'running',
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+        const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
+        return c.json({
+          sessionId: newSessionId,
+          status: 'completed',
+          lastMessage: lastMessage?.content,
+        })
+      }
+      return c.json({ sessionId: newSessionId, status: 'running' })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[x-agent] invoke failed', {
+        callerSlug,
+        targetSlug,
+        existingSessionId: existingSessionId ?? null,
+        stage,
+        error: message,
       })
-    }
-    return c.json({ sessionId: existingSessionId, status: 'running' })
-  }
-
-  // New session
-  const client = await containerManager.ensureRunning(targetSlug)
-  const availableEnvVars = await getSecretEnvVars(targetSlug)
-  const agentLimits = getEffectiveAgentLimits()
-  const customEnvVars = getCustomEnvVars()
-
-  // Model/effort/speed preference order: target agent's default > global default.
-  const targetPrefs = await readAgentPreferences(targetSlug)
-
-  const containerSession = await client.createSession({
-    availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-    initialMessage: prompt,
-    model: targetPrefs.defaultModel ?? getEffectiveModels().agentModel,
-    browserModel: getEffectiveModels().browserModel,
-    dashboardBuilderModel: getEffectiveModels().dashboardBuilderModel,
-    ...(targetPrefs.defaultEffort ? { effort: targetPrefs.defaultEffort } : {}),
-    ...(targetPrefs.defaultSpeed ? { speed: targetPrefs.defaultSpeed } : {}),
-    maxOutputTokens: agentLimits.maxOutputTokens,
-    maxThinkingTokens: agentLimits.maxThinkingTokens,
-    maxTurns: agentLimits.maxTurns,
-    maxBudgetUsd: agentLimits.maxBudgetUsd,
-    customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-    maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-  })
-  const newSessionId = containerSession.id
-  // Mark active synchronously before any await so waitForIdle has state to observe
-  // even if the SDK's 'result' event lands before subscribeToSession completes.
-  messagePersister.markSessionActive(newSessionId, targetSlug)
-
-  // Register on the host. If this fails, the container is already holding a
-  // running session — clean it up so we don't leave orphans burning model budget.
-  try {
-    await registerSession(targetSlug, newSessionId, `Invoked by ${callerSlug}`)
-  } catch (registerErr) {
-    console.error('[x-agent] registerSession failed; cleaning up container session', registerErr)
-    await client.deleteSession(newSessionId).catch((cleanupErr) => {
-      // Container was unreachable or session already gone — nothing more we can do
-      console.error('[x-agent] failed to clean up orphaned container session', newSessionId, cleanupErr)
-    })
-    messagePersister.unsubscribeFromSession(newSessionId)
-    return c.json(
-      { error: `Failed to register invoked session: ${registerErr instanceof Error ? registerErr.message : String(registerErr)}` },
-      500,
-    )
-  }
-
-  // Metadata write failure shouldn't fail the invoke (the session is still
-  // usable), but don't silently swallow — log so we can debug missing
-  // cross-agent provenance later.
-  try {
-    await updateSessionMetadata(targetSlug, newSessionId, {
-      invokedByAgentSlug: callerSlug,
-      ...(attributedUserId ? { createdByUserId: attributedUserId } : {}),
-    })
-  } catch (metaErr) {
-    console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', metaErr)
-  }
-
-  await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug)
-  if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-    messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
-  }
-
-  if (sync) {
-    try {
-      await messagePersister.waitForIdle(newSessionId)
-    } catch (error) {
-      return c.json({
-        sessionId: newSessionId,
-        status: 'running',
-        error: error instanceof Error ? error.message : String(error),
+      captureException(err, {
+        tags: { ...X_AGENT_SENTRY, stage },
+        extra: { callerSlug, targetSlug, existingSessionId: existingSessionId ?? null },
       })
+      return c.json({ error: `Failed to invoke agent (${stage}): ${message}` }, 500)
     }
-    const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
-    return c.json({
-      sessionId: newSessionId,
-      status: 'completed',
-      lastMessage: lastMessage?.content,
-    })
-  }
-  return c.json({ sessionId: newSessionId, status: 'running' })
   })
 })
 
