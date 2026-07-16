@@ -356,6 +356,67 @@ describe('ClaudeCodeProcess model prompt hints', () => {
   })
 })
 
+describe('ClaudeCodeProcess agent-browser Bash hook', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('adds a warning without denying direct agent-browser commands', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-agent-browser-hook',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const hooks = calls[0].options.hooks as {
+      PreToolUse: Array<{
+        matcher: string
+        hooks: Array<(input: unknown) => Promise<Record<string, unknown>>>
+      }>
+    }
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher === 'Bash')
+    expect(bashHook).toBeDefined()
+
+    const directResult = await bashHook!.hooks[0]({
+      tool_name: 'Bash',
+      tool_input: { command: 'agent-browser open https://example.com' },
+    })
+    const discoveryResult = await bashHook!.hooks[0]({
+      tool_name: 'Bash',
+      tool_input: { command: 'which agent-browser; agent-browser --help' },
+    })
+    for (const result of [directResult, discoveryResult]) {
+      expect(result).toMatchObject({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext: expect.stringContaining('STRONG WARNING'),
+        },
+      })
+      expect(result).not.toHaveProperty('hookSpecificOutput.permissionDecision')
+    }
+  })
+
+  it('does not add context to ordinary Bash commands', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ordinary-bash-hook',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const hooks = calls[0].options.hooks as {
+      PreToolUse: Array<{
+        matcher: string
+        hooks: Array<(input: unknown) => Promise<Record<string, unknown>>>
+      }>
+    }
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher === 'Bash')!
+    await expect(bashHook.hooks[0]({
+      tool_name: 'Bash',
+      tool_input: { command: 'rg browser src' },
+    })).resolves.toEqual({})
+  })
+})
+
 describe('ClaudeCodeProcess static tool bans', () => {
   beforeEach(() => {
     calls.length = 0
