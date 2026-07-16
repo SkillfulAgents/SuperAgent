@@ -1,23 +1,17 @@
 {
   "storyId": "browser-test",
-  "passed": true,
-  "reason": "All steps executed successfully. Agent opened browser, navigated to example.com, retrieved the page title \"Example Domain\", and provided the correct response.",
-  "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded Gamut interface with agent list visible.",
-    "Clicked on QA-20260716-023117-xtvj agent — Successfully navigated to agent chat page.",
-    "Sent message: \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully submitted and agent began processing.",
-    "Waited for response (up to 3 minutes) — Agent successfully executed browser commands within the timeout period.",
-    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\".\" Test requirement satisfied."
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: or agent response (up to 3 minutes) — Response received within ~10 seconds\n\n**[STEP]** Verified response content — Screenshot confirms response contains \"The page title is \"Example Domain\".\" with tool call cards showing \"Open Browser\" and \"Browser MCP: Browser Get State\" both completed successfully\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 61018,
-  "sessionId": "ef5e79e2-5ee6-45fe-9d6b-5222d143e6c5",
+  "durationMs": 132572,
+  "sessionId": "68bcd219-9ed2-4619-abac-6372ed6465f1",
   "cost": {
-    "inputTokens": 284,
-    "outputTokens": 9692,
-    "cacheCreationTokens": 54574,
-    "cacheReadTokens": 712212,
+    "inputTokens": 488,
+    "outputTokens": 12551,
+    "cacheCreationTokens": 75018,
+    "cacheReadTokens": 1368949,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.188183
+    "totalCostUsd": 0.29391
   }
 }
