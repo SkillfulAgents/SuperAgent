@@ -51,6 +51,9 @@ vi.mock('@shared/lib/config/settings', () => ({
 import {
   LambdaMicroVmRuntimeClient,
   LocalAuthForwardProxy,
+  MICROVM_STREAM_KEEPALIVE_MS,
+  MICROVM_WS_PING_FRAME,
+  attachMicrovmUpstreamKeepalive,
   resetMicrovmRuntimeForTests,
   resolveMicrovmRuntimeConfigOrNull,
   isMicrovmRuntimeConfigured,
@@ -671,5 +674,42 @@ describe('LocalAuthForwardProxy', () => {
     })
     await closed
     expect(true).toBe(true)
+  })
+})
+
+describe('attachMicrovmUpstreamKeepalive', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('writes a WS ping frame on the MicroVM keepalive interval', () => {
+    const write = vi.fn()
+    const upstream = { destroyed: false, write } as unknown as import('net').Socket
+    const dispose = attachMicrovmUpstreamKeepalive(upstream)
+
+    vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS - 1)
+    expect(write).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(write.mock.calls[0][0]).toEqual(MICROVM_WS_PING_FRAME)
+    vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS)
+    expect(write).toHaveBeenCalledTimes(2)
+
+    dispose()
+    vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS * 2)
+    expect(write).toHaveBeenCalledTimes(2)
+  })
+
+  it('skips write when the upstream socket is destroyed', () => {
+    const write = vi.fn()
+    const upstream = { destroyed: true, write } as unknown as import('net').Socket
+    const dispose = attachMicrovmUpstreamKeepalive(upstream)
+    vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS)
+    expect(write).not.toHaveBeenCalled()
+    dispose()
   })
 })

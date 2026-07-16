@@ -39,6 +39,24 @@ const RESUME_RETRY_DELAY_MS = 400
 // handshake completes (a live stream is idle by design).
 const UPSTREAM_IDLE_TIMEOUT_MS = 30_000
 const ECS_METADATA_TIMEOUT_MS = 2_000
+// Quiet session streams through MicroVM ingress die at ~60s without traffic.
+export const MICROVM_STREAM_KEEPALIVE_MS = 25_000
+// Empty WebSocket ping frame (FIN + opcode 0x9, zero-length payload).
+export const MICROVM_WS_PING_FRAME = Buffer.from([0x89, 0x00])
+
+/** Keep MicroVM ingress from idle-cutting a quiet proxied WS stream. */
+export function attachMicrovmUpstreamKeepalive(upstream: net.Socket): () => void {
+  const timer = setInterval(() => {
+    if (upstream.destroyed) return
+    try {
+      upstream.write(MICROVM_WS_PING_FRAME)
+    } catch (error) {
+      console.warn('[LocalAuthForwardProxy] WebSocket ping failed:', error)
+    }
+  }, MICROVM_STREAM_KEEPALIVE_MS)
+  timer.unref?.()
+  return () => clearInterval(timer)
+}
 
 const ecsContainerMetadataSchema = z.object({
   Networks: z.array(z.object({
@@ -388,6 +406,7 @@ export class LocalAuthForwardProxy {
       if (connectTimer) clearTimeout(connectTimer)
       connectTimer = null
     }
+    let stopKeepalive: (() => void) | null = null
     const upstream = tls.connect({ host: this.options.endpoint, port: 443, servername: this.options.endpoint }, () => {
       clearConnectTimer()
       // Keep WS handshake headers (HOP_BY_HOP would drop upgrade/connection) and
@@ -412,15 +431,25 @@ export class LocalAuthForwardProxy {
       if (head?.length) upstream.write(head)
       upstream.pipe(socket)
       socket.pipe(upstream)
+      // First ping fires at 25s — well after the 101 handshake completes.
+      stopKeepalive = attachMicrovmUpstreamKeepalive(upstream)
     })
     const onError = (error: Error) => {
       clearConnectTimer()
+      stopKeepalive?.()
+      stopKeepalive = null
       captureException(error, { tags: { area: 'container', op: 'microvm.proxy.upgrade' }, extra: { endpoint: this.options.endpoint } })
       upstream.destroy()
       socket.destroy()
     }
+    const onClose = () => {
+      stopKeepalive?.()
+      stopKeepalive = null
+    }
     upstream.on('error', onError)
     socket.on('error', onError)
+    upstream.on('close', onClose)
+    socket.on('close', onClose)
   }
 }
 
