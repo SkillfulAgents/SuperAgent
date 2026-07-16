@@ -1,0 +1,211 @@
+/**
+ * Home Graph Service — assembles the topology snapshot behind
+ * GET /api/home-graph: every edge fact of the home connections graph in a
+ * handful of whole-table queries instead of a per-agent client fan-out.
+ *
+ * Node identity (agents, accounts, MCPs) is deliberately NOT assembled here —
+ * the renderer keeps using the existing global endpoints for those, which is
+ * what keeps agent status live via SSE.
+ *
+ * The route owns request concerns (auth extraction, error mapping); this
+ * service takes the already-resolved scope so it can be tested against an
+ * in-memory database.
+ */
+
+import pLimit from 'p-limit'
+import { count, eq, inArray, isNotNull, ne, and } from 'drizzle-orm'
+import { db } from '@shared/lib/db'
+import {
+  agentConnectedAccounts,
+  agentRemoteMcps,
+  connectedAccounts,
+  mcpAuditLog,
+  proxyAuditLog,
+  remoteMcpServers,
+  xAgentPolicies,
+} from '@shared/lib/db/schema'
+import type { HomeGraphData } from '@shared/lib/types/home-graph-schema'
+import {
+  listChatIntegrationsByAgents,
+  countSessionsPerIntegration,
+} from './chat-integration-service'
+import { listActiveWebhookTriggersByAgents } from './webhook-trigger-service'
+import { listPendingScheduledTasksByAgents } from './scheduled-task-service'
+import { readSessionMetadata } from './session-service'
+
+export interface HomeGraphScope {
+  /** Agents the caller may see (ACL-resolved in auth mode, all otherwise) */
+  agentSlugs: string[]
+  /** Scopes usage counts to the caller's accounts/servers; null outside auth mode */
+  userId: string | null
+  /** Live chat transport state (injected — the manager imports this service's siblings) */
+  isIntegrationConnected: (integrationId: string) => boolean
+}
+
+/**
+ * Actual agent→agent communication, counted from each visible agent's session
+ * metadata: sessions record which agent invoked them (`invokedByAgentSlug`).
+ */
+async function countInvocations(
+  agentSlugs: string[],
+  visible: Set<string>,
+): Promise<HomeGraphData['invocations']> {
+  const counts = new Map<string, number>()
+  const limit = pLimit(10)
+  await Promise.all(
+    agentSlugs.map((slug) =>
+      limit(async () => {
+        // readSessionMetadata degrades to {} on a missing/corrupt file.
+        const metadata = await readSessionMetadata(slug)
+        for (const meta of Object.values(metadata)) {
+          const caller = meta.invokedByAgentSlug
+          if (!caller || caller === slug || !visible.has(caller)) continue
+          const key = `${caller}\u0000${slug}`
+          counts.set(key, (counts.get(key) ?? 0) + 1)
+        }
+      }),
+    ),
+  )
+  return [...counts]
+    .map(([key, n]) => {
+      const [caller, target] = key.split('\u0000')
+      return { caller, target, count: n }
+    })
+    .sort((a, b) => a.caller.localeCompare(b.caller) || a.target.localeCompare(b.target))
+}
+
+/**
+ * Proxied-call counts per "agentSlug:accountId". Joined against the accounts
+ * table so auth mode scopes to the caller's own accounts and rows for deleted
+ * accounts drop out. Weights are decorative — failures degrade to {}.
+ */
+async function accountUsageCounts(userId: string | null): Promise<Record<string, number>> {
+  try {
+    const rows = await db
+      .select({ agentSlug: proxyAuditLog.agentSlug, accountId: proxyAuditLog.accountId, calls: count() })
+      .from(proxyAuditLog)
+      .innerJoin(connectedAccounts, eq(proxyAuditLog.accountId, connectedAccounts.id))
+      .where(userId ? eq(connectedAccounts.userId, userId) : undefined)
+      .groupBy(proxyAuditLog.agentSlug, proxyAuditLog.accountId)
+
+    const counts: Record<string, number> = {}
+    for (const row of rows) counts[`${row.agentSlug}:${row.accountId}`] = row.calls
+    return counts
+  } catch (error) {
+    console.error('Failed to aggregate account usage counts:', error)
+    return {}
+  }
+}
+
+async function mcpUsageCounts(userId: string | null): Promise<Record<string, number>> {
+  try {
+    const rows = await db
+      .select({ agentSlug: mcpAuditLog.agentSlug, mcpId: mcpAuditLog.remoteMcpId, calls: count() })
+      .from(mcpAuditLog)
+      .innerJoin(remoteMcpServers, eq(mcpAuditLog.remoteMcpId, remoteMcpServers.id))
+      .where(userId ? eq(remoteMcpServers.userId, userId) : undefined)
+      .groupBy(mcpAuditLog.agentSlug, mcpAuditLog.remoteMcpId)
+
+    const counts: Record<string, number> = {}
+    for (const row of rows) counts[`${row.agentSlug}:${row.mcpId}`] = row.calls
+    return counts
+  } catch (error) {
+    console.error('Failed to aggregate MCP usage counts:', error)
+    return {}
+  }
+}
+
+export async function buildHomeGraph(scope: HomeGraphScope): Promise<HomeGraphData> {
+  const { agentSlugs, userId } = scope
+  if (agentSlugs.length === 0) {
+    return {
+      accountLinks: [],
+      mcpLinks: [],
+      chats: [],
+      webhooks: [],
+      crons: [],
+      permissions: [],
+      invocations: [],
+      accountUsage: {},
+      mcpUsage: {},
+    }
+  }
+  const visible = new Set(agentSlugs)
+
+  const [accountLinkRows, mcpLinkRows, permissionRows, webhooksByAgent, cronsByAgent, invocations, accountUsage, mcpUsage] =
+    await Promise.all([
+      db
+        .select({ agentSlug: agentConnectedAccounts.agentSlug, accountId: agentConnectedAccounts.connectedAccountId })
+        .from(agentConnectedAccounts)
+        .where(inArray(agentConnectedAccounts.agentSlug, agentSlugs)),
+      db
+        .select({ agentSlug: agentRemoteMcps.agentSlug, mcpId: agentRemoteMcps.remoteMcpId })
+        .from(agentRemoteMcps)
+        .where(inArray(agentRemoteMcps.agentSlug, agentSlugs)),
+      db
+        .select({ caller: xAgentPolicies.callerAgentSlug, target: xAgentPolicies.targetAgentSlug })
+        .from(xAgentPolicies)
+        .where(
+          and(
+            inArray(xAgentPolicies.callerAgentSlug, agentSlugs),
+            // Target must be visible too — same anti-topology-leak rule as the
+            // per-agent policies route: never surface slugs the viewer has no
+            // ACL on. (The graph couldn't draw those edges anyway.)
+            inArray(xAgentPolicies.targetAgentSlug, agentSlugs),
+            eq(xAgentPolicies.operation, 'invoke'),
+            ne(xAgentPolicies.decision, 'block'),
+            isNotNull(xAgentPolicies.targetAgentSlug),
+          ),
+        ),
+      listActiveWebhookTriggersByAgents(agentSlugs),
+      listPendingScheduledTasksByAgents(agentSlugs),
+      countInvocations(agentSlugs, visible),
+      accountUsageCounts(userId),
+      mcpUsageCounts(userId),
+    ])
+
+  const chatsByAgent = listChatIntegrationsByAgents(agentSlugs, { allStatuses: true })
+  const sessionCounts = countSessionsPerIntegration(agentSlugs)
+
+  const chats: HomeGraphData['chats'] = [...chatsByAgent.values()].flat().map((chat) => ({
+    id: chat.id,
+    agentSlug: chat.agentSlug,
+    provider: chat.provider,
+    name: chat.name,
+    status: chat.status,
+    connected: scope.isIntegrationConnected(chat.id),
+    sessionCount: sessionCounts[chat.id] ?? 0,
+  }))
+
+  const webhooks: HomeGraphData['webhooks'] = [...webhooksByAgent.values()].flat().map((row) => ({
+    id: row.id,
+    agentSlug: row.agentSlug,
+    triggerType: row.triggerType,
+    name: row.name,
+    status: row.status,
+    fireCount: row.fireCount,
+  }))
+
+  const crons: HomeGraphData['crons'] = [...cronsByAgent.values()].flat().map((row) => ({
+    id: row.id,
+    agentSlug: row.agentSlug,
+    name: row.name,
+    scheduleExpression: row.scheduleExpression,
+    isRecurring: row.isRecurring,
+    status: row.status,
+    executionCount: row.executionCount,
+  }))
+
+  return {
+    accountLinks: accountLinkRows,
+    mcpLinks: mcpLinkRows,
+    chats,
+    webhooks,
+    crons,
+    // isNotNull() above guarantees target; the filter narrows the type.
+    permissions: permissionRows.filter((p): p is { caller: string; target: string } => p.target !== null),
+    invocations,
+    accountUsage,
+    mcpUsage,
+  }
+}
