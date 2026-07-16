@@ -1,6 +1,6 @@
 import type { EffortLevel, SpeedLevel } from '../container/types'
 import type { ModelDefinition } from './model-catalog-schema'
-import { GPT_TOOL_USE_PROMPT_HINTS } from './model-prompt-hints'
+import { GPT_TOOL_USE_PROMPT_HINTS, GROK_BROWSER_TOOL_PROMPT_HINTS } from './model-prompt-hints'
 import { pricingFor } from './model-pricing-lookup'
 
 /**
@@ -268,6 +268,7 @@ const OPENROUTER_EXTRA_MODELS: ModelDefinition[] = [
     pricing: { inputPerMtok: 2, outputPerMtok: 6 },
     // OpenRouter-reported context length for x-ai/grok-4.5, fetched 2026-07-10.
     contextWindow: 500_000,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
 ]
 
@@ -377,6 +378,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     ...PLATFORM_RESPONSES_WEB,
     pricing: { inputPerMtok: 2, outputPerMtok: 6, speedMultipliers: PRIORITY_2X_MULTIPLIERS },
     contextWindow: 500_000,
+    promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
 ]
 

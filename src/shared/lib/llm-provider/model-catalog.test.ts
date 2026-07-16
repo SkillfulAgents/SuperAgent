@@ -368,6 +368,18 @@ describe('getModelPromptHints', () => {
     }
   })
 
+  it('returns browser-integration guidance for Platform and OpenRouter Grok 4.5', () => {
+    for (const [providerId, modelId] of [
+      ['platform', 'grok-4.5'],
+      ['openrouter', 'x-ai/grok-4.5'],
+    ] as const) {
+      const hints = getModelPromptHints(modelId, providerId)
+      expect(hints.some((hint) => hint.includes('mcp__browser__browser_*'))).toBe(true)
+      expect(hints.some((hint) => hint.includes('exact full names'))).toBe(true)
+      expect(hints.some((hint) => hint.includes('agent-browser'))).toBe(true)
+    }
+  })
+
   it('returns an empty list for Claude models and unknown ids', () => {
     expect(getModelPromptHints('claude-opus-4-8', 'anthropic')).toEqual([])
     expect(getModelPromptHints('nope', 'platform')).toEqual([])

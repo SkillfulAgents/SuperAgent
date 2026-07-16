@@ -61,6 +61,14 @@ import {
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
 const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 
+export const AGENT_BROWSER_BASH_WARNING =
+  'STRONG WARNING: This Bash command is probably bypassing Gamut\'s browser integration. For website work, use the dedicated mcp__browser__browser_* tools; if they are deferred, load their exact full names with ToolSearch. The Bash command is still allowed, but continue with agent-browser only when the dedicated browser tools genuinely cannot perform the operation.';
+
+export function startsWithAgentBrowserCommand(command: unknown): boolean {
+  if (typeof command !== 'string') return false;
+  return /^(?:agent-browser|which\s+agent-browser)(?=$|[\s;&|])/.test(command.trimStart());
+}
+
 // Default values for system-prompt template vars when the host env is unset.
 // Mirror values the host (base-container-client.ts) sets, so out-of-host runs
 // render sensibly.
@@ -767,6 +775,21 @@ export class ClaudeCodeProcess extends EventEmitter {
                     inputManager.setCurrentToolUseId(toolUseId, this.sessionId);
                   }
                   return {};
+                },
+              ],
+            },
+            {
+              matcher: 'Bash',
+              hooks: [
+                async (input) => {
+                  const toolInput = (input as any).tool_input as Record<string, unknown> | undefined;
+                  if (!startsWithAgentBrowserCommand(toolInput?.command)) return {};
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: 'PreToolUse' as const,
+                      additionalContext: AGENT_BROWSER_BASH_WARNING,
+                    },
+                  };
                 },
               ],
             },

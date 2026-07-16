@@ -1,6 +1,40 @@
 import { describe, it, expect } from 'vitest'
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
-import { resultNeedsResumeErrorFallback, stillQueuedFromReceipt, MessageQueue } from './claude-code'
+import {
+  AGENT_BROWSER_BASH_WARNING,
+  MessageQueue,
+  resultNeedsResumeErrorFallback,
+  startsWithAgentBrowserCommand,
+  stillQueuedFromReceipt,
+} from './claude-code'
+
+describe('startsWithAgentBrowserCommand', () => {
+  it.each([
+    'agent-browser open https://example.com',
+    '  agent-browser snapshot',
+    'which agent-browser',
+    '\twhich   agent-browser; agent-browser --help',
+  ])('matches a direct agent-browser Bash request: %s', (command) => {
+    expect(startsWithAgentBrowserCommand(command)).toBe(true)
+  })
+
+  it.each([
+    'echo agent-browser',
+    'env | grep -i browser',
+    'which agent-browser-helper',
+    'agent-browser-helper open https://example.com',
+    '',
+    undefined,
+  ])('ignores unrelated Bash requests: %s', (command) => {
+    expect(startsWithAgentBrowserCommand(command)).toBe(false)
+  })
+
+  it('uses a strong but explicitly non-blocking warning', () => {
+    expect(AGENT_BROWSER_BASH_WARNING).toContain('STRONG WARNING')
+    expect(AGENT_BROWSER_BASH_WARNING).toContain('still allowed')
+    expect(AGENT_BROWSER_BASH_WARNING).toContain('mcp__browser__browser_*')
+  })
+})
 
 describe('resultNeedsResumeErrorFallback', () => {
   it('wants the fallback only when the error result carries no text at all', () => {
