@@ -146,6 +146,11 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
+const mockCaptureException = vi.fn()
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: (...args: unknown[]) => mockCaptureException(...args),
+}))
+
 // ----------------------------------------------------------------------------
 // Imports (after mocks)
 // ----------------------------------------------------------------------------
@@ -469,6 +474,44 @@ describe('/invoke', () => {
     expect(body.error).toMatch(/disk full/i)
     // Container session should have been deleted to avoid burning model budget on an orphan
     expect(mockDeleteSession).toHaveBeenCalledWith('new-sess-id')
+    expect(mockCaptureException).toHaveBeenCalled()
+  })
+
+  it('returns 500 with stage=ensure_running when target container start fails', async () => {
+    reviewDecisions.push('allow')
+    mockEnsureRunning.mockRejectedValueOnce(new Error('Failed to start container: 500'))
+
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello' })
+    expect(res.status).toBe(500)
+    const body = await res.json()
+    expect(body.error).toMatch(/ensure_running/)
+    expect(body.error).toMatch(/Failed to start container: 500/)
+    expect(mockCreateSession).not.toHaveBeenCalled()
+    expect(mockCaptureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        tags: expect.objectContaining({ area: 'x-agent', op: 'invoke', stage: 'ensure_running' }),
+      }),
+    )
+  })
+
+  it('returns 500 with stage=create_session when session create fails after start', async () => {
+    reviewDecisions.push('allow')
+    mockCreateSession.mockRejectedValueOnce(
+      new Error('Failed to start session - request timed out'),
+    )
+
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hello' })
+    expect(res.status).toBe(500)
+    const body = await res.json()
+    expect(body.error).toMatch(/create_session/)
+    expect(body.error).toMatch(/timed out/)
+    expect(mockCaptureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        tags: expect.objectContaining({ stage: 'create_session' }),
+      }),
+    )
   })
 
   it('returns running + error (200, not 500) when sync=true and waitForIdle rejects', async () => {
