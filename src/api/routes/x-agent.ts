@@ -476,13 +476,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
 
   // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
   const targetSlug = await resolveAgentId(rawTargetSlug)
-  if (!targetSlug) {
-    console.warn('[x-agent] invoke rejected', { callerSlug, rawTargetSlug, reason: 'target_not_found', status: 404 })
-    return c.json({ error: 'Target agent not found' }, 404)
-  }
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
   if (targetSlug === callerSlug) {
-    console.warn('[x-agent] invoke rejected', { callerSlug, targetSlug, reason: 'self_invoke', status: 400 })
     return c.json({ error: 'Agent cannot invoke itself' }, 400)
   }
 
@@ -491,13 +487,6 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     ? await getSessionMetadata(callerSlug, _callerSessionId)
     : null
   if (callerMeta?.invokedByAgentSlug) {
-    console.warn('[x-agent] invoke rejected', {
-      callerSlug,
-      targetSlug,
-      reason: 'one_hop',
-      invokedBy: callerMeta.invokedByAgentSlug,
-      status: 403,
-    })
     return c.json(
       {
         error:
@@ -509,13 +498,9 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
   }
 
   const target = await getAgent(targetSlug)
-  if (!target) {
-    console.warn('[x-agent] invoke rejected', { callerSlug, targetSlug, reason: 'target_missing', status: 404 })
-    return c.json({ error: 'Target agent not found' }, 404)
-  }
+  if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'user'))) {
-    console.warn('[x-agent] invoke rejected', { callerSlug, targetSlug, reason: 'acl', status: 403 })
     return c.json({ error: 'Forbidden: caller has no user access to target agent' }, 403)
   }
 
@@ -527,13 +512,6 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     prompt.slice(0, 200),
   )
   if (!policy.allowed) {
-    console.warn('[x-agent] invoke rejected', {
-      callerSlug,
-      targetSlug,
-      reason: 'policy',
-      detail: policy.reason ?? 'Forbidden',
-      status: 403,
-    })
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
@@ -543,26 +521,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
   }
 
-  console.info('[x-agent] invoke start', {
-    callerSlug,
-    targetSlug,
-    existingSessionId: existingSessionId ?? null,
-    sync: !!sync,
-  })
-
   return runWithOptionalUser(attributedUserId, async () => {
-    // Stages for runtime failures: ensure_running → create_session / send_message.
+    // Stages for runtime 500s: ensure_running → create_session / send_message.
     let stage = 'ensure_running'
     try {
       if (existingSessionId) {
         if (messagePersister.isSessionActive(existingSessionId)) {
-          console.warn('[x-agent] invoke rejected', {
-            callerSlug,
-            targetSlug,
-            existingSessionId,
-            reason: 'session_busy',
-            status: 409,
-          })
           return c.json({ error: 'Target session is currently running' }, 409)
         }
         stage = 'ensure_running'
@@ -580,12 +544,6 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             stage = 'wait_for_idle'
             await messagePersister.waitForIdle(existingSessionId)
           } catch (error) {
-            console.warn('[x-agent] invoke sync wait incomplete', {
-              callerSlug,
-              targetSlug,
-              sessionId: existingSessionId,
-              error: error instanceof Error ? error.message : String(error),
-            })
             return c.json({
               sessionId: existingSessionId,
               status: 'running',
@@ -593,26 +551,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
             })
           }
           const lastMessage = await readLastAssistantMessage(targetSlug, existingSessionId)
-          console.info('[x-agent] invoke ok', {
-            callerSlug,
-            targetSlug,
-            sessionId: existingSessionId,
-            mode: 'existing',
-            sync: true,
-          })
           return c.json({
             sessionId: existingSessionId,
             status: 'completed',
             lastMessage: lastMessage?.content,
           })
         }
-        console.info('[x-agent] invoke ok', {
-          callerSlug,
-          targetSlug,
-          sessionId: existingSessionId,
-          mode: 'existing',
-          sync: false,
-        })
         return c.json({ sessionId: existingSessionId, status: 'running' })
       }
 
@@ -694,12 +638,6 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           stage = 'wait_for_idle'
           await messagePersister.waitForIdle(newSessionId)
         } catch (error) {
-          console.warn('[x-agent] invoke sync wait incomplete', {
-            callerSlug,
-            targetSlug,
-            sessionId: newSessionId,
-            error: error instanceof Error ? error.message : String(error),
-          })
           return c.json({
             sessionId: newSessionId,
             status: 'running',
@@ -707,26 +645,12 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
           })
         }
         const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
-        console.info('[x-agent] invoke ok', {
-          callerSlug,
-          targetSlug,
-          sessionId: newSessionId,
-          mode: 'new',
-          sync: true,
-        })
         return c.json({
           sessionId: newSessionId,
           status: 'completed',
           lastMessage: lastMessage?.content,
         })
       }
-      console.info('[x-agent] invoke ok', {
-        callerSlug,
-        targetSlug,
-        sessionId: newSessionId,
-        mode: 'new',
-        sync: false,
-      })
       return c.json({ sessionId: newSessionId, status: 'running' })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
