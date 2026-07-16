@@ -31,6 +31,24 @@ export const userSettingsSchema = z.object({
   autoCheckUpdates: z.boolean().default(true),
   timezone: z.string().optional(),
   agentOrder: z.array(z.string()).optional(),
+  // Home graph view: user-dragged node positions, keyed by stable node id
+  // (e.g. 'agent:{slug}', 'account:{id}'). Absent entries fall back to auto-layout.
+  graphNodePositions: z.record(z.string(), z.object({ x: z.number(), y: z.number() })).optional(),
+  // Home graph view: user-dragged elbow-connector geometry, keyed by edge id.
+  // coords = cross-coordinates of the route's interior segments (the
+  // orthogonal waypoint model in graph-edges.tsx); sourceAngle/targetAngle =
+  // pinned anchor position on the node's circular perimeter, in degrees
+  // (absent = auto-picked facing side).
+  graphEdgeGeometry: z.record(
+    z.string(),
+    z.object({
+      coords: z.array(z.number()).optional(),
+      sourceAngle: z.number().optional(),
+      targetAngle: z.number().optional(),
+      // Count-chip position as a fraction of the route's length
+      chipT: z.number().optional(),
+    }),
+  ).optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),

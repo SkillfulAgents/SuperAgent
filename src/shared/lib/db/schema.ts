@@ -240,6 +240,10 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
 }, (table) => ({
   agentSlugCreatedAtIdx: index('proxy_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
   accountIdCreatedAtIdx: index('proxy_audit_log_account_id_created_at_idx').on(table.accountId, table.createdAt),
+  // Covers the home-graph usage aggregation (GROUP BY agent×account, with an
+  // owner join on account_id) — the table grows with every proxied call, so
+  // an unindexed scan degrades linearly forever.
+  accountAgentIdx: index('proxy_audit_log_account_agent_idx').on(table.accountId, table.agentSlug),
 }))
 
 // Remote MCP servers registered at app level
@@ -299,6 +303,9 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
 }, (table) => ({
   agentSlugCreatedAtIdx: index('mcp_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
   remoteMcpIdCreatedAtIdx: index('mcp_audit_log_remote_mcp_id_created_at_idx').on(table.remoteMcpId, table.createdAt),
+  // Same rationale as proxy_audit_log_account_agent_idx: usage aggregation
+  // over an append-only table.
+  mcpAgentIdx: index('mcp_audit_log_mcp_agent_idx').on(table.remoteMcpId, table.agentSlug),
 }))
 
 // Agent ACLs - maps users to agents with roles (auth mode only)

@@ -28,6 +28,20 @@ vi.mock('@renderer/context/search-context', () => ({
   useSearch: () => ({ open: false, openSearch: vi.fn(), closeSearch: vi.fn() }),
 }))
 
+// HomePage reads the cards⇄graph view from the URL (router search params) and
+// navigates to switch it — no real router mounts here, so both hooks are
+// stubbed (same pattern as app-sidebar.test.tsx).
+const mockRouteSearch = vi.fn<() => Record<string, unknown>>(() => ({}))
+const mockNavigate = vi.fn()
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+    useSearch: () => mockRouteSearch(),
+  }
+})
+
 vi.mock('@renderer/hooks/use-sessions', () => ({
   useSessions: () => ({ data: [] }),
 }))
@@ -266,5 +280,38 @@ describe('HomePage AgentCard', () => {
     renderWithProviders(<HomePage />)
     // The mocked AgentStatus just renders the status prop
     expect(screen.getByTestId('agent-status')).toBeInTheDocument()
+  })
+})
+
+describe('HomePage view toggle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockRouteSearch.mockReturnValue({})
+  })
+
+  it('defaults to cards and navigates to ?view=graph on toggle', async () => {
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    renderWithProviders(<HomePage />)
+
+    // Cards view renders the agent grid; both toggle buttons are present.
+    expect(screen.getByText('Test Agent')).toBeInTheDocument()
+    expect(screen.getByTestId('home-view-cards')).toHaveAttribute('aria-pressed', 'true')
+
+    screen.getByTestId('home-view-graph').click()
+    expect(mockNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ to: '/', search: expect.any(Function) }),
+    )
+    // The search updater writes view=graph and preserves other params.
+    const updater = mockNavigate.mock.calls[0][0].search as (p: Record<string, unknown>) => Record<string, unknown>
+    expect(updater({ redirect: '/x' })).toEqual({ redirect: '/x', view: 'graph' })
+  })
+
+  it('renders the graph empty state for ?view=graph with no agents', () => {
+    mockRouteSearch.mockReturnValue({ view: 'graph' })
+    mockAgentsData.mockReturnValue({ data: [], isLoading: false })
+    renderWithProviders(<HomePage />)
+
+    expect(screen.getByTestId('graph-empty-state')).toBeInTheDocument()
+    expect(screen.getByTestId('home-view-graph')).toHaveAttribute('aria-pressed', 'true')
   })
 })

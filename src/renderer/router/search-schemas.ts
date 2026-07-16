@@ -49,6 +49,12 @@ export const rootSearchSchema = z.object({
   redirect: internalPath.optional(),
 })
 
+// Home view toggle (cards ⇄ graph). URL-driven so back/forward navigation and
+// reloads keep the selected view; absent = cards.
+export const homeSearchSchema = z.object({
+  view: z.enum(['cards', 'graph']).optional(),
+})
+
 // Settings close-target: the path the gear was opened FROM, so closing returns
 // there. A query param (not an in-memory stash) so it SURVIVES a refresh inside
 // settings.

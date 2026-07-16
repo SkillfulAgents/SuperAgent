@@ -6,7 +6,7 @@ import { HttpError } from '@renderer/lib/api'
 import { agentQuery } from '@renderer/hooks/query-options'
 import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
-import { chatSearchSchema, connectionsSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
+import { chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 import { NotificationsRoute } from '@renderer/components/layout/notifications-route'
@@ -56,6 +56,7 @@ export const appShellRoute = createRoute({
 export const homeRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: '/',
+  validateSearch: lenient(homeSearchSchema),
   component: HomePage,
 })
 
