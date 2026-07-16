@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import http from 'http'
 import net from 'net'
 import { PassThrough } from 'stream'
+import { WebSocketServer } from 'ws'
 
 const sendMock = vi.fn()
 const responses: Record<string, unknown> = {}
@@ -52,8 +53,8 @@ import {
   LambdaMicroVmRuntimeClient,
   LocalAuthForwardProxy,
   MICROVM_STREAM_KEEPALIVE_MS,
-  MICROVM_WS_PING_FRAME,
   attachMicrovmUpstreamKeepalive,
+  createMicrovmWebSocketPingFrame,
   resetMicrovmRuntimeForTests,
   resolveMicrovmRuntimeConfigOrNull,
   isMicrovmRuntimeConfigured,
@@ -686,7 +687,7 @@ describe('attachMicrovmUpstreamKeepalive', () => {
     vi.useRealTimers()
   })
 
-  it('writes a WS ping frame on the MicroVM keepalive interval', () => {
+  it('writes a masked client WS ping frame on the MicroVM keepalive interval', () => {
     const write = vi.fn()
     const upstream = { destroyed: false, write } as unknown as import('net').Socket
     const dispose = attachMicrovmUpstreamKeepalive(upstream)
@@ -695,13 +696,57 @@ describe('attachMicrovmUpstreamKeepalive', () => {
     expect(write).not.toHaveBeenCalled()
     vi.advanceTimersByTime(1)
     expect(write).toHaveBeenCalledTimes(1)
-    expect(write.mock.calls[0][0]).toEqual(MICROVM_WS_PING_FRAME)
+    const frame = write.mock.calls[0][0] as Buffer
+    expect(frame).toHaveLength(6)
+    expect(frame[0]).toBe(0x89)
+    expect(frame[1]).toBe(0x80)
     vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS)
     expect(write).toHaveBeenCalledTimes(2)
 
     dispose()
     vi.advanceTimersByTime(MICROVM_STREAM_KEEPALIVE_MS * 2)
     expect(write).toHaveBeenCalledTimes(2)
+  })
+
+  it('creates a client ping accepted by a WebSocket server', async () => {
+    vi.useRealTimers()
+    const server = http.createServer()
+    const wss = new WebSocketServer({ server })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const port = (server.address() as net.AddressInfo).port
+    const socket = net.connect(port, '127.0.0.1')
+    const connected = new Promise<import('ws').WebSocket>((resolve) => wss.once('connection', resolve))
+    let websocket: import('ws').WebSocket | undefined
+    try {
+      await new Promise<void>((resolve) => socket.once('connect', resolve))
+      socket.write([
+        'GET / HTTP/1.1',
+        'Host: 127.0.0.1',
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+        'Sec-WebSocket-Version: 13',
+        '',
+        '',
+      ].join('\r\n'))
+
+      websocket = await connected
+      const ping = new Promise<Buffer>((resolve, reject) => {
+        websocket!.once('ping', resolve)
+        websocket!.once('error', reject)
+      })
+      socket.write(createMicrovmWebSocketPingFrame())
+      await expect(ping).resolves.toEqual(Buffer.alloc(0))
+    } finally {
+      socket.destroy()
+      websocket?.terminate()
+      await new Promise<void>((resolve) => wss.close(() => resolve()))
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => error ? reject(error) : resolve())
+        })
+      }
+    }
   })
 
   it('skips write when the upstream socket is destroyed', () => {
