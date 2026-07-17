@@ -37,6 +37,7 @@ const mockDiscoverOAuthMetadata = vi.fn()
 const mockValidateAndConsumeOAuthErrorResponse = vi.fn()
 
 vi.mock('@shared/lib/mcp/oauth', () => ({
+  McpOAuthSetupError: class McpOAuthSetupError extends Error {},
   initiateOAuthFlow: (...args: unknown[]) => mockInitiateOAuthFlow(...args),
   initiateNewServerOAuth: (...args: unknown[]) => mockInitiateNewServerOAuth(...args),
   completeOAuthFlow: (...args: unknown[]) => mockCompleteOAuthFlow(...args),
@@ -1002,6 +1003,27 @@ describe('SSRF protection', () => {
       const [, , candidates, electron] = mockInitiateNewServerOAuth.mock.calls[0]
       expect(electron).toBe(false)
       expect(candidates).toEqual(['http://localhost:3000/api/remote-mcps/oauth-callback'])
+    })
+  })
+
+  describe('POST /initiate-oauth — surfaces OAuth setup failures', () => {
+    it('returns the setup error message when the authorization server rejects registration', async () => {
+      const { McpOAuthSetupError } = await import('@shared/lib/mcp/oauth')
+      mockInitiateNewServerOAuth.mockRejectedValue(
+        new McpOAuthSetupError(
+          'The authorization server rejected client registration (HTTP 400): redirect_uri is not allowed by the account configuration'
+        )
+      )
+
+      const res = await app.request('http://localhost/api/remote-mcps/initiate-oauth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Locked Down', url: 'https://mcp.example.com/mcp' }),
+      })
+
+      expect(res.status).toBe(500)
+      const body = await res.json()
+      expect(body.error).toContain('redirect_uri is not allowed by the account configuration')
     })
   })
 

@@ -9,6 +9,7 @@ import {
   completeOAuthFlow,
   validateAndConsumeOAuthErrorResponse,
   discoverOAuthMetadata,
+  McpOAuthSetupError,
 } from '@shared/lib/mcp/oauth'
 import type { McpToolInfo } from '@shared/lib/mcp/types'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
@@ -306,7 +307,13 @@ remoteMcps.post('/initiate-oauth', async (c) => {
       return c.json({ error: 'MCP server not found' }, 404)
     }
 
-    const result = await initiateOAuthFlow(body.mcpId, server.url, redirectCandidates, !!body.electron, clientNameOverride, clientIdOverride, clientSecretOverride)
+    let result
+    try {
+      result = await initiateOAuthFlow(body.mcpId, server.url, redirectCandidates, !!body.electron, clientNameOverride, clientIdOverride, clientSecretOverride)
+    } catch (e) {
+      if (e instanceof McpOAuthSetupError) return c.json({ error: e.message }, 500)
+      throw e
+    }
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(server.url)
@@ -325,7 +332,13 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     }
 
     // New server: OAuth-first flow (no DB insert yet)
-    const result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
+    let result
+    try {
+      result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
+    } catch (e) {
+      if (e instanceof McpOAuthSetupError) return c.json({ error: e.message }, 500)
+      throw e
+    }
 
     if (!result) {
       const discoveryResult = await discoverOAuthMetadata(body.url.trim())
