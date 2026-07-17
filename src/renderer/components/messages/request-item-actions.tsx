@@ -10,7 +10,7 @@ export function RequestItemActions({ children, className }: RequestItemActionsPr
   return (
     <div
       className={cn(
-        'sticky bottom-0 z-10 -mx-4 -mb-4 flex justify-end gap-2 border-t border-border bg-background px-4 pb-4 pt-4',
+        'sticky bottom-0 z-10 -mx-4 -mb-4 mt-4 flex justify-end gap-2 border-t border-border bg-background px-4 pb-4 pt-4',
         className
       )}
     >
