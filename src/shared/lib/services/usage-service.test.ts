@@ -232,16 +232,61 @@ describe('usage-service', () => {
     })
 
     it('returns zero totals before a session transcript exists', async () => {
-      const totals = await loadSessionUsageTotals({
-        sessionPath: path.join(tmpdir(), 'missing-superagent-session.jsonl'),
-      })
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-missing-session-'))
+      writeFileSync(path.join(dir, 'agent-legacy.jsonl'), '{}\n')
 
-      expect(totals).toEqual({
-        totalCost: 0,
-        totalTokens: 0,
-        priceMissing: false,
-        usageIncomplete: false,
+      try {
+        const totals = await loadSessionUsageTotals({
+          sessionPath: path.join(dir, 'missing-session.jsonl'),
+        })
+
+        expect(totals).toEqual({
+          totalCost: 0,
+          totalTokens: 0,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('deduplicates snapshots when requestId presence differs', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-mixed-request-id-'))
+      const transcript = path.join(dir, 'mixed-request-id.jsonl')
+      const partialSnapshot = JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-01-01T12:00:00.000Z',
+        requestId: 'request-1',
+        costUSD: 0.1,
+        message: {
+          id: 'shared-message-id',
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: 100, output_tokens: 10 },
+        },
       })
+      const finalSnapshotWithoutRequestId = JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-01-01T12:00:01.000Z',
+        costUSD: 0.2,
+        message: {
+          id: 'shared-message-id',
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: 100, output_tokens: 20 },
+        },
+      })
+      writeFileSync(transcript, `${partialSnapshot}\n${finalSnapshotWithoutRequestId}\n`)
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.2,
+          totalTokens: 120,
+          priceMissing: false,
+          usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
     })
   })
 
@@ -362,19 +407,19 @@ describe('usage-service', () => {
       const dir = mkdtempSync(path.join(tmpdir(), 'usage-cache-only-'))
       const transcript = path.join(dir, 'cache-only.jsonl')
       const cacheReadRow = JSON.stringify({
-          type: 'assistant',
-          timestamp: '2026-01-01T12:00:00.000Z',
-          message: {
-            id: 'cache-only-message',
-            model: 'claude-sonnet-4-6',
-            usage: {
-              input_tokens: 0,
-              output_tokens: 0,
-              cache_creation_input_tokens: 0,
-              cache_read_input_tokens: 123,
-            },
+        type: 'assistant',
+        timestamp: '2026-01-01T12:00:00.000Z',
+        message: {
+          id: 'cache-only-message',
+          model: 'claude-sonnet-4-6',
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 123,
           },
-        })
+        },
+      })
       const cacheCreationRow = JSON.stringify({
         type: 'assistant',
         timestamp: '2026-01-01T12:00:01.000Z',
@@ -399,6 +444,49 @@ describe('usage-service', () => {
           totalTokens: 579,
           priceMissing: false,
           usageIncomplete: false,
+        })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('warns rather than guessing ownership of legacy flat subagent transcripts', async () => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'usage-legacy-subagent-'))
+      const transcript = path.join(dir, 'session.jsonl')
+      const legacySubagent = path.join(dir, 'agent-legacy.jsonl')
+      writeFileSync(
+        transcript,
+        `${JSON.stringify({
+          type: 'assistant',
+          timestamp: '2026-01-01T12:00:00.000Z',
+          costUSD: 0.1,
+          message: {
+            id: 'main-session-message',
+            model: 'claude-sonnet-4-6',
+            usage: { input_tokens: 100, output_tokens: 10 },
+          },
+        })}\n`,
+      )
+      writeFileSync(
+        legacySubagent,
+        `${JSON.stringify({
+          type: 'assistant',
+          timestamp: '2026-01-01T12:00:01.000Z',
+          costUSD: 0.2,
+          message: {
+            id: 'unlinked-subagent-message',
+            model: 'claude-sonnet-4-6',
+            usage: { input_tokens: 200, output_tokens: 20 },
+          },
+        })}\n`,
+      )
+
+      try {
+        await expect(loadSessionUsageTotals({ sessionPath: transcript })).resolves.toEqual({
+          totalCost: 0.1,
+          totalTokens: 110,
+          priceMissing: false,
+          usageIncomplete: true,
         })
       } finally {
         rmSync(dir, { recursive: true, force: true })

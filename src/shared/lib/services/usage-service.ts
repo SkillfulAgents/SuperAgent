@@ -40,7 +40,6 @@ interface UsageEntry {
       speed?: string
     }
   }
-  requestId?: string
   costUSD?: number
 }
 
@@ -370,10 +369,16 @@ export async function loadDailyUsageData(
     // A session's primary transcript is <id>.jsonl. Current subagent/workflow
     // transcripts live below the adjacent <id>/ directory, so include those in
     // the session total without walking every other session for the agent.
+    // Legacy Claude Code versions wrote unlinked agent-*.jsonl siblings; those
+    // cannot be attributed safely, so exclude them and flag the result below.
     files = []
+    let hasPrimaryTranscript = false
     try {
       const stat = await fs.promises.stat(options.sessionPath)
-      if (stat.isFile()) files.push(options.sessionPath)
+      if (stat.isFile()) {
+        files.push(options.sessionPath)
+        hasPrimaryTranscript = true
+      }
       else markIncomplete()
     } catch (error) {
       // A newly-created session can exist before its transcript is written.
@@ -386,6 +391,29 @@ export async function loadDailyUsageData(
     } catch (error) {
       // Most sessions have no nested transcripts.
       if (!isMissingPathError(error)) markIncomplete()
+    }
+
+    if (hasPrimaryTranscript) {
+      try {
+        const siblingEntries = await fs.promises.readdir(path.dirname(options.sessionPath), {
+          withFileTypes: true,
+        })
+        const primaryFilename = path.basename(options.sessionPath)
+        if (
+          siblingEntries.some(
+            (entry) =>
+              entry.name !== primaryFilename &&
+              entry.isFile() &&
+              entry.name.startsWith('agent-') &&
+              entry.name.endsWith('.jsonl'),
+          )
+        ) {
+          markIncomplete()
+        }
+      } catch (error) {
+        // Other failures mean we cannot rule out omitted data.
+        if (!isMissingPathError(error)) markIncomplete()
+      }
     }
   } else {
     const projectsDir = path.join(options.claudePath, 'projects')
@@ -432,9 +460,19 @@ export async function loadDailyUsageData(
 
   if (files.length === 0) return []
 
-  // Resolve the provider catalog pricing ONCE for this load. processLine closes
-  // over it so per-line cost is a Map lookup, not a per-line catalog rebuild.
+  // Resolve the provider catalog pricing once, then cache the final rate card
+  // per runtime model id. A load generally has many usage rows but only a
+  // handful of distinct models, so candidate normalization stays off the hot
+  // per-line path after the first occurrence.
   const catalogPricing = providerId ? buildCatalogPricingMap(providerId) : undefined
+  const rateCardByModel = new Map<string, PricingEntry | null>()
+  const resolveRateCardForLoad = (model: string): PricingEntry | null => {
+    const cached = rateCardByModel.get(model)
+    if (cached !== undefined) return cached
+    const rateCard = resolveRateCard(model, catalogPricing)
+    rateCardByModel.set(model, rateCard)
+    return rateCard
+  }
 
   // Stream-read files with concurrency limit.
   // Pre-filter lines with a cheap string check before JSON.parse — most lines
@@ -571,7 +609,7 @@ export async function loadDailyUsageData(
     // Only the exact tier strings select a multiplier; anything else (absent,
     // unknown future tiers) bills standard.
     const speed = usage.speed === 'slow' || usage.speed === 'fast' ? usage.speed : undefined
-    const rateCard = resolveRateCard(model, catalogPricing)
+    const rateCard = resolveRateCardForLoad(model)
     const speedMultiplier = speed !== undefined ? rateCard?.speedMultipliers?.[speed] : undefined
     const computedCost = costFromRateCard(
       rateCard,
@@ -604,15 +642,13 @@ export async function loadDailyUsageData(
       priceMissing: !hasRecordedCost && rateCard === null,
     }
 
-    // Transcript snapshots for the same model response can share a message id
-    // while output_tokens increases as more content blocks are appended. Some
-    // provider-translated rows omit requestId entirely, so message id alone is
-    // the fallback dedup key. Keep the highest snapshot to avoid counting a
-    // response multiple times.
+    // Transcript snapshots for the same model response share the provider's
+    // unique message id while output_tokens increases as content is appended.
+    // requestId is not consistently present across translated snapshots, so
+    // key solely on message id and keep the highest-output snapshot.
     const msgId = entry.message?.id || ''
-    const reqId = entry.requestId || ''
     if (msgId) {
-      const key = reqId ? `message:${msgId}:request:${reqId}` : `message:${msgId}`
+      const key = `message:${msgId}`
       const previous = countedEntries.get(key)
       if (previous && outputTokens <= previous.outputTokens) return
       countedEntries.set(key, countedUsage)

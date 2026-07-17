@@ -513,7 +513,12 @@ export function getAgentSessionsDir(slug: string): string {
  * ~/.superagent/agents/{slug}/workspace/.claude/projects/-workspace/{sessionId}.jsonl
  */
 export function getSessionJsonlPath(slug: string, sessionId: string): string {
-  return path.join(getAgentSessionsDir(slug), `${sessionId}.jsonl`)
+  const sessionsDir = getAgentSessionsDir(slug)
+  return assertPathWithinDir(
+    sessionsDir,
+    path.resolve(sessionsDir, `${sessionId}.jsonl`),
+    'Invalid session ID',
+  )
 }
 
 // ============================================================================

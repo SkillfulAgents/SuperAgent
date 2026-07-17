@@ -753,4 +753,9 @@ describe('path helpers', () => {
       /\/agents\/my-agent\/workspace\/\.claude\/projects\/-workspace\/session-123\.jsonl$/
     )
   })
+
+  it('getSessionJsonlPath rejects session ids that escape the sessions directory', () => {
+    expect(() => getSessionJsonlPath('my-agent', '../outside')).toThrow('Invalid session ID')
+    expect(() => getSessionJsonlPath('my-agent', '/tmp/outside')).toThrow('Invalid session ID')
+  })
 })
