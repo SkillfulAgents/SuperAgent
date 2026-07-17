@@ -65,6 +65,25 @@ describe('MarkdownComposerEditor', () => {
     expect(editor.querySelectorAll('li')).toHaveLength(2)
   })
 
+  it('lets an explicit minimum height override the row-based fallback', () => {
+    render(
+      <MarkdownComposerEditor
+        value=""
+        onChange={() => {}}
+        placeholder="Write a message"
+        dataTestId="markdown-editor"
+        minRows={2}
+        className="min-h-[50vh]"
+      />
+    )
+
+    const editor = screen.getByTestId('markdown-editor')
+    expect(editor.style.minHeight).toBe('')
+    expect(editor.style.getPropertyValue('--composer-min-height')).toBe('40px')
+    expect(editor.className).toContain('min-h-[50vh]')
+    expect(editor.className).not.toContain('min-h-[var(--composer-min-height)]')
+  })
+
   it('turns typed Markdown tokens into rich text while retaining Markdown output', async () => {
     const user = userEvent.setup()
     render(<ControlledEditor />)

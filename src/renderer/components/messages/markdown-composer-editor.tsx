@@ -620,7 +620,7 @@ export function MarkdownComposerEditor({
   onEditorElement,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
-    'markdown-composer-editor relative w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none',
+    'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none',
     className
   )
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -682,7 +682,10 @@ export function MarkdownComposerEditor({
         spellcheck: 'true',
         ...(dataTestId ? { 'data-testid': dataTestId } : {}),
         ...(enterKeyHint ? { enterkeyhint: enterKeyHint } : {}),
-        style: `min-height: ${Math.max(1, minRows) * 20}px`,
+        // Keep the row-based default as a variable-backed utility so callers'
+        // explicit min-height classes can win through tailwind-merge. An inline
+        // min-height would override the agent-home expand/collapse classes.
+        style: `--composer-min-height: ${Math.max(1, minRows) * 20}px`,
         class: managedClassNameRef.current,
       },
       handleDOMEvents: {

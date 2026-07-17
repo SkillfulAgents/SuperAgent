@@ -18,6 +18,14 @@ test.describe('composer Markdown blocks', () => {
   test('live-renders headings and lists from keyboard input and pasted Markdown', async ({ page }) => {
     const input = page.locator('[data-testid="home-message-input"]')
 
+    const collapsedHeight = await input.evaluate((element) => element.clientHeight)
+    await page.getByRole('button', { name: 'Expand input' }).click()
+    await expect.poll(() => input.evaluate((element) => element.clientHeight))
+      .toBeGreaterThan(collapsedHeight + 100)
+    await page.getByRole('button', { name: 'Shrink input' }).click()
+    await expect.poll(() => input.evaluate((element) => element.clientHeight))
+      .toBeLessThanOrEqual(120)
+
     await input.fill('intro')
     await input.press('Shift+Enter')
     await input.pressSequentially('## Hello')
