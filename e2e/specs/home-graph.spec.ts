@@ -164,8 +164,39 @@ test.describe('home connections graph', () => {
     // On CI the shared server holds ~100 agents from sibling specs, so
     // fitView bottoms out at minZoom (0.15) where a port's hit zone is ~3px
     // and the 30-flow-px connectionRadius shrinks below cursor precision.
-    // Wheel-zoom anchored between the two cards until they render near
-    // natural size (card = 176 flow px wide).
+    // Worse, alphabetically-adjacent agents can straddle a grid-row wrap and
+    // sit thousands of flow px apart — zooming to a workable scale then
+    // leaves one (or both) outside the viewport, where mouse gestures are
+    // no-ops. Two counters:
+    //  1. pinPairTogether: drag the source card next to the target. Node
+    //     drags work at any zoom, and a dragged node is PINNED — churn
+    //     re-layouts stop moving both cards, making every later
+    //     measurement stable.
+    //  2. zoomToPair: wheel-zoom anchored between the (now adjacent) cards
+    //     until they render near natural size (card = 176 flow px wide).
+    const dragNode = async (from: { x: number; y: number }, to: { x: number; y: number }) => {
+      await page.mouse.move(from.x, from.y)
+      await page.mouse.down()
+      await page.mouse.move(to.x, to.y, { steps: 5 })
+      await page.mouse.up()
+    }
+    const pinPairTogether = async () => {
+      await page.getByRole('button', { name: 'Fit View' }).click()
+      const tb0 = await targetNode.boundingBox({ timeout: 1500 }).catch(() => null)
+      if (!tb0) return
+      // Nudge the target a few px — enough to pin it against re-layouts.
+      const tCenter = { x: tb0.x + tb0.width / 2, y: tb0.y + tb0.height / 2 }
+      await dragNode(tCenter, { x: tCenter.x + 10, y: tCenter.y + 10 })
+      const tb = await targetNode.boundingBox({ timeout: 1500 }).catch(() => null)
+      const sb = await sourceNode.boundingBox({ timeout: 1500 }).catch(() => null)
+      if (!tb || !sb) return
+      // Park the source three card-widths left of the target (clear gap,
+      // same row) and thereby pin it too.
+      await dragNode(
+        { x: sb.x + sb.width / 2, y: sb.y + sb.height / 2 },
+        { x: tb.x - 3 * tb.width, y: tb.y + tb.height / 2 },
+      )
+    }
     const zoomToPair = async () => {
       for (let i = 0; i < 24; i++) {
         const sb = await sourceNode.boundingBox({ timeout: 1500 }).catch(() => null)
@@ -189,7 +220,7 @@ test.describe('home connections graph', () => {
       // churn shuffled underneath, navigating clean off the graph — come back
       // before trying again.
       if (!/view=graph/.test(page.url())) await page.goto('/?view=graph')
-      await page.getByRole('button', { name: 'Fit View' }).click()
+      await pinPairTogether()
       await zoomToPair()
       await sourceNode.click({ force: true, timeout: 2000 }).catch(() => {})
       const sourceBox = await sourceNode.boundingBox({ timeout: 1500 }).catch(() => null)
@@ -229,10 +260,11 @@ test.describe('home connections graph', () => {
     let revoked = false
     for (let attempt = 0; attempt < 6 && !revoked; attempt++) {
       if (!/view=graph/.test(page.url())) await page.goto('/?view=graph')
-      // The edge lives between the two cards, which the draw phase may have
-      // zoomed clean out of the viewport — a force-click on an off-screen
-      // element is a no-op (the canvas pans, it doesn't scroll). Re-fit and
-      // re-zoom onto the pair so the connector is big and on screen.
+      // The edge lives between the two (pinned, adjacent) cards, which the
+      // draw phase may have zoomed out of the viewport — a force-click on an
+      // off-screen element is a no-op (the canvas pans, it doesn't scroll).
+      // Re-fit and re-zoom onto the pair so the connector is big and on
+      // screen.
       await page.getByRole('button', { name: 'Fit View' }).click()
       await zoomToPair()
       if (await edge.count()) {
