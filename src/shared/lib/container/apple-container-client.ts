@@ -2,13 +2,15 @@ import { execSync } from 'child_process'
 import { createHash } from 'crypto'
 import { createReadStream, createWriteStream } from 'fs'
 import { mkdtemp, rm } from 'fs/promises'
-import { tmpdir } from 'os'
+import { tmpdir, freemem, totalmem } from 'os'
 import { join } from 'path'
 import { Readable, Transform } from 'stream'
 import { pipeline } from 'stream/promises'
-import { BaseContainerClient, checkCommandAvailable, execWithPath, CONTAINER_INTERNAL_PORT, shellEscape } from './base-container-client'
+import { BaseContainerClient, checkCommandAvailable, execWithPath, execSyncWithPath, CONTAINER_INTERNAL_PORT, shellEscape } from './base-container-client'
 import type { ContainerConfig, ContainerInfo, ContainerStats, ImagePullProgress } from './types'
 import { isAdminPrivilegeCancelError, runWithAdminPrivileges } from '@shared/lib/run-with-admin-privileges'
+import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { getAppPort } from '@shared/lib/proxy/host-url'
 
 export type AppleContainerProvisionProgress = Pick<ImagePullProgress, 'status' | 'percent'>
 
@@ -38,6 +40,54 @@ function getMacOSMajorVersion(): number | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Gateway IP of the default network — the vmnet host-side interface, and the
+ * only address containers can reach the host at: Apple's runtime has no
+ * --add-host equivalent and host.docker.internal does not resolve inside its
+ * containers (verified NXDOMAIN on CLI 1.1.0). Cached per app session; the
+ * default network's subnet is stable while the apiserver runs.
+ */
+let cachedGatewayIp: string | null = null
+function getAppleGatewayIp(): string | null {
+  if (cachedGatewayIp) return cachedGatewayIp
+  try {
+    const raw = execSyncWithPath('container network inspect default', { timeout: 10_000 }).toString()
+    const nets = JSON.parse(raw)
+    const gw = (Array.isArray(nets) ? nets[0] : nets)?.status?.ipv4Gateway
+    cachedGatewayIp = typeof gw === 'string' && gw ? gw : null
+  } catch {
+    cachedGatewayIp = null
+  }
+  return cachedGatewayIp
+}
+
+/**
+ * Collect diagnostic data about the Apple Container environment at the moment
+ * of failure. Every probe is bounded and best-effort — this runs when the
+ * runtime is likely already misbehaving.
+ */
+async function collectAppleContainerDiagnostics(): Promise<Record<string, unknown>> {
+  const diag: Record<string, unknown> = {
+    arch: process.arch,
+    macos_major_version: getMacOSMajorVersion(),
+    system_memory_free_mb: Math.round(freemem() / 1048576),
+    system_memory_total_mb: Math.round(totalmem() / 1048576),
+  }
+  try {
+    const { stdout } = await execWithPath('container --version', { timeoutMs: 5000 })
+    diag.cli_version = stdout.trim()
+  } catch (e: any) {
+    diag.cli_version = `check_failed: ${String(e?.message ?? e).slice(0, 300)}`
+  }
+  try {
+    const { stdout, stderr } = await execWithPath('container system status', { timeoutMs: 5000 })
+    diag.system_status = (stdout + stderr).trim().slice(0, 500) || '(empty)'
+  } catch (e: any) {
+    diag.system_status = `check_failed: ${String(e?.message ?? e).slice(0, 300)}`
+  }
+  return diag
 }
 
 async function hashFileSha256(filePath: string): Promise<string> {
@@ -106,14 +156,34 @@ export class AppleContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Handle kernel-not-configured error on first use by auto-installing the recommended kernel.
+   * Handle run errors: install the recommended kernel on first use, and
+   * restart the runtime when the real health probe says it's down.
    */
   protected async handleRunError(error: any): Promise<boolean> {
-    if (error.message?.includes('kernel not configured')) {
+    const msg = error.message || error.stderr || String(error)
+    addErrorBreadcrumb({ category: 'apple-container', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
+
+    if (msg.includes('kernel not configured')) {
       const arch = process.arch === 'arm64' ? 'arm64' : 'amd64'
       console.log(`Apple Container kernel not configured for ${arch}, installing recommended kernel...`)
       await execWithPath(`container system kernel set --arch ${arch} --recommended`)
       return true
+    }
+
+    // No error-text heuristics: Apple's failure signatures are unmapped, so
+    // only the real runtime probe decides recovery (SUP-291 pattern, mirrored
+    // from Lima/WSL2). This also keeps registry-level pull/build error text
+    // from ever triggering a spurious runtime restart. Unrecovered errors are
+    // captured by start()'s catch; a failed restart is captured with
+    // diagnostics inside ensureAppleContainerReadyImpl — no capture here.
+    if (!(await AppleContainerClient.isRunning())) {
+      console.log('Apple Container runtime unreachable after run error, attempting to start...')
+      try {
+        await ensureAppleContainerReady()
+        return true
+      } catch (err) {
+        console.error('Failed to start Apple Container runtime:', err)
+      }
     }
     return false
   }
@@ -186,10 +256,102 @@ export class AppleContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Apple Container does not currently support `container stats`.
+   * Apple's CLI has no `stats` subcommand, so read the guest's own meters via
+   * `container exec` instead. Each Apple container is its own lightweight VM,
+   * so the guest's MemTotal IS the container's memory cap and
+   * MemTotal - MemAvailable the usage under it — without this the health
+   * monitor silently skips Apple-backed agents and no memory-pressure
+   * warnings are ever produced.
    */
   async getStats(): Promise<ContainerStats | null> {
-    return null
+    try {
+      const { stdout } = await execWithPath(
+        `${this.getRunnerShellCommand()} exec ${this.getContainerName()} cat /proc/meminfo`,
+        { timeoutMs: 5000 },
+      )
+      const memTotalKb = parseInt(stdout.match(/MemTotal:\s+(\d+)/i)?.[1] ?? '', 10)
+      const memAvailableKb = parseInt(stdout.match(/MemAvailable:\s+(\d+)/i)?.[1] ?? '', 10)
+      if (!(memTotalKb > 0) || !Number.isFinite(memAvailableKb)) return null
+      const usedKb = Math.max(0, memTotalKb - memAvailableKb)
+      return {
+        memoryUsageBytes: usedKb * 1024,
+        memoryLimitBytes: memTotalKb * 1024,
+        memoryPercent: (usedKb / memTotalKb) * 100,
+        // Not measured — the only stats consumer (memoryHealthChecker) ignores it.
+        cpuPercent: 0,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Containers talk back to the host (LLM proxy, host API) at this URL.
+   * host.docker.internal doesn't resolve here, so use the gateway IP — the
+   * same address Lima aliases that name to via --add-host. Without this,
+   * PROXY_BASE_URL is unreachable and agents can't reach the LLM proxy.
+   */
+  public getHostApiBaseUrl(): string | Promise<string> {
+    const gateway = getAppleGatewayIp()
+    return gateway ? `http://${gateway}:${getAppPort()}` : super.getHostApiBaseUrl()
+  }
+
+  /** The vmnet gateway is a real host interface — the host-browser CDP proxy
+   *  must bind it for the container to reach the browser stream (SUP-217). */
+  getHostBridgeIp(): string | null {
+    return getAppleGatewayIp()
+  }
+
+  /** Apple's `logs` takes `-n`, not Docker's `--tail` — the inherited form
+   *  exits 64, so startup-failure reports would carry no container logs. */
+  async getLogs(tail: number = 50): Promise<string> {
+    try {
+      const { stdout, stderr } = await execWithPath(
+        `${this.getRunnerShellCommand()} logs -n ${tail} ${this.getContainerName()}`,
+      )
+      return (stdout + stderr).trim()
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * Probe why `stop` + `kill` hung. Each probe is individually bounded — a
+   * probe timing out is itself a signal the runtime is wedged. All best-effort.
+   */
+  protected async collectStopFailureDiagnostics(containerName: string): Promise<Record<string, unknown>> {
+    const diag: Record<string, unknown> = await collectAppleContainerDiagnostics()
+    const probe = async (key: string, command: string): Promise<void> => {
+      try {
+        const { stdout, stderr } = await execWithPath(command, { timeoutMs: 4000 })
+        diag[key] = (stdout + stderr).trim().slice(0, 2000) || '(empty)'
+      } catch (e: any) {
+        diag[key] = `probe_failed: ${String(e?.message ?? e).slice(0, 200)}`
+      }
+    }
+    const runner = this.getRunnerShellCommand()
+    await Promise.all([
+      probe('container_state', `${runner} inspect ${containerName}`),
+      probe('containers_list', `${runner} list --format json`),
+      probe('container_logs_tail', `${runner} logs -n 20 ${containerName}`),
+    ])
+    return diag
+  }
+
+  /**
+   * Last-resort kill when both `stop` and `kill` time out. Each Apple
+   * container is its own VM, so force-deleting the container tears that VM
+   * down directly — the per-container analog of Lima killing its shared VM
+   * process. Bounded so a wedged runtime can't hang the shutdown path.
+   */
+  protected async forceStop(): Promise<void> {
+    const containerName = this.getContainerName()
+    console.warn(`Force-deleting Apple container ${containerName} (stop and kill both timed out)`)
+    try {
+      await execWithPath(`${this.getRunnerShellCommand()} delete --force ${containerName}`, { timeoutMs: 10_000 })
+    } catch {
+      console.error('Apple container force-delete failed')
+    }
   }
 
   /**
@@ -231,9 +393,13 @@ export class AppleContainerClient extends BaseContainerClient {
     }
   }
 
-  /** Apple has no `rmi`; corrupt-image recovery uses `image delete`. */
+  /**
+   * Apple has no `rmi`; corrupt-image recovery uses `image delete`. Forced to
+   * match the base class's `rmi -f` — a corrupt image that's still referenced
+   * must go regardless, or the recovery loop rebuilds on top of it.
+   */
   protected async removeCorruptImage(image: string): Promise<void> {
-    await execWithPath(`${this.getRunnerShellCommand()} image delete ${shellEscape(image)}`)
+    await execWithPath(`${this.getRunnerShellCommand()} image delete --force ${shellEscape(image)}`)
   }
 
   /**
@@ -245,10 +411,16 @@ export class AppleContainerClient extends BaseContainerClient {
 
   /**
    * Check if the Apple Container services are running and usable.
+   *
+   * Does NOT trust `system status` alone: a wedged daemon can pass the status
+   * check while hanging every real request, and this probe backs
+   * isRuntimeReachable() on the start path — so `list` proves the API actually
+   * answers. Both hard-bounded so a hung daemon can't dangle the caller.
    */
   static async isRunning(): Promise<boolean> {
     try {
-      await execWithPath('container system status')
+      await execWithPath('container system status', { timeoutMs: 10_000 })
+      await execWithPath('container list', { timeoutMs: 10_000 })
       return true
     } catch {
       return false
@@ -324,6 +496,10 @@ async function installAppleContainerPkg(
         )
       }
       const message = error instanceof Error ? error.message : String(error)
+      captureException(error, {
+        tags: { component: 'apple-container', operation: 'install' },
+        extra: await collectAppleContainerDiagnostics(),
+      })
       throw new Error(`Failed to install Apple Container: ${message}`)
     }
   } finally {
@@ -352,6 +528,10 @@ async function ensureAppleContainerReadyImpl(
     await execWithPath('container system start --enable-kernel-install')
   } catch (error: any) {
     if (!error?.message?.includes('already running')) {
+      captureException(error, {
+        tags: { component: 'apple-container', operation: 'system-start' },
+        extra: await collectAppleContainerDiagnostics(),
+      })
       throw new Error(
         `Failed to start Apple Container runtime: ${error instanceof Error ? error.message : String(error)}`,
       )
@@ -360,7 +540,12 @@ async function ensureAppleContainerReadyImpl(
 
   const running = await AppleContainerClient.isRunning()
   if (!running) {
-    throw new Error('Apple Container runtime did not become ready after start.')
+    const notReady = new Error('Apple Container runtime did not become ready after start.')
+    captureException(notReady, {
+      tags: { component: 'apple-container', operation: 'system-start' },
+      extra: await collectAppleContainerDiagnostics(),
+    })
+    throw notReady
   }
 }
 
@@ -392,6 +577,7 @@ export async function ensureAppleContainerReady(
 
 export function resetAppleContainerClientForTests(): void {
   cachedMacOSMajorVersion = undefined
+  cachedGatewayIp = null
   appleReadyPromise = null
   appleReadyAllowsInstall = false
   appleContainerProvisionIO.downloadToFile = downloadToFile

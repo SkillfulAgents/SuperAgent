@@ -7,6 +7,10 @@ vi.mock('child_process', () => ({
 
 const mockCheckCommandAvailable = vi.fn()
 const mockExecWithPath = vi.fn()
+const mockExecSyncWithPath = vi.fn()
+vi.mock('@shared/lib/proxy/host-url', () => ({
+  getAppPort: () => 47891,
+}))
 vi.mock('./base-container-client', () => ({
   BaseContainerClient: class {
     config: { agentId: string }
@@ -16,9 +20,16 @@ vi.mock('./base-container-client', () => ({
     getContainerName() {
       return `superagent-${this.config.agentId}`
     }
+    getRunnerShellCommand() {
+      return 'container'
+    }
+    getHostApiBaseUrl() {
+      return 'http://host.docker.internal:47891'
+    }
   },
   checkCommandAvailable: (...args: unknown[]) => mockCheckCommandAvailable(...args),
   execWithPath: (...args: unknown[]) => mockExecWithPath(...args),
+  execSyncWithPath: (...args: unknown[]) => mockExecSyncWithPath(...args),
   CONTAINER_INTERNAL_PORT: 3000,
   shellEscape: (value: string) => `'${value.replace(/'/g, `'\\''`)}'`,
 }))
@@ -31,6 +42,13 @@ const mockIsAdminPrivilegeCancelError = vi.fn((error: unknown) => {
 vi.mock('@shared/lib/run-with-admin-privileges', () => ({
   runWithAdminPrivileges: (...args: unknown[]) => mockRunWithAdminPrivileges(...args),
   isAdminPrivilegeCancelError: (error: unknown) => mockIsAdminPrivilegeCancelError(error),
+}))
+
+const mockCaptureException = vi.fn()
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: (...args: unknown[]) => mockCaptureException(...args),
+  captureMessage: vi.fn(),
+  addErrorBreadcrumb: vi.fn(),
 }))
 
 import {
@@ -57,6 +75,150 @@ describe('AppleContainerClient.getInfoFromRuntime', () => {
       status: 'running',
       port: 5001,
     })
+  })
+})
+
+describe('AppleContainerClient.getStats', () => {
+  beforeEach(() => {
+    mockExecWithPath.mockReset()
+  })
+
+  it('reads guest /proc/meminfo via container exec (Apple CLI has no stats)', async () => {
+    mockExecWithPath.mockResolvedValue({
+      stdout: 'MemTotal:        2000000 kB\nMemFree:          400000 kB\nMemAvailable:    1500000 kB\n',
+      stderr: '',
+    })
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    await expect(client.getStats()).resolves.toEqual({
+      memoryUsageBytes: 500000 * 1024,
+      memoryLimitBytes: 2000000 * 1024,
+      memoryPercent: 25,
+      cpuPercent: 0,
+    })
+    expect(mockExecWithPath).toHaveBeenCalledWith(
+      'container exec superagent-abc123 cat /proc/meminfo',
+      { timeoutMs: 5000 },
+    )
+  })
+
+  it('returns null when exec fails so the health monitor skips the agent', async () => {
+    mockExecWithPath.mockRejectedValue(new Error('container not running'))
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    await expect(client.getStats()).resolves.toBeNull()
+  })
+})
+
+describe('AppleContainerClient recovery hooks', () => {
+  beforeEach(() => {
+    mockExecWithPath.mockReset()
+  })
+
+  it('forceStop force-deletes the container VM, bounded', async () => {
+    mockExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    await (client as any).forceStop()
+    expect(mockExecWithPath).toHaveBeenCalledWith('container delete --force superagent-abc123', { timeoutMs: 10_000 })
+  })
+
+  it('getLogs uses Apple\'s -n flag (Docker\'s --tail exits 64 on this CLI)', async () => {
+    mockExecWithPath.mockResolvedValue({ stdout: 'boot ok\n', stderr: '' })
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    await expect(client.getLogs(30)).resolves.toBe('boot ok')
+    expect(mockExecWithPath).toHaveBeenCalledWith('container logs -n 30 superagent-abc123')
+  })
+
+  it('removeCorruptImage force-deletes so a still-referenced corrupt image cannot survive', async () => {
+    mockExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    await (client as any).removeCorruptImage('ghcr.io/x/agent:1')
+    expect(mockExecWithPath).toHaveBeenCalledWith(`container image delete --force 'ghcr.io/x/agent:1'`)
+  })
+
+  it('collectStopFailureDiagnostics degrades failed probes to markers instead of throwing', async () => {
+    mockExecWithPath.mockImplementation(async (cmd: string) => {
+      if (cmd.startsWith('container inspect')) throw new Error('inspect hung')
+      return { stdout: 'ok', stderr: '' }
+    })
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    const diag = await (client as any).collectStopFailureDiagnostics('superagent-abc123')
+    expect(diag.container_state).toMatch(/^probe_failed:/)
+    expect(diag.containers_list).toBe('ok')
+  })
+})
+
+describe('AppleContainerClient host talk-back (host.docker.internal is NXDOMAIN here)', () => {
+  beforeEach(() => {
+    resetAppleContainerClientForTests()
+    mockExecSyncWithPath.mockReset()
+  })
+
+  it('routes host API + bridge IP through the default network gateway', () => {
+    mockExecSyncWithPath.mockReturnValue(Buffer.from(JSON.stringify([{ status: { ipv4Gateway: '192.168.64.1' } }])))
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    expect(client.getHostApiBaseUrl()).toBe('http://192.168.64.1:47891')
+    expect(client.getHostBridgeIp()).toBe('192.168.64.1')
+    // Cached: one inspect for both calls.
+    expect(mockExecSyncWithPath).toHaveBeenCalledOnce()
+  })
+
+  it('falls back to the base URL when the gateway cannot be resolved', () => {
+    mockExecSyncWithPath.mockImplementation(() => { throw new Error('network inspect failed') })
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    expect(client.getHostApiBaseUrl()).toBe('http://host.docker.internal:47891')
+    expect(client.getHostBridgeIp()).toBeNull()
+  })
+})
+
+describe('AppleContainerClient.isRunning', () => {
+  beforeEach(() => {
+    mockExecWithPath.mockReset()
+  })
+
+  it('requires a real API roundtrip — status passing while list fails reads as down', async () => {
+    mockExecWithPath.mockImplementation(async (cmd: string) => {
+      if (cmd === 'container list') throw new Error('api not answering')
+      return { stdout: 'apiserver is running', stderr: '' }
+    })
+    await expect(AppleContainerClient.isRunning()).resolves.toBe(false)
+    expect(mockExecWithPath).toHaveBeenCalledWith('container system status', { timeoutMs: 10_000 })
+  })
+})
+
+describe('AppleContainerClient.handleRunError', () => {
+  const originalPlatform = process.platform
+  const originalArch = process.arch
+
+  beforeEach(() => {
+    resetAppleContainerClientForTests()
+    vi.clearAllMocks()
+    Object.defineProperty(process, 'platform', { value: 'darwin', writable: true, configurable: true })
+    Object.defineProperty(process, 'arch', { value: 'arm64', writable: true, configurable: true })
+    mockExecSync.mockReturnValue(Buffer.from('26.0\n'))
+    mockCheckCommandAvailable.mockResolvedValue(true)
+  })
+
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, writable: true, configurable: true })
+    Object.defineProperty(process, 'arch', { value: originalArch, writable: true, configurable: true })
+    resetAppleContainerClientForTests()
+  })
+
+  it('restarts the runtime when the health probe fails, then retries the run', async () => {
+    let listCalls = 0
+    mockExecWithPath.mockImplementation(async (cmd: string) => {
+      if (cmd === 'container list' && ++listCalls === 1) throw new Error('connection refused')
+      return { stdout: '', stderr: '' }
+    })
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    await expect((client as any).handleRunError(new Error('vm exited unexpectedly'))).resolves.toBe(true)
+    expect(mockExecWithPath).toHaveBeenCalledWith('container system start --enable-kernel-install')
+  })
+
+  it('does not restart a healthy runtime on an unrecognized run error', async () => {
+    mockExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    await expect((client as any).handleRunError(new Error('weird one-off'))).resolves.toBe(false)
+    expect(mockExecWithPath).not.toHaveBeenCalledWith('container system start --enable-kernel-install')
   })
 })
 
