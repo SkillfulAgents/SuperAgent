@@ -33,6 +33,7 @@ import {
   registerDynamicClient,
   initiateOAuthFlow,
   initiateNewServerOAuth,
+  McpOAuthSetupError,
   completeOAuthFlow,
   validateAndConsumeOAuthErrorResponse,
   refreshMcpToken,
@@ -376,26 +377,62 @@ describe('oauth', () => {
       })
     })
 
-    it('returns null on registration failure', async () => {
+    it('throws with HTTP status on registration failure', async () => {
       mockFetch.mockResolvedValueOnce(new Response(null, { status: 400 }))
 
-      const result = await registerDynamicClient(
-        'https://auth.example.com/register',
-        'http://localhost/callback',
-        'Superagent'
-      )
-      expect(result).toBeNull()
+      await expect(
+        registerDynamicClient(
+          'https://auth.example.com/register',
+          'http://localhost/callback',
+          'Superagent'
+        )
+      ).rejects.toThrow('The authorization server rejected client registration (HTTP 400)')
     })
 
-    it('returns null on network error', async () => {
+    it('surfaces the error_description from a rejection body (Cloudflare Access case)', async () => {
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: 'invalid_client_metadata',
+            error_description: 'redirect_uri is not allowed by the account configuration',
+          }),
+          { status: 400 }
+        )
+      )
+
+      await expect(
+        registerDynamicClient(
+          'https://auth.example.com/register',
+          'http://localhost/callback',
+          'Superagent'
+        )
+      ).rejects.toThrow(
+        'The authorization server rejected client registration (HTTP 400): invalid_client_metadata: redirect_uri is not allowed by the account configuration'
+      )
+    })
+
+    it('surfaces a bare-text rejection body (Figma case)', async () => {
+      mockFetch.mockResolvedValueOnce(new Response('Forbidden', { status: 403 }))
+
+      await expect(
+        registerDynamicClient(
+          'https://auth.example.com/register',
+          'http://localhost/callback',
+          'Superagent'
+        )
+      ).rejects.toThrow('The authorization server rejected client registration (HTTP 403): Forbidden')
+    })
+
+    it('throws a setup error on network error', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Network error'))
 
-      const result = await registerDynamicClient(
-        'https://auth.example.com/register',
-        'http://localhost/callback',
-        'Superagent'
-      )
-      expect(result).toBeNull()
+      await expect(
+        registerDynamicClient(
+          'https://auth.example.com/register',
+          'http://localhost/callback',
+          'Superagent'
+        )
+      ).rejects.toThrow(McpOAuthSetupError)
     })
   })
 
@@ -711,15 +748,16 @@ describe('oauth', () => {
         { oauthClientId: 'client-id' },
       ])
 
-      const result = await initiateOAuthFlow(
-        'mcp-1',
-        'https://mcp.example.com/mcp',
-        ['http://localhost:3000/callback']
-      )
-      expect(result).toBeNull()
+      await expect(
+        initiateOAuthFlow(
+          'mcp-1',
+          'https://mcp.example.com/mcp',
+          ['http://localhost:3000/callback']
+        )
+      ).rejects.toThrow('does not support the required S256 PKCE method')
     })
 
-    it('returns null when no client_id is available', async () => {
+    it('throws a setup error when no client_id is available', async () => {
       setupDiscoveryMocks()
 
       // DB: no existing oauthClientId, no registration endpoint in metadata
@@ -730,12 +768,54 @@ describe('oauth', () => {
         { oauthClientId: null, oauthClientSecret: null },
       ])
 
+      await expect(
+        initiateOAuthFlow(
+          'mcp-1',
+          'https://mcp.example.com/mcp',
+          ['http://localhost:3000/callback']
+        )
+      ).rejects.toThrow('does not support automatic client registration')
+    })
+
+    it('falls back to the stored client when dynamic registration is rejected', async () => {
+      // Probe: 401
+      mockFetch.mockResolvedValueOnce(
+        new Response(null, {
+          status: 401,
+          headers: { 'WWW-Authenticate': 'Bearer' },
+        })
+      )
+      // Well-known: metadata WITH a registration endpoint
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint: 'https://auth.example.com/authorize',
+            token_endpoint: 'https://auth.example.com/token',
+            registration_endpoint: 'https://auth.example.com/register',
+          }),
+          { status: 200 }
+        )
+      )
+      // Registration: rejected
+      mockFetch.mockResolvedValueOnce(new Response('Forbidden', { status: 403 }))
+
+      // DB: existing server has stored credentials from a prior registration
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ limit: mockLimit })
+      mockLimit.mockResolvedValue([
+        { oauthClientId: 'stored-client-id', oauthClientSecret: 'stored-secret' },
+      ])
+      mockSet.mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) })
+
       const result = await initiateOAuthFlow(
         'mcp-1',
         'https://mcp.example.com/mcp',
         ['http://localhost:3000/callback']
       )
-      expect(result).toBeNull()
+
+      expect(result).not.toBeNull()
+      const url = new URL(result!.authorizationUrl)
+      expect(url.searchParams.get('client_id')).toBe('stored-client-id')
     })
   })
 
@@ -878,6 +958,42 @@ describe('oauth', () => {
       expect(JSON.parse(registerCalls[1][1].body).redirect_uris).toEqual([loopback])
     })
 
+    it('propagates the last rejection reason when DCR rejects every redirect candidate', async () => {
+      setupNewServerDcrDiscovery()
+      // DCR #1: custom scheme rejected.
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: 'invalid_client_metadata',
+            error_description: 'redirect_uri is not allowed by the account configuration',
+          }),
+          { status: 400 }
+        )
+      )
+      // DCR #2: loopback rejected too.
+      mockFetch.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: 'invalid_client_metadata',
+            error_description: 'redirect_uri is not allowed by the account configuration',
+          }),
+          { status: 400 }
+        )
+      )
+
+      await expect(
+        initiateNewServerOAuth(
+          'https://mcp.example.com/mcp',
+          'Locked Down',
+          ['superagent://mcp-oauth-callback', 'http://localhost:47891/api/remote-mcps/oauth-callback'],
+          true,
+          'user-1'
+        )
+      ).rejects.toThrow(
+        'The authorization server rejected client registration (HTTP 400): invalid_client_metadata: redirect_uri is not allowed by the account configuration'
+      )
+    })
+
     it('uses the preferred (custom scheme) redirect when DCR accepts it', async () => {
       setupNewServerDcrDiscovery()
       // DCR #1: custom scheme accepted — no fallback needed.
@@ -974,7 +1090,7 @@ describe('oauth', () => {
       expect(url.searchParams.get('client_id')).toBe('manual-client-id')
     })
 
-    it('returns null when dynamic registration is not available', async () => {
+    it('throws a setup error when dynamic registration is not available', async () => {
       // Discovery without registration_endpoint
       mockFetch.mockResolvedValueOnce(
         new Response(null, {
@@ -993,12 +1109,13 @@ describe('oauth', () => {
         )
       )
 
-      const result = await initiateNewServerOAuth(
-        'https://mcp.example.com/mcp',
-        'New MCP',
-        ['http://localhost/callback']
-      )
-      expect(result).toBeNull()
+      await expect(
+        initiateNewServerOAuth(
+          'https://mcp.example.com/mcp',
+          'New MCP',
+          ['http://localhost/callback']
+        )
+      ).rejects.toThrow('does not support automatic client registration')
     })
   })
 
