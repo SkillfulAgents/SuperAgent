@@ -3,9 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const useSettingsMock = vi.fn()
+const useModelConfigMock = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => useSettingsMock(),
+  useModelConfig: () => useModelConfigMock(),
 }))
 
 import { SettingsModelSelect } from './settings-model-select'
@@ -26,6 +26,8 @@ function settingsWith(web: { webProvider: string; webProviderIsDefault?: boolean
   return {
     data: {
       llmProvider: 'anthropic',
+      catalog: CATALOG,
+      defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
       llmProviderStatus: [
         {
           id: 'anthropic',
@@ -41,9 +43,11 @@ function settingsWith(web: { webProvider: string; webProviderIsDefault?: boolean
 }
 
 beforeEach(() => {
-  useSettingsMock.mockReturnValue({
+  useModelConfigMock.mockReturnValue({
     data: {
       llmProvider: 'anthropic',
+      catalog: CATALOG,
+      defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
       llmProviderStatus: [
         {
           id: 'anthropic',
@@ -117,7 +121,7 @@ describe('SettingsModelSelect (flat picker)', () => {
 
   describe('web-tools warning reads the active vendor', () => {
     it('stays hidden when a host vendor is active', async () => {
-      useSettingsMock.mockReturnValue(settingsWith({ webProvider: 'platform', webProviderIsDefault: true }))
+      useModelConfigMock.mockReturnValue(settingsWith({ webProvider: 'platform', webProviderIsDefault: true }))
       const user = userEvent.setup()
       render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
 
@@ -126,7 +130,7 @@ describe('SettingsModelSelect (flat picker)', () => {
     })
 
     it('shows when the active vendor is native and the model has no web tools', async () => {
-      useSettingsMock.mockReturnValue(settingsWith({ webProvider: 'native', webProviderIsDefault: true }))
+      useModelConfigMock.mockReturnValue(settingsWith({ webProvider: 'native', webProviderIsDefault: true }))
       const user = userEvent.setup()
       render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
 

@@ -4,12 +4,11 @@ import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelConfig } from '@renderer/hooks/use-settings'
 import { ModelFamilyList, findCatalogModel, familyDisplayName } from '@renderer/components/messages/model-family-list'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
 import { EFFORT_LEVELS, type EffortLevel, type SpeedLevel } from '@shared/lib/container/types'
-import type { LlmProviderId } from '@shared/lib/config/settings'
 
 interface SettingsModelSelectProps {
   /** Currently-selected model — a concrete id (pinned) or a bare family alias (latest); undefined while loading. */
@@ -56,12 +55,8 @@ function SettingsModelSelectImpl({
   disabled,
   align = 'end',
 }: SettingsModelSelectProps) {
-  const { data: settings } = useSettings()
-  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const catalog = useMemo(
-    () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],
-    [settings, activeProvider],
-  )
+  const { data: modelConfig } = useModelConfig()
+  const catalog = useMemo(() => modelConfig?.catalog ?? [], [modelConfig])
 
   // Resolve the current selection for the trigger label.
   const resolved = findCatalogModel(model, catalog)
@@ -123,7 +118,7 @@ function SettingsModelSelectImpl({
           value={model}
           onPick={onModelChange}
           offerLatest
-          webProvider={settings?.webProvider}
+          webProvider={modelConfig?.webProvider}
         />
         {includeEffort && (
           <>

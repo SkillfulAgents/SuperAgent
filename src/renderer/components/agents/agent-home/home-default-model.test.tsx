@@ -3,9 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const useSettingsMock = vi.fn()
+const useModelConfigMock = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => useSettingsMock(),
+  useModelConfig: () => useModelConfigMock(),
 }))
 
 const usePreferencesMock = vi.fn()
@@ -41,9 +41,11 @@ const NO_SPEED_CATALOG = [
 ]
 
 function mockSettings(catalog: unknown[]) {
-  useSettingsMock.mockReturnValue({
+  useModelConfigMock.mockReturnValue({
     data: {
       llmProvider: 'anthropic',
+      catalog,
+      defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
       llmProviderStatus: [
         {
           id: 'anthropic',

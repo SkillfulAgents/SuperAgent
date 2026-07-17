@@ -1807,6 +1807,33 @@ describe('settings route', () => {
     })
   })
 
+  describe('model config', () => {
+    it('returns only safe model-picker data without requiring admin authorization', async () => {
+      const res = await app.request('http://localhost/api/settings/model-config')
+
+      expect(res.status).toBe(200)
+      expect(mockAuthenticatedMiddleware).toHaveBeenCalled()
+      expect(mockIsAdminMiddleware).not.toHaveBeenCalled()
+
+      const body = await res.json()
+      expect(Object.keys(body).sort()).toEqual([
+        'catalog',
+        'defaultModels',
+        'llmProvider',
+        'models',
+        'webProvider',
+      ])
+      expect(body.llmProvider).toBe('anthropic')
+      expect(body.models).toEqual({
+        summarizerModel: 'claude-3-haiku',
+        agentModel: 'claude-sonnet-4-20250514',
+        browserModel: 'claude-3-haiku',
+      })
+      expect(body.catalog).toEqual(expect.any(Array))
+      expect(body.defaultModels).toEqual({ agent: 'opus', summarizer: 'haiku', browser: 'sonnet' })
+    })
+  })
+
   describe('provider model search', () => {
     it('rejects providers that do not support model search', async () => {
       const res = await app.request('http://localhost/api/settings/llm-providers/anthropic/models/search?q=claude')

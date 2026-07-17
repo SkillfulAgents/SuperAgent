@@ -10,6 +10,22 @@ const useProviderModelSearchMock = vi.fn()
 
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => useSettingsMock(),
+  useModelConfig: () => {
+    const result = useSettingsMock()
+    const active = result.data?.llmProviderStatus?.find(
+      (provider: { id: string }) => provider.id === result.data?.llmProvider,
+    )
+    return {
+      ...result,
+      data: result.data ? {
+        llmProvider: result.data.llmProvider,
+        catalog: active?.catalog ?? [],
+        defaultModels: active?.defaultModels,
+        models: result.data.models,
+        webProvider: result.data.webProvider,
+      } : undefined,
+    }
+  },
   useProviderModelSearch: (...args: unknown[]) => useProviderModelSearchMock(...args),
   useUpdateSettings: () => ({ mutate: mutateMock }),
 }))

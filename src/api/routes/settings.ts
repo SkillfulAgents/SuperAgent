@@ -2,7 +2,7 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
-import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
+import { getLlmProvider, getAllProviderInfo, getEffectiveCatalog, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -32,6 +32,7 @@ import {
   type ApiKeySettings,
   type ContainerSettings,
   type GlobalSettingsResponse,
+  type ModelConfigResponse,
 } from '@shared/lib/config/settings'
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
 import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
@@ -195,6 +196,28 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
 // Custom model icons are used in regular model pickers, so any authenticated
 // user may read them. Writes and the rest of settings stay admin-only.
 settings.get('/model-icons/:fileName', Authenticated(), serveUploadedModelIcon)
+
+// GET /api/settings/model-config - Safe model-picker configuration for every
+// authenticated user. The full settings response below intentionally remains
+// admin-only because it includes host paths, custom env vars, and auth/runtime
+// configuration that ordinary workspace members must not receive.
+settings.get('/model-config', Authenticated(), (c) => {
+  const appSettings = getSettings()
+  const llmProvider = appSettings.llmProvider ?? 'anthropic'
+  const provider = getLlmProvider(llmProvider)
+  const response: ModelConfigResponse = {
+    llmProvider,
+    catalog: getEffectiveCatalog(llmProvider),
+    defaultModels: {
+      agent: provider.getDefaultModel('agent'),
+      summarizer: provider.getDefaultModel('summarizer'),
+      browser: provider.getDefaultModel('browser'),
+    },
+    models: getEffectiveModels(),
+    webProvider: resolveEffectiveWebVendor(),
+  }
+  return c.json(response)
+})
 
 settings.use('*', Authenticated(), IsAdmin())
 

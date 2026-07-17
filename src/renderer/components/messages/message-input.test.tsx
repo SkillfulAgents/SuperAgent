@@ -69,6 +69,12 @@ const mockSettings = {
   data: {
     llmProvider: 'anthropic',
     models: { agentModel: 'opus' },
+    catalog: [
+      { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
+      { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
+      { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    ],
+    defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
     llmProviderStatus: [
       {
         id: 'anthropic',
@@ -85,7 +91,7 @@ const mockSettings = {
   },
 }
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => mockSettings,
+  useModelConfig: () => mockSettings,
 }))
 
 describe('MessageInput', () => {

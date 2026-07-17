@@ -12,6 +12,7 @@ import type {
   LlmProviderId,
   WebProviderId,
   AgentCapabilitySettings,
+  ModelConfigResponse,
 } from '@shared/lib/config/settings'
 import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
@@ -19,6 +20,18 @@ import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-er
 import type { ModelCatalogSettings, ModelSearchResult } from '@shared/lib/llm-provider'
 
 export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
+
+export function useModelConfig() {
+  return useQuery<ModelConfigResponse>({
+    queryKey: ['model-config'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/settings/model-config')
+      if (!res.ok) throw new Error('Failed to fetch model configuration')
+      return res.json()
+    },
+    refetchInterval: 60000,
+  })
+}
 
 export function useSettings(options?: { enabled?: boolean }) {
   return useQuery<GlobalSettingsResponse>({
@@ -118,6 +131,7 @@ export function useUpdateSettings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['model-config'] })
     },
   })
 }

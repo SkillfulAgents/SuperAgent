@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelConfig } from '@renderer/hooks/use-settings'
 import { ComposerOptionsPopover } from './composer-options-popover'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 import type { ModelDefinition } from '@shared/lib/llm-provider'
-import type { LlmProviderId } from '@shared/lib/config/settings'
 
 /**
  * State + presentation helpers shared between the AgentHome composer (used to
@@ -110,7 +109,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     followDefaults = false,
   } = args
 
-  const { data: settings } = useSettings()
+  const { data: modelConfig } = useModelConfig()
 
   // ---- Effort ----
   const [effort, setEffortState] = useState<EffortLevel>(initialEffort ?? DEFAULT_EFFORT)
@@ -144,12 +143,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   }, [])
 
   // ---- Catalog from active provider ----
-  const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
-  const providerInfo = useMemo(
-    () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider),
-    [settings, activeProvider],
-  )
-  const catalog = useMemo(() => providerInfo?.catalog ?? [], [providerInfo])
+  const catalog = useMemo(() => modelConfig?.catalog ?? [], [modelConfig])
   // Fallback hierarchy: the agent's own default → user's "Default Model" →
   // provider's agent default → the catalog's latest Sonnet → first catalog
   // entry. The first non-empty wins. Aliases and concrete ids are both valid
@@ -157,11 +151,11 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const fallbackModel = useMemo(
     () =>
       agentDefaultModel ??
-      settings?.models?.agentModel ??
-      providerInfo?.defaultModels?.agent ??
+      modelConfig?.models?.agentModel ??
+      modelConfig?.defaultModels?.agent ??
       catalog.find((m) => m.family === 'sonnet' && m.isLatest)?.id ??
       catalog[0]?.id,
-    [agentDefaultModel, settings, providerInfo, catalog],
+    [agentDefaultModel, modelConfig, catalog],
   )
 
   // ---- Model ----
@@ -191,8 +185,8 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   const adoptionLockedRef = useRef(false)
   const adoptionKeyRef = useRef(agentKey)
   const fallbackEffort =
-    agentDefaultEffort ?? settings?.models?.agentEffort ?? (settings ? DEFAULT_EFFORT : undefined)
-  const fallbackSpeed = agentDefaultSpeed ?? (settings ? DEFAULT_SPEED : undefined)
+    agentDefaultEffort ?? modelConfig?.models?.agentEffort ?? (modelConfig ? DEFAULT_EFFORT : undefined)
+  const fallbackSpeed = agentDefaultSpeed ?? (modelConfig ? DEFAULT_SPEED : undefined)
   useEffect(() => {
     if (adoptionKeyRef.current !== agentKey) {
       adoptionKeyRef.current = agentKey
@@ -218,7 +212,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     ) {
       setSpeedState(fallbackSpeed)
     }
-    if (!followDefaults && settings && agentDefaultsReady) {
+    if (!followDefaults && modelConfig && agentDefaultsReady) {
       adoptionLockedRef.current = true
     }
   }, [
@@ -231,7 +225,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
     speed,
     fallbackSpeed,
     initialSpeed,
-    settings,
+    modelConfig,
     agentDefaultsReady,
     followDefaults,
   ])
@@ -256,10 +250,10 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       model,
       setModel,
       catalog,
-      webProvider: settings?.webProvider,
+      webProvider: modelConfig?.webProvider,
       toRuntimeOptions,
     }),
-    [effort, setEffort, speed, setSpeed, model, setModel, catalog, settings, toRuntimeOptions],
+    [effort, setEffort, speed, setSpeed, model, setModel, catalog, modelConfig, toRuntimeOptions],
   )
 }
 

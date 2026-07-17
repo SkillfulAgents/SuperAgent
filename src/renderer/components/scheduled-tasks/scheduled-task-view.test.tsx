@@ -49,6 +49,27 @@ vi.mock('@renderer/hooks/use-settings', () => ({
     data: {
       llmProvider: 'anthropic',
       models: { agentModel: 'sonnet' },
+      catalog: [
+        { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
+      ],
+      defaultModels: { agent: 'sonnet', summarizer: 'haiku', browser: 'sonnet' },
+      llmProviderStatus: [
+        {
+          id: 'anthropic',
+          name: 'Anthropic',
+          isConfigured: true,
+          catalog: [
+            { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
+          ],
+          defaultModels: { agent: 'sonnet', summarizer: 'haiku', browser: 'sonnet' },
+        },
+      ],
+    },
+  }),
+  useModelConfig: () => ({
+    data: {
+      llmProvider: 'anthropic',
+      models: { agentModel: 'sonnet' },
       llmProviderStatus: [
         {
           id: 'anthropic',

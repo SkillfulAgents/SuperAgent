@@ -1,7 +1,7 @@
 import { RotateCcw } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelConfig } from '@renderer/hooks/use-settings'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
@@ -18,13 +18,13 @@ interface HomeDefaultModelProps {
  * per-trigger or per-session pick still wins over both.
  */
 export function HomeDefaultModel({ agentSlug, className }: HomeDefaultModelProps) {
-  const { data: settings } = useSettings()
+  const { data: modelConfig } = useModelConfig()
   const { data: prefs } = useAgentPreferences(agentSlug)
   const updatePreferences = useUpdateAgentPreferences(agentSlug)
 
   const hasCustom = Boolean(prefs?.defaultModel || prefs?.defaultEffort || prefs?.defaultSpeed)
-  const displayModel = prefs?.defaultModel ?? settings?.models?.agentModel
-  const displayEffort = prefs?.defaultEffort ?? settings?.models?.agentEffort ?? 'medium'
+  const displayModel = prefs?.defaultModel ?? modelConfig?.models?.agentModel
+  const displayEffort = prefs?.defaultEffort ?? modelConfig?.models?.agentEffort ?? 'medium'
   const displaySpeed = prefs?.defaultSpeed ?? 'normal'
 
   return (

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { useStartRunner, useRestartRunner, RunnerSetupFailedError } from './use-settings'
+import { useModelConfig, useStartRunner, useRestartRunner, RunnerSetupFailedError } from './use-settings'
 import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-errors'
 
 const apiFetchMock = vi.fn()
@@ -26,6 +26,29 @@ const setupPayload: RunnerSetupRemediation = {
   originalStderr: 'HCS_E_HYPERV_NOT_INSTALLED',
   userResolvable: true,
 }
+
+describe('useModelConfig', () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset()
+  })
+
+  it('loads the authenticated model-picker configuration endpoint', async () => {
+    const config = {
+      llmProvider: 'anthropic',
+      catalog: [],
+      defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+      models: { agentModel: 'opus' },
+      webProvider: 'native',
+    }
+    apiFetchMock.mockResolvedValue({ ok: true, json: async () => config })
+
+    const { result } = renderHook(() => useModelConfig(), { wrapper })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/settings/model-config')
+    expect(result.current.data).toEqual(config)
+  })
+})
 
 describe('useStartRunner', () => {
   beforeEach(() => {

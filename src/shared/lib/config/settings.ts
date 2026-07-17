@@ -267,7 +267,7 @@ import type { RuntimeReadiness } from '@shared/lib/container/types'
 import type { ChromeProfile } from '@shared/lib/browser/chrome-profile'
 // Canonical provider-info type (catalog + defaultModels) lives with the
 // provider layer; import it (type-only, no runtime cycle) so the two never drift.
-import type { LlmProviderInfo } from '../llm-provider'
+import type { LlmProviderInfo, ModelDefinition, ProviderDefaultModels } from '../llm-provider'
 
 export interface HostBrowserProviderInfo {
   id: string
@@ -330,6 +330,20 @@ export interface GlobalSettingsResponse {
   shareErrorReports: boolean
   enableToolSearch: boolean
   agentCapabilities: AgentCapabilitySettings
+}
+
+/**
+ * Non-sensitive model configuration needed by ordinary agent surfaces.
+ * Unlike {@link GlobalSettingsResponse}, this shape is safe for every
+ * authenticated workspace member: it contains no host paths, environment
+ * variables, credentials, or deployment/auth configuration.
+ */
+export interface ModelConfigResponse {
+  llmProvider: LlmProviderId
+  catalog: ModelDefinition[]
+  defaultModels: ProviderDefaultModels
+  models: ModelSettings
+  webProvider: WebProviderId
 }
 
 /**
