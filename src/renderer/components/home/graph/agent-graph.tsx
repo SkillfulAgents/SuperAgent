@@ -41,6 +41,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
 import { useUpdateUserSettings, useUserSettings, type UserSettingsData } from '@renderer/hooks/use-user-settings'
+import { useUser } from '@renderer/context/user-context'
 import { AgentGraphNode, ResourceGraphNode, openGraphNode } from './graph-nodes'
 import { ElbowEdge, type EdgeGeometryOverride, type GraphEdge } from './graph-edges'
 import { computeLayout, type XY } from './layout'
@@ -162,25 +163,34 @@ async function deleteGraphConnection(edge: GraphEdgeSpec): Promise<boolean> {
       toast.success(resourceKind === 'account' ? 'Account unlinked' : 'MCP server unlinked')
       return true
     }
-    // Atomic per-target revoke, both directions (the drawn line is
-    // unordered). The endpoint PRESERVES explicit 'block' rows — removing
-    // the pair's grants must never lift a block and silently escalate.
+    // Atomic per-target revoke of every direction the user can edit (the
+    // drawn line is unordered; buildGraph pre-filtered `policyCallers` to
+    // directions with a policy row on a caller the user admins). Directions
+    // are independent: one failing must not abort the rest, and any success
+    // must still report `changed` so the graph refetches — otherwise a
+    // half-removed pair renders stale. The endpoint PRESERVES explicit
+    // 'block' rows — removing grants must never lift a block and escalate.
     const a = nodeRef(edge.source)
     const b = nodeRef(edge.target)
     let changed = false
-    for (const [caller, target] of [
-      [a, b],
-      [b, a],
-    ] as const) {
-      const res = await apiFetch(
-        `/api/agents/${caller}/x-agent-policies/invoke/${encodeURIComponent(target)}`,
-        { method: 'DELETE' },
-      )
-      if (!res.ok) throw new Error(`Failed to revoke permission (${res.status})`)
-      const { removed } = (await res.json()) as { removed: number }
-      if (removed > 0) changed = true
+    let failed = false
+    for (const caller of edge.policyCallers ?? []) {
+      const target = caller === a ? b : a
+      try {
+        const res = await apiFetch(
+          `/api/agents/${caller}/x-agent-policies/invoke/${encodeURIComponent(target)}`,
+          { method: 'DELETE' },
+        )
+        if (!res.ok) throw new Error(`Failed to revoke permission (${res.status})`)
+        const { removed } = (await res.json()) as { removed: number }
+        if (removed > 0) changed = true
+      } catch (error) {
+        console.error('Failed to revoke permission:', error)
+        failed = true
+      }
     }
-    if (changed) toast.success('Invoke permission revoked')
+    if (failed) toast.error(changed ? "Couldn't remove every direction of the connection" : "Couldn't remove the connection")
+    else if (changed) toast.success('Invoke permission revoked')
     return changed
   } catch (error) {
     console.error('Failed to delete connection:', error)
@@ -247,6 +257,20 @@ async function createDrawnConnection(source: string, target: string): Promise<bo
 export function AgentGraph() {
   const navigate = useNavigate()
   const graph = useGraphData()
+  // Drawing is role-gated in auth mode to mirror what the server enforces:
+  // an invoke policy is written on the DRAG-SOURCE agent (owner-only
+  // endpoint); a resource link is written on the agent side (user role).
+  const { canUseAgent, canAdminAgent } = useUser()
+  const canDrawConnection = useCallback(
+    (source: string, target: string) => {
+      const kind = drawnConnectionKind(source, target)
+      if (!kind) return false
+      if (kind === 'invoke') return canAdminAgent(nodeRef(source))
+      const agentNodeId = nodeKind(source) === 'agent' ? source : target
+      return canUseAgent(nodeRef(agentNodeId))
+    },
+    [canAdminAgent, canUseAgent],
+  )
   // Saved positions must be loaded before nodes are seeded, or the first drag
   // would persist auto-layout coordinates over the user's arrangement.
   const settingsQuery = useUserSettings()
@@ -346,12 +370,12 @@ export function AgentGraph() {
         selected: selectedIds.has(spec.id),
         // Mid connection-drag, fade anything the drag can't legally land on.
         className:
-          connectingFromId && spec.id !== connectingFromId && !drawnConnectionKind(connectingFromId, spec.id)
+          connectingFromId && spec.id !== connectingFromId && !canDrawConnection(connectingFromId, spec.id)
             ? 'opacity-25 transition-opacity duration-200'
             : 'transition-opacity duration-200',
       }))
     })
-  }, [ready, graph.nodes, layoutPositions, setNodes, connectingFromId, showDetails])
+  }, [ready, graph.nodes, layoutPositions, setNodes, connectingFromId, showDetails, canDrawConnection])
 
   // Hovering an edge surfaces the real numbers (label at the midpoint) and
   // thickens the stroke so it's clear which line is being read.
@@ -485,8 +509,8 @@ export function AgentGraph() {
   const onConnectEnd = useCallback(() => setConnectingFromId(null), [])
   const queryClient = useQueryClient()
   const isValidConnection: IsValidConnection<GraphEdge> = useCallback(
-    (connection) => drawnConnectionKind(connection.source, connection.target) !== null,
-    [],
+    (connection) => canDrawConnection(connection.source, connection.target),
+    [canDrawConnection],
   )
   const onConnect: OnConnect = useCallback(
     (connection) => {

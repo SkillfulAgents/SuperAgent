@@ -21,6 +21,7 @@ import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
 import { useUsageData } from '@renderer/hooks/use-usage'
+import { useUser } from '@renderer/context/user-context'
 import {
   ActivitySparkChart,
   ActivitySparkChartSkeleton,
@@ -249,6 +250,11 @@ function formatTokenCount(tokens: number): string {
 
 export function AgentGraphNode({ data, selected }: NodeProps<Node<AgentNodeData, 'agent'>>) {
   const { agent } = data
+  // Ports draw new connections AND act as drop targets; both link routes
+  // need at least user role on this agent, so viewers get a plain card with
+  // no dead connect affordances (auth mode; non-auth is always true).
+  const { canUseAgent } = useUser()
+  const connectable = canUseAgent(agent.slug)
   const activityStatus = getAgentActivityStatus(
     agent.status,
     agent.hasActiveSessions ?? false,
@@ -299,7 +305,7 @@ export function AgentGraphNode({ data, selected }: NodeProps<Node<AgentNodeData,
         </>
       )}
       <AgentToolbar data={data} selected={!!selected} />
-      <ConnectPorts />
+      {connectable && <ConnectPorts />}
       {/* Traditional card header: title top-left, icon-only status top-right */}
       <div className="flex w-full items-start justify-between gap-2">
         <span className="line-clamp-2 min-w-0 break-words text-left text-xs">{agent.name}</span>

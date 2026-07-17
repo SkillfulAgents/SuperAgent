@@ -18,6 +18,7 @@ import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useConnectedAccounts, type ConnectedAccount } from '@renderer/hooks/use-connected-accounts'
 import { useRemoteMcps, type RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
 import { humanizeCron } from '@renderer/hooks/use-humanized-cron'
+import { useUser } from '@renderer/context/user-context'
 import { homeGraphSchema, type HomeGraphData } from '@shared/lib/types/home-graph-schema'
 
 // ── Domain model ─────────────────────────────────────────────────────────
@@ -73,12 +74,33 @@ export interface GraphEdgeSpec {
   /**
    * The graph can remove the relationship behind this edge (unlink an
    * account/MCP, revoke an invoke permission). Trigger edges are not
-   * deletable — that would delete the webhook/cron/chat itself.
+   * deletable — that would delete the webhook/cron/chat itself. In auth
+   * mode this also requires the role the mutation endpoint enforces
+   * (user for resource links, owner of a caller agent for policies).
    */
   deletable?: boolean
   /** Caller agent whose x-agent policies govern this edge — the edit target */
   policyAgentSlug?: string
+  /**
+   * Agent↔agent edges: the callers holding a policy row for this pair that
+   * the current user is allowed to edit. Edge deletion revokes exactly
+   * these directions — attempting one the user can't admin would 403
+   * mid-delete and strand a half-removed pair.
+   */
+  policyCallers?: string[]
 }
+
+/**
+ * Role gates for edge affordances. The graph renders shared agents the
+ * caller can't mutate (auth mode); affordances must match what the server
+ * will actually allow. Non-auth mode is single-user: everything is allowed.
+ */
+export type GraphRoleAccess = {
+  canUse: (agentSlug: string) => boolean
+  canAdmin: (agentSlug: string) => boolean
+}
+
+const FULL_ACCESS: GraphRoleAccess = { canUse: () => true, canAdmin: () => true }
 
 export interface GraphModel {
   nodes: GraphNodeSpec[]
@@ -141,7 +163,9 @@ export function buildGraph(input: {
   accounts: ConnectedAccount[]
   mcps: RemoteMcpServer[]
   topology: HomeGraphData | undefined
+  roles?: GraphRoleAccess
 }): GraphModel {
+  const roles = input.roles ?? FULL_ACCESS
   const nodes: GraphNodeSpec[] = []
   const edges: GraphEdgeSpec[] = []
   const agents = [...input.agents].sort((a, b) => a.slug.localeCompare(b.slug))
@@ -208,7 +232,9 @@ export function buildGraph(input: {
       variant: 'resource',
       weight: calls,
       broken: problem !== undefined,
-      deletable: true,
+      // Unlinking needs user role on the agent (the account itself is always
+      // the caller's own — the topology only reports their links).
+      deletable: roles.canUse(link.agentSlug),
     })
   }
 
@@ -226,7 +252,7 @@ export function buildGraph(input: {
       variant: 'resource',
       weight: calls,
       broken: problem !== undefined,
-      deletable: true,
+      deletable: roles.canUse(link.agentSlug),
     })
   }
 
@@ -318,16 +344,25 @@ export function buildGraph(input: {
     })
   }
 
-  // Permissions per unordered pair (first caller wins as the edit target) —
-  // consulted by both activity edges (delete = revoke the permission
-  // underneath, if any) and the permission-edge pass below.
-  const permissionCallerByPair = new Map<string, string>()
+  // Permissions per unordered pair, keeping every direction that has a
+  // policy row — consulted by both activity edges (delete = revoke the
+  // permission underneath, if any) and the permission-edge pass below.
+  const permissionCallersByPair = new Map<string, string[]>()
   for (const perm of topology.permissions) {
     if (perm.caller === perm.target) continue
     if (!agentSlugSet.has(perm.caller) || !agentSlugSet.has(perm.target)) continue
     const key = pairKey(perm.caller, perm.target)
-    if (!permissionCallerByPair.has(key)) permissionCallerByPair.set(key, perm.caller)
+    const callers = permissionCallersByPair.get(key) ?? []
+    if (!callers.includes(perm.caller)) {
+      callers.push(perm.caller)
+      permissionCallersByPair.set(key, callers)
+    }
   }
+  // Policy rows live on the caller agent, so editing/revoking a direction
+  // needs owner role on that caller. A pair the user can't admin in either
+  // direction renders with no edit/delete affordance at all.
+  const editablePolicyCallers = (key: string): string[] =>
+    (permissionCallersByPair.get(key) ?? []).filter((slug) => roles.canAdmin(slug))
 
   // Merge invocations onto unordered pairs (A→B and B→A are visually one
   // line), then draw one activity edge per communicating pair…
@@ -340,6 +375,7 @@ export function buildGraph(input: {
   }
   for (const [key, weight] of [...activityByPair].sort(([a], [b]) => a.localeCompare(b))) {
     const [a, b] = key.split('|')
+    const editable = editablePolicyCallers(key)
     edges.push({
       id: `${nodeId.agent(a)}=${nodeId.agent(b)}`,
       source: nodeId.agent(a),
@@ -347,25 +383,28 @@ export function buildGraph(input: {
       variant: 'activity',
       weight,
       // Activity is history — deleting the edge only revokes the standing
-      // permission (when one exists); the recorded line stays.
-      deletable: permissionCallerByPair.has(key),
-      policyAgentSlug: permissionCallerByPair.get(key),
+      // permission (when one the user can edit exists); the line stays.
+      deletable: editable.length > 0,
+      policyAgentSlug: editable[0],
+      policyCallers: editable,
     })
   }
 
   // …and one idle permission edge per permitted-but-silent pair. Any
   // recorded activity supersedes the permission line: both would occupy the
   // same straight segment and double-draw.
-  for (const [key, caller] of [...permissionCallerByPair].sort(([a], [b]) => a.localeCompare(b))) {
+  for (const key of [...permissionCallersByPair.keys()].sort((a, b) => a.localeCompare(b))) {
     if (activityByPair.has(key)) continue
     const [a, b] = key.split('|')
+    const editable = editablePolicyCallers(key)
     edges.push({
       id: `${nodeId.agent(a)}~${nodeId.agent(b)}`,
       source: nodeId.agent(a),
       target: nodeId.agent(b),
       variant: 'permission',
-      deletable: true,
-      policyAgentSlug: caller,
+      deletable: editable.length > 0,
+      policyAgentSlug: editable[0],
+      policyCallers: editable,
     })
   }
 
@@ -391,6 +430,10 @@ export function useGraphData(): GraphModel & { isLoading: boolean; topologyFaile
     staleTime: 60_000,
   })
 
+  // Edge affordances (deletable, edit target) must reflect the caller's
+  // per-agent role in auth mode — the server rejects what these gate off.
+  const { canUseAgent, canAdminAgent } = useUser()
+
   const graph = useMemo(
     () =>
       buildGraph({
@@ -398,8 +441,9 @@ export function useGraphData(): GraphModel & { isLoading: boolean; topologyFaile
         accounts: Array.isArray(accountsData?.accounts) ? accountsData.accounts : [],
         mcps: Array.isArray(mcpsData?.servers) ? mcpsData.servers : [],
         topology: topologyQuery.data,
+        roles: { canUse: canUseAgent, canAdmin: canAdminAgent },
       }),
-    [agents, accountsData, mcpsData, topologyQuery.data],
+    [agents, accountsData, mcpsData, topologyQuery.data, canUseAgent, canAdminAgent],
   )
 
   return {
