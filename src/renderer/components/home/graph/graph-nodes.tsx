@@ -220,7 +220,7 @@ function ConnectPorts() {
   return (
     <>
       {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
-        <Handle key={side} id={side} type="source" position={PORT_POSITIONS[side]} className="graph-port" isConnectable>
+        <Handle key={side} id={side} type="source" position={PORT_POSITIONS[side]} className="graph-port" isConnectable data-testid="graph-port">
           <span className="port-hit" aria-hidden />
           <span className="port-dot" aria-hidden />
           <span className="port-ghost" aria-hidden />

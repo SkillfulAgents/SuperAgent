@@ -11,6 +11,7 @@ import {
 
 import {
   listSessions,
+  listSessionsByIds,
   getSession,
   getSessionMessages,
   deleteSession,
@@ -2415,6 +2416,74 @@ describe('session-service', () => {
       const sessions = await getSessionsByWebhookTrigger('test-agent', 'trigger-abc')
       expect(sessions.length).toBe(1)
       expect(sessions[0].id).toBe('sess-1')
+    })
+  })
+
+  describe('listSessionsByIds', () => {
+    it('returns info only for the requested ids without touching siblings', async () => {
+      await createSessionFile('test-agent', 'wanted-1', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'wanted-2', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'other', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'wanted-1': { name: 'First', createdAt: '2026-01-01T00:00:00Z' },
+      })
+
+      const sessions = await listSessionsByIds('test-agent', ['wanted-1', 'wanted-2'])
+      expect(sessions.map((s) => s.id).sort()).toEqual(['wanted-1', 'wanted-2'])
+      const first = sessions.find((s) => s.id === 'wanted-1')
+      expect(first?.name).toBe('First')
+      expect(first?.createdAt).toEqual(new Date('2026-01-01T00:00:00Z'))
+    })
+
+    it('dedupes repeated ids and skips ids with no transcript and no registration', async () => {
+      await createSessionFile('test-agent', 'real', SAMPLE_JSONL_ENTRIES)
+
+      const sessions = await listSessionsByIds('test-agent', ['real', 'real', 'ghost'])
+      expect(sessions.map((s) => s.id)).toEqual(['real'])
+    })
+
+    it('skips unregistered empty transcripts (SDK subagent artifacts)', async () => {
+      await createSessionFile('test-agent', 'artifact', [])
+      await createSessionFile('test-agent', 'registered-empty', [])
+      await createSessionMetadata('test-agent', {
+        'registered-empty': { name: 'Empty but real', createdAt: '2026-01-01T00:00:00Z' },
+      })
+
+      const sessions = await listSessionsByIds('test-agent', ['artifact', 'registered-empty'])
+      expect(sessions.map((s) => s.id)).toEqual(['registered-empty'])
+    })
+
+    it('excludes automated sessions unless promoted to interactive', async () => {
+      await createSessionFile('test-agent', 'cron-run', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'promoted', SAMPLE_JSONL_ENTRIES)
+      await createSessionFile('test-agent', 'chat-run', SAMPLE_JSONL_ENTRIES)
+      await createSessionMetadata('test-agent', {
+        'cron-run': { createdAt: '2026-01-01T00:00:00Z', isScheduledExecution: true },
+        promoted: { createdAt: '2026-01-01T00:00:00Z', isScheduledExecution: true, promotedToInteractive: true },
+        'chat-run': { createdAt: '2026-01-01T00:00:00Z', isChatIntegrationSession: true },
+      })
+
+      const sessions = await listSessionsByIds('test-agent', ['cron-run', 'promoted', 'chat-run'], {
+        excludeAutomated: true,
+      })
+      expect(sessions.map((s) => s.id)).toEqual(['promoted'])
+    })
+
+    it('falls back to registration metadata for sessions that have not streamed yet', async () => {
+      await createSessionMetadata('test-agent', {
+        'registered-only': { name: 'Brand new', createdAt: '2026-01-05T00:00:00Z' },
+      })
+
+      const sessions = await listSessionsByIds('test-agent', ['registered-only'])
+      expect(sessions).toHaveLength(1)
+      expect(sessions[0]).toMatchObject({ id: 'registered-only', name: 'Brand new', messageCount: 0 })
+      expect(sessions[0].lastActivityAt).toEqual(new Date('2026-01-05T00:00:00Z'))
+    })
+
+    it('returns an empty list for no ids without reading anything', async () => {
+      // No directories were created for this agent at all — an eager metadata
+      // read would throw or create paths as a side effect.
+      await expect(listSessionsByIds('missing-agent', [])).resolves.toEqual([])
     })
   })
 })

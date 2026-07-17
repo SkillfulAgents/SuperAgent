@@ -132,4 +132,75 @@ test.describe('home connections graph', () => {
     }
     expect(after.graphNodePositions ?? {}).toEqual({})
   })
+
+  test('drawing an edge between agents creates the invoke permission; deleting it revokes', async ({ page, request }, testInfo) => {
+    const source = await createAgent(request, uniqueName(testInfo, 'Graph Draw Src'))
+    const target = await createAgent(request, uniqueName(testInfo, 'Graph Draw Dst'))
+
+    const policyTargets = async () => {
+      const res = await request.get(`/api/agents/${source.slug}/x-agent-policies`)
+      expect(res.ok()).toBeTruthy()
+      const body = await res.json() as { policies?: Array<{ targetAgentSlug: string; decision: string }> }
+      return (body.policies ?? []).filter((p) => p.decision === 'allow').map((p) => p.targetAgentSlug)
+    }
+
+    await page.goto('/?view=graph')
+    const sourceNode = page.getByTestId(`graph-node-agent-${source.slug}`)
+    const targetNode = page.getByTestId(`graph-node-agent-${target.slug}`)
+    await expect(sourceNode).toBeVisible()
+    await expect(targetNode).toBeVisible()
+
+    // Ports arm on selection only, and sibling specs' churn reshuffles the
+    // layout under a stale bounding box (same hazard as the drag test above)
+    // — so grab-and-draw retries with fresh measurements, treating the policy
+    // row's existence as the success signal.
+    let drawn = false
+    for (let attempt = 0; attempt < 5 && !drawn; attempt++) {
+      await page.getByRole('button', { name: 'Fit View' }).click()
+      await sourceNode.click()
+      const sourceBox = await sourceNode.boundingBox()
+      const targetBox = await targetNode.boundingBox()
+      if (!sourceBox || !targetBox) continue
+      const saved = page
+        .waitForResponse(
+          (r) => r.url().includes('/x-agent-policies/invoke/') && r.request().method() === 'PUT' && r.ok(),
+          { timeout: 4000 },
+        )
+        .catch(() => null)
+      // Right-side port: 24px hit zone centered ~6px inside the card edge.
+      await page.mouse.move(sourceBox.x + sourceBox.width - 6, sourceBox.y + sourceBox.height / 2)
+      await page.mouse.down()
+      // Drop ON the target's left port — the drop must land within
+      // connectionRadius (30px) of a handle, and the card center is 40px+
+      // from every port.
+      await page.mouse.move(targetBox.x + 6, targetBox.y + targetBox.height / 2, { steps: 8 })
+      await page.mouse.up()
+      await saved
+      drawn = (await policyTargets()).includes(target.slug)
+    }
+    expect(drawn).toBe(true)
+
+    // The topology refetch draws the permission edge (unordered pair id).
+    const [a, b] = [`agent:${source.slug}`, `agent:${target.slug}`].sort()
+    const edge = page.locator(`[data-id="${a}~${b}"]`)
+    await expect(edge).toBeAttached()
+
+    // Deleting the connector revokes the policy. Selecting a ~1px line is the
+    // flaky part, so retry the select-then-delete gesture until the policy row
+    // is actually gone.
+    const deleteButton = page.getByTestId('graph-edge-delete')
+    let revoked = false
+    for (let attempt = 0; attempt < 5 && !revoked; attempt++) {
+      if (await edge.count()) {
+        await edge.click({ force: true })
+        if (await deleteButton.isVisible()) {
+          await deleteButton.click()
+          await expect(deleteButton).toBeHidden()
+        }
+      }
+      revoked = !(await policyTargets()).includes(target.slug)
+    }
+    expect(revoked).toBe(true)
+    await expect(edge).toHaveCount(0)
+  })
 })
