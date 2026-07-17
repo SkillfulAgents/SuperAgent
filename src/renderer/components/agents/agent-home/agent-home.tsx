@@ -62,7 +62,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // The new-agent morph tag lives in NavTransientContext — above the router, so
   // it survives in-app nav and dies on hard reload. justCreatedSlug producer =
   // use-create-untitled-agent.
-  const { justCreatedSlug, setJustCreatedSlug } = useNavTransient()
+  const { justCreatedSlug, setJustCreatedSlug, openAgentSettings, setOpenAgentSettings } = useNavTransient()
   const navigate = useNavigate()
   const [introStagger] = useState(() => {
     if (justCreatedSlug !== agent.slug) return false
@@ -132,6 +132,18 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     setSettingsTab(tab)
     setSettingsOpen(true)
   }, [])
+  // One-shot from NavTransientContext: another page (e.g. the home graph's
+  // "edit permissions") navigated here asking for a settings tab. Consume
+  // immediately so it can't replay on a later visit — and drop it unacted
+  // when stale: an abandoned navigation would otherwise pop the dialog on a
+  // much-later organic visit to this agent.
+  useEffect(() => {
+    if (openAgentSettings?.slug !== agent.slug) return
+    if (Date.now() - openAgentSettings.requestedAt < 10_000) {
+      handleOpenSettings(openAgentSettings.tab)
+    }
+    setOpenAgentSettings(null)
+  }, [openAgentSettings, agent.slug, handleOpenSettings, setOpenAgentSettings])
 
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []

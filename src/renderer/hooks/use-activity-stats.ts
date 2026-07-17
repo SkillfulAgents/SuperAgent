@@ -19,7 +19,13 @@ async function activityJson<T>(url: string, schema: z.ZodType<T>): Promise<T> {
 export function useAgentActivityStats(
   agentSlug: string | null,
   days = DEFAULT_ACTIVITY_DAYS,
+  // live=false is for decorative consumers (graph hover cards): no poll, and
+  // mounts only refetch when stale — the graph can mount MANY of these at
+  // once, one per agent with triggers, so "always refetch per mount" and a
+  // 2-minute poll would multiply into a request storm.
+  options?: { live?: boolean },
 ) {
+  const live = options?.live ?? true
   // Day buckets follow the viewer's clock; the offset keys the cache so a
   // timezone change (travel, DST) doesn't serve stale-bucketed series.
   const tzOffsetMinutes = new Date().getTimezoneOffset()
@@ -31,11 +37,11 @@ export function useAgentActivityStats(
     ),
     enabled: !!agentSlug,
     staleTime: ACTIVITY_STALE_TIME_MS,
-    refetchInterval: ACTIVITY_REFETCH_INTERVAL_MS,
+    refetchInterval: live ? ACTIVITY_REFETCH_INTERVAL_MS : false,
     // A trigger/connection created moments ago (agent home is mounted right
     // after) must not wait out staleTime+poll to get its chart; the response
     // is a small SQL rollup, so a refetch per mount is cheap.
-    refetchOnMount: 'always',
+    refetchOnMount: live ? 'always' : true,
   })
 }
 

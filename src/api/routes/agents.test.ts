@@ -99,6 +99,7 @@ vi.mock('@shared/lib/container/message-persister', () => ({
     markAllSessionsInactiveForAgent: vi.fn(),
     isSessionActive: vi.fn(() => false),
     isSessionAwaitingInput: vi.fn(() => false),
+    getActiveSessionIdsForAgent: vi.fn(() => [] as string[]),
     hasActiveSessionsForAgent: vi.fn(() => false),
     hasSessionsAwaitingInputForAgent: vi.fn(() => false),
     isSubscribed: vi.fn(() => true),
@@ -226,6 +227,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: vi.fn(),
+  listSessionsByIds: vi.fn(),
   updateSessionName: vi.fn(),
   registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(),
@@ -425,10 +427,10 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, getSessionMessagesWithCompact, getSessionSummary, sessionExists, deleteSession, getSession } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, deleteSession, getSession } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
-import { deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
@@ -3628,5 +3630,97 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     const args = mockCreateSession.mock.calls[0][0]
     expect(args.model).toBe('global-agent-model')
     expect(args.effort).toBeUndefined()
+  })
+})
+
+// ============================================================================
+// Notable sessions fast path — GET /:id/sessions?notable=true
+// ============================================================================
+
+describe('notable sessions fast path — GET /:id/sessions?notable=true', () => {
+  const NOTABLE_URL = '/api/agents/test-agent/sessions?notable=true'
+  let app: ReturnType<typeof createApp>
+
+  const sessionInfo = (id: string, lastActivityAt: string) => ({
+    id,
+    agentSlug: 'test-agent',
+    name: id,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    lastActivityAt: new Date(lastActivityAt),
+    messageCount: 0,
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    vi.mocked(listSessionsByIds).mockResolvedValue([])
+  })
+
+  it('requests exactly the union of live and unread ids, deduped, automated excluded', async () => {
+    vi.mocked(messagePersister.getActiveSessionIdsForAgent).mockReturnValue(['s-live', 's-both'])
+    vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set(['s-both', 's-unread']))
+
+    const res = await getReq(app, NOTABLE_URL)
+    expect(res.status).toBe(200)
+    expect(vi.mocked(listSessionsByIds)).toHaveBeenCalledWith(
+      'test-agent',
+      ['s-live', 's-both', 's-unread'],
+      { excludeAutomated: true },
+    )
+  })
+
+  it('live sessions survive the cap even when idle ones have newer activity', async () => {
+    vi.mocked(listSessionsByIds).mockResolvedValue([
+      sessionInfo('s-idle-newest', '2026-01-02T12:00:00Z'),
+      sessionInfo('s-live-older', '2026-01-02T09:00:00Z'),
+    ])
+    vi.mocked(messagePersister.isSessionActive).mockImplementation((id: string) => id === 's-live-older')
+
+    const res = await getReq(app, `${NOTABLE_URL}&limit=1`)
+    const body = await res.json()
+    expect(body.map((s: { id: string }) => s.id)).toEqual(['s-live-older'])
+    expect(body[0].isActive).toBe(true)
+  })
+
+  it('sorts newest-first within a band and carries the unread flag', async () => {
+    vi.mocked(listSessionsByIds).mockResolvedValue([
+      sessionInfo('s-old', '2026-01-01T10:00:00Z'),
+      sessionInfo('s-new', '2026-01-02T10:00:00Z'),
+    ])
+    vi.mocked(getSessionIdsWithUnreadNotifications).mockResolvedValue(new Set(['s-old']))
+
+    const res = await getReq(app, NOTABLE_URL)
+    const body = await res.json()
+    expect(body.map((s: { id: string }) => s.id)).toEqual(['s-new', 's-old'])
+    expect(body[0].hasUnreadNotifications).toBe(false)
+    expect(body[1].hasUnreadNotifications).toBe(true)
+  })
+
+  it('marks active sessions awaiting input when agent-level reviews are pending', async () => {
+    vi.mocked(listSessionsByIds).mockResolvedValue([
+      sessionInfo('s-live', '2026-01-02T10:00:00Z'),
+      sessionInfo('s-idle', '2026-01-02T11:00:00Z'),
+    ])
+    vi.mocked(messagePersister.isSessionActive).mockImplementation((id: string) => id === 's-live')
+    mockGetPendingReviewsForAgent.mockReturnValue([{ id: 'review-1' }])
+
+    const res = await getReq(app, NOTABLE_URL)
+    const body = await res.json() as Array<{ id: string; isAwaitingInput: boolean }>
+    const bySessionId = new Map(body.map((s) => [s.id, s]))
+    // Agent-level review only flags LIVE sessions — idle ones can't be the
+    // session the review is waiting on.
+    expect(bySessionId.get('s-live')?.isAwaitingInput).toBe(true)
+    expect(bySessionId.get('s-idle')?.isAwaitingInput).toBe(false)
+  })
+
+  it('falls back to the default cap when the limit is garbage', async () => {
+    vi.mocked(listSessionsByIds).mockResolvedValue(
+      Array.from({ length: 30 }, (_, i) =>
+        sessionInfo(`s-${String(i).padStart(2, '0')}`, `2026-01-01T00:${String(i).padStart(2, '0')}:00Z`),
+      ),
+    )
+    const res = await getReq(app, `${NOTABLE_URL}&limit=zero`)
+    const body = await res.json()
+    expect(body).toHaveLength(25)
   })
 })

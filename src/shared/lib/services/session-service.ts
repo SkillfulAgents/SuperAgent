@@ -460,6 +460,62 @@ export async function listSessions(
 }
 
 /**
+ * Build SessionInfo for a specific set of session ids without enumerating
+ * the sessions directory — one metadata read plus one stat per requested id.
+ * The badge/toolbar consumers ("notable sessions") only ever need a handful
+ * of live/unread ids; listSessions stats EVERY transcript, which is 20k
+ * stats for a 20k-session agent. Unknown ids (no transcript, no metadata
+ * registration) are skipped.
+ */
+export async function listSessionsByIds(
+  agentSlug: string,
+  sessionIds: string[],
+  options?: { excludeAutomated?: boolean },
+): Promise<SessionInfo[]> {
+  if (sessionIds.length === 0) return []
+  const metadata = await readSessionMetadata(agentSlug)
+  const isAutomated = (sessionId: string) => {
+    const meta = metadata[sessionId]
+    if (meta?.promotedToInteractive) return false
+    return meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession
+  }
+  const limit = pLimit(10)
+  const sessions = await Promise.all(
+    [...new Set(sessionIds)].map((sessionId) =>
+      limit(async (): Promise<SessionInfo | null> => {
+        if (options?.excludeAutomated && isAutomated(sessionId)) return null
+        const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+        try {
+          const stat = await fs.promises.stat(jsonlPath)
+          // Same rule as listSessions: unregistered empty JSONLs are SDK
+          // subagent artifacts, not sessions.
+          if (stat.size === 0 && !metadata[sessionId]) return null
+          const metaCreatedAt = metadata[sessionId]?.createdAt
+          const createdAt = metaCreatedAt
+            ? new Date(metaCreatedAt)
+            : stat.birthtimeMs > 0
+              ? stat.birthtime
+              : new Date(stat.mtimeMs)
+          return {
+            id: sessionId,
+            agentSlug,
+            name: metadata[sessionId]?.name || 'New Session',
+            createdAt,
+            lastActivityAt: new Date(stat.mtimeMs),
+            messageCount: 0,
+          }
+        } catch {
+          const meta = metadata[sessionId]
+          if (meta?.createdAt) return emptySessionFromMetadata(sessionId, agentSlug, meta)
+          return null
+        }
+      }),
+    ),
+  )
+  return sessions.filter((s): s is SessionInfo => s !== null)
+}
+
+/**
  * Get a single session's info
  */
 export async function getSession(

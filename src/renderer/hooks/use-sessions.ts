@@ -41,6 +41,28 @@ export function useSessions(agentSlug: string | null, options?: { staleTime?: nu
   })
 }
 
+/**
+ * Notable-only slice (live or carrying unread notifications) for badge and
+ * toolbar consumers. The full list makes the server stat every transcript in
+ * the agent's directory — 20k stats for a 20k-session agent — where this
+ * path stats only the handful of notable ids. Keyed under the same
+ * ['sessions', slug] prefix so SSE-driven invalidations reach it too.
+ */
+export function useNotableSessions(agentSlug: string | null, options?: { limit?: number; staleTime?: number }) {
+  const resolvedSlug = useResolvedAgentSlug(agentSlug)
+  const limit = options?.limit ?? 25
+  return useQuery<ApiSession[]>({
+    queryKey: ['sessions', resolvedSlug, 'notable', limit],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/agents/${resolvedSlug}/sessions?notable=true&limit=${limit}`)
+      if (!res.ok) throw new Error('Failed to fetch sessions')
+      return res.json()
+    },
+    enabled: !!resolvedSlug,
+    staleTime: options?.staleTime,
+  })
+}
+
 export function useSession(id: string | null, agentSlug: string | null = null) {
   const resolvedSlug = useResolvedAgentSlug(agentSlug)
   return useQuery<ApiSession>({

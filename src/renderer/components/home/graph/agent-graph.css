@@ -1,0 +1,269 @@
+/* Canvas wash behind the graph. A rule here (not a Tailwind bg-* on the
+   component) because xyflow's style.css sets its own background-color on
+   .react-flow — this file loads after it and the two-class selector wins.
+   Light mode: 5% muted-foreground over the app background ≈ a faint
+   97%-lightness gray, so the white cards pop. Dark mode: cards (13%) sit a
+   hair above the background (10%), and a lightening wash lands exactly ON
+   the card color, erasing them — so the wash goes DARKER than both instead. */
+.react-flow.agent-graph-canvas {
+  background-color: hsl(var(--muted-foreground) / 0.05);
+}
+.dark .react-flow.agent-graph-canvas {
+  background-color: hsl(0 0% 7%);
+  /* Theme xyflow's Controls (zoom buttons) via its CSS hooks — the widget
+     ships light-only. Same surface language as the graph cards:
+     neutral-800 with a faint light edge. */
+  --xy-controls-button-background-color: hsl(0 0% 15%);
+  --xy-controls-button-background-color-hover: hsl(0 0% 20%);
+  --xy-controls-button-color: hsl(0 0% 75%);
+  --xy-controls-button-color-hover: hsl(0 0% 98%);
+  --xy-controls-button-border-color: hsl(0 0% 100% / 0.1);
+  --xy-controls-box-shadow: 0 1px 3px 0 hsl(0 0% 0% / 0.5);
+}
+
+/* Attention pulse on agent cards: a thin ring hugging the card that travels
+   outward and fades — a power field pulsing out and dissipating. Two copies
+   at opposite phase (the .delayed ring starts mid-cycle via a NEGATIVE
+   delay) read as a continuous wave train. Blue/slow = unread notification;
+   orange/fast = a session needs input (.urgent); green/slowest = working.
+   The wave is an OUTLINE animated via outline-offset: outlines occupy no
+   layout and follow border-radius (the drawn radius grows with the offset,
+   keeping corners circular — a transform scale on the 176×80 card would
+   stretch them elliptical), so the infinite loop is paint-only. The earlier
+   inset+border-radius version reflowed the canvas every frame per ring. */
+.agent-pulse-ring {
+  --pulse-color: rgb(59 130 246 / 0.7); /* blue-500 — notification */
+  --pulse-period: 2.6s;
+  position: absolute;
+  inset: 0;
+  border-radius: 0.75rem; /* rounded-xl, matching the card */
+  outline: 1.5px solid var(--pulse-color);
+  pointer-events: none;
+  opacity: 0;
+  animation: agent-pulse var(--pulse-period) ease-out infinite;
+}
+.agent-pulse-ring.urgent {
+  --pulse-color: rgb(249 115 22 / 0.8); /* orange-500 — needs input */
+  --pulse-period: 1.4s;
+}
+.agent-pulse-ring.working {
+  --pulse-color: rgb(34 197 94 / 0.6); /* green-500 — working, calm ambient hum */
+  --pulse-period: 3.4s;
+}
+.agent-pulse-ring.delayed {
+  animation-delay: calc(var(--pulse-period) / -2);
+}
+@keyframes agent-pulse {
+  0% {
+    outline-offset: 0px;
+    opacity: 0.9;
+  }
+  100% {
+    outline-offset: 14px;
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-pulse-ring {
+    animation: none;
+  }
+}
+
+/* Perimeter connection ports: shown when their node is SELECTED (click;
+   pane click deselects). The handle itself is an invisible hit zone ~2× the
+   dot; the visible dot is a child so proximity (zone hover) and direct (dot
+   hover) can stage differently. The pointer-events gate rides visibility so
+   hidden ports never intercept node drags; dropping a connection still
+   snaps via connectionRadius, which uses positions, not hit tests. */
+.react-flow__handle.graph-port {
+  width: 24px;
+  height: 24px;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 9999px;
+  background: none;
+  border: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms;
+}
+/* Rest state: visible at 50%; any hover (or an active connection) goes full. */
+.react-flow__node.selected .react-flow__handle.graph-port {
+  opacity: 0.5;
+  pointer-events: all;
+}
+.react-flow__node.selected .react-flow__handle.graph-port:hover,
+.react-flow__handle.graph-port.connectingfrom,
+.react-flow__handle.graph-port.connectingto {
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* Port zones center a few px clear of the element's edge instead of
+   straddling it. Connectors still dock on the perimeter itself. */
+.react-flow__handle-top.graph-port {
+  top: -6px;
+}
+.react-flow__handle-bottom.graph-port {
+  bottom: -6px;
+}
+.react-flow__handle-left.graph-port {
+  left: -6px;
+}
+.react-flow__handle-right.graph-port {
+  right: -6px;
+}
+
+/* Fixed-size invisible core: the DIRECT-hover trigger. The visible dot is
+   pointer-transparent — if the dot itself were the trigger, its proximity
+   growth would swallow the cursor and instantly cascade into the direct
+   state, collapsing the two stages. */
+.graph-port .port-hit {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: 9999px;
+  z-index: 1;
+}
+
+/* The visible dot. Rest: blue with a white border. Proximity (zone hover):
+   grows into a circled blue outward arrow. Direct (core hover) / drawing:
+   fills blue with a white arrow. */
+.graph-port .port-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7.5px;
+  height: 7.5px;
+  transform: translate(-50%, -50%);
+  border-radius: 9999px;
+  background: rgb(59 130 246);
+  border: 1.5px solid #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition:
+    width 120ms,
+    height 120ms,
+    background-color 120ms,
+    border-color 120ms;
+}
+.graph-port .port-dot::before {
+  content: '→';
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 600;
+  color: rgb(59 130 246);
+  opacity: 0;
+  transition: opacity 120ms;
+}
+.react-flow__handle-top.graph-port .port-dot::before {
+  transform: rotate(-90deg);
+}
+.react-flow__handle-bottom.graph-port .port-dot::before {
+  transform: rotate(90deg);
+}
+.react-flow__handle-left.graph-port .port-dot::before {
+  transform: rotate(180deg);
+}
+.graph-port.connectable:hover .port-dot {
+  width: 16px;
+  height: 16px;
+  background: hsl(var(--card));
+  border-color: rgb(59 130 246);
+}
+.graph-port.connectable:hover .port-dot::before {
+  opacity: 1;
+}
+.graph-port.connectable .port-hit:hover ~ .port-dot,
+.graph-port.connectingfrom .port-dot {
+  width: 20px;
+  height: 20px;
+  background: rgb(59 130 246);
+  border-color: rgb(59 130 246);
+}
+.graph-port.connectable .port-hit:hover ~ .port-dot::before,
+.graph-port.connectingfrom .port-dot::before {
+  opacity: 1;
+  color: #fff;
+}
+
+/* Ghost connector: a dashed run-out with an arrowhead, previewing the drag.
+   Only on DIRECT dot hover; hidden once a real connection line is out.
+   translateX after the per-side rotation pushes the start clear of the dot. */
+.graph-port .port-ghost {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 48px;
+  height: 0;
+  border-top: 1.5px dashed rgb(59 130 246 / 0.45);
+  transform-origin: 0 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms;
+}
+.graph-port .port-ghost::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: -4.5px;
+  width: 8px;
+  height: 8px;
+  border-top: 1.5px solid rgb(59 130 246 / 0.6);
+  border-right: 1.5px solid rgb(59 130 246 / 0.6);
+  transform: rotate(45deg);
+}
+.react-flow__handle-right.graph-port .port-ghost {
+  transform: rotate(0deg) translateX(14px);
+}
+.react-flow__handle-bottom.graph-port .port-ghost {
+  transform: rotate(90deg) translateX(14px);
+}
+.react-flow__handle-left.graph-port .port-ghost {
+  transform: rotate(180deg) translateX(14px);
+}
+.react-flow__handle-top.graph-port .port-ghost {
+  transform: rotate(270deg) translateX(14px);
+}
+.graph-port.connectable .port-hit:hover ~ .port-ghost {
+  opacity: 1;
+}
+.graph-port.connectingfrom .port-ghost {
+  opacity: 0 !important;
+}
+
+/* Agent toolbar (Open chip + session rows) entrance: each item pops down
+   out of the card with a slight overshoot; per-item animation-delay set
+   inline staggers the cascade. `backwards` holds the hidden from-state
+   through the delay so late rows don't flash before their turn. */
+.graph-toolbar-item {
+  animation: graph-toolbar-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+  transform-origin: top center;
+}
+@keyframes graph-toolbar-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.85);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .graph-toolbar-item {
+    animation: none;
+  }
+}
+
+/* Elbow-connector grab handles only exist while the edge is selected
+   (see ElbowControls); fade them in on mount. */
+.elbow-drag-handle {
+  animation: elbow-handle-in 150ms ease-out;
+}
+@keyframes elbow-handle-in {
+  from {
+    opacity: 0;
+  }
+}

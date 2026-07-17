@@ -14,7 +14,7 @@
 
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
-import { and, desc, eq, isNull, or } from 'drizzle-orm'
+import { and, desc, eq, isNull, ne, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
 
@@ -90,16 +90,18 @@ export function getPolicy(
  * transaction so concurrent setPolicy calls serialize correctly.
  *
  * Returns Promise to keep the call-site signature stable; the actual work is
- * sync (better-sqlite3 transactions are synchronous).
+ * sync (better-sqlite3 transactions are synchronous). The result reports
+ * whether a row was created and what it replaced, so single-policy callers
+ * (the graph's drawn edges) can message accurately without a list round-trip.
  */
 export async function setPolicy(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
   decision: XAgentDecision,
-): Promise<void> {
+): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
   const now = new Date()
-  db.transaction(() => {
+  return db.transaction(() => {
     const existing = db
       .select()
       .from(xAgentPolicies)
@@ -117,7 +119,7 @@ export async function setPolicy(
         .set({ decision, updatedAt: now })
         .where(eq(xAgentPolicies.id, existing[0].id))
         .run()
-      return
+      return { created: false, previousDecision: existing[0].decision as XAgentDecision }
     }
     db.insert(xAgentPolicies)
       .values({
@@ -130,7 +132,36 @@ export async function setPolicy(
         updatedAt: now,
       })
       .run()
+    return { created: true, previousDecision: null }
   })
+}
+
+/**
+ * Delete the specific-target policy rows for (caller, operation, target).
+ * With `preserveBlock`, 'block' rows survive: revoking a granted edge must
+ * not silently lift an explicit block (that would ESCALATE access — the
+ * effective decision would fall back to a global allow, if one exists).
+ * Returns the number of rows removed.
+ */
+export function deleteTargetPolicy(
+  callerSlug: string,
+  operation: XAgentOperation,
+  targetSlug: string,
+  options?: { preserveBlock?: boolean },
+): number {
+  const conditions = [
+    eq(xAgentPolicies.callerAgentSlug, callerSlug),
+    eq(xAgentPolicies.operation, operation),
+    eq(xAgentPolicies.targetAgentSlug, targetSlug),
+  ]
+  if (options?.preserveBlock) {
+    conditions.push(ne(xAgentPolicies.decision, 'block'))
+  }
+  const result = db
+    .delete(xAgentPolicies)
+    .where(and(...conditions))
+    .run()
+  return result.changes
 }
 
 /**

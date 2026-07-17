@@ -330,3 +330,108 @@ describe('PUT /api/agents/:id/x-agent-policies', () => {
     expect(byOp.read).toBe('review')
   })
 })
+
+// ============================================================================
+// PUT/DELETE /api/agents/:id/x-agent-policies/invoke/:target (atomic, graph)
+// ============================================================================
+
+describe('atomic single invoke policy endpoints', () => {
+  const invokeUrl = (caller: string, target: string) =>
+    `/api/agents/${caller}/x-agent-policies/invoke/${target}`
+
+  it('PUT creates an invoke=allow row and reports created=true', async () => {
+    const res = await app.request(invokeUrl(CALLER, TARGET_A), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ok: true, created: true, previousDecision: null })
+    expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('allow')
+  })
+
+  it('PUT over an existing allow reports created=false / previousDecision=allow', async () => {
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+    const res = await app.request(invokeUrl(CALLER, TARGET_A), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(await res.json()).toMatchObject({ created: false, previousDecision: 'allow' })
+  })
+
+  it('PUT deliberately replaces a block, reporting previousDecision=block', async () => {
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'block')
+    const res = await app.request(invokeUrl(CALLER, TARGET_A), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(await res.json()).toMatchObject({ created: false, previousDecision: 'block' })
+    expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('allow')
+  })
+
+  it('PUT rejects targeting the caller itself', async () => {
+    const res = await app.request(invokeUrl(CALLER, CALLER), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it('DELETE removes an allow grant', async () => {
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+    const res = await app.request(invokeUrl(CALLER, TARGET_A), { method: 'DELETE' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ ok: true, removed: 1 })
+    expect(getPolicy(CALLER, 'invoke', TARGET_A)).toBeNull()
+  })
+
+  it('DELETE PRESERVES an explicit block (no silent escalation)', async () => {
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'block')
+    const res = await app.request(invokeUrl(CALLER, TARGET_A), { method: 'DELETE' })
+    expect(await res.json()).toMatchObject({ removed: 0 })
+    // The block survives — deleting a drawn edge must never lift it.
+    expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('block')
+  })
+
+  it('in auth mode, PUT toward an invisible target returns 404 (same as nonexistent — no existence oracle)', async () => {
+    authModeEnabled = true
+    currentUserId = 'user-viewer'
+    await testDb.insert(schema.user).values([
+      { id: 'user-viewer', name: 'V', email: 'v@t', emailVerified: false },
+    ])
+    // Caller is visible; TARGET_B is NOT in the user's ACL.
+    await testDb.insert(schema.agentAcl).values([
+      { id: 'acl-c', userId: 'user-viewer', agentSlug: CALLER, role: 'owner', createdAt: new Date() },
+    ])
+    const res = await app.request(invokeUrl(CALLER, TARGET_B), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(res.status).toBe(404)
+    // No row was written toward the invisible target.
+    expect(getPolicy(CALLER, 'invoke', TARGET_B)).toBeNull()
+  })
+
+  it('in auth mode, PUT toward a visible target succeeds', async () => {
+    authModeEnabled = true
+    currentUserId = 'user-viewer'
+    await testDb.insert(schema.user).values([
+      { id: 'user-viewer', name: 'V', email: 'v@t', emailVerified: false },
+    ])
+    await testDb.insert(schema.agentAcl).values([
+      { id: 'acl-c', userId: 'user-viewer', agentSlug: CALLER, role: 'owner', createdAt: new Date() },
+      { id: 'acl-t', userId: 'user-viewer', agentSlug: TARGET_A, role: 'viewer', createdAt: new Date() },
+    ])
+    const res = await app.request(invokeUrl(CALLER, TARGET_A), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(res.status).toBe(200)
+    expect(getPolicy(CALLER, 'invoke', TARGET_A)?.decision).toBe('allow')
+  })
+})

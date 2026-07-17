@@ -57,6 +57,13 @@ vi.mock('@shared/lib/db', () => ({
           // Awaited directly (terminal `.where()` with no `.limit()`).
           then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) => mockDbSelectLimit().then(onF, onR),
         }),
+        // Ownership-scoped link deletes join the resource table before WHERE.
+        innerJoin: () => ({
+          where: () => ({
+            limit: () => mockDbSelectLimit(),
+            then: (onF: (v: unknown) => unknown, onR?: (e: unknown) => unknown) => mockDbSelectLimit().then(onF, onR),
+          }),
+        }),
         orderBy: () => ({ $dynamic: () => ({ where: () => mockDbSelectLimit() }) }),
       }),
     }),
@@ -607,5 +614,65 @@ describe('SUP-199: remote MCP assignment ownership (AUTH_MODE)', () => {
 
     expect(res.status).toBe(200)
     expect(mockDbInsertValues).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// UNLINK ownership (AUTH_MODE)
+// ---------------------------------------------------------------------------
+//
+// DELETE /api/agents/:id/connected-accounts/:accountId and
+// DELETE /api/agents/:id/remote-mcps/:mcpId only proved the caller had
+// `AgentUser()` access to the agent, then matched the mapping by agentSlug
+// alone — so on a SHARED agent a co-tenant could sever ANOTHER user's account
+// or MCP link just by knowing its id (the id was newly enumerable via the home
+// graph). Both now join the resource table with an `ownerScope` filter, so the
+// mapping lookup returns nothing unless the acting user owns the resource; the
+// delete never runs otherwise. Gated on isAuthMode() — non-auth is unaffected.
+//
+// Harness note: the ownership-scoped lookup terminates in `.limit(1)`, so its
+// result is the next `selectQueue` entry — `[]` = not owned, `[{...}]` = owned.
+
+describe('unlink ownership: cross-user account/MCP unlink from a shared agent (AUTH_MODE)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    selectQueue = []
+    mockIsAuthMode.mockReturnValue(true)
+  })
+
+  it('rejects unlinking another user account from a shared agent', async () => {
+    selectQueue = [[]] // owner-scoped lookup finds nothing → not the acting user's account
+    const res = await appWithAgents().request('http://localhost/api/agents/shared-agent/connected-accounts/victim-account-id', {
+      method: 'DELETE',
+    })
+    expect(res.status).toBe(404)
+    expect(mockDbDeleteWhere).not.toHaveBeenCalled()
+  })
+
+  it('allows unlinking an account the acting user owns', async () => {
+    selectQueue = [[{ id: 'mapping-1' }]]
+    const res = await appWithAgents().request('http://localhost/api/agents/my-agent/connected-accounts/my-account-id', {
+      method: 'DELETE',
+    })
+    expect(res.status).toBe(204)
+    expect(mockDbDeleteWhere).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects unlinking another user remote MCP from a shared agent', async () => {
+    selectQueue = [[]]
+    const res = await appWithAgents().request('http://localhost/api/agents/shared-agent/remote-mcps/victim-mcp-id', {
+      method: 'DELETE',
+    })
+    expect(res.status).toBe(404)
+    expect(mockDbDeleteWhere).not.toHaveBeenCalled()
+  })
+
+  it('allows unlinking a remote MCP the acting user owns', async () => {
+    selectQueue = [[{ id: 'mapping-1' }]]
+    const res = await appWithAgents().request('http://localhost/api/agents/my-agent/remote-mcps/my-mcp-id', {
+      method: 'DELETE',
+    })
+    expect(res.status).toBe(204)
+    expect(mockDbDeleteWhere).toHaveBeenCalledTimes(1)
   })
 })

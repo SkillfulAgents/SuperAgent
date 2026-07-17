@@ -29,6 +29,7 @@ import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   listSessions,
+  listSessionsByIds,
   getSessionSummary,
   updateSessionName,
   registerSession,
@@ -95,9 +96,12 @@ import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
   deletePoliciesForAgent,
+  deleteTargetPolicy,
   listPoliciesForCaller,
   replacePoliciesForCaller,
   replacePoliciesForCallerInputSchema,
+  setPolicy,
+  xAgentDecisionSchema,
 } from '@shared/lib/services/x-agent-policy-service'
 import {
   exportAgentTemplate,
@@ -1288,10 +1292,41 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 })
 
 // GET /api/agents/:id/sessions - List sessions for an agent
+// ?notable=true&limit=N — fast path for badge/toolbar consumers: only
+// sessions that are live or carry unread notifications, built from targeted
+// stats instead of statting every transcript in the directory.
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
 
+    if (c.req.query('notable') === 'true') {
+      const limitRaw = Number(c.req.query('limit'))
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.trunc(limitRaw), 100) : 25
+      const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
+      const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
+      const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(slug).length > 0
+      const infos = await listSessionsByIds(slug, [...new Set([...activeIds, ...unreadIds])], {
+        excludeAutomated: true,
+      })
+      const enriched = infos.map((session) => {
+        const isActive = messagePersister.isSessionActive(session.id)
+        return {
+          ...session,
+          isActive,
+          isAwaitingInput:
+            messagePersister.isSessionAwaitingInput(session.id) || (isActive && hasAgentLevelReviews),
+          hasUnreadNotifications: unreadIds.has(session.id),
+        }
+      })
+      // Live sessions must survive the cap; within each band, newest first.
+      enriched.sort((a, b) => {
+        const aLive = a.isActive || a.isAwaitingInput ? 1 : 0
+        const bLive = b.isActive || b.isAwaitingInput ? 1 : 0
+        if (aLive !== bLive) return bLive - aLive
+        return b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
+      })
+      return c.json(enriched.slice(0, limit))
+    }
 
     const sessionList = await listSessions(slug, { excludeAutomated: true })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
@@ -3204,12 +3239,19 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
     const slug = getAgentId(c)
     const accountId = c.req.param('accountId')
 
-    const filtered = await db
-      .select()
+    // Owner-scope the account in auth mode: a co-tenant with `user` role on a
+    // shared agent must NOT be able to sever another user's account link just
+    // by knowing its id. Mirrors the POST sibling's ownerScope guard.
+    const [found] = await db
+      .select({ id: agentConnectedAccounts.id })
       .from(agentConnectedAccounts)
-      .where(eq(agentConnectedAccounts.agentSlug, slug))
-
-    const found = filtered.find((m) => m.connectedAccountId === accountId)
+      .innerJoin(connectedAccounts, eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id))
+      .where(and(
+        eq(agentConnectedAccounts.agentSlug, slug),
+        eq(agentConnectedAccounts.connectedAccountId, accountId),
+        ownerScope(c, connectedAccounts.userId),
+      ))
+      .limit(1)
 
     if (!found) {
       return c.json({ error: 'Account mapping not found' }, 404)
@@ -3322,13 +3364,17 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
     const slug = getAgentId(c)
     const mcpId = c.req.param('mcpId')
 
+    // Owner-scope the server in auth mode (see connected-accounts DELETE): a
+    // shared agent's co-tenant must not unlink another user's MCP server.
     const [mapping] = await db
-      .select()
+      .select({ id: agentRemoteMcps.id })
       .from(agentRemoteMcps)
+      .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
       .where(
         and(
           eq(agentRemoteMcps.agentSlug, slug),
-          eq(agentRemoteMcps.remoteMcpId, mcpId)
+          eq(agentRemoteMcps.remoteMcpId, mcpId),
+          ownerScope(c, remoteMcpServers.userId)
         )
       )
       .limit(1)
@@ -5068,6 +5114,26 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 // X-Agent invoke policies (per-agent remembered cross-agent permissions)
 // =============================================================================
 
+/**
+ * Agents the caller may see: their agentAcl entries in auth mode, everything
+ * in non-auth mode (null = no restriction). One query, reused by the policy
+ * read + write paths so their visibility rules can't drift.
+ */
+async function callerVisibleAgents(c: Context): Promise<Set<string> | null> {
+  if (!isAuthMode()) return null
+  const userId = getCurrentUserId(c)
+  const aclRows = await db
+    .select({ agentSlug: agentAcl.agentSlug })
+    .from(agentAcl)
+    .where(eq(agentAcl.userId, userId))
+  return new Set(aclRows.map((r) => r.agentSlug))
+}
+
+async function callerCanSeeAgent(c: Context, agentSlug: string): Promise<boolean> {
+  const visible = await callerVisibleAgents(c)
+  return visible === null || visible.has(agentSlug)
+}
+
 // GET /api/agents/:id/x-agent-policies - List policies where this agent is the caller
 agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   const slug = getAgentId(c)
@@ -5080,15 +5146,7 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   // In auth mode, hide policies whose target the viewer can't see — otherwise
   // the policy editor leaks workspace topology (target slugs the user has no ACL on).
   // null targets ('list' policy) are always visible.
-  let visibleTargets: Set<string> | null = null
-  if (isAuthMode()) {
-    const userId = getCurrentUserId(c)
-    const aclRows = await db
-      .select({ agentSlug: agentAcl.agentSlug })
-      .from(agentAcl)
-      .where(eq(agentAcl.userId, userId))
-    visibleTargets = new Set(aclRows.map((r) => r.agentSlug))
-  }
+  const visibleTargets = await callerVisibleAgents(c)
 
   const nameMap = new Map<string, string>()
   for (const targetSlug of targetSlugs) {
@@ -5132,6 +5190,45 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   }
   replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
+})
+
+// PUT /api/agents/:id/x-agent-policies/invoke/:target - Upsert ONE invoke
+// policy atomically. The batch PUT above is a whole-form replace: concurrent
+// single-edge edits through it read-modify-write the full list and the last
+// writer silently drops the other's change. Graph edge edits go through here.
+agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
+  const slug = getAgentId(c)
+  const targetSlug = c.req.param('target')
+  if (targetSlug === slug) {
+    return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
+  }
+  // AgentAdmin checks role but not existence; assert both ends so a typo'd
+  // slug doesn't write phantom rows that nothing references. In auth mode the
+  // target must also be VISIBLE to the caller (same anti-topology-leak rule
+  // the GET route enforces) — and an invisible target returns the SAME 404 as
+  // a nonexistent one, so this can't be used as an agent-existence oracle.
+  const [callerAgent, targetAgent] = await Promise.all([getAgent(slug), getAgent(targetSlug)])
+  if (!callerAgent || !targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
+    return c.json({ error: 'Agent not found' }, 404)
+  }
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = z.object({ decision: xAgentDecisionSchema.default('allow') }).safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid policy payload', details: parsed.error.format() }, 400)
+  }
+  const result = await setPolicy(slug, 'invoke', targetSlug, parsed.data.decision)
+  return c.json({ ok: true, ...result })
+})
+
+// DELETE /api/agents/:id/x-agent-policies/invoke/:target - Remove the invoke
+// grant for one target atomically. Preserves 'block' rows: deleting a drawn
+// graph edge revokes a grant, and lifting an explicit block here would
+// silently escalate (effective decision falls back to a global allow).
+agents.delete('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
+  const slug = getAgentId(c)
+  const targetSlug = c.req.param('target')
+  const removed = deleteTargetPolicy(slug, 'invoke', targetSlug, { preserveBlock: true })
+  return c.json({ ok: true, removed })
 })
 
 // GET /api/agents/:id/bookmarks - Read bookmarks from agent workspace
