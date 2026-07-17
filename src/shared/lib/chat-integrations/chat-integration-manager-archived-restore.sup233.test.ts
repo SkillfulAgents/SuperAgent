@@ -89,6 +89,9 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
+    // connectIntegration cancels itself on a stopped manager; this harness
+    // drives it directly (no start()), so mark the manager running.
+    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {

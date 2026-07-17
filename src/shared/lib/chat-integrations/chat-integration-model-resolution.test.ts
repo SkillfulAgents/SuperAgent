@@ -139,6 +139,10 @@ describe('chat integration model and effort resolution', () => {
 
     mockReadAgentPreferences.mockReset()
     mockReadAgentPreferences.mockResolvedValue({})
+
+    // connectIntegration cancels itself on a stopped manager; this harness
+    // drives addIntegration directly (no start()), so mark the manager running.
+    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {

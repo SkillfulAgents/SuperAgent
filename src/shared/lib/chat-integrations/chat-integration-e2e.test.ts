@@ -159,6 +159,10 @@ describe('Chat integration E2E', () => {
     (containerManager.ensureRunning as any).mockResolvedValue(mockContainerClient)
 
     registeredSessions.clear()
+
+    // connectIntegration cancels itself on a stopped manager; this harness
+    // drives addIntegration directly (no start()), so mark the manager running.
+    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
   })
 
   afterEach(async () => {
