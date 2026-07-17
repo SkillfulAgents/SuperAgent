@@ -239,6 +239,11 @@ vi.mock('@shared/lib/services/session-service', () => ({
   getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
 }))
 
+const mockLoadSessionUsageTotals = vi.fn()
+vi.mock('@shared/lib/services/usage-service', () => ({
+  loadSessionUsageTotals: (...args: unknown[]) => mockLoadSessionUsageTotals(...args),
+}))
+
 vi.mock('@shared/lib/services/secrets-service', () => ({
   listSecrets: vi.fn(),
   listUserSecrets: vi.fn(),
@@ -373,13 +378,16 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 }))
 
 const mockGetAgentWorkspaceDir = vi.fn((_slug?: string) => '/mock/workspace')
+const mockGetSessionJsonlPath = vi.fn(
+  (agentSlug: string, sessionId: string) => `/mock/sessions/${agentSlug}/${sessionId}.jsonl`,
+)
 vi.mock('@shared/lib/utils/file-storage', () => ({
   // ResolveAgent() resolves the :id param via resolveAgentId. Delegate to the
   // existing agentExists mock so the legacy 404-on-missing behavior is preserved:
   // returns the slug verbatim when it "exists", else null.
   resolveAgentId: async (slug: string) => ((await mockAgentExists(slug)) ? slug : null),
   displaySlug: (_name: string, id: string) => id,
-  getSessionJsonlPath: vi.fn(),
+  getSessionJsonlPath: (...args: [string, string]) => mockGetSessionJsonlPath(...args),
   readFileOrNull: vi.fn(),
   writeFile: vi.fn(),
   getAgentSessionsDir: vi.fn(() => '/mock/sessions'),
@@ -466,6 +474,47 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
     body,
   })
 }
+
+describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+  })
+
+  it('calculates usage only when the endpoint is requested', async () => {
+    mockLoadSessionUsageTotals.mockResolvedValue({
+      totalCost: 0.1234,
+      totalTokens: 45_678,
+      priceMissing: false,
+      usageIncomplete: false,
+    })
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/session-1/usage')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      totalCost: 0.1234,
+      totalTokens: 45_678,
+      priceMissing: false,
+      usageIncomplete: false,
+    })
+    expect(mockLoadSessionUsageTotals).toHaveBeenCalledWith({
+      sessionPath: '/mock/sessions/test-agent/session-1.jsonl',
+      providerId: 'anthropic',
+    })
+  })
+
+  it('returns 404 without calculating usage for a missing session', async () => {
+    vi.mocked(sessionExists).mockResolvedValueOnce(false)
+
+    const res = await getReq(app, '/api/agents/test-agent/sessions/missing/usage')
+
+    expect(res.status).toBe(404)
+    expect(mockLoadSessionUsageTotals).not.toHaveBeenCalled()
+  })
+})
 
 // ============================================================================
 // Import Template Tests

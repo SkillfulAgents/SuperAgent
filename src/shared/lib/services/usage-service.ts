@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import pLimit from 'p-limit'
 import { getEffectiveCatalog, type LlmProviderId, type ModelDefinition } from '../llm-provider'
+import type { SessionUsageTotals } from '../types/usage'
 
 export interface ModelBreakdown {
   modelName: string
@@ -19,6 +20,7 @@ export interface DailyUsageData {
   cacheCreationTokens: number
   cacheReadTokens: number
   totalCost: number
+  priceMissing: boolean
   modelBreakdowns: ModelBreakdown[]
 }
 
@@ -38,15 +40,26 @@ interface UsageEntry {
       speed?: string
     }
   }
-  requestId?: string
   costUSD?: number
 }
 
-interface LoadOptions {
-  claudePath: string
+interface CommonLoadOptions {
   since?: string
   concurrency?: number
   providerId?: LlmProviderId
+  loadStatus?: UsageLoadStatus
+}
+
+interface UsageLoadStatus {
+  incomplete: boolean
+}
+
+interface LoadOptions extends CommonLoadOptions {
+  claudePath: string
+}
+
+interface SessionLoadOptions extends CommonLoadOptions {
+  sessionPath: string
 }
 
 interface CountedUsage {
@@ -57,6 +70,7 @@ interface CountedUsage {
   cacheCreationTokens: number
   cacheReadTokens: number
   cost: number
+  priceMissing: boolean
 }
 
 // Per-million-token pricing for known Claude models.
@@ -138,6 +152,84 @@ function rateCardFromCatalogModel(
  */
 type CatalogPricingMap = Map<string, PricingEntry | null>
 
+const MODEL_SNAPSHOT_SUFFIX = /(?:-|@)(?:\d{8}|\d{4}-\d{2}-\d{2})$/
+const BEDROCK_VERSION_SUFFIX = /-v\d+(?::\d+)?$/
+
+/** Provider aliases whose billed canonical model is documented and stable. */
+const MODEL_PRICING_ALIASES: Record<string, string> = {
+  // OpenAI documents gpt-5.6 as the alias for the Sol tier.
+  'gpt-5.6': 'gpt-5.6-sol',
+  // xAI documents both aliases as pointers to Grok 4.5.
+  'grok-4.5-latest': 'grok-4.5',
+  'grok-build-latest': 'grok-4.5',
+}
+
+/**
+ * Return every plausible pricing key for a runtime-reported model id.
+ *
+ * Provider proxies can report the concrete upstream deployment rather than the
+ * configured catalog id, for example:
+ *   anthropic/claude-sonnet-5-20260630 -> claude-sonnet-5
+ *   anthropic/claude-4.6-opus-20260205 -> claude-opus-4-6
+ *   openai/gpt-5.5-20260423            -> openai/gpt-5.5 / gpt-5.5
+ *   anthropic/claude-sonnet-4.6         -> claude-sonnet-4-6
+ *   claude-haiku-4-5@20251001           -> claude-haiku-4-5
+ *
+ * Build candidates instead of normalizing destructively so exact custom model
+ * ids still win and historical dated ids already present in the static table
+ * remain available.
+ */
+function modelPricingCandidates(model: string): string[] {
+  const candidates: string[] = []
+  const seen = new Set<string>()
+  const queue: string[] = []
+
+  const add = (candidate: string) => {
+    if (!candidate || seen.has(candidate)) return
+    seen.add(candidate)
+    candidates.push(candidate)
+    queue.push(candidate)
+  }
+
+  add(model)
+
+  while (queue.length > 0) {
+    const candidate = queue.shift()!
+
+    add(candidate.replace(MODEL_SNAPSHOT_SUFFIX, ''))
+    add(candidate.replace(BEDROCK_VERSION_SUFFIX, ''))
+    add(MODEL_PRICING_ALIASES[candidate])
+
+    if (candidate.includes('/')) {
+      add(candidate.split('/').pop()!)
+    }
+
+    const bedrockMatch = candidate.match(/^(?:[\w-]+\.)?anthropic\.(.+)$/)
+    if (bedrockMatch) add(bedrockMatch[1])
+
+    // OpenRouter uses dots for Claude minor versions (for example,
+    // anthropic/claude-sonnet-4.6), while Anthropic's rate-card ids use
+    // hyphens. Limit this rewrite to Claude so GPT/Grok decimal versions stay
+    // intact.
+    if (candidate.startsWith('claude-')) {
+      add(candidate.replace(/(\d+)\.(\d+)/g, '$1-$2'))
+    }
+
+    // Some proxy responses use Claude's version-family order while our catalog
+    // uses family-version. Preserve an optional date so an exact dated static
+    // key can still resolve before the undated fallback.
+    const claudeVersionFirst = candidate.match(
+      /^claude-(\d+(?:[.-]\d+)?)-(haiku|sonnet|opus|fable)(-\d{8})?$/,
+    )
+    if (claudeVersionFirst) {
+      const [, version, family, date = ''] = claudeVersionFirst
+      add(`claude-${family}-${version.replace('.', '-')}${date}`)
+    }
+  }
+
+  return candidates
+}
+
 function buildCatalogPricingMap(providerId: LlmProviderId): CatalogPricingMap {
   const map: CatalogPricingMap = new Map()
   for (const model of getEffectiveCatalog(providerId)) {
@@ -156,8 +248,23 @@ function resolveRateCard(
   model: string,
   catalogPricing: CatalogPricingMap | undefined,
 ): PricingEntry | null {
-  if (catalogPricing?.has(model)) return catalogPricing.get(model) ?? null
-  return (MODEL_PRICING as Record<string, PricingEntry>)[model] ?? null
+  const candidates = modelPricingCandidates(model)
+
+  // Catalog pricing (including user overrides) wins over every static alias.
+  // An exact or canonical catalog entry with intentionally absent pricing must
+  // remain free instead of falling through to an unrelated static fallback.
+  if (catalogPricing) {
+    for (const candidate of candidates) {
+      if (catalogPricing.has(candidate)) return catalogPricing.get(candidate) ?? null
+    }
+  }
+
+  for (const candidate of candidates) {
+    const pricing = (MODEL_PRICING as Record<string, PricingEntry>)[candidate]
+    if (pricing) return pricing
+  }
+
+  return null
 }
 
 /** Token counts → cost for an already-resolved rate card (null ⇒ 0). */
@@ -237,29 +344,86 @@ async function findJsonlFiles(dir: string): Promise<string[]> {
   return results
 }
 
+function isMissingPathError(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT'
+}
+
 /**
  * Lightweight replacement for ccusage's loadDailyUsageData.
  * - Pre-filters files by mtime when `since` is set
  * - Limits concurrent file reads via pLimit
- * - Deduplicates entries by messageId:requestId, keeping the highest output_tokens snapshot
+ * - Deduplicates entries by messageId, including rows where requestId is absent,
+ *   while keeping the highest output_tokens snapshot
  * - Uses costUSD field when available
  */
-export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsageData[]> {
-  const { claudePath, since, concurrency = 10, providerId } = options
-
-  const projectsDir = path.join(claudePath, 'projects')
-  try {
-    await fs.promises.access(projectsDir)
-  } catch {
-    return []
+export async function loadDailyUsageData(
+  options: LoadOptions | SessionLoadOptions,
+): Promise<DailyUsageData[]> {
+  const { since, concurrency = 10, providerId, loadStatus } = options
+  const markIncomplete = () => {
+    if (loadStatus) loadStatus.incomplete = true
   }
 
-  // Recursively find all JSONL files
   let files: string[]
-  try {
-    files = await findJsonlFiles(projectsDir)
-  } catch {
-    return []
+  if ('sessionPath' in options) {
+    // A session's primary transcript is <id>.jsonl. Current subagent/workflow
+    // transcripts live below the adjacent <id>/ directory, so include those in
+    // the session total without walking every other session for the agent.
+    // Legacy Claude Code versions wrote unlinked agent-*.jsonl siblings; those
+    // cannot be attributed safely, so exclude them and flag the result below.
+    files = []
+    let hasPrimaryTranscript = false
+    try {
+      const stat = await fs.promises.stat(options.sessionPath)
+      if (stat.isFile()) {
+        files.push(options.sessionPath)
+        hasPrimaryTranscript = true
+      }
+      else markIncomplete()
+    } catch (error) {
+      // A newly-created session can exist before its transcript is written.
+      if (!isMissingPathError(error)) markIncomplete()
+    }
+
+    const relatedDir = options.sessionPath.replace(/\.jsonl$/, '')
+    try {
+      files.push(...(await findJsonlFiles(relatedDir)))
+    } catch (error) {
+      // Most sessions have no nested transcripts.
+      if (!isMissingPathError(error)) markIncomplete()
+    }
+
+    if (hasPrimaryTranscript) {
+      try {
+        const siblingEntries = await fs.promises.readdir(path.dirname(options.sessionPath), {
+          withFileTypes: true,
+        })
+        const primaryFilename = path.basename(options.sessionPath)
+        if (
+          siblingEntries.some(
+            (entry) =>
+              entry.name !== primaryFilename &&
+              entry.isFile() &&
+              entry.name.startsWith('agent-') &&
+              entry.name.endsWith('.jsonl'),
+          )
+        ) {
+          markIncomplete()
+        }
+      } catch (error) {
+        // Other failures mean we cannot rule out omitted data.
+        if (!isMissingPathError(error)) markIncomplete()
+      }
+    }
+  } else {
+    const projectsDir = path.join(options.claudePath, 'projects')
+    try {
+      await fs.promises.access(projectsDir)
+      files = await findJsonlFiles(projectsDir)
+    } catch (error) {
+      if (!isMissingPathError(error)) markIncomplete()
+      return []
+    }
   }
 
   if (files.length === 0) return []
@@ -285,6 +449,7 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
             const stat = await fs.promises.stat(file)
             return stat.mtimeMs >= sinceMs ? file : null
           } catch {
+            markIncomplete()
             return null
           }
         })
@@ -295,9 +460,19 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
 
   if (files.length === 0) return []
 
-  // Resolve the provider catalog pricing ONCE for this load. processLine closes
-  // over it so per-line cost is a Map lookup, not a per-line catalog rebuild.
+  // Resolve the provider catalog pricing once, then cache the final rate card
+  // per runtime model id. A load generally has many usage rows but only a
+  // handful of distinct models, so candidate normalization stays off the hot
+  // per-line path after the first occurrence.
   const catalogPricing = providerId ? buildCatalogPricingMap(providerId) : undefined
+  const rateCardByModel = new Map<string, PricingEntry | null>()
+  const resolveRateCardForLoad = (model: string): PricingEntry | null => {
+    const cached = rateCardByModel.get(model)
+    if (cached !== undefined) return cached
+    const rateCard = resolveRateCard(model, catalogPricing)
+    rateCardByModel.set(model, rateCard)
+    return rateCard
+  }
 
   // Stream-read files with concurrency limit.
   // Pre-filter lines with a cheap string check before JSON.parse — most lines
@@ -313,6 +488,7 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
       cacheCreationTokens: number
       cacheReadTokens: number
       totalCost: number
+      priceMissing: boolean
       models: Map<
         string,
         {
@@ -351,6 +527,7 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
           }
         } catch {
           // Skip unreadable files
+          markIncomplete()
         } finally {
           await fh?.close()
         }
@@ -364,17 +541,52 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
     unkeyedEntries: CountedUsage[],
     sinceDateFilter: Date | null,
   ) {
-    // Cheap pre-filter: skip lines that can't contain usage data
-    if (!line.includes('"input_tokens"')) return
+    const trimmed = line.trim()
+    if (!trimmed) return
+
+    // JSONL entries are objects. Catch visibly truncated/corrupted rows without
+    // paying JSON.parse cost for every valid non-usage event in large logs.
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+      markIncomplete()
+      return
+    }
+
+    // Cheap pre-filter: skip lines that can't contain token usage data.
+    if (
+      !line.includes('"input_tokens"') &&
+      !line.includes('"output_tokens"') &&
+      !line.includes('"cache_creation_input_tokens"') &&
+      !line.includes('"cache_read_input_tokens"')
+    ) {
+      return
+    }
 
     let entry: UsageEntry
     try {
       entry = JSON.parse(line)
     } catch {
+      markIncomplete()
       return
     }
 
-    if (!entry.message?.usage?.input_tokens && !entry.message?.usage?.output_tokens) return
+    const usage = entry.message?.usage
+    if (!usage) return
+
+    const tokenValues = [
+      usage.input_tokens,
+      usage.output_tokens,
+      usage.cache_creation_input_tokens,
+      usage.cache_read_input_tokens,
+    ]
+    if (
+      tokenValues.some(
+        (value) => value !== undefined && (typeof value !== 'number' || !Number.isFinite(value)),
+      )
+    ) {
+      markIncomplete()
+      return
+    }
+    if (!tokenValues.some((value) => typeof value === 'number' && value !== 0)) return
     if (!entry.timestamp) return
 
     // Filter by date if since is set
@@ -382,19 +594,22 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
 
     // Use local timezone for date grouping (matches ccusage behavior)
     const ts = new Date(entry.timestamp)
+    if (Number.isNaN(ts.getTime())) {
+      markIncomplete()
+      return
+    }
     const date = `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, '0')}-${String(ts.getDate()).padStart(2, '0')}`
     const model = entry.message?.model || 'unknown'
-    const usage = entry.message!.usage!
 
-    const inputTokens = usage.input_tokens || 0
-    const outputTokens = usage.output_tokens || 0
-    const cacheCreationTokens = usage.cache_creation_input_tokens || 0
-    const cacheReadTokens = usage.cache_read_input_tokens || 0
+    const inputTokens = usage.input_tokens ?? 0
+    const outputTokens = usage.output_tokens ?? 0
+    const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0
+    const cacheReadTokens = usage.cache_read_input_tokens ?? 0
 
     // Only the exact tier strings select a multiplier; anything else (absent,
     // unknown future tiers) bills standard.
     const speed = usage.speed === 'slow' || usage.speed === 'fast' ? usage.speed : undefined
-    const rateCard = resolveRateCard(model, catalogPricing)
+    const rateCard = resolveRateCardForLoad(model)
     const speedMultiplier = speed !== undefined ? rateCard?.speedMultipliers?.[speed] : undefined
     const computedCost = costFromRateCard(
       rateCard,
@@ -404,9 +619,15 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
       cacheReadTokens,
       speed,
     )
+    const hasRecordedCost = typeof entry.costUSD === 'number' && Number.isFinite(entry.costUSD)
     // entry.costUSD is the CLI's own estimate and is tier-blind, so a row
     // served on a tier we can price locally must not use it.
-    const cost = speedMultiplier !== undefined ? computedCost : (entry.costUSD ?? computedCost)
+    const cost =
+      speedMultiplier !== undefined
+        ? computedCost
+        : hasRecordedCost
+          ? entry.costUSD!
+          : computedCost
 
     const countedUsage: CountedUsage = {
       date,
@@ -416,15 +637,18 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
       cacheCreationTokens,
       cacheReadTokens,
       cost,
+      // A numeric recorded cost (including an intentional zero) is authoritative.
+      // Otherwise a null rate card means the total is incomplete, not free.
+      priceMissing: !hasRecordedCost && rateCard === null,
     }
 
-    // Claude transcript snapshots for the same model response can share
-    // messageId:requestId while output_tokens increases as more content blocks
-    // are appended. Keep the highest snapshot to avoid counting mid-turn usage.
+    // Transcript snapshots for the same model response share the provider's
+    // unique message id while output_tokens increases as content is appended.
+    // requestId is not consistently present across translated snapshots, so
+    // key solely on message id and keep the highest-output snapshot.
     const msgId = entry.message?.id || ''
-    const reqId = entry.requestId || ''
-    if (msgId && reqId) {
-      const key = `${msgId}:${reqId}`
+    if (msgId) {
+      const key = `message:${msgId}`
       const previous = countedEntries.get(key)
       if (previous && outputTokens <= previous.outputTokens) return
       countedEntries.set(key, countedUsage)
@@ -435,7 +659,16 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
   }
 
   function addUsage(map: typeof dateMap, usage: CountedUsage) {
-    const { date, model, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, cost } = usage
+    const {
+      date,
+      model,
+      inputTokens,
+      outputTokens,
+      cacheCreationTokens,
+      cacheReadTokens,
+      cost,
+      priceMissing,
+    } = usage
     let day = map.get(date)
     if (!day) {
       day = {
@@ -444,6 +677,7 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         totalCost: 0,
+        priceMissing: false,
         models: new Map(),
       }
       map.set(date, day)
@@ -454,6 +688,7 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
     day.cacheCreationTokens += cacheCreationTokens
     day.cacheReadTokens += cacheReadTokens
     day.totalCost += cost
+    day.priceMissing ||= priceMissing
 
     let modelData = day.models.get(model)
     if (!modelData) {
@@ -503,6 +738,7 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
       cacheCreationTokens: day.cacheCreationTokens,
       cacheReadTokens: day.cacheReadTokens,
       totalCost: round(day.totalCost),
+      priceMissing: day.priceMissing,
       modelBreakdowns,
     })
   }
@@ -510,4 +746,39 @@ export async function loadDailyUsageData(options: LoadOptions): Promise<DailyUsa
   // Sort by date descending (newest first, matching ccusage)
   results.sort((a, b) => b.date.localeCompare(a.date))
   return results
+}
+
+/**
+ * Calculate all-time usage for one session on demand.
+ *
+ * This intentionally performs no caching: callers use it for ad-hoc views and
+ * should receive a fresh total when a session is still accumulating messages.
+ */
+export async function loadSessionUsageTotals(options: {
+  sessionPath: string
+  providerId?: LlmProviderId
+}): Promise<SessionUsageTotals> {
+  const loadStatus: UsageLoadStatus = { incomplete: false }
+  const daily = await loadDailyUsageData({ ...options, loadStatus })
+
+  const totals = daily.reduce<SessionUsageTotals>(
+    (sum, day) => ({
+      totalCost: sum.totalCost + day.totalCost,
+      totalTokens:
+        sum.totalTokens +
+        day.inputTokens +
+        day.outputTokens +
+        day.cacheCreationTokens +
+        day.cacheReadTokens,
+      priceMissing: sum.priceMissing || day.priceMissing,
+      usageIncomplete: sum.usageIncomplete,
+    }),
+    { totalCost: 0, totalTokens: 0, priceMissing: false, usageIncomplete: false },
+  )
+
+  return {
+    ...totals,
+    totalCost: Math.round(totals.totalCost * 1e10) / 1e10,
+    usageIncomplete: loadStatus.incomplete,
+  }
 }
