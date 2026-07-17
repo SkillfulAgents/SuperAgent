@@ -18,6 +18,12 @@ const APPLE_CONTAINER_VERSION = '1.1.0' // pin; do not follow releases/latest
 export const APPLE_CONTAINER_PKG_SHA256 =
   '0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714'
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000
+/** CLI `--timeout` (seconds) for apiserver readiness; exec bound is slightly longer. */
+const APPLE_SYSTEM_START_TIMEOUT_SEC = 60
+const APPLE_SYSTEM_START_CMD =
+  `container system start --enable-kernel-install --timeout ${APPLE_SYSTEM_START_TIMEOUT_SEC}`
+const APPLE_SYSTEM_START_EXEC_TIMEOUT_MS = (APPLE_SYSTEM_START_TIMEOUT_SEC + 30) * 1000
+const APPLE_SYSTEM_STOP_EXEC_TIMEOUT_MS = 15_000
 
 let cachedMacOSMajorVersion: number | null | undefined = undefined // null failures not cached
 let appleReadyPromise: Promise<void> | null = null
@@ -288,12 +294,18 @@ export class AppleContainerClient extends BaseContainerClient {
   /**
    * Containers talk back to the host (LLM proxy, host API) at this URL.
    * host.docker.internal doesn't resolve here, so use the gateway IP — the
-   * same address Lima aliases that name to via --add-host. Without this,
-   * PROXY_BASE_URL is unreachable and agents can't reach the LLM proxy.
+   * same address Lima aliases that name to via --add-host. Fail closed if
+   * the gateway is unknown: the Docker fallback is NXDOMAIN inside Apple
+   * containers and would start agents with a permanently unreachable proxy.
    */
-  public getHostApiBaseUrl(): string | Promise<string> {
+  public getHostApiBaseUrl(): string {
     const gateway = getAppleGatewayIp()
-    return gateway ? `http://${gateway}:${getAppPort()}` : super.getHostApiBaseUrl()
+    if (!gateway) {
+      throw new Error(
+        'macOS Container host gateway is unreachable. Restart macOS Container and try again.',
+      )
+    }
+    return `http://${gateway}:${getAppPort()}`
   }
 
   /** The vmnet gateway is a real host interface — the host-browser CDP proxy
@@ -525,7 +537,7 @@ async function ensureAppleContainerReadyImpl(
 
   reportProgress(onProgress, 'Starting macOS Container...', null)
   try {
-    await execWithPath('container system start --enable-kernel-install')
+    await execWithPath(APPLE_SYSTEM_START_CMD, { timeoutMs: APPLE_SYSTEM_START_EXEC_TIMEOUT_MS })
   } catch (error: any) {
     if (!error?.message?.includes('already running')) {
       captureException(error, {
@@ -573,6 +585,11 @@ export async function ensureAppleContainerReady(
     appleReadyPromise = null
     appleReadyAllowsInstall = false
   }
+}
+
+/** Bound stop for restart/shutdown — CLI has no native stop timeout. */
+export async function stopAppleContainerRuntime(): Promise<void> {
+  await execWithPath('container system stop', { timeoutMs: APPLE_SYSTEM_STOP_EXEC_TIMEOUT_MS })
 }
 
 export function resetAppleContainerClientForTests(): void {

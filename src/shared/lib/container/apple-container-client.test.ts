@@ -161,10 +161,10 @@ describe('AppleContainerClient host talk-back (host.docker.internal is NXDOMAIN 
     expect(mockExecSyncWithPath).toHaveBeenCalledOnce()
   })
 
-  it('falls back to the base URL when the gateway cannot be resolved', () => {
+  it('refuses host API URL when the gateway cannot be resolved (Docker fallback is NXDOMAIN here)', () => {
     mockExecSyncWithPath.mockImplementation(() => { throw new Error('network inspect failed') })
     const client = new AppleContainerClient({ agentId: 'abc123' })
-    expect(client.getHostApiBaseUrl()).toBe('http://host.docker.internal:47891')
+    expect(() => client.getHostApiBaseUrl()).toThrow(/host gateway is unreachable/i)
     expect(client.getHostBridgeIp()).toBeNull()
   })
 })
@@ -211,14 +211,17 @@ describe('AppleContainerClient.handleRunError', () => {
     })
     const client = new AppleContainerClient({ agentId: 'abc123' })
     await expect((client as any).handleRunError(new Error('vm exited unexpectedly'))).resolves.toBe(true)
-    expect(mockExecWithPath).toHaveBeenCalledWith('container system start --enable-kernel-install')
+    expect(mockExecWithPath).toHaveBeenCalledWith(
+      expect.stringMatching(/^container system start --enable-kernel-install --timeout \d+$/),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    )
   })
 
   it('does not restart a healthy runtime on an unrecognized run error', async () => {
     mockExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
     const client = new AppleContainerClient({ agentId: 'abc123' })
     await expect((client as any).handleRunError(new Error('weird one-off'))).resolves.toBe(false)
-    expect(mockExecWithPath).not.toHaveBeenCalledWith('container system start --enable-kernel-install')
+    expect(mockExecWithPath.mock.calls.some(([cmd]) => String(cmd).includes('system start'))).toBe(false)
   })
 })
 
@@ -286,7 +289,10 @@ describe('ensureAppleContainerReady', () => {
 
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(mockRunWithAdminPrivileges).not.toHaveBeenCalled()
-    expect(mockExecWithPath).toHaveBeenCalledWith('container system start --enable-kernel-install')
+    expect(mockExecWithPath).toHaveBeenCalledWith(
+      expect.stringMatching(/^container system start --enable-kernel-install --timeout \d+$/),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    )
   })
 
   it('refuses first-install without allowInstall', async () => {
@@ -322,7 +328,10 @@ describe('ensureAppleContainerReady', () => {
     expect(elevateCmd).toContain('/usr/bin/shasum -a 256')
     expect(elevateCmd).toContain('/usr/sbin/installer -pkg')
     expect(elevateCmd).toContain(APPLE_CONTAINER_PKG_SHA256)
-    expect(mockExecWithPath).toHaveBeenCalledWith('container system start --enable-kernel-install')
+    expect(mockExecWithPath).toHaveBeenCalledWith(
+      expect.stringMatching(/^container system start --enable-kernel-install --timeout \d+$/),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    )
     expect(events.some((e) => e.status.includes('Downloading') && e.percent === 50)).toBe(true)
     expect(events.some((e) => e.status.includes('Verifying') && e.percent === null)).toBe(true)
     // After download, never invent a rising overall percent
