@@ -46,7 +46,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
     'data-hidden': itemHidden ? 'true' : 'false',
     style: { transitionDelay: `${exiting ? outDelayMs : inDelayMs}ms` },
   })
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const textareaRef = useRef<HTMLDivElement>(null)
   const displayedPlaceholder = useTypewriterPlaceholder(DEFAULT_AGENT_PROMPT_EXAMPLES)
 
   const createAgent = useCreateAgent()
@@ -98,14 +98,6 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
     }, [createAgent, createSession, navigate, track, onAgentCreated]),
   })
 
-  useEffect(() => {
-    const textarea = textareaRef.current
-    if (textarea) {
-      textarea.style.height = 'auto'
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`
-    }
-  }, [composer.message])
-
   const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(initialTemplate ?? null)
 
   useEffect(() => {
@@ -127,10 +119,10 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
     [finishCreatedAgent],
   )
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      e.currentTarget.closest('form')?.requestSubmit()
+      void composer.handleSubmit(e)
     }
   }
 
@@ -151,7 +143,7 @@ export function CreateAgentForm({ onAgentCreated, initialTemplate, className, ex
             attachments={composer.attachments}
             onRemoveAttachment={composer.removeAttachment}
             value={composer.message}
-            onChange={(e) => composer.setMessage(e.target.value)}
+            onChange={composer.setMessage}
             onKeyDown={handleKeyDown}
             onPaste={composer.handlePaste}
             placeholder={displayedPlaceholder}

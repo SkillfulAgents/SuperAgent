@@ -392,7 +392,7 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('home-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('disables input when createSession is pending', () => {
@@ -400,7 +400,7 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('home-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('disables input when uploading', () => {
@@ -408,12 +408,29 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('home-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toHaveAttribute('aria-disabled', 'true')
   })
 
   // --- Auto-expand ---
 
-  it('auto-expands to full view when the textarea overflows its max-height', () => {
+  it('expands and shrinks the editor with the input-size toggle', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const editor = screen.getByTestId('home-message-input')
+    expect(editor.className).toContain('min-h-[60px]')
+    expect(editor.style.minHeight).toBe('')
+
+    await user.click(screen.getByRole('button', { name: 'Expand input' }))
+    expect(editor.className).toContain('min-h-[50vh]')
+
+    await user.click(screen.getByRole('button', { name: 'Shrink input' }))
+    expect(editor.className).toContain('min-h-[60px]')
+  })
+
+  it('auto-expands to full view when the editor overflows its max-height', async () => {
     // jsdom doesn't compute layout, so stub scrollHeight > clientHeight to
     // simulate content overflowing the CSS-driven 6-line cap.
     const origScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
@@ -426,7 +443,9 @@ describe('AgentHome', () => {
         <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
       )
 
-      expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
+      await waitFor(() => {
+        expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
+      })
     } finally {
       if (origScroll) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', origScroll)
       if (origClient) Object.defineProperty(HTMLElement.prototype, 'clientHeight', origClient)

@@ -106,7 +106,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     followDefaults: true,
   })
   const sessionSearchRef = useRef<HTMLInputElement>(null)
-  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const composerTextareaRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
@@ -215,10 +215,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     }
   }, [composer.message, isExpanded])
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      composer.handleSubmit(e)
+      void composer.handleSubmit(e)
     }
   }
 
@@ -358,7 +358,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
                   value={composer.message}
-                  onChange={(e) => composer.setMessage(e.target.value)}
+                  onChange={composer.setMessage}
                   onKeyDown={handleKeyDown}
                   onPaste={composer.handlePaste}
                   placeholder={composerPlaceholder}
@@ -538,7 +538,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 const el = composerTextareaRef.current
                 if (el) {
                   el.focus()
-                  el.selectionStart = el.selectionEnd = text.length
                 }
               }, 0)
             }} />

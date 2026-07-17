@@ -6,6 +6,7 @@ import { MessageInput } from './message-input'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { useDraft } from '@renderer/context/drafts-context'
 import { useEffect } from 'react'
+import { setMarkdownComposerSelection } from './markdown-composer-editor'
 
 // Mock hooks
 const mockSendMessage = {
@@ -141,7 +142,7 @@ describe('MessageInput', () => {
     renderWithProviders(
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
-    expect(screen.getByTestId('message-input')).not.toBeDisabled()
+    expect(screen.getByTestId('message-input')).toHaveAttribute('aria-disabled', 'false')
   })
 
   it('shows stop and send buttons when active', () => {
@@ -237,6 +238,24 @@ describe('MessageInput', () => {
     expect(call).not.toHaveProperty('model')
   })
 
+  it('submits the Markdown source after live-rendering inline tokens', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(
+      <MessageInput sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    const input = screen.getByTestId('message-input')
+    await user.type(input, '**important**')
+    expect(input.querySelector('strong')).toHaveTextContent('important')
+    await user.click(screen.getByTestId('send-button'))
+
+    await waitFor(() => {
+      expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
+        content: '**important**',
+      }))
+    })
+  })
+
   it('does not submit on Shift+Enter', async () => {
     const user = userEvent.setup()
     renderWithProviders(
@@ -261,7 +280,7 @@ describe('MessageInput', () => {
     await user.keyboard('{Enter}')
 
     await waitFor(() => {
-      expect(input).toHaveValue('')
+      expect(input.textContent).toBe('')
     })
   })
 
@@ -285,7 +304,9 @@ describe('MessageInput', () => {
     )
 
     const input = screen.getByTestId('message-input')
-    await user.type(input, `Use this token:\n${key}`)
+    await user.type(input, 'Use this token:')
+    await user.keyboard('{Shift>}{Enter}{/Shift}')
+    await user.type(input, key)
 
     expect(screen.getByTestId('potential-secret')).toHaveTextContent(key)
     expect(screen.getByText('Is this a Key?')).toBeInTheDocument()
@@ -306,7 +327,8 @@ describe('MessageInput', () => {
         location: 'composer',
       })
     })
-    expect(input).toHaveValue('Use this token:\n[GitHub Token | *********]')
+    expect(input.textContent).toBe('Use this token:[GitHub Token | *********]')
+    expect(input.querySelector('br[data-soft-break="true"]')).toBeInTheDocument()
     expect(screen.getByTestId('secured-secret')).toHaveTextContent('[GitHub Token | *********]')
     expect(screen.getByTestId('secured-secret')).toHaveClass(
       'bg-amber-500/10',
@@ -314,11 +336,14 @@ describe('MessageInput', () => {
     )
     expect(screen.queryByText('Is this a Key?')).not.toBeInTheDocument()
 
+    // Continuing to edit must keep the secured display byte-for-byte stable so
+    // submission can still replace it with the non-secret environment marker.
+    await user.type(input, ' for deployment')
     await user.click(screen.getByTestId('send-button'))
 
     await waitFor(() => {
       expect(mockSendMessage.mutateAsync).toHaveBeenCalledWith(expect.objectContaining({
-        content: 'Use this token:\n[Key saved to .env - GITHUB_TOKEN]',
+        content: 'Use this token:\n[Key saved to .env - GITHUB_TOKEN] for deployment',
       }))
     })
     expect(mockSendMessage.mutateAsync).not.toHaveBeenCalledWith(
@@ -337,20 +362,19 @@ describe('MessageInput', () => {
       <MessageInput sessionId="s-1" agentSlug="agent-1" />
     )
 
-    const input = screen.getByTestId('message-input') as HTMLTextAreaElement
+    const input = screen.getByTestId('message-input') as HTMLDivElement
     await user.type(input, `Before ${key} after`)
     await user.click(screen.getByRole('button', { name: 'Send securely to the agent' }))
     await user.type(screen.getByLabelText('Key name'), 'GitHub Token')
     await user.click(screen.getByRole('button', { name: 'Save securely' }))
 
-    await waitFor(() => expect(input).toHaveValue(`Before ${pill} after`))
-    const pillStart = input.value.indexOf(pill)
-    const caret = caretEdge === 'end' ? pillStart + pill.length : pillStart
-    input.focus()
-    input.setSelectionRange(caret, caret)
+    await waitFor(() => expect(input.textContent).toBe(`Before ${pill} after`))
+    const pillStart = (input.textContent ?? '').indexOf(pill)
+    const caret = 1 + (caretEdge === 'end' ? pillStart + pill.length : pillStart)
+    expect(setMarkdownComposerSelection(input, caret)).toBe(true)
     await user.keyboard(pressedKey)
 
-    expect(input).toHaveValue('Before  after')
+    expect(input.textContent).toBe('Before  after')
     expect(screen.queryByTestId('secured-secret')).not.toBeInTheDocument()
   })
 
@@ -366,7 +390,7 @@ describe('MessageInput', () => {
     await user.click(screen.getByRole('button', { name: 'Dismiss key suggestion' }))
 
     expect(screen.queryByTestId('potential-secret')).not.toBeInTheDocument()
-    expect(input).toHaveValue(key)
+    expect(input.textContent).toBe(key)
   })
 
   it('registers a getter for the live composer and deregisters on unmount', async () => {
@@ -503,7 +527,7 @@ describe('MessageInput', () => {
       await user.keyboard('{Enter}')
 
       await waitFor(() => {
-        expect(input).toHaveValue('/deploy ')
+        expect(input.textContent).toBe('/deploy ')
       })
     })
 
@@ -532,7 +556,7 @@ describe('MessageInput', () => {
       // Select with Enter
       await user.keyboard('{Enter}')
       await waitFor(() => {
-        expect(input).toHaveValue('/status ')
+        expect(input.textContent).toBe('/status ')
       })
     })
   })
@@ -562,7 +586,7 @@ describe('MessageInput', () => {
       renderWithProviders(
         <MessageInput sessionId="s-1" agentSlug="agent-1" />
       )
-      expect(screen.getByTestId('message-input')).toBeDisabled()
+      expect(screen.getByTestId('message-input')).toHaveAttribute('aria-disabled', 'true')
     })
 
     it('shows offline warning message', () => {
@@ -596,7 +620,7 @@ describe('MessageInput', () => {
       renderWithProviders(
         <MessageInput sessionId="s-1" agentSlug="agent-1" />
       )
-      expect(screen.getByTestId('message-input')).toBeDisabled()
+      expect(screen.getByTestId('message-input')).toHaveAttribute('aria-disabled', 'true')
     })
 
     it('disables the textarea while the runtime is being checked', () => {
@@ -604,7 +628,7 @@ describe('MessageInput', () => {
       renderWithProviders(
         <MessageInput sessionId="s-1" agentSlug="agent-1" />
       )
-      expect(screen.getByTestId('message-input')).toBeDisabled()
+      expect(screen.getByTestId('message-input')).toHaveAttribute('aria-disabled', 'true')
     })
 
     it('keeps the send button disabled even after typing when runtime is pending', async () => {
@@ -697,7 +721,7 @@ describe('MessageInput', () => {
       await user.keyboard('{Tab}')
 
       await waitFor(() => {
-        expect(input).toHaveValue('/deploy ')
+        expect(input.textContent).toBe('/deploy ')
       })
     })
   })
@@ -945,7 +969,7 @@ describe('MessageInput', () => {
       // The seeder's effect fires after first paint, then the composer's sync effect
       // pushes the stored value into the textarea.
       await waitFor(() => {
-        expect(screen.getByTestId('message-input')).toHaveValue('half-written message')
+        expect(screen.getByTestId('message-input').textContent).toBe('half-written message')
       })
 
       // Simulate navigation: unmount the input entirely (but keep the provider).
@@ -954,7 +978,7 @@ describe('MessageInput', () => {
       rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
 
       await waitFor(() => {
-        expect(screen.getByTestId('message-input')).toHaveValue('half-written message')
+        expect(screen.getByTestId('message-input').textContent).toBe('half-written message')
       })
     })
 
@@ -970,12 +994,12 @@ describe('MessageInput', () => {
 
       // Switch to a different session.
       rerender(<MessageInput key="s-B" sessionId="s-B" agentSlug="agent-1" />)
-      expect(screen.getByTestId('message-input')).toHaveValue('')
+      expect(screen.getByTestId('message-input').textContent).toBe('')
 
       // Switch back — A's draft is still there.
       rerender(<MessageInput key="s-A" sessionId="s-A" agentSlug="agent-1" />)
       await waitFor(() => {
-        expect(screen.getByTestId('message-input')).toHaveValue('draft for A')
+        expect(screen.getByTestId('message-input').textContent).toBe('draft for A')
       })
     })
 
@@ -995,7 +1019,7 @@ describe('MessageInput', () => {
 
       rerender(<></>)
       rerender(<MessageInput sessionId="s-1" agentSlug="agent-1" />)
-      expect(screen.getByTestId('message-input')).toHaveValue('')
+      expect(screen.getByTestId('message-input').textContent).toBe('')
     })
 
     it('reflects externally-injected drafts (voice feedback path) into the input', async () => {
@@ -1014,7 +1038,7 @@ describe('MessageInput', () => {
         </>
       )
 
-      expect(screen.getByTestId('message-input')).toHaveValue('')
+      expect(screen.getByTestId('message-input').textContent).toBe('')
 
       // Simulate voice feedback writing the drafted message.
       rerender(
@@ -1025,7 +1049,7 @@ describe('MessageInput', () => {
       )
 
       await waitFor(() => {
-        expect(screen.getByTestId('message-input')).toHaveValue('voice-generated draft')
+        expect(screen.getByTestId('message-input').textContent).toBe('voice-generated draft')
       })
     })
   })

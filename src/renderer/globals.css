@@ -117,6 +117,112 @@ html[data-keyboard-open] [data-composer-footer] {
   padding-bottom: 0;
 }
 
+/* The composer uses a ProseMirror document model but its controlled value is
+   always serialized Markdown. Keep block spacing compact enough for chat while
+   still making each Markdown construct immediately legible as it is typed. */
+.markdown-composer-editor {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-font-variant-ligatures: normal;
+  font-variant-ligatures: normal;
+  font-feature-settings: normal;
+}
+
+.markdown-composer-editor[contenteditable="false"] {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.markdown-composer-editor[data-empty="true"]::before {
+  position: absolute;
+  color: hsl(var(--muted-foreground));
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.markdown-composer-editor p,
+.markdown-composer-editor h1,
+.markdown-composer-editor h2,
+.markdown-composer-editor h3,
+.markdown-composer-editor h4,
+.markdown-composer-editor h5,
+.markdown-composer-editor h6 {
+  min-height: 1.25rem;
+  margin: 0;
+}
+
+.markdown-composer-editor > * + * {
+  margin-top: .25rem;
+}
+
+.markdown-composer-editor h1 { font-size: 1.25rem; line-height: 1.6rem; font-weight: 700; }
+.markdown-composer-editor h2 { font-size: 1.125rem; line-height: 1.5rem; font-weight: 700; }
+.markdown-composer-editor h3,
+.markdown-composer-editor h4,
+.markdown-composer-editor h5,
+.markdown-composer-editor h6 { font-size: 1rem; line-height: 1.4rem; font-weight: 650; }
+
+.markdown-composer-editor strong { font-weight: 700; }
+.markdown-composer-editor em { font-style: italic; }
+.markdown-composer-editor s { color: hsl(var(--muted-foreground)); }
+
+.markdown-composer-editor :not(pre) > code {
+  border-radius: .25rem;
+  background: hsl(var(--muted));
+  padding: .08rem .28rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: .88em;
+}
+
+.markdown-composer-editor pre {
+  overflow-x: auto;
+  border-radius: .5rem;
+  background: hsl(var(--muted));
+  padding: .5rem .65rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: .82rem;
+  line-height: 1.2rem;
+}
+
+.markdown-composer-editor blockquote {
+  margin: .2rem 0;
+  border-left: 2px solid hsl(var(--border));
+  padding-left: .65rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.markdown-composer-editor ul,
+.markdown-composer-editor ol {
+  margin: .15rem 0;
+  padding-left: 1.35rem;
+}
+
+.markdown-composer-editor ul { list-style: disc; }
+.markdown-composer-editor ol { list-style: decimal; }
+.markdown-composer-editor li > p { min-height: auto; }
+.markdown-composer-editor li::marker { color: hsl(var(--muted-foreground)); }
+
+.markdown-composer-editor a {
+  color: hsl(var(--foreground));
+  text-decoration: underline;
+  text-decoration-color: hsl(var(--muted-foreground) / .6);
+  text-underline-offset: 2px;
+}
+
+.markdown-composer-editor hr {
+  margin: .45rem 0;
+  border: 0;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.markdown-composer-editor img {
+  display: inline-block;
+  max-height: 5rem;
+  max-width: min(100%, 12rem);
+  border-radius: .35rem;
+  vertical-align: middle;
+}
+
 /* Force visible scrollbar on code blocks so users know content is scrollable */
 .code-scrollbar {
   overflow-x: auto !important;
