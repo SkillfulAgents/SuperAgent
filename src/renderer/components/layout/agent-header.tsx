@@ -9,6 +9,7 @@ import { useConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
 import { useRemoteMcps } from '@renderer/hooks/use-remote-mcps'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { Separator } from '@renderer/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
@@ -56,18 +57,33 @@ export function AgentHeader({ slug, isViewOnly, startAgent, stopAgent }: AgentHe
     <>
       <div className="flex flex-col md:flex-row md:items-center gap-0 md:gap-1.5 min-w-0 flex-1">
         <div className="flex items-center gap-2 min-w-0">
-          <AppLink
-            to="/agents/$slug"
-            params={{ slug }}
-            activeOptions={{ exact: true }}
-            noDrag
-            // Route-derived leaf styling: foreground only when this link is the
-            // exact active route (`data-status=active`), muted/clickable otherwise.
-            className="text-sm font-light truncate transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
-            data-testid="agent-breadcrumb"
-          >
-            {agent?.name || 'Loading...'}
-          </AppLink>
+          {agent ? (
+            <AgentContextMenu agent={agent}>
+              <AppLink
+                to="/agents/$slug"
+                params={{ slug }}
+                activeOptions={{ exact: true }}
+                noDrag
+                // Route-derived leaf styling: foreground only when this link is the
+                // exact active route (`data-status=active`), muted/clickable otherwise.
+                className="text-sm font-light truncate transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground cursor-context-menu"
+                data-testid="agent-breadcrumb"
+              >
+                {agent.name}
+              </AppLink>
+            </AgentContextMenu>
+          ) : (
+            <AppLink
+              to="/agents/$slug"
+              params={{ slug }}
+              activeOptions={{ exact: true }}
+              noDrag
+              className="text-sm font-light truncate transition-colors text-muted-foreground hover:text-foreground data-[status=active]:text-foreground"
+              data-testid="agent-breadcrumb"
+            >
+              Loading...
+            </AppLink>
+          )}
         </div>
         {(() => {
           const taskCrumbId = scheduledTaskId ?? (sessionId ? session?.scheduledTaskId ?? null : null)
