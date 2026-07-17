@@ -1,2 +1,2 @@
-CREATE INDEX `mcp_audit_log_mcp_agent_idx` ON `mcp_audit_log` (`remote_mcp_id`,`agent_slug`);--> statement-breakpoint
-CREATE INDEX `proxy_audit_log_account_agent_idx` ON `proxy_audit_log` (`account_id`,`agent_slug`);
+CREATE INDEX IF NOT EXISTS `mcp_audit_log_mcp_agent_idx` ON `mcp_audit_log` (`remote_mcp_id`,`agent_slug`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `proxy_audit_log_account_agent_idx` ON `proxy_audit_log` (`account_id`,`agent_slug`);
