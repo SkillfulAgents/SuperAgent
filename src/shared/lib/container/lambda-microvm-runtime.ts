@@ -539,7 +539,7 @@ async function serviceFetch<T>(
 
 async function runMicrovm(
   config: MicrovmRuntimeConfig,
-  opts: { runHookPayload: string; clientToken: string; logStream: string },
+  opts: { runHookPayload: string; clientToken: string; logStream: string; agentId: string },
 ): Promise<{ microvmId: string; endpoint: string }> {
   const idlePolicy = {
     maxIdleDurationSeconds: resolveIdleSeconds(config),
@@ -564,6 +564,8 @@ async function runMicrovm(
       maximumDurationInSeconds: config.maxDurationSeconds,
       runHookPayload: opts.runHookPayload,
       clientToken: opts.clientToken,
+      // Lifecycle embeds agentId in the SPIFFE URI SAN on the client cert (Phase C).
+      agentId: opts.agentId,
     })
   }
   const res = (await getMicrovmClient(config.region).send(
@@ -712,6 +714,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       // InternalFailure on the idempotency conflict).
       clientToken: randomUUID(),
       logStream: this.config.agentId,
+      agentId: this.config.agentId,
     })
 
     const proxy = new LocalAuthForwardProxy({
