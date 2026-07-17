@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully verified that the browser-use feature allows agents to open a browser, navigate to websites, extract page information (title), and display browser tool call results in the chat interface.",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 using browser_run_code with domcontentloaded wait — Successfully loaded the Gamut application homepage showing agents list.",
+    "Step 2 - Found and clicked the agent \"QA-20260717-205901-5gfi\" in the left sidebar — Successfully navigated to the agent's chat page at http://localhost:47891/agents/qa-20260717-205901-5gfi-ov4kqh7zlu.",
+    "Step 3 - Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field — Message successfully entered in the chat input box.",
+    "Step 4 - Sent the message using Cmd+Enter keyboard shortcut — Message sent successfully, session created (URL changed to include session ID 30bb8950-855b-4f9e-b0db-4121fa8e6d86), and agent began processing.",
+    "Step 5 - Waited for agent response with a polling loop checking for \"Example Domain\" text — Response received within 13 seconds (well under the 3-minute timeout).",
+    "Step 6 - Verified the response mentions \"Example Domain\" and took final screenshot — Response clearly states: \"The page at https://example.com has the title \"Example Domain\".\" All browser tool calls (Open Browser, Browser Get State, Close Browser) show green checkmarks indicating successful execution. Browser preview feature is functioning correctly."
+  ],
+  "bugs": [],
+  "durationMs": 166970,
+  "sessionId": "ea841024-bdf0-443e-bda7-8c1339e563ca",
+  "cost": {
+    "inputTokens": 566,
+    "outputTokens": 14939,
+    "cacheCreationTokens": 114680,
+    "cacheReadTokens": 1567948,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.375406
+  }
+}
