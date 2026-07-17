@@ -83,10 +83,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
     if (introStagger) setJustCreatedSlug(null)
   }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
-  const { canUseAgent, canAdminAgent, isAuthMode, isAdmin } = useUser()
+  const { canUseAgent, canAdminAgent } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
-  const showDefaultModelSetting = !isAuthMode || isAdmin
   const [isExpanded, setIsExpanded] = useState(false)
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
@@ -556,9 +555,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
             }} />
             <HomeChatIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
             <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
-            {showDefaultModelSetting && (
-              <HomeDefaultModel className="intro-step intro-step-9" agentSlug={agent.slug} />
-            )}
+            <HomeDefaultModel className="intro-step intro-step-9" agentSlug={agent.slug} />
             <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
             <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />
           </div>

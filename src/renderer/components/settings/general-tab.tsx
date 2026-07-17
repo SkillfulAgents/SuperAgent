@@ -136,10 +136,10 @@ interface GeneralTabProps {
 export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
   const { data: userSettings, isLoading: isUserSettingsLoading } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
-  const { data: globalSettings } = useSettings()
-  const updateGlobalSettings = useUpdateSettings()
   const { isAuthMode, isAdmin } = useUser()
   const showAdminFeatures = !isAuthMode || isAdmin
+  const { data: globalSettings } = useSettings({ enabled: showAdminFeatures })
+  const updateGlobalSettings = useUpdateSettings()
   const [keepAwakeLoading, setKeepAwakeLoading] = useState(false)
   const [faviconSaving, setFaviconSaving] = useState(false)
   const [faviconError, setFaviconError] = useState<string | null>(null)
@@ -310,7 +310,7 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
         </div>
       </div>
 
-      {isElectronApp && <ShortcutsSection />}
+      {isElectronApp && showAdminFeatures && <ShortcutsSection />}
 
       {showWebFaviconSettings && (
         <div className="space-y-2">

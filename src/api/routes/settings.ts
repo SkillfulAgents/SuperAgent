@@ -33,6 +33,8 @@ import {
   type ContainerSettings,
   type GlobalSettingsResponse,
   type ModelConfigResponse,
+  type ClientConfigResponse,
+  type AnalyticsTarget,
 } from '@shared/lib/config/settings'
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
 import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
@@ -215,6 +217,39 @@ settings.get('/model-config', Authenticated(), (c) => {
     },
     models: getEffectiveModels(),
     webProvider: resolveEffectiveWebVendor(),
+  }
+  return c.json(response)
+})
+
+function sanitizeClientAnalyticsTargets(targets: AnalyticsTarget[] | undefined): AnalyticsTarget[] | undefined {
+  return targets?.map((target) => {
+    const configKey = target.type === 'amplitude'
+      ? 'apiKey'
+      : target.type === 'google-analytics'
+        ? 'measurementId'
+        : 'token'
+    const value = target.config[configKey]
+    return {
+      type: target.type,
+      enabled: target.enabled,
+      config: value ? { [configKey]: value } : {},
+    }
+  })
+}
+
+// GET /api/settings/client-config - Safe renderer configuration for every
+// authenticated user. Keep this deliberately narrower than the admin settings
+// response: only values needed by member-visible surfaces belong here.
+settings.get('/client-config', Authenticated(), (c) => {
+  const appSettings = getSettings()
+  const response: ClientConfigResponse = {
+    appDefaultAutoDeleteInactiveDays: appSettings.app?.autoDeleteInactiveDays,
+    setupCompleted: !!appSettings.app?.setupCompleted,
+    tenantId: getTenantId(),
+    shareAnalytics: appSettings.shareAnalytics !== false,
+    analyticsTargets: sanitizeClientAnalyticsTargets(appSettings.analyticsTargets),
+    shareErrorReports: appSettings.shareErrorReports !== false,
+    composioApiKeyConfigured: getComposioApiKeyStatus().isConfigured,
   }
   return c.json(response)
 })

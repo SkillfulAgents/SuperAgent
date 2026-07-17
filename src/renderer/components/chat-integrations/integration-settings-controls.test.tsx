@@ -31,11 +31,13 @@ vi.mock('@renderer/hooks/use-settings', () => ({
       llmProvider: 'anthropic',
       catalog: CATALOG,
       defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
-      llmProviderStatus: [{
-        id: 'anthropic',
-        catalog: CATALOG,
-        defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
-      }],
+      models: {
+        agentModel: 'opus',
+        summarizerModel: 'haiku',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'sonnet',
+      },
+      webProvider: 'native',
     },
   }),
 }))

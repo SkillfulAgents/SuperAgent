@@ -67,26 +67,19 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   useModelConfig: () => ({
     data: {
       llmProvider: 'anthropic',
-      models: { agentModel: 'sonnet' },
+      models: {
+        agentModel: 'sonnet',
+        summarizerModel: 'haiku',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'sonnet',
+      },
       catalog: [
         { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
         { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
       ],
       defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
-      llmProviderStatus: [
-        {
-          id: 'anthropic',
-          name: 'Anthropic',
-          isConfigured: true,
-          catalog: [
-            { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-            { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
-            { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
-          ],
-          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
-        },
-      ],
+      webProvider: 'native',
     },
   }),
 }))
@@ -210,15 +203,11 @@ vi.mock('@renderer/hooks/use-runtime-status', () => ({
 // Mock user context — default to full access, override for view-only tests
 let mockCanUseAgent = true
 let mockCanAdminAgent = false
-let mockIsAuthMode = false
-let mockIsAdmin = false
 
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
     canUseAgent: () => mockCanUseAgent,
     canAdminAgent: () => mockCanAdminAgent,
-    isAuthMode: mockIsAuthMode,
-    isAdmin: mockIsAdmin,
   }),
   UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
@@ -241,8 +230,6 @@ describe('AgentHome', () => {
     mockRuntimeStatus.isPending = false
     mockCanUseAgent = true
     mockCanAdminAgent = false
-    mockIsAuthMode = false
-    mockIsAdmin = false
     capturedComposerOptions = undefined
     mockSessionsData = []
     mockJustCreatedSlug = null
@@ -303,10 +290,8 @@ describe('AgentHome', () => {
     expect(screen.getByTestId('home-send-button')).toBeInTheDocument()
   })
 
-  it('hides the workspace default-model card from non-admins in auth mode', () => {
-    mockCanAdminAgent = true
-    mockIsAuthMode = true
-    mockIsAdmin = false
+  it('hides the agent default-model card from non-owners', () => {
+    mockCanAdminAgent = false
 
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
@@ -315,10 +300,8 @@ describe('AgentHome', () => {
     expect(screen.queryByTestId('home-default-model-card')).not.toBeInTheDocument()
   })
 
-  it('shows the workspace default-model card to admins in auth mode', () => {
+  it('shows the agent default-model card to agent owners', () => {
     mockCanAdminAgent = true
-    mockIsAuthMode = true
-    mockIsAdmin = true
 
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />

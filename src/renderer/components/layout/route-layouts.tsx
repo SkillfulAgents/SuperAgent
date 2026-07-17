@@ -22,7 +22,7 @@ import { useKeyboardViewport } from '@renderer/hooks/use-keyboard-viewport'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useClientConfig } from '@renderer/hooks/use-settings'
 import { useDocumentTitle } from '@renderer/hooks/use-document-title'
 import { isElectron, getPlatform } from '@renderer/lib/env'
 import { setRendererErrorReportingEnabled, setRendererErrorReportingUser } from '@renderer/lib/error-reporting'
@@ -41,8 +41,8 @@ export function RootLayout() {
   const [wizardOpen, setWizardOpen] = useState(false)
   const [wizardAgentOnly, setWizardAgentOnly] = useState(false)
   const { data: userSettings } = useUserSettings()
-  const { data: globalSettings } = useSettings()
   const { isAuthMode, isAdmin, user } = useUser()
+  const { data: clientConfig } = useClientConfig()
   const { identify } = useAnalyticsTracking()
   const hasAutoOpened = useRef(false)
 
@@ -50,7 +50,7 @@ export function RootLayout() {
     identify()
   }, [identify])
 
-  const shareErrorReports = globalSettings?.shareErrorReports
+  const shareErrorReports = clientConfig?.shareErrorReports
   useEffect(() => {
     if (shareErrorReports !== undefined) {
       setRendererErrorReportingEnabled(shareErrorReports !== false)
@@ -67,7 +67,7 @@ export function RootLayout() {
 
   useEffect(() => {
     if (hasAutoOpened.current) return
-    if (!userSettings || !globalSettings) return
+    if (!userSettings || !clientConfig) return
 
     if (userSettings.setupCompleted) return
 
@@ -75,16 +75,16 @@ export function RootLayout() {
       hasAutoOpened.current = true
       setWizardAgentOnly(false)
       setWizardOpen(true)
-    } else if (!globalSettings.setupCompleted && isAdmin) {
+    } else if (!clientConfig.setupCompleted && isAdmin) {
       hasAutoOpened.current = true
       setWizardAgentOnly(false)
       setWizardOpen(true)
-    } else if (globalSettings.setupCompleted) {
+    } else if (clientConfig.setupCompleted) {
       hasAutoOpened.current = true
       setWizardAgentOnly(true)
       setWizardOpen(true)
     }
-  }, [userSettings, globalSettings, isAuthMode, isAdmin])
+  }, [userSettings, clientConfig, isAuthMode, isAdmin])
 
   return (
     <DialogProvider onOpenWizard={() => setWizardOpen(true)}>
@@ -103,7 +103,7 @@ export function RootLayout() {
           <PackageImportHandler />
           <HistoryNavigationHandler />
           <GlobalNotificationHandler />
-          <ContainerSetupHandler />
+          {(!isAuthMode || isAdmin) && <ContainerSetupHandler />}
           <WindowControls />
           <UpdateToastNotifier />
           {/* Rendered here (inside the router) so it can use useNavigate. */}

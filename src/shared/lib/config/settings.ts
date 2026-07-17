@@ -347,6 +347,23 @@ export interface ModelConfigResponse {
 }
 
 /**
+ * Non-sensitive application configuration consumed by ordinary renderer
+ * surfaces. Client-side analytics identifiers are included so the renderer can
+ * initialize those providers; server credentials, host details, environment
+ * variables, and auth/runtime administration remain exclusive to
+ * {@link GlobalSettingsResponse}.
+ */
+export interface ClientConfigResponse {
+  appDefaultAutoDeleteInactiveDays?: number
+  setupCompleted: boolean
+  tenantId: string
+  shareAnalytics: boolean
+  analyticsTargets?: AnalyticsTarget[]
+  shareErrorReports: boolean
+  composioApiKeyConfigured: boolean
+}
+
+/**
  * Default container runner: Lima on macOS (bundled, no install needed),
  * WSL2 on Windows (bundled, no install needed), Docker elsewhere.
  */

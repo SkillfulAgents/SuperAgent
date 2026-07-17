@@ -249,7 +249,12 @@ function setupDefaults() {
   mockGetAccountProviderUserId.mockReturnValue(undefined)
   mockGetDefaultAccountProviderType.mockReturnValue('composio')
   mockGetNangoSecretKey.mockReturnValue(undefined)
-  mockGetEffectiveModels.mockReturnValue({ summarizerModel: 'claude-3-haiku', agentModel: 'claude-sonnet-4-20250514', browserModel: 'claude-3-haiku' })
+  mockGetEffectiveModels.mockReturnValue({
+    summarizerModel: 'claude-3-haiku',
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-3-haiku',
+    dashboardBuilderModel: 'claude-sonnet-4-20250514',
+  })
   mockGetEffectiveAgentLimits.mockReturnValue({ maxTurns: 100 })
   mockGetCustomEnvVars.mockReturnValue({ FOO: 'bar' })
   mockSttGetApiKeyStatus.mockImplementation((id: string) => {
@@ -1828,9 +1833,74 @@ describe('settings route', () => {
         summarizerModel: 'claude-3-haiku',
         agentModel: 'claude-sonnet-4-20250514',
         browserModel: 'claude-3-haiku',
+        dashboardBuilderModel: 'claude-sonnet-4-20250514',
       })
       expect(body.catalog).toEqual(expect.any(Array))
       expect(body.defaultModels).toEqual({ agent: 'opus', summarizer: 'haiku', browser: 'sonnet' })
+    })
+  })
+
+  describe('client config', () => {
+    it('returns only member-safe renderer data without requiring admin authorization', async () => {
+      const storedAnalyticsTargets = [
+        {
+          type: 'amplitude',
+          config: { apiKey: 'amplitude-key', internalSecret: 'must-not-leak' },
+          enabled: true,
+        },
+        {
+          type: 'google-analytics',
+          config: { measurementId: 'G-123', internalSecret: 'must-not-leak' },
+          enabled: false,
+        },
+        {
+          type: 'mixpanel',
+          config: { token: 'client-token', internalSecret: 'must-not-leak' },
+          enabled: true,
+        },
+      ]
+      mockGetSettings.mockReturnValue({
+        ...defaultSettings(),
+        app: {
+          showMenuBarIcon: true,
+          autoDeleteInactiveDays: 30,
+          setupCompleted: true,
+        },
+        shareAnalytics: false,
+        analyticsTargets: storedAnalyticsTargets,
+        shareErrorReports: false,
+      })
+      mockGetComposioApiKeyStatus.mockReturnValue({ isConfigured: true, source: 'settings' })
+
+      const res = await app.request('http://localhost/api/settings/client-config')
+
+      expect(res.status).toBe(200)
+      expect(mockAuthenticatedMiddleware).toHaveBeenCalled()
+      expect(mockIsAdminMiddleware).not.toHaveBeenCalled()
+
+      const body = await res.json()
+      expect(Object.keys(body).sort()).toEqual([
+        'analyticsTargets',
+        'appDefaultAutoDeleteInactiveDays',
+        'composioApiKeyConfigured',
+        'setupCompleted',
+        'shareAnalytics',
+        'shareErrorReports',
+        'tenantId',
+      ])
+      expect(body).toEqual({
+        appDefaultAutoDeleteInactiveDays: 30,
+        setupCompleted: true,
+        tenantId: 'mock-tenant-id',
+        shareAnalytics: false,
+        analyticsTargets: [
+          { type: 'amplitude', config: { apiKey: 'amplitude-key' }, enabled: true },
+          { type: 'google-analytics', config: { measurementId: 'G-123' }, enabled: false },
+          { type: 'mixpanel', config: { token: 'client-token' }, enabled: true },
+        ],
+        shareErrorReports: false,
+        composioApiKeyConfigured: true,
+      })
     })
   })
 

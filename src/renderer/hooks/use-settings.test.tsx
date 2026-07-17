@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { useModelConfig, useStartRunner, useRestartRunner, RunnerSetupFailedError } from './use-settings'
+import { useClientConfig, useModelConfig, useStartRunner, useRestartRunner, RunnerSetupFailedError } from './use-settings'
 import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-errors'
 
 const apiFetchMock = vi.fn()
@@ -37,7 +37,12 @@ describe('useModelConfig', () => {
       llmProvider: 'anthropic',
       catalog: [],
       defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
-      models: { agentModel: 'opus' },
+      models: {
+        agentModel: 'opus',
+        summarizerModel: 'haiku',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'sonnet',
+      },
       webProvider: 'native',
     }
     apiFetchMock.mockResolvedValue({ ok: true, json: async () => config })
@@ -46,6 +51,30 @@ describe('useModelConfig', () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
     expect(apiFetchMock).toHaveBeenCalledWith('/api/settings/model-config')
+    expect(result.current.data).toEqual(config)
+  })
+})
+
+describe('useClientConfig', () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset()
+  })
+
+  it('loads the authenticated member-safe renderer configuration endpoint', async () => {
+    const config = {
+      appDefaultAutoDeleteInactiveDays: 30,
+      setupCompleted: true,
+      tenantId: 'tenant-1',
+      shareAnalytics: true,
+      shareErrorReports: true,
+      composioApiKeyConfigured: false,
+    }
+    apiFetchMock.mockResolvedValue({ ok: true, json: async () => config })
+
+    const { result } = renderHook(() => useClientConfig(), { wrapper })
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/settings/client-config')
     expect(result.current.data).toEqual(config)
   })
 })

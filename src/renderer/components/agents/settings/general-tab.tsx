@@ -18,7 +18,7 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import { useDeleteAgent, useRouteAgentId } from '@renderer/hooks/use-agents'
 import { useAgentPreferences, useUpdateAgentPreferences } from '@renderer/hooks/use-agent-preferences'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useClientConfig } from '@renderer/hooks/use-settings'
 import { useNavigate } from '@tanstack/react-router'
 import {
   useForceSyncAgentTemplate,
@@ -50,7 +50,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
   const deleteAgent = useDeleteAgent()
   const { data: agentPrefs } = useAgentPreferences(agentSlug)
   const updatePrefs = useUpdateAgentPreferences(agentSlug)
-  const { data: settings } = useSettings()
+  const { data: clientConfig } = useClientConfig()
   const navigate = useNavigate()
   const routeAgentId = useRouteAgentId()
   const { data: templateStatus } = useAgentTemplateStatus(agentSlug)
@@ -237,7 +237,7 @@ export function GeneralTab({ name, agentSlug, onNameChange, onDialogClose }: Gen
         </div>
         <AgentAutoDeleteSelect
           value={agentPrefs?.autoDeleteInactiveDays}
-          appDefault={settings?.app?.autoDeleteInactiveDays}
+          appDefault={clientConfig?.appDefaultAutoDeleteInactiveDays}
           onChange={(days) => {
             updatePrefs.mutate({ autoDeleteInactiveDays: days })
           }}

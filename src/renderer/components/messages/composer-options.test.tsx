@@ -5,20 +5,23 @@ import { useComposerOptions, type UseComposerOptionsArgs } from './composer-opti
 
 // Mutable config the mocked useModelConfig reads at call time, so tests can
 // simulate the query resolving (undefined → loaded) and later refetches.
-const state = vi.hoisted(() => ({ settings: undefined as unknown }))
+const state = vi.hoisted(() => ({ config: undefined as unknown }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useModelConfig: () => ({ data: state.settings }),
+  useModelConfig: () => ({ data: state.config }),
 }))
 
-const LOADED_SETTINGS = {
+const LOADED_MODEL_CONFIG = {
   llmProvider: 'anthropic',
-  models: { agentModel: 'opus' },
+  models: {
+    agentModel: 'opus',
+    summarizerModel: 'haiku',
+    browserModel: 'sonnet',
+    dashboardBuilderModel: 'sonnet',
+  },
   catalog: [],
   defaultModels: { agent: 'sonnet', summarizer: 'haiku', browser: 'sonnet' },
-  llmProviderStatus: [
-    { id: 'anthropic', catalog: [], defaultModels: { agent: 'sonnet' } },
-  ],
+  webProvider: 'native',
 }
 
 function render(initialProps: UseComposerOptionsArgs) {
@@ -29,16 +32,16 @@ function render(initialProps: UseComposerOptionsArgs) {
 
 describe('useComposerOptions default adoption', () => {
   beforeEach(() => {
-    state.settings = LOADED_SETTINGS
+    state.config = LOADED_MODEL_CONFIG
   })
 
   it('adopts the agent default over the global default as sources stream in', () => {
-    state.settings = undefined
+    state.config = undefined
     const { result, rerender } = render({ agentKey: 'a', agentDefaultsReady: false })
     expect(result.current.model).toBeUndefined()
 
     // Settings resolve first: adopt the global default.
-    state.settings = LOADED_SETTINGS
+    state.config = LOADED_MODEL_CONFIG
     rerender({ agentKey: 'a', agentDefaultsReady: false })
     expect(result.current.model).toBe('opus')
     expect(result.current.effort).toBe('medium')
@@ -184,7 +187,7 @@ describe('useComposerOptions default adoption', () => {
 
 describe('useComposerOptions web provider', () => {
   it('exposes the active webProvider from settings', () => {
-    state.settings = { ...LOADED_SETTINGS, webProvider: 'platform', webProviderIsDefault: true }
+    state.config = { ...LOADED_MODEL_CONFIG, webProvider: 'platform' }
     const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
     expect(result.current.webProvider).toBe('platform')
   })

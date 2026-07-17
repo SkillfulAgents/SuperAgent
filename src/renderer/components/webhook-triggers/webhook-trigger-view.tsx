@@ -23,7 +23,7 @@ import {
 import { useNavigate } from '@tanstack/react-router'
 import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import { useUser } from '@renderer/context/user-context'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useClientConfig } from '@renderer/hooks/use-settings'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import {
   AlertDialog,
@@ -58,7 +58,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const updateRuntimeOptions = useUpdateWebhookTriggerRuntimeOptions()
   const navigate = useNavigate()
   const { canUseAgent } = useUser()
-  const { data: settings } = useSettings()
+  const { data: clientConfig } = useClientConfig()
   const { data: platformAuth } = usePlatformAuthStatus()
   const canCancel = canUseAgent(agentSlug)
   const { data: agents } = useAgents()
@@ -83,7 +83,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
 
   const isActive = trigger?.status === 'active' || trigger?.status === 'paused'
   const isPaused = trigger?.status === 'paused'
-  const hasLocalComposioKey = settings?.apiKeyStatus?.composio?.isConfigured ?? false
+  const hasLocalComposioKey = clientConfig?.composioApiKeyConfigured ?? false
   const isPlatformConnected = platformAuth?.connected ?? false
 
   const [settingsOpen, setSettingsOpen] = useState(false)
