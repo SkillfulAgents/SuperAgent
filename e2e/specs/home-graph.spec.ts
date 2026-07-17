@@ -101,7 +101,7 @@ test.describe('home connections graph', () => {
     for (let attempt = 0; attempt < 5 && !landed; attempt++) {
       // Late-created agents can push the grid past the initial viewport;
       // re-fitting keeps the target node on screen for the grab.
-      await page.locator('.react-flow__controls-fitview').click()
+      await page.getByRole('button', { name: 'Fit View' }).click()
       const box = await node.boundingBox()
       if (!box) continue
       const persisted = page
