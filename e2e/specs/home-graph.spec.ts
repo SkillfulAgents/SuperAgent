@@ -67,9 +67,20 @@ test.describe('home connections graph', () => {
     await expect(page.locator(`[data-id="${a}~${b}"]`)).toBeAttached()
 
     // Click selects the node (revealing its Open toolbar); Open navigates to
-    // the agent page; back → graph view intact.
-    await page.getByTestId(`graph-node-agent-${caller.slug}`).click()
-    await page.getByTestId('graph-node-open').click()
+    // the agent page; back → graph view intact. Force-click both: sibling
+    // specs' agent churn re-solves the layout, and a node that keeps moving
+    // never passes Playwright's stability wait — a missed click just loops.
+    const openChip = page.getByTestId('graph-node-open')
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await page.getByTestId(`graph-node-agent-${caller.slug}`).click({ force: true, timeout: 2000 }).catch(() => {})
+      if (await openChip.isVisible()) await openChip.click({ force: true, timeout: 2000 }).catch(() => {})
+      // Give the navigation a beat to land; a missed click just loops.
+      const navigated = await page
+        .waitForURL(/\/agents\//, { timeout: 1000 })
+        .then(() => true)
+        .catch(() => false)
+      if (navigated) break
+    }
     await expect(page).toHaveURL(/\/agents\//)
     await page.goBack()
     await expect(page).toHaveURL(/view=graph/)
@@ -150,17 +161,42 @@ test.describe('home connections graph', () => {
     await expect(sourceNode).toBeVisible()
     await expect(targetNode).toBeVisible()
 
+    // On CI the shared server holds ~100 agents from sibling specs, so
+    // fitView bottoms out at minZoom (0.15) where a port's hit zone is ~3px
+    // and the 30-flow-px connectionRadius shrinks below cursor precision.
+    // Wheel-zoom anchored between the two cards until they render near
+    // natural size (card = 176 flow px wide).
+    const zoomToPair = async () => {
+      for (let i = 0; i < 24; i++) {
+        const sb = await sourceNode.boundingBox({ timeout: 1500 }).catch(() => null)
+        const tb = await targetNode.boundingBox({ timeout: 1500 }).catch(() => null)
+        if (!sb || !tb || sb.width >= 150) return
+        await page.mouse.move(
+          (sb.x + sb.width / 2 + tb.x + tb.width / 2) / 2,
+          (sb.y + sb.height / 2 + tb.y + tb.height / 2) / 2,
+        )
+        await page.mouse.wheel(0, -160)
+      }
+    }
+
     // Ports arm on selection only, and sibling specs' churn reshuffles the
     // layout under a stale bounding box (same hazard as the drag test above)
     // — so grab-and-draw retries with fresh measurements, treating the policy
     // row's existence as the success signal.
     let drawn = false
     for (let attempt = 0; attempt < 5 && !drawn; attempt++) {
+      // A stale force-click can land as a double-click on whatever card the
+      // churn shuffled underneath, navigating clean off the graph — come back
+      // before trying again.
+      if (!/view=graph/.test(page.url())) await page.goto('/?view=graph')
       await page.getByRole('button', { name: 'Fit View' }).click()
-      await sourceNode.click()
-      const sourceBox = await sourceNode.boundingBox()
-      const targetBox = await targetNode.boundingBox()
+      await zoomToPair()
+      await sourceNode.click({ force: true, timeout: 2000 }).catch(() => {})
+      const sourceBox = await sourceNode.boundingBox({ timeout: 1500 }).catch(() => null)
+      const targetBox = await targetNode.boundingBox({ timeout: 1500 }).catch(() => null)
       if (!sourceBox || !targetBox) continue
+      // Port offsets are in flow px — scale them by the rendered zoom.
+      const zoom = sourceBox.width / 176
       const saved = page
         .waitForResponse(
           (r) => r.url().includes('/x-agent-policies/invoke/') && r.request().method() === 'PUT' && r.ok(),
@@ -168,12 +204,12 @@ test.describe('home connections graph', () => {
         )
         .catch(() => null)
       // Right-side port: 24px hit zone centered ~6px inside the card edge.
-      await page.mouse.move(sourceBox.x + sourceBox.width - 6, sourceBox.y + sourceBox.height / 2)
+      await page.mouse.move(sourceBox.x + sourceBox.width - 6 * zoom, sourceBox.y + sourceBox.height / 2)
       await page.mouse.down()
       // Drop ON the target's left port — the drop must land within
-      // connectionRadius (30px) of a handle, and the card center is 40px+
-      // from every port.
-      await page.mouse.move(targetBox.x + 6, targetBox.y + targetBox.height / 2, { steps: 8 })
+      // connectionRadius (30 flow px) of a handle, and the card center is
+      // 40+ flow px from every port.
+      await page.mouse.move(targetBox.x + 6 * zoom, targetBox.y + targetBox.height / 2, { steps: 8 })
       await page.mouse.up()
       await saved
       drawn = (await policyTargets()).includes(target.slug)
@@ -181,6 +217,7 @@ test.describe('home connections graph', () => {
     expect(drawn).toBe(true)
 
     // The topology refetch draws the permission edge (unordered pair id).
+    if (!/view=graph/.test(page.url())) await page.goto('/?view=graph')
     const [a, b] = [`agent:${source.slug}`, `agent:${target.slug}`].sort()
     const edge = page.locator(`[data-id="${a}~${b}"]`)
     await expect(edge).toBeAttached()
@@ -190,12 +227,25 @@ test.describe('home connections graph', () => {
     // is actually gone.
     const deleteButton = page.getByTestId('graph-edge-delete')
     let revoked = false
-    for (let attempt = 0; attempt < 5 && !revoked; attempt++) {
+    for (let attempt = 0; attempt < 6 && !revoked; attempt++) {
+      if (!/view=graph/.test(page.url())) await page.goto('/?view=graph')
+      // The edge lives between the two cards, which the draw phase may have
+      // zoomed clean out of the viewport — a force-click on an off-screen
+      // element is a no-op (the canvas pans, it doesn't scroll). Re-fit and
+      // re-zoom onto the pair so the connector is big and on screen.
+      await page.getByRole('button', { name: 'Fit View' }).click()
+      await zoomToPair()
       if (await edge.count()) {
-        await edge.click({ force: true })
+        await edge.click({ force: true, timeout: 2000 }).catch(() => {})
         if (await deleteButton.isVisible()) {
-          await deleteButton.click()
-          await expect(deleteButton).toBeHidden()
+          // force: the toolbar chip rides the edge midpoint, which churn can
+          // shift mid-actionability-wait; a missed click just retries.
+          await deleteButton.click({ force: true, timeout: 2000 }).catch(() => {})
+          // Poll (network-paced) for the revoke to land before re-clicking.
+          const deadline = Date.now() + 2000
+          while (Date.now() < deadline && (await policyTargets()).includes(target.slug)) {
+            // each policyTargets() round-trip paces the loop
+          }
         }
       }
       revoked = !(await policyTargets()).includes(target.slug)
