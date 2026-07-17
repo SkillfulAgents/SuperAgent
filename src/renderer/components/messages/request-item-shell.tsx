@@ -161,10 +161,7 @@ export function RequestItemShell({
   const showStopButton = !!(sessionId && agentSlug)
 
   return (
-    <div
-      className="max-h-[50vh] overflow-y-auto border rounded-[12px] bg-muted/30 shadow-md text-sm"
-      {...dataAttrs}
-    >
+    <div className="border rounded-[12px] bg-muted/30 shadow-md text-sm" {...dataAttrs}>
       <div className="p-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
