@@ -239,6 +239,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   removeMessage: vi.fn(),
   removeToolCall: vi.fn(),
   getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
+  readSessionMetadata: vi.fn(() => Promise.resolve({})),
 }))
 
 const mockLoadSessionUsageTotals = vi.fn()
@@ -427,10 +428,10 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, deleteSession, getSession } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, deleteSession, getSession, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
-import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications } from '@shared/lib/services/notification-service'
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
@@ -2605,6 +2606,60 @@ describe('GET /api/agents (enriched summary)', () => {
     const body = await res.json()
 
     expect(body[0].hasSessionsAwaitingInput).toBe(true)
+  })
+
+  it('raises hasUnreadNotifications for an unread on a visible session', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-1'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasUnreadNotifications).toBe(true)
+  })
+
+  it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-chat', 'sess-cron'],
+      sessionCount: 2,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(
+      new Map([['agent-1', new Set(['sess-chat', 'sess-cron'])]]),
+    )
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'sess-chat': { isChatIntegrationSession: true },
+      'sess-cron': { isScheduledExecution: true },
+    })
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasUnreadNotifications).toBe(false)
+  })
+
+  it('counts unread on a promoted automated session — it is visible again', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-cron'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-cron'])]]))
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'sess-cron': { isScheduledExecution: true, promotedToInteractive: true },
+    })
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasUnreadNotifications).toBe(true)
   })
 
   it('detects awaiting input from agent-level proxy reviews on active sessions', async () => {

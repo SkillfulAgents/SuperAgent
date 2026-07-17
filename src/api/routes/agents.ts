@@ -31,6 +31,7 @@ import {
   listSessions,
   listSessionsByIds,
   getSessionSummary,
+  readSessionMetadata,
   updateSessionName,
   registerSession,
   getSessionMessagesWithCompact,
@@ -90,6 +91,7 @@ import {
 } from '@shared/lib/services/skillset-service'
 import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import { getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
@@ -180,10 +182,11 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
   return Promise.all(
     agents.map((agent) => limit(async () => {
       // Only FS operations remain per-agent (parallelized)
-      const [sessionSummary, artifacts, agentPrefs] = await Promise.all([
+      const [sessionSummary, artifacts, agentPrefs, sessionMetadata] = await Promise.all([
         getSessionSummary(agent.slug),
         listArtifactsFromFilesystem(agent.slug),
         readAgentPreferences(agent.slug),
+        readSessionMetadata(agent.slug),
       ])
 
       const unreadSessionIds = unreadByAgent.get(agent.slug) ?? new Set<string>()
@@ -193,9 +196,12 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
 
       // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
-      // (session_complete / session_waiting); session_complete on automated sessions
-      // is suppressed at creation time, so any unread that lands here is one the
-      // user genuinely needs to see.
+      // (session_complete / session_waiting). Unread notifications on hidden
+      // automated sessions are skipped: those sessions are excluded from every
+      // session list (`excludeAutomated`), so a flag raised by them would show
+      // an unread indicator with nothing visible behind it — and no way to ever
+      // clear it. (Legacy rows exist from before creation-time suppression;
+      // session_waiting now promotes the session first, but old rows remain.)
       let hasActiveSessions = false
       let hasSessionsAwaitingInput = false
       let hasUnreadNotifications = false
@@ -208,7 +214,7 @@ async function enrichAgentsWithSummary(agents: ApiAgent[]): Promise<ApiAgent[]> 
         if (messagePersister.isSessionAwaitingInput(sessionId)) {
           hasSessionsAwaitingInput = true
         }
-        if (unreadSessionIds.has(sessionId)) {
+        if (unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
           hasUnreadNotifications = true
         }
       }
