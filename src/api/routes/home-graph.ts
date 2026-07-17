@@ -5,7 +5,7 @@ import { agentAcl } from '@shared/lib/db/schema'
 import { Authenticated } from '../middleware/auth'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
-import { listAgents } from '@shared/lib/services/agent-service'
+import { listAgentSlugs } from '@shared/lib/services/agent-service'
 import { buildHomeGraph } from '@shared/lib/services/home-graph-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 
@@ -31,7 +31,9 @@ homeGraph.get('/', async (c) => {
         .where(eq(agentAcl.userId, userId))
       agentSlugs = rows.map((r) => r.agentSlug)
     } else {
-      agentSlugs = (await listAgents()).map((a) => a.slug)
+      // Slugs only — listAgents() would parse every agent's CLAUDE.md just
+      // to throw the result away.
+      agentSlugs = await listAgentSlugs()
     }
 
     const graph = await buildHomeGraph({

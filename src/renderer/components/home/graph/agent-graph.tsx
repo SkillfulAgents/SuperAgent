@@ -40,7 +40,7 @@ import { Loader2, RotateCcw } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
-import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
+import { useUpdateUserSettings, useUserSettings, type UserSettingsData } from '@renderer/hooks/use-user-settings'
 import { AgentGraphNode, ResourceGraphNode, openGraphNode } from './graph-nodes'
 import { ElbowEdge, type EdgeGeometryOverride, type GraphEdge } from './graph-edges'
 import { computeLayout, type XY } from './layout'
@@ -80,16 +80,20 @@ function edgeStyle(e: GraphEdgeSpec): CSSProperties {
 
 const PERSIST_DEBOUNCE_MS = 600
 
-/** Debug readout of the current viewport zoom. */
-function ZoomReadout() {
+/**
+ * Publishes the viewport zoom as `--graph-zoom` on the canvas container —
+ * the ONE zoom subscription. Per-consumer useStore subscriptions (toolbars,
+ * detail cards, count chips) would re-render O(nodes + edges) components on
+ * every zoomed frame; instead they read the variable inside their CSS
+ * transforms and the browser re-resolves it with zero React work.
+ */
+function ZoomVariable() {
   const zoom = useStore((s) => s.transform[2])
-  return (
-    <Panel position="bottom-center">
-      <div className="rounded border bg-card/80 px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
-        zoom {zoom.toFixed(2)}
-      </div>
-    </Panel>
-  )
+  const domNode = useStore((s) => s.domNode)
+  useEffect(() => {
+    domNode?.style.setProperty('--graph-zoom', String(zoom))
+  }, [zoom, domNode])
+  return null
 }
 
 /**
@@ -158,6 +162,9 @@ async function deleteGraphConnection(edge: GraphEdgeSpec): Promise<boolean> {
       toast.success(resourceKind === 'account' ? 'Account unlinked' : 'MCP server unlinked')
       return true
     }
+    // Atomic per-target revoke, both directions (the drawn line is
+    // unordered). The endpoint PRESERVES explicit 'block' rows — removing
+    // the pair's grants must never lift a block and silently escalate.
     const a = nodeRef(edge.source)
     const b = nodeRef(edge.target)
     let changed = false
@@ -165,22 +172,13 @@ async function deleteGraphConnection(edge: GraphEdgeSpec): Promise<boolean> {
       [a, b],
       [b, a],
     ] as const) {
-      const res = await apiFetch(`/api/agents/${caller}/x-agent-policies`)
-      if (!res.ok) throw new Error(`Failed to load policies (${res.status})`)
-      const { policies } = (await res.json()) as {
-        policies: { operation: string; targetAgentSlug: string | null; decision: string }[]
-      }
-      const kept = policies.filter((p) => !(p.operation === 'invoke' && p.targetAgentSlug === target))
-      if (kept.length === policies.length) continue
-      const put = await apiFetch(`/api/agents/${caller}/x-agent-policies`, {
-        method: 'PUT',
-        headers: JSON_HEADERS,
-        body: JSON.stringify({
-          policies: kept.map((p) => ({ operation: p.operation, targetSlug: p.targetAgentSlug, decision: p.decision })),
-        }),
-      })
-      if (!put.ok) throw new Error(`Failed to save policies (${put.status})`)
-      changed = true
+      const res = await apiFetch(
+        `/api/agents/${caller}/x-agent-policies/invoke/${encodeURIComponent(target)}`,
+        { method: 'DELETE' },
+      )
+      if (!res.ok) throw new Error(`Failed to revoke permission (${res.status})`)
+      const { removed } = (await res.json()) as { removed: number }
+      if (removed > 0) changed = true
     }
     if (changed) toast.success('Invoke permission revoked')
     return changed
@@ -198,30 +196,26 @@ async function createDrawnConnection(source: string, target: string): Promise<bo
   try {
     if (kind === 'invoke') {
       // Drag direction = permission direction: source may invoke target.
+      // Atomic single-policy upsert — the whole-list GET+replace round-trip
+      // was O(policy count) and lost concurrent edits (last PUT wins).
       const caller = nodeRef(source)
       const targetSlug = nodeRef(target)
-      const res = await apiFetch(`/api/agents/${caller}/x-agent-policies`)
-      if (!res.ok) throw new Error(`Failed to load policies (${res.status})`)
-      const { policies } = (await res.json()) as {
-        policies: { operation: string; targetAgentSlug: string | null; decision: string }[]
+      const res = await apiFetch(
+        `/api/agents/${caller}/x-agent-policies/invoke/${encodeURIComponent(targetSlug)}`,
+        { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ decision: 'allow' }) },
+      )
+      if (!res.ok) throw new Error(`Failed to save policy (${res.status})`)
+      const { created, previousDecision } = (await res.json()) as {
+        created: boolean
+        previousDecision: 'allow' | 'review' | 'block' | null
       }
-      if (policies.some((p) => p.operation === 'invoke' && p.targetAgentSlug === targetSlug)) {
+      if (!created && previousDecision === 'allow') {
         toast.info('These agents are already connected')
         return false
       }
-      // The PUT replaces the whole policy list — carry existing rows along.
-      const put = await apiFetch(`/api/agents/${caller}/x-agent-policies`, {
-        method: 'PUT',
-        headers: JSON_HEADERS,
-        body: JSON.stringify({
-          policies: [
-            ...policies.map((p) => ({ operation: p.operation, targetSlug: p.targetAgentSlug, decision: p.decision })),
-            { operation: 'invoke', targetSlug, decision: 'allow' },
-          ],
-        }),
-      })
-      if (!put.ok) throw new Error(`Failed to save policy (${put.status})`)
-      toast.success('Invoke permission added')
+      // A pre-existing 'block' (invisible on the graph — block edges aren't
+      // drawn) is deliberately replaced: the user just drew the connection.
+      toast.success(previousDecision === 'block' ? 'Invoke permission added (replaced block)' : 'Invoke permission added')
       return true
     }
     const agentNodeId = nodeKind(source) === 'agent' ? source : target
@@ -289,7 +283,24 @@ export function AgentGraph() {
     [onNodesChange],
   )
 
-  const layoutPositions = useMemo(() => computeLayout(graph.nodes, graph.edges), [graph.nodes, graph.edges])
+  // Layout depends only on the graph's STRUCTURE — which nodes exist, their
+  // kind, and how they're wired — never on payloads (status, counts). The
+  // queries feeding buildGraph refresh constantly via SSE invalidations and
+  // mint fresh array identities each time, so keying this memo on identity
+  // would re-run the 300-tick force simulation (a synchronous main-thread
+  // block that grows with graph size) on every agent status flip.
+  const layoutSignature = useMemo(
+    () =>
+      graph.nodes.map((n) => `${n.id}:${n.data.kind}`).join(';') +
+      '|' +
+      graph.edges.map((e) => `${e.source}>${e.target}:${e.variant}`).join(';'),
+    [graph.nodes, graph.edges],
+  )
+  const layoutPositions = useMemo(
+    () => computeLayout(graph.nodes, graph.edges),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the signature covers everything computeLayout reads
+    [layoutSignature],
+  )
 
   // Source node of an in-progress connection drag; nodes that can't legally
   // receive the connection fade while it's set (applied in the node sync).
@@ -358,12 +369,29 @@ export function AgentGraph() {
     savedEdgeGeometryRef.current = userSettings?.graphEdgeGeometry
   }, [userSettings?.graphEdgeGeometry])
 
+  // Prune targets: ids that still exist in the loaded graph. Deleted
+  // agents, unlinked accounts and completed one-time crons would otherwise
+  // accrete in the persisted maps forever (every persist rewrites
+  // saved ∪ dragged, and the PUT replaces the whole map — the client is the
+  // only place pruning can happen). Snapshotted only while the FULL graph,
+  // topology included, is loaded: a mid-load or failed-topology persist
+  // must not mistake "not loaded" for "deleted" and wipe real entries.
+  const pruneIdsRef = useRef<{ nodes: Set<string>; edges: Set<string> } | null>(null)
+  useEffect(() => {
+    if (graph.isLoading || graph.topologyFailed) return
+    pruneIdsRef.current = {
+      nodes: new Set(graph.nodes.map((n) => n.id)),
+      edges: new Set(graph.edges.map((e) => e.id)),
+    }
+  }, [graph.isLoading, graph.topologyFailed, graph.nodes, graph.edges])
+
   // Persist only user-dragged geometry (node positions, elbow offsets),
   // merged over previously saved values — auto-laid-out elements stay fluid
   // instead of getting pinned at whatever the layout said the moment
   // someone dragged something else.
   const persistNow = useCallback(() => {
     if (!canPersist) return
+    const prune = pruneIdsRef.current
     const update: {
       graphNodePositions?: Record<string, XY>
       graphEdgeGeometry?: Record<string, EdgeGeometryOverride>
@@ -373,12 +401,22 @@ export function AgentGraph() {
       for (const [id, position] of Object.entries(draggedPositionsRef.current)) {
         positions[id] = { x: Math.round(position.x), y: Math.round(position.y) }
       }
+      if (prune) {
+        for (const id of Object.keys(positions)) {
+          if (!prune.nodes.has(id)) delete positions[id]
+        }
+      }
       update.graphNodePositions = positions
     }
     if (Object.keys(draggedEdgeGeometryRef.current).length > 0) {
       const geometry = { ...(savedEdgeGeometryRef.current ?? {}) }
       for (const [id, patch] of Object.entries(draggedEdgeGeometryRef.current)) {
         geometry[id] = { ...geometry[id], ...patch }
+      }
+      if (prune) {
+        for (const id of Object.keys(geometry)) {
+          if (!prune.edges.has(id)) delete geometry[id]
+        }
       }
       update.graphEdgeGeometry = geometry
     }
@@ -491,51 +529,78 @@ export function AgentGraph() {
   )
 
   const savedEdgeGeometry = userSettings?.graphEdgeGeometry
-  const edges: GraphEdge[] = useMemo(
-    () =>
-      graph.edges.map((e) => {
-        const hovered = e.id === hoveredEdgeId
-        let style = edgeStyle(e)
-        if (hovered) style = { ...style, strokeWidth: 2.5 }
-        return {
-          id: e.id,
-          source: e.source,
-          target: e.target,
-          type: 'elbow',
-          style,
-          focusable: false,
-          // Clicking a connector reveals its grab handles and endpoint dots;
-          // clicking the canvas deselects (nodes opt out of selection instead
-          // of the canvas, since pane-click deselect is gated on
-          // elementsSelectable).
-          selectable: true,
-          selected: selectedEdgeIds.has(e.id),
-          // Gates the Delete/Backspace path (React Flow skips non-deletables).
-          deletable: !!e.deletable,
-          data: {
-            geometry: { ...savedEdgeGeometry?.[e.id], ...draggedEdgeGeometry[e.id] },
-            count: e.weight ?? 0,
-            unit: EDGE_UNIT[nodeKind(e.target)] ?? 'run',
-            hovered,
-            showDetails,
-            onGeometryCommit: commitEdgeGeometry,
-            onDelete: e.deletable ? deleteEdge : undefined,
-            onEditPermissions: e.policyAgentSlug ? editEdgePermissions : undefined,
-          },
-        }
-      }),
-    [
-      graph.edges,
-      hoveredEdgeId,
-      draggedEdgeGeometry,
-      savedEdgeGeometry,
-      commitEdgeGeometry,
-      selectedEdgeIds,
-      deleteEdge,
-      editEdgePermissions,
-      showDetails,
-    ],
-  )
+  // Per-id cache so a hover/selection change rebuilds ONLY the affected
+  // edges' objects. Fresh identities defeat React Flow's per-edge memo —
+  // without this, one mouse pass over a line re-renders every ElbowEdge on
+  // the canvas twice (enter + leave), each recomputing its full geometry.
+  const edgeCacheRef = useRef(new Map<string, { deps: readonly unknown[]; edge: GraphEdge }>())
+  const edges: GraphEdge[] = useMemo(() => {
+    const cache = edgeCacheRef.current
+    const seen = new Set<string>()
+    const result = graph.edges.map((e) => {
+      seen.add(e.id)
+      const hovered = e.id === hoveredEdgeId
+      const selected = selectedEdgeIds.has(e.id)
+      // Everything this edge's output is derived from, compared by identity.
+      const deps = [
+        e,
+        hovered,
+        selected,
+        savedEdgeGeometry?.[e.id],
+        draggedEdgeGeometry[e.id],
+        showDetails,
+        commitEdgeGeometry,
+        deleteEdge,
+        editEdgePermissions,
+      ] as const
+      const cached = cache.get(e.id)
+      if (cached && cached.deps.every((d, i) => d === deps[i])) return cached.edge
+      let style = edgeStyle(e)
+      if (hovered) style = { ...style, strokeWidth: 2.5 }
+      const edge: GraphEdge = {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        type: 'elbow',
+        style,
+        focusable: false,
+        // Clicking a connector reveals its grab handles and endpoint dots;
+        // clicking the canvas deselects (nodes opt out of selection instead
+        // of the canvas, since pane-click deselect is gated on
+        // elementsSelectable).
+        selectable: true,
+        selected,
+        // Gates the Delete/Backspace path (React Flow skips non-deletables).
+        deletable: !!e.deletable,
+        data: {
+          geometry: { ...savedEdgeGeometry?.[e.id], ...draggedEdgeGeometry[e.id] },
+          count: e.weight ?? 0,
+          unit: EDGE_UNIT[nodeKind(e.target)] ?? 'run',
+          hovered,
+          showDetails,
+          onGeometryCommit: commitEdgeGeometry,
+          onDelete: e.deletable ? deleteEdge : undefined,
+          onEditPermissions: e.policyAgentSlug ? editEdgePermissions : undefined,
+        },
+      }
+      cache.set(e.id, { deps, edge })
+      return edge
+    })
+    for (const id of cache.keys()) {
+      if (!seen.has(id)) cache.delete(id)
+    }
+    return result
+  }, [
+    graph.edges,
+    hoveredEdgeId,
+    draggedEdgeGeometry,
+    savedEdgeGeometry,
+    commitEdgeGeometry,
+    selectedEdgeIds,
+    deleteEdge,
+    editEdgePermissions,
+    showDetails,
+  ])
 
   // Keep fitting the viewport as the per-agent fan-out queries stream nodes
   // in — but stop the moment the user pans/zooms/drags, so we never yank a
@@ -562,12 +627,20 @@ export function AgentGraph() {
       clearTimeout(persistTimer.current)
       persistTimer.current = null
     }
+    // Reflect the wipe in the query cache immediately: edges render straight
+    // from userSettings.graphEdgeGeometry, so without this the old elbows
+    // linger until the PUT + invalidate round-trip lands — and if the PUT
+    // failed, the next drag-persist (which writes saved ∪ dragged from the
+    // now-empty refs) would wipe them server-side for real anyway.
+    queryClient.setQueryData<UserSettingsData>(['user-settings'], (prev) =>
+      prev ? { ...prev, graphNodePositions: {}, graphEdgeGeometry: {} } : prev,
+    )
     mutateSettings({ graphNodePositions: {}, graphEdgeGeometry: {} })
     setNodes((prev) => prev.map((n) => ({ ...n, position: layoutPositions[n.id] ?? { x: 0, y: 0 } })))
     requestAnimationFrame(() => {
       void rfInstance.current?.fitView({ padding: 0.15, maxZoom: 1 })
     })
-  }, [layoutPositions, setNodes, mutateSettings])
+  }, [layoutPositions, setNodes, mutateSettings, queryClient])
 
   // Click = select; the page behind a node opens via its toolbar or double-click.
   const onNodeDoubleClick: NodeMouseHandler<RfNode> = useCallback(
@@ -633,7 +706,7 @@ export function AgentGraph() {
         className="agent-graph-canvas"
       >
         <AdaptiveDotsBackground />
-        <ZoomReadout />
+        <ZoomVariable />
         <Controls showInteractive={false} />
         <Panel position="top-right" className="flex items-center gap-2">
           <label

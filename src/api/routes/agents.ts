@@ -29,6 +29,7 @@ import { parseByteRange } from '@shared/lib/utils/http-range'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import {
   listSessions,
+  listSessionsByIds,
   getSessionSummary,
   updateSessionName,
   registerSession,
@@ -95,9 +96,12 @@ import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
   deletePoliciesForAgent,
+  deleteTargetPolicy,
   listPoliciesForCaller,
   replacePoliciesForCaller,
   replacePoliciesForCallerInputSchema,
+  setPolicy,
+  xAgentDecisionSchema,
 } from '@shared/lib/services/x-agent-policy-service'
 import {
   exportAgentTemplate,
@@ -1287,10 +1291,41 @@ agents.post('/:id/open-directory', AgentAdmin(), async (c) => {
 })
 
 // GET /api/agents/:id/sessions - List sessions for an agent
+// ?notable=true&limit=N — fast path for badge/toolbar consumers: only
+// sessions that are live or carry unread notifications, built from targeted
+// stats instead of statting every transcript in the directory.
 agents.get('/:id/sessions', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
 
+    if (c.req.query('notable') === 'true') {
+      const limitRaw = Number(c.req.query('limit'))
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.trunc(limitRaw), 100) : 25
+      const unreadIds = await getSessionIdsWithUnreadNotifications(slug)
+      const activeIds = messagePersister.getActiveSessionIdsForAgent(slug)
+      const hasAgentLevelReviews = reviewManager.getPendingReviewsForAgent(slug).length > 0
+      const infos = await listSessionsByIds(slug, [...new Set([...activeIds, ...unreadIds])], {
+        excludeAutomated: true,
+      })
+      const enriched = infos.map((session) => {
+        const isActive = messagePersister.isSessionActive(session.id)
+        return {
+          ...session,
+          isActive,
+          isAwaitingInput:
+            messagePersister.isSessionAwaitingInput(session.id) || (isActive && hasAgentLevelReviews),
+          hasUnreadNotifications: unreadIds.has(session.id),
+        }
+      })
+      // Live sessions must survive the cap; within each band, newest first.
+      enriched.sort((a, b) => {
+        const aLive = a.isActive || a.isAwaitingInput ? 1 : 0
+        const bLive = b.isActive || b.isAwaitingInput ? 1 : 0
+        if (aLive !== bLive) return bLive - aLive
+        return b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
+      })
+      return c.json(enriched.slice(0, limit))
+    }
 
     const sessionList = await listSessions(slug, { excludeAutomated: true })
     const unreadSessionIds = await getSessionIdsWithUnreadNotifications(slug)
@@ -5111,6 +5146,42 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   }
   replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
+})
+
+// PUT /api/agents/:id/x-agent-policies/invoke/:target - Upsert ONE invoke
+// policy atomically. The batch PUT above is a whole-form replace: concurrent
+// single-edge edits through it read-modify-write the full list and the last
+// writer silently drops the other's change. Graph edge edits go through here.
+agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
+  const slug = getAgentId(c)
+  const targetSlug = c.req.param('target')
+  if (targetSlug === slug) {
+    return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
+  }
+  // AgentAdmin checks role but not existence; assert both ends so a typo'd
+  // slug doesn't write phantom rows that nothing references.
+  const [callerAgent, targetAgent] = await Promise.all([getAgent(slug), getAgent(targetSlug)])
+  if (!callerAgent || !targetAgent) {
+    return c.json({ error: 'Agent not found' }, 404)
+  }
+  const body = await c.req.json().catch(() => ({}))
+  const parsed = z.object({ decision: xAgentDecisionSchema.default('allow') }).safeParse(body)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid policy payload', details: parsed.error.format() }, 400)
+  }
+  const result = await setPolicy(slug, 'invoke', targetSlug, parsed.data.decision)
+  return c.json({ ok: true, ...result })
+})
+
+// DELETE /api/agents/:id/x-agent-policies/invoke/:target - Remove the invoke
+// grant for one target atomically. Preserves 'block' rows: deleting a drawn
+// graph edge revokes a grant, and lifting an explicit block here would
+// silently escalate (effective decision falls back to a global allow).
+agents.delete('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
+  const slug = getAgentId(c)
+  const targetSlug = c.req.param('target')
+  const removed = deleteTargetPolicy(slug, 'invoke', targetSlug, { preserveBlock: true })
+  return c.json({ ok: true, removed })
 })
 
 // GET /api/agents/:id/bookmarks - Read bookmarks from agent workspace

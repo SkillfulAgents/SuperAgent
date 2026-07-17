@@ -12,6 +12,7 @@
  * in-memory database.
  */
 
+import fs from 'node:fs'
 import pLimit from 'p-limit'
 import { count, eq, inArray, isNotNull, ne, and } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
@@ -32,6 +33,7 @@ import {
 import { listActiveWebhookTriggersByAgents } from './webhook-trigger-service'
 import { listPendingScheduledTasksByAgents } from './scheduled-task-service'
 import { readSessionMetadata } from './session-service'
+import { getAgentSessionMetadataPath } from '@shared/lib/utils/file-storage'
 
 export interface HomeGraphScope {
   /** Agents the caller may see (ACL-resolved in auth mode, all otherwise) */
@@ -40,6 +42,56 @@ export interface HomeGraphScope {
   userId: string | null
   /** Live chat transport state (injected — the manager imports this service's siblings) */
   isIntegrationConnected: (integrationId: string) => boolean
+}
+
+/**
+ * Per-agent cache of "who invoked this agent, how many times", keyed on the
+ * metadata file's stat identity. Lifetime invocation counts require walking
+ * the agent's ENTIRE session metadata map — hundreds of thousands of
+ * Zod-validated entries for a heavy user — so re-deriving them on every
+ * /api/home-graph request doesn't scale. Metadata writes are atomic
+ * temp-file+rename (see session-service), so any change moves mtime; a
+ * matching (mtimeMs, size) pair means the counts are still valid and the
+ * request pays one stat() instead of a parse. Counts are cached UNFILTERED
+ * (all callers) so a change in the caller's visible-agent set never
+ * invalidates them — visibility is applied per request in countInvocations.
+ */
+const invocationCache = new Map<string, { mtimeMs: number; size: number; callerCounts: Map<string, number> }>()
+
+/** Test seam: metadata rewrites within one mtime granule are indistinguishable to stat. */
+export function clearInvocationCache(): void {
+  invocationCache.clear()
+}
+
+async function countCallersForAgent(slug: string): Promise<Map<string, number>> {
+  const metadataPath = getAgentSessionMetadataPath(slug)
+  let stat: fs.Stats | null = null
+  try {
+    stat = await fs.promises.stat(metadataPath)
+  } catch {
+    // No statable file: drop any stale entry and fall through to the
+    // graceful reader (it degrades to {} on ENOENT; tests stub it without
+    // backing files). Nothing gets cached on this path.
+    invocationCache.delete(slug)
+  }
+  if (stat) {
+    const cached = invocationCache.get(slug)
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      return cached.callerCounts
+    }
+  }
+  // readSessionMetadata degrades to {} on a missing/corrupt file.
+  const metadata = await readSessionMetadata(slug)
+  const callerCounts = new Map<string, number>()
+  for (const meta of Object.values(metadata)) {
+    const caller = meta.invokedByAgentSlug
+    if (!caller || caller === slug) continue
+    callerCounts.set(caller, (callerCounts.get(caller) ?? 0) + 1)
+  }
+  if (stat) {
+    invocationCache.set(slug, { mtimeMs: stat.mtimeMs, size: stat.size, callerCounts })
+  }
+  return callerCounts
 }
 
 /**
@@ -55,13 +107,11 @@ async function countInvocations(
   await Promise.all(
     agentSlugs.map((slug) =>
       limit(async () => {
-        // readSessionMetadata degrades to {} on a missing/corrupt file.
-        const metadata = await readSessionMetadata(slug)
-        for (const meta of Object.values(metadata)) {
-          const caller = meta.invokedByAgentSlug
-          if (!caller || caller === slug || !visible.has(caller)) continue
+        const callerCounts = await countCallersForAgent(slug)
+        for (const [caller, n] of callerCounts) {
+          if (!visible.has(caller)) continue
           const key = `${caller}\u0000${slug}`
-          counts.set(key, (counts.get(key) ?? 0) + 1)
+          counts.set(key, n)
         }
       }),
     ),
@@ -75,17 +125,33 @@ async function countInvocations(
 }
 
 /**
- * Proxied-call counts per "agentSlug:accountId". Joined against the accounts
- * table so auth mode scopes to the caller's own accounts and rows for deleted
- * accounts drop out. Weights are decorative — failures degrade to {}.
+ * Proxied-call counts per "agentSlug:accountId". Scoped three ways: to the
+ * visible agents (in auth mode a usage key would otherwise leak a slug the
+ * viewer has no ACL on — same anti-topology-leak rule as the permission
+ * edges), to CURRENT agent↔account links (the graph only draws edges for
+ * live links, so counts for since-unlinked pairs are dead payload), and via
+ * the accounts join so auth mode sees only the caller's own accounts.
+ * Weights are decorative — failures degrade to {}.
  */
-async function accountUsageCounts(userId: string | null): Promise<Record<string, number>> {
+async function accountUsageCounts(agentSlugs: string[], userId: string | null): Promise<Record<string, number>> {
   try {
     const rows = await db
       .select({ agentSlug: proxyAuditLog.agentSlug, accountId: proxyAuditLog.accountId, calls: count() })
       .from(proxyAuditLog)
       .innerJoin(connectedAccounts, eq(proxyAuditLog.accountId, connectedAccounts.id))
-      .where(userId ? eq(connectedAccounts.userId, userId) : undefined)
+      .innerJoin(
+        agentConnectedAccounts,
+        and(
+          eq(agentConnectedAccounts.agentSlug, proxyAuditLog.agentSlug),
+          eq(agentConnectedAccounts.connectedAccountId, proxyAuditLog.accountId),
+        ),
+      )
+      .where(
+        and(
+          inArray(proxyAuditLog.agentSlug, agentSlugs),
+          userId ? eq(connectedAccounts.userId, userId) : undefined,
+        ),
+      )
       .groupBy(proxyAuditLog.agentSlug, proxyAuditLog.accountId)
 
     const counts: Record<string, number> = {}
@@ -97,13 +163,25 @@ async function accountUsageCounts(userId: string | null): Promise<Record<string,
   }
 }
 
-async function mcpUsageCounts(userId: string | null): Promise<Record<string, number>> {
+async function mcpUsageCounts(agentSlugs: string[], userId: string | null): Promise<Record<string, number>> {
   try {
     const rows = await db
       .select({ agentSlug: mcpAuditLog.agentSlug, mcpId: mcpAuditLog.remoteMcpId, calls: count() })
       .from(mcpAuditLog)
       .innerJoin(remoteMcpServers, eq(mcpAuditLog.remoteMcpId, remoteMcpServers.id))
-      .where(userId ? eq(remoteMcpServers.userId, userId) : undefined)
+      .innerJoin(
+        agentRemoteMcps,
+        and(
+          eq(agentRemoteMcps.agentSlug, mcpAuditLog.agentSlug),
+          eq(agentRemoteMcps.remoteMcpId, mcpAuditLog.remoteMcpId),
+        ),
+      )
+      .where(
+        and(
+          inArray(mcpAuditLog.agentSlug, agentSlugs),
+          userId ? eq(remoteMcpServers.userId, userId) : undefined,
+        ),
+      )
       .groupBy(mcpAuditLog.agentSlug, mcpAuditLog.remoteMcpId)
 
     const counts: Record<string, number> = {}
@@ -160,8 +238,8 @@ export async function buildHomeGraph(scope: HomeGraphScope): Promise<HomeGraphDa
       listActiveWebhookTriggersByAgents(agentSlugs),
       listPendingScheduledTasksByAgents(agentSlugs),
       countInvocations(agentSlugs, visible),
-      accountUsageCounts(userId),
-      mcpUsageCounts(userId),
+      accountUsageCounts(agentSlugs, userId),
+      mcpUsageCounts(agentSlugs, userId),
     ])
 
   const chatsByAgent = listChatIntegrationsByAgents(agentSlugs, { allStatuses: true })
@@ -186,7 +264,14 @@ export async function buildHomeGraph(scope: HomeGraphScope): Promise<HomeGraphDa
     fireCount: row.fireCount,
   }))
 
-  const crons: HomeGraphData['crons'] = [...cronsByAgent.values()].flat().map((row) => ({
+  // Session wakes (resumeSessionId) are session-scoped sleep timers, not
+  // agent-level automations — the scheduled-tasks route excludes them for
+  // the same reason, and a heavy long-sleep user would otherwise grow one
+  // bogus "one-time" cron node per sleeping session.
+  const crons: HomeGraphData['crons'] = [...cronsByAgent.values()]
+    .flat()
+    .filter((row) => !row.resumeSessionId)
+    .map((row) => ({
     id: row.id,
     agentSlug: row.agentSlug,
     name: row.name,

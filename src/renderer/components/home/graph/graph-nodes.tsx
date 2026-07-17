@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
-import { Handle, NodeToolbar, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, NodeToolbar, Position, type Node, type NodeProps } from '@xyflow/react'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowUpRight, Clock, Webhook, Timer } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
@@ -17,7 +17,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { getAgentActivityStatus, type AgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
-import { useSessions } from '@renderer/hooks/use-sessions'
+import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
 import { useUsageData } from '@renderer/hooks/use-usage'
@@ -99,9 +99,10 @@ function AgentToolbar({ data, selected }: { data: AgentNodeData; selected: boole
   const navigate = useNavigate()
   const { agent } = data
   // Sessions are fetched only while the toolbar is actually up (selected)
-  // AND the agent flags something notable — same gating as the home cards.
+  // AND the agent flags something notable — and via the notable-only fast
+  // path, which skips statting the agent's entire session directory.
   const hasNotable = !!(agent.hasActiveSessions || agent.hasSessionsAwaitingInput || agent.hasUnreadNotifications)
-  const { data: sessions } = useSessions(selected && hasNotable ? agent.slug : null, { staleTime: 30_000 })
+  const { data: sessions } = useNotableSessions(selected && hasNotable ? agent.slug : null, { staleTime: 30_000 })
   // Active/awaiting sessions first, then unread-only notifications. Hard cap
   // at 5 rows so a noisy agent doesn't grow a tail off the canvas: at 6+ the
   // 5th row collapses into "N more", which opens the agent page.
@@ -115,14 +116,14 @@ function AgentToolbar({ data, selected }: { data: AgentNodeData; selected: boole
   const overflowCount = notableSessions.length > MAX_ROWS ? notableSessions.length - (MAX_ROWS - 1) : 0
   const visibleSessions = overflowCount ? notableSessions.slice(0, MAX_ROWS - 1) : notableSessions
   // NodeToolbar renders at constant SCREEN size while the card scales with
-  // zoom; scaling by the viewport zoom pins the toolbar back to flow
+  // zoom; scaling by the viewport zoom (published as --graph-zoom by the
+  // canvas — no per-node store subscription) pins the toolbar back to flow
   // coordinates, so the w-44 rows stay exactly as wide as the w-44 card.
-  const zoom = useStore((s) => s.transform[2])
   return (
     <NodeToolbar position={Position.Bottom} offset={10}>
       <div
         className="flex w-44 flex-col items-center gap-1"
-        style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
+        style={{ transform: 'scale(var(--graph-zoom, 1))', transformOrigin: 'top center' }}
       >
         <button
           type="button"
@@ -391,16 +392,20 @@ export function ResourceGraphNode({ data, selected }: NodeProps<Node<ResourceNod
   }, [])
   const shown = pinned || hoverOpen
   // Activity spark charts (crons + webhooks) — same rollup the agent
-  // homepage sidebar cards use. Keyed per owning agent, so react-query
-  // dedupes the fetch across all of that agent's trigger nodes; other
+  // homepage sidebar cards use. Fetched only while the card is actually
+  // visible (hover or pinned): a canvas of trigger nodes must NOT fan out
+  // one activity request per agent at graph load. Keyed per owning agent,
+  // so react-query still dedupes across that agent's trigger nodes; other
   // resource kinds pass null and never fetch.
-  const wantsActivity = data.kind === 'cron' || data.kind === 'webhook'
+  const wantsActivity = (data.kind === 'cron' || data.kind === 'webhook') && shown
   const { data: activityStats, isPending: activityPending } = useAgentActivityStats(
     wantsActivity ? (data.agentSlug ?? null) : null,
+    undefined,
+    { live: false },
   )
-  // Counter-scale the detail pill so it renders at true text size at every
-  // zoom level (transform[2] = zoom; selecting just it skips pan re-renders).
-  const zoom = useStore((s) => s.transform[2])
+  // The detail pill counter-scales via --graph-zoom (published once by the
+  // canvas) so it reads at true text size at every zoom level without a
+  // per-node store subscription re-rendering every resource on zoom frames.
   // No `title` attr: the OS tooltip would race the fade-in label with the
   // same text.
   return (
@@ -442,7 +447,7 @@ export function ResourceGraphNode({ data, selected }: NodeProps<Node<ResourceNod
           'absolute bottom-full left-1/2 mb-3 w-48 transition-opacity duration-200',
           shown ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
         )}
-        style={{ transform: `translateX(-50%) scale(${1 / zoom})`, transformOrigin: 'bottom center' }}
+        style={{ transform: 'translateX(-50%) scale(calc(1 / var(--graph-zoom, 1)))', transformOrigin: 'bottom center' }}
         onMouseEnter={openHover}
         onMouseLeave={scheduleCloseHover}
       >

@@ -1,15 +1,18 @@
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useState, type ReactNode } from 'react'
 
 interface OpenAgentSettings {
   slug: string
   tab: string
+  /** Stamped by the setter — consumers drop stale requests (abandoned
+   *  navigations must not pop a dialog on a much-later organic visit). */
+  requestedAt: number
 }
 
 interface NavTransientValue {
   justCreatedSlug: string | null
   setJustCreatedSlug: (slug: string | null) => void
   openAgentSettings: OpenAgentSettings | null
-  setOpenAgentSettings: (value: OpenAgentSettings | null) => void
+  setOpenAgentSettings: (value: Omit<OpenAgentSettings, 'requestedAt'> | null) => void
 }
 
 const NavTransientContext = createContext<NavTransientValue | null>(null)
@@ -27,7 +30,12 @@ const NavTransientContext = createContext<NavTransientValue | null>(null)
  */
 export function NavTransientProvider({ children }: { children: ReactNode }) {
   const [justCreatedSlug, setJustCreatedSlug] = useState<string | null>(null)
-  const [openAgentSettings, setOpenAgentSettings] = useState<OpenAgentSettings | null>(null)
+  const [openAgentSettings, setOpenAgentSettingsRaw] = useState<OpenAgentSettings | null>(null)
+  const setOpenAgentSettings = useCallback(
+    (value: Omit<OpenAgentSettings, 'requestedAt'> | null) =>
+      setOpenAgentSettingsRaw(value ? { ...value, requestedAt: Date.now() } : null),
+    [],
+  )
 
   return (
     <NavTransientContext.Provider

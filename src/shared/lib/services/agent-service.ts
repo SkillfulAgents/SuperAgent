@@ -15,6 +15,7 @@ import {
   ensureDirectory,
   removeDirectory,
   readFileOrNull,
+  fileExists,
   writeFileAtomic,
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
@@ -94,6 +95,22 @@ async function parseAgentClaudeMd(slug: string): Promise<AgentConfig | null> {
     frontmatter,
     instructions: body,
   }
+}
+
+/**
+ * List agent slugs only — a directory listing plus a CLAUDE.md existence
+ * check per entry, no frontmatter parsing. For callers that need scope
+ * (which agents exist), not identity; listAgents() reads every agent's
+ * CLAUDE.md sequentially, which is too heavy to run per request.
+ */
+export async function listAgentSlugs(): Promise<string[]> {
+  const agentsDir = getAgentsDir()
+  await ensureDirectory(agentsDir)
+  const slugs = await listDirectories(agentsDir)
+  const checks = await Promise.all(
+    slugs.map(async (slug) => ((await fileExists(getAgentClaudeMdPath(slug))) ? slug : null)),
+  )
+  return checks.filter((slug): slug is string => slug !== null)
 }
 
 /**

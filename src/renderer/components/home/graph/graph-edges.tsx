@@ -28,7 +28,6 @@ import {
   EdgeLabelRenderer,
   useInternalNode,
   useReactFlow,
-  useStore,
   type Edge,
   type EdgeProps,
   type InternalNode,
@@ -374,6 +373,15 @@ function usePointerDrag(onStart: () => void, onMove: (p: XYPoint) => void, onEnd
       event.currentTarget.releasePointerCapture(event.pointerId)
       onEnd()
     },
+    // A cancelled pointer (touch scroll takeover, window blur mid-drag)
+    // never fires pointerup — without this the uncommitted live geometry
+    // stays applied until the next completed gesture.
+    onPointerCancel: (event: ReactPointerEvent<Element>) => {
+      if (!dragging.current) return
+      dragging.current = false
+      event.currentTarget.releasePointerCapture(event.pointerId)
+      onEnd()
+    },
   }
 }
 
@@ -533,7 +541,6 @@ function CountChip({
   onDragMove: (p: XYPoint) => void
   onDragEnd: () => void
 }) {
-  const zoom = useStore((s) => s.transform[2])
   // Keep the chip alive mid-drag even when the pointer leaves the edge's
   // hover band (pointer capture keeps the events coming regardless).
   const [dragging, setDragging] = useState(false)
@@ -555,7 +562,9 @@ function CountChip({
           shown ? 'opacity-100' : 'opacity-0',
         )}
         style={{
-          transform: `translate(${geometry.labelX}px, ${geometry.labelY}px) translate(-50%, -50%) scale(${1 / zoom})`,
+          // Counter-scaled via --graph-zoom (published once by the canvas) so
+          // the chip reads at true size without a per-chip zoom subscription.
+          transform: `translate(${geometry.labelX}px, ${geometry.labelY}px) translate(-50%, -50%) scale(calc(1 / var(--graph-zoom, 1)))`,
           pointerEvents: shown ? 'all' : 'none',
           zIndex: 1001,
         }}

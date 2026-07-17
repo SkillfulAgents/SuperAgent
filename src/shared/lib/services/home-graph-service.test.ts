@@ -79,6 +79,8 @@ function seed() {
   const cronRows: (typeof schema.scheduledTasks.$inferInsert)[] = [
     { id: 'cr1', agentSlug: 'agent2', scheduleType: 'cron', scheduleExpression: '0 9 * * *', prompt: 'p', status: 'pending', nextExecutionAt: NOW, isRecurring: true, executionCount: 3, createdAt: NOW },
     { id: 'cr2', agentSlug: 'agent2', scheduleType: 'at', scheduleExpression: '2026-01-01', prompt: 'p', status: 'executed', nextExecutionAt: NOW, isRecurring: false, executionCount: 0, createdAt: NOW },
+    // A pending session wake: session-scoped, must never surface as a cron node.
+    { id: 'wake1', agentSlug: 'agent2', scheduleType: 'at', scheduleExpression: '2026-08-01', prompt: 'p', status: 'pending', nextExecutionAt: NOW, isRecurring: false, executionCount: 0, resumeSessionId: 'sess-sleeping', createdAt: NOW },
   ]
   testDb.insert(schema.scheduledTasks).values(cronRows).run()
 
@@ -91,10 +93,10 @@ function seed() {
     { id: 'p6', callerAgentSlug: 'agent1', targetAgentSlug: 'hidden', operation: 'invoke', decision: 'allow', createdAt: NOW, updatedAt: NOW },
   ]).run()
 
-  const audit = (accountId: string, n: number) =>
+  const audit = (agentSlug: string, accountId: string, n: number) =>
     Array.from({ length: n }, (_, i) => ({
-      id: `pa-${accountId}-${i}`,
-      agentSlug: 'agent1',
+      id: `pa-${agentSlug}-${accountId}-${i}`,
+      agentSlug,
       accountId,
       toolkit: 'gmail',
       targetHost: 'api.example.com',
@@ -102,7 +104,15 @@ function seed() {
       method: 'GET',
       createdAt: NOW,
     }))
-  testDb.insert(proxyAuditLog).values([...audit('accA', 3), ...audit('accB', 1)]).run()
+  testDb.insert(proxyAuditLog).values([
+    ...audit('agent1', 'accA', 3),
+    ...audit('agent1', 'accB', 1),
+    // Non-visible agent using a linked account: its slug must never reach the
+    // usage payload (topology leak).
+    ...audit('hidden', 'accA', 7),
+    // Visible agent, but the agent↔account link no longer exists: dead usage.
+    ...audit('agent2', 'accA', 2),
+  ]).run()
 
   testDb.insert(mcpAuditLog).values(
     Array.from({ length: 2 }, (_, i) => ({
@@ -181,8 +191,10 @@ describe('home-graph-service', () => {
     expect(graph.invocations).toEqual([{ caller: 'agent1', target: 'agent2', count: 2 }])
   })
 
-  it('aggregates usage counts, unscoped outside auth mode', async () => {
+  it('scopes usage counts to visible agents and current links', async () => {
     const graph = await buildHomeGraph(scope())
+    // 'hidden:accA' (non-visible agent) and 'agent2:accA' (no current link)
+    // are both excluded despite having audit rows.
     expect(graph.accountUsage).toEqual({ 'agent1:accA': 3, 'agent1:accB': 1 })
     expect(graph.mcpUsage).toEqual({ 'agent2:mcpX': 2 })
   })

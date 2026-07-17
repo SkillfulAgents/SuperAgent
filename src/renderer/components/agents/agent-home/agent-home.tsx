@@ -133,10 +133,14 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   }, [])
   // One-shot from NavTransientContext: another page (e.g. the home graph's
   // "edit permissions") navigated here asking for a settings tab. Consume
-  // immediately so it can't replay on a later visit.
+  // immediately so it can't replay on a later visit — and drop it unacted
+  // when stale: an abandoned navigation would otherwise pop the dialog on a
+  // much-later organic visit to this agent.
   useEffect(() => {
     if (openAgentSettings?.slug !== agent.slug) return
-    handleOpenSettings(openAgentSettings.tab)
+    if (Date.now() - openAgentSettings.requestedAt < 10_000) {
+      handleOpenSettings(openAgentSettings.tab)
+    }
     setOpenAgentSettings(null)
   }, [openAgentSettings, agent.slug, handleOpenSettings, setOpenAgentSettings])
 

@@ -21,22 +21,23 @@
   --xy-controls-box-shadow: 0 1px 3px 0 hsl(0 0% 0% / 0.5);
 }
 
-/* Attention pulse on agent cards: a border-only ring hugging the card that
-   scales outward and fades — a power field pulsing out and dissipating. Two
-   copies at opposite phase (the .delayed ring starts mid-cycle via a
-   NEGATIVE delay) read as a continuous wave train. Blue/slow = unread
-   notification; orange/fast = a session needs input (.urgent); green/slowest
-   = working. The wave is a true offset outline: inset animates outward and
-   border-radius grows by the SAME distance, so spacing stays even on all
-   sides and the corners stay circular (a transform scale on the 176×80 card
-   would stretch them elliptical). */
+/* Attention pulse on agent cards: a thin ring hugging the card that travels
+   outward and fades — a power field pulsing out and dissipating. Two copies
+   at opposite phase (the .delayed ring starts mid-cycle via a NEGATIVE
+   delay) read as a continuous wave train. Blue/slow = unread notification;
+   orange/fast = a session needs input (.urgent); green/slowest = working.
+   The wave is an OUTLINE animated via outline-offset: outlines occupy no
+   layout and follow border-radius (the drawn radius grows with the offset,
+   keeping corners circular — a transform scale on the 176×80 card would
+   stretch them elliptical), so the infinite loop is paint-only. The earlier
+   inset+border-radius version reflowed the canvas every frame per ring. */
 .agent-pulse-ring {
   --pulse-color: rgb(59 130 246 / 0.7); /* blue-500 — notification */
   --pulse-period: 2.6s;
   position: absolute;
   inset: 0;
   border-radius: 0.75rem; /* rounded-xl, matching the card */
-  border: 1.5px solid var(--pulse-color);
+  outline: 1.5px solid var(--pulse-color);
   pointer-events: none;
   opacity: 0;
   animation: agent-pulse var(--pulse-period) ease-out infinite;
@@ -54,13 +55,11 @@
 }
 @keyframes agent-pulse {
   0% {
-    inset: 0;
-    border-radius: 0.75rem;
+    outline-offset: 0px;
     opacity: 0.9;
   }
   100% {
-    inset: -14px;
-    border-radius: calc(0.75rem + 14px);
+    outline-offset: 14px;
     opacity: 0;
   }
 }
