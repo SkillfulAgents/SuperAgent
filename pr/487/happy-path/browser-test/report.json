@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-use feature successfully allows agent to open browser, navigate to URL, retrieve page title, and report findings. Agent response mentions \"Example Domain\" as required.",
+  "reason": "Verified that the agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the chat response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut home with agent list in sidebar",
-    "Found and clicked \"QA-20260716-233904-qgd7\" agent in sidebar — Successfully navigated to agent chat page at /agents/qa-20260716-233904-qgd7-o0nskz0zbc",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message displayed in chat, agent status changed to \"working\"",
-    "Waited for response (5+ seconds) — Agent completed task in 11 seconds, well under 3-minute limit",
-    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title is \"Example Domain\".\" and \"The page at https://example.com has the title \"Example Domain\".\" Agent successfully executed browser tools (ToolSearch, Open Browser → https://example.com, Browser MCP: Browser Get State, Close Browser)"
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut home page showing the agents list.",
+    "Found and clicked on the \"QA-20260717-013120-odnr\" agent in the sidebar — Successfully navigated to the agent's chat page at http://localhost:47891/agents/qa-20260717-013120-odnr-uqza4nkhrc.",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully typed the message in the input field and sent it using Cmd+Enter, creating a new session.",
+    "Waited up to 3 minutes for the response — The agent completed processing in 14 seconds, successfully executing all required browser tools (Open Browser, Browser Get State, Close Browser).",
+    "Verified the response mentions \"Example Domain\" — The agent's final response clearly states: \"The page title is 'Example Domain'.\" and \"The page at https://example.com has the title 'Example Domain'. Browser closed.\" The response successfully mentions \"Example Domain\" as required."
   ],
   "bugs": [],
-  "durationMs": 144041,
-  "sessionId": "b4ab76cb-9b29-4f2a-908d-5ed1ea7f776d",
+  "durationMs": 228726,
+  "sessionId": "0910a807-492e-412f-9b66-275e612f09d0",
   "cost": {
-    "inputTokens": 464,
-    "outputTokens": 13971,
-    "cacheCreationTokens": 125422,
-    "cacheReadTokens": 1285280,
+    "inputTokens": 650,
+    "outputTokens": 15284,
+    "cacheCreationTokens": 111485,
+    "cacheReadTokens": 1786157,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.355625
+    "totalCostUsd": 0.395042
   }
 }
