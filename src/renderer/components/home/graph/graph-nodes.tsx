@@ -3,20 +3,24 @@
  *
  * Agent nodes are rounded cards; resource nodes (accounts, MCPs,
  * triggers, chat integrations) are bare icon chips — their health shows
- * through the edge styling (red dashes) and the hover label, not on the
+ * through the edge styling (red stroke) and the hover label, not on the
  * node itself. Handles are invisible and centered so straight edges radiate from
  * node centers, mind-map style.
  */
 
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { Handle, NodeToolbar, Position, useStore, type Node, type NodeProps } from '@xyflow/react'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowUpRight, Webhook, Timer } from 'lucide-react'
+import { ArrowUpRight, Clock, Webhook, Timer } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
 import { cn } from '@shared/lib/utils/cn'
 import { getAgentActivityStatus, type AgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { useSessions } from '@renderer/hooks/use-sessions'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
+import { useUsageData } from '@renderer/hooks/use-usage'
 import {
   ActivitySparkChart,
   ActivitySparkChartSkeleton,
@@ -53,7 +57,14 @@ export function openGraphNode(navigate: NavigateFn, data: GraphNodeData): void {
       return
     case 'account':
     case 'mcp':
-      void navigate({ to: '/settings/$tab', params: { tab: 'connections' } })
+      // Deep-link to this connection's detail overlay on the Connections tab
+      // (same `detail` key the tab itself uses; a stale key falls back to the
+      // list). `from` makes settings' Close return to the graph.
+      void navigate({
+        to: '/settings/$tab',
+        params: { tab: 'connections' },
+        search: { detail: `${data.kind}-${data.resourceId}`, from: '/?view=graph' },
+      })
       return
     case 'webhook':
       if (data.agentSlug)
@@ -79,25 +90,100 @@ export function openGraphNode(navigate: NavigateFn, data: GraphNodeData): void {
   }
 }
 
-/** Floating "Open" chip under a selected node — the navigation affordance.
- *  Below, not above: a node near the canvas top would put an above-toolbar
- *  underneath the app header, which steals the click. */
-function OpenToolbar({ data }: { data: GraphNodeData }) {
+/** Floating toolbar under a selected agent: the "Open" chip plus the
+ *  agent's notable sessions (working / needs input / unread notification),
+ *  each with its status dot, clicking straight into the session. Below, not
+ *  above: a node near the canvas top would put an above-toolbar underneath
+ *  the app header, which steals the click. */
+function AgentToolbar({ data, selected }: { data: AgentNodeData; selected: boolean }) {
   const navigate = useNavigate()
+  const { agent } = data
+  // Sessions are fetched only while the toolbar is actually up (selected)
+  // AND the agent flags something notable — same gating as the home cards.
+  const hasNotable = !!(agent.hasActiveSessions || agent.hasSessionsAwaitingInput || agent.hasUnreadNotifications)
+  const { data: sessions } = useSessions(selected && hasNotable ? agent.slug : null, { staleTime: 30_000 })
+  // Active/awaiting sessions first, then unread-only notifications. Hard cap
+  // at 5 rows so a noisy agent doesn't grow a tail off the canvas: at 6+ the
+  // 5th row collapses into "N more", which opens the agent page.
+  const notableSessions = useMemo(() => {
+    if (!sessions) return []
+    const active = sessions.filter((s) => s.isActive || s.isAwaitingInput)
+    const unread = sessions.filter((s) => !s.isActive && !s.isAwaitingInput && s.hasUnreadNotifications)
+    return [...active, ...unread]
+  }, [sessions])
+  const MAX_ROWS = 5
+  const overflowCount = notableSessions.length > MAX_ROWS ? notableSessions.length - (MAX_ROWS - 1) : 0
+  const visibleSessions = overflowCount ? notableSessions.slice(0, MAX_ROWS - 1) : notableSessions
+  // NodeToolbar renders at constant SCREEN size while the card scales with
+  // zoom; scaling by the viewport zoom pins the toolbar back to flow
+  // coordinates, so the w-44 rows stay exactly as wide as the w-44 card.
+  const zoom = useStore((s) => s.transform[2])
   return (
     <NodeToolbar position={Position.Bottom} offset={10}>
-      <button
-        type="button"
-        className="flex items-center gap-1 rounded-md border border-border/60 bg-card px-1.5 py-1 text-2xs text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
-        onClick={(event) => {
-          event.stopPropagation()
-          openGraphNode(navigate, data)
-        }}
-        data-testid="graph-node-open"
+      <div
+        className="flex w-44 flex-col items-center gap-1"
+        style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
       >
-        <ArrowUpRight className="h-3 w-3" />
-        Open
-      </button>
+        <button
+          type="button"
+          className="graph-toolbar-item flex items-center gap-1 rounded-md border border-border/60 bg-card px-1.5 py-1 text-2xs text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground dark:border-white/10 dark:bg-neutral-800"
+          onClick={(event) => {
+            event.stopPropagation()
+            openGraphNode(navigate, data)
+          }}
+          data-testid="graph-node-open"
+        >
+          <ArrowUpRight className="h-3 w-3" />
+          Open
+        </button>
+        {visibleSessions.map((session, index) => {
+          const isAwaiting = session.isAwaitingInput
+          const isWorking = session.isActive && !session.isAwaitingInput
+          return (
+            <button
+              key={session.id}
+              type="button"
+              className="graph-toolbar-item flex w-full items-center gap-1.5 rounded-md border border-border/60 bg-card px-2 py-1 text-left text-[9px] leading-3 shadow-sm transition-colors hover:bg-muted dark:border-white/10 dark:bg-neutral-800"
+              style={{ animationDelay: `${(index + 1) * 45}ms` }}
+              onClick={(event) => {
+                event.stopPropagation()
+                void navigate({
+                  to: '/agents/$slug/sessions/$sessionId',
+                  params: { slug: agent.slug, sessionId: session.id },
+                })
+              }}
+              data-testid="graph-session-row"
+            >
+              {isAwaiting ? (
+                <AwaitingDot />
+              ) : isWorking ? (
+                <WorkingDots />
+              ) : (
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
+              )}
+              <span className="min-w-0 truncate">{session.name}</span>
+              <span className="ml-auto shrink-0 text-muted-foreground">
+                {isAwaiting ? 'needs input' : isWorking ? 'working' : 'new message'}
+              </span>
+            </button>
+          )
+        })}
+        {overflowCount > 0 && (
+          <button
+            type="button"
+            className="graph-toolbar-item flex w-full items-center justify-center gap-1 rounded-md border border-border/60 bg-card px-2 py-1 text-[9px] leading-3 text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground dark:border-white/10 dark:bg-neutral-800"
+            style={{ animationDelay: `${(visibleSessions.length + 1) * 45}ms` }}
+            onClick={(event) => {
+              event.stopPropagation()
+              openGraphNode(navigate, data)
+            }}
+            data-testid="graph-session-overflow"
+          >
+            {overflowCount} more
+            <ArrowUpRight className="h-2.5 w-2.5" />
+          </button>
+        )}
+      </div>
     </NodeToolbar>
   )
 }
@@ -123,22 +209,16 @@ const PORT_POSITIONS: Record<string, Position> = {
  * while it's selected. Real React Flow handles: the handle itself is an
  * invisible hit zone ~2× the dot; the child .port-dot stages FigJam-style
  * (rest dot → circled arrow on zone hover → filled arrow + .port-ghost
- * drag preview on direct hover). When connectable, dragging one out draws
- * a new connection (drop targets snap within ReactFlow's connectionRadius).
- * All styling/state lives in agent-graph.css (.graph-port).
+ * drag preview on direct hover). Dragging one out draws a new connection
+ * (drop targets snap within ReactFlow's connectionRadius). Only rendered on
+ * nodes that can be drawn from/to (agents, accounts, MCPs) — trigger nodes
+ * get none. All styling/state lives in agent-graph.css (.graph-port).
  */
-function ConnectPorts({ connectable }: { connectable: boolean }) {
+function ConnectPorts() {
   return (
     <>
       {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
-        <Handle
-          key={side}
-          id={side}
-          type="source"
-          position={PORT_POSITIONS[side]}
-          className="graph-port"
-          isConnectable={connectable}
-        >
+        <Handle key={side} id={side} type="source" position={PORT_POSITIONS[side]} className="graph-port" isConnectable>
           <span className="port-hit" aria-hidden />
           <span className="port-dot" aria-hidden />
           <span className="port-ghost" aria-hidden />
@@ -148,15 +228,56 @@ function ConnectPorts({ connectable }: { connectable: boolean }) {
   )
 }
 
+// Dark mode: bg-card (13%) barely clears the canvas, and shadows are
+// invisible on dark — cards pop via a lighter surface + a faint light edge.
+const CARD_SURFACE = 'bg-card dark:bg-neutral-800'
+
 const agentBorder: Record<AgentActivityStatus, string> = {
   working: 'border-green-500/50',
   awaiting_input: 'border-orange-500/60',
-  idle: 'border-border/60',
-  sleeping: 'border-border/60',
+  idle: 'border-border/60 dark:border-white/10',
+  sleeping: 'border-border/60 dark:border-white/10',
 }
 
-export function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData, 'agent'>>) {
+// Same abbreviation the home-page card details row uses.
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(0)}k`
+  return String(tokens)
+}
+
+export function AgentGraphNode({ data, selected }: NodeProps<Node<AgentNodeData, 'agent'>>) {
   const { agent } = data
+  const activityStatus = getAgentActivityStatus(
+    agent.status,
+    agent.hasActiveSessions ?? false,
+    agent.hasSessionsAwaitingInput ?? false,
+  )
+  // Attention pulse, one state at a time: needs-input (urgent orange) >
+  // working (calm green hum) > unread notification (blue). Working outranks
+  // notification so a busy agent reads green all over, not green card +
+  // blue ring; the notification pulse takes over once it settles.
+  const attention =
+    activityStatus === 'awaiting_input'
+      ? 'urgent'
+      : activityStatus === 'working'
+        ? 'working'
+        : agent.hasUnreadNotifications
+          ? 'notification'
+          : null
+  const lastWorked = agent.lastActivityAt
+    ? formatDistanceToNow(new Date(agent.lastActivityAt), { addSuffix: true })
+    : null
+  // 7-day token total, matching the home-page card. One global usage query —
+  // react-query dedupes the fetch across every agent node.
+  const { data: usageData } = useUsageData(7)
+  const tokens7d = useMemo(() => {
+    let sum = 0
+    for (const day of usageData?.daily ?? []) {
+      sum += day.byAgent.find((a) => a.agentSlug === agent.slug)?.totalTokens ?? 0
+    }
+    return sum
+  }, [usageData, agent.slug])
   return (
     <div
       role="button"
@@ -164,19 +285,20 @@ export function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData, 'agent'>>
       aria-label={`Agent ${agent.name}`}
       onKeyDown={activateOnKey}
       className={cn(
-        'group relative flex h-20 w-44 cursor-pointer flex-col rounded-xl border-[0.5px] bg-card px-3 py-2.5 shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg',
-        agentBorder[
-          getAgentActivityStatus(
-            agent.status,
-            agent.hasActiveSessions ?? false,
-            agent.hasSessionsAwaitingInput ?? false,
-          )
-        ],
+        'group relative flex h-20 w-44 cursor-pointer flex-col rounded-xl border-[0.5px] px-3 py-2.5 shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg',
+        CARD_SURFACE,
+        agentBorder[activityStatus],
       )}
       data-testid={`graph-node-agent-${agent.slug}`}
     >
-      <OpenToolbar data={data} />
-      <ConnectPorts connectable />
+      {attention && (
+        <>
+          <span className={cn('agent-pulse-ring', attention !== 'notification' && attention)} aria-hidden />
+          <span className={cn('agent-pulse-ring delayed', attention !== 'notification' && attention)} aria-hidden />
+        </>
+      )}
+      <AgentToolbar data={data} selected={!!selected} />
+      <ConnectPorts />
       {/* Traditional card header: title top-left, icon-only status top-right */}
       <div className="flex w-full items-start justify-between gap-2">
         <span className="line-clamp-2 min-w-0 break-words text-left text-xs">{agent.name}</span>
@@ -187,6 +309,16 @@ export function AgentGraphNode({ data }: NodeProps<Node<AgentNodeData, 'agent'>>
           iconOnly
           className="mt-0.5 shrink-0"
         />
+      </div>
+      {/* Details row pinned to the card bottom: last worked + 7-day tokens */}
+      <div className="mt-auto flex w-full items-center justify-between gap-2 text-2xs text-muted-foreground">
+        {lastWorked && (
+          <span className="flex min-w-0 items-center gap-1">
+            <Clock className="h-2.5 w-2.5 shrink-0" />
+            <span className="truncate">{lastWorked}</span>
+          </span>
+        )}
+        {tokens7d > 0 && <span className="ml-auto shrink-0">{formatTokenCount(tokens7d)} tok/7d</span>}
       </div>
       <CenterHandles />
     </div>
@@ -284,13 +416,16 @@ export function ResourceGraphNode({ data, selected }: NodeProps<Node<ResourceNod
           card; the card itself keeps it open via the same grace-period
           handlers so Settings is reachable. */}
       <div
-        className="group relative flex h-10 w-10 items-center justify-center rounded-lg border-[0.5px] border-border/60 bg-card shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg"
+        className={cn(
+          'group relative flex h-10 w-10 items-center justify-center rounded-lg border-[0.5px] border-border/60 shadow-sm transition-[box-shadow,transform] duration-300 hover:-translate-y-0.5 hover:shadow-lg dark:border-white/10',
+          CARD_SURFACE,
+        )}
         onMouseEnter={openHover}
         onMouseLeave={scheduleCloseHover}
       >
         {/* Webhooks/crons/chats are owned by their agent and created through
-            forms — you can't draw one, so their ports stay decorative. */}
-        <ConnectPorts connectable={data.kind === 'account' || data.kind === 'mcp'} />
+            forms — you can't draw one, so they get no ports at all. */}
+        {(data.kind === 'account' || data.kind === 'mcp') && <ConnectPorts />}
         <ResourceIcon data={data} />
         <span className={cn('absolute right-0.5 top-0.5 h-[5px] w-[5px] rounded-full', toneDot[data.tone])} />
       </div>
@@ -315,8 +450,8 @@ export function ResourceGraphNode({ data, selected }: NodeProps<Node<ResourceNod
         className={cn(
           'flex w-full flex-col rounded-lg border px-3 py-2 transition-[transform,background-color,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.34,1.56,0.64,1)]',
           pinned
-            ? 'translate-y-0 scale-100 border-border/60 bg-card shadow-md'
-            : 'translate-y-1 scale-90 border-transparent bg-card/40 backdrop-blur-sm',
+            ? 'translate-y-0 scale-100 border-border/60 bg-card shadow-md dark:border-white/10 dark:bg-neutral-800'
+            : 'translate-y-1 scale-90 border-transparent bg-card/40 backdrop-blur-sm dark:bg-neutral-800/40',
         )}
         style={{
           transformOrigin: 'bottom center',

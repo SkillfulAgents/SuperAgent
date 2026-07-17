@@ -51,8 +51,9 @@ type RfNode = Node<GraphNodeData>
 const nodeTypes = { agent: AgentGraphNode, resource: ResourceGraphNode }
 const edgeTypes = { elbow: ElbowEdge }
 
-// Two-state line language: solid gray = connected (regardless of traffic
-// volume — counts live on the node pill), red dashes = broken endpoint.
+// Line language, two independent axes: COLOR = health (red = broken
+// endpoint, gray otherwise); DASH = exercise (solid = the path has recorded
+// traffic, dashed = connected but never used). Exact counts live on the chip.
 const EDGE_DASH = '6 4'
 
 // Count-chip unit (singular) by the edge's target kind. Resource edges are
@@ -67,11 +68,14 @@ const EDGE_UNIT: Record<string, string> = {
 }
 
 function edgeStyle(e: GraphEdgeSpec): CSSProperties {
-  // Broken endpoint (expired auth, errored server, disconnected chat).
-  if (e.broken) {
-    return { stroke: 'rgb(239 68 68 / 0.7)', strokeWidth: 1.25, strokeDasharray: EDGE_DASH } // red-500, matching the error status dot
+  const exercised = (e.weight ?? 0) > 0
+  return {
+    // Broken endpoint (expired auth, errored server, disconnected chat) —
+    // red-500, matching the error status dot.
+    stroke: e.broken ? 'rgb(239 68 68 / 0.7)' : 'hsl(var(--muted-foreground) / 0.45)',
+    strokeWidth: 1.25,
+    strokeDasharray: exercised ? undefined : EDGE_DASH,
   }
-  return { stroke: 'hsl(var(--muted-foreground) / 0.45)', strokeWidth: 1.25 }
 }
 
 const PERSIST_DEBOUNCE_MS = 600
@@ -292,8 +296,18 @@ export function AgentGraph() {
   const [connectingFromId, setConnectingFromId] = useState<string | null>(null)
 
   // Details view: pin every resource's detail card open (vs. the simple
-  // view's hover/select reveal).
-  const [showDetails, setShowDetails] = useState(false)
+  // view's hover/select reveal). Persisted as a user preference; the local
+  // override answers immediately while the PUT round-trips (and before the
+  // invalidated settings query refetches).
+  const [detailsOverride, setDetailsOverride] = useState<boolean | null>(null)
+  const showDetails = detailsOverride ?? userSettings?.graphShowDetails ?? false
+  const setShowDetails = useCallback(
+    (next: boolean) => {
+      setDetailsOverride(next)
+      mutateSettings({ graphShowDetails: next })
+    },
+    [mutateSettings],
+  )
 
   // Render once data is settled (success OR error) — a failed settings fetch
   // degrades to a non-persisting canvas instead of an eternal spinner.
@@ -613,12 +627,10 @@ export function AgentGraph() {
         nodeDragThreshold={4}
         minZoom={0.15}
         maxZoom={1.35}
-        // Inline style, not a bg-* class: xyflow's style.css sets its own
-        // background-color on .react-flow (loaded after Tailwind, same
-        // specificity), silently overriding any utility class. 5%
-        // muted-foreground over the app background ≈ a 97%-lightness wash in
-        // light mode — a faint gray so the white nodes pop.
-        style={{ backgroundColor: 'hsl(var(--muted-foreground) / 0.05)' }}
+        // Canvas background lives in agent-graph.css (.agent-graph-canvas),
+        // not a bg-* utility: xyflow's style.css sets its own background-color
+        // on .react-flow, and the theme needs a dark-mode override anyway.
+        className="agent-graph-canvas"
       >
         <AdaptiveDotsBackground />
         <ZoomReadout />

@@ -167,12 +167,12 @@ function SettingsPageContent({
 
   const [headerHidden, setHeaderHidden] = React.useState(false)
   const [contentFullWidth, setContentFullWidth] = React.useState(false)
-  // Reset header visibility / width override whenever the active section changes
-  // so a setting from one section doesn't leak into the next.
-  React.useEffect(() => {
-    setHeaderHidden(false)
-    setContentFullWidth(false)
-  }, [active])
+  // No reset-on-section-change effect here: the consuming hooks
+  // (useHideSettingsHeader / useFullWidthSettingsContent) reset to false in
+  // their unmount cleanup, which covers section switches. A parent-level
+  // reset would also fire AFTER a child's mount effect (child effects run
+  // first), clobbering a section that sets its override on first mount —
+  // e.g. deep-linking straight into /settings/connections?detail=….
 
   if (isMobile) {
     if (mobileView === 'menu') {

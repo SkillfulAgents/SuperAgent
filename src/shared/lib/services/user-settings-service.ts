@@ -49,6 +49,9 @@ export const userSettingsSchema = z.object({
       chipT: z.number().optional(),
     }),
   ).optional(),
+  // Home graph view: the "Details" toggle (pin every resource's detail card
+  // + count chips open). Absent = off.
+  graphShowDetails: z.boolean().optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),

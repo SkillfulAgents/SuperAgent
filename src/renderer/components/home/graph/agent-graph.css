@@ -1,3 +1,75 @@
+/* Canvas wash behind the graph. A rule here (not a Tailwind bg-* on the
+   component) because xyflow's style.css sets its own background-color on
+   .react-flow — this file loads after it and the two-class selector wins.
+   Light mode: 5% muted-foreground over the app background ≈ a faint
+   97%-lightness gray, so the white cards pop. Dark mode: cards (13%) sit a
+   hair above the background (10%), and a lightening wash lands exactly ON
+   the card color, erasing them — so the wash goes DARKER than both instead. */
+.react-flow.agent-graph-canvas {
+  background-color: hsl(var(--muted-foreground) / 0.05);
+}
+.dark .react-flow.agent-graph-canvas {
+  background-color: hsl(0 0% 7%);
+  /* Theme xyflow's Controls (zoom buttons) via its CSS hooks — the widget
+     ships light-only. Same surface language as the graph cards:
+     neutral-800 with a faint light edge. */
+  --xy-controls-button-background-color: hsl(0 0% 15%);
+  --xy-controls-button-background-color-hover: hsl(0 0% 20%);
+  --xy-controls-button-color: hsl(0 0% 75%);
+  --xy-controls-button-color-hover: hsl(0 0% 98%);
+  --xy-controls-button-border-color: hsl(0 0% 100% / 0.1);
+  --xy-controls-box-shadow: 0 1px 3px 0 hsl(0 0% 0% / 0.5);
+}
+
+/* Attention pulse on agent cards: a border-only ring hugging the card that
+   scales outward and fades — a power field pulsing out and dissipating. Two
+   copies at opposite phase (the .delayed ring starts mid-cycle via a
+   NEGATIVE delay) read as a continuous wave train. Blue/slow = unread
+   notification; orange/fast = a session needs input (.urgent); green/slowest
+   = working. The wave is a true offset outline: inset animates outward and
+   border-radius grows by the SAME distance, so spacing stays even on all
+   sides and the corners stay circular (a transform scale on the 176×80 card
+   would stretch them elliptical). */
+.agent-pulse-ring {
+  --pulse-color: rgb(59 130 246 / 0.7); /* blue-500 — notification */
+  --pulse-period: 2.6s;
+  position: absolute;
+  inset: 0;
+  border-radius: 0.75rem; /* rounded-xl, matching the card */
+  border: 1.5px solid var(--pulse-color);
+  pointer-events: none;
+  opacity: 0;
+  animation: agent-pulse var(--pulse-period) ease-out infinite;
+}
+.agent-pulse-ring.urgent {
+  --pulse-color: rgb(249 115 22 / 0.8); /* orange-500 — needs input */
+  --pulse-period: 1.4s;
+}
+.agent-pulse-ring.working {
+  --pulse-color: rgb(34 197 94 / 0.6); /* green-500 — working, calm ambient hum */
+  --pulse-period: 3.4s;
+}
+.agent-pulse-ring.delayed {
+  animation-delay: calc(var(--pulse-period) / -2);
+}
+@keyframes agent-pulse {
+  0% {
+    inset: 0;
+    border-radius: 0.75rem;
+    opacity: 0.9;
+  }
+  100% {
+    inset: -14px;
+    border-radius: calc(0.75rem + 14px);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-pulse-ring {
+    animation: none;
+  }
+}
+
 /* Perimeter connection ports: shown when their node is SELECTED (click;
    pane click deselects). The handle itself is an invisible hit zone ~2× the
    dot; the visible dot is a child so proximity (zone hover) and direct (dot
@@ -164,6 +236,26 @@
 }
 .graph-port.connectingfrom .port-ghost {
   opacity: 0 !important;
+}
+
+/* Agent toolbar (Open chip + session rows) entrance: each item pops down
+   out of the card with a slight overshoot; per-item animation-delay set
+   inline staggers the cascade. `backwards` holds the hidden from-state
+   through the delay so late rows don't flash before their turn. */
+.graph-toolbar-item {
+  animation: graph-toolbar-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+  transform-origin: top center;
+}
+@keyframes graph-toolbar-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.85);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .graph-toolbar-item {
+    animation: none;
+  }
 }
 
 /* Elbow-connector grab handles only exist while the edge is selected

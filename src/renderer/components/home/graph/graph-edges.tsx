@@ -551,7 +551,7 @@ function CountChip({
     <EdgeLabelRenderer>
       <div
         className={cn(
-          'nodrag nopan absolute cursor-grab select-none rounded-full border border-border/60 bg-card px-1.5 text-2xs leading-4 text-muted-foreground shadow-sm transition-opacity duration-150 active:cursor-grabbing',
+          'nodrag nopan absolute cursor-grab select-none rounded-full border border-border/60 bg-card px-1.5 text-2xs leading-4 text-muted-foreground shadow-sm transition-opacity duration-150 active:cursor-grabbing dark:border-white/10 dark:bg-neutral-800',
           shown ? 'opacity-100' : 'opacity-0',
         )}
         style={{
