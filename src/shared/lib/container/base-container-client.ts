@@ -416,6 +416,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Exec bound for the `run` command; undefined = unbounded. Override when the
+   * runtime can hang on run instead of failing (e.g. Apple's VZ materializing
+   * a dataless iCloud mount).
+   */
+  protected getRunExecTimeoutMs(): number | undefined {
+    return undefined
+  }
+
+  /**
    * Whether a run failure is a host-port allocation race. The chosen port passed
    * findAvailablePort()'s pre-flight bind but was grabbed (or published on a
    * different interface) before `run -p` claimed it. Recoverable by re-picking a
@@ -685,7 +694,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           await execWithPathSilent(`${runner} rm ${containerName}`)
 
           try {
-            ({ stdout } = await execWithPath(buildRunCmd()))
+            ({ stdout } = await execWithPath(buildRunCmd(), { timeoutMs: this.getRunExecTimeoutMs() }))
             break
           } catch (runError: any) {
             // 1. Inaccessible bind mount (e.g. iCloud/File Provider path the VM

@@ -6,7 +6,7 @@ import { tmpdir, freemem, totalmem } from 'os'
 import { join } from 'path'
 import { Readable, Transform } from 'stream'
 import { pipeline } from 'stream/promises'
-import { BaseContainerClient, checkCommandAvailable, execWithPath, execSyncWithPath, CONTAINER_INTERNAL_PORT, shellEscape } from './base-container-client'
+import { BaseContainerClient, execWithPath, execSyncWithPath, CONTAINER_INTERNAL_PORT, shellEscape } from './base-container-client'
 import type { ContainerConfig, ContainerInfo, ContainerStats, ImagePullProgress } from './types'
 import { isAdminPrivilegeCancelError, runWithAdminPrivileges } from '@shared/lib/run-with-admin-privileges'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -24,6 +24,8 @@ const APPLE_SYSTEM_START_CMD =
   `container system start --enable-kernel-install --timeout ${APPLE_SYSTEM_START_TIMEOUT_SEC}`
 const APPLE_SYSTEM_START_EXEC_TIMEOUT_MS = (APPLE_SYSTEM_START_TIMEOUT_SEC + 30) * 1000
 const APPLE_SYSTEM_STOP_EXEC_TIMEOUT_MS = 15_000
+/** `run` normally returns in seconds; a dataless iCloud mount hangs it for minutes. */
+const APPLE_RUN_EXEC_TIMEOUT_MS = 120_000
 
 let cachedMacOSMajorVersion: number | null | undefined = undefined // null failures not cached
 let appleReadyPromise: Promise<void> | null = null
@@ -94,6 +96,22 @@ async function collectAppleContainerDiagnostics(): Promise<Record<string, unknow
     diag.system_status = `check_failed: ${String(e?.message ?? e).slice(0, 300)}`
   }
   return diag
+}
+
+/**
+ * The pinned installer is 1.1.0 and `system start --timeout` needs 1.1+;
+ * pre-1.1 installs exist in the wild (SuperAgent supported Apple Containers
+ * before 1.0) and fail every start. Unparseable output or a wedged binary
+ * counts as unsupported: the Install path recovers by installing the pin.
+ */
+async function getInstalledCliState(): Promise<'absent' | 'unsupported' | 'supported'> {
+  try {
+    const { stdout } = await execWithPath('container --version', { timeoutMs: 5000 })
+    const m = stdout.match(/(\d+)\.(\d+)\.\d+/)
+    return m && Number(m[1]) === 1 && Number(m[2]) >= 1 ? 'supported' : 'unsupported'
+  } catch (error: any) {
+    return error?.code === 127 ? 'absent' : 'unsupported' // 127 = shell couldn't find the binary
+  }
 }
 
 async function hashFileSha256(filePath: string): Promise<string> {
@@ -191,7 +209,23 @@ export class AppleContainerClient extends BaseContainerClient {
         console.error('Failed to start Apple Container runtime:', err)
       }
     }
+
+    // Our run exec bound fired while the runtime is healthy. error.killed is
+    // set only when the exec API itself killed the child (the timeoutMs
+    // bound), never for an external kill. Likeliest cause is a mount stuck
+    // materializing dataless iCloud files (Desktop & Documents sync lives
+    // outside the rejected cloud prefixes) - name it as likely, not certain.
+    if (error?.killed && error?.signal === 'SIGKILL') {
+      throw new Error(
+        'Container start timed out after 2 minutes. This can happen when a folder attached to this agent is stored in iCloud but not downloaded on this Mac - download it or remove it, then try again.',
+      )
+    }
     return false
+  }
+
+  /** See APPLE_RUN_EXEC_TIMEOUT_MS: bound `run` so a dataless mount can't hang startup. */
+  protected getRunExecTimeoutMs(): number {
+    return APPLE_RUN_EXEC_TIMEOUT_MS
   }
 
   /**
@@ -406,19 +440,23 @@ export class AppleContainerClient extends BaseContainerClient {
   }
 
   /**
-   * Apple has no `rmi`; corrupt-image recovery uses `image delete`. Forced to
-   * match the base class's `rmi -f` — a corrupt image that's still referenced
-   * must go regardless, or the recovery loop rebuilds on top of it.
+   * Apple has no `rmi`. The failed run can leave a container record referencing
+   * the image; 1.1.0 deletes referenced images anyway (live-verified), but clear
+   * the record first so recovery never depends on that. `--force` only quiets
+   * image-not-found, keeping the delete idempotent.
    */
   protected async removeCorruptImage(image: string): Promise<void> {
+    await execWithPath(`${this.getRunnerShellCommand()} delete --force ${this.getContainerName()}`, { timeoutMs: 10_000 }).catch(() => {})
     await execWithPath(`${this.getRunnerShellCommand()} image delete --force ${shellEscape(image)}`)
   }
 
   /**
-   * Check if the Apple Container CLI is available on the system.
+   * Check if a supported Apple Container CLI is installed. An unsupported
+   * version reports not-installed so the UI offers Install, which upgrades
+   * in place via the pinned pkg.
    */
   static async isAvailable(): Promise<boolean> {
-    return checkCommandAvailable('container')
+    return (await getInstalledCliState()) === 'supported'
   }
 
   /**
@@ -527,10 +565,14 @@ async function ensureAppleContainerReadyImpl(
     throw new Error('macOS Container requires macOS 26 or later on Apple silicon.')
   }
 
-  const installed = await AppleContainerClient.isAvailable()
-  if (!installed) {
+  const cliState = await getInstalledCliState()
+  if (cliState !== 'supported') {
     if (!allowInstall) {
-      throw new Error('macOS Container is not installed. Click Install to set it up.')
+      throw new Error(
+        cliState === 'absent'
+          ? 'macOS Container is not installed. Click Install to set it up.'
+          : `The installed macOS Container version is not supported. Click Install to update it to ${APPLE_CONTAINER_VERSION}.`,
+      )
     }
     await installAppleContainerPkg(onProgress)
   }

@@ -5,7 +5,6 @@ vi.mock('child_process', () => ({
   execSync: (...args: unknown[]) => mockExecSync(...args),
 }))
 
-const mockCheckCommandAvailable = vi.fn()
 const mockExecWithPath = vi.fn()
 const mockExecSyncWithPath = vi.fn()
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -27,7 +26,6 @@ vi.mock('./base-container-client', () => ({
       return 'http://host.docker.internal:47891'
     }
   },
-  checkCommandAvailable: (...args: unknown[]) => mockCheckCommandAvailable(...args),
   execWithPath: (...args: unknown[]) => mockExecWithPath(...args),
   execSyncWithPath: (...args: unknown[]) => mockExecSyncWithPath(...args),
   CONTAINER_INTERNAL_PORT: 3000,
@@ -58,6 +56,10 @@ import {
   ensureAppleContainerReady,
   resetAppleContainerClientForTests,
 } from './apple-container-client'
+
+const CLI_VERSION_1_1 = 'container CLI version 1.1.0 (build: release, commit: 5973b9c)'
+/** Shell exit 127: the `container` binary is not on PATH. */
+const cliAbsentError = () => Object.assign(new Error('sh: container: command not found'), { code: 127 })
 
 describe('AppleContainerClient.getInfoFromRuntime', () => {
   it('treats status.state=running as running (Apple Container 1.x inspect shape)', async () => {
@@ -127,11 +129,20 @@ describe('AppleContainerClient recovery hooks', () => {
     expect(mockExecWithPath).toHaveBeenCalledWith('container logs -n 30 superagent-abc123')
   })
 
-  it('removeCorruptImage force-deletes so a still-referenced corrupt image cannot survive', async () => {
-    mockExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
+  it('removeCorruptImage clears the failed container record first; its absence never blocks the image delete', async () => {
+    const calls: string[] = []
+    mockExecWithPath.mockImplementation(async (cmd: string) => {
+      calls.push(cmd)
+      if (cmd.startsWith('container delete')) throw new Error('no such container')
+      return { stdout: '', stderr: '' }
+    })
     const client = new AppleContainerClient({ agentId: 'abc123' })
     await (client as any).removeCorruptImage('ghcr.io/x/agent:1')
-    expect(mockExecWithPath).toHaveBeenCalledWith(`container image delete --force 'ghcr.io/x/agent:1'`)
+    expect(calls).toEqual([
+      'container delete --force superagent-abc123',
+      `container image delete --force 'ghcr.io/x/agent:1'`,
+    ])
+    expect(mockExecWithPath).toHaveBeenCalledWith('container delete --force superagent-abc123', { timeoutMs: 10_000 })
   })
 
   it('collectStopFailureDiagnostics degrades failed probes to markers instead of throwing', async () => {
@@ -194,7 +205,6 @@ describe('AppleContainerClient.handleRunError', () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', writable: true, configurable: true })
     Object.defineProperty(process, 'arch', { value: 'arm64', writable: true, configurable: true })
     mockExecSync.mockReturnValue(Buffer.from('26.0\n'))
-    mockCheckCommandAvailable.mockResolvedValue(true)
   })
 
   afterEach(() => {
@@ -207,6 +217,7 @@ describe('AppleContainerClient.handleRunError', () => {
     let listCalls = 0
     mockExecWithPath.mockImplementation(async (cmd: string) => {
       if (cmd === 'container list' && ++listCalls === 1) throw new Error('connection refused')
+      if (cmd === 'container --version') return { stdout: CLI_VERSION_1_1, stderr: '' }
       return { stdout: '', stderr: '' }
     })
     const client = new AppleContainerClient({ agentId: 'abc123' })
@@ -222,6 +233,32 @@ describe('AppleContainerClient.handleRunError', () => {
     const client = new AppleContainerClient({ agentId: 'abc123' })
     await expect((client as any).handleRunError(new Error('weird one-off'))).resolves.toBe(false)
     expect(mockExecWithPath.mock.calls.some(([cmd]) => String(cmd).includes('system start'))).toBe(false)
+  })
+
+  it('maps a killed run exec on a healthy runtime to a clear timeout error (dataless-mount hang guard)', async () => {
+    mockExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
+    const runError = Object.assign(new Error('Command failed: container run -d ...'), { killed: true, signal: 'SIGKILL' })
+    const client = new AppleContainerClient({ agentId: 'abc123' })
+    await expect((client as any).handleRunError(runError)).rejects.toThrow(/timed out.*iCloud/s)
+    // killed is set only by the exec API's own timeout; an external SIGKILL
+    // (killed: false) must NOT be diagnosed as the hang guard.
+    const externalKill = Object.assign(new Error('Command failed: container run -d ...'), { killed: false, signal: 'SIGKILL' })
+    await expect((client as any).handleRunError(externalKill)).resolves.toBe(false)
+  })
+})
+
+describe('AppleContainerClient.isAvailable (version gate)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it.each([
+    { version: CLI_VERSION_1_1, expected: true, label: 'pinned 1.1.x' },
+    { version: 'container CLI version 0.12.3 (build: release, commit: abc1234)', expected: false, label: 'pre-1.1 lacks system start --timeout' },
+    { version: 'container CLI version 2.0.0 (build: release, commit: abc1234)', expected: false, label: 'future major is unproven' },
+  ])('isAvailable=$expected for $label', async ({ version, expected }) => {
+    mockExecWithPath.mockResolvedValue({ stdout: version, stderr: '' })
+    await expect(AppleContainerClient.isAvailable()).resolves.toBe(expected)
   })
 })
 
@@ -280,8 +317,8 @@ describe('ensureAppleContainerReady', () => {
   })
 
   it('skips download when CLI is already installed', async () => {
-    mockCheckCommandAvailable.mockResolvedValue(true)
-    mockExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
+    // stdout is only read by the version probe; other commands ignore it.
+    mockExecWithPath.mockResolvedValue({ stdout: CLI_VERSION_1_1, stderr: '' })
     const fetchSpy = vi.fn()
     globalThis.fetch = fetchSpy as unknown as typeof fetch
 
@@ -296,14 +333,24 @@ describe('ensureAppleContainerReady', () => {
   })
 
   it('refuses first-install without allowInstall', async () => {
-    mockCheckCommandAvailable.mockResolvedValue(false)
+    mockExecWithPath.mockRejectedValue(cliAbsentError())
 
     await expect(ensureAppleContainerReady()).rejects.toThrow(/Click Install/i)
     expect(mockRunWithAdminPrivileges).not.toHaveBeenCalled()
   })
 
+  it('refuses an unsupported installed version instead of running a start it cannot survive', async () => {
+    mockExecWithPath.mockResolvedValue({ stdout: 'container CLI version 0.12.3 (build: release, commit: abc1234)', stderr: '' })
+
+    await expect(ensureAppleContainerReady()).rejects.toThrow(/not supported.*Install to update/i)
+    expect(mockExecWithPath.mock.calls.some(([cmd]) => String(cmd).includes('system start'))).toBe(false)
+  })
+
   it('first-install: download, verify, elevate with rehash, start + progress', async () => {
-    mockCheckCommandAvailable.mockResolvedValue(false)
+    mockExecWithPath.mockImplementation(async (cmd: string) => {
+      if (cmd === 'container --version') throw cliAbsentError()
+      return { stdout: '', stderr: '' }
+    })
     appleContainerProvisionIO.downloadToFile = vi.fn(
       async (_url: string, _dest: string, onBytes?: (downloaded: number, total: number | null) => void) => {
         onBytes?.(50, 100)
@@ -312,7 +359,6 @@ describe('ensureAppleContainerReady', () => {
     )
     appleContainerProvisionIO.hashFileSha256 = vi.fn().mockResolvedValue(APPLE_CONTAINER_PKG_SHA256)
     mockRunWithAdminPrivileges.mockResolvedValue(undefined)
-    mockExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
 
     const events: Array<{ status: string; percent: number | null }> = []
     await ensureAppleContainerReady((p) => events.push(p), { allowInstall: true })
@@ -348,7 +394,7 @@ describe('ensureAppleContainerReady', () => {
   })
 
   it('never elevates when downloaded digest mismatches', async () => {
-    mockCheckCommandAvailable.mockResolvedValue(false)
+    mockExecWithPath.mockRejectedValue(cliAbsentError())
     const badBody = new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode('not-the-installer'))
@@ -367,7 +413,7 @@ describe('ensureAppleContainerReady', () => {
   })
 
   it('maps admin cancel to a recoverable error', async () => {
-    mockCheckCommandAvailable.mockResolvedValue(false)
+    mockExecWithPath.mockRejectedValue(cliAbsentError())
     appleContainerProvisionIO.downloadToFile = vi.fn().mockResolvedValue(undefined)
     appleContainerProvisionIO.hashFileSha256 = vi.fn().mockResolvedValue(APPLE_CONTAINER_PKG_SHA256)
     mockRunWithAdminPrivileges.mockRejectedValue(new Error('User canceled. (-128)'))
@@ -377,22 +423,24 @@ describe('ensureAppleContainerReady', () => {
   })
 
   it('mutex serializes concurrent ensure calls', async () => {
-    let resolveAvailable: ((v: boolean) => void) | undefined
-    let availableCalls = 0
-    mockCheckCommandAvailable.mockImplementation(() => {
-      availableCalls++
-      return new Promise<boolean>((resolve) => {
-        resolveAvailable = resolve
-      })
+    let resolveVersion: ((v: { stdout: string; stderr: string }) => void) | undefined
+    let versionCalls = 0
+    mockExecWithPath.mockImplementation((cmd: string) => {
+      if (cmd === 'container --version') {
+        versionCalls++
+        return new Promise<{ stdout: string; stderr: string }>((resolve) => {
+          resolveVersion = resolve
+        })
+      }
+      return Promise.resolve({ stdout: '', stderr: '' })
     })
-    mockExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
 
     const p1 = ensureAppleContainerReady(undefined, { allowInstall: true })
     const p2 = ensureAppleContainerReady(undefined, { allowInstall: true })
-    expect(availableCalls).toBe(1)
+    expect(versionCalls).toBe(1)
 
-    resolveAvailable?.(true)
+    resolveVersion?.({ stdout: CLI_VERSION_1_1, stderr: '' })
     await Promise.all([p1, p2])
-    expect(availableCalls).toBe(1)
+    expect(versionCalls).toBe(1)
   })
 })
