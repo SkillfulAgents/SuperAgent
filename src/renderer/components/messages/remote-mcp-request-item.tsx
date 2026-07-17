@@ -650,7 +650,7 @@ export function RemoteMcpRequestItem({
               />
             ) : null}
           </div>
-          <RequestItemActions>
+          <div className="flex justify-end gap-2 pt-4">
             <DeclineButton
               onDecline={handleDecline}
               disabled={status !== 'pending' && status !== 'oauth_pending'}
@@ -668,7 +668,7 @@ export function RemoteMcpRequestItem({
             >
               Allow Access{selectedMcpIdsForProvide.length > 1 ? ` (${selectedMcpIdsForProvide.length})` : ''}
             </Button>
-          </RequestItemActions>
+          </div>
         </div>
       ) : null}
 
