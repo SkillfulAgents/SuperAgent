@@ -81,7 +81,9 @@ async function completeChangeAndEnter(page: Page, current: string, next: string,
 
   await submitPasswordChange(page, current, next)
 
-  const settled = page.locator('[data-testid="app-sidebar"], [data-testid="auth-page"]').first()
+  const settled = page
+    .locator('[data-testid="app-sidebar"], [data-testid="wizard-container"], [data-testid="auth-page"]')
+    .first()
   await expect(settled).toBeVisible({ timeout: 15000 })
 
   if (await page.locator('[data-testid="auth-page"]').isVisible().catch(() => false)) {
