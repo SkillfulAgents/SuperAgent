@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
     },
   })),
   broadcastGlobal: vi.fn(),
+  promoteAutomatedSession: vi.fn(async () => {}),
 }))
 
 vi.mock('@shared/lib/services/notification-service', () => ({
@@ -33,12 +34,16 @@ vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => false,
 }))
 vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { broadcastGlobal: mocks.broadcastGlobal },
+  messagePersister: {
+    broadcastGlobal: mocks.broadcastGlobal,
+    promoteAutomatedSession: mocks.promoteAutomatedSession,
+  },
 }))
 
 const mockCreateNotification = mocks.createNotification
 const mockGetSessionMetadata = mocks.getSessionMetadata
 const mockBroadcastGlobal = mocks.broadcastGlobal
+const mockPromoteAutomatedSession = mocks.promoteAutomatedSession
 
 import { notificationManager } from './notification-manager'
 
@@ -160,6 +165,53 @@ describe('triggerSessionWaitingInput — NOT gated by automated-session flag', (
     mockGetSessionMetadata.mockResolvedValue({ isChatIntegrationSession: true })
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'file')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('session_waiting promotes automated sessions to interactive', () => {
+  // Session lists exclude non-promoted automated sessions, so a session_waiting
+  // notification on one would raise unread indicators that point at nothing —
+  // and could never be cleared. Every session_waiting must promote first.
+  it('triggerSessionWaitingInput promotes before creating the notification', async () => {
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'secret')
+
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'agent-x')
+    expect(mockCreateNotification).toHaveBeenCalledTimes(1)
+    expect(mockPromoteAutomatedSession.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCreateNotification.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('triggerSessionApiReviewWaiting promotes too — the proxy-review path was the original gap', async () => {
+    await notificationManager.triggerSessionApiReviewWaiting('sess-1', 'agent-x', 'review-1', 'Allow?')
+
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'agent-x')
+    expect(mockCreateNotification).toHaveBeenCalledTimes(1)
+  })
+
+  it('triggerSessionComplete does not promote', async () => {
+    await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
+    expect(mockPromoteAutomatedSession).not.toHaveBeenCalled()
+  })
+
+  it('a promotion failure does not block the notification', async () => {
+    mockPromoteAutomatedSession.mockRejectedValueOnce(new Error('disk full'))
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'question')
+    expect(mockCreateNotification).toHaveBeenCalledTimes(1)
+  })
+
+  it('promotes even when session_waiting notifications are disabled in settings', async () => {
+    mocks.getUserSettings.mockReturnValueOnce({
+      notifications: {
+        enabled: true,
+        sessionComplete: true,
+        sessionWaiting: false,
+        sessionScheduled: true,
+      },
+    })
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'secret')
+    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('sess-1', 'agent-x')
+    expect(mockCreateNotification).not.toHaveBeenCalled()
   })
 })
 

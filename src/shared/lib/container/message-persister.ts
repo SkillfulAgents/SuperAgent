@@ -58,6 +58,7 @@ import { eq } from 'drizzle-orm'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
 import { finalizeAutomationStatus, getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -876,12 +877,12 @@ class MessagePersister {
   }
 
   // Promote an automated session (cron/webhook/chat) to a regular session so it
-  // appears in the sidebar and receives completion notifications.
-  private async promoteAutomatedSession(sessionId: string, agentSlug: string): Promise<void> {
+  // appears in the sidebar and receives completion notifications. Public: the
+  // notification manager promotes on session_waiting so blocked automations
+  // surface in session lists instead of accruing unread rows nothing displays.
+  async promoteAutomatedSession(sessionId: string, agentSlug: string): Promise<void> {
     const meta = await getSessionMetadata(agentSlug, sessionId)
-    if (!meta) return
-    if (meta.promotedToInteractive) return
-    if (!meta.isScheduledExecution && !meta.isWebhookExecution && !meta.isChatIntegrationSession) return
+    if (!isHiddenAutomatedSession(meta)) return
 
     await updateSessionMetadata(agentSlug, sessionId, {
       promotedToInteractive: true,
