@@ -53,6 +53,16 @@ export const CHAT_PROVIDERS = ['telegram', 'slack', 'imessage'] as const
 export type ChatProvider = (typeof CHAT_PROVIDERS)[number]
 type ChatConfig = TelegramConfig | SlackConfig | IMessageConfig
 
+const configPatchSchema = z.record(z.string(), z.unknown())
+
+const MASKED_CREDENTIAL = /^(?:(?:\*|•){4,}(?:[A-Za-z0-9_-]{0,4})?|redacted|\[redacted\]|<redacted>)$/i
+
+const CREDENTIAL_FIELDS: Record<ChatProvider, readonly string[]> = {
+  telegram: ['botToken'],
+  slack: ['botToken', 'appToken'],
+  imessage: ['gatewayUrl', 'token'],
+}
+
 /**
  * Validate and parse a config object for the given provider.
  * Throws a descriptive error if validation fails.
@@ -84,4 +94,32 @@ export function parseChatIntegrationConfig(
     console.error(`[ChatIntegration] Invalid config for ${provider}:`, err instanceof Error ? err.message : err)
     return null
   }
+}
+
+/**
+ * Merge an API config patch with the credential-bearing stored config.
+ * Omitted credentials and conventional masked placeholders preserve the
+ * existing value so settings can be edited without ever reading secrets back.
+ */
+export function mergeChatIntegrationConfig(
+  provider: ChatProvider,
+  storedConfigJson: string,
+  patch: unknown,
+): ChatConfig {
+  const stored = parseChatIntegrationConfig(provider, storedConfigJson)
+  if (!stored) {
+    throw new Error(`Stored ${provider} chat integration config is invalid`)
+  }
+
+  const parsedPatch = configPatchSchema.parse(patch)
+  const credentialFields = CREDENTIAL_FIELDS[provider]
+  const unmaskedPatch = Object.fromEntries(
+    Object.entries(parsedPatch).filter(([key, value]) =>
+      !credentialFields.includes(key)
+      || typeof value !== 'string'
+      || !MASKED_CREDENTIAL.test(value),
+    ),
+  )
+
+  return validateChatIntegrationConfig(provider, { ...stored, ...unmaskedPatch })
 }

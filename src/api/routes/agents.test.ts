@@ -435,6 +435,7 @@ import { messagePersister } from '@shared/lib/container/message-persister'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
+import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 
 // ============================================================================
 // Test Helpers
@@ -445,6 +446,46 @@ function createApp() {
   app.route('/api/agents', agents)
   return app
 }
+
+describe('SUP-420 — GET /:id/chat-integrations', () => {
+  it('redacts credentials from every list row', async () => {
+    vi.mocked(listChatIntegrations).mockReturnValueOnce([{
+      id: 'integration-1',
+      agentSlug: 'test-agent',
+      provider: 'telegram',
+      name: 'Alerts bot',
+      config: JSON.stringify({
+        botToken: 'telegram-viewer-secret',
+        chatId: 'private-chat-id',
+        draftStreaming: true,
+      }),
+      showToolCalls: false,
+      requireApproval: true,
+      sessionTimeout: null,
+      model: null,
+      effort: null,
+      speed: null,
+      status: 'active',
+      errorMessage: null,
+      createdByUserId: 'owner-user',
+      createdAt: new Date('2026-07-17T00:00:00Z'),
+      updatedAt: new Date('2026-07-17T00:00:00Z'),
+    }])
+
+    const res = await getReq(createApp(), '/api/agents/test-agent/chat-integrations')
+    const body = await res.json() as Array<Record<string, unknown>>
+
+    expect(res.status).toBe(200)
+    expect(body[0]).not.toHaveProperty('config')
+    expect(body[0]).toMatchObject({
+      id: 'integration-1',
+      hasCredentials: true,
+      settings: { draftStreaming: true },
+    })
+    expect(JSON.stringify(body)).not.toContain('telegram-viewer-secret')
+    expect(JSON.stringify(body)).not.toContain('private-chat-id')
+  })
+})
 
 async function patchJson(app: Hono, url: string, body: unknown): Promise<Response> {
   return app.request(`http://localhost${url}`, {

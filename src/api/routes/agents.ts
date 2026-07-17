@@ -145,6 +145,7 @@ import { Readable } from 'stream'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
+import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 
 function getConfiguredSkillsets() {
   return getSettings().skillsets || []
@@ -2982,7 +2983,7 @@ agents.get('/:id/chat-integrations', AgentRead(), async (c) => {
     // "Connecting…" from the same source of truth as the connector page, instead
     // of guessing from persisted status alone.
     const withConnection = integrations.map((integration) => ({
-      ...integration,
+      ...toPublicChatIntegration(integration),
       connected: chatIntegrationManager.isIntegrationConnected(integration.id),
     }))
     return c.json(withConnection)

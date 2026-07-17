@@ -171,6 +171,52 @@ describe('chat-integration-service', () => {
   })
 
   describe('updateChatIntegration', () => {
+    it('preserves stored Slack credentials when PATCHing only behavior settings', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'slack',
+        config: {
+          botToken: 'xoxb-secret',
+          appToken: 'xapp-secret',
+          channelId: 'C123',
+          onlyMentioned: false,
+        },
+      })
+
+      expect(updateChatIntegration(id, {
+        config: { onlyMentioned: true },
+      })).toBe(true)
+
+      expect(JSON.parse(getChatIntegration(id)!.config)).toEqual({
+        botToken: 'xoxb-secret',
+        appToken: 'xapp-secret',
+        channelId: 'C123',
+        onlyMentioned: true,
+      })
+    })
+
+    it('preserves stored credentials when a client echoes masked placeholders', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'slack',
+        config: { botToken: 'xoxb-secret', appToken: 'xapp-secret' },
+      })
+
+      updateChatIntegration(id, {
+        config: {
+          botToken: '********',
+          appToken: '••••xapp',
+          answerInThread: true,
+        },
+      })
+
+      expect(JSON.parse(getChatIntegration(id)!.config)).toEqual({
+        botToken: 'xoxb-secret',
+        appToken: 'xapp-secret',
+        answerInThread: true,
+      })
+    })
+
     it('throws DuplicateBotTokenError when PATCHing config to an already-used token', () => {
       const firstId = createChatIntegration({
         agentSlug: 'agent-a',

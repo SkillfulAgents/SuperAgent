@@ -2,8 +2,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { ConversationHistorySection } from './conversation-history-section'
-import { makeSession, makeAccess } from './test-factories'
-import type { ChatIntegration, ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
+import { makeChatIntegration, makeSession, makeAccess } from './test-factories'
+import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 
 vi.mock('@renderer/components/messages/session-thread', () => ({
   SessionThread: (p: any) => <div data-testid="session-thread">{p.sessionId}</div>,
@@ -36,7 +36,12 @@ function s(id: string, ms: number, archived = false, name?: string): ChatIntegra
     createdAt: new Date(ms), updatedAt: new Date(ms),
   })
 }
-const integration = { id: 'int-1', provider: 'telegram', agentSlug: 'a', requireApproval: true } as ChatIntegration
+const integration = makeChatIntegration({
+  id: 'int-1',
+  provider: 'telegram',
+  agentSlug: 'a',
+  requireApproval: true,
+})
 const base = {
   integration, routeNewChatId: null, onSelectWindow: vi.fn(), onNewConversation: vi.fn(),
   agentSlug: 'a', providerName: 'Telegram', canManageAccess: true,

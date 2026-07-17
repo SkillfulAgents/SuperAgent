@@ -16,10 +16,6 @@ vi.mock('./integration-settings-controls', () => ({
   ),
   SessionTimeoutSelect: () => null,
 }))
-vi.mock('@shared/lib/chat-integrations/config-schema', () => ({
-  parseChatIntegrationConfig: (provider: string) =>
-    provider === 'slack' ? { onlyMentioned: false, answerInThread: false, newSessionPerThread: false } : null,
-}))
 
 describe('IntegrationSettingsCard', () => {
   beforeEach(() => { updateMock.mockReset(); setApprovalMock.mockReset() })
@@ -35,6 +31,20 @@ describe('IntegrationSettingsCard', () => {
     expect(screen.queryByLabelText(/only respond when @mentioned/i)).not.toBeInTheDocument()
     rerender(<IntegrationSettingsCard integration={makeIntegration({ provider: 'slack' })} />)
     expect(screen.getByLabelText(/only respond when @mentioned/i)).toBeInTheDocument()
+  })
+
+  it('updates Slack settings without sending credential placeholders', () => {
+    render(<IntegrationSettingsCard integration={makeIntegration({
+      provider: 'slack',
+      settings: { onlyMentioned: false },
+    })} />)
+
+    screen.getByLabelText(/only respond when @mentioned/i).click()
+
+    expect(updateMock).toHaveBeenCalledWith({
+      id: 'int-1',
+      config: { onlyMentioned: true },
+    })
   })
 
   it.each([

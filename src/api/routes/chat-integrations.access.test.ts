@@ -103,6 +103,8 @@ vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
 
 vi.mock('@shared/lib/chat-integrations/config-schema', () => ({
   validateChatIntegrationConfig: vi.fn(),
+  mergeChatIntegrationConfig: vi.fn((_provider, _stored, patch) => patch),
+  parseChatIntegrationConfig: vi.fn((_provider, config) => JSON.parse(config)),
   CHAT_PROVIDERS: ['telegram', 'slack', 'imessage'],
   IMESSAGE_GATEWAY_URL: 'https://imessage.example.com',
   imessageSetupSchema: { safeParse: () => ({ success: true, data: {} }) },
@@ -174,6 +176,41 @@ describe('chat-integrations access routes', () => {
   })
 
   // ── GET /:integrationId/access ─────────────────────────────────────────
+
+  describe('GET /:integrationId', () => {
+    it('never serializes provider credentials', async () => {
+      mockAuthRole.current = 'viewer'
+      mockGetChatIntegration.mockReturnValueOnce({
+        id: INTEGRATION_A,
+        agentSlug: 'agent-a',
+        provider: 'slack',
+        name: 'Team bot',
+        config: JSON.stringify({
+          botToken: 'xoxb-viewer-secret',
+          appToken: 'xapp-viewer-secret',
+          channelId: 'C123',
+          onlyMentioned: true,
+        }),
+        status: 'active',
+      } as never)
+
+      const res = await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}`,
+      )
+      const body = await res.json() as Record<string, unknown>
+
+      expect(res.status).toBe(200)
+      expect(body).not.toHaveProperty('config')
+      expect(body).toMatchObject({
+        id: INTEGRATION_A,
+        hasCredentials: true,
+        settings: { onlyMentioned: true },
+      })
+      expect(JSON.stringify(body)).not.toContain('xoxb-viewer-secret')
+      expect(JSON.stringify(body)).not.toContain('xapp-viewer-secret')
+      expect(JSON.stringify(body)).not.toContain('C123')
+    })
+  })
 
   describe('GET /:integrationId/access', () => {
     it('returns all access rows for the integration', async () => {

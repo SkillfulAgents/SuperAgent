@@ -2,7 +2,7 @@ import { IntegrationStatusCard } from './integration-status-card'
 import { IntegrationSettingsCard } from './integration-settings-card'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { IntegrationModelEffort } from './integration-settings-controls'
-import type { ChatIntegration } from '@shared/lib/db/schema'
+import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 
 export interface ChatIntegrationSidePanelProps {
   integration: ChatIntegration

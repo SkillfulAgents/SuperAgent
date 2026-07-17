@@ -25,7 +25,8 @@ import {
 import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-access-service'
 import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
-import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { validateChatIntegrationConfig, mergeChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, AgentUser, EntityAgentRole, ResolveAgent, getAgentId } from '../middleware/auth'
@@ -51,8 +52,8 @@ const IntegrationAgentRole = EntityAgentRole({
 // GET /api/chat-integrations/:integrationId - Get a single integration
 chatIntegrationsRouter.get('/:integrationId', IntegrationAgentRole('viewer'), async (c) => {
   try {
-    const integration = c.get('chatIntegration' as never)
-    return c.json(integration)
+    const integration = c.get('chatIntegration' as never) as NonNullable<ReturnType<typeof getChatIntegration>>
+    return c.json(toPublicChatIntegration(integration))
   } catch (error) {
     console.error('Failed to fetch chat integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'get-integration' }, extra: { integrationId: c.req.param('integrationId') } })
@@ -240,7 +241,7 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
 
     const integration = getChatIntegration(id)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
-    return c.json(integration, 201)
+    return c.json(integration ? toPublicChatIntegration(integration) : null, 201)
   } catch (error) {
     console.error('Failed to create chat integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'create-integration' }, extra: { agentSlug: c.req.param('id') } })
@@ -259,12 +260,19 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
       return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
     }
 
-    // Validate config if provided
+    // Merge with the stored credential-bearing config before validation. API
+    // clients never receive secrets, so omitted or masked credentials must keep
+    // their current values when a non-secret setting changes.
+    let mergedConfig: Record<string, unknown> | undefined
     if (config !== undefined) {
       const integration = c.get('chatIntegration' as never) as Awaited<ReturnType<typeof getChatIntegration>>
       if (integration) {
         try {
-          validateChatIntegrationConfig(integration.provider as ChatProvider, config)
+          mergedConfig = mergeChatIntegrationConfig(
+            integration.provider as ChatProvider,
+            integration.config,
+            config,
+          )
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Invalid config'
           return c.json({ error: `Invalid config: ${message}` }, 400)
@@ -275,7 +283,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     // Step 1: Persist DB updates first (config, name, showToolCalls)
     const updates: Record<string, unknown> = {}
     if (name !== undefined) updates.name = name
-    if (config !== undefined) updates.config = config
+    if (mergedConfig !== undefined) updates.config = mergedConfig
     if (showToolCalls !== undefined) updates.showToolCalls = showToolCalls
     if (sessionTimeout !== undefined) updates.sessionTimeout = sessionTimeout
     if (model !== undefined) updates.model = model
@@ -299,7 +307,7 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
 
     const updated = getChatIntegration(id)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
-    return c.json(updated)
+    return c.json(updated ? toPublicChatIntegration(updated) : null)
   } catch (error) {
     if (error instanceof DuplicateBotTokenError) {
       captureException(error, {
@@ -336,7 +344,7 @@ chatIntegrationsRouter.patch('/:integrationId/require-approval', IntegrationAgen
     }
     const updated = getChatIntegration(id)
     logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated', details: { requireApproval } })
-    return c.json(updated)
+    return c.json(updated ? toPublicChatIntegration(updated) : null)
   } catch (error) {
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'set-require-approval' }, extra: { integrationId: c.req.param('integrationId') } })
     return c.json({ error: 'Failed to update require approval' }, 500)

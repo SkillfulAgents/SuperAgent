@@ -7,6 +7,7 @@ import { db } from '@shared/lib/db'
 import { chatIntegrations, chatIntegrationSessions } from '@shared/lib/db/schema'
 import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
 import type { ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { mergeChatIntegrationConfig } from '@shared/lib/chat-integrations/config-schema'
 import { captureException } from '@shared/lib/error-reporting'
 
 export type { ChatIntegration, NewChatIntegration }
@@ -242,17 +243,20 @@ export function listChatIntegrationsByAgents(
 // ── Update ──────────────────────────────────────────────────────────────
 
 export function updateChatIntegration(id: string, params: UpdateChatIntegrationParams): boolean {
+  let nextConfig: Record<string, unknown> | undefined
+
   // Guard against a PATCH moving a token to one that's already owned by
   // another integration — would re-create SUP-150's duplicate-poller scenario.
   if (params.config !== undefined) {
     const current = getChatIntegration(id)
-    if (current) {
-      const newToken = extractUniqueKey(current.provider, params.config)
-      if (newToken) {
-        const duplicate = findIntegrationByUniqueKey(current.provider, newToken, id)
-        if (duplicate) {
-          throw new DuplicateBotTokenError(duplicate.id, current.provider)
-        }
+    if (!current) return false
+
+    nextConfig = mergeChatIntegrationConfig(current.provider, current.config, params.config)
+    const newToken = extractUniqueKey(current.provider, nextConfig)
+    if (newToken) {
+      const duplicate = findIntegrationByUniqueKey(current.provider, newToken, id)
+      if (duplicate) {
+        throw new DuplicateBotTokenError(duplicate.id, current.provider)
       }
     }
   }
@@ -262,7 +266,7 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
   }
 
   if (params.name !== undefined) updates.name = params.name
-  if (params.config !== undefined) updates.config = JSON.stringify(params.config)
+  if (nextConfig !== undefined) updates.config = JSON.stringify(nextConfig)
   if (params.showToolCalls !== undefined) updates.showToolCalls = params.showToolCalls
   if (params.requireApproval !== undefined) updates.requireApproval = params.requireApproval
   if (params.sessionTimeout !== undefined) updates.sessionTimeout = params.sessionTimeout
