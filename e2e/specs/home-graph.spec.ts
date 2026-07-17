@@ -85,23 +85,41 @@ test.describe('home connections graph', () => {
     const node = page.getByTestId(`graph-node-agent-${agent.slug}`)
     await expect(node).toBeVisible()
 
-    const box = await node.boundingBox()
-    expect(box).toBeTruthy()
-    if (!box) return
-
-    const persisted = page.waitForResponse(
-      (r) => r.url().includes('/api/user-settings') && r.request().method() === 'PUT' && r.ok(),
-    )
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-    await page.mouse.down()
-    await page.mouse.move(box.x + box.width / 2 + 120, box.y + box.height / 2 + 90, { steps: 6 })
-    await page.mouse.up()
-    await persisted // drag-stop → debounced settings write
-
-    const settings = await (await request.get('/api/user-settings')).json() as {
-      graphNodePositions?: Record<string, { x: number; y: number }>
+    // Sibling specs share this server: their agents fill the graph, and while
+    // they keep creating more, every structural change re-solves the layout
+    // and shifts every unpinned node. A bounding box measured before a
+    // reshuffle dangles — the mouse grabs empty canvas and pans instead of
+    // dragging. Re-fit, re-measure and retry until the settings write proves
+    // THIS node's position landed.
+    const savedPosition = async () => {
+      const settings = await (await request.get('/api/user-settings')).json() as {
+        graphNodePositions?: Record<string, { x: number; y: number }>
+      }
+      return settings.graphNodePositions?.[`agent:${agent.slug}`]
     }
-    expect(settings.graphNodePositions?.[`agent:${agent.slug}`]).toBeTruthy()
+    let landed = false
+    for (let attempt = 0; attempt < 5 && !landed; attempt++) {
+      // Late-created agents can push the grid past the initial viewport;
+      // re-fitting keeps the target node on screen for the grab.
+      await page.locator('.react-flow__controls-fitview').click()
+      const box = await node.boundingBox()
+      if (!box) continue
+      const persisted = page
+        .waitForResponse(
+          (r) => r.url().includes('/api/user-settings') && r.request().method() === 'PUT' && r.ok(),
+          { timeout: 4000 },
+        )
+        .catch(() => null)
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(box.x + box.width / 2 + 120, box.y + box.height / 2 + 90, { steps: 6 })
+      await page.mouse.up()
+      await persisted // drag-stop → debounced settings write (or a missed grab timing out)
+      // A missed grab can still drag a NEIGHBORING node and fire the PUT —
+      // only the target agent's saved position counts as success.
+      landed = (await savedPosition()) !== undefined
+    }
+    expect(landed).toBe(true)
 
     const cleared = page.waitForResponse(
       (r) => r.url().includes('/api/user-settings') && r.request().method() === 'PUT' && r.ok(),
