@@ -2,7 +2,7 @@ import type { ContainerClient, ContainerConfig, ImagePullProgress } from './type
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { DockerContainerClient } from './docker-container-client'
 import { PodmanContainerClient } from './podman-container-client'
-import { AppleContainerClient } from './apple-container-client'
+import { AppleContainerClient, ensureAppleContainerReady, stopAppleContainerRuntime } from './apple-container-client'
 import { LimaContainerClient, getNerdctlWrapperPath, ensureLimaReady, stopLimaVm } from './lima-container-client'
 import { WSL2ContainerClient, getWSL2NerdctlWrapperPath, ensureWSL2Ready, stopWSL2Distro, killWSL2PullProcesses } from './wsl2-container-client'
 import { PlatformK8sRuntimeClient } from './platform-k8s-runtime'
@@ -40,7 +40,10 @@ export interface RunnerAvailability {
   running: boolean
   /** Overall availability (installed AND running) */
   available: boolean
-  /** If installed but not running, can we attempt to start it? */
+  /**
+   * Whether the UI can offer Start/Install via startRunner.
+   * True when the runtime can be started, or (for apple-container) first-installed.
+   */
   canStart: boolean
   /** Whether settings.container.agentImage is honored by this runner. */
   supportsCustomAgentImage: boolean
@@ -82,7 +85,7 @@ const ALL_RUNNERS: {
    */
   killStalledPull?: () => Promise<void>
 }[] = [
-  { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning(), shutdownRuntime: () => execWithPath('container system stop').then(() => {}) },
+  { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning(), shutdownRuntime: () => stopAppleContainerRuntime() },
   { name: 'docker', cliCommand: 'docker', isEligible: () => DockerContainerClient.isEligible(), isAvailable: () => DockerContainerClient.isAvailable(), isRunning: () => DockerContainerClient.isRunning() },
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
   { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), reconcileRuntimeState: () => LimaContainerClient.reconcileRuntimeState(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
@@ -94,10 +97,15 @@ const ALL_RUNNERS: {
 /**
  * Supported container runners on this platform, filtered by eligibility.
  * Order reflects preference (apple-container first on macOS 26+, then docker, then podman).
+ * Recomputed on refresh so a transient sw_vers failure does not hide Apple forever.
  */
-export const SUPPORTED_RUNNERS: ContainerRunner[] = ALL_RUNNERS
+export let SUPPORTED_RUNNERS: ContainerRunner[] = ALL_RUNNERS
   .filter((r) => r.isEligible())
   .map((r) => r.name)
+
+function recomputeSupportedRunners(): void {
+  SUPPORTED_RUNNERS = ALL_RUNNERS.filter((r) => r.isEligible()).map((r) => r.name)
+}
 
 /**
  * User-facing display name for a runner.
@@ -171,22 +179,31 @@ function canAttemptStart(runner: ContainerRunner): boolean {
  * Returns true if start was attempted (not necessarily successful).
  */
 // TODO: disgusting piece of code. The whole idea of having the container client classes is that they should encapsulate all runtime-specific logic, including starting the runtime if needed. We should move this logic into static methods on each client class, e.g., DockerContainerClient.startRuntime(), PodmanContainerClient.startRuntime(), etc. Then this function can just delegate to the appropriate class without needing to know about platform-specific details here. Refactor this in the future to clean up the code and adhere to better separation of concerns.
-export async function startRunner(runner: ContainerRunner): Promise<StartRunnerResult> {
+export async function startRunner(
+  runner: ContainerRunner,
+  onProgress?: (progress: ImagePullProgress) => void,
+  options?: { allowInstall?: boolean },
+): Promise<StartRunnerResult> {
   const os = platform()
 
   if (runner === 'apple-container') {
     try {
-      await execWithPath('container system start')
-      return { success: true, message: 'Apple Container runtime is starting...' }
+      await ensureAppleContainerReady(
+        onProgress
+          ? (p) => onProgress({ status: p.status, percent: p.percent, completedLayers: 0, totalLayers: 0 })
+          : undefined,
+        { allowInstall: options?.allowInstall === true },
+      )
+      return { success: true, message: 'Apple Container runtime is running.' }
     } catch (error: any) {
-      if (error.message?.includes('already running')) {
-        return { success: true, message: 'Apple Container runtime is already running.' }
-      }
       captureException(error, {
         tags: { component: 'runtime', operation: 'start-apple-container' },
         extra: { platform: os },
       })
-      return { success: false, message: `Failed to start Apple Container runtime: ${error.message}` }
+      return {
+        success: false,
+        message: error?.message || 'Failed to start Apple Container runtime.',
+      }
     }
   }
 
@@ -318,12 +335,13 @@ async function checkRunnerDetailedAvailability(runner: ContainerRunner): Promise
   const installed = await entry.isAvailable()
 
   if (!installed) {
+    // apple-container only: Start/Install provisions (other runners keep installUrl fallthrough).
     return {
       runner,
       installed: false,
       running: false,
       available: false,
-      canStart: false,
+      canStart: runner === 'apple-container',
       supportsCustomAgentImage,
     }
   }
@@ -374,6 +392,7 @@ export async function checkAllRunnersAvailability(): Promise<RunnerAvailability[
  * Call this after starting a runner or when user requests refresh.
  */
 export async function refreshRunnerAvailability(): Promise<RunnerAvailability[]> {
+  recomputeSupportedRunners()
   cachedRunnerAvailability = null
   runnerAvailabilityCachedAt = 0
   return checkAllRunnersAvailability()

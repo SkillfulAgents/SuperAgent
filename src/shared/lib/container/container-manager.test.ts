@@ -109,13 +109,23 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
 }))
 
+const mockSettingsState = {
+  containerRunner: 'docker' as string,
+}
+
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => ({ container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }),
+  getSettings: () => ({
+    container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
+    app: {},
+  }),
   updateSettings: vi.fn(),
   // the runner auto-switch now persists via mutateSettings; apply the
   // mutator to a fresh snapshot and return it (matching the real return shape).
   mutateSettings: (mutator: (s: { container: { agentImage: string; containerRunner: string }; app: Record<string, unknown> }) => void) => {
-    const s = { container: { agentImage: 'test-image', containerRunner: 'docker' }, app: {} }
+    const s = {
+      container: { agentImage: 'test-image', containerRunner: mockSettingsState.containerRunner },
+      app: {},
+    }
     mutator(s)
     return s
   },
@@ -647,7 +657,7 @@ describe('containerManager — health warnings', () => {
 // ensureImageReady — state machine (CHECKING -> READY / ERROR / RUNTIME_UNAVAILABLE)
 // ============================================================================
 
-import { checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage } from './client-factory'
+import { checkAllRunnersAvailability, checkImageExists, pullImage, canBuildImage, buildImage, startRunner } from './client-factory'
 
 describe('containerManager.ensureImageReady — state machine', () => {
   const originalE2eMock = process.env.E2E_MOCK
@@ -656,6 +666,7 @@ describe('containerManager.ensureImageReady — state machine', () => {
     vi.clearAllMocks()
     containerManager.clearClients()
     delete process.env.E2E_MOCK
+    mockSettingsState.containerRunner = 'docker'
     // Default: plenty of disk space (100 GB)
     mockStatfs.mockResolvedValue({ bavail: 100 * 1024 * 1024 * 1024 / 4096, bsize: 4096 })
   })
@@ -705,6 +716,26 @@ describe('containerManager.ensureImageReady — state machine', () => {
     const readiness = containerManager.getReadiness()
     expect(readiness.status).toBe('RUNTIME_UNAVAILABLE')
     expect(readiness.message).toContain('docker')
+  })
+
+  it('does not auto-provision apple-container when CLI is missing (no silent elevate)', async () => {
+    mockSettingsState.containerRunner = 'apple-container'
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      {
+        runner: 'apple-container',
+        installed: false,
+        running: false,
+        available: false,
+        canStart: true,
+        supportsCustomAgentImage: true,
+      },
+    ])
+
+    await containerManager.ensureImageReady()
+
+    expect(startRunner).not.toHaveBeenCalled()
+    const readiness = containerManager.getReadiness()
+    expect(readiness.status).toBe('RUNTIME_UNAVAILABLE')
   })
 
   it('pulls image when runner available but image does not exist', async () => {
@@ -1105,6 +1136,35 @@ describe('containerManager.resetReadiness', () => {
     containerManager.resetReadiness()
 
     expect(containerManager.getReadiness().message).toBe('Restarting runtime...')
+  })
+})
+
+describe('containerManager start/fail guards vs PULLING_IMAGE', () => {
+  it.each([
+    {
+      label: 'markRuntimeUnavailable',
+      act: () => containerManager.markRuntimeUnavailable('should be ignored'),
+      assert: () => expect(containerManager.getReadiness().status).toBe('PULLING_IMAGE'),
+    },
+    {
+      label: 'updateStartProgress',
+      act: () =>
+        containerManager.updateStartProgress({
+          status: 'Downloading...',
+          percent: 50,
+          completedLayers: 0,
+          totalLayers: 0,
+        }),
+      assert: () => expect(containerManager.getReadiness().pullProgress?.percent).toBe(10),
+    },
+  ])('$label does NOT override PULLING_IMAGE', ({ act, assert }) => {
+    ;(containerManager as any)._readiness = {
+      status: 'PULLING_IMAGE',
+      message: 'Pulling...',
+      pullProgress: { status: 'layer', percent: 10, completedLayers: 1, totalLayers: 3 },
+    }
+    act()
+    assert()
   })
 })
 

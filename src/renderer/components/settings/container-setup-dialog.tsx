@@ -12,7 +12,8 @@ import { useSettings, useStartRunner, useRefreshAvailability } from '@renderer/h
 import { getPlatform } from '@renderer/lib/env'
 import { Wsl2InstallGuide } from '@renderer/components/wizard/wsl2-install-guide'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
-import { Play, Loader2, ExternalLink, Check, RefreshCw } from 'lucide-react'
+import { RuntimeProvisionProgress } from '@renderer/components/runtime/runtime-provision-progress'
+import { Play, Download, Loader2, ExternalLink, Check, RefreshCw } from 'lucide-react'
 
 interface ContainerSetupDialogProps {
   open: boolean
@@ -22,8 +23,8 @@ interface ContainerSetupDialogProps {
 const RUNTIME_INFO: Record<string, { name: string; description: string; installUrl: string; icon: string }> = {
   'apple-container': {
     name: 'macOS Container',
-    description: 'Native container runtime built into macOS. Fast and lightweight with no extra software needed.',
-    installUrl: 'https://github.com/apple/container',
+    description: 'Apple\'s container runtime for macOS. Gamut can install it for you (administrator password required).',
+    installUrl: '',
     icon: '🍎',
   },
   docker: {
@@ -71,6 +72,7 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
   const showWsl2Guide = isWindows && wsl2Runtime && !wsl2Runtime.installed
 
   const handleStartRunner = async (runner: string) => {
+    startRunner.reset()
     try {
       await startRunner.mutateAsync(runner)
     } catch (error) {
@@ -159,7 +161,7 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
                       {runtime.info.description}
                     </p>
                     <div className="mt-2">
-                      {runtime.available ? (
+                      {runtime.available && !startRunner.isProvisioning(runtime.runner) ? (
                         <Button
                           size="sm"
                           variant="outline"
@@ -169,21 +171,33 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
                           <Check className="h-3 w-3 mr-1" />
                           Ready to use
                         </Button>
-                      ) : runtime.installed && runtime.canStart ? (
-                        <Button
-                          size="sm"
-                          className="h-7 text-xs"
-                          onClick={() => handleStartRunner(runtime.runner)}
-                          disabled={startRunner.isPending}
-                        >
-                          {startRunner.isPending ? (
-                            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                          ) : (
-                            <Play className="h-3 w-3 mr-1" />
+                      ) : runtime.canStart || startRunner.isProvisioning(runtime.runner) ? (
+                        <div className="space-y-2">
+                          {runtime.canStart && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              onClick={() => handleStartRunner(runtime.runner)}
+                              disabled={startRunner.isPending}
+                            >
+                              {startRunner.isPending && startRunner.variables === runtime.runner ? (
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                              ) : runtime.installed ? (
+                                <Play className="h-3 w-3 mr-1" />
+                              ) : (
+                                <Download className="h-3 w-3 mr-1" />
+                              )}
+                              {runtime.installed ? `Start ${runtime.info.name}` : `Install ${runtime.info.name}`}
+                            </Button>
                           )}
-                          Start {runtime.info.name}
-                        </Button>
-                      ) : (
+                          {startRunner.isProvisioning(runtime.runner) && (
+                            <RuntimeProvisionProgress
+                              progress={settings?.runtimeReadiness?.pullProgress}
+                            />
+                          )}
+                        </div>
+                      ) : runtime.info.installUrl ? (
                         <Button
                           size="sm"
                           variant="outline"
@@ -193,7 +207,7 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
                           <ExternalLink className="h-3 w-3 mr-1" />
                           Install {runtime.info.name}
                         </Button>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -201,15 +215,15 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
             </div>
           </div>
 
-          {startRunner.error && getRunnerSetupPayload(startRunner.error) ? (
-            <RunnerSetupErrorPanel error={startRunner.error} />
-          ) : startRunner.error ? (
+          {startRunner.displayError && getRunnerSetupPayload(startRunner.displayError) ? (
+            <RunnerSetupErrorPanel error={startRunner.displayError} />
+          ) : startRunner.displayError ? (
             <p className="text-sm text-destructive">
-              {startRunner.error.message}
+              {startRunner.displayError.message}
             </p>
           ) : null}
 
-          {startRunner.isSuccess && startRunner.data?.message && (
+          {startRunner.isSuccess && startRunner.data?.message && !startRunner.displayError && (
             <p className="text-sm text-green-600 dark:text-green-400">
               {startRunner.data.message}
             </p>
