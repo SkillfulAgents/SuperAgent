@@ -15,6 +15,7 @@ import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { AgentSettingsDialog } from '@renderer/components/agents/agent-settings-dialog'
+import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
@@ -288,28 +289,32 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between gap-2 intro-step intro-step-1">
-            <InlineEditableTitle
-              value={agent.name}
-              canEdit={isOwner}
-              isSaving={updateAgent.isPending}
-              onSave={async (name) => {
-                await updateAgent.mutateAsync({ slug: agent.slug, name })
-              }}
-              onError={(error) => {
-                console.error('Failed to rename agent:', error)
-                toast.error('Failed to rename agent', {
-                  description: error instanceof Error ? error.message : 'Please try again.',
-                })
-              }}
-              displayClassName="text-xl font-semibold"
-              inputClassName="h-9 text-xl font-semibold"
-              saveButtonClassName="h-8 w-8"
-              ariaLabel="Rename agent"
-              saveAriaLabel="Save name"
-              displayTestId="agent-name"
-              inputTestId="agent-name-input"
-              saveButtonTestId="agent-name-save"
-            />
+            <AgentContextMenu agent={agent}>
+              <div className="flex-1 min-w-0 cursor-context-menu">
+                <InlineEditableTitle
+                  value={agent.name}
+                  canEdit={isOwner}
+                  isSaving={updateAgent.isPending}
+                  onSave={async (name) => {
+                    await updateAgent.mutateAsync({ slug: agent.slug, name })
+                  }}
+                  onError={(error) => {
+                    console.error('Failed to rename agent:', error)
+                    toast.error('Failed to rename agent', {
+                      description: error instanceof Error ? error.message : 'Please try again.',
+                    })
+                  }}
+                  displayClassName="text-xl font-semibold"
+                  inputClassName="h-9 text-xl font-semibold"
+                  saveButtonClassName="h-8 w-8"
+                  ariaLabel="Rename agent"
+                  saveAriaLabel="Save name"
+                  displayTestId="agent-name"
+                  inputTestId="agent-name-input"
+                  saveButtonTestId="agent-name-save"
+                />
+              </div>
+            </AgentContextMenu>
             {/* AgentHome owns the settings dialog (no onOpenSettings prop), so the
                 gear opens the local handler rather than a parent-supplied one. */}
             <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => handleOpenSettings()} aria-label="Agent settings" data-testid="agent-settings-button">

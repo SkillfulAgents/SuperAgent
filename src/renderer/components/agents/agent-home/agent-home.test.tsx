@@ -109,6 +109,11 @@ vi.mock('@renderer/context/nav-transient-context', () => ({
 vi.mock('@renderer/components/agents/agent-settings-dialog', () => ({
   AgentSettingsDialog: () => null,
 }))
+vi.mock('@renderer/components/agents/agent-context-menu', () => ({
+  AgentContextMenu: ({ agent, children }: { agent: ApiAgent; children: React.ReactNode }) => (
+    <div data-testid="agent-title-context-menu" data-agent-slug={agent.slug}>{children}</div>
+  ),
+}))
 vi.mock('@renderer/components/agents/system-prompt-dialog', () => ({
   SystemPromptDialog: () => null,
 }))
@@ -238,6 +243,16 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
+  })
+
+  it('reuses the agent context menu on the agent title', () => {
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const contextMenu = screen.getByTestId('agent-title-context-menu')
+    expect(contextMenu).toHaveAttribute('data-agent-slug', 'test-agent')
+    expect(contextMenu).toContainElement(screen.getByTestId('agent-name'))
   })
 
   it('renames the agent inline for owners', async () => {
