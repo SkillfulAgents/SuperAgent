@@ -377,7 +377,7 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('home-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('disables input when createSession is pending', () => {
@@ -385,7 +385,7 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('home-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('disables input when uploading', () => {
@@ -393,12 +393,12 @@ describe('AgentHome', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
-    expect(screen.getByTestId('home-message-input')).toBeDisabled()
+    expect(screen.getByTestId('home-message-input')).toHaveAttribute('aria-disabled', 'true')
   })
 
   // --- Auto-expand ---
 
-  it('auto-expands to full view when the textarea overflows its max-height', () => {
+  it('auto-expands to full view when the editor overflows its max-height', async () => {
     // jsdom doesn't compute layout, so stub scrollHeight > clientHeight to
     // simulate content overflowing the CSS-driven 6-line cap.
     const origScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
@@ -411,7 +411,9 @@ describe('AgentHome', () => {
         <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
       )
 
-      expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
+      await waitFor(() => {
+        expect(screen.getByTestId('home-message-input').className).toContain('min-h-[50vh]')
+      })
     } finally {
       if (origScroll) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', origScroll)
       if (origClient) Object.defineProperty(HTMLElement.prototype, 'clientHeight', origClient)

@@ -129,7 +129,7 @@ test.describe('Stop button interrupts the working agent', () => {
     // The queued message was never picked up — after the idle grace period its
     // ghost is removed and its text is restored into the composer draft
     await expect(ghost).not.toBeAttached({ timeout: 10000 })
-    await expect(sessionPage.getMessageInput()).toHaveValue(queuedText, { timeout: 10000 })
+    await expect(sessionPage.getMessageInput()).toHaveText(queuedText, { timeout: 10000 })
 
     // Resend the rescued text — it goes out as a fresh turn and persists as a
     // real user message
@@ -189,8 +189,8 @@ test.describe('Stop button interrupts the working agent', () => {
     // batching may merge them in either order — assert presence, not order).
     await expect(ghosts).toHaveCount(0, { timeout: 10000 })
     const composer = sessionPage.getMessageInput()
-    await expect(composer).toHaveValue(new RegExp('first rescue candidate'), { timeout: 10000 })
-    await expect(composer).toHaveValue(new RegExp('second rescue candidate'))
+    await expect(composer).toHaveText(new RegExp('first rescue candidate'), { timeout: 10000 })
+    await expect(composer).toHaveText(new RegExp('second rescue candidate'))
 
     // Neither queued message ever reached the transcript — only the original
     // send and the interrupt marker the abort appended.

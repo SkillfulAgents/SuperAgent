@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
 
 // QuickDispatch wires the reused composer to the launcher's window IPC. These
 // tests exercise its OWN logic — default-agent selection, the Enter handler, and
@@ -172,6 +173,45 @@ describe('QuickDispatch', () => {
 
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(composerMock.handleSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('live-renders Markdown and keeps Markdown in composer state', async () => {
+    const user = userEvent.setup()
+    installElectronAPI()
+    render(<QuickDispatch />)
+    const input = await screen.findByTestId('quick-dispatch-input')
+
+    await user.type(input, '**important**')
+
+    expect(input.querySelector('strong')).toHaveTextContent('important')
+    expect(composerMock.setMessage).toHaveBeenLastCalledWith('**important**')
+  })
+
+  it('dispatches with Cmd+Enter from inside a rich list', async () => {
+    const user = userEvent.setup()
+    installElectronAPI()
+    render(<QuickDispatch />)
+    const input = await screen.findByTestId('quick-dispatch-input')
+
+    await user.type(input, '- item')
+    expect(input.querySelector('li')).toHaveTextContent('item')
+    composerMock.handleSubmit.mockClear()
+    await user.keyboard('{Meta>}{Enter}{/Meta}')
+
+    expect(composerMock.handleSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('focuses and selects all rich content when the launcher is shown again', async () => {
+    composerMock.message = '**important**'
+    const listeners = installElectronAPI()
+    render(<QuickDispatch />)
+    const input = await screen.findByTestId('quick-dispatch-input')
+    await waitFor(() => expect(listeners.shown).toBeTypeOf('function'))
+
+    act(() => listeners.shown())
+
+    expect(document.activeElement).toBe(input)
+    expect(window.getSelection()?.toString()).toBe('important')
   })
 
   it('keeps the typed message in the input until the dispatch completes', () => {

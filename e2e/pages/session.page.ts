@@ -7,7 +7,7 @@ export class SessionPage {
   constructor(private page: Page) {}
 
   /**
-   * Get the message input textarea (handles both home page and chat page)
+   * Get the rich message editor (handles both home page and chat page)
    */
   getMessageInput() {
     // Try regular message input first, then home page input
@@ -128,7 +128,7 @@ export class SessionPage {
   async typeMessage(content: string) {
     const input = await this.getEnabledMessageInput()
     await input.fill(content)
-    await expect(input).toHaveValue(content)
+    await expect(input).toHaveText(content)
   }
 
   /**

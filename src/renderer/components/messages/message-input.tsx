@@ -58,7 +58,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     agentKey: agentSlug,
     agentDefaultsReady: agentPrefsFetched,
   })
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const textareaRef = useRef<HTMLDivElement>(null)
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
@@ -166,8 +166,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     textareaRef.current?.focus()
   }, [composer])
 
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value
+  const handleChange = useCallback((value: string) => {
     composer.setMessage(value)
 
     // Open slash menu when input is "/" followed by optional non-space chars (still typing command)
@@ -202,7 +201,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     // Slash command menu keyboard navigation
     if (slashMenuOpen && filteredCommands.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -234,7 +233,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
       // mid-thought. Desktop (fine pointer) keeps Enter-to-send unchanged.
       if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
       e.preventDefault()
-      composer.handleSubmit(e)
+      void composer.handleSubmit(e)
     }
   }
 

@@ -19,6 +19,10 @@ import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { toast } from 'sonner'
 import { AgentMenu, AttachMenu, ModelEffortMenu } from './quick-dispatch-menus'
 import { EFFORT_LABELS } from '@renderer/components/messages/effort-slider'
+import {
+  MarkdownComposerEditor,
+  selectAllMarkdownComposer,
+} from '@renderer/components/messages/markdown-composer-editor'
 
 type OpenMenu = 'agent' | 'model' | 'attach' | null
 
@@ -96,7 +100,7 @@ export function QuickDispatch() {
     agentDefaultsReady: agentPrefsFetched,
   })
   const createSession = useCreateSession()
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const editorRef = useRef<HTMLDivElement | null>(null)
 
   const selectedModel =
     findCatalogModel(composerOptions.model, composerOptions.catalog) ??
@@ -159,10 +163,9 @@ export function QuickDispatch() {
   useEffect(() => {
     const unsub = window.electronAPI?.onQuickDispatchShown?.(() => {
       setOpenMenu(null)
-      const el = textareaRef.current
+      const el = editorRef.current
       if (el) {
-        el.focus()
-        el.select()
+        selectAllMarkdownComposer(el)
       }
     })
     return () => unsub?.()
@@ -274,7 +277,7 @@ export function QuickDispatch() {
   const handleWindowDragStart = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
     // Never start a window-drag from controls, text fields, or the menus.
-    if ((e.target as HTMLElement).closest('button, input, textarea, a, [data-no-window-drag]')) return
+    if ((e.target as HTMLElement).closest('button, input, textarea, a, [contenteditable="true"], [data-no-window-drag]')) return
     const startX = e.screenX
     const startY = e.screenY
     window.electronAPI?.quickDispatchDragStart?.()
@@ -320,12 +323,12 @@ export function QuickDispatch() {
   const toggleMenu = (menu: Exclude<OpenMenu, null>) =>
     setOpenMenu((prev) => (prev === menu ? null : menu))
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     // Enter (and ⌘/Ctrl+Enter) dispatches; Shift+Enter inserts a newline.
     // Matches the main app's composer (submit on `Enter && !shiftKey`).
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      composer.handleSubmit(e)
+      void composer.handleSubmit(e)
     }
   }
 
@@ -354,26 +357,28 @@ export function QuickDispatch() {
         {/* Input row — large, borderless, full-width like Raycast's search
             field. File drops are handled at the panel root (any file dragged
             anywhere over the window attaches here). */}
-        <div className="px-4 pt-3.5 pb-2.5">
+        <div
+          className="px-4 pt-3.5 pb-2.5"
+          onPaste={composer.handlePaste}
+          onFocus={() => setOpenMenu(null)}
+        >
           {composer.attachments.length > 0 && (
             <div className="mb-2">
               <AttachmentPreview attachments={composer.attachments} onRemove={composer.removeAttachment} />
             </div>
           )}
-          <textarea
-            ref={textareaRef}
-            dir="auto"
+          <MarkdownComposerEditor
             value={composer.message}
-            onChange={(e) => composer.setMessage(e.target.value)}
+            onChange={composer.setMessage}
             onKeyDown={handleKeyDown}
-            onPaste={composer.handlePaste}
-            onFocus={() => setOpenMenu(null)}
             placeholder={selectedAgent ? `Dispatch ${selectedAgent.name}…` : 'Dispatch an agent…'}
             disabled={isDisabled}
-            rows={1}
+            minRows={1}
             autoFocus
-            data-testid="quick-dispatch-input"
-            className="max-h-[200px] w-full resize-none bg-transparent text-[15px] leading-relaxed outline-none [field-sizing:content] placeholder:text-muted-foreground/70 disabled:opacity-60"
+            dataTestId="quick-dispatch-input"
+            enterKeyHint="send"
+            className="max-h-[200px] w-full bg-transparent text-[15px] leading-relaxed outline-none"
+            onEditorElement={(element) => { editorRef.current = element }}
           />
         </div>
 

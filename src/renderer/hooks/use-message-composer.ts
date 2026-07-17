@@ -116,12 +116,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     })
   }, [])
 
-  const removeSecuredSecrets = useCallback((
-    secrets: SecuredSecret[],
-    range: { start: number; end: number }
-  ) => {
+  const removeSecuredSecrets = useCallback((secrets: SecuredSecret[]) => {
     const secretIds = new Set(secrets.map((secret) => secret.id))
-    setMessage((current) => `${current.slice(0, range.start)}${current.slice(range.end)}`)
     setSecuredSecrets((current) => current.filter((secret) => !secretIds.has(secret.id)))
   }, [])
 
@@ -179,7 +175,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     setPendingFolders([])
   }, [pendingFolders, addFoldersDirectly, addMounts])
 
-  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLElement>) => {
     const items = e.clipboardData?.items
     if (!items) return
 
@@ -197,7 +193,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
   }, [addFiles])
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: Pick<React.FormEvent, 'preventDefault'>) => {
     e.preventDefault()
 
     // Stop voice recording first and await the final text: stopRecording flushes
