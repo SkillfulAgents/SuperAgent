@@ -4,6 +4,7 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
 import {
@@ -31,6 +32,19 @@ import { useNavigate, useParams } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { Trash2, ClipboardCopy, Pencil } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
+import type { SessionUsageTotals } from '@shared/lib/types/usage'
+
+type UsageState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'success'; totals: SessionUsageTotals }
+  | { status: 'error' }
+
+function formatCost(cost: number): string {
+  if (cost > 0 && cost < 0.0001) return '<$0.0001'
+  const digits = cost > 0 && cost < 0.01 ? 4 : 2
+  return `$${cost.toFixed(digits)}`
+}
 
 interface SessionContextMenuProps {
   sessionId: string
@@ -49,7 +63,9 @@ export function SessionContextMenu({
   const [showRenameDialog, setShowRenameDialog] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [newName, setNewName] = useState(sessionName)
+  const [usage, setUsage] = useState<UsageState>({ status: 'idle' })
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const usageRequestRef = useRef(0)
   const deleteSession = useDeleteSession()
   const updateSessionName = useUpdateSessionName()
   const navigate = useNavigate()
@@ -102,9 +118,31 @@ export function SessionContextMenu({
     }
   }
 
+  const handleMenuOpenChange = (open: boolean) => {
+    if (!open) return
+
+    const requestId = ++usageRequestRef.current
+    setUsage({ status: 'loading' })
+
+    void apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/usage`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Failed to fetch session usage')
+        const totals = (await response.json()) as SessionUsageTotals
+        if (usageRequestRef.current === requestId) {
+          setUsage({ status: 'success', totals })
+        }
+      })
+      .catch((error) => {
+        if (usageRequestRef.current === requestId) {
+          console.error('Failed to fetch session usage:', error)
+          setUsage({ status: 'error' })
+        }
+      })
+  }
+
   return (
     <>
-      <ContextMenu>
+      <ContextMenu onOpenChange={handleMenuOpenChange}>
         <ContextMenuTrigger asChild>
           {children}
         </ContextMenuTrigger>
@@ -135,6 +173,35 @@ export function SessionContextMenu({
               Delete Session
             </ContextMenuItem>
           )}
+          <ContextMenuSeparator />
+          <div
+            className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 px-2 py-1.5 text-xs"
+            data-testid="session-usage-totals"
+          >
+            {usage.status === 'loading' || usage.status === 'idle' ? (
+              <span className="col-span-2 text-muted-foreground">Calculating usage...</span>
+            ) : usage.status === 'error' ? (
+              <span className="col-span-2 text-muted-foreground">Usage unavailable</span>
+            ) : (
+              <>
+                <span className="text-muted-foreground">Cost</span>
+                <span className="text-right tabular-nums">
+                  {usage.totals.priceMissing
+                    ? 'Model price missing'
+                    : formatCost(usage.totals.totalCost)}
+                </span>
+                <span className="text-muted-foreground">Tokens</span>
+                <span className="text-right tabular-nums">
+                  {usage.totals.totalTokens.toLocaleString('en-US')}
+                </span>
+                {usage.totals.usageIncomplete && (
+                  <span className="col-span-2 text-amber-600 dark:text-amber-400">
+                    Warning: usage may be incomplete
+                  </span>
+                )}
+              </>
+            )}
+          </div>
         </ContextMenuContent>
       </ContextMenu>
 

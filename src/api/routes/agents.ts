@@ -134,6 +134,7 @@ import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/servic
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
 import { Readable } from 'stream'
@@ -1597,6 +1598,26 @@ agents.get('/:id/sessions/:sessionId/raw-log', AgentRead(), async (c) => {
   } catch (error) {
     console.error('Failed to fetch raw log:', error)
     return c.json({ error: 'Failed to fetch raw log' }, 500)
+  }
+})
+
+// GET /api/agents/:id/sessions/:sessionId/usage - Calculate all-time usage for a session
+agents.get('/:id/sessions/:sessionId/usage', AgentRead(), async (c) => {
+  try {
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+
+    if (!(await sessionExists(agentSlug, sessionId))) {
+      return c.json({ error: 'Session not found' }, 404)
+    }
+
+    const sessionPath = getSessionJsonlPath(agentSlug, sessionId)
+    const providerId = getSettings().llmProvider ?? 'anthropic'
+    const totals = await loadSessionUsageTotals({ sessionPath, providerId })
+    return c.json(totals)
+  } catch (error) {
+    console.error('Failed to calculate session usage:', error)
+    return c.json({ error: 'Failed to calculate session usage' }, 500)
   }
 })
 
