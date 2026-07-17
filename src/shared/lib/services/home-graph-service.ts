@@ -212,14 +212,32 @@ export async function buildHomeGraph(scope: HomeGraphScope): Promise<HomeGraphDa
 
   const [accountLinkRows, mcpLinkRows, permissionRows, webhooksByAgent, cronsByAgent, invocations, accountUsage, mcpUsage] =
     await Promise.all([
+      // Junction rows for visible agents — but in auth mode joined to the
+      // accounts/servers table and filtered to the CALLER's own, so a shared
+      // agent never leaks another user's account/MCP ids in the payload
+      // (the account/MCP node list is already user-scoped, so a foreign
+      // link would be dropped client-side anyway — this stops the raw id
+      // from reaching the wire at all). Same rule as the usage rollups.
       db
         .select({ agentSlug: agentConnectedAccounts.agentSlug, accountId: agentConnectedAccounts.connectedAccountId })
         .from(agentConnectedAccounts)
-        .where(inArray(agentConnectedAccounts.agentSlug, agentSlugs)),
+        .innerJoin(connectedAccounts, eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id))
+        .where(
+          and(
+            inArray(agentConnectedAccounts.agentSlug, agentSlugs),
+            userId ? eq(connectedAccounts.userId, userId) : undefined,
+          ),
+        ),
       db
         .select({ agentSlug: agentRemoteMcps.agentSlug, mcpId: agentRemoteMcps.remoteMcpId })
         .from(agentRemoteMcps)
-        .where(inArray(agentRemoteMcps.agentSlug, agentSlugs)),
+        .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
+        .where(
+          and(
+            inArray(agentRemoteMcps.agentSlug, agentSlugs),
+            userId ? eq(remoteMcpServers.userId, userId) : undefined,
+          ),
+        ),
       db
         .select({ caller: xAgentPolicies.callerAgentSlug, target: xAgentPolicies.targetAgentSlug })
         .from(xAgentPolicies)

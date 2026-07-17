@@ -3218,12 +3218,19 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
     const slug = getAgentId(c)
     const accountId = c.req.param('accountId')
 
-    const filtered = await db
-      .select()
+    // Owner-scope the account in auth mode: a co-tenant with `user` role on a
+    // shared agent must NOT be able to sever another user's account link just
+    // by knowing its id. Mirrors the POST sibling's ownerScope guard.
+    const [found] = await db
+      .select({ id: agentConnectedAccounts.id })
       .from(agentConnectedAccounts)
-      .where(eq(agentConnectedAccounts.agentSlug, slug))
-
-    const found = filtered.find((m) => m.connectedAccountId === accountId)
+      .innerJoin(connectedAccounts, eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id))
+      .where(and(
+        eq(agentConnectedAccounts.agentSlug, slug),
+        eq(agentConnectedAccounts.connectedAccountId, accountId),
+        ownerScope(c, connectedAccounts.userId),
+      ))
+      .limit(1)
 
     if (!found) {
       return c.json({ error: 'Account mapping not found' }, 404)
@@ -3336,13 +3343,17 @@ agents.delete('/:id/remote-mcps/:mcpId', AgentUser(), async (c) => {
     const slug = getAgentId(c)
     const mcpId = c.req.param('mcpId')
 
+    // Owner-scope the server in auth mode (see connected-accounts DELETE): a
+    // shared agent's co-tenant must not unlink another user's MCP server.
     const [mapping] = await db
-      .select()
+      .select({ id: agentRemoteMcps.id })
       .from(agentRemoteMcps)
+      .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
       .where(
         and(
           eq(agentRemoteMcps.agentSlug, slug),
-          eq(agentRemoteMcps.remoteMcpId, mcpId)
+          eq(agentRemoteMcps.remoteMcpId, mcpId),
+          ownerScope(c, remoteMcpServers.userId)
         )
       )
       .limit(1)
@@ -5082,6 +5093,26 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
 // X-Agent invoke policies (per-agent remembered cross-agent permissions)
 // =============================================================================
 
+/**
+ * Agents the caller may see: their agentAcl entries in auth mode, everything
+ * in non-auth mode (null = no restriction). One query, reused by the policy
+ * read + write paths so their visibility rules can't drift.
+ */
+async function callerVisibleAgents(c: Context): Promise<Set<string> | null> {
+  if (!isAuthMode()) return null
+  const userId = getCurrentUserId(c)
+  const aclRows = await db
+    .select({ agentSlug: agentAcl.agentSlug })
+    .from(agentAcl)
+    .where(eq(agentAcl.userId, userId))
+  return new Set(aclRows.map((r) => r.agentSlug))
+}
+
+async function callerCanSeeAgent(c: Context, agentSlug: string): Promise<boolean> {
+  const visible = await callerVisibleAgents(c)
+  return visible === null || visible.has(agentSlug)
+}
+
 // GET /api/agents/:id/x-agent-policies - List policies where this agent is the caller
 agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   const slug = getAgentId(c)
@@ -5094,15 +5125,7 @@ agents.get('/:id/x-agent-policies', AgentRead(), async (c) => {
   // In auth mode, hide policies whose target the viewer can't see — otherwise
   // the policy editor leaks workspace topology (target slugs the user has no ACL on).
   // null targets ('list' policy) are always visible.
-  let visibleTargets: Set<string> | null = null
-  if (isAuthMode()) {
-    const userId = getCurrentUserId(c)
-    const aclRows = await db
-      .select({ agentSlug: agentAcl.agentSlug })
-      .from(agentAcl)
-      .where(eq(agentAcl.userId, userId))
-    visibleTargets = new Set(aclRows.map((r) => r.agentSlug))
-  }
+  const visibleTargets = await callerVisibleAgents(c)
 
   const nameMap = new Map<string, string>()
   for (const targetSlug of targetSlugs) {
@@ -5159,9 +5182,12 @@ agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
   }
   // AgentAdmin checks role but not existence; assert both ends so a typo'd
-  // slug doesn't write phantom rows that nothing references.
+  // slug doesn't write phantom rows that nothing references. In auth mode the
+  // target must also be VISIBLE to the caller (same anti-topology-leak rule
+  // the GET route enforces) — and an invisible target returns the SAME 404 as
+  // a nonexistent one, so this can't be used as an agent-existence oracle.
   const [callerAgent, targetAgent] = await Promise.all([getAgent(slug), getAgent(targetSlug)])
-  if (!callerAgent || !targetAgent) {
+  if (!callerAgent || !targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
     return c.json({ error: 'Agent not found' }, 404)
   }
   const body = await c.req.json().catch(() => ({}))

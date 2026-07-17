@@ -205,6 +205,20 @@ describe('home-graph-service', () => {
     expect(graph.mcpUsage).toEqual({ 'agent2:mcpX': 2 })
   })
 
+  it("scopes account/MCP links to the caller's own resources in auth mode", async () => {
+    // agent1 is a SHARED agent linked to accA (u1's) and accB (u2's). As u2,
+    // the payload must not leak u1's accA id — even though the agent is
+    // visible to both users. mcpX belongs to u1, so u2 sees no mcp link.
+    const graph = await buildHomeGraph(scope({ userId: 'u2' }))
+    expect(graph.accountLinks).toEqual([{ agentSlug: 'agent1', accountId: 'accB' }])
+    expect(graph.mcpLinks).toEqual([])
+
+    // As u1: accA is visible, accB (u2's) is not.
+    const asU1 = await buildHomeGraph(scope({ userId: 'u1' }))
+    expect(asU1.accountLinks).toEqual([{ agentSlug: 'agent1', accountId: 'accA' }])
+    expect(asU1.mcpLinks).toEqual([{ agentSlug: 'agent2', mcpId: 'mcpX' }])
+  })
+
   it('returns an empty graph for an empty agent scope without touching other data', async () => {
     const graph = await buildHomeGraph(scope({ agentSlugs: [] }))
     expect(graph).toEqual({
