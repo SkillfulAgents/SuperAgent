@@ -191,22 +191,37 @@ describe('resume: reconnectAll', () => {
     expect(mgr.connections.get(INT)?.connector).toBe(working)
   })
 
-  it('coalesces concurrent reconnectAll calls into a single pass', async () => {
+  it('coalesces concurrent reconnectAll calls into serial passes, and the second wake still gets a FORCE pass', async () => {
     seedRow(integrationRow())
     let releaseConnect: () => void = () => {}
-    const hanging = fakeConnector({
-      connectImpl: () => new Promise<void>((resolve) => { releaseConnect = resolve }),
+    let calls = 0
+    const createSpy = vi.spyOn(mgr, 'createConnector').mockImplementation(async () => {
+      calls++
+      if (calls === 1) {
+        return fakeConnector({
+          connectImpl: () => new Promise<void>((resolve) => { releaseConnect = resolve }),
+        })
+      }
+      return fakeConnector()
     })
-    const createSpy = vi.spyOn(mgr, 'createConnector').mockResolvedValue(hanging)
 
     const first = mgr.reconnectAll()
     await new Promise((r) => setTimeout(r, 0))
     const second = mgr.reconnectAll()
 
+    // Never concurrent: the second wake must not race a second teardown/rebuild
+    // against the in-flight one (that race was the bolt "reading 'start'" null
+    // deref).
+    expect(createSpy).toHaveBeenCalledTimes(1)
+
     releaseConnect()
     await Promise.all([first, second])
 
-    expect(createSpy).toHaveBeenCalledTimes(1)
+    // …but it must not be silently swallowed either: after the first pass the
+    // second wake's sockets are suspect again and isConnected() can read
+    // stale-true, so exactly one more FORCE pass runs (rebuilding even
+    // "connected" integrations).
+    expect(createSpy).toHaveBeenCalledTimes(2)
     expect(mgr.connections.has(INT)).toBe(true)
   })
 

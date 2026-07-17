@@ -92,9 +92,14 @@ interface ManagerTestSurface {
   disconnectedSince: Map<string, number>
   consecutiveFailures: Map<string, number>
   reconcilingIds: Set<string>
+  generations?: Map<string, number>
   isRunning: boolean
   runHealthChecks(): Promise<void>
   createConnector(integration: unknown): Promise<ChatClientConnector>
+  pauseIntegration(id: string): Promise<void>
+  removeIntegration(id: string): Promise<void>
+  addIntegration(id: string): Promise<void>
+  stop(): void
 }
 
 const mgr = chatIntegrationManager as unknown as ManagerTestSurface
@@ -123,12 +128,15 @@ interface FakeConnector extends ChatClientConnector {
   connectedState: boolean
 }
 
-function fakeConnector(opts?: { connectImpl?: () => Promise<void> }): FakeConnector {
+function fakeConnector(opts?: {
+  connectImpl?: () => Promise<void>
+  disconnectImpl?: () => Promise<void>
+}): FakeConnector {
   const c = {
     provider: 'telegram',
     connectedState: true,
     connect: vi.fn(opts?.connectImpl ?? (async () => {})),
-    disconnect: vi.fn(async () => {}),
+    disconnect: vi.fn(opts?.disconnectImpl ?? (async () => {})),
     isConnected: vi.fn(() => c.connectedState),
     onMessage: vi.fn().mockReturnValue(() => {}),
     onInteractiveResponse: vi.fn().mockReturnValue(() => {}),
@@ -151,6 +159,7 @@ function resetManagerState(): void {
   mgr.disconnectedSince.clear()
   mgr.consecutiveFailures.clear()
   mgr.reconcilingIds?.clear()
+  mgr.generations?.clear()
 }
 
 beforeEach(() => {
@@ -329,5 +338,176 @@ describe('reconcile: DB-driven health check', () => {
 
     expect(createSpy).not.toHaveBeenCalled()
     expect(mgr.connections.has(INT)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Lifecycle operations racing an in-flight rebuild.
+//
+// A rebuild spans two await gaps — the old connector's teardown and the new
+// connector's connect — and user lifecycle operations (pause, delete, config
+// update) can land inside either. Every public lifecycle mutation bumps a
+// per-integration generation; a rebuild captures the generation up front and
+// treats any change as CANCELLATION: no reconnect from its (now stale) row
+// snapshot, no status writes over what the user's operation just wrote, and
+// any socket it opened anyway is torn down. Without this, a background rebuild
+// could resurrect a paused integration or restore pre-update credentials.
+// ---------------------------------------------------------------------------
+
+describe('reconcile: lifecycle operations racing a rebuild', () => {
+  /** Let the microtask queue drain so an in-flight rebuild reaches its next await. */
+  const settle = () => new Promise((r) => setTimeout(r, 0))
+
+  it('a pause landing during the teardown await cancels the rebuild (stale-row reconnect)', async () => {
+    const row = integrationRow()
+    seedRow(row) // getChatIntegration keeps returning the stale ACTIVE row: only the generation can save us
+    let releaseDisconnect: () => void = () => {}
+    const dead = fakeConnector({
+      disconnectImpl: () => new Promise<void>((r) => { releaseDisconnect = r }),
+    })
+    dead.connectedState = false
+    mgr.connections.set(INT, { connector: dead } as never)
+    mgr.disconnectedSince.set(INT, Date.now() - 10 * 60 * 1000) // grace expired
+    const createSpy = vi.spyOn(mgr, 'createConnector').mockResolvedValue(fakeConnector())
+
+    const tick = mgr.runHealthChecks()
+    await settle() // rebuild is now awaiting the old connector's teardown
+
+    await mgr.pauseIntegration(INT) // user pauses; returns successfully
+    releaseDisconnect()
+    await tick
+
+    // The rebuild must stand down completely: no reconnect, no status write
+    // over the pause, nothing left in the map.
+    expect(createSpy).not.toHaveBeenCalled()
+    expect(mgr.connections.has(INT)).toBe(false)
+    expect(updateStatusMock).toHaveBeenCalledWith(INT, 'paused')
+    expect(updateStatusMock).not.toHaveBeenCalledWith(INT, 'error', expect.anything())
+  })
+
+  it('a pause landing during the connect await tears the new connector down and writes no active badge', async () => {
+    seedRow(integrationRow({ status: 'error' } as Partial<ChatIntegration>))
+    let releaseConnect: () => void = () => {}
+    const connector = fakeConnector({
+      connectImpl: () => new Promise<void>((r) => { releaseConnect = r }),
+    })
+    vi.spyOn(mgr, 'createConnector').mockResolvedValue(connector)
+
+    const tick = mgr.runHealthChecks() // orphan rebuild starts, connect in flight
+    await settle()
+
+    await mgr.pauseIntegration(INT)
+    releaseConnect() // the connect "succeeds" — but the user owns the integration now
+    await tick
+
+    expect(mgr.connections.has(INT)).toBe(false)
+    expect(connector.disconnect).toHaveBeenCalled()
+    // The error-row success path must NOT write 'active' over the fresh 'paused'.
+    expect(updateStatusMock).not.toHaveBeenCalledWith(INT, 'active', null)
+  })
+
+  it('a connect FAILURE after a pause writes no error status and counts no failure', async () => {
+    seedRow(integrationRow())
+    let rejectConnect: (e: Error) => void = () => {}
+    const connector = fakeConnector({
+      connectImpl: () => new Promise<void>((_r, rej) => { rejectConnect = rej }),
+    })
+    vi.spyOn(mgr, 'createConnector').mockResolvedValue(connector)
+
+    const tick = mgr.runHealthChecks()
+    await settle()
+
+    await mgr.pauseIntegration(INT)
+    rejectConnect(new Error('socket torn down by the pause'))
+    await tick
+
+    // A cancelled rebuild reports nothing: writing 'error' here would flip the
+    // row back to startup-eligible and resurrect the paused integration.
+    expect(updateStatusMock).not.toHaveBeenCalledWith(INT, 'error', expect.anything())
+    expect(mgr.consecutiveFailures.has(INT)).toBe(false)
+  })
+
+  it('a config update mid-rebuild wins: the stale rebuild does not resurrect the old connector', async () => {
+    const rowV1 = integrationRow({ config: '{"v":1}' } as Partial<ChatIntegration>)
+    const rowV2 = integrationRow({ config: '{"v":2}' } as Partial<ChatIntegration>)
+    seedRow(rowV1)
+
+    let releaseOldConnect: () => void = () => {}
+    const connOld = fakeConnector({
+      connectImpl: () => new Promise<void>((r) => { releaseOldConnect = r }),
+    })
+    const connNew = fakeConnector()
+    let calls = 0
+    vi.spyOn(mgr, 'createConnector').mockImplementation(async () => (++calls === 1 ? connOld : connNew))
+
+    const tick = mgr.runHealthChecks() // rebuild from rowV1, connect in flight
+    await settle()
+
+    // Route-style config update: remove + add with the new row.
+    await mgr.removeIntegration(INT)
+    seedRow(rowV2)
+    await mgr.addIntegration(INT)
+    expect(mgr.connections.get(INT)?.connector).toBe(connNew)
+
+    releaseOldConnect() // the STALE connect (old credentials) resolves late
+    await tick
+
+    // The new-credential connector must still own the integration; the stale
+    // one must be torn down, not installed.
+    expect(mgr.connections.get(INT)?.connector).toBe(connNew)
+    expect(connOld.disconnect).toHaveBeenCalled()
+    expect(connNew.disconnect).not.toHaveBeenCalled()
+  })
+
+  it("a stale rebuild's connect FAILURE must not tear down the winner that replaced it", async () => {
+    const rowV1 = integrationRow({ config: '{"v":1}' } as Partial<ChatIntegration>)
+    const rowV2 = integrationRow({ config: '{"v":2}' } as Partial<ChatIntegration>)
+    seedRow(rowV1)
+
+    let rejectOldConnect: (e: Error) => void = () => {}
+    const connOld = fakeConnector({
+      connectImpl: () => new Promise<void>((_r, rej) => { rejectOldConnect = rej }),
+    })
+    const connNew = fakeConnector()
+    let calls = 0
+    vi.spyOn(mgr, 'createConnector').mockImplementation(async () => (++calls === 1 ? connOld : connNew))
+
+    const tick = mgr.runHealthChecks()
+    await settle()
+
+    await mgr.removeIntegration(INT)
+    seedRow(rowV2)
+    await mgr.addIntegration(INT)
+
+    rejectOldConnect(new Error('old credentials no longer valid'))
+    await tick
+
+    // The loser's failure cleanup must only touch what it owns.
+    expect(mgr.connections.get(INT)?.connector).toBe(connNew)
+    expect(connNew.disconnect).not.toHaveBeenCalled()
+    expect(updateStatusMock).not.toHaveBeenCalledWith(INT, 'error', expect.anything())
+  })
+
+  it('stop() during the teardown await is not resurrected by the in-flight rebuild', async () => {
+    seedRow(integrationRow())
+    let releaseDisconnect: () => void = () => {}
+    const dead = fakeConnector({
+      disconnectImpl: () => new Promise<void>((r) => { releaseDisconnect = r }),
+    })
+    dead.connectedState = false
+    mgr.connections.set(INT, { connector: dead } as never)
+    mgr.disconnectedSince.set(INT, Date.now() - 10 * 60 * 1000)
+    const createSpy = vi.spyOn(mgr, 'createConnector').mockResolvedValue(fakeConnector())
+
+    const tick = mgr.runHealthChecks()
+    await settle() // rebuild parked on the teardown await
+
+    mgr.stop() // app shutdown (or web-server restart)
+    releaseDisconnect()
+    await tick
+
+    // A stopped manager must stay stopped: no fresh connector, empty map.
+    expect(createSpy).not.toHaveBeenCalled()
+    expect(mgr.connections.size).toBe(0)
   })
 })

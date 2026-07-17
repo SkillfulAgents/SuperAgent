@@ -26,6 +26,10 @@ const hoisted = vi.hoisted(() => ({
   receivers: [] as Array<{ opts: Record<string, unknown>; client: unknown }>,
   apps: [] as Array<{ opts: Record<string, unknown> }>,
   failNextClientStart: false,
+  // When true, client.start() parks until the pushed deferred is resolved —
+  // simulates apps.connections.open hanging while a disconnect() races it.
+  deferClientStart: false,
+  pendingStarts: [] as Array<{ resolve: () => void; reject: (e: unknown) => void }>,
 }))
 
 vi.mock('@slack/bolt', async () => {
@@ -36,6 +40,11 @@ vi.mock('@slack/bolt', async () => {
       if (hoisted.failNextClientStart) {
         hoisted.failNextClientStart = false
         throw new Error('simulated start failure')
+      }
+      if (hoisted.deferClientStart) {
+        await new Promise<void>((resolve, reject) => {
+          hoisted.pendingStarts.push({ resolve, reject })
+        })
       }
       this.emit('connected')
     })
@@ -116,6 +125,8 @@ beforeEach(() => {
   hoisted.receivers.length = 0
   hoisted.apps.length = 0
   hoisted.failNextClientStart = false
+  hoisted.deferClientStart = false
+  hoisted.pendingStarts.length = 0
 })
 
 afterEach(() => {
@@ -248,5 +259,70 @@ describe('SlackConnector socket lifecycle', () => {
     // Dead workspace: retrying is pointless, the loop must stop for good.
     await vi.advanceTimersByTimeAsync(600_000)
     expect(client.start).toHaveBeenCalledTimes(1)
+  })
+
+  // ── disconnect() racing an in-flight start ──────────────────────────
+  //
+  // SocketModeClient.start() awaiting apps.connections.open has no websocket
+  // yet, so client.disconnect() resolves immediately — and the pending start
+  // then continues and OPENS A SOCKET AFTER TEARDOWN FINISHED. Left alone,
+  // that ownerless socket keeps acking its share of round-robin events (the
+  // old bolt app's catch-all still listens), silently eating messages meant
+  // for the replacement connector. The connector must track the in-flight
+  // restart and close whatever it opens once teardown has begun.
+
+  it('disconnect() during an in-flight restart closes the late-opening socket', async () => {
+    const connector = makeConnector()
+    await connector.connect()
+    const client = lastClient()
+    client.start.mockClear()
+
+    hoisted.deferClientStart = true
+    client.emit('disconnected')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(client.start).toHaveBeenCalledTimes(1) // restart parked mid-flight
+
+    const disconnectsBefore = client.disconnect.mock.calls.length
+    const teardown = connector.disconnect()
+    hoisted.pendingStarts.shift()!.resolve() // apps.connections.open finally returns — socket opens late
+    await teardown
+
+    // The late socket must be closed, and the 'connected' it emitted must not
+    // flip state back on a connector that is already torn down.
+    expect(connector.isConnected()).toBe(false)
+    expect(client.disconnect.mock.calls.length).toBeGreaterThanOrEqual(disconnectsBefore + 2) // app.stop + late-socket close
+  })
+
+  it("a late 'connected' event after disconnect() cannot flip state back", async () => {
+    const connector = makeConnector()
+    await connector.connect()
+    const client = lastClient()
+
+    await connector.disconnect()
+    client.emit('connected')
+
+    expect(connector.isConnected()).toBe(false)
+  })
+
+  it('disconnect() racing the initial connect() rejects the connect and leaves no socket', async () => {
+    hoisted.deferClientStart = true
+    const connector = makeConnector()
+
+    const connecting = connector.connect()
+    await vi.advanceTimersByTimeAsync(0) // auth.test done; app.start() parked
+    expect(hoisted.pendingStarts).toHaveLength(1)
+
+    await connector.disconnect() // user pause / manager teardown wins the race
+    hoisted.pendingStarts.shift()!.resolve() // the socket still opens afterwards
+
+    await expect(connecting).rejects.toThrow(/disconnected during connect/i)
+    expect(connector.isConnected()).toBe(false)
+
+    // And the aborted connect must not leave a reconnect loop behind.
+    const client = lastClient()
+    client.start.mockClear()
+    client.emit('disconnected')
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(client.start).not.toHaveBeenCalled()
   })
 })

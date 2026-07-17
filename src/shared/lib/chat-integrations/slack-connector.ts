@@ -272,6 +272,13 @@ export class SlackConnector extends ChatClientConnector {
   // zombie loop on a connector object the manager already discarded.
   private started = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  // The restart attempt currently in flight, if any. disconnect() can only
+  // clear the TIMER; an attempt already awaiting apps.connections.open has no
+  // socket yet, so socket-mode's disconnect() resolves without touching it —
+  // and the pending start would otherwise OPEN a socket after teardown
+  // finished. That ownerless socket still acks its share of round-robin
+  // events, silently eating messages meant for the replacement connector.
+  private restartInFlight: Promise<void> | null = null
   private reconnectAttempts = 0
   private static readonly BASE_RECONNECT_DELAY_MS = 1_000
   private static readonly MAX_RECONNECT_DELAY_MS = 60_000
@@ -317,27 +324,35 @@ export class SlackConnector extends ChatClientConnector {
     // Fail fast on the underlying API calls (auth.test, apps.connections.open):
     // retry pacing belongs to our loop below and to the manager's health-check
     // backstop, not to a WebClient silently retrying for half an hour while the
-    // manager waits on connect().
-    this.receiver = new SocketModeReceiver({
+    // manager waits on connect(). The 30s timeout matters too: WebClient's
+    // default is 0 (unbounded), so a blackholed request would otherwise wedge
+    // a connect/reconnect attempt for as long as the OS keeps the TCP open.
+    //
+    // Locals throughout this method: disconnect() nulls this.app/this.receiver,
+    // and a disconnect racing this connect used to turn that into a TypeError
+    // ("Cannot read properties of null") mid-flight (ELECTRON-3T's signature).
+    const receiver = new SocketModeReceiver({
       appToken: this.config.appToken,
       autoReconnectEnabled: false,
       logLevel: 'warn' as any,
-      installerOptions: { clientOptions: { retryConfig: { retries: 2 } } },
+      installerOptions: { clientOptions: { retryConfig: { retries: 2 }, timeout: 30_000 } },
     })
-    this.app = new SlackApp({
+    const app = new SlackApp({
       token: this.config.botToken,
-      receiver: this.receiver,
+      receiver,
       logLevel: 'warn' as any,
-      clientOptions: { retryConfig: { retries: 2 } },
+      clientOptions: { retryConfig: { retries: 2 }, timeout: 30_000 },
     })
+    this.receiver = receiver
+    this.app = app
 
     // Catch-all for events we don't explicitly handle (Bolt requires ack for all events)
-    this.app.event(/.*/, async (_ctx: any) => {
+    app.event(/.*/, async (_ctx: any) => {
       // No-op — just acknowledge so Slack doesn't retry/disconnect
     })
 
     // Handle incoming messages
-    this.app.message(async ({ message, say: _say }: { message: any; say: any }) => {
+    app.message(async ({ message, say: _say }: { message: any; say: any }) => {
       // Skip bot messages, edits, etc. — but allow file_share (user sent an image/file)
       const subtype = (message as any).subtype
       if (!message || (subtype && subtype !== 'file_share')) return
@@ -417,7 +432,7 @@ export class SlackConnector extends ChatClientConnector {
     })
 
     // Handle button clicks (interactive actions)
-    this.app.action(/^cb_\d+$/, async ({ ack, action, body }: { ack: any; action: any; body: any }) => {
+    app.action(/^cb_\d+$/, async ({ ack, action, body }: { ack: any; action: any; body: any }) => {
       await ack()
 
       const actionId = (action as any).action_id
@@ -468,7 +483,7 @@ export class SlackConnector extends ChatClientConnector {
 
     // Validate tokens before starting Socket Mode
     try {
-      const authResult = await this.app.client.auth.test()
+      const authResult = await app.client.auth.test()
       if (!authResult.ok) {
         throw new Error(`Slack auth.test failed: ${authResult.error}`)
       }
@@ -481,8 +496,12 @@ export class SlackConnector extends ChatClientConnector {
 
     // Track the real socket state so isConnected() is honest — the manager's
     // health check is blind without this.
-    const client = this.receiver.client
+    const client = receiver.client
     client.on('connected', () => {
+      // A 'connected' arriving after disconnect() began is a socket that
+      // outlived its owner (a start() that was mid-flight during teardown) —
+      // it is being closed, and must not flip a torn-down connector "live".
+      if (this.disconnecting) return
       this.connected = true
       this.reconnectAttempts = 0
     })
@@ -493,10 +512,17 @@ export class SlackConnector extends ChatClientConnector {
 
     // Start Socket Mode (requires valid app-level token with connections:write)
     try {
-      await this.app.start()
+      await app.start()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       throw new Error(`Slack Socket Mode failed to start (check app-level token and connections:write scope): ${msg}`)
+    }
+    // disconnect() may have raced this connect (user pause, manager teardown):
+    // its app.stop() ran against a socket that didn't exist yet, so the one
+    // that just opened is ownerless — close it and report the connect failed.
+    if (this.disconnecting) {
+      await app.stop().catch(() => {})
+      throw new Error('Slack connector was disconnected during connect')
     }
     this.started = true
     this.connected = true
@@ -520,8 +546,16 @@ export class SlackConnector extends ChatClientConnector {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       if (this.disconnecting || !this.receiver) return
-      this.receiver.client.start()
+      const client = this.receiver.client
+      const attempt = client.start()
         .then(() => {
+          if (this.disconnecting) {
+            // Teardown began while this attempt was awaiting its connection —
+            // the socket that just opened has no owner. Close it (socket-mode's
+            // disconnect() never rejects).
+            void client.disconnect()
+            return
+          }
           // The 'connected' listener already restored state.
           console.log('[SlackConnector] Socket Mode reconnected')
         })
@@ -532,9 +566,15 @@ export class SlackConnector extends ChatClientConnector {
             this.emitError(err instanceof Error ? err : new Error(String(err)))
             return
           }
-          console.warn(`[SlackConnector] Reconnect attempt ${this.reconnectAttempts} failed:`, err instanceof Error ? err.message : err)
+          // A websocket-stage failure rejects with undefined (socket-mode's
+          // close handler carries no error) — name it for the log.
+          console.warn(`[SlackConnector] Reconnect attempt ${this.reconnectAttempts} failed:`, err instanceof Error ? err.message : err ?? 'socket closed before connecting')
           this.scheduleReconnect()
         })
+        .finally(() => {
+          if (this.restartInFlight === attempt) this.restartInFlight = null
+        })
+      this.restartInFlight = attempt
     }, delay)
   }
 
@@ -546,6 +586,10 @@ export class SlackConnector extends ChatClientConnector {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    // Capture any restart already past its timer: it can't be cancelled, only
+    // waited out — its own success handler closes the socket it opens now that
+    // disconnecting is set (see restartInFlight).
+    const restart = this.restartInFlight
 
     // Remove any active reactions (before clearing thread context needed to resolve channels)
     for (const key of this.activeReactions) {
@@ -567,6 +611,12 @@ export class SlackConnector extends ChatClientConnector {
       this.app = null
     }
     this.receiver = null
+    // Wait for a mid-flight restart to settle: app.stop() resolves while the
+    // pending start is still awaiting apps.connections.open (no socket exists
+    // for it to close), and the start can OPEN a socket after this point. Its
+    // success handler tears that late socket down; don't report "disconnected"
+    // until it has.
+    if (restart) await restart.catch(() => {})
     console.log('[SlackConnector] Disconnected')
   }
 
