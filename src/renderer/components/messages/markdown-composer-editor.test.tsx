@@ -96,6 +96,26 @@ describe('MarkdownComposerEditor', () => {
     expect(screen.getByTestId('markdown-value').textContent).toBe('**important**')
   })
 
+  it('keeps Cmd/Ctrl+B inside the editor while applying bold', async () => {
+    const user = userEvent.setup()
+    const onWindowKeyDown = vi.fn()
+    window.addEventListener('keydown', onWindowKeyDown)
+
+    try {
+      render(<ControlledEditor />)
+      const editor = screen.getByTestId('markdown-editor')
+
+      fireEvent.keyDown(editor, { key: 'b', metaKey: true })
+      fireEvent.keyDown(editor, { key: 'b', ctrlKey: true })
+
+      expect(onWindowKeyDown).not.toHaveBeenCalled()
+      await user.type(editor, 'bold')
+      expect(editor.querySelector('strong')).toHaveTextContent('bold')
+    } finally {
+      window.removeEventListener('keydown', onWindowKeyDown)
+    }
+  })
+
   it('does not interpret intraword underscores inside a typed secret', async () => {
     const user = userEvent.setup()
     const token = 'github_pat_11ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890'
