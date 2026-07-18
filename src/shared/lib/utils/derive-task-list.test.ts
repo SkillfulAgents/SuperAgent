@@ -161,6 +161,22 @@ describe('deriveTaskList keying by real task id', () => {
     ])
   })
 
+  it('keeps an in-flight create visible when its ordinal collides with a real id', () => {
+    // Compaction hid create #1 from the visible window: the first visible
+    // create resolved as task #2, while the second visible create is still
+    // awaiting its result. The fallback key for the in-flight create must
+    // not collide with real id "2" (which would silently discard it).
+    const messages = [
+      assistantMsg([taskCreate('Resolved task', 2), taskCreate('In-flight task', null)]),
+      assistantMsg([taskUpdate('2', 'completed')]),
+    ]
+    const { todos } = deriveTaskList(messages)
+    expect(todos).toEqual([
+      { content: 'Resolved task', status: 'completed', activeForm: 'Resolved task...' },
+      { content: 'In-flight task', status: 'pending', activeForm: 'In-flight task...' },
+    ])
+  })
+
   it('keeps an in-flight create (no result yet) visible as pending', () => {
     const messages = [assistantMsg([taskCreate('Streaming task', null)])]
     const { todos } = deriveTaskList(messages)

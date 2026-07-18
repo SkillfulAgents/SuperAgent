@@ -1819,4 +1819,45 @@ describe('replayed duplicate entries (resume history replay)', () => {
     expect(asMessage(result[0]).toolCalls).toHaveLength(1)
     expect(asMessage(result[0]).content.text).toBe('One')
   })
+
+  it('drops a replayed memory_recall entry with an already-seen uuid', () => {
+    const recall = (): JsonlSystemEntry => ({
+      uuid: 'recall-1',
+      type: 'system',
+      subtype: 'memory_recall',
+      content: '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:00:00.000Z',
+      memory_paths: ['memory/a.md'],
+    })
+    const result = transformMessages([
+      recall(),
+      createUserMessage('user-1', 'Hello'),
+      // Cold-resume replay of the same [recall, message] pair
+      recall(),
+      createUserMessage('user-1', 'Hello'),
+    ])
+    expect(result.filter((r) => r.type === 'memory_recall')).toHaveLength(1)
+    expect(result).toHaveLength(2)
+  })
+
+  it('drops a replayed compact boundary with an already-seen uuid', () => {
+    const boundary = (): JsonlSystemEntry => ({
+      uuid: 'boundary-1',
+      type: 'system',
+      subtype: 'compact_boundary',
+      content: '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:00:00.000Z',
+      compactMetadata: { trigger: 'auto', preTokens: 1000 },
+    })
+    const result = transformMessages([
+      boundary(),
+      createUserMessage('user-1', 'Hello'),
+      boundary(),
+      createUserMessage('user-1', 'Hello'),
+    ])
+    expect(result.filter((r) => r.type === 'compact_boundary')).toHaveLength(1)
+    expect(result).toHaveLength(2)
+  })
 })

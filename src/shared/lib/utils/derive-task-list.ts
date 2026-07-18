@@ -59,12 +59,15 @@ export function deriveTaskList(messages: TaskSourceMessage[] | undefined): {
         if (tc.isError) continue
         const input = tc.input as { subject?: string; activeForm?: string }
         if (input?.subject) {
-          // Key by the real task id when the result has landed; fall back to
-          // the call's ordinal position (unprefixed, so a still-streaming
-          // create whose ids happen to align keeps matching its updates).
+          // Key by the real task id when the result has landed; an in-flight
+          // create (no result yet) gets a prefixed ordinal key so it can never
+          // collide with a real id (after compaction the visible ordinals and
+          // real ids diverge). Updates can't target a pending-keyed task, but
+          // an update always follows its create's result in the transcript —
+          // by then re-derivation has re-keyed the task under its real id.
           // First occurrence wins: a duplicated create (replayed history)
           // must not reset the original task's status to pending.
-          const key = parseCreatedTaskId(tc.result) ?? String(taskCounter)
+          const key = parseCreatedTaskId(tc.result) ?? `pending:${taskCounter}`
           if (taskMap.has(key)) continue
           taskMap.set(key, {
             content: input.subject,
