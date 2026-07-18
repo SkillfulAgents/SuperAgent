@@ -20,6 +20,7 @@ export interface PublicChatIntegrationSettings {
 }
 
 export type PublicChatIntegration = Omit<ChatIntegration, 'config'> & {
+  /** True only when the stored credential config validates against the current provider schema. */
   hasCredentials: boolean
   settings: PublicChatIntegrationSettings
 }

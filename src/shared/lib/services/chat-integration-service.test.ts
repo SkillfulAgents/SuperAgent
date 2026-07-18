@@ -217,6 +217,63 @@ describe('chat-integration-service', () => {
       })
     })
 
+    it('repairs an invalid stored config when PATCH supplies a complete replacement', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'slack',
+        config: { legacyBotToken: 'obsolete-shape' },
+      })
+
+      expect(updateChatIntegration(id, {
+        config: {
+          botToken: 'xoxb-repaired',
+          appToken: 'xapp-repaired',
+          onlyMentioned: true,
+        },
+      })).toBe(true)
+
+      expect(JSON.parse(getChatIntegration(id)!.config)).toEqual({
+        botToken: 'xoxb-repaired',
+        appToken: 'xapp-repaired',
+        onlyMentioned: true,
+      })
+    })
+
+    it('rejects a partial PATCH when an invalid stored config cannot supply credentials', () => {
+      const id = createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'slack',
+        config: { legacyBotToken: 'obsolete-shape' },
+      })
+
+      expect(() => updateChatIntegration(id, {
+        config: { onlyMentioned: true },
+      })).toThrow()
+    })
+
+    it('allows settings-only edits on legacy rows whose token is already duplicated', () => {
+      createChatIntegration({
+        agentSlug: 'agent-a',
+        provider: 'telegram',
+        config: { botToken: 'legacy-duplicate' },
+      })
+      const secondId = createChatIntegration({
+        agentSlug: 'agent-b',
+        provider: 'telegram',
+        config: { botToken: 'originally-unique' },
+      })
+      testSqlite.prepare('UPDATE chat_integrations SET config = ? WHERE id = ?')
+        .run(JSON.stringify({ botToken: 'legacy-duplicate' }), secondId)
+
+      expect(updateChatIntegration(secondId, {
+        config: { draftStreaming: true },
+      })).toBe(true)
+      expect(JSON.parse(getChatIntegration(secondId)!.config)).toEqual({
+        botToken: 'legacy-duplicate',
+        draftStreaming: true,
+      })
+    })
+
     it('throws DuplicateBotTokenError when PATCHing config to an already-used token', () => {
       const firstId = createChatIntegration({
         agentSlug: 'agent-a',

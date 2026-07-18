@@ -252,8 +252,14 @@ export function updateChatIntegration(id: string, params: UpdateChatIntegrationP
     if (!current) return false
 
     nextConfig = mergeChatIntegrationConfig(current.provider, current.config, params.config)
+    const currentConfig = safeParseConfig(current)
+    const currentToken = currentConfig
+      ? extractUniqueKey(current.provider, currentConfig)
+      : null
     const newToken = extractUniqueKey(current.provider, nextConfig)
-    if (newToken) {
+    // Settings-only edits preserve the same unique key. Avoid re-checking those
+    // against legacy duplicate rows that predate the create-time guard.
+    if (newToken && newToken !== currentToken) {
       const duplicate = findIntegrationByUniqueKey(current.provider, newToken, id)
       if (duplicate) {
         throw new DuplicateBotTokenError(duplicate.id, current.provider)

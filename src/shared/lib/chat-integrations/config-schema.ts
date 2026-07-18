@@ -106,11 +106,6 @@ export function mergeChatIntegrationConfig(
   storedConfigJson: string,
   patch: unknown,
 ): ChatConfig {
-  const stored = parseChatIntegrationConfig(provider, storedConfigJson)
-  if (!stored) {
-    throw new Error(`Stored ${provider} chat integration config is invalid`)
-  }
-
   const parsedPatch = configPatchSchema.parse(patch)
   const credentialFields = CREDENTIAL_FIELDS[provider]
   const unmaskedPatch = Object.fromEntries(
@@ -120,6 +115,11 @@ export function mergeChatIntegrationConfig(
       || !MASKED_CREDENTIAL.test(value),
     ),
   )
+
+  const stored = parseChatIntegrationConfig(provider, storedConfigJson)
+  // A corrupt or legacy row must remain repairable. When the old value cannot
+  // be trusted, require the patch itself to be a complete valid replacement.
+  if (!stored) return validateChatIntegrationConfig(provider, unmaskedPatch)
 
   return validateChatIntegrationConfig(provider, { ...stored, ...unmaskedPatch })
 }

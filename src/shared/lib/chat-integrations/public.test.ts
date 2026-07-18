@@ -40,7 +40,7 @@ describe('toPublicChatIntegration', () => {
     }
   })
 
-  it('reports missing credentials for invalid stored config without exposing it', () => {
+  it('reports an invalid stored credential config without exposing it', () => {
     const result = toPublicChatIntegration(integration('slack', { onlyMentioned: true }))
 
     expect(result).not.toHaveProperty('config')

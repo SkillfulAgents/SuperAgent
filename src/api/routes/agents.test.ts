@@ -447,7 +447,42 @@ function createApp() {
   return app
 }
 
-describe('SUP-420 — GET /:id/chat-integrations', () => {
+async function patchJson(app: Hono, url: string, body: unknown): Promise<Response> {
+  return app.request(`http://localhost${url}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+async function postJson(app: Hono, url: string, body: unknown): Promise<Response> {
+  return app.request(`http://localhost${url}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+async function deleteReq(app: Hono, url: string): Promise<Response> {
+  return app.request(`http://localhost${url}`, { method: 'DELETE' })
+}
+
+async function getReq(app: Hono, url: string): Promise<Response> {
+  return app.request(`http://localhost${url}`, { method: 'GET' })
+}
+
+async function postFormData(app: Hono, url: string, body: FormData): Promise<Response> {
+  return app.request(`http://localhost${url}`, {
+    method: 'POST',
+    body,
+  })
+}
+
+// ============================================================================
+// Chat integrations — GET /:id/chat-integrations
+// ============================================================================
+
+describe('GET /:id/chat-integrations', () => {
   it('redacts credentials from every list row', async () => {
     vi.mocked(listChatIntegrations).mockReturnValueOnce([{
       id: 'integration-1',
@@ -486,37 +521,6 @@ describe('SUP-420 — GET /:id/chat-integrations', () => {
     expect(JSON.stringify(body)).not.toContain('private-chat-id')
   })
 })
-
-async function patchJson(app: Hono, url: string, body: unknown): Promise<Response> {
-  return app.request(`http://localhost${url}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-}
-
-async function postJson(app: Hono, url: string, body: unknown): Promise<Response> {
-  return app.request(`http://localhost${url}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-}
-
-async function deleteReq(app: Hono, url: string): Promise<Response> {
-  return app.request(`http://localhost${url}`, { method: 'DELETE' })
-}
-
-async function getReq(app: Hono, url: string): Promise<Response> {
-  return app.request(`http://localhost${url}`, { method: 'GET' })
-}
-
-async function postFormData(app: Hono, url: string, body: FormData): Promise<Response> {
-  return app.request(`http://localhost${url}`, {
-    method: 'POST',
-    body,
-  })
-}
 
 describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
   let app: ReturnType<typeof createApp>
