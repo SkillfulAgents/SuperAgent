@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser Use feature successfully executed: agent opened a browser, navigated to example.com, retrieved and reported the page title \"Example Domain\", and closed the browser.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing agent list with \"QA-20260718-014108-qvsr\" agent visible in sidebar and main content area.",
+    "Clicked on \"QA-20260718-014108-qvsr\" agent — Agent page loaded, displaying the chat interface with message input box.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input box — Message was typed successfully in the textbox.",
+    "Clicked Send message button — Message was sent successfully, agent status changed from \"idle\" to \"working\", and a new session titled \"Browser Page Title Check\" was created.",
+    "Waited for agent response (up to 3 minutes) — Agent finished processing in 11 seconds as indicated by \"Worked for 11s\".",
+    "Verified response mentions \"Example Domain\" — Response clearly displays \"The page title is \"Example Domain\".\" and \"The page at https://example.com has the title \"Example Domain\". Browser closed.\" The agent successfully executed three browser tool calls (Open Browser, Browser Get State, Close Browser) all marked with green checkmarks indicating successful execution."
+  ],
+  "bugs": [],
+  "durationMs": 69605,
+  "sessionId": "72e22597-c3ba-4c9e-8a24-dcd0efd18275",
+  "cost": {
+    "inputTokens": 380,
+    "outputTokens": 10286,
+    "cacheCreationTokens": 74318,
+    "cacheReadTokens": 1066078,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.251315
+  }
+}
