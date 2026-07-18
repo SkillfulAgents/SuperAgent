@@ -1432,6 +1432,164 @@ describe('MessagePersister', () => {
   })
 
   // ============================================================================
+  // SUP-424 / #366 — subagent-originated input requests must surface
+  // ============================================================================
+
+  describe('subagent input request surfacing', () => {
+    function setupTaskTool(toolId = 'task-tool-1') {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          content_block: { type: 'tool_use', id: toolId, name: 'Task' },
+        },
+      })
+      mockClient._sendMessage({
+        type: 'stream_event',
+        event: { type: 'content_block_stop' },
+      })
+    }
+
+    function sendSidechainStreamEvent(event: any) {
+      mockClient._sendMessage({
+        type: 'stream_event',
+        parent_tool_use_id: 'task-tool-1',
+        event,
+      })
+    }
+
+    function simulateSidechainToolUse(
+      toolName: string,
+      toolId: string,
+      input: Record<string, unknown>,
+    ) {
+      sendSidechainStreamEvent({
+        type: 'content_block_start',
+        content_block: { type: 'tool_use', id: toolId, name: toolName },
+      })
+      sendSidechainStreamEvent({
+        type: 'content_block_delta',
+        delta: { type: 'input_json_delta', partial_json: JSON.stringify(input) },
+      })
+      sendSidechainStreamEvent({ type: 'content_block_stop' })
+    }
+
+    const cases: Array<{
+      toolName: string
+      toolId: string
+      input: Record<string, unknown>
+      eventType: string
+    }> = [
+      {
+        toolName: 'AskUserQuestion',
+        toolId: 'sub-q-1',
+        input: {
+          questions: [{ question: 'Pick DB?', header: 'DB', options: [{ label: 'Postgres', description: 'pg' }], multiSelect: false }],
+        },
+        eventType: 'user_question_request',
+      },
+      {
+        toolName: 'mcp__user-input__request_secret',
+        toolId: 'sub-sec-1',
+        input: { secretName: 'API_KEY', reason: 'Need it' },
+        eventType: 'secret_request',
+      },
+      {
+        toolName: 'mcp__user-input__request_file',
+        toolId: 'sub-file-1',
+        input: { description: 'Upload a CSV' },
+        eventType: 'file_request',
+      },
+      {
+        toolName: 'mcp__user-input__request_remote_mcp',
+        toolId: 'sub-mcp-1',
+        input: { url: 'https://example.com/mcp' },
+        eventType: 'remote_mcp_request',
+      },
+      {
+        toolName: 'mcp__user-input__request_connected_account',
+        toolId: 'sub-acct-1',
+        input: { toolkit: 'github', reason: 'Need access' },
+        eventType: 'connected_account_request',
+      },
+      {
+        toolName: 'mcp__user-input__request_browser_input',
+        toolId: 'sub-bi-1',
+        input: { message: 'Please log in', requirements: ['Enter credentials'] },
+        eventType: 'browser_input_request',
+      },
+    ]
+
+    // One matrix for the stream switchboard (five missing tools + browser awaiting).
+    for (const { toolName, toolId, input, eventType } of cases) {
+      it(`stream path: ${toolName} emits ${eventType} and marks awaiting`, () => {
+        setupTaskTool()
+        sseEvents.length = 0
+
+        simulateSidechainToolUse(toolName, toolId, input)
+
+        expect(sseEvents.some((e) => e.type === eventType)).toBe(true)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      })
+    }
+
+    // Distinct delivery shape from stream content_block_stop.
+    it('complete-assistant path: AskUserQuestion emits user_question_request and marks awaiting', () => {
+      setupTaskTool()
+      sseEvents.length = 0
+
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'task-tool-1',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'sub-q-complete',
+              name: 'AskUserQuestion',
+              input: {
+                questions: [{ question: 'Pick DB?', header: 'DB', options: [{ label: 'Postgres', description: 'pg' }], multiSelect: false }],
+              },
+            },
+          ],
+        },
+      })
+
+      expect(sseEvents.some((e) => e.type === 'user_question_request')).toBe(true)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+
+    it('stream then complete-assistant with same toolUseId emits one request', () => {
+      const questionInput = {
+        questions: [{ question: 'Pick DB?', header: 'DB', options: [{ label: 'Postgres', description: 'pg' }], multiSelect: false }],
+      }
+      setupTaskTool()
+      sseEvents.length = 0
+
+      simulateSidechainToolUse('AskUserQuestion', 'sub-q-dup', questionInput)
+      mockClient._sendMessage({
+        type: 'assistant',
+        parent_tool_use_id: 'task-tool-1',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'sub-q-dup',
+              name: 'AskUserQuestion',
+              input: questionInput,
+            },
+          ],
+        },
+      })
+
+      expect(sseEvents.filter((e) => e.type === 'user_question_request')).toHaveLength(1)
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+    })
+  })
+
+  // ============================================================================
   // Sidechain complete assistant message broadcasts subagent_stream_delta
   // ============================================================================
 
