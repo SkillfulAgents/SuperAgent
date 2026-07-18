@@ -693,6 +693,13 @@ export function MarkdownComposerEditor({
         keydown: (editorView, event) => {
           if (event.isComposing) return false
 
+          // Cmd/Ctrl+B belongs to the rich-text editor. Keep it from reaching
+          // window-level shortcuts (notably the sidebar toggle) without
+          // preventing ProseMirror's strong-mark keymap from handling it.
+          if (event.key === 'b' && (event.metaKey || event.ctrlKey)) {
+            event.stopPropagation()
+          }
+
           if ((event.key === 'Backspace' || event.key === 'Delete') && latestRef.current.onRemoveSecuredSecrets) {
             const { from, to, empty } = editorView.state.selection
             const matches = findSecretMatches(
