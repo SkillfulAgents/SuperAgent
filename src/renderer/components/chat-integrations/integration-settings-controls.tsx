@@ -11,7 +11,7 @@ import {
 import { useUpdateChatIntegration } from '@renderer/hooks/use-chat-integrations'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
-import type { ChatIntegration } from '@shared/lib/db/schema'
+import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 
 export function ToggleRow({ label, helperText, checked, onCheckedChange, disabled }: {
   label: string

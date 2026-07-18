@@ -25,7 +25,8 @@ import {
 import type { ChatAccessStatus } from '@shared/lib/services/chat-integration-access-service'
 import { listChatIntegrationSessions, archiveChatIntegrationSession, getChatIntegrationSessionById, deleteChatIntegrationSessionsByIntegration } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
-import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { validateChatIntegrationConfig, CHAT_PROVIDERS, IMESSAGE_GATEWAY_URL, imessageSetupSchema } from '@shared/lib/chat-integrations/config-schema'
+import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, AgentUser, EntityAgentRole, ResolveAgent, getAgentId } from '../middleware/auth'
@@ -51,8 +52,8 @@ const IntegrationAgentRole = EntityAgentRole({
 // GET /api/chat-integrations/:integrationId - Get a single integration
 chatIntegrationsRouter.get('/:integrationId', IntegrationAgentRole('viewer'), async (c) => {
   try {
-    const integration = c.get('chatIntegration' as never)
-    return c.json(integration)
+    const integration = c.get('chatIntegration' as never) as NonNullable<ReturnType<typeof getChatIntegration>>
+    return c.json(toPublicChatIntegration(integration))
   } catch (error) {
     console.error('Failed to fetch chat integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'get-integration' }, extra: { integrationId: c.req.param('integrationId') } })
@@ -239,8 +240,9 @@ chatIntegrationsRouter.post('/:id', ResolveAgent(), AgentUser(), async (c) => {
     }
 
     const integration = getChatIntegration(id)
+    if (!integration) throw new Error('Chat integration disappeared after creation')
     logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'created', details: { provider, agentSlug } })
-    return c.json(integration, 201)
+    return c.json(toPublicChatIntegration(integration), 201)
   } catch (error) {
     console.error('Failed to create chat integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'create-integration' }, extra: { agentSlug: c.req.param('id') } })
@@ -259,19 +261,6 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
       return c.json({ error: `Invalid speed. Must be one of: ${SPEED_LEVELS.join(', ')}` }, 400)
     }
 
-    // Validate config if provided
-    if (config !== undefined) {
-      const integration = c.get('chatIntegration' as never) as Awaited<ReturnType<typeof getChatIntegration>>
-      if (integration) {
-        try {
-          validateChatIntegrationConfig(integration.provider as ChatProvider, config)
-        } catch (err) {
-          const message = err instanceof Error ? err.message : 'Invalid config'
-          return c.json({ error: `Invalid config: ${message}` }, 400)
-        }
-      }
-    }
-
     // Step 1: Persist DB updates first (config, name, showToolCalls)
     const updates: Record<string, unknown> = {}
     if (name !== undefined) updates.name = name
@@ -283,7 +272,9 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     if (body.speed !== undefined) updates.speed = parsedSpeed.data ?? null
 
     if (Object.keys(updates).length > 0) {
-      updateChatIntegration(id, updates)
+      if (!updateChatIntegration(id, updates)) {
+        throw new Error('Chat integration disappeared during update')
+      }
     }
 
     // Step 2: Handle lifecycle changes (pause/resume/reconnect)
@@ -298,8 +289,9 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
     }
 
     const updated = getChatIntegration(id)
+    if (!updated) throw new Error('Chat integration disappeared after update')
     logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated' })
-    return c.json(updated)
+    return c.json(toPublicChatIntegration(updated))
   } catch (error) {
     if (error instanceof DuplicateBotTokenError) {
       captureException(error, {
@@ -311,6 +303,10 @@ chatIntegrationsRouter.patch('/:integrationId', IntegrationAgentRole('user'), as
         { error: error.message, code: 'duplicate_bot_token', existingIntegrationId: error.existingIntegrationId },
         409,
       )
+    }
+    if (error instanceof z.ZodError) {
+      const message = error.issues[0]?.message ?? 'Invalid config'
+      return c.json({ error: `Invalid config: ${message}` }, 400)
     }
     console.error('Failed to update chat integration:', error)
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'update-integration' }, extra: { integrationId: c.req.param('integrationId') } })
@@ -328,15 +324,18 @@ chatIntegrationsRouter.patch('/:integrationId/require-approval', IntegrationAgen
     if (!z.boolean().safeParse(requireApproval).success) {
       return c.json({ error: 'requireApproval must be a boolean' }, 400)
     }
-    updateChatIntegration(id, { requireApproval })
+    if (!updateChatIntegration(id, { requireApproval })) {
+      throw new Error('Chat integration disappeared during approval update')
+    }
     // Secure-by-default: enabling approval must gate already-running sessions whose
     // chat is not explicitly allowed (previously-public conversations).
     if (requireApproval === true) {
       await chatIntegrationManager.reconcileAccess(id)
     }
     const updated = getChatIntegration(id)
+    if (!updated) throw new Error('Chat integration disappeared after approval update')
     logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: id, action: 'updated', details: { requireApproval } })
-    return c.json(updated)
+    return c.json(toPublicChatIntegration(updated))
   } catch (error) {
     captureException(error, { tags: { ...SENTRY_TAGS, operation: 'set-require-approval' }, extra: { integrationId: c.req.param('integrationId') } })
     return c.json({ error: 'Failed to update require approval' }, 500)

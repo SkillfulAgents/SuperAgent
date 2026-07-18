@@ -10,6 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
+import { z } from 'zod'
 import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
@@ -67,7 +68,7 @@ const mockGetChatIntegration = vi.fn((id: string) => integrations[id] ?? null)
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
   getChatIntegration: (id: string) => mockGetChatIntegration(id),
   createChatIntegration: vi.fn(),
-  updateChatIntegration: vi.fn(),
+  updateChatIntegration: vi.fn(() => true),
   updateChatIntegrationStatus: vi.fn(),
   deleteChatIntegration: vi.fn(),
   DuplicateBotTokenError: class DuplicateBotTokenError extends Error {},
@@ -86,6 +87,7 @@ const mockNotifyChatApproved = vi.fn().mockResolvedValue(undefined)
 const mockTearDownChatSession = vi.fn().mockResolvedValue(undefined)
 const mockReconcileAccess = vi.fn().mockResolvedValue(undefined)
 const mockClearChatSessionById = vi.fn()
+const mockRemoveIntegration = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
   chatIntegrationManager: {
@@ -95,7 +97,7 @@ vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
     reconcileAccess: (...args: unknown[]) => mockReconcileAccess(...args),
     isIntegrationConnected: vi.fn(() => false),
     addIntegration: vi.fn(),
-    removeIntegration: vi.fn(),
+    removeIntegration: (...args: unknown[]) => mockRemoveIntegration(...args),
     pauseIntegration: vi.fn(),
     resumeIntegration: vi.fn(),
   },
@@ -103,6 +105,7 @@ vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
 
 vi.mock('@shared/lib/chat-integrations/config-schema', () => ({
   validateChatIntegrationConfig: vi.fn(),
+  parseChatIntegrationConfig: vi.fn((_provider, config) => JSON.parse(config)),
   CHAT_PROVIDERS: ['telegram', 'slack', 'imessage'],
   IMESSAGE_GATEWAY_URL: 'https://imessage.example.com',
   imessageSetupSchema: { safeParse: () => ({ success: true, data: {} }) },
@@ -122,7 +125,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 }))
 
 import chatIntegrationsRouter from './chat-integrations'
-import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { createChatIntegration, updateChatIntegration } from '@shared/lib/services/chat-integration-service'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 
 function app() {
@@ -174,6 +177,83 @@ describe('chat-integrations access routes', () => {
   })
 
   // ── GET /:integrationId/access ─────────────────────────────────────────
+
+  describe('GET /:integrationId', () => {
+    it('never serializes provider credentials', async () => {
+      mockAuthRole.current = 'viewer'
+      mockGetChatIntegration.mockReturnValueOnce({
+        id: INTEGRATION_A,
+        agentSlug: 'agent-a',
+        provider: 'slack',
+        name: 'Team bot',
+        config: JSON.stringify({
+          botToken: 'xoxb-viewer-secret',
+          appToken: 'xapp-viewer-secret',
+          channelId: 'C123',
+          onlyMentioned: true,
+        }),
+        status: 'active',
+      } as never)
+
+      const res = await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}`,
+      )
+      const body = await res.json() as Record<string, unknown>
+
+      expect(res.status).toBe(200)
+      expect(body).not.toHaveProperty('config')
+      expect(body).toMatchObject({
+        id: INTEGRATION_A,
+        hasCredentials: true,
+        settings: { onlyMentioned: true },
+      })
+      expect(JSON.stringify(body)).not.toContain('xoxb-viewer-secret')
+      expect(JSON.stringify(body)).not.toContain('xapp-viewer-secret')
+      expect(JSON.stringify(body)).not.toContain('C123')
+    })
+  })
+
+  describe('PATCH /:integrationId', () => {
+    it('maps config validation failures from the service to 400', async () => {
+      vi.mocked(updateChatIntegration).mockImplementationOnce(() => {
+        z.object({ botToken: z.string() }).parse({})
+        return true
+      })
+
+      const res = await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: { onlyMentioned: true } }),
+        },
+      )
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toMatchObject({ error: expect.stringContaining('Invalid config') })
+      expect(mockRemoveIntegration).not.toHaveBeenCalled()
+    })
+
+    it('returns 500 instead of a null success body when the row vanishes', async () => {
+      mockGetChatIntegration
+        .mockReturnValueOnce(integrations[INTEGRATION_A])
+        .mockReturnValueOnce(null as never)
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+      const res = await app().request(
+        `http://localhost/api/chat-integrations/${INTEGRATION_A}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Renamed' }),
+        },
+      )
+
+      expect(res.status).toBe(500)
+      expect(await res.json()).toEqual({ error: 'Failed to update chat integration' })
+      consoleError.mockRestore()
+    })
+  })
 
   describe('GET /:integrationId/access', () => {
     it('returns all access rows for the integration', async () => {
@@ -551,6 +631,21 @@ describe('chat-integrations access routes', () => {
       // default (true). Making a bot public is owner-only via PATCH /require-approval.
       expect(vi.mocked(createChatIntegration)).toHaveBeenCalledTimes(1)
       expect(vi.mocked(createChatIntegration).mock.calls[0][0]).not.toHaveProperty('requireApproval')
+    })
+
+    it('returns 500 instead of a null success body when the created row cannot be read back', async () => {
+      vi.mocked(createChatIntegration).mockReturnValue('missing-int')
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+      const res = await app().request('http://localhost/api/chat-integrations/agent-a', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'telegram', config: { botToken: 't' } }),
+      })
+
+      expect(res.status).toBe(500)
+      expect(await res.json()).toEqual({ error: 'Failed to create chat integration' })
+      consoleError.mockRestore()
     })
   })
 })
