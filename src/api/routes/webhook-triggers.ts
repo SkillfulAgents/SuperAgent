@@ -39,11 +39,8 @@ const TriggerAgentRole = EntityAgentRole({
 // GET /api/webhook-triggers/:triggerId - Get a single trigger
 webhookTriggersRouter.get('/:triggerId', TriggerAgentRole('viewer'), async (c) => {
   try {
-    const trigger = c.get('webhookTrigger' as never)
-    return c.json(toPublicWebhookTrigger(
-      trigger as NonNullable<Awaited<ReturnType<typeof getWebhookTrigger>>>,
-      getAuthorizedAgentRole(c),
-    ))
+    const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
+    return c.json(toPublicWebhookTrigger(trigger!, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to fetch webhook trigger:', error)
     return c.json({ error: 'Failed to fetch webhook trigger' }, 500)
