@@ -22,6 +22,22 @@ async function getAuthLazy() {
 export { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
 import { type AgentRole, hasMinRole } from '@shared/lib/types/agent'
 
+const AUTHORIZED_AGENT_ROLE_CONTEXT_KEY = 'authorizedAgentRole'
+
+function setAuthorizedAgentRole(c: Context, role: AgentRole): void {
+  c.set(AUTHORIZED_AGENT_ROLE_CONTEXT_KEY as never, role as never)
+}
+
+/**
+ * Read the role established by AgentRead/AgentUser/AgentAdmin or
+ * EntityAgentRole. Returns null when no role-aware middleware ran so callers
+ * can default to the least-privileged response shape.
+ */
+export function getAuthorizedAgentRole(c: Context): AgentRole | null {
+  const role = c.get(AUTHORIZED_AGENT_ROLE_CONTEXT_KEY as never) as AgentRole | undefined
+  return role ?? null
+}
+
 /**
  * Authenticated — verifies user session and attaches user to context.
  * No-op when AUTH_MODE is disabled.
@@ -107,15 +123,22 @@ function resolvedAgentSlug(c: Context): string {
  */
 export function AgentRead(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
     const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'viewer')) {
+    if (!role || !hasMinRole(role, 'viewer')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -126,15 +149,22 @@ export function AgentRead(): MiddlewareHandler {
  */
 export function AgentUser(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
     const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'user')) {
+    if (!role || !hasMinRole(role, 'user')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -145,15 +175,22 @@ export function AgentUser(): MiddlewareHandler {
  */
 export function AgentAdmin(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
     const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'owner')) {
+    if (!role || !hasMinRole(role, 'owner')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -206,14 +243,18 @@ export function EntityAgentRole<T extends { agentSlug: string }>(opts: {
       }
       c.set(opts.contextKey as never, entity as never)
 
-      if (!isAuthMode()) return next()
+      if (!isAuthMode()) {
+        setAuthorizedAgentRole(c, 'owner')
+        return next()
+      }
 
       const user = getUser(c)
       const role = await getUserAgentRole(user.id, entity.agentSlug)
-      if (!hasMinRole(role, minRole)) {
+      if (!role || !hasMinRole(role, minRole)) {
         return c.json({ error: 'Forbidden' }, 403)
       }
 
+      setAuthorizedAgentRole(c, role)
       return next()
     }
   }

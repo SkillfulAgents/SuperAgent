@@ -65,6 +65,7 @@ import {
   HasNotificationAccess,
   Or,
   EntityAgentRole,
+  getAuthorizedAgentRole,
 } from './auth'
 
 // ---------------------------------------------------------------------------
@@ -215,10 +216,14 @@ describe('Auth Middleware', () => {
       mockAclQuery('viewer')
       const app = new Hono()
       setUser(app, { id: 'user-1', role: 'user' })
-      app.get('/:id', AgentRead(), (c) => c.json({ ok: true }))
+      app.get('/:id', AgentRead(), (c) => c.json({
+        ok: true,
+        authorizedRole: getAuthorizedAgentRole(c),
+      }))
 
       const res = await request(app)
       expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true, authorizedRole: 'viewer' })
     })
 
     it('allows user with user role', async () => {
@@ -1333,6 +1338,20 @@ describe('Auth Middleware', () => {
       const body = await res.json()
       expect(body.entity).toEqual(entity)
       expect(mockSelect).not.toHaveBeenCalled()
+    })
+
+    it('marks local-mode entity access as owner access', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      mockLookup.mockResolvedValue({ agentSlug: 'my-agent', name: 'My Entity' })
+      const app = new Hono()
+      app.get('/:entityId', TestEntityRole('viewer'), (c) => c.json({
+        role: getAuthorizedAgentRole(c),
+      }))
+
+      const res = await request(app, '/entity-1')
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ role: 'owner' })
     })
 
     it('passes when user has sufficient role', async () => {
