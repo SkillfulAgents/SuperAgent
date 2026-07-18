@@ -223,13 +223,24 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     }
   }
 
-  // Filter to only message entries for the main transform pipeline
+  // Filter to only message entries for the main transform pipeline.
+  // Dedupe by uuid: when a session is resumed into a fresh CLI process, the
+  // CLI can re-append the prior history to the transcript VERBATIM (same
+  // uuids, same message.ids). Without this, the merge-by-message.id pass
+  // below would stack the replayed content blocks onto the original
+  // messages (tripled text, duplicated tool calls).
   const messageEntries: JsonlMessageEntry[] = []
+  const seenUuids = new Set<string>()
 
   for (let i = 0; i < entries.length; i++) {
     if (skipIndices.has(i)) continue
     const entry = entries[i]
     if (entry.type === 'user' || entry.type === 'assistant') {
+      const uuid = (entry as JsonlMessageEntry).uuid
+      if (uuid) {
+        if (seenUuids.has(uuid)) continue
+        seenUuids.add(uuid)
+      }
       messageEntries.push(entry as JsonlMessageEntry)
     }
   }

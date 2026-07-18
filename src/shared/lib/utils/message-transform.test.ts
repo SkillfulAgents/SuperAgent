@@ -1778,3 +1778,45 @@ describe('parseCommandMessage', () => {
     })
   })
 })
+
+// ============================================================================
+// Resume history replay: the CLI can re-append prior transcript entries
+// VERBATIM (same uuid, same message.id) when a session is resumed into a
+// fresh CLI process. Duplicated entries must be dropped, not re-merged.
+// ============================================================================
+
+describe('replayed duplicate entries (resume history replay)', () => {
+  it('drops a replayed user entry with an already-seen uuid', () => {
+    const original = createUserMessage('user-1', 'Hello')
+    const replayed = createUserMessage('user-1', 'Hello')
+    const result = transformMessages([original, replayed])
+    expect(result).toHaveLength(1)
+  })
+
+  it('drops replayed assistant per-block entries instead of stacking their blocks', () => {
+    const textEntry = () =>
+      createAssistantMessage('uuid-a1', 'msg-1', [{ type: 'text', text: 'Working on it' }])
+    const toolEntry = () =>
+      createAssistantMessage('uuid-a2', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
+      ])
+    // Original per-block stream, then the resume replay of the same entries
+    const result = transformMessages([textEntry(), toolEntry(), textEntry(), toolEntry()])
+    expect(result).toHaveLength(1)
+    const msg = asMessage(result[0])
+    expect(msg.content.text).toBe('Working on it')
+    expect(msg.toolCalls).toHaveLength(1)
+  })
+
+  it('still merges distinct per-block entries sharing a message.id', () => {
+    const result = transformMessages([
+      createAssistantMessage('uuid-a1', 'msg-1', [{ type: 'text', text: 'One' }]),
+      createAssistantMessage('uuid-a2', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+      ]),
+    ])
+    expect(result).toHaveLength(1)
+    expect(asMessage(result[0]).toolCalls).toHaveLength(1)
+    expect(asMessage(result[0]).content.text).toBe('One')
+  })
+})
