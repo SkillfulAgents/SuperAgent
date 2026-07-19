@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { overlayLiveStatus, workflowProgressSegments } from './workflow-tray-content'
+import { overlayLiveStatus, progressSummary, workflowProgressSegments } from './workflow-tray-content'
 import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
 
 function node(over: Partial<WorkflowAgentNode>): WorkflowAgentNode {
@@ -98,5 +98,17 @@ describe('workflowProgressSegments', () => {
     const agents = [node({ agentId: 'a', status: 'done' })]
     // The estimate said 3 but the run finished with 1 — whatever didn't start never will.
     expect(workflowProgressSegments(agents, 3, false)).toEqual(['done'])
+  })
+})
+
+describe('progressSummary', () => {
+  it('reads "N/M agents done" when nothing failed', () => {
+    expect(progressSummary(['done', 'done', 'running', 'pending'])).toBe('2/4 agents done')
+  })
+
+  it('counts failed agents as finished and calls them out', () => {
+    // 22 done + 1 failed + 1 running must not read "22/24 done" — 23 have finished.
+    const segs = Array<'done' | 'failed' | 'running'>(22).fill('done').concat('failed', 'running')
+    expect(progressSummary(segs)).toBe('23/24 agents finished · 1 failed')
   })
 })

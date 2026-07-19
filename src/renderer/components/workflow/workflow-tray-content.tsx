@@ -102,6 +102,18 @@ export function workflowProgressSegments(
   return segs
 }
 
+/**
+ * Summary line under the bar. Failed agents are FINISHED — counting only green
+ * would read "22/24" with 23 over ("22 done, 1 failed"), so the numerator counts
+ * both and failures get called out explicitly.
+ */
+export function progressSummary(segments: ProgressSegment[]): string {
+  const done = segments.filter((s) => s === 'done').length
+  const failed = segments.filter((s) => s === 'failed').length
+  if (failed === 0) return `${done}/${segments.length} agents done`
+  return `${done + failed}/${segments.length} agents finished · ${failed} failed`
+}
+
 const SEGMENT_CLASS: Record<ProgressSegment, string> = {
   done: 'bg-emerald-500',
   running: 'bg-blue-500 animate-pulse',
@@ -120,7 +132,6 @@ function WorkflowProgressBar({
 }) {
   const segments = workflowProgressSegments(agents, expectedAgents, active)
   if (segments.length === 0) return null
-  const done = segments.filter((s) => s === 'done').length
   return (
     <div className="px-4 pt-2.5 pb-2 shrink-0">
       <div className="flex items-center gap-1">
@@ -128,9 +139,7 @@ function WorkflowProgressBar({
           <div key={i} className={cn('h-1.5 flex-1 rounded-full transition-colors', SEGMENT_CLASS[s])} />
         ))}
       </div>
-      <div className="mt-1 text-[10px] text-muted-foreground">
-        {done}/{segments.length} agents done
-      </div>
+      <div className="mt-1 text-[10px] text-muted-foreground">{progressSummary(segments)}</div>
     </div>
   )
 }
