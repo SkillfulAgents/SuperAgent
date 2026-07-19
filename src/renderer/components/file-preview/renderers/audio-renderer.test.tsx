@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { FileComment } from '@renderer/context/file-preview-context'
 import { AudioRenderer } from './audio-renderer'
+import { FileRenderer } from './file-renderer'
 
 const addComment = vi.fn()
 let comments = new Map<string, FileComment[]>()
@@ -54,6 +55,27 @@ describe('AudioRenderer', () => {
     expect(timeline).toContainElement(screen.getByTestId('audio-seek'))
     expect(playhead).toHaveStyle({ left: '50%' })
     expect(screen.getByTestId('audio-waveform-progress')).toHaveAttribute('offset', '50%')
+  })
+
+  it('waits for metadata before fetching audio for waveform decoding', () => {
+    render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
+    expect(fetch).not.toHaveBeenCalled()
+
+    const audio = screen.getByTestId('audio-element') as HTMLAudioElement
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 60 })
+    fireEvent.loadedMetadata(audio)
+
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it('skips waveform decoding for long recordings', () => {
+    render(<AudioRenderer url="/long-recording.mp3" filePath="/workspace/long-recording.mp3" />)
+
+    const audio = screen.getByTestId('audio-element') as HTMLAudioElement
+    Object.defineProperty(audio, 'duration', { configurable: true, value: 20 * 60 })
+    fireEvent.loadedMetadata(audio)
+
+    expect(fetch).not.toHaveBeenCalled()
   })
 
   it('shows an add-comment affordance when the waveform is hovered', () => {
@@ -138,5 +160,30 @@ describe('AudioRenderer', () => {
     render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
 
     expect(screen.getByRole('button', { name: 'Seek to comment 1 at 0:12' })).toBeVisible()
+  })
+
+  it('clears media state when switching between audio files', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(
+      <FileRenderer
+        filePath="/workspace/a.mp3"
+        fileUrl="/files/a.mp3"
+        agentSlug="agent-1"
+      />,
+    )
+
+    await user.click(screen.getByTestId('audio-add-comment'))
+    expect(screen.getByPlaceholderText('Add your comment...')).toBeVisible()
+
+    rerender(
+      <FileRenderer
+        filePath="/workspace/b.mp3"
+        fileUrl="/files/b.mp3"
+        agentSlug="agent-1"
+      />,
+    )
+
+    expect(screen.queryByPlaceholderText('Add your comment...')).not.toBeInTheDocument()
+    expect(screen.getByText('b.mp3')).toBeVisible()
   })
 })

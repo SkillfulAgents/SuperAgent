@@ -55,11 +55,11 @@ export function FileRenderer({ filePath, fileUrl, agentSlug }: FileRendererProps
   }
 
   if (VIDEO_EXTS.has(ext)) {
-    return <VideoRenderer url={fileUrl} filePath={filePath} />
+    return <VideoRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} />
   }
 
   if (AUDIO_EXTS.has(ext)) {
-    return <AudioRenderer url={fileUrl} filePath={filePath} />
+    return <AudioRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} />
   }
 
   if (ext === 'pdf') {

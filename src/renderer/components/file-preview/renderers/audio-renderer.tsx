@@ -18,7 +18,8 @@ interface PendingComment {
 type AudioComment = FileComment & { timestamp: number }
 
 const WAVEFORM_BAR_COUNT = 112
-const MAX_WAVEFORM_BYTES = 50 * 1024 * 1024
+const MAX_WAVEFORM_ENCODED_BYTES = 15 * 1024 * 1024
+const MAX_WAVEFORM_DURATION_SECONDS = 15 * 60
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
@@ -45,8 +46,6 @@ export function AudioRenderer({ url, filePath }: AudioRendererProps) {
   const [waveform, setWaveform] = useState(() => createFallbackWaveform(WAVEFORM_BAR_COUNT))
 
   const { comments } = useFilePreview()
-  const fileComments = comments.get(filePath) || []
-  const audioComments = fileComments.filter((comment): comment is AudioComment => comment.timestamp != null)
   const maxSeek = validDuration(duration)
   const playedRatio = maxSeek > 0 ? clamp(currentTime / maxSeek, 0, 1) : 0
   const filename = getFilename(filePath)
@@ -55,16 +54,23 @@ export function AudioRenderer({ url, filePath }: AudioRendererProps) {
     const controller = new AbortController()
     setWaveform(createFallbackWaveform(WAVEFORM_BAR_COUNT))
 
+    // Decoding compressed audio materializes the entire PCM stream in renderer
+    // memory. Wait for metadata and skip long recordings before fetching the
+    // source so a small encoded file cannot expand into a very large buffer.
+    if (duration === 0 || duration > MAX_WAVEFORM_DURATION_SECONDS) {
+      return () => controller.abort()
+    }
+
     async function decodeWaveform() {
       try {
         const response = await fetch(url, { credentials: 'same-origin', signal: controller.signal })
         if (!response.ok) return
 
         const contentLength = Number(response.headers.get('content-length'))
-        if (Number.isFinite(contentLength) && contentLength > MAX_WAVEFORM_BYTES) return
+        if (Number.isFinite(contentLength) && contentLength > MAX_WAVEFORM_ENCODED_BYTES) return
 
         const encodedAudio = await response.arrayBuffer()
-        if (controller.signal.aborted || encodedAudio.byteLength > MAX_WAVEFORM_BYTES) return
+        if (controller.signal.aborted || encodedAudio.byteLength > MAX_WAVEFORM_ENCODED_BYTES) return
 
         const decoder = new OfflineAudioContext(1, 1, 44_100)
         const audioBuffer = await decoder.decodeAudioData(encodedAudio)
@@ -86,7 +92,7 @@ export function AudioRenderer({ url, filePath }: AudioRendererProps) {
 
     void decodeWaveform()
     return () => controller.abort()
-  }, [url])
+  }, [duration, url])
 
   // `timeupdate` is intentionally throttled by browsers and makes a custom
   // playhead advance in noticeable jumps. Sample the media clock every frame
@@ -173,10 +179,15 @@ export function AudioRenderer({ url, filePath }: AudioRendererProps) {
 
   const hoverRatio = hoverTime != null && maxSeek > 0 ? clamp(hoverTime / maxSeek, 0, 1) : 0.5
 
-  const commentMarkers = useMemo(() => audioComments.map(comment => ({
-    ...comment,
-    ratio: maxSeek > 0 ? clamp(comment.timestamp / maxSeek, 0, 1) : 0,
-  })), [audioComments, maxSeek])
+  const commentMarkers = useMemo(() => {
+    const fileComments = comments.get(filePath) || []
+    return fileComments
+      .filter((comment): comment is AudioComment => comment.timestamp != null)
+      .map(comment => ({
+        ...comment,
+        ratio: maxSeek > 0 ? clamp(comment.timestamp / maxSeek, 0, 1) : 0,
+      }))
+  }, [comments, filePath, maxSeek])
 
   return (
     <div className="flex min-h-full items-start justify-center p-5" data-testid="audio-renderer">
@@ -200,7 +211,9 @@ export function AudioRenderer({ url, filePath }: AudioRendererProps) {
           data-testid="audio-element"
           onLoadedMetadata={event => setDuration(validDuration(event.currentTarget.duration))}
           onDurationChange={event => setDuration(validDuration(event.currentTarget.duration))}
-          onTimeUpdate={event => setCurrentTime(event.currentTarget.currentTime)}
+          onTimeUpdate={event => {
+            if (!playing) setCurrentTime(event.currentTarget.currentTime)
+          }}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onEnded={() => setPlaying(false)}
