@@ -6,6 +6,7 @@ import { TextRenderer } from './text-renderer'
 import { CsvRenderer } from './csv-renderer'
 import { ImageRenderer } from './image-renderer'
 import { VideoRenderer } from './video-renderer'
+import { AudioRenderer } from './audio-renderer'
 import { HtmlRenderer } from './html-renderer'
 import { UnsupportedRenderer } from './unsupported-renderer'
 
@@ -22,6 +23,7 @@ const TEXT_EXTS = new Set([
 ])
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'])
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v', 'ogv'])
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'weba'])
 
 interface FileRendererProps {
   filePath: string
@@ -53,7 +55,11 @@ export function FileRenderer({ filePath, fileUrl, agentSlug }: FileRendererProps
   }
 
   if (VIDEO_EXTS.has(ext)) {
-    return <VideoRenderer url={fileUrl} filePath={filePath} />
+    return <VideoRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} />
+  }
+
+  if (AUDIO_EXTS.has(ext)) {
+    return <AudioRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} />
   }
 
   if (ext === 'pdf') {

@@ -14,6 +14,9 @@ describe('guessMimeType', () => {
     expect(guessMimeType('icon.svg')).toBe('image/svg+xml')
     expect(guessMimeType('notes.txt')).toBe('text/plain')
     expect(guessMimeType('doc.docx')).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    expect(guessMimeType('recording.mp3')).toBe('audio/mpeg')
+    expect(guessMimeType('voice-note.m4a')).toBe('audio/mp4')
+    expect(guessMimeType('lossless.flac')).toBe('audio/flac')
   })
 
   it('is case-insensitive', () => {

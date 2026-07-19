@@ -8,7 +8,7 @@ export interface TextSelectionInfo {
   x?: number
   y?: number
   cell?: CellRef
-  /** Playback position in seconds, set for video-frame comments. */
+  /** Playback position in seconds, set for audio/video comments. */
   timestamp?: number
 }
 
