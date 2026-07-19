@@ -378,6 +378,14 @@ function getOrCreateEventSource(
   eventSources.set(key, es)
   refCounts.set(key, 1)
 
+  // A command_lifecycle:started frame is the authoritative queued-message
+  // pickup signal. The CLI writes the queued_command transcript attachment
+  // around the same time, so the pickup invalidate below can beat that write.
+  // Keep the command marked until the next model response starts; by then the
+  // command has necessarily been incorporated into the request and a second,
+  // conditional refetch can materialize its optimistic ghost reliably.
+  const startedCommandsAwaitingTranscript = new Set<string>()
+
   es.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)
@@ -586,20 +594,34 @@ function getOrCreateEventSource(
         queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
-      // Per-command lifecycle (runtime >= CLI 2.1.206). Terminal dead states
-      // name a queued message that will never run — the deterministic rescue
-      // signal. 'cancelled' for a command that already materialized is
-      // harmless: rescue only fires while its ghost still exists.
+      // Per-command lifecycle (runtime >= CLI 2.1.206). A started command
+      // drives queued-ghost reconciliation; terminal dead states name a
+      // message that will never run — the deterministic rescue signal.
+      // 'cancelled' for a command that already materialized is harmless:
+      // rescue only fires while its ghost still exists.
       else if (data.type === 'command_lifecycle') {
+        const commandUuid = typeof data.commandUuid === 'string' ? data.commandUuid : null
+        if (commandUuid && data.state === 'started') {
+          startedCommandsAwaitingTranscript.add(commandUuid)
+          // Fast path: in the common case the transcript attachment is already
+          // readable. stream_start below provides the bounded read-after-write
+          // retry when this invalidate lands a moment too early.
+          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        } else if (
+          commandUuid &&
+          (data.state === 'completed' || data.state === 'discarded' || data.state === 'cancelled')
+        ) {
+          startedCommandsAwaitingTranscript.delete(commandUuid)
+        }
         if (
           current &&
           (data.state === 'discarded' || data.state === 'cancelled') &&
-          typeof data.commandUuid === 'string' &&
-          !current.discardedCommandUuids.includes(data.commandUuid)
+          commandUuid &&
+          !current.discardedCommandUuids.includes(commandUuid)
         ) {
           streamStates.set(sessionId, {
             ...current,
-            discardedCommandUuids: [...current.discardedCommandUuids, data.commandUuid],
+            discardedCommandUuids: [...current.discardedCommandUuids, commandUuid],
           })
         }
       }
@@ -697,6 +719,10 @@ function getOrCreateEventSource(
       }
       // Streaming events - update streaming state, preserve isActive
       else if (data.type === 'stream_start') {
+        if (startedCommandsAwaitingTranscript.size > 0) {
+          startedCommandsAwaitingTranscript.clear()
+          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        }
         // Capture slash commands from init event (piggybacked on stream_start)
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
