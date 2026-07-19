@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import { getLlmPolyfillJs } from '../llm-polyfill'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, ResolveAgent, getAgentId } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -148,6 +148,7 @@ import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
+import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 
 function getConfiguredSkillsets() {
   return getSettings().skillsets || []
@@ -2970,7 +2971,8 @@ agents.get('/:id/webhook-triggers', AgentRead(), async (c) => {
       : status === 'cancelled'
       ? await listCancelledWebhookTriggers(slug)
       : await listWebhookTriggers(slug)
-    return c.json(triggers)
+    const role = getAuthorizedAgentRole(c)
+    return c.json(triggers.map((trigger) => toPublicWebhookTrigger(trigger, role)))
   } catch (error) {
     console.error('Failed to fetch webhook triggers:', error)
     return c.json({ error: 'Failed to fetch webhook triggers' }, 500)

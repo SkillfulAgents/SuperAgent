@@ -57,10 +57,11 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const updatePrompt = useUpdateWebhookTriggerPrompt()
   const updateRuntimeOptions = useUpdateWebhookTriggerRuntimeOptions()
   const navigate = useNavigate()
-  const { canUseAgent } = useUser()
+  const { canUseAgent, canAdminAgent } = useUser()
   const { data: settings } = useSettings()
   const { data: platformAuth } = usePlatformAuthStatus()
   const canCancel = canUseAgent(agentSlug)
+  const canViewOwnerDetails = canAdminAgent(trigger?.agentSlug ?? agentSlug)
   const { data: agents } = useAgents()
 
   // Canonicalize: triggers are addressed globally by id, so /agents/<wrong>/webhooks/<id>
@@ -106,8 +107,8 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
 
   const isCustom = trigger?.kind === 'custom'
   const endpointUrl = useMemo(
-    () => (isCustom ? extractEndpointUrl(trigger?.triggerConfig) : null),
-    [isCustom, trigger?.triggerConfig],
+    () => (isCustom && canViewOwnerDetails ? extractEndpointUrl(trigger?.triggerConfig) : null),
+    [isCustom, canViewOwnerDetails, trigger?.triggerConfig],
   )
   const [urlCopied, setUrlCopied] = useState(false)
   const handleCopyUrl = async () => {
@@ -127,7 +128,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
   const parsedConfigEntries = useMemo<[string, unknown][]>(() => {
     // For custom endpoints the config IS the endpoint mirror (url/endpointId),
     // which gets its own card — no generic Configuration card to show.
-    if (!trigger?.triggerConfig || isCustom) return []
+    if (!canViewOwnerDetails || !trigger?.triggerConfig || isCustom) return []
     try {
       const config = JSON.parse(trigger.triggerConfig) as Record<string, unknown>
       return Object.entries(config).filter(
@@ -136,7 +137,7 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
     } catch {
       return []
     }
-  }, [trigger?.triggerConfig, isCustom])
+  }, [canViewOwnerDetails, trigger?.triggerConfig, isCustom])
 
   const handleCancel = async () => {
     try {
@@ -368,12 +369,12 @@ export function WebhookTriggerView({ triggerId, agentSlug }: WebhookTriggerViewP
                     </dd>
                   </div>
                 )
-              ) : (
+              ) : canViewOwnerDetails && trigger.connectedAccountId ? (
                 <div>
                   <dt className="text-xs text-muted-foreground">Connected Account</dt>
                   <dd className="text-xs font-normal break-all">{trigger.connectedAccountId}</dd>
                 </div>
-              )}
+              ) : null}
             </dl>
           </DetailCard>
 
