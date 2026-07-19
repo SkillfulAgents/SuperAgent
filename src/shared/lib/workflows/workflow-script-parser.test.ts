@@ -95,6 +95,46 @@ describe('parseWorkflowScript — synthetic edge cases', () => {
     )
   })
 
+  it('tags agent() calls inside args.<key>.map fan-outs with fanOutArgsKey', () => {
+    const src = [
+      "export const meta = { name: 'v', description: 'd', phases: [{ title: 'Analyze' }] }",
+      "phase('Analyze')",
+      'const analyses = (await parallel(args.videos.map(v => () => agent(`analyze ${v.id}`, { label: `analyze:${v.id}` })))).filter(Boolean)',
+      "const plan = await agent('merge everything', { label: 'plan:merge' })",
+    ].join('\n')
+    const parsed = parseWorkflowScript(src)
+    expect(parsed.agentCalls).toHaveLength(2)
+    expect(parsed.agentCalls[0].fanOutArgsKey).toBe('videos')
+    expect(parsed.agentCalls[1].fanOutArgsKey).toBeNull()
+  })
+
+  it('tags agent() calls inside pipeline(args.<key>, ...) stages', () => {
+    const src = [
+      "export const meta = { name: 'p', description: 'd', phases: [] }",
+      "const out = await pipeline(args.items, x => agent(`do ${x}`, { label: `do:${x}` }), r => agent(`check ${r}`, { label: 'check' }))",
+      "const done = await agent('wrap up', { label: 'wrap' })",
+    ].join('\n')
+    const parsed = parseWorkflowScript(src)
+    expect(parsed.agentCalls).toHaveLength(3)
+    expect(parsed.agentCalls[0].fanOutArgsKey).toBe('items')
+    expect(parsed.agentCalls[1].fanOutArgsKey).toBe('items')
+    expect(parsed.agentCalls[2].fanOutArgsKey).toBeNull()
+  })
+
+  it('does not size fan-outs over non-args or filtered collections', () => {
+    const src = [
+      "export const meta = { name: 'n', description: 'd', phases: [] }",
+      // Runtime collection — length unknowable.
+      'const a = await parallel(plan.techniques.map(t => () => agent(`build ${t}`, {})))',
+      // Filtered args — args.videos.length would OVER-estimate; must stay untagged.
+      'const b = await parallel(args.videos.filter(v => v.ok).map(v => () => agent(`redo ${v}`, {})))',
+    ].join('\n')
+    const parsed = parseWorkflowScript(src)
+    expect(parsed.agentCalls).toHaveLength(2)
+    expect(parsed.agentCalls[0].fanOutArgsKey).toBeNull()
+    expect(parsed.agentCalls[1].fanOutArgsKey).toBeNull()
+  })
+
   it('does not match `agent` inside an identifier or string', () => {
     const src = [
       "export const meta = { name: 'x', description: 'y', phases: [] }",

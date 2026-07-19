@@ -93,4 +93,10 @@ describe('workflowProgressSegments', () => {
     const agents = [node({ agentId: 'a', status: 'done' }), node({ agentId: 'b', status: 'failed' })]
     expect(workflowProgressSegments(agents, 0)).toEqual(['done', 'failed'])
   })
+
+  it('drops pending cells once the run is no longer active', () => {
+    const agents = [node({ agentId: 'a', status: 'done' })]
+    // The estimate said 3 but the run finished with 1 — whatever didn't start never will.
+    expect(workflowProgressSegments(agents, 3, false)).toEqual(['done'])
+  })
 })

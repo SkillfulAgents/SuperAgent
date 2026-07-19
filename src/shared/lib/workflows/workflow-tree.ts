@@ -1,5 +1,6 @@
 import * as path from 'path'
 import { promises as fs } from 'fs'
+import { isPathWithinDir } from '../utils/path-safety'
 import { parseWorkflowScript } from './workflow-script-parser'
 import {
   JournalLineSchema,
@@ -23,6 +24,9 @@ type JoinedAgent = Omit<WorkflowAgentNode, 'prompt' | 'toolCount' | 'tokens' | '
  *   <sessionsDir>/<sessionId>/subagents/workflows/<runId>/journal.jsonl   (status + result, ordered)
  *   <sessionsDir>/<sessionId>/subagents/workflows/<runId>/agent-<id>.jsonl (first user msg = the join key)
  *   <sessionsDir>/<sessionId>/workflows/scripts/<name>-<runId>.js          (phases + per-call label/phase)
+ *   — plus the Workflow invocation mined from <sessionsDir>/<sessionId>.jsonl:
+ *     the executed script's path for `scriptPath` runs (no session-dir copy
+ *     exists) and the `args` input, which sizes `args.<key>` fan-outs.
  *
  * Returns null when the run dir / journal doesn't exist (→ the route 404s).
  */
@@ -70,7 +74,8 @@ export async function buildWorkflowTree(opts: {
     }
   }
 
-  const script = await loadScript(sessionsDir, sessionId, runId)
+  const invocation = await findWorkflowInvocation(sessionsDir, sessionId, runId)
+  const script = await loadScript(sessionsDir, sessionId, runId, invocation.scriptHostPath)
   const stats = new Map<string, AgentStats>()
   await Promise.all(
     startedOrder.map(async (agentId) => {
@@ -106,7 +111,7 @@ export async function buildWorkflowTree(opts: {
     description: script.description,
     phases: script.phases,
     agents,
-    expectedAgents: script.agentCalls.length,
+    expectedAgents: expectedAgentCount(script, invocation.args),
     totals,
   })
 }
@@ -185,22 +190,123 @@ function resolveLabel(
   return unresolved ? fallback : label
 }
 
-async function loadScript(sessionsDir: string, sessionId: string, runId: string): Promise<ParsedScript> {
+async function loadScript(
+  sessionsDir: string,
+  sessionId: string,
+  runId: string,
+  invocationScriptPath: string | null
+): Promise<ParsedScript> {
   const empty: ParsedScript = { name: null, description: null, phases: [], agentCalls: [] }
+  // Canonical location: inline-`script` invocations get a copy persisted here.
   const scriptsDir = path.join(sessionsDir, sessionId, 'workflows', 'scripts')
-  let entries: string[]
   try {
-    entries = await fs.readdir(scriptsDir)
+    const entries = await fs.readdir(scriptsDir)
+    const file = entries.find((f) => f.endsWith(`${runId}.js`))
+    if (file) return parseWorkflowScript(await fs.readFile(path.join(scriptsDir, file), 'utf8'))
   } catch {
-    return empty
+    // fall through to the invocation-referenced path
   }
-  const file = entries.find((f) => f.endsWith(`${runId}.js`))
-  if (!file) return empty
+  // `scriptPath` invocations run a caller-owned file (e.g. a skill's script) and
+  // persist nothing under the session dir — read the file the invocation named.
+  if (invocationScriptPath) {
+    try {
+      return parseWorkflowScript(await fs.readFile(invocationScriptPath, 'utf8'))
+    } catch {
+      // unreadable/unparsable script → same degraded tree as before
+    }
+  }
+  return empty
+}
+
+/**
+ * Estimated total agents for the run: a call site fanning out over a Workflow
+ * `args` array counts as that array's actual length; every other call site counts
+ * as 1. Still a lower bound — fan-outs over runtime-computed collections (an
+ * earlier phase's output) can't be sized statically.
+ */
+function expectedAgentCount(script: ParsedScript, args: unknown): number {
+  const argsObj =
+    args !== null && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : null
+  return script.agentCalls.reduce((n, call) => {
+    if (call.fanOutArgsKey && argsObj) {
+      const list = argsObj[call.fanOutArgsKey]
+      if (Array.isArray(list)) return n + list.length
+    }
+    return n + 1
+  }, 0)
+}
+
+interface WorkflowInvocation {
+  /** Host path of the executed script, contained within the agent workspace; null if unknown. */
+  scriptHostPath: string | null
+  /** The invocation's `args` input, verbatim; undefined if unknown. */
+  args: unknown
+}
+
+/**
+ * Mine the run's Workflow invocation out of the parent session transcript: the
+ * tool_result names the executed script (`Script file: <container path>`) and its
+ * paired tool_use input carries `args` (sizes fan-outs) and, for `scriptPath`
+ * invocations, the caller-owned script location. Container paths (`/workspace/...`)
+ * are mapped onto the host workspace dir; anything escaping it is ignored.
+ */
+async function findWorkflowInvocation(
+  sessionsDir: string,
+  sessionId: string,
+  runId: string
+): Promise<WorkflowInvocation> {
+  const none: WorkflowInvocation = { scriptHostPath: null, args: undefined }
+  let raw: string
   try {
-    return parseWorkflowScript(await fs.readFile(path.join(scriptsDir, file), 'utf8'))
+    raw = await fs.readFile(path.join(sessionsDir, `${sessionId}.jsonl`), 'utf8')
   } catch {
-    return empty
+    return none
   }
+  // sessionsDir = <workspace>/.claude/projects/-workspace
+  const workspaceDir = path.resolve(sessionsDir, '..', '..', '..')
+
+  const inputsByToolUseId = new Map<string, Record<string, unknown>>()
+  let resultText: string | null = null
+  let resultToolUseId: string | null = null
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let entry: { message?: { content?: unknown } }
+    try {
+      entry = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+    const content = entry.message?.content
+    if (!Array.isArray(content)) continue
+    for (const block of content as Array<Record<string, unknown>>) {
+      if (block?.type === 'tool_use' && block.name === 'Workflow' && typeof block.id === 'string') {
+        const input = block.input
+        inputsByToolUseId.set(block.id, input !== null && typeof input === 'object' ? (input as Record<string, unknown>) : {})
+      }
+      if (resultText === null && block?.type === 'tool_result') {
+        const text = messageText(block.content)
+        if (text.includes(runId)) {
+          resultText = text
+          resultToolUseId = typeof block.tool_use_id === 'string' ? block.tool_use_id : null
+        }
+      }
+    }
+  }
+  if (resultText === null) return none
+
+  const input = resultToolUseId !== null ? inputsByToolUseId.get(resultToolUseId) : undefined
+  // Prefer the result's `Script file:` line (present for inline-`script` runs too,
+  // pointing at the persisted copy); fall back to the tool_use's own scriptPath.
+  const containerPath =
+    /Script file: (\/workspace\/\S+)/.exec(resultText)?.[1] ??
+    (typeof input?.scriptPath === 'string' ? input.scriptPath : null)
+  let scriptHostPath: string | null = null
+  if (containerPath?.startsWith('/workspace/')) {
+    const host = path.join(workspaceDir, containerPath.slice('/workspace/'.length))
+    if (isPathWithinDir(workspaceDir, host)) scriptHostPath = host
+  }
+  return { scriptHostPath, args: input?.args }
 }
 
 interface AgentStats {

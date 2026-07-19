@@ -183,6 +183,106 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
     })
   })
 
+  it('falls back to the transcript-referenced script for scriptPath invocations', async () => {
+    // scriptPath runs persist nothing under <session>/workflows/scripts — the only
+    // pointer to the script is the Workflow tool result in the session transcript.
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'wf-tree-sp-'))
+    tmpDirs.push(tmp)
+    const workspace = path.join(tmp, 'workspace')
+    const sessionsDir = path.join(workspace, '.claude', 'projects', '-workspace')
+    const runDir = path.join(sessionsDir, 's1', 'subagents', 'workflows', 'wf_sp')
+    await fs.mkdir(runDir, { recursive: true })
+    await fs.writeFile(
+      path.join(runDir, 'journal.jsonl'),
+      JSON.stringify({ type: 'started', key: 'v2:1', agentId: 'k1' }) + '\n'
+    )
+    await fs.writeFile(
+      path.join(runDir, 'agent-k1.jsonl'),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'analyze v01' } }) + '\n'
+    )
+    const skillScripts = path.join(workspace, '.claude', 'skills', 'probe', 'scripts')
+    await fs.mkdir(skillScripts, { recursive: true })
+    await fs.writeFile(
+      path.join(skillScripts, 'wf.js'),
+      [
+        "export const meta = { name: 'probe', description: 'd', phases: [{ title: 'Analyze' }] }",
+        "phase('Analyze')",
+        'const r = await parallel(args.videos.map(v => () => agent(`analyze ${v}`, { label: `analyze:${v}`, phase: \'Analyze\' })))',
+        "const merged = await agent('merge it all', { label: 'merge' })",
+      ].join('\n')
+    )
+    // The invocation as it appears in the transcript: the assistant tool_use carries
+    // scriptPath + args; the paired tool_result names the script and the run id.
+    const toolUseLine = JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tu1',
+            name: 'Workflow',
+            input: {
+              scriptPath: '/workspace/.claude/skills/probe/scripts/wf.js',
+              args: { videos: ['v01', 'v02', 'v03'] },
+            },
+          },
+        ],
+      },
+    })
+    const toolResultLine = JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tu1',
+            content:
+              'Workflow launched in background.\nScript file: /workspace/.claude/skills/probe/scripts/wf.js\nRun ID: wf_sp',
+          },
+        ],
+      },
+    })
+    await fs.writeFile(path.join(sessionsDir, 's1.jsonl'), toolUseLine + '\n' + toolResultLine + '\n')
+    const tree = await buildWorkflowTree({ sessionsDir, sessionId: 's1', runId: 'wf_sp' })
+    expect(tree!.name).toBe('probe')
+    expect(tree!.phases.map((p) => p.title)).toEqual(['Analyze'])
+    // args.videos fan-out (3) + the single merge call site.
+    expect(tree!.expectedAgents).toBe(4)
+    expect(tree!.agents[0]).toMatchObject({ label: 'analyze:v01', phase: 'Analyze' })
+  })
+
+  it('rejects a transcript script path that escapes the workspace', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'wf-tree-esc-'))
+    tmpDirs.push(tmp)
+    const workspace = path.join(tmp, 'workspace')
+    const sessionsDir = path.join(workspace, '.claude', 'projects', '-workspace')
+    const runDir = path.join(sessionsDir, 's1', 'subagents', 'workflows', 'wf_esc')
+    await fs.mkdir(runDir, { recursive: true })
+    await fs.writeFile(
+      path.join(runDir, 'journal.jsonl'),
+      JSON.stringify({ type: 'started', key: 'v2:1', agentId: 'k1' }) + '\n'
+    )
+    // A script OUTSIDE the workspace that a traversal path would otherwise reach.
+    await fs.writeFile(
+      path.join(tmp, 'evil.js'),
+      "export const meta = { name: 'evil', description: 'd', phases: [] }"
+    )
+    await fs.writeFile(
+      path.join(sessionsDir, 's1.jsonl'),
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', content: 'Script file: /workspace/../evil.js\nRun ID: wf_esc' }],
+        },
+      }) + '\n'
+    )
+    const tree = await buildWorkflowTree({ sessionsDir, sessionId: 's1', runId: 'wf_esc' })
+    expect(tree!.name).toBeNull() // traversal path ignored → degraded (script-less) tree
+  })
+
   it('marks a still-running agent (started, no result yet) as running', async () => {
     const script = [
       "export const meta = { name: 'r', description: 'd', phases: [{ title: 'Go' }] }",

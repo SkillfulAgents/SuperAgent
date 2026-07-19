@@ -84,17 +84,20 @@ export type ProgressSegment = 'done' | 'running' | 'failed' | 'pending'
 
 /**
  * One progress cell per agent: known agents colored by status, plus gray "pending"
- * cells for declared-but-not-yet-started agents (`expectedAgents` = script call sites,
- * a lower bound — so a dynamic fan-out just grows the bar, never shows phantom pending).
+ * cells for expected-but-not-yet-started agents (`expectedAgents` sizes `args`
+ * fan-outs from the invocation but is still a lower bound — a runtime fan-out just
+ * grows the bar, never shows phantom pending). A finished run (`active` false)
+ * never shows pending: whatever didn't start by then never will.
  */
 export function workflowProgressSegments(
   agents: Pick<WorkflowAgentNode, 'status'>[],
-  expectedAgents: number
+  expectedAgents: number,
+  active = true
 ): ProgressSegment[] {
   const segs: ProgressSegment[] = agents.map((a) =>
     a.status === 'done' ? 'done' : a.status === 'failed' ? 'failed' : 'running'
   )
-  const pending = Math.max(0, expectedAgents - agents.length)
+  const pending = active ? Math.max(0, expectedAgents - agents.length) : 0
   for (let i = 0; i < pending; i++) segs.push('pending')
   return segs
 }
@@ -109,11 +112,13 @@ const SEGMENT_CLASS: Record<ProgressSegment, string> = {
 function WorkflowProgressBar({
   agents,
   expectedAgents,
+  active,
 }: {
   agents: WorkflowAgentNode[]
   expectedAgents: number
+  active: boolean
 }) {
-  const segments = workflowProgressSegments(agents, expectedAgents)
+  const segments = workflowProgressSegments(agents, expectedAgents, active)
   if (segments.length === 0) return null
   const done = segments.filter((s) => s === 'done').length
   return (
@@ -206,7 +211,7 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
         </button>
       </div>
 
-      <WorkflowProgressBar agents={agents} expectedAgents={treeQuery.data?.expectedAgents ?? 0} />
+      <WorkflowProgressBar agents={agents} expectedAgents={treeQuery.data?.expectedAgents ?? 0} active={isActive} />
 
       {openWorkflows.length > 1 && (
         <div className="px-4 pb-2 shrink-0">
@@ -312,7 +317,8 @@ function WorkflowAgentRow({
         <span className="flex h-4 w-4 shrink-0 items-center justify-center">
           <StatusIndicator status={indicatorStatus} />
         </span>
-        <span className="text-xs text-foreground/80 truncate">{agent.label}</span>
+        {/* shrink-0 + cap: a long result/tool string must truncate itself, not crush the label to zero width */}
+        <span className="text-xs text-foreground/80 truncate shrink-0 max-w-[70%]">{agent.label}</span>
         {/* While running, show the current tool (live from the wire). */}
         {isRunning && agent.lastTool && (
           <>
