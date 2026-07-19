@@ -147,7 +147,10 @@ test.describe('File Preview', () => {
     await expect(csv.getByRole('columnheader', { name: 'Email' })).toBeVisible()
   })
 
-  test('pins a comment to a CSV cell and inserts feedback into the composer without sending', async ({ page }) => {
+  test('pins a comment to a CSV cell and focuses feedback in a narrow composer without sending', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 700 })
+    await page.evaluate(() => localStorage.setItem('tray_drawer_width', '700'))
+
     await agentPage.createAgent(`CsvComment ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
     seedWorkspaceFile(
@@ -196,6 +199,7 @@ test.describe('File Preview', () => {
     await expect(composer).toContainText('File feedback on data.csv:')
     await expect(composer).toContainText('At cell 1:Email (col 2, value: "alice@example.com"):')
     await expect(composer).toContainText('This email looks wrong')
+    await expect(composer).toBeFocused()
     await expect(sessionPage.getUserMessages()).toHaveCount(userMessageCount)
     expect(feedbackPostCount).toBe(0)
   })

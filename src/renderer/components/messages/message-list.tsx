@@ -24,7 +24,7 @@ import { ArrowDown, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-r
 import { FileDownloadPill } from '@renderer/components/ui/file-download-pill'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
-import { useDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { appendToSessionDraft, useDraft, useDraftsStore } from '@renderer/context/drafts-context'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, Fragment, type ReactNode } from 'react'
@@ -246,11 +246,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const dead = new Set(discardedCommandUuids)
     const rescued = (pendingUserMessages ?? []).filter((p) => p.uuid && dead.has(p.uuid))
     if (rescued.length > 0) {
-      const draftKey = `session:${sessionId}`
-      const existing = draftsStore.get<string>(draftKey)?.trim() ?? ''
       const restored = rescued.map((p) => p.text.trim()).filter(Boolean)
-      const merged = [...restored, existing].filter(Boolean).join('\n\n')
-      draftsStore.set(draftKey, merged || undefined)
+      appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
       for (const pending of rescued) {
         onPendingMessageAppeared?.(pending.localId)
         consumeDiscardedCommand(sessionId, pending.uuid!)
@@ -288,11 +285,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
     const timerId = setTimeout(() => {
       if (undelivered.length > 0) {
-        const draftKey = `session:${sessionId}`
-        const existing = draftsStore.get<string>(draftKey)?.trim() ?? ''
         const restored = undelivered.map((p) => p.text.trim()).filter(Boolean)
-        const merged = [...restored, existing].filter(Boolean).join('\n\n')
-        draftsStore.set(draftKey, merged || undefined)
+        appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
         for (const pending of undelivered) onPendingMessageAppeared?.(pending.localId)
       }
       clearPeerUserMessages(sessionId)

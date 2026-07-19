@@ -36,6 +36,7 @@ describe('CommentBar feedback submission', () => {
     renderWithProviders(
       <>
         <DraftProbe sessionId={sessionId} initialDraft="Existing note" />
+        <input data-testid="message-input" aria-label="Message composer" />
         <CommentBar
           comments={comments}
           filePath="/workspace/report.md"
@@ -53,5 +54,6 @@ describe('CommentBar feedback submission', () => {
       )
     })
     expect(sendMessage).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.getByTestId('message-input')).toHaveFocus())
   })
 })
