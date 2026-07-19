@@ -2256,7 +2256,7 @@ describe('useMessageStream', () => {
     })
   })
 
-  describe('command lifecycle (queued-ghost rescue signal)', () => {
+  describe('command lifecycle', () => {
     async function setupHook(sessionId: string) {
       const mod = await getHookModule()
       const wrapper = createWrapper()
@@ -2271,7 +2271,7 @@ describe('useMessageStream', () => {
       act(() => {
         es.simulateMessage({ type: 'connected', isActive: true })
       })
-      return { mod, result, es }
+      return { mod, result, es, queryClient: wrapper.queryClient }
     }
 
     it('accumulates terminal-dead command uuids (discarded/cancelled), deduped', async () => {
@@ -2287,7 +2287,7 @@ describe('useMessageStream', () => {
       expect(result.current.discardedCommandUuids).toEqual(['u1', 'u2'])
     })
 
-    it('ignores non-terminal states and frames without a uuid', async () => {
+    it('does not treat non-terminal states or malformed frames as discarded', async () => {
       const { result, es } = await setupHook('cmd-s2')
 
       act(() => {
@@ -2298,6 +2298,33 @@ describe('useMessageStream', () => {
       })
 
       expect(result.current.discardedCommandUuids).toEqual([])
+    })
+
+    it('refetches at queued-command pickup and again when its model response starts', async () => {
+      const { es, queryClient } = await setupHook('cmd-s4')
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+      act(() => {
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'started' })
+      })
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['messages', 'cmd-s4'] })
+
+      // The pickup refetch can race the CLI's queued_command transcript write.
+      // A model response proves the command has been incorporated, so it must
+      // trigger one bounded reconciliation retry.
+      invalidateSpy.mockClear()
+      act(() => {
+        es.simulateMessage({ type: 'stream_start' })
+      })
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['messages', 'cmd-s4'] })
+
+      // The marker is consumed: later model iterations do not keep polling.
+      invalidateSpy.mockClear()
+      act(() => {
+        es.simulateMessage({ type: 'stream_start' })
+      })
+      expect(invalidateSpy).not.toHaveBeenCalled()
     })
 
     it('consumeDiscardedCommand removes a single uuid once acted upon', async () => {
