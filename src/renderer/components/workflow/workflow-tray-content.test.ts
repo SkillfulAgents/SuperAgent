@@ -48,10 +48,22 @@ describe('overlayLiveStatus', () => {
     expect(out[0].result).toBe('live result')
   })
 
-  it('surfaces a live failed state (disk never produces failed)', () => {
+  it('surfaces a live failed state', () => {
     const base = [node({ agentId: 'a', status: 'running', result: null })]
     const out = overlayLiveStatus(base, { a: { status: 'failed', result: null } })
     expect(out[0].status).toBe('failed')
+  })
+
+  it('does NOT let a stale live running override a tree failed (trailing-error detection)', () => {
+    const base = [node({ agentId: 'a', status: 'failed', result: 'request_too_large: 413' })]
+    const out = overlayLiveStatus(base, { a: { status: 'running', result: null } })
+    expect(out[0]).toMatchObject({ status: 'failed', result: 'request_too_large: 413' })
+  })
+
+  it('lets done win over failed when the sources disagree (a result is definitive)', () => {
+    const base = [node({ agentId: 'a', status: 'failed', result: 'err' })]
+    const out = overlayLiveStatus(base, { a: { status: 'done', result: 'late result' } })
+    expect(out[0].status).toBe('done')
   })
 
   it('overlays live tokens/toolCount/lastTool onto the node', () => {

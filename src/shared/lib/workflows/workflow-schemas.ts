@@ -100,9 +100,11 @@ export const WorkflowAgentNodeSchema = z.object({
   /** Resolved display label, e.g. `word-alpha` or `fact:Mars`; falls back to `agent N`. */
   label: z.string(),
   phase: z.string().nullable(),
-  // Disk (journal) only knows running/done; `failed` comes from the live wire snapshot.
+  // running/done come from the journal; `failed` from either the live wire snapshot
+  // or, durably, a transcript that ends on a synthetic error frame with no result.
   status: z.enum(['running', 'done', 'failed']),
-  /** Display string of the agent's return value (JSON-stringified if structured). */
+  /** Display string of the agent's return value (JSON-stringified if structured);
+   *  for failed agents, the error details from the trailing error frame. */
   result: z.string().nullable(),
   /** How the agentId→call join was made (for debuggability + tests). */
   resolved: z.enum(['prompt-regex', 'ordinal-fallback']),

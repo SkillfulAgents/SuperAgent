@@ -111,7 +111,7 @@ afterEach(async () => {
 async function scaffold(opts: {
   script: string
   journal: Array<Record<string, unknown>>
-  agents: Array<{ agentId: string; firstPrompt: string }>
+  agents: Array<{ agentId: string; firstPrompt: string; extraLines?: Array<Record<string, unknown>> }>
 }): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'wf-tree-'))
   tmpDirs.push(root)
@@ -122,13 +122,11 @@ async function scaffold(opts: {
   await fs.mkdir(path.join(root, sid, 'workflows', 'scripts'), { recursive: true })
   await fs.writeFile(path.join(runDir, 'journal.jsonl'), opts.journal.map((j) => JSON.stringify(j)).join('\n'))
   for (const a of opts.agents) {
-    const line = JSON.stringify({
-      type: 'user',
-      isSidechain: true,
-      agentId: a.agentId,
-      message: { role: 'user', content: a.firstPrompt },
-    })
-    await fs.writeFile(path.join(runDir, `agent-${a.agentId}.jsonl`), line + '\n')
+    const lines = [
+      { type: 'user', isSidechain: true, agentId: a.agentId, message: { role: 'user', content: a.firstPrompt } },
+      ...(a.extraLines ?? []),
+    ]
+    await fs.writeFile(path.join(runDir, `agent-${a.agentId}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
   }
   await fs.writeFile(path.join(root, sid, 'workflows', 'scripts', `probe-${run}.js`), opts.script)
   return root
@@ -296,5 +294,74 @@ describe('buildWorkflowTree — synthetic edge cases', () => {
     })
     const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
     expect(tree!.agents[0]).toMatchObject({ label: 'worker', phase: 'Go', status: 'running', result: null })
+  })
+
+  it('marks a result-less agent whose transcript ends on an error frame as failed', async () => {
+    // The journal has no failure event — a dead agent is a `started` with no
+    // `result`. The durable marker is the trailing synthetic error entry.
+    const script = "export const meta = { name: 'f', description: 'd', phases: [] }\nawait agent('doomed', {})"
+    const root = await scaffold({
+      script,
+      journal: [{ type: 'started', key: 'v2:1', agentId: 'f1' }],
+      agents: [
+        {
+          agentId: 'f1',
+          firstPrompt: 'doomed',
+          extraLines: [
+            {
+              type: 'assistant',
+              agentId: 'f1',
+              message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: 'Request too large' }] },
+              error: 'invalid_request',
+              errorDetails: 'request_too_large: 413',
+            },
+          ],
+        },
+      ],
+    })
+    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents[0]).toMatchObject({ status: 'failed', result: 'request_too_large: 413' })
+  })
+
+  it('does not fail an agent that recovered from a mid-transcript error', async () => {
+    const script = "export const meta = { name: 'f', description: 'd', phases: [] }\nawait agent('resilient', {})"
+    const root = await scaffold({
+      script,
+      journal: [{ type: 'started', key: 'v2:1', agentId: 'r1' }],
+      agents: [
+        {
+          agentId: 'r1',
+          firstPrompt: 'resilient',
+          extraLines: [
+            { type: 'assistant', agentId: 'r1', message: { model: '<synthetic>', role: 'assistant' }, error: 'overloaded' },
+            // A later entry means the agent kept going — the error was transient.
+            { type: 'assistant', agentId: 'r1', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } },
+          ],
+        },
+      ],
+    })
+    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents[0]).toMatchObject({ status: 'running', result: null })
+  })
+
+  it('journal result always wins over a trailing error frame', async () => {
+    // A result on disk is definitive completion, whatever the transcript tail says.
+    const script = "export const meta = { name: 'f', description: 'd', phases: [] }\nawait agent('finisher', {})"
+    const root = await scaffold({
+      script,
+      journal: [
+        { type: 'started', key: 'v2:1', agentId: 'd1' },
+        { type: 'result', key: 'v2:1', agentId: 'd1', result: 'all good' },
+      ],
+      agents: [
+        {
+          agentId: 'd1',
+          firstPrompt: 'finisher',
+          extraLines: [{ type: 'assistant', agentId: 'd1', message: { model: '<synthetic>' }, error: 'overloaded' }],
+        },
+      ],
+    })
+    const tree = await buildWorkflowTree({ sessionsDir: root, sessionId: 's1', runId: 'wf_test' })
+    expect(tree!.agents[0]).toMatchObject({ status: 'done', result: 'all good' })
   })
 })

@@ -86,8 +86,14 @@ export async function buildWorkflowTree(opts: {
   const firstPrompts = new Map([...stats].map(([id, s]) => [id, s.firstPrompt]))
   const agents = joinAgents({ startedOrder, statusByAgent, firstPrompts, script }).map((node) => {
     const s = stats.get(node.agentId)
+    // The journal has no failure event — a dead agent is a `started` with no
+    // `result`, forever. The durable marker is the transcript ending on a
+    // synthetic error frame; self-correcting if the agent appends more entries.
+    const failed = node.status === 'running' && s?.trailingError != null
     return {
       ...node,
+      status: failed ? ('failed' as const) : node.status,
+      result: node.result ?? (failed ? s.trailingError : null),
       prompt: s?.firstPrompt ?? '',
       toolCount: s?.toolCount ?? 0,
       tokens: s?.tokens ?? 0,
@@ -162,7 +168,7 @@ function joinAgents(input: {
       agentId,
       label: resolveLabel(chosen, captures, index),
       phase: chosen ? chosen.phase ?? chosen.sourcePhase : null,
-      status: st.status,
+      status: st.status, // 'running' may be promoted to 'failed' once transcript stats are layered on
       result: displayAgentResult(st.result),
       resolved,
     })
@@ -315,6 +321,9 @@ interface AgentStats {
   tokens: number
   firstTs: number | null
   lastTs: number | null
+  /** Error text when the transcript's FINAL entry is a synthetic error frame
+   *  (`error` + `errorDetails` fields) — the durable marker of a dead agent. */
+  trailingError: string | null
 }
 
 function messageText(content: unknown): string {
@@ -334,7 +343,14 @@ function messageText(content: unknown): string {
  * first/last timestamps (for duration). Tolerant of a half-written trailing line.
  */
 async function readAgentStats(filePath: string): Promise<AgentStats> {
-  const empty: AgentStats = { firstPrompt: '', toolCount: 0, tokens: 0, firstTs: null, lastTs: null }
+  const empty: AgentStats = {
+    firstPrompt: '',
+    toolCount: 0,
+    tokens: 0,
+    firstTs: null,
+    lastTs: null,
+    trailingError: null,
+  }
   let raw: string
   try {
     raw = await fs.readFile(filePath, 'utf8')
@@ -346,12 +362,15 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
   let tokens = 0
   let firstTs: number | null = null
   let lastTs: number | null = null
+  let trailingError: string | null = null
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
     let entry: {
       type?: string
       timestamp?: string
+      error?: unknown
+      errorDetails?: unknown
       message?: { content?: unknown; usage?: { output_tokens?: number } }
     }
     try {
@@ -359,6 +378,14 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
     } catch {
       continue
     }
+    // Track the error marker of the LAST entry only: a mid-transcript error the
+    // agent recovered from must not read as failure, so any later entry clears it.
+    trailingError =
+      typeof entry.error === 'string'
+        ? typeof entry.errorDetails === 'string'
+          ? entry.errorDetails
+          : entry.error
+        : null
     if (typeof entry.timestamp === 'string') {
       const t = Date.parse(entry.timestamp)
       if (!Number.isNaN(t)) {
@@ -377,5 +404,5 @@ async function readAgentStats(filePath: string): Promise<AgentStats> {
       tokens += entry.message?.usage?.output_tokens ?? 0
     }
   }
-  return { firstPrompt, toolCount, tokens, firstTs, lastTs }
+  return { firstPrompt, toolCount, tokens, firstTs, lastTs, trailingError }
 }

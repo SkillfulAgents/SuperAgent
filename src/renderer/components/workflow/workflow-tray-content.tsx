@@ -64,10 +64,15 @@ export function overlayLiveStatus(
   return base.map((a) => {
     const live = liveAgents[a.agentId]
     if (!live) return a
-    // `failed` is live-only and wins; otherwise `done` from either source wins; a stale
-    // live `running` never overrides a tree `done` (the tailer can miss the last line).
+    // `done` from either source wins (a result on disk or wire is definitive), then
+    // `failed` from either (the tree detects it durably from a trailing transcript
+    // error frame); a stale `running` on one side never downgrades the other.
     const status: WorkflowAgentNode['status'] =
-      live.status === 'failed' ? 'failed' : a.status === 'done' || live.status === 'done' ? 'done' : 'running'
+      a.status === 'done' || live.status === 'done'
+        ? 'done'
+        : a.status === 'failed' || live.status === 'failed'
+          ? 'failed'
+          : 'running'
     return {
       ...a,
       status,
@@ -335,8 +340,16 @@ function WorkflowAgentRow({
             <span className="text-[11px] text-muted-foreground/70 truncate min-w-0 font-mono">{agent.lastTool}</span>
           </>
         )}
-        {agent.status === 'done' && agent.result && (
-          <span className="text-[11px] text-muted-foreground/80 truncate min-w-0">{agent.result}</span>
+        {/* Terminal agents show their return value — or, for failed ones, the error. */}
+        {(agent.status === 'done' || agent.status === 'failed') && agent.result && (
+          <span
+            className={cn(
+              'text-[11px] truncate min-w-0',
+              agent.status === 'failed' ? 'text-destructive/80' : 'text-muted-foreground/80'
+            )}
+          >
+            {agent.result}
+          </span>
         )}
         <span className="ml-auto shrink-0 text-muted-foreground/60">
           {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -351,10 +364,14 @@ function WorkflowAgentRow({
             </div>
           )}
           <StatsLine durationMs={agent.durationMs} toolCount={agent.toolCount} tokens={agent.tokens} />
-          {agent.status === 'done' && agent.result && (
+          {(agent.status === 'done' || agent.status === 'failed') && agent.result && (
             <div className="text-[11px] break-words">
-              <span className="font-medium text-foreground/70">Result: </span>
-              <span className="text-muted-foreground">{agent.result}</span>
+              <span className="font-medium text-foreground/70">
+                {agent.status === 'failed' ? 'Error: ' : 'Result: '}
+              </span>
+              <span className={agent.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}>
+                {agent.result}
+              </span>
             </div>
           )}
           <WorkflowAgentTranscript messages={messages.data} agentSlug={agentSlug} isRunning={isRunning} />
