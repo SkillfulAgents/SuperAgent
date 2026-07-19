@@ -1778,3 +1778,86 @@ describe('parseCommandMessage', () => {
     })
   })
 })
+
+// ============================================================================
+// Resume history replay: the CLI can re-append prior transcript entries
+// VERBATIM (same uuid, same message.id) when a session is resumed into a
+// fresh CLI process. Duplicated entries must be dropped, not re-merged.
+// ============================================================================
+
+describe('replayed duplicate entries (resume history replay)', () => {
+  it('drops a replayed user entry with an already-seen uuid', () => {
+    const original = createUserMessage('user-1', 'Hello')
+    const replayed = createUserMessage('user-1', 'Hello')
+    const result = transformMessages([original, replayed])
+    expect(result).toHaveLength(1)
+  })
+
+  it('drops replayed assistant per-block entries instead of stacking their blocks', () => {
+    const textEntry = () =>
+      createAssistantMessage('uuid-a1', 'msg-1', [{ type: 'text', text: 'Working on it' }])
+    const toolEntry = () =>
+      createAssistantMessage('uuid-a2', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
+      ])
+    // Original per-block stream, then the resume replay of the same entries
+    const result = transformMessages([textEntry(), toolEntry(), textEntry(), toolEntry()])
+    expect(result).toHaveLength(1)
+    const msg = asMessage(result[0])
+    expect(msg.content.text).toBe('Working on it')
+    expect(msg.toolCalls).toHaveLength(1)
+  })
+
+  it('still merges distinct per-block entries sharing a message.id', () => {
+    const result = transformMessages([
+      createAssistantMessage('uuid-a1', 'msg-1', [{ type: 'text', text: 'One' }]),
+      createAssistantMessage('uuid-a2', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'Bash', input: {} },
+      ]),
+    ])
+    expect(result).toHaveLength(1)
+    expect(asMessage(result[0]).toolCalls).toHaveLength(1)
+    expect(asMessage(result[0]).content.text).toBe('One')
+  })
+
+  it('drops a replayed memory_recall entry with an already-seen uuid', () => {
+    const recall = (): JsonlSystemEntry => ({
+      uuid: 'recall-1',
+      type: 'system',
+      subtype: 'memory_recall',
+      content: '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:00:00.000Z',
+      memory_paths: ['memory/a.md'],
+    })
+    const result = transformMessages([
+      recall(),
+      createUserMessage('user-1', 'Hello'),
+      // Cold-resume replay of the same [recall, message] pair
+      recall(),
+      createUserMessage('user-1', 'Hello'),
+    ])
+    expect(result.filter((r) => r.type === 'memory_recall')).toHaveLength(1)
+    expect(result).toHaveLength(2)
+  })
+
+  it('drops a replayed compact boundary with an already-seen uuid', () => {
+    const boundary = (): JsonlSystemEntry => ({
+      uuid: 'boundary-1',
+      type: 'system',
+      subtype: 'compact_boundary',
+      content: '',
+      isMeta: false,
+      timestamp: '2026-01-24T10:00:00.000Z',
+      compactMetadata: { trigger: 'auto', preTokens: 1000 },
+    })
+    const result = transformMessages([
+      boundary(),
+      createUserMessage('user-1', 'Hello'),
+      boundary(),
+      createUserMessage('user-1', 'Hello'),
+    ])
+    expect(result.filter((r) => r.type === 'compact_boundary')).toHaveLength(1)
+    expect(result).toHaveLength(2)
+  })
+})

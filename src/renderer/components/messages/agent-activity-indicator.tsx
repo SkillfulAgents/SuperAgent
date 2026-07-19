@@ -11,11 +11,7 @@ import { cn } from '@shared/lib/utils'
 import { AlertTriangle, Monitor, X } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 
-interface Todo {
-  content: string
-  status: 'pending' | 'in_progress' | 'completed'
-  activeForm: string
-}
+import { deriveTaskList, Todo } from '@shared/lib/utils/derive-task-list'
 
 interface AgentActivityIndicatorProps {
   sessionId: string
@@ -114,73 +110,10 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
   // to TodoWrite (older SDK). Memoized on [messages] so it doesn't re-scan the
   // whole transcript on every per-delta re-render driven by useMessageStream —
   // only when the persisted message list actually changes.
-  const { todos, activeItem } = useMemo<{ todos: Todo[] | null; activeItem: Todo | null }>(() => {
-    if (!messages) return { todos: null, activeItem: null }
-
-    let list: Todo[] | null = null
-    let current: Todo | null = null
-
-    // Try TaskCreate/TaskUpdate first (newer SDK format)
-    const taskMap = new Map<string, Todo>()
-    let taskCounter = 0
-
-    for (const message of messages) {
-      if (message.type !== 'user' && message.type !== 'assistant') continue
-      for (const tc of message.toolCalls || []) {
-        if (tc.name === 'TaskCreate') {
-          taskCounter++
-          const input = tc.input as { subject?: string; activeForm?: string }
-          if (input?.subject) {
-            taskMap.set(String(taskCounter), {
-              content: input.subject,
-              status: 'pending',
-              activeForm: input.activeForm || input.subject,
-            })
-          }
-        } else if (tc.name === 'TaskUpdate') {
-          const input = tc.input as { taskId?: string; status?: string }
-          if (input?.taskId && taskMap.has(input.taskId)) {
-            const task = taskMap.get(input.taskId)!
-            if (input.status === 'completed' || input.status === 'in_progress' || input.status === 'pending') {
-              task.status = input.status
-            }
-          }
-        }
-      }
-    }
-
-    if (taskMap.size > 0) {
-      list = Array.from(taskMap.values())
-      current = list.find((t) => t.status === 'in_progress') || null
-    }
-
-    // Fall back to TodoWrite (older SDK format)
-    if (!list) {
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const message = messages[i]
-        if (message.type !== 'user' && message.type !== 'assistant') continue
-        const toolCalls = message.toolCalls || []
-        for (let j = toolCalls.length - 1; j >= 0; j--) {
-          const toolCall = toolCalls[j]
-          if (toolCall.name === 'TodoWrite') {
-            try {
-              const input = toolCall.input as { todos?: Todo[] }
-              if (input?.todos && Array.isArray(input.todos)) {
-                list = input.todos
-                current = list.find((t) => t.status === 'in_progress') || null
-                break
-              }
-            } catch {
-              // Invalid input format, skip
-            }
-          }
-        }
-        if (list) break
-      }
-    }
-
-    return { todos: list, activeItem: current }
-  }, [messages])
+  const { todos, activeItem } = useMemo<{ todos: Todo[] | null; activeItem: Todo | null }>(
+    () => deriveTaskList(messages),
+    [messages]
+  )
 
   // Show error if present
   if (error) {
