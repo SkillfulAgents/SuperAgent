@@ -2327,6 +2327,22 @@ describe('useMessageStream', () => {
       expect(invalidateSpy).not.toHaveBeenCalled()
     })
 
+    it('does not retry after the picked-up command completes before another response starts', async () => {
+      const { es, queryClient } = await setupHook('cmd-s5')
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+      act(() => {
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'started' })
+        es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'completed' })
+      })
+
+      invalidateSpy.mockClear()
+      act(() => {
+        es.simulateMessage({ type: 'stream_start' })
+      })
+      expect(invalidateSpy).not.toHaveBeenCalled()
+    })
+
     it('consumeDiscardedCommand removes a single uuid once acted upon', async () => {
       const { mod, result, es } = await setupHook('cmd-s3')
 
