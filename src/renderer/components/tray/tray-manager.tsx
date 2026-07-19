@@ -67,11 +67,10 @@ export function TrayManager({ agentSlug, sessionId, browserActive }: TrayManager
 
   const filePreviewTrayContent = useMemo(() => (
     <FilePreviewTrayContent
-      agentSlug={agentSlug}
       sessionId={sessionId}
       onClose={handleCloseFilePreview}
     />
-  ), [agentSlug, sessionId, handleCloseFilePreview])
+  ), [sessionId, handleCloseFilePreview])
 
   const closeWorkflow = workflow.close
   const handleCloseWorkflow = useCallback(() => closeWorkflow(), [closeWorkflow])
