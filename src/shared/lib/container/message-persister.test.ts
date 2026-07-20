@@ -1685,6 +1685,99 @@ describe('MessagePersister', () => {
         cleanup()
       }
     })
+
+    it('keeps awaiting when computer-use is still pending after an input ask resolves', async () => {
+      const globalEvents: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((event) => {
+        globalEvents.push(event)
+      })
+      vi.stubEnv('E2E_MOCK', 'true')
+      mockCheckPermission.mockReturnValue('prompt_needed')
+
+      try {
+        setupTaskTool()
+        simulateSidechainToolUse('AskUserQuestion', 'sub-q-with-cu', {
+          questions: [{ question: 'Pick DB?', header: 'DB', options: [{ label: 'Postgres', description: 'pg' }], multiSelect: false }],
+        })
+        simulateSidechainToolUse('mcp__computer-use__computer_click', 'sub-cu-1', { ref: 'win:1' })
+        await vi.waitFor(() => {
+          expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(1)
+        })
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        globalEvents.length = 0
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'task-tool-1',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'sub-q-with-cu', content: 'Postgres' }],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.getPendingComputerUseRequests(SESSION_ID)).toHaveLength(1)
+        expect(globalEvents.some((e) => e.type === 'session_input_provided')).toBe(false)
+
+        // CU was the last real wait — approving it must turn the light off.
+        globalEvents.length = 0
+        messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'sub-cu-1')
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(globalEvents).toContainEqual(expect.objectContaining({
+          type: 'session_input_provided',
+          sessionId: SESSION_ID,
+        }))
+      } finally {
+        cleanup()
+        vi.unstubAllEnvs()
+      }
+    })
+
+    it('clears awaiting when only an auto-approved script remains in the replay map', async () => {
+      const globalEvents: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((event) => {
+        globalEvents.push(event)
+      })
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true } as Response)))
+
+      try {
+        setupTaskTool()
+        simulateSidechainToolUse('AskUserQuestion', 'sub-q-with-script', {
+          questions: [{ question: 'Pick DB?', header: 'DB', options: [{ label: 'Postgres', description: 'pg' }], multiSelect: false }],
+        })
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        mockCheckPermission.mockReturnValue('granted')
+        simulateSidechainToolUse('mcp__user-input__request_script_run', 'sub-sr-auto', {
+          script: 'sw_vers',
+          explanation: 'Check version',
+          scriptType: 'shell',
+        })
+        expect(messagePersister.getPendingInputRequests(SESSION_ID).some(
+          (r) => r.toolUseId === 'sub-sr-auto' && r.autoApproved === true,
+        )).toBe(true)
+
+        globalEvents.length = 0
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'task-tool-1',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'sub-q-with-script', content: 'Postgres' }],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(globalEvents).toContainEqual(expect.objectContaining({
+          type: 'session_input_provided',
+          sessionId: SESSION_ID,
+        }))
+      } finally {
+        cleanup()
+        mockCheckPermission.mockReturnValue('prompt_needed')
+        vi.unstubAllGlobals()
+      }
+    })
   })
 
   // ============================================================================

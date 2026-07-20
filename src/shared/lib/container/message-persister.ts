@@ -548,10 +548,9 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     if (state) {
       state.pendingComputerUseRequests.delete(toolUseId)
-      // Broadcast so the sidebar updates immediately.
-      // Don't clear isAwaitingInput here — other input types (secrets, questions, etc.)
-      // may still be pending. The flag is cleared when the tool result arrives in the stream.
-      if (state.pendingComputerUseRequests.size === 0) {
+      // Same waiting-light rule as sidechain input clear: both shelves, skip auto-approved.
+      if (state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
+        state.isAwaitingInput = false
         this.broadcastGlobal({
           type: 'session_input_provided',
           sessionId,
@@ -863,6 +862,14 @@ class MessagePersister {
         })
       }
     }
+  }
+
+  // Real waits only: non-auto pocket-A asks + any pocket-B computer-use approval.
+  private hasBlockingPendingRequests(state: StreamingState): boolean {
+    return (
+      [...state.pendingInputRequests.values()].some((r) => r.autoApproved !== true) ||
+      state.pendingComputerUseRequests.size > 0
+    )
   }
 
   // Surface host-blocking user-input tools (main + sidechain). script_run /
@@ -1949,7 +1956,7 @@ class MessagePersister {
               isError: block.is_error || false,
             })
           }
-          if (clearedPending && state.isAwaitingInput && state.pendingInputRequests.size === 0) {
+          if (clearedPending && state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
             state.isAwaitingInput = false
             this.broadcastGlobal({
               type: 'session_input_provided',
