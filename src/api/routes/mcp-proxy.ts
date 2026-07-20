@@ -10,6 +10,7 @@ import {
   mcpAuditLog,
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
+import { mcpSafeFetch } from '@shared/lib/utils/url-safety'
 
 async function logMcpAuditEntry(entry: {
   agentSlug: string
@@ -68,7 +69,7 @@ async function tryRefreshToken(mcp: {
       body.set('resource', mcp.oauthResource)
     }
 
-    const res = await fetch(mcp.oauthTokenEndpoint, {
+    const res = await mcpSafeFetch(mcp.oauthTokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
@@ -345,7 +346,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   }
 
   try {
-    const response = await fetch(targetUrl, init)
+    const response = await mcpSafeFetch(targetUrl, init)
     const durationMs = Date.now() - startTime
 
     // Fire-and-forget audit log
