@@ -1587,6 +1587,53 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter((e) => e.type === 'user_question_request')).toHaveLength(1)
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
     })
+
+    it('clears awaiting state and replay entry when a subagent input is resolved', () => {
+      const globalEvents: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((event) => {
+        globalEvents.push(event)
+      })
+
+      try {
+        setupTaskTool()
+
+        simulateSidechainToolUse('AskUserQuestion', 'sub-q-resolved', {
+          questions: [{
+            question: 'Pick DB?',
+            header: 'DB',
+            options: [{ label: 'Postgres', description: 'pg' }],
+            multiSelect: false,
+          }],
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+
+        globalEvents.length = 0
+
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'task-tool-1',
+          message: {
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: 'sub-q-resolved',
+              content: 'Postgres',
+            }],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+        expect(globalEvents).toContainEqual(expect.objectContaining({
+          type: 'session_input_provided',
+          sessionId: SESSION_ID,
+        }))
+      } finally {
+        cleanup()
+      }
+    })
   })
 
   // ============================================================================

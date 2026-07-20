@@ -1931,6 +1931,19 @@ class MessagePersister {
           }
         }
       }
+      // Sidechain returns before the main user-branch awaiting clear.
+      if (content.type === 'user') {
+        const pendingBefore = state.pendingInputRequests.size
+        this.handleToolResults(sessionId, content)
+        if (state.isAwaitingInput && pendingBefore > 0 && state.pendingInputRequests.size === 0) {
+          state.isAwaitingInput = false
+          this.broadcastGlobal({
+            type: 'session_input_provided',
+            sessionId,
+            agentSlug: state.agentSlug,
+          })
+        }
+      }
       this.broadcastToSSE(sessionId, {
         type: 'subagent_updated',
         parentToolId,
