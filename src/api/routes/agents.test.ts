@@ -493,6 +493,177 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
 }
 
 // ============================================================================
+// Shared-agent connection projections
+// ============================================================================
+
+describe('shared-agent connection projections', () => {
+  const ownAccount = {
+    id: 'own-account',
+    providerConnectionId: 'own-provider-connection',
+    providerName: 'composio',
+    toolkitSlug: 'github',
+    displayName: 'My GitHub',
+    status: 'active' as const,
+    userId: 'test-user-id',
+    createdAt: new Date('2026-07-18T10:00:00Z'),
+    updatedAt: new Date('2026-07-18T11:00:00Z'),
+  }
+  const foreignAccount = {
+    ...ownAccount,
+    id: 'victim-account-id',
+    providerConnectionId: 'victim-provider-connection',
+    toolkitSlug: 'slack',
+    displayName: 'Victim Workspace',
+    userId: 'victim-user-id',
+  }
+  const ownAccountMapping = {
+    id: 'own-account-mapping',
+    agentSlug: 'test-agent',
+    connectedAccountId: ownAccount.id,
+    createdAt: new Date('2026-07-18T12:00:00Z'),
+  }
+  const foreignAccountMapping = {
+    ...ownAccountMapping,
+    id: 'victim-account-mapping',
+    connectedAccountId: foreignAccount.id,
+  }
+  const ownMcp = {
+    id: 'own-mcp',
+    name: 'My MCP',
+    url: 'https://mine.example.test/mcp',
+    userId: 'test-user-id',
+    authType: 'bearer' as const,
+    accessToken: 'own-token',
+    refreshToken: null,
+    tokenExpiresAt: null,
+    oauthTokenEndpoint: null,
+    oauthClientId: null,
+    oauthClientSecret: null,
+    oauthResource: null,
+    toolsJson: JSON.stringify([{ name: 'search', description: 'Search' }]),
+    toolsDiscoveredAt: new Date('2026-07-18T11:00:00Z'),
+    status: 'active' as const,
+    errorMessage: null,
+    createdAt: new Date('2026-07-18T10:00:00Z'),
+    updatedAt: new Date('2026-07-18T11:00:00Z'),
+  }
+  const foreignMcp = {
+    ...ownMcp,
+    id: 'victim-mcp-id',
+    name: 'Victim private MCP',
+    url: 'https://victim.example.test/private-mcp',
+    userId: 'victim-user-id',
+    accessToken: 'victim-token',
+    toolsJson: JSON.stringify([{ name: 'victim_private_tool' }]),
+    errorMessage: 'victim-only error detail',
+  }
+  const ownMcpMapping = {
+    id: 'own-mcp-mapping',
+    agentSlug: 'test-agent',
+    remoteMcpId: ownMcp.id,
+    createdAt: new Date('2026-07-18T12:00:00Z'),
+  }
+  const foreignMcpMapping = {
+    ...ownMcpMapping,
+    id: 'victim-mcp-mapping',
+    remoteMcpId: foreignMcp.id,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    mockIsAuthMode.mockReturnValue(true)
+  })
+
+  afterEach(() => {
+    mockIsAuthMode.mockReturnValue(false)
+  })
+
+  it('returns owned account details and only a capability marker for foreign accounts', async () => {
+    mockDbSelectFrom.mockReturnValue({
+      innerJoin: () => ({
+        where: () => Promise.resolve([
+          { mapping: ownAccountMapping, account: ownAccount },
+          { mapping: foreignAccountMapping, account: foreignAccount },
+        ]),
+      }),
+    })
+
+    const res = await getReq(createApp(), '/api/agents/test-agent/connected-accounts')
+    const body = await res.json() as { accounts: Array<Record<string, unknown>> }
+
+    expect(res.status).toBe(200)
+    expect(body.accounts[0]).toMatchObject({
+      id: 'own-account',
+      providerConnectionId: 'own-provider-connection',
+      mappingId: 'own-account-mapping',
+    })
+    expect(body.accounts[0]).not.toHaveProperty('userId')
+    expect(body.accounts[1]).toEqual({ kind: 'connected-account', toolkitSlug: 'slack' })
+    expect(JSON.stringify(body)).not.toContain('victim-account-id')
+    expect(JSON.stringify(body)).not.toContain('victim-provider-connection')
+    expect(JSON.stringify(body)).not.toContain('Victim Workspace')
+    expect(JSON.stringify(body)).not.toContain('victim-user-id')
+  })
+
+  it('applies the same projection to the account assignment response', async () => {
+    mockDbSelectFrom
+      .mockReturnValueOnce({ where: () => Promise.resolve([ownAccount]) })
+      .mockReturnValueOnce({
+        innerJoin: () => ({
+          where: () => Promise.resolve([
+            { mapping: ownAccountMapping, account: ownAccount },
+            { mapping: foreignAccountMapping, account: foreignAccount },
+          ]),
+        }),
+      })
+
+    const res = await postJson(createApp(), '/api/agents/test-agent/connected-accounts', {
+      accountIds: [ownAccount.id],
+    })
+    const body = await res.json() as { accounts: Array<Record<string, unknown>> }
+
+    expect(res.status).toBe(200)
+    expect(body.accounts[1]).toEqual({ kind: 'connected-account', toolkitSlug: 'slack' })
+    expect(JSON.stringify(body)).not.toContain('victim-account-id')
+    expect(JSON.stringify(body)).not.toContain('victim-provider-connection')
+    expect(JSON.stringify(body)).not.toContain('victim-user-id')
+  })
+
+  it('returns owned MCP details and a fully opaque marker for foreign MCPs', async () => {
+    mockDbSelectFrom.mockReturnValue({
+      innerJoin: () => ({
+        where: () => Promise.resolve([
+          { mapping: ownMcpMapping, mcp: ownMcp },
+          { mapping: foreignMcpMapping, mcp: foreignMcp },
+        ]),
+      }),
+    })
+
+    const res = await getReq(createApp(), '/api/agents/test-agent/remote-mcps')
+    const body = await res.json() as { mcps: Array<Record<string, unknown>> }
+
+    expect(res.status).toBe(200)
+    expect(body.mcps[0]).toMatchObject({
+      id: 'own-mcp',
+      name: 'My MCP',
+      url: 'https://mine.example.test/mcp',
+      tools: [{ name: 'search', description: 'Search' }],
+      mappingId: 'own-mcp-mapping',
+    })
+    expect(body.mcps[0]).not.toHaveProperty('userId')
+    expect(body.mcps[0]).not.toHaveProperty('accessToken')
+    expect(body.mcps[1]).toEqual({ kind: 'remote-mcp' })
+    expect(JSON.stringify(body)).not.toContain('victim-mcp-id')
+    expect(JSON.stringify(body)).not.toContain('Victim private MCP')
+    expect(JSON.stringify(body)).not.toContain('victim.example.test')
+    expect(JSON.stringify(body)).not.toContain('victim_private_tool')
+    expect(JSON.stringify(body)).not.toContain('victim-only error detail')
+    expect(JSON.stringify(body)).not.toContain('victim-user-id')
+  })
+})
+
+// ============================================================================
 // Webhook triggers — GET /:id/webhook-triggers
 // ============================================================================
 

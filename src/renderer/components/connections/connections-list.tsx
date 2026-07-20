@@ -26,6 +26,12 @@ import {
 } from '@renderer/hooks/use-remote-mcps'
 import { buildUnifiedRows, type UnifiedRow } from '@renderer/components/connections/unified-rows'
 import { startViewTransition } from '@renderer/lib/view-transition'
+import {
+  isForeignAgentConnectedAccount,
+  isForeignAgentRemoteMcp,
+  isPublicAgentConnectedAccount,
+  isPublicAgentRemoteMcp,
+} from '@shared/lib/agent-connections/public'
 
 interface ConnectionsListProps {
   agentSlug: string
@@ -143,8 +149,14 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
     const rows = buildUnifiedRows({
       allAccounts,
       allMcps,
-      agentAccountIds: new Set(agentAccounts.map((a) => a.id)),
-      agentMcpIds: new Set(agentMcps.map((m) => m.id)),
+      agentAccountIds: new Set(
+        agentAccounts.filter(isPublicAgentConnectedAccount).map((account) => account.id),
+      ),
+      agentMcpIds: new Set(
+        agentMcps.filter(isPublicAgentRemoteMcp).map((mcp) => mcp.id),
+      ),
+      foreignAccounts: agentAccounts.filter(isForeignAgentConnectedAccount),
+      foreignMcps: agentMcps.filter(isForeignAgentRemoteMcp),
       grantOverrides,
     })
 
@@ -161,10 +173,14 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
   useEffect(() => {
     if (Object.keys(grantOverrides).length === 0) return
     const agentAccountIds = new Set(
-      (Array.isArray(agentAccountsData?.accounts) ? agentAccountsData.accounts : []).map((a) => a.id),
+      (Array.isArray(agentAccountsData?.accounts) ? agentAccountsData.accounts : [])
+        .filter(isPublicAgentConnectedAccount)
+        .map((account) => account.id),
     )
     const agentMcpIds = new Set(
-      (Array.isArray(agentMcpsData?.mcps) ? agentMcpsData.mcps : []).map((m) => m.id),
+      (Array.isArray(agentMcpsData?.mcps) ? agentMcpsData.mcps : [])
+        .filter(isPublicAgentRemoteMcp)
+        .map((mcp) => mcp.id),
     )
     setGrantOverrides((prev) => {
       let changed = false
@@ -186,6 +202,8 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
     isLoadingAllAccounts || isLoadingAgentAccounts || isLoadingAllMcps || isLoadingAgentMcps
 
   const handleToggle = async (row: UnifiedRow, next: boolean) => {
+    if (row.foreign) return
+
     // Optimistic flip wrapped in View Transitions so the row animates to its
     // new section. flushSync forces the optimistic state into the DOM before
     // startViewTransition snapshots the "before" image — without it the
@@ -229,6 +247,8 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
   }
 
   const isRowPending = (row: UnifiedRow): boolean => {
+    if (row.foreign) return false
+
     if (row.type === 'oauth') {
       if (assignAccounts.isPending && assignAccounts.variables?.accountIds.includes(row.id)) return true
       if (removeAccount.isPending && removeAccount.variables?.accountId === row.id) return true
@@ -242,7 +262,7 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
   // Resolve the selected row from the freshest data so the detail page stays
   // live across renames; clear the selection once the row is truly gone.
   const selectedRow = detailRowKey
-    ? [...grantedRows, ...notGrantedRows].find((r) => r.key === detailRowKey) ?? null
+    ? [...grantedRows, ...notGrantedRows].find((r) => r.key === detailRowKey && !r.foreign) ?? null
     : null
   if (detailRowKey && !selectedRow && !isLoading) {
     // Defer clearing to next tick to avoid setState during render.
@@ -266,9 +286,9 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
         key={row.key}
         row={row}
         viewTransitionName={`integration-${row.key}`}
-        onActivate={() => onDetailRowKeyChange(row.key)}
-        ariaLabel={`Open ${row.name} connection details`}
-        onReconnect={row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
+        onActivate={row.foreign ? undefined : () => onDetailRowKeyChange(row.key)}
+        ariaLabel={row.foreign ? undefined : `Open ${row.name} connection details`}
+        onReconnect={!row.foreign && row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
           ? () => oauthReconnect(row.id, row.toolkit!)
           : undefined}
         onCancelReconnect={
@@ -278,7 +298,9 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
         }
         reconnecting={pendingAccountId === row.id}
         right={
-          <>
+          row.foreign ? (
+            <span className="text-xs text-muted-foreground">Shared</span>
+          ) : <>
             {/* Slides in on row hover/focus; -ml-2 swallows the flex gap while hidden. */}
             <span
               aria-hidden="true"
