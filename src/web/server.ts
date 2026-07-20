@@ -80,10 +80,8 @@ async function gracefulShutdown(signal: string) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
-// Cloud host-app only: log when the event loop stalls past 500ms (health-check hangs).
+// Log when the event loop stalls past 500ms (helps diagnose health-check hangs). Silent when healthy.
 function startEventLoopStallLog(): void {
-  if (process.env.SUPERAGENT_DIAG === '0') return
-  if (process.env.SUPERAGENT_DIAG !== '1' && !process.env.SUPERAGENT_ORG_ID) return
   const h = monitorEventLoopDelay({ resolution: 20 })
   h.enable()
   setInterval(() => {
