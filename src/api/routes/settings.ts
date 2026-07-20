@@ -2,7 +2,7 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
-import { getLlmProvider, getAllProviderInfo, getEffectiveCatalog, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
+import { getLlmProvider, getAllProviderInfo, getEffectiveCatalog, defaultModelsFor, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -35,6 +35,7 @@ import {
   type ModelConfigResponse,
   type ClientConfigResponse,
   type AnalyticsTarget,
+  type AnalyticsTargetType,
 } from '@shared/lib/config/settings'
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
 import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
@@ -210,24 +211,25 @@ settings.get('/model-config', Authenticated(), (c) => {
   const response: ModelConfigResponse = {
     llmProvider,
     catalog: getEffectiveCatalog(llmProvider),
-    defaultModels: {
-      agent: provider.getDefaultModel('agent'),
-      summarizer: provider.getDefaultModel('summarizer'),
-      browser: provider.getDefaultModel('browser'),
-    },
+    defaultModels: defaultModelsFor(provider),
     models: getEffectiveModels(),
     webProvider: resolveEffectiveWebVendor(),
   }
   return c.json(response)
 })
 
+/** The single client-side config key each analytics target type is allowed to
+ * expose to members. Keyed exhaustively so adding a target type without
+ * deciding its public key is a compile error, not a silent leak. */
+const CLIENT_ANALYTICS_CONFIG_KEYS: Record<AnalyticsTargetType, string> = {
+  amplitude: 'apiKey',
+  'google-analytics': 'measurementId',
+  mixpanel: 'token',
+}
+
 function sanitizeClientAnalyticsTargets(targets: AnalyticsTarget[] | undefined): AnalyticsTarget[] | undefined {
   return targets?.map((target) => {
-    const configKey = target.type === 'amplitude'
-      ? 'apiKey'
-      : target.type === 'google-analytics'
-        ? 'measurementId'
-        : 'token'
+    const configKey = CLIENT_ANALYTICS_CONFIG_KEYS[target.type]
     const value = target.config[configKey]
     return {
       type: target.type,

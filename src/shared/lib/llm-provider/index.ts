@@ -94,7 +94,7 @@ export interface LlmProviderInfo {
   }
 }
 
-function defaultModelsFor(provider: BaseLlmProvider): ProviderDefaultModels {
+export function defaultModelsFor(provider: BaseLlmProvider): ProviderDefaultModels {
   return {
     agent: provider.getDefaultModel('agent'),
     summarizer: provider.getDefaultModel('summarizer'),
