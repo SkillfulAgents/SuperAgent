@@ -624,7 +624,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
         params: {
           protocolVersion: '2025-03-26',
           capabilities: {},
-          clientInfo: { name: 'Superagent', version: '1.0.0' },
+          clientInfo: { name: 'Gamut', version: '1.0.0' },
         },
         id: 1,
       }),

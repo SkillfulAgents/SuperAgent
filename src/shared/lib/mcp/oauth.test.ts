@@ -368,7 +368,7 @@ describe('oauth', () => {
       const result = await registerDynamicClient(
         'https://auth.example.com/register',
         'http://localhost/callback',
-        'Superagent'
+        'Gamut'
       )
       expect(result).toEqual({
         clientId: 'new-client-id',
@@ -384,7 +384,7 @@ describe('oauth', () => {
         registerDynamicClient(
           'https://auth.example.com/register',
           'http://localhost/callback',
-          'Superagent'
+          'Gamut'
         )
       ).rejects.toThrow('The authorization server rejected client registration (HTTP 400)')
     })
@@ -404,7 +404,7 @@ describe('oauth', () => {
         registerDynamicClient(
           'https://auth.example.com/register',
           'http://localhost/callback',
-          'Superagent'
+          'Gamut'
         )
       ).rejects.toThrow(
         'The authorization server rejected client registration (HTTP 400): invalid_client_metadata: redirect_uri is not allowed by the account configuration'
@@ -418,7 +418,7 @@ describe('oauth', () => {
         registerDynamicClient(
           'https://auth.example.com/register',
           'http://localhost/callback',
-          'Superagent'
+          'Gamut'
         )
       ).rejects.toThrow('The authorization server rejected client registration (HTTP 403): Forbidden')
     })
@@ -430,7 +430,7 @@ describe('oauth', () => {
         registerDynamicClient(
           'https://auth.example.com/register',
           'http://localhost/callback',
-          'Superagent'
+          'Gamut'
         )
       ).rejects.toThrow(McpOAuthSetupError)
     })
