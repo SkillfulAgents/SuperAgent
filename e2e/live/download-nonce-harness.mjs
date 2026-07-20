@@ -3,20 +3,28 @@
  * Live end-to-end validation of installer-carried identity.
  *
  * Drives the REAL stack, no mocks on the nonce path:
- *   1. Logs into the locally running platform web app with a seeded user and
- *      clicks the actual "Download for MacOS" button, capturing the stamped
- *      download URL (validates mint + button wiring).
- *   2. Creates a DMG named like a stamped installer and mounts it, so the
- *      app's hdiutil mount-scan channel recovers the code for real.
+ *   1. Logs into the locally running platform web app with a seeded user,
+ *      opens the workspace Get Started tab, and clicks the actual
+ *      "Download for MacOS" button — exercising the memberId threading and
+ *      startStampedDownload() mint for real. The stamped navigation is
+ *      captured at the network layer and the code extracted from its ?dl=.
+ *      Alongside, API negatives: unscoped mint → 400, foreign-membership
+ *      mint → 403.
+ *   2. Creates a DMG named like a stamped installer (or, in worker mode,
+ *      uses the actually-downloaded one) and mounts it, so the app's hdiutil
+ *      mount-scan channel recovers the code for real.
  *   3. Launches the built Electron app with a fresh data dir and
  *      --remote-debugging-port, connects over CDP, and asserts the
  *      onboarding button reads "Continue as <email>".
  *   4. Clicks it and verifies the redeemed plat_sa_ token lands in
  *      settings.json (and, when docker is available, that the nonce row is
- *      consumed in the local Supabase DB).
+ *      consumed in the local Supabase DB). Then replays the redeem with the
+ *      consumed code and requires the uniform 404.
  *   5. Negative pass: relaunches with another fresh data dir while the same
- *      (now consumed) DMG is still mounted and asserts the button falls back
- *      to "Get Started" — flow unchanged.
+ *      (now consumed) DMG is still mounted. The app's own offer endpoint is
+ *      polled until the offer SETTLES (the GET awaits the full scan +
+ *      resolve chain), then the button must read "Get Started" — flow
+ *      unchanged.
  *
  * Prereqs:
  *   - Local Supabase running + seeded (bob@test.io / bobtest exists) with the
@@ -25,6 +33,10 @@
  *   - App built for electron:  npm run build:electron
  *     (with PLATFORM_BASE_URL/PLATFORM_PROXY_URL pointing at the local stack)
  *   - Native modules rebuilt for Electron:  npx electron-rebuild -f
+ *
+ * Note: the platform's nonce endpoints share a 30/min/IP rate limiter across
+ * mint/resolve/redeem — rapid back-to-back runs can surface as 429s; wait a
+ * minute or restart the platform dev server.
  *
  * Run:  node e2e/live/download-nonce-harness.mjs
  */
@@ -52,13 +64,17 @@ const PLATFORM_URL = process.env.HARNESS_PLATFORM_URL || 'http://localhost:3000'
 const WORKER_URL = process.env.HARNESS_WORKER_URL || null
 const LOGIN_EMAIL = process.env.HARNESS_EMAIL || 'bob@test.io'
 const LOGIN_PASSWORD = process.env.HARNESS_PASSWORD || 'bobtest'
-// Seeded membership of the login user (workspace scoping is mandatory at mint).
+// Seeded membership of the login user — the real download button must mint
+// for exactly this membership. Override when the seed's workspace differs.
 const MEMBER_ID = process.env.HARNESS_MEMBER_ID || 'sub_ba2caa9e-476a-4a60-9cc2-6138e6b2b7a8'
 const CDP_PORT = Number(process.env.HARNESS_CDP_PORT || 9333)
 const APP_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..')
 
 const workRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'download-nonce-live-'))
 const cleanups = []
+// { name, logs } per launched app — dumped when any check fails, since the
+// app's own output is usually the only diagnostic for CDP/wizard timeouts.
+const appLogTails = []
 let failures = 0
 
 function step(name) {
@@ -86,10 +102,37 @@ async function expectEventually(fn, what, timeoutMs = 30_000, intervalMs = 250) 
   throw new Error(`Timed out waiting for: ${what}${lastErr ? ` (${lastErr})` : ''}`)
 }
 
-// --- 1. Mint through the real dashboard ------------------------------------
+async function runCleanups() {
+  while (cleanups.length) {
+    const fn = cleanups.pop()
+    try {
+      await fn()
+    } catch {
+      // Best-effort teardown.
+    }
+  }
+}
 
-async function mintNonceViaDownloadClick() {
-  step('Mint: platform login + real download click')
+// Ctrl-C must not leave Electron instances and mounted DMGs behind — a stale
+// app on the CDP port poisons the next run's connectOverCDP.
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.once(sig, () => {
+    process.stdout.write(`\n${sig} received — cleaning up\n`)
+    runCleanups().finally(() => process.exit(130))
+  })
+}
+
+function dumpAppLogTails() {
+  for (const { name, logs } of appLogTails) {
+    const tail = logs.join('').split('\n').slice(-40).join('\n').trim()
+    process.stdout.write(`\n--- app log tail (${name}) ---\n${tail || '(no output)'}\n`)
+  }
+}
+
+// --- 1. Mint through the real dashboard download button ---------------------
+
+async function mintViaRealDownloadClick() {
+  step('Mint: platform login + real "Download for MacOS" click')
   const browser = await chromium.launch({ headless: true })
   cleanups.push(() => browser.close().catch(() => {}))
   const context = await browser.newContext()
@@ -124,36 +167,64 @@ async function mintNonceViaDownloadClick() {
   await page.getByPlaceholder('Email').fill(LOGIN_EMAIL)
   await page.getByPlaceholder('Password', { exact: true }).fill(LOGIN_PASSWORD)
   await page.locator('button[type="submit"]').first().click()
-  // Generous: a cold Next dev server compiles routes on first hit.
-  await page.waitForURL(/dashboard/, { timeout: 60_000 })
-  pass(`logged in as ${LOGIN_EMAIL}`)
+  // Generous: a cold Next dev server compiles routes on first hit. /dashboard
+  // redirects to the user's workspace page, which carries the org id.
+  await page.waitForURL(/\/dashboard\/organizations\/[^/?]+/, { timeout: 60_000 })
+  const orgId = new URL(page.url()).pathname.split('/')[3]
+  pass(`logged in as ${LOGIN_EMAIL} (workspace ${orgId})`)
 
-  // Mint through the real authenticated endpoint (shares the page's cookies).
-  // Workspace scoping is mandatory: an unscoped mint must be refused, and the
-  // scoped one must come back stamped for exactly the requested membership.
+  // API negatives through the page's session cookies: workspace scoping is
+  // mandatory (no guessing), and other users' memberships are off-limits.
   const unscoped = await page.request.post(`${PLATFORM_URL}/api/download-nonce/mint`, {
     data: {},
   })
   if (unscoped.status() === 400) pass('unscoped mint refused (400) — no workspace guessing')
   else fail(`unscoped mint not refused: ${unscoped.status()}`)
 
-  const minted = await page.request.post(`${PLATFORM_URL}/api/download-nonce/mint`, {
-    data: { member_id: MEMBER_ID },
+  const foreign = await page.request.post(`${PLATFORM_URL}/api/download-nonce/mint`, {
+    data: { member_id: 'sub_00000000-0000-0000-0000-000000000000' },
   })
-  if (!minted.ok()) throw new Error(`mint failed: ${minted.status()}`)
-  const { code } = await minted.json()
-  if (!code || !/^[a-f0-9]{40,64}$/.test(code)) {
-    throw new Error(`mint returned no valid code`)
-  }
-  pass(`mint issued a code for ${MEMBER_ID}: ${code.slice(0, 8)}… (${code.length} hex chars)`)
+  if (foreign.status() === 403) pass('foreign-membership mint refused (403)')
+  else fail(`foreign-membership mint not refused: ${foreign.status()}`)
 
-  // Navigate the branded download URL like the stamped button would.
+  // The real button lives on the Get Started tab, behind the phone
+  // verification card for fresh users — skip that gate if it's up.
+  await page.goto(`${PLATFORM_URL}/dashboard/organizations/${orgId}?tab=getting-started`, {
+    waitUntil: 'domcontentloaded',
+  })
+  const macButton = page.getByRole('link', { name: 'Download for MacOS' })
+  const skipLink = page.getByText('Skip for now')
+  await expectEventually(
+    async () =>
+      (await macButton.isVisible().catch(() => false)) ||
+      (await skipLink.isVisible().catch(() => false)),
+    'Get Started tab content',
+    30_000,
+  )
+  if (!(await macButton.isVisible().catch(() => false))) {
+    await skipLink.click()
+    pass('skipped the phone-verification gate')
+  }
+  await macButton.waitFor({ state: 'visible', timeout: 30_000 })
+
+  const downloadPromise = WORKER_URL ? page.waitForEvent('download', { timeout: 30_000 }) : null
+  await macButton.click()
+  await expectEventually(() => capturedUrl, 'stamped download navigation captured', 30_000)
+
+  const captured = new URL(capturedUrl)
+  const code = captured.searchParams.get('dl') || ''
+  // Exactly 48 hex — anything shorter would be an entropy downgrade even if
+  // the redeem path (40-64) still accepted it.
+  if (!/^[a-f0-9]{48}$/.test(code)) {
+    throw new Error(`captured download URL not stamped as expected: ${capturedUrl}`)
+  }
+  if (!captured.pathname.endsWith('/download/mac')) {
+    fail(`unexpected download path: ${captured.pathname}`)
+  }
+  pass(`real button minted + navigated stamped URL: dl=${code.slice(0, 8)}… (48 hex chars)`)
+
   let downloadedDmg = null
   if (WORKER_URL) {
-    const downloadPromise = page.waitForEvent('download', { timeout: 30_000 })
-    await page
-      .goto(`https://updates.gamutagents.com/download/mac?dl=${code}`)
-      .catch(() => {}) // download navigations abort the goto; that's expected
     const download = await downloadPromise
     const suggested = download.suggestedFilename()
     if (new RegExp(`-${code}\\.dmg$`).test(suggested)) {
@@ -164,11 +235,6 @@ async function mintNonceViaDownloadClick() {
     downloadedDmg = path.join(workRoot, suggested)
     await download.saveAs(downloadedDmg)
     pass('installer really downloaded through the local release worker')
-  } else {
-    await page
-      .goto(`https://updates.gamutagents.com/download/mac?dl=${code}`)
-      .catch(() => {}) // route aborts the request; we only need the capture
-    await expectEventually(() => capturedUrl, 'download navigation captured', 15_000)
   }
 
   await browser.close()
@@ -201,7 +267,15 @@ async function mountStampedDmg(code, downloadedDmg) {
 
 // --- 3./5. Launch the app and inspect the onboarding button over CDP --------
 
-async function launchApp({ dataDir, cdpPort }) {
+async function launchApp({ dataDir, cdpPort, name }) {
+  // A leftover instance from an aborted prior run would make connectOverCDP
+  // attach to stale state — refuse to run instead.
+  const stale = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`).catch(() => null)
+  if (stale) {
+    await stale.close().catch(() => {})
+    throw new Error(`something already answers CDP on :${cdpPort} — stale harness run? Kill it first.`)
+  }
+
   await fs.mkdir(dataDir, { recursive: true })
   const electronBin = require('electron')
   const mainEntry = path.join(APP_ROOT, 'dist', 'main', 'index.js')
@@ -222,6 +296,7 @@ async function launchApp({ dataDir, cdpPort }) {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const logs = []
+  appLogTails.push({ name, logs })
   child.stdout.on('data', (d) => logs.push(d.toString()))
   child.stderr.on('data', (d) => logs.push(d.toString()))
   cleanups.push(() => {
@@ -231,6 +306,18 @@ async function launchApp({ dataDir, cdpPort }) {
       // Already exited.
     }
   })
+
+  // The bound port is dynamic (bindServerWithRetry walks past busy ports);
+  // the startup log line is the source of truth.
+  const apiPort = await expectEventually(
+    () => {
+      const m = logs.join('').match(/API server running on http:\/\/localhost:(\d+)/)
+      return m ? Number(m[1]) : null
+    },
+    'app API port in startup logs',
+    60_000,
+    250,
+  )
 
   const cdp = await expectEventually(
     () => chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`).catch(() => null),
@@ -251,7 +338,7 @@ async function launchApp({ dataDir, cdpPort }) {
     60_000,
     500,
   )
-  return { child, cdp, page, logs }
+  return { child, cdp, page, apiPort }
 }
 
 async function assertContinueAs(page) {
@@ -292,8 +379,9 @@ async function redeemAndVerify(page, button, dataDir, code) {
   else fail(`unexpected token shape: ${auth.token.slice(0, 12)}…`)
   if (auth.email === LOGIN_EMAIL) pass(`connected as ${auth.email}`)
   else fail(`connected email mismatch: ${auth.email}`)
-  if (auth.memberId?.startsWith('sub_')) pass(`member-scoped: ${auth.memberId}`)
-  else fail(`memberId missing/odd: ${auth.memberId}`)
+  // The button minted this itself — proves the memberId threading end to end.
+  if (auth.memberId === MEMBER_ID) pass(`scoped to the expected membership: ${auth.memberId}`)
+  else fail(`memberId mismatch: got ${auth.memberId}, expected ${MEMBER_ID} (override HARNESS_MEMBER_ID if the seed changed)`)
 
   await expectEventually(
     async () => (await page.locator('[data-testid="wizard-platform-login"]').count()) === 0
@@ -304,6 +392,16 @@ async function redeemAndVerify(page, button, dataDir, code) {
     () => pass('wizard advanced past welcome step'),
     () => fail('wizard did not advance'),
   )
+
+  // Replay: the code is consumed now; the platform must return the uniform
+  // 404 (no oracle distinguishing consumed from never-existed).
+  const replay = await fetch(`${PLATFORM_URL}/api/download-nonce/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  })
+  if (replay.status === 404) pass('redeem replay of consumed code → uniform 404')
+  else fail(`redeem replay not refused: ${replay.status}`)
 
   // DB-side verification (best effort: needs local docker supabase). Only the
   // code's hash is at rest — plaintext never touches the platform DB.
@@ -327,12 +425,32 @@ async function redeemAndVerify(page, button, dataDir, code) {
 async function assertFallbackFlow() {
   step('Negative: consumed nonce → flow unchanged ("Get Started")')
   const dataDir2 = path.join(workRoot, 'app-data-negative')
-  const { cdp, page } = await launchApp({ dataDir: dataDir2, cdpPort: CDP_PORT + 1 })
-  const button = page.locator('[data-testid="wizard-platform-login"]')
-  // Give the offer query time to resolve (it 404s against the consumed nonce),
-  // then require the plain label. The label must never be "Continue as".
-  await new Promise((r) => setTimeout(r, 4000))
-  const text = (await button.textContent()) || ''
+  const { cdp, page, apiPort } = await launchApp({
+    dataDir: dataDir2,
+    cdpPort: CDP_PORT + 1,
+    name: 'negative pass',
+  })
+
+  // Deterministic settling instead of a sleep: the offer GET awaits the full
+  // scan + resolve chain before responding, so a response proves resolution
+  // ran against the consumed nonce. Read twice — the transient-failure branch
+  // also reports unavailable but leaves the offer unresolved, and a second
+  // read re-runs it.
+  const offerUrl = `http://127.0.0.1:${apiPort}/api/platform-auth/download-nonce`
+  const readOffer = async () => {
+    const res = await fetch(offerUrl)
+    if (!res.ok) throw new Error(`offer endpoint returned ${res.status}`)
+    return res.json()
+  }
+  const first = await expectEventually(readOffer, 'offer endpoint to respond', 30_000)
+  const second = await readOffer()
+  if (first.available === false && second.available === false) {
+    pass('offer settled as unavailable (consumed nonce rejected by resolve)')
+  } else {
+    fail(`offer unexpectedly available: ${JSON.stringify(second)}`)
+  }
+
+  const text = (await page.locator('[data-testid="wizard-platform-login"]').textContent()) || ''
   if (text.includes('Get Started') && !text.includes('Continue as')) {
     pass(`fallback intact: button reads "${text.trim()}"`)
   } else {
@@ -344,21 +462,39 @@ async function assertFallbackFlow() {
 // --- Run ---------------------------------------------------------------------
 
 try {
-  const { code, downloadedDmg } = await mintNonceViaDownloadClick()
+  const { code, downloadedDmg } = await mintViaRealDownloadClick()
   await mountStampedDmg(code, downloadedDmg)
 
   const dataDir = path.join(workRoot, 'app-data')
-  const { cdp, page } = await launchApp({ dataDir, cdpPort: CDP_PORT })
-  const button = await assertContinueAs(page)
-  await redeemAndVerify(page, button, dataDir, code)
-  await cdp.close().catch(() => {})
+  const appA = await launchApp({ dataDir, cdpPort: CDP_PORT, name: 'positive pass' })
+  const button = await assertContinueAs(appA.page)
+  await redeemAndVerify(appA.page, button, dataDir, code)
+  await appA.cdp.close().catch(() => {})
+  // Kill the first instance before the negative pass runs — one app at a
+  // time keeps ports and mounted-volume access unambiguous.
+  try {
+    appA.child.kill('SIGKILL')
+  } catch {
+    // Already exited.
+  }
 
   await assertFallbackFlow()
 } catch (err) {
   fail(`harness aborted: ${err?.stack || err}`)
 } finally {
-  for (const fn of cleanups.reverse()) await fn()
+  await runCleanups()
 }
 
-process.stdout.write(`\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`)
-process.exit(failures === 0 ? 0 : 1)
+if (failures > 0) {
+  dumpAppLogTails()
+  process.stdout.write(`\n  INFO  work dir kept for debugging: ${workRoot}\n`)
+} else {
+  await fs.rm(workRoot, { recursive: true, force: true }).catch(() => {})
+}
+
+// Write the verdict through the callback so a piped stdout (tee) can't lose
+// the final line to process.exit.
+process.stdout.write(
+  `\n${failures === 0 ? 'ALL CHECKS PASSED' : `${failures} CHECK(S) FAILED`}\n`,
+  () => process.exit(failures === 0 ? 0 : 1),
+)
