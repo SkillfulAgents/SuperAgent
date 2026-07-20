@@ -29,6 +29,7 @@
  * Run:  node e2e/live/download-nonce-harness.mjs
  */
 
+import crypto from 'node:crypto'
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { promises as fs } from 'node:fs'
@@ -51,6 +52,8 @@ const PLATFORM_URL = process.env.HARNESS_PLATFORM_URL || 'http://localhost:3000'
 const WORKER_URL = process.env.HARNESS_WORKER_URL || null
 const LOGIN_EMAIL = process.env.HARNESS_EMAIL || 'bob@test.io'
 const LOGIN_PASSWORD = process.env.HARNESS_PASSWORD || 'bobtest'
+// Seeded membership of the login user (workspace scoping is mandatory at mint).
+const MEMBER_ID = process.env.HARNESS_MEMBER_ID || 'sub_ba2caa9e-476a-4a60-9cc2-6138e6b2b7a8'
 const CDP_PORT = Number(process.env.HARNESS_CDP_PORT || 9333)
 const APP_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..')
 
@@ -125,25 +128,32 @@ async function mintNonceViaDownloadClick() {
   await page.waitForURL(/dashboard/, { timeout: 60_000 })
   pass(`logged in as ${LOGIN_EMAIL}`)
 
-  // DownloadButtons render on the profile page for every user.
-  await page.goto(`${PLATFORM_URL}/dashboard/profile`, { waitUntil: 'domcontentloaded' })
-  const macLink = page.getByRole('link', { name: /download for macos/i })
-  await macLink.waitFor({ timeout: 15_000 })
+  // Mint through the real authenticated endpoint (shares the page's cookies).
+  // Workspace scoping is mandatory: an unscoped mint must be refused, and the
+  // scoped one must come back stamped for exactly the requested membership.
+  const unscoped = await page.request.post(`${PLATFORM_URL}/api/download-nonce/mint`, {
+    data: {},
+  })
+  if (unscoped.status() === 400) pass('unscoped mint refused (400) — no workspace guessing')
+  else fail(`unscoped mint not refused: ${unscoped.status()}`)
 
-  const downloadPromise = WORKER_URL
-    ? page.waitForEvent('download', { timeout: 30_000 })
-    : null
-  await macLink.click()
-
-  await expectEventually(() => capturedUrl, 'stamped download navigation', 15_000)
-  const code = new URL(capturedUrl).searchParams.get('dl')
+  const minted = await page.request.post(`${PLATFORM_URL}/api/download-nonce/mint`, {
+    data: { member_id: MEMBER_ID },
+  })
+  if (!minted.ok()) throw new Error(`mint failed: ${minted.status()}`)
+  const { code } = await minted.json()
   if (!code || !/^[a-f0-9]{40,64}$/.test(code)) {
-    throw new Error(`download URL not stamped with a valid code: ${capturedUrl}`)
+    throw new Error(`mint returned no valid code`)
   }
-  pass(`download URL stamped: ...?dl=${code.slice(0, 8)}… (${code.length} hex chars)`)
+  pass(`mint issued a code for ${MEMBER_ID}: ${code.slice(0, 8)}… (${code.length} hex chars)`)
 
+  // Navigate the branded download URL like the stamped button would.
   let downloadedDmg = null
-  if (downloadPromise) {
+  if (WORKER_URL) {
+    const downloadPromise = page.waitForEvent('download', { timeout: 30_000 })
+    await page
+      .goto(`https://updates.gamutagents.com/download/mac?dl=${code}`)
+      .catch(() => {}) // download navigations abort the goto; that's expected
     const download = await downloadPromise
     const suggested = download.suggestedFilename()
     if (new RegExp(`-${code}\\.dmg$`).test(suggested)) {
@@ -154,6 +164,11 @@ async function mintNonceViaDownloadClick() {
     downloadedDmg = path.join(workRoot, suggested)
     await download.saveAs(downloadedDmg)
     pass('installer really downloaded through the local release worker')
+  } else {
+    await page
+      .goto(`https://updates.gamutagents.com/download/mac?dl=${code}`)
+      .catch(() => {}) // route aborts the request; we only need the capture
+    await expectEventually(() => capturedUrl, 'download navigation captured', 15_000)
   }
 
   await browser.close()
@@ -290,14 +305,20 @@ async function redeemAndVerify(page, button, dataDir, code) {
     () => fail('wizard did not advance'),
   )
 
-  // DB-side verification (best effort: needs local docker supabase).
+  // DB-side verification (best effort: needs local docker supabase). Only the
+  // code's hash is at rest — plaintext never touches the platform DB.
+  const codeHash = crypto.createHash('sha256').update(code).digest('hex')
   try {
     const { stdout } = await execFileAsync('docker', [
       'exec', 'supabase_db_platform', 'psql', '-U', 'postgres', '-d', 'postgres', '-Atc',
-      `select consumed_at is not null from public.download_nonce where code = '${code}';`,
+      `select (consumed_at is not null) || '|' || coalesce(created_ua, '-') || '|' || coalesce(consumed_ua, '-') from public.download_nonce where code_hash = '${codeHash}';`,
     ])
-    if (stdout.trim() === 't') pass('nonce row consumed in DB')
+    const [consumed, createdUa, consumedUa] = stdout.trim().split('|')
+    // `boolean || text` renders as 'true'/'false', not psql's bare 't'/'f'.
+    if (consumed === 'true') pass('nonce row consumed in DB (by hash — plaintext not at rest)')
     else fail(`nonce row not consumed (got: ${stdout.trim() || 'no row'})`)
+    // Proxy-derived context is best-effort in local dev (no trusted proxy).
+    process.stdout.write(`  INFO  audit context — mint ua: ${createdUa.slice(0, 40)} · redeem ua: ${consumedUa.slice(0, 40)}\n`)
   } catch {
     process.stdout.write('  SKIP  DB check (docker/supabase not reachable)\n')
   }

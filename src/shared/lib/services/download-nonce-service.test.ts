@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   deriveMacBundlePath,
   extractNonceFromFileName,
-  extractNonceFromHdiutilPlist,
+  extractNoncesFromHdiutilPlist,
   extractNonceFromUrlText,
   extractNonceFromWhereFromsHex,
 } from './download-nonce-service'
@@ -83,32 +83,48 @@ describe('extractNonceFromWhereFromsHex', () => {
   })
 })
 
-describe('extractNonceFromHdiutilPlist', () => {
-  const plist = (imagePath: string) => `<?xml version="1.0" encoding="UTF-8"?>
+describe('extractNoncesFromHdiutilPlist', () => {
+  const plist = (...imagePaths: string[]) => `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-  <key>images</key><array><dict>
-    <key>image-path</key><string>${imagePath}</string>
+  <key>images</key><array>${imagePaths
+    .map(
+      (p) => `<dict>
+    <key>image-path</key><string>${p}</string>
     <key>system-entities</key><array><dict>
       <key>mount-point</key><string>/Volumes/Gamut</string>
     </dict></array>
-  </dict></array>
+  </dict>`,
+    )
+    .join('')}</array>
 </dict></plist>`
 
   it('recovers the code from a mounted stamped DMG', () => {
     expect(
-      extractNonceFromHdiutilPlist(plist(`/Users/x/Downloads/Gamut-1.2.3-${NONCE}.dmg`)),
-    ).toBe(NONCE)
+      extractNoncesFromHdiutilPlist(plist(`/Users/x/Downloads/Gamut-1.2.3-${NONCE}.dmg`)),
+    ).toEqual([NONCE])
+  })
+
+  it('returns every stamped product DMG — a stale mount must not shadow a fresh one', () => {
+    const STALE = 'ffff'.repeat(12)
+    expect(
+      extractNoncesFromHdiutilPlist(
+        plist(
+          `/Users/x/Downloads/Gamut-1.2.2-${STALE}.dmg`,
+          `/Users/x/Downloads/Gamut-1.2.3-${NONCE}.dmg`,
+        ),
+      ),
+    ).toEqual([STALE, NONCE])
   })
 
   it('ignores non-product DMGs even when their names carry hex runs', () => {
     expect(
-      extractNonceFromHdiutilPlist(plist(`/Users/x/Downloads/OtherApp-${NONCE}.dmg`)),
-    ).toBeNull()
+      extractNoncesFromHdiutilPlist(plist(`/Users/x/Downloads/OtherApp-${NONCE}.dmg`)),
+    ).toEqual([])
   })
 
   it('ignores unstamped product DMGs and non-DMG strings', () => {
-    expect(extractNonceFromHdiutilPlist(plist('/Users/x/Downloads/Gamut-1.2.3.dmg'))).toBeNull()
-    expect(extractNonceFromHdiutilPlist('<string>/Volumes/whatever</string>')).toBeNull()
+    expect(extractNoncesFromHdiutilPlist(plist('/Users/x/Downloads/Gamut-1.2.3.dmg'))).toEqual([])
+    expect(extractNoncesFromHdiutilPlist('<string>/Volumes/whatever</string>')).toEqual([])
   })
 })
 

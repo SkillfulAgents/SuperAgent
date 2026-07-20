@@ -29,7 +29,6 @@ const RESOLVE_TIMEOUT_MS = 5_000
 // A download nonce arrives out-of-band with the installer (filename, download
 // URL metadata) and is only ever an upgrade hint: every failure below degrades
 // to "no offer" and the normal onboarding flow.
-const NONCE_PATTERN = /[a-f0-9]{40,64}/
 const FILENAME_NONCE_RE = /(?:^|[-_ ])([a-f0-9]{40,64})(?=$|[-_ .()])/i
 // The terminator is simply "next char isn't hex": inside xattr binary-plist
 // bytes the URL run is followed by an arbitrary object-marker byte, not a
@@ -83,9 +82,12 @@ export function extractNonceFromWhereFromsHex(hexOutput: string): string | null 
 /**
  * Scans `hdiutil info -plist` output for mounted disk images whose backing
  * file is a stamped installer DMG. Restricted to images that look like ours
- * so an unrelated mounted DMG can't inject a candidate.
+ * so an unrelated mounted DMG can't inject a candidate. Returns EVERY match:
+ * a stale stamped DMG can be mounted next to the fresh one, and only the
+ * platform can tell which code is still live.
  */
-export function extractNonceFromHdiutilPlist(plistXml: string): string | null {
+export function extractNoncesFromHdiutilPlist(plistXml: string): string[] {
+  const found: string[] = []
   const stringValues = plistXml.match(/<string>([^<]*)<\/string>/g) ?? []
   for (const tag of stringValues) {
     const value = tag.slice('<string>'.length, -'</string>'.length)
@@ -93,9 +95,9 @@ export function extractNonceFromHdiutilPlist(plistXml: string): string | null {
     const base = path.basename(value)
     if (!/gamut|superagent/i.test(base)) continue
     const nonce = extractNonceFromFileName(base)
-    if (nonce) return nonce
+    if (nonce && !found.includes(nonce)) found.push(nonce)
   }
-  return null
+  return found
 }
 
 async function readWhereFromsNonce(targetPath: string): Promise<string | null> {
@@ -112,15 +114,15 @@ async function readWhereFromsNonce(targetPath: string): Promise<string | null> {
   }
 }
 
-async function readMountedDmgNonce(): Promise<string | null> {
+async function readMountedDmgNonces(): Promise<string[]> {
   try {
     const { stdout } = await execFileAsync('hdiutil', ['info', '-plist'], {
       timeout: EXEC_TIMEOUT_MS,
       maxBuffer: EXEC_MAX_BUFFER,
     })
-    return extractNonceFromHdiutilPlist(stdout)
+    return extractNoncesFromHdiutilPlist(stdout)
   } catch {
-    return null
+    return []
   }
 }
 
@@ -143,7 +145,7 @@ export function deriveMacBundlePath(execPath: string): string | null {
 }
 
 let config: DownloadNonceRecoveryConfig = {}
-let scanPromise: Promise<string | null> | undefined
+let scanPromise: Promise<string[]> | undefined
 // undefined = not attempted; null = terminally no offer (missing nonce,
 // resolve 404, dismissed, or redeemed). A transient resolve failure leaves
 // this undefined so a later status query retries.
@@ -160,37 +162,42 @@ export function resetDownloadNonceStateForTests(): void {
   cachedOffer = undefined
 }
 
-async function scanForNonce(): Promise<string | null> {
+/**
+ * Ordered, deduped candidates from every channel. All of them are offered to
+ * the platform in turn — a stale code (expired DMG still mounted, re-used
+ * installer) must not shadow a live one.
+ */
+async function scanForNonceCandidates(): Promise<string[]> {
+  const candidates: string[] = []
+  const add = (value: string | null) => {
+    if (value && !candidates.includes(value)) candidates.push(value)
+  }
+
   if (config.windowsHandoffFile) {
-    const fromHandoff = await readWindowsHandoffNonce(config.windowsHandoffFile)
-    if (fromHandoff) return fromHandoff
+    add(await readWindowsHandoffNonce(config.windowsHandoffFile))
   }
 
   if (process.platform === 'darwin') {
     const bundlePath = config.macBundlePath ?? deriveMacBundlePath(process.execPath)
     if (bundlePath) {
-      const fromXattr = await readWhereFromsNonce(bundlePath)
-      if (fromXattr) return fromXattr
+      add(await readWhereFromsNonce(bundlePath))
     }
     if (!config.disableMountScan) {
-      const fromMount = await readMountedDmgNonce()
-      if (fromMount) return fromMount
+      for (const nonce of await readMountedDmgNonces()) add(nonce)
     }
   }
 
   if (config.testSourcePath) {
-    const fromTestXattr = await readWhereFromsNonce(config.testSourcePath)
-    if (fromTestXattr) return fromTestXattr
-    const fromTestName = extractNonceFromFileName(config.testSourcePath)
-    if (fromTestName && NONCE_PATTERN.test(fromTestName)) return fromTestName
+    add(await readWhereFromsNonce(config.testSourcePath))
+    add(extractNonceFromFileName(config.testSourcePath))
   }
 
-  return null
+  return candidates
 }
 
-function recoverNonceOnce(): Promise<string | null> {
+function recoverNonceCandidatesOnce(): Promise<string[]> {
   if (!scanPromise) {
-    scanPromise = scanForNonce().catch(() => null)
+    scanPromise = scanForNonceCandidates().catch(() => [])
   }
   return scanPromise
 }
@@ -227,27 +234,26 @@ export async function getDownloadNonceOffer(): Promise<DownloadNonceOffer> {
     return cachedOffer ? offerFromIdentity(cachedOffer.identity) : { available: false }
   }
 
-  const code = await recoverNonceOnce()
-  if (!code) {
+  const candidates = await recoverNonceCandidatesOnce()
+  if (candidates.length === 0) {
     cachedOffer = null
     return { available: false }
   }
 
-  const res = await postDownloadNonce('/api/download-nonce/resolve', { code })
-  if (!res) return { available: false } // transient: leave undefined for retry
-  if (!res.ok) {
-    cachedOffer = null
-    return { available: false }
+  for (const code of candidates) {
+    const res = await postDownloadNonce('/api/download-nonce/resolve', { code })
+    if (!res) return { available: false } // transient: leave undefined for retry
+    if (!res.ok) continue // dead candidate (expired/consumed); try the next
+
+    const parsed = DownloadNonceIdentitySchema.safeParse(await res.json().catch(() => null))
+    if (!parsed.success) continue
+
+    cachedOffer = { code, identity: parsed.data }
+    return offerFromIdentity(parsed.data)
   }
 
-  const parsed = DownloadNonceIdentitySchema.safeParse(await res.json().catch(() => null))
-  if (!parsed.success) {
-    cachedOffer = null
-    return { available: false }
-  }
-
-  cachedOffer = { code, identity: parsed.data }
-  return offerFromIdentity(parsed.data)
+  cachedOffer = null
+  return { available: false }
 }
 
 function offerFromIdentity(identity: DownloadNonceIdentity): DownloadNonceOffer {
