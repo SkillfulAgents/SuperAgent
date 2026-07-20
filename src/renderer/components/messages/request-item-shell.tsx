@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
-import { RequestError } from './request-error'
+import { RequestItemErrorContext } from './request-item-actions'
 import { usePagination } from './pending-request-stack'
 import { StopSessionButton } from './stop-session-button'
 
@@ -184,8 +184,9 @@ export function RequestItemShell({
             )}
           </div>
           {subtitleNode}
-          {children}
-          <RequestError message={error ?? null} />
+          <RequestItemErrorContext.Provider value={error ?? null}>
+            {children}
+          </RequestItemErrorContext.Provider>
         </div>
       </div>
     </div>

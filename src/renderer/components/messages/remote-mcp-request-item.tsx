@@ -12,6 +12,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
 import { DeclineButton } from './decline-button'
+import { RequestError } from './request-error'
 import { RequestItemShell } from './request-item-shell'
 import { RequestItemActions } from './request-item-actions'
 import { cn } from '@shared/lib/utils/cn'
@@ -635,41 +636,44 @@ export function RemoteMcpRequestItem({
       ) : null}
 
       {selectedServer ? (
-        <div className="flex items-end justify-between gap-3">
-          <div className="min-w-0 self-end pt-4">
-            {status !== 'oauth_pending' ? (
-              <McpServicePicker
-                open={isMcpPickerOpen}
-                onOpenChange={setIsMcpPickerOpen}
-                options={pickerServiceOptions}
-                selectedServiceKey={selectedServiceKey}
-                onSelect={(_serviceKey, serverId) => {
-                  setSelectedMcpIds(new Set([serverId]))
-                }}
-                disabled={status !== 'pending'}
+        <>
+          <div className="flex items-end justify-between gap-3">
+            <div className="min-w-0 self-end pt-4">
+              {status !== 'oauth_pending' ? (
+                <McpServicePicker
+                  open={isMcpPickerOpen}
+                  onOpenChange={setIsMcpPickerOpen}
+                  options={pickerServiceOptions}
+                  selectedServiceKey={selectedServiceKey}
+                  onSelect={(_serviceKey, serverId) => {
+                    setSelectedMcpIds(new Set([serverId]))
+                  }}
+                  disabled={status !== 'pending'}
+                />
+              ) : null}
+            </div>
+            <RequestItemActions inline>
+              <DeclineButton
+                onDecline={handleDecline}
+                disabled={status !== 'pending' && status !== 'oauth_pending'}
+                label="Deny"
+                showIcon={false}
+                className="border-border text-foreground hover:bg-muted"
               />
-            ) : null}
-          </div>
-          <div className="flex justify-end gap-2 pt-4">
-            <DeclineButton
-              onDecline={handleDecline}
-              disabled={status !== 'pending' && status !== 'oauth_pending'}
-              label="Deny"
-              showIcon={false}
-              className="border-border text-foreground hover:bg-muted"
-            />
 
-            <Button
-              onClick={handleProvide}
-              loading={status === 'submitting'}
-              disabled={selectedMcpIdsForProvide.length === 0 || status !== 'pending'}
-              size="xs"
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              Allow Access{selectedMcpIdsForProvide.length > 1 ? ` (${selectedMcpIdsForProvide.length})` : ''}
-            </Button>
+              <Button
+                onClick={handleProvide}
+                loading={status === 'submitting'}
+                disabled={selectedMcpIdsForProvide.length === 0 || status !== 'pending'}
+                size="xs"
+                className="bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                Allow Access{selectedMcpIdsForProvide.length > 1 ? ` (${selectedMcpIdsForProvide.length})` : ''}
+              </Button>
+            </RequestItemActions>
           </div>
-        </div>
+          {error ? <RequestError message={error} /> : null}
+        </>
       ) : null}
 
       {policyEditorMcp && (
