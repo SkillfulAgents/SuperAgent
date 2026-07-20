@@ -1931,17 +1931,32 @@ class MessagePersister {
           }
         }
       }
-      // Sidechain returns before the main user-branch awaiting clear.
+      // Sidechain skips the main awaiting clear; only match pending input asks
+      // (not every child tool_result — that would flicker the parent stream).
       if (content.type === 'user') {
-        const pendingBefore = state.pendingInputRequests.size
-        this.handleToolResults(sessionId, content)
-        if (state.isAwaitingInput && pendingBefore > 0 && state.pendingInputRequests.size === 0) {
-          state.isAwaitingInput = false
-          this.broadcastGlobal({
-            type: 'session_input_provided',
-            sessionId,
-            agentSlug: state.agentSlug,
-          })
+        const blocks = content.message?.content
+        if (Array.isArray(blocks)) {
+          let clearedPending = false
+          for (const block of blocks) {
+            if (block?.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue
+            if (!state.pendingInputRequests.has(block.tool_use_id)) continue
+            state.pendingInputRequests.delete(block.tool_use_id)
+            clearedPending = true
+            this.broadcastToSSE(sessionId, {
+              type: 'tool_result',
+              toolUseId: block.tool_use_id,
+              result: block.content,
+              isError: block.is_error || false,
+            })
+          }
+          if (clearedPending && state.isAwaitingInput && state.pendingInputRequests.size === 0) {
+            state.isAwaitingInput = false
+            this.broadcastGlobal({
+              type: 'session_input_provided',
+              sessionId,
+              agentSlug: state.agentSlug,
+            })
+          }
         }
       }
       this.broadcastToSSE(sessionId, {

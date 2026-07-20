@@ -1634,6 +1634,57 @@ describe('MessagePersister', () => {
         cleanup()
       }
     })
+
+    it('keeps awaiting when one of multiple subagent inputs resolves', () => {
+      const globalEvents: any[] = []
+      const cleanup = messagePersister.addGlobalNotificationClient((event) => {
+        globalEvents.push(event)
+      })
+
+      try {
+        setupTaskTool()
+        simulateSidechainToolUse('AskUserQuestion', 'sub-q-a', {
+          questions: [{ question: 'A?', header: 'A', options: [{ label: '1', description: '1' }], multiSelect: false }],
+        })
+        simulateSidechainToolUse('mcp__user-input__request_file', 'sub-file-a', {
+          description: 'Upload a CSV',
+        })
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(2)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        globalEvents.length = 0
+        sseEvents.length = 0
+
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'task-tool-1',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'sub-q-a', content: '1' }],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.getPendingInputRequests(SESSION_ID).map((r) => r.toolUseId)).toEqual(['sub-file-a'])
+        expect(globalEvents.some((e) => e.type === 'session_input_provided')).toBe(false)
+        expect(sseEvents.filter((e) => e.type === 'tool_result')).toHaveLength(1)
+
+        // Ordinary child tool_result must not emit parent tool_result SSE.
+        sseEvents.length = 0
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'task-tool-1',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'sub-read-1', content: 'file contents' }],
+          },
+        })
+        expect(sseEvents.filter((e) => e.type === 'tool_result')).toHaveLength(0)
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      } finally {
+        cleanup()
+      }
+    })
   })
 
   // ============================================================================
