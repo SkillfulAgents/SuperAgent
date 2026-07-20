@@ -57,10 +57,6 @@ const mcpToolInfoSchema = z.object({
 
 const mcpToolsSchema = z.array(mcpToolInfoSchema)
 
-function serializeDate(value: Date): string {
-  return value.toISOString()
-}
-
 function parseMcpTools(value: string | null): McpToolInfo[] {
   if (!value) return []
   try {
@@ -92,10 +88,10 @@ export function toAgentConnectedAccountDto(
     toolkitSlug: account.toolkitSlug,
     displayName: account.displayName,
     status: account.status,
-    createdAt: serializeDate(account.createdAt),
-    updatedAt: serializeDate(account.updatedAt),
+    createdAt: account.createdAt.toISOString(),
+    updatedAt: account.updatedAt.toISOString(),
     mappingId: mapping.id,
-    mappedAt: serializeDate(mapping.createdAt),
+    mappedAt: mapping.createdAt.toISOString(),
     provider,
   }
 }
@@ -119,14 +115,14 @@ export function toAgentRemoteMcpDto(
     errorMessage: mcp.errorMessage,
     tools: parseMcpTools(mcp.toolsJson),
     mappingId: mapping.id,
-    mappedAt: serializeDate(mapping.createdAt),
+    mappedAt: mapping.createdAt.toISOString(),
   }
 }
 
 export function isForeignAgentConnectedAccount(
   account: AgentConnectedAccountDto,
 ): account is ForeignAgentConnectedAccount {
-  return 'kind' in account
+  return 'kind' in account && account.kind === 'connected-account'
 }
 
 export function isPublicAgentConnectedAccount(
@@ -138,7 +134,7 @@ export function isPublicAgentConnectedAccount(
 export function isForeignAgentRemoteMcp(
   mcp: AgentRemoteMcpDto,
 ): mcp is ForeignAgentRemoteMcp {
-  return 'kind' in mcp
+  return 'kind' in mcp && mcp.kind === 'remote-mcp'
 }
 
 export function isPublicAgentRemoteMcp(

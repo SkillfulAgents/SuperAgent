@@ -196,6 +196,55 @@ describe('activity stats data pathways', () => {
     expect(result.connectionById).not.toHaveProperty('account-account-not-mapped')
   })
 
+  it('owner-scopes connection IDs and usage in shared-agent activity', async () => {
+    await insertUser('owner-a')
+    await insertUser('owner-b')
+    await insertAccount('account-a', 'owner-a')
+    await insertAccount('account-b-private', 'owner-b')
+    await insertMcp('mcp-a', 'owner-a')
+    await insertMcp('mcp-b-private', 'owner-b')
+
+    await testDb.insert(schema.agentConnectedAccounts).values([
+      { id: 'map-account-a', agentSlug: 'shared-agent', connectedAccountId: 'account-a', createdAt: NOW },
+      { id: 'map-account-b', agentSlug: 'shared-agent', connectedAccountId: 'account-b-private', createdAt: NOW },
+    ])
+    await testDb.insert(schema.agentRemoteMcps).values([
+      { id: 'map-mcp-a', agentSlug: 'shared-agent', remoteMcpId: 'mcp-a', createdAt: NOW },
+      { id: 'map-mcp-b', agentSlug: 'shared-agent', remoteMcpId: 'mcp-b-private', createdAt: NOW },
+    ])
+    await testDb.insert(schema.proxyAuditLog).values([
+      { id: 'account-a-call', agentSlug: 'shared-agent', accountId: 'account-a', toolkit: 'github', targetHost: 'api.github.com', targetPath: 'repos', method: 'GET', statusCode: 200, createdAt: NOW },
+      { id: 'account-b-call', agentSlug: 'shared-agent', accountId: 'account-b-private', toolkit: 'github', targetHost: 'api.github.com', targetPath: 'repos', method: 'GET', statusCode: 200, createdAt: NOW },
+    ])
+    await testDb.insert(schema.mcpAuditLog).values([
+      { id: 'mcp-a-call', agentSlug: 'shared-agent', remoteMcpId: 'mcp-a', remoteMcpName: 'mcp-a', method: 'POST', requestPath: '/tools/call', statusCode: 200, createdAt: NOW },
+      { id: 'mcp-b-call', agentSlug: 'shared-agent', remoteMcpId: 'mcp-b-private', remoteMcpName: 'mcp-b', method: 'POST', requestPath: '/tools/call', statusCode: 200, createdAt: NOW },
+    ])
+
+    const result = await getAgentActivityStats('shared-agent', {
+      days: 1,
+      ownerId: 'owner-a',
+      now: NOW,
+    })
+
+    expect(Object.keys(result.connectionById).sort()).toEqual([
+      'account-account-a',
+      'mcp-mcp-a',
+    ])
+    expect(JSON.stringify(result.connectionById)).not.toContain('account-b-private')
+    expect(JSON.stringify(result.connectionById)).not.toContain('mcp-b-private')
+    expect(result.connectionById['account-account-a'][0]).toEqual({
+      date: '2026-07-09',
+      succeeded: 1,
+      failed: 0,
+    })
+    expect(result.connectionById['mcp-mcp-a'][0]).toEqual({
+      date: '2026-07-09',
+      succeeded: 1,
+      failed: 0,
+    })
+  })
+
   it('owner-scopes global connection activity and still returns zero-filled visible rows', async () => {
     await insertUser('owner-a')
     await insertUser('owner-b')

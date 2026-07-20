@@ -1,6 +1,5 @@
 import { Hono } from 'hono'
-import { getCurrentUserId } from '@shared/lib/auth/config'
-import { isAuthMode } from '@shared/lib/auth/mode'
+import { getViewerUserId } from '@shared/lib/auth/ownership'
 import {
   DEFAULT_ACTIVITY_DAYS,
   MAX_ACTIVITY_DAYS,
@@ -48,7 +47,13 @@ activityRouter.get('/agents/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
     const days = parseDays(c.req.query('days'))
     const tzOffsetMinutes = parseTzOffset(c.req.query('tz'))
-    return c.json(await getAgentActivityStats(getAgentId(c), { days, tzOffsetMinutes, isSessionLive }))
+    const ownerId = getViewerUserId(c) ?? undefined
+    return c.json(await getAgentActivityStats(getAgentId(c), {
+      days,
+      tzOffsetMinutes,
+      isSessionLive,
+      ownerId,
+    }))
   } catch (error) {
     console.error('Failed to fetch agent activity statistics:', error)
     return c.json({ error: 'Failed to fetch activity statistics' }, 500)
@@ -59,7 +64,7 @@ activityRouter.get('/connections', async (c) => {
   try {
     const days = parseDays(c.req.query('days'))
     const tzOffsetMinutes = parseTzOffset(c.req.query('tz'))
-    const ownerId = isAuthMode() ? getCurrentUserId(c) : undefined
+    const ownerId = getViewerUserId(c) ?? undefined
     return c.json(await getConnectionActivityStats({ days, tzOffsetMinutes, ownerId }))
   } catch (error) {
     console.error('Failed to fetch connection activity statistics:', error)

@@ -70,7 +70,7 @@ import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServ
 import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
-import { ownerScope } from '@shared/lib/auth/ownership'
+import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
 import { getProvider } from '@shared/lib/account-providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
@@ -3141,7 +3141,7 @@ agents.delete('/:id/secrets/:secretId', AgentUser(), async (c) => {
 agents.get('/:id/connected-accounts', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const viewerUserId = isAuthMode() ? getCurrentUserId(c) : null
+    const viewerUserId = getViewerUserId(c)
 
     const mappings = await db
       .select({
@@ -3174,7 +3174,7 @@ agents.get('/:id/connected-accounts', AgentRead(), async (c) => {
 agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const viewerUserId = isAuthMode() ? getCurrentUserId(c) : null
+    const viewerUserId = getViewerUserId(c)
     const body = await c.req.json()
     const { accountIds } = body as { accountIds: string[] }
 
@@ -3289,7 +3289,7 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
 agents.get('/:id/remote-mcps', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const viewerUserId = isAuthMode() ? getCurrentUserId(c) : null
+    const viewerUserId = getViewerUserId(c)
     const mappings = await db
       .select({ mcp: remoteMcpServers, mapping: agentRemoteMcps })
       .from(agentRemoteMcps)

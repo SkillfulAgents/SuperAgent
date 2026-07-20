@@ -40,6 +40,49 @@ interface BuildArgs {
   grantOverrides?: Record<string, boolean>
 }
 
+interface ForeignRowsArgs {
+  accounts?: ForeignAgentConnectedAccount[]
+  mcps?: ForeignAgentRemoteMcp[]
+}
+
+/** Build noninteractive client-only rows for links owned by another member. */
+export function buildForeignConnectionRows({
+  accounts = [],
+  mcps = [],
+}: ForeignRowsArgs): UnifiedRow[] {
+  const rows: UnifiedRow[] = accounts.map((account, index) => {
+    const provider = getProvider(account.toolkitSlug)
+    const id = `foreign-account-${account.toolkitSlug}-${index}`
+    return {
+      key: id,
+      id,
+      name: provider?.displayName ?? account.toolkitSlug,
+      subtitle: 'Connected by another member',
+      iconSlug: account.toolkitSlug,
+      iconFallback: 'oauth',
+      type: 'oauth',
+      granted: true,
+      foreign: true,
+    }
+  })
+
+  mcps.forEach((_mcp, index) => {
+    const id = `foreign-mcp-${index}`
+    rows.push({
+      key: id,
+      id,
+      name: 'Shared MCP connection',
+      subtitle: 'Connected by another member',
+      iconFallback: 'blocks',
+      type: 'mcp',
+      granted: true,
+      foreign: true,
+    })
+  })
+
+  return rows
+}
+
 /**
  * Build the unified list of OAuth + MCP rows. When `agentAccountIds` /
  * `agentMcpIds` are provided, rows are flagged `granted` based on those sets;
@@ -94,35 +137,10 @@ export function buildUnifiedRows({
     })
   }
 
-  foreignAccounts.forEach((account, index) => {
-    const provider = getProvider(account.toolkitSlug)
-    const id = `foreign-account-${account.toolkitSlug}-${index}`
-    out.push({
-      key: id,
-      id,
-      name: provider?.displayName ?? account.toolkitSlug,
-      subtitle: 'Connected by another member',
-      iconSlug: account.toolkitSlug,
-      iconFallback: 'oauth',
-      type: 'oauth',
-      granted: true,
-      foreign: true,
-    })
-  })
-
-  foreignMcps.forEach((_mcp, index) => {
-    const id = `foreign-mcp-${index}`
-    out.push({
-      key: id,
-      id,
-      name: 'Shared MCP connection',
-      subtitle: 'Connected by another member',
-      iconFallback: 'blocks',
-      type: 'mcp',
-      granted: true,
-      foreign: true,
-    })
-  })
+  out.push(...buildForeignConnectionRows({
+    accounts: foreignAccounts,
+    mcps: foreignMcps,
+  }))
 
   return out.sort(
     (a, b) => {
