@@ -413,7 +413,7 @@ describe('discoverTools (via POST /)', () => {
     expect(initCall[0]).toBe('https://mcp.example.com')
     const initBody = JSON.parse(initCall[1].body)
     expect(initBody.method).toBe('initialize')
-    expect(initBody.params.clientInfo.name).toBe('Superagent')
+    expect(initBody.params.clientInfo.name).toBe('Gamut')
 
     // Call 2: notifications/initialized — includes session ID
     const notifCall = mockFetch.mock.calls[1]

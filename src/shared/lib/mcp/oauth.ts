@@ -444,7 +444,7 @@ export async function initiateOAuthFlow(
       const registration = await registerDynamicClientWithFallback(
         metadata.registration_endpoint,
         redirectCandidates,
-        clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
+        clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Gamut',
       )
       clientId = registration.clientId
       clientSecret = registration.clientSecret
@@ -584,7 +584,7 @@ export async function initiateNewServerOAuth(
     const registration = await registerDynamicClientWithFallback(
       metadata.registration_endpoint,
       redirectCandidates,
-      clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
+      clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Gamut',
     )
     clientId = registration.clientId
     clientSecret = registration.clientSecret
