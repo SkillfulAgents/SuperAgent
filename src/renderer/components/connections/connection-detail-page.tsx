@@ -61,8 +61,12 @@ export function ConnectionDetailPage({ row, onBack, backLabel = 'Connections' }:
           <p className="text-xs text-muted-foreground truncate">
             {row.type === 'oauth' ? 'API' : 'MCP'}
             {row.subtitle ? ` · ${row.subtitle}` : ''}
-            {' · '}
-            <span className="tabular-nums">{formatCompactDistance(safeDate(row.date))}</span>
+            {row.date !== undefined && (
+              <>
+                {' · '}
+                <span className="tabular-nums">{formatCompactDistance(safeDate(row.date))}</span>
+              </>
+            )}
           </p>
         </div>
         <div className="shrink-0">

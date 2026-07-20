@@ -70,7 +70,7 @@ import { connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServ
 import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
-import { ownerScope } from '@shared/lib/auth/ownership'
+import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
 import { getProvider } from '@shared/lib/account-providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
@@ -149,6 +149,10 @@ import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { toPublicChatIntegration } from '@shared/lib/chat-integrations/public'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
+import {
+  toAgentConnectedAccountDto,
+  toAgentRemoteMcpDto,
+} from '@shared/lib/agent-connections/public'
 
 function getConfiguredSkillsets() {
   return getSettings().skillsets || []
@@ -3137,7 +3141,7 @@ agents.delete('/:id/secrets/:secretId', AgentUser(), async (c) => {
 agents.get('/:id/connected-accounts', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
-
+    const viewerUserId = getViewerUserId(c)
 
     const mappings = await db
       .select({
@@ -3151,12 +3155,13 @@ agents.get('/:id/connected-accounts', AgentRead(), async (c) => {
       )
       .where(eq(agentConnectedAccounts.agentSlug, slug))
 
-    const accounts = mappings.map(({ mapping, account }) => ({
-      ...account,
-      mappingId: mapping.id,
-      mappedAt: mapping.createdAt,
-      provider: getProvider(account.toolkitSlug),
-    }))
+    const accounts = mappings.map(({ mapping, account }) =>
+      toAgentConnectedAccountDto(
+        mapping,
+        account,
+        viewerUserId,
+        getProvider(account.toolkitSlug),
+      ))
 
     return c.json({ accounts })
   } catch (error) {
@@ -3169,6 +3174,7 @@ agents.get('/:id/connected-accounts', AgentRead(), async (c) => {
 agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const viewerUserId = getViewerUserId(c)
     const body = await c.req.json()
     const { accountIds } = body as { accountIds: string[] }
 
@@ -3227,12 +3233,13 @@ agents.post('/:id/connected-accounts', AgentUser(), async (c) => {
       )
       .where(eq(agentConnectedAccounts.agentSlug, slug))
 
-    const accounts = updatedMappings.map(({ mapping, account }) => ({
-      ...account,
-      mappingId: mapping.id,
-      mappedAt: mapping.createdAt,
-      provider: getProvider(account.toolkitSlug),
-    }))
+    const accounts = updatedMappings.map(({ mapping, account }) =>
+      toAgentConnectedAccountDto(
+        mapping,
+        account,
+        viewerUserId,
+        getProvider(account.toolkitSlug),
+      ))
 
     for (const accountId of insertedAccountIds) { logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: accountId, action: 'assigned', details: { agentSlug: slug } }) }
     return c.json({ accounts })
@@ -3282,6 +3289,7 @@ agents.delete('/:id/connected-accounts/:accountId', AgentUser(), async (c) => {
 agents.get('/:id/remote-mcps', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
+    const viewerUserId = getViewerUserId(c)
     const mappings = await db
       .select({ mcp: remoteMcpServers, mapping: agentRemoteMcps })
       .from(agentRemoteMcps)
@@ -3292,17 +3300,8 @@ agents.get('/:id/remote-mcps', AgentRead(), async (c) => {
       .where(eq(agentRemoteMcps.agentSlug, slug))
 
     return c.json({
-      mcps: mappings.map(({ mcp, mapping }) => ({
-        id: mcp.id,
-        name: mcp.name,
-        url: mcp.url,
-        authType: mcp.authType,
-        status: mcp.status,
-        errorMessage: mcp.errorMessage,
-        tools: mcp.toolsJson ? JSON.parse(mcp.toolsJson) : [],
-        mappingId: mapping.id,
-        mappedAt: mapping.createdAt,
-      })),
+      mcps: mappings.map(({ mcp, mapping }) =>
+        toAgentRemoteMcpDto(mapping, mcp, viewerUserId)),
     })
   } catch (error) {
     console.error('Failed to fetch agent remote MCPs:', error)

@@ -363,34 +363,3 @@ export interface ApiNotification {
   createdAt: Date
   readAt: Date | null
 }
-
-// ============================================================================
-// Connected Account API Types
-// ============================================================================
-
-/**
- * Provider info
- */
-export interface ApiProvider {
-  slug: string
-  displayName: string
-  icon?: string
-}
-
-/**
- * Connected account response
- */
-export interface ApiConnectedAccount {
-  id: string
-  providerConnectionId: string
-  providerName: string
-  toolkitSlug: string
-  displayName: string
-  status: 'active' | 'revoked' | 'expired'
-  createdAt: Date
-  updatedAt: Date
-  provider?: ApiProvider
-  // Only present when fetched for a specific agent
-  mappingId?: string
-  mappedAt?: Date
-}

@@ -68,10 +68,14 @@ export function ConnectionRow({
               <span className="truncate">{row.subtitle}</span>
             </>
           )}
-          <span className="shrink-0">·</span>
-          <span className="whitespace-nowrap shrink-0 tabular-nums">
-            {formatCompactDistance(safeDate(row.date))}
-          </span>
+          {row.date !== undefined && (
+            <>
+              <span className="shrink-0">·</span>
+              <span className="whitespace-nowrap shrink-0 tabular-nums">
+                {formatCompactDistance(safeDate(row.date))}
+              </span>
+            </>
+          )}
           {subtitleExtra}
         </>
       }
