@@ -17,7 +17,8 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { mcpSafeFetch, validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
+import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import { discoverTools } from '@shared/lib/mcp/discover-tools'
 
 function safeParseTools(json: string | null): McpToolInfo[] {

@@ -12,11 +12,11 @@
  *   - validateSafeCloneUrl(url, { allowedHostPrefixes? }): full SSRF guard
  *   - validateMcpDiscoveryUrl(url): async SSRF guard for remote-MCP / OAuth
  *     discovery (string policy + DNS resolve; rejects private resolved IPs)
- *   - mcpSafeFetch(url, init?): fetch pinned to a vetted resolved address
+ *   - resolveMcpDiscoveryTarget(url): same policy, also returns resolved addresses
+ *     for pin-on-connect (used by mcpSafeFetch)
  */
 
 import { lookup } from 'node:dns/promises'
-import { Agent } from 'undici'
 
 const PRIVATE_HOSTNAMES = new Set([
   'localhost',
@@ -46,7 +46,8 @@ function isPrivateIPv6(host: string): boolean {
   const h = host.replace(/^\[/, '').replace(/\]$/, '').toLowerCase()
   if (h === '::1' || h === '::') return true
   if (h.startsWith('fc') || h.startsWith('fd')) return true // ULA fc00::/7
-  if (h.startsWith('fe80')) return true // link-local
+  // link-local fe80::/10 → fe80:: through febf::
+  if (/^fe[89ab][0-9a-f](?::|$)/i.test(h)) return true
   // IPv4-mapped — dotted or hex (URL.hostname canonicalizes to hex)
   const v4dotted = h.match(/::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
   if (v4dotted) return isPrivateIPv4(v4dotted[1])
@@ -155,7 +156,7 @@ async function resolveHostnameAddresses(hostname: string): Promise<ResolvedAddre
  * Resolve + apply the remote-MCP SSRF policy. Shared by validateMcpDiscoveryUrl
  * and mcpSafeFetch so pin and reject cannot drift.
  */
-async function resolveMcpDiscoveryTarget(url: string): Promise<{
+export async function resolveMcpDiscoveryTarget(url: string): Promise<{
   parsed: URL
   addresses: ResolvedAddress[]
 }> {
@@ -198,42 +199,6 @@ async function resolveMcpDiscoveryTarget(url: string): Promise<{
 export async function validateMcpDiscoveryUrl(url: string): Promise<URL> {
   const { parsed } = await resolveMcpDiscoveryTarget(url)
   return parsed
-}
-
-/**
- * Outbound fetch for remote-MCP / OAuth discovery URLs: resolve+validate,
- * then connect pinned to a vetted address so a later DNS change cannot
- * redirect the socket (TOCTOU). Uses the undici Agent `connect.lookup` hook
- * so Host / SNI stay on the original hostname.
- */
-export async function mcpSafeFetch(
-  url: string,
-  init?: RequestInit,
-): Promise<Response> {
-  const { addresses } = await resolveMcpDiscoveryTarget(url)
-  const pinned = addresses[0]
-
-  const agent = new Agent({
-    connect: {
-      lookup(_hostname, _options, callback) {
-        // undici 7 invokes lookup with `{ all: true }` and expects an address
-        // list; the Node dns `(err, address, family)` shape yields undefined IP.
-        callback(null, [{ address: pinned.address, family: pinned.family }])
-      },
-    },
-  })
-
-  try {
-    // Preserve the caller URL string (path / trailing slash). Never auto-follow
-    // redirects: a public host can 302 to a private target past this guard.
-    // Node's DOM lib typings omit undici's `dispatcher`; runtime fetch accepts it.
-    return await (fetch as (input: string, init?: RequestInit & { dispatcher?: Agent }) => Promise<Response>)(
-      url,
-      { ...init, dispatcher: agent, redirect: 'manual' },
-    )
-  } finally {
-    void agent.close()
-  }
 }
 
 export interface SafeCloneUrlOptions {

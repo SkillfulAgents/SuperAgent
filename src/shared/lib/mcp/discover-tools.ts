@@ -1,5 +1,5 @@
 import type { McpToolInfo } from './types'
-import { mcpSafeFetch } from '@shared/lib/utils/url-safety'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { captureMessage } from '@shared/lib/error-reporting'
 
 /**

@@ -2,7 +2,8 @@ import crypto from 'crypto'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
-import { mcpSafeFetch, validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
+import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import type { OAuthMetadata, OAuthTokenResponse } from './types'
 
 /**

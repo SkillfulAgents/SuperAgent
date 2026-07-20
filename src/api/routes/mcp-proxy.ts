@@ -10,7 +10,7 @@ import {
   mcpAuditLog,
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
-import { mcpSafeFetch } from '@shared/lib/utils/url-safety'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 
 async function logMcpAuditEntry(entry: {
   agentSlug: string
