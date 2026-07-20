@@ -5,7 +5,12 @@ import { Button } from '@renderer/components/ui/button'
 import { RequestError } from '@renderer/components/messages/request-error'
 import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
-import { usePlatformConnect } from '@renderer/hooks/use-platform-auth'
+import {
+  useDismissDownloadNonce,
+  useDownloadNonceOffer,
+  usePlatformConnect,
+  useRedeemDownloadNonce,
+} from '@renderer/hooks/use-platform-auth'
 
 interface WelcomeStepProps {
   onChoosePlatform?: () => void
@@ -43,6 +48,24 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
 
   const isPlatformAvailable = !isLoadingPlatformAuth && Boolean(platformAuth?.platformBaseUrl)
 
+  // Installer-carried enrollment: when the main process recovered a download
+  // nonce, the primary button becomes one-click "Continue as <email>". No
+  // nonce (or any failure) leaves the flow exactly as before.
+  const { data: nonceOffer } = useDownloadNonceOffer(isPlatformAvailable && !isPlatformConnected)
+  const redeemNonce = useRedeemDownloadNonce()
+  const dismissNonce = useDismissDownloadNonce()
+  const nonceEmail = nonceOffer?.available ? nonceOffer.email : undefined
+
+  async function handleContinueAsOffer() {
+    try {
+      await redeemNonce.mutateAsync()
+      onChoosePlatform?.()
+    } catch {
+      // The mutation exposes the error below; the offer query refetches and
+      // the button falls back to the regular flow if the nonce is gone.
+    }
+  }
+
   async function handleManualSetup() {
     try {
       if (settings?.llmProvider === 'platform') {
@@ -68,28 +91,59 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
         {isPlatformAvailable && (
           <div className="space-y-3">
             <div className="flex items-center gap-3">
-              <Button
-                type="button"
-                variant="default"
-                size="lg"
-                onClick={() => void handleConnect()}
-                data-testid="wizard-platform-login"
-                disabled={isLaunching}
-                className="w-full max-w-[380px]"
-              >
-                {isLaunching ? (
-                  <><Loader2 className="h-4 w-4 animate-spin mr-2" />Logging in...</>
-                ) : (
-                  'Get Started'
-                )}
-              </Button>
+              {nonceEmail ? (
+                <Button
+                  type="button"
+                  variant="default"
+                  size="lg"
+                  onClick={() => void handleContinueAsOffer()}
+                  data-testid="wizard-platform-login"
+                  disabled={redeemNonce.isPending}
+                  className="w-full max-w-[380px]"
+                >
+                  {redeemNonce.isPending ? (
+                    <><Loader2 className="h-4 w-4 animate-spin mr-2" />Signing in...</>
+                  ) : (
+                    `Continue as ${nonceEmail}`
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="default"
+                  size="lg"
+                  onClick={() => void handleConnect()}
+                  data-testid="wizard-platform-login"
+                  disabled={isLaunching}
+                  className="w-full max-w-[380px]"
+                >
+                  {isLaunching ? (
+                    <><Loader2 className="h-4 w-4 animate-spin mr-2" />Logging in...</>
+                  ) : (
+                    'Get Started'
+                  )}
+                </Button>
+              )}
             </div>
+            {nonceEmail && !redeemNonce.isPending && (
+              <p className="text-sm text-muted-foreground">
+                Not you?{' '}
+                <button
+                  type="button"
+                  onClick={() => dismissNonce.mutate()}
+                  data-testid="wizard-nonce-dismiss"
+                  className="underline underline-offset-2 hover:text-foreground transition-colors"
+                >
+                  Use a different account
+                </button>
+              </p>
+            )}
             {isLaunching && (
               <ManualAccessKeyInput prefixText="Log in issues?" className="text-sm text-muted-foreground" />
             )}
           </div>
         )}
-        <RequestError message={platformError ?? null} />
+        <RequestError message={platformError ?? redeemNonce.error?.message ?? null} />
         {isPlatformAvailable ? (
           <p className="text-sm text-muted-foreground">
             Need to bring your own keys?{' '}

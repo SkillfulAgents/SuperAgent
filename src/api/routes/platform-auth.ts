@@ -15,6 +15,12 @@ import {
   savePlatformAuth,
   revokePlatformToken,
 } from '@shared/lib/services/platform-auth-service'
+import {
+  dismissDownloadNonceOffer,
+  getDownloadNonceOffer,
+  redeemDownloadNonce,
+  DownloadNonceUnavailableError,
+} from '@shared/lib/services/download-nonce-service'
 import { platformService } from '@shared/lib/services/platform-service'
 import { PlatformRequestError } from '@shared/lib/platform-auth/platform-fetch'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
@@ -140,6 +146,42 @@ platformAuth.post('/complete', rejectMutationInAuthMode, async (c) => {
   })
 
   return c.json(status)
+})
+
+// Download-carried enrollment: a nonce recovered from the installer's
+// surroundings (filename / download-URL metadata) lets onboarding offer
+// "Continue as <email>" instead of the browser handoff. No nonce → these
+// endpoints report unavailable and the flow is unchanged.
+platformAuth.get('/download-nonce', async (c) => {
+  return c.json(await getDownloadNonceOffer())
+})
+
+platformAuth.post('/download-nonce/redeem', rejectMutationInAuthMode, async (c) => {
+  const userId = getCurrentUserId(c)
+  let status
+  try {
+    status = await redeemDownloadNonce(userId)
+  } catch (error) {
+    if (error instanceof DownloadNonceUnavailableError) {
+      return c.json({ error: error.message, expired: true }, 410)
+    }
+    if (error instanceof PlatformRequestError) {
+      return c.json({ error: error.message }, error.status as ContentfulStatusCode)
+    }
+    throw error
+  }
+
+  setErrorReportingUser({
+    id: status.tokenPreview || undefined,
+    email: status.email || undefined,
+  })
+
+  return c.json(status)
+})
+
+platformAuth.post('/download-nonce/dismiss', (c) => {
+  dismissDownloadNonceOffer()
+  return c.json({ success: true })
 })
 
 platformAuth.post('/revoke', rejectMutationInAuthMode, async (c) => {
