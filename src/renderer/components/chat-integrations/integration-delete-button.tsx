@@ -12,7 +12,7 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { useDeleteChatIntegration } from '@renderer/hooks/use-chat-integrations'
-import type { ChatIntegration } from '@shared/lib/db/schema'
+import type { PublicChatIntegration as ChatIntegration } from '@shared/lib/chat-integrations/public'
 
 /**
  * Header action that deletes the integration behind a confirm dialog.

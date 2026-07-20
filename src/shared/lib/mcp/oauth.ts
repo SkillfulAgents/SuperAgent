@@ -6,6 +6,39 @@ import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import type { OAuthMetadata, OAuthTokenResponse } from './types'
 
 /**
+ * OAuth setup failure whose message is safe to show in the UI verbatim. Carries
+ * the authorization server's own error/error_description (e.g. a dynamic client
+ * registration rejection reason) so users see why a connection failed instead
+ * of a generic "Failed to initiate OAuth flow".
+ */
+export class McpOAuthSetupError extends Error {}
+
+/**
+ * Summarize an OAuth error response body for a user-facing message: prefer the
+ * RFC 6749 error/error_description fields, fall back to the raw (truncated)
+ * body — some servers reject with a bare-text body (e.g. Figma's "Forbidden").
+ */
+async function describeOAuthErrorBody(res: Response): Promise<string> {
+  let text: string
+  try {
+    text = (await res.text()).trim()
+  } catch {
+    return ''
+  }
+  if (!text) return ''
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; error_description?: unknown }
+    const detail = [parsed.error, parsed.error_description]
+      .filter((v): v is string => typeof v === 'string' && v.length > 0)
+      .join(': ')
+    if (detail) return `: ${detail}`
+  } catch {
+    // Not JSON — fall through to the raw body
+  }
+  return `: ${text.slice(0, 200)}`
+}
+
+/**
  * Build the candidate well-known metadata URLs for an authorization server.
  *
  * For issuers with a path, RFC 8414 inserts /.well-known/<name> between origin
@@ -173,14 +206,16 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
 
 /**
  * Register a dynamic client with the authorization server (RFC 7591).
+ * Throws McpOAuthSetupError with the server's rejection reason on failure.
  */
 export async function registerDynamicClient(
   registrationEndpoint: string,
   redirectUri: string,
   clientName: string,
-): Promise<{ clientId: string; clientSecret?: string; scope?: string } | null> {
+): Promise<{ clientId: string; clientSecret?: string; scope?: string }> {
+  let res: Response
   try {
-    const res = await fetch(registrationEndpoint, {
+    res = await fetch(registrationEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -191,18 +226,27 @@ export async function registerDynamicClient(
         token_endpoint_auth_method: 'none',
       }),
     })
-
-    if (!res.ok) return null
-
-    const data = (await res.json()) as {
-      client_id: string
-      client_secret?: string
-      scope?: string
-    }
-    return { clientId: data.client_id, clientSecret: data.client_secret, scope: data.scope }
-  } catch {
-    return null
+  } catch (error) {
+    throw new McpOAuthSetupError(
+      `Could not reach the authorization server's registration endpoint: ${error instanceof Error ? error.message : String(error)}`,
+    )
   }
+
+  if (!res.ok) {
+    throw new McpOAuthSetupError(
+      `The authorization server rejected client registration (HTTP ${res.status})${await describeOAuthErrorBody(res)}`,
+    )
+  }
+
+  let data: { client_id: string; client_secret?: string; scope?: string }
+  try {
+    data = await res.json()
+  } catch {
+    throw new McpOAuthSetupError(
+      'The authorization server returned an invalid client registration response',
+    )
+  }
+  return { clientId: data.client_id, clientSecret: data.client_secret, scope: data.scope }
 }
 
 /**
@@ -219,14 +263,19 @@ async function registerDynamicClientWithFallback(
   registrationEndpoint: string,
   redirectCandidates: string[],
   clientName: string,
-): Promise<{ clientId: string; clientSecret?: string; scope?: string; redirectUri: string } | null> {
+): Promise<{ clientId: string; clientSecret?: string; scope?: string; redirectUri: string }> {
+  let lastError: McpOAuthSetupError | undefined
   for (const redirectUri of redirectCandidates) {
-    const registration = await registerDynamicClient(registrationEndpoint, redirectUri, clientName)
-    if (registration) {
+    try {
+      const registration = await registerDynamicClient(registrationEndpoint, redirectUri, clientName)
       return { ...registration, redirectUri }
+    } catch (error) {
+      if (!(error instanceof McpOAuthSetupError)) throw error
+      console.error(`[mcp/oauth] Dynamic registration failed for redirect ${redirectUri}:`, error.message)
+      lastError = error
     }
   }
-  return null
+  throw lastError ?? new McpOAuthSetupError('No redirect URLs available for client registration')
 }
 
 type PendingOAuthFlow = {
@@ -362,7 +411,9 @@ export async function initiateOAuthFlow(
   const supportedMethods = metadata.code_challenge_methods_supported || []
   if (supportedMethods.length > 0 && !supportedMethods.includes('S256')) {
     console.error('[mcp/oauth] Server does not support S256 PKCE')
-    return null
+    throw new McpOAuthSetupError(
+      `The authorization server does not support the required S256 PKCE method (supports: ${supportedMethods.join(', ')})`,
+    )
   }
 
   // Resolve client credentials: explicit override > dynamic registration > stored.
@@ -389,20 +440,25 @@ export async function initiateOAuthFlow(
     // self-heals which redirect the AS accepts (custom scheme vs http loopback)
     // and re-binds to the current loopback port, so a client first registered
     // against a rejected scheme or a stale port doesn't break reconnection.
-    const registration = await registerDynamicClientWithFallback(
-      metadata.registration_endpoint,
-      redirectCandidates,
-      clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
-    )
-    if (registration) {
+    try {
+      const registration = await registerDynamicClientWithFallback(
+        metadata.registration_endpoint,
+        redirectCandidates,
+        clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
+      )
       clientId = registration.clientId
       clientSecret = registration.clientSecret
       registeredScope = registration.scope
       redirectUri = registration.redirectUri
-    } else if (existing?.oauthClientId) {
-      // Registration failed unexpectedly — fall back to the stored client.
-      clientId = existing.oauthClientId
-      clientSecret = existing.oauthClientSecret || undefined
+    } catch (error) {
+      if (!(error instanceof McpOAuthSetupError)) throw error
+      if (existing?.oauthClientId) {
+        // Registration failed unexpectedly — fall back to the stored client.
+        clientId = existing.oauthClientId
+        clientSecret = existing.oauthClientSecret || undefined
+      } else {
+        throw error
+      }
     }
   } else if (existing?.oauthClientId) {
     clientId = existing.oauthClientId
@@ -411,7 +467,9 @@ export async function initiateOAuthFlow(
 
   if (!clientId) {
     console.error('[mcp/oauth] No client_id available')
-    return null
+    throw new McpOAuthSetupError(
+      'The authorization server does not support automatic client registration — provide an OAuth Client ID in the advanced connection options',
+    )
   }
 
   // Generate PKCE and state
@@ -506,7 +564,9 @@ export async function initiateNewServerOAuth(
   const supportedMethods = metadata.code_challenge_methods_supported || []
   if (supportedMethods.length > 0 && !supportedMethods.includes('S256')) {
     console.error('[mcp/oauth] Server does not support S256 PKCE')
-    return null
+    throw new McpOAuthSetupError(
+      `The authorization server does not support the required S256 PKCE method (supports: ${supportedMethods.join(', ')})`,
+    )
   }
 
   let clientId: string | undefined
@@ -526,17 +586,17 @@ export async function initiateNewServerOAuth(
       redirectCandidates,
       clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
     )
-    if (registration) {
-      clientId = registration.clientId
-      clientSecret = registration.clientSecret
-      registeredScope = registration.scope
-      redirectUri = registration.redirectUri
-    }
+    clientId = registration.clientId
+    clientSecret = registration.clientSecret
+    registeredScope = registration.scope
+    redirectUri = registration.redirectUri
   }
 
   if (!clientId) {
     console.error('[mcp/oauth] No client_id available — provide an OAuth Client ID or use a server that supports dynamic registration')
-    return null
+    throw new McpOAuthSetupError(
+      'The authorization server does not support automatic client registration — provide an OAuth Client ID in the advanced connection options',
+    )
   }
 
   const { codeVerifier, codeChallenge } = generatePKCE()

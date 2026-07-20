@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
+import { useState } from 'react'
 import { MessageList } from './message-list'
 import { useDraft } from '@renderer/context/drafts-context'
 import { renderWithProviders } from '@renderer/test/test-utils'
@@ -507,6 +508,57 @@ describe('MessageList', () => {
     )
 
     expect(onAppeared).toHaveBeenCalledWith('uuid-1')
+  })
+
+  it('does not restore /compact over a draft typed while manual compaction runs', async () => {
+    vi.useFakeTimers()
+    try {
+      mockMessagesData.data = []
+      mockStreamState.isActive = true
+
+      const CompactRaceHarness = () => {
+        const [pending, setPending] = useState([
+          { localId: 'compact-local', uuid: 'compact-server', text: '/compact', sentAt: Date.now() },
+        ])
+        const [draft, setDraft] = useDraft<string>('session:s-1')
+
+        return (
+          <>
+            <button onClick={() => setDraft('the next message')}>Type next message</button>
+            <MessageList
+              sessionId="s-1"
+              agentSlug="agent-1"
+              pendingUserMessages={pending}
+              onPendingMessageAppeared={(localId) => {
+                setPending((current) => current.filter((message) => message.localId !== localId))
+              }}
+            />
+            <div data-testid="draft-probe">{draft ?? ''}</div>
+          </>
+        )
+      }
+
+      const { rerender } = renderWithProviders(<CompactRaceHarness />)
+
+      // The user starts composing the next turn while /compact is active.
+      fireEvent.click(screen.getByRole('button', { name: 'Type next message' }))
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
+
+      // Manual compaction persists a boundary, not a user message carrying the
+      // POST uuid. The compact command must still be considered delivered.
+      mockMessagesData.data = [createCompactBoundary({ createdAt: new Date() })]
+      mockStreamState.isActive = false
+      rerender(<CompactRaceHarness />)
+
+      await act(async () => {
+        vi.advanceTimersByTime(1500)
+      })
+
+      expect(screen.getByTestId('draft-probe')).toHaveTextContent('the next message')
+      expect(screen.getByTestId('draft-probe')).not.toHaveTextContent('/compact')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not call onPendingMessageAppeared when neither uuid nor text matches', () => {

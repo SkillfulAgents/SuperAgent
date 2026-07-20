@@ -48,15 +48,16 @@ vi.mock('stream', () => ({
 
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // Display-slug -> canonical-id resolution applied by the ResolveAgent mock. Defaults
 // to identity (test slugs are already canonical); a test can override it to exercise
 // routes where the URL display slug differs from the resolved id.
 let mockResolveSlug: (slug: string) => string = (slug) => slug
 vi.mock('../middleware/auth', () => ({
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
-  AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
-  AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
-  AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
+  AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
+  AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   // Mirrors the real ResolveAgent: 404 on a missing agent (via the agentExists
   // mock) and stash the resolved id, which getAgentId reads back. For test slugs
   // (already canonical), resolution is the identity.
@@ -67,6 +68,7 @@ vi.mock('../middleware/auth', () => ({
     return next()
   },
   getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
+  getAuthorizedAgentRole: (c: any) => c.get('authorizedAgentRole') ?? null,
 }))
 
 // Container manager
@@ -239,6 +241,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   removeMessage: vi.fn(),
   removeToolCall: vi.fn(),
   getSessionSummary: vi.fn().mockResolvedValue({ sessionIds: [], sessionCount: 0, lastActivityAt: null }),
+  readSessionMetadata: vi.fn(() => Promise.resolve({})),
 }))
 
 const mockLoadSessionUsageTotals = vi.fn()
@@ -293,6 +296,12 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
 vi.mock('@shared/lib/services/chat-integration-service', () => ({
   listChatIntegrations: vi.fn(() => []),
   listChatIntegrationsByAgents: vi.fn(() => new Map()),
+}))
+
+vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
+  listWebhookTriggers: vi.fn(() => Promise.resolve([])),
+  listActiveWebhookTriggers: vi.fn(() => Promise.resolve([])),
+  listCancelledWebhookTriggers: vi.fn(() => Promise.resolve([])),
 }))
 
 vi.mock('@shared/lib/services/notification-service', () => ({
@@ -427,14 +436,16 @@ import {
   importSkillFromZip,
 } from '@shared/lib/services/skillset-service'
 import { getAgent, listAgentsWithStatus } from '@shared/lib/services/agent-service'
-import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, deleteSession, getSession } from '@shared/lib/services/session-service'
+import { listSessions, listSessionsByIds, getSessionMessagesWithCompact, getSessionSummary, sessionExists, deleteSession, getSession, readSessionMetadata } from '@shared/lib/services/session-service'
 import { listPendingScheduledTasks, listPendingScheduledTasksByAgents } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem } from '@shared/lib/services/artifact-service'
-import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications } from '@shared/lib/services/notification-service'
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
+import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
+import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
 // ============================================================================
 // Test Helpers
@@ -445,6 +456,10 @@ function createApp() {
   app.route('/api/agents', agents)
   return app
 }
+
+beforeEach(() => {
+  mockAuthorizedAgentRole = 'owner'
+})
 
 async function patchJson(app: Hono, url: string, body: unknown): Promise<Response> {
   return app.request(`http://localhost${url}`, {
@@ -476,6 +491,110 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
     body,
   })
 }
+
+// ============================================================================
+// Webhook triggers — GET /:id/webhook-triggers
+// ============================================================================
+
+describe('GET /:id/webhook-triggers', () => {
+  const trigger = {
+    id: 'trigger-1',
+    agentSlug: 'test-agent',
+    kind: 'custom' as const,
+    composioTriggerId: 'whep_private-id',
+    connectedAccountId: 'account-private-id',
+    triggerType: 'CUSTOM_WEBHOOK',
+    triggerConfig: JSON.stringify({ url: 'https://hooks.example.test/private-capability' }),
+    prompt: 'Handle the event',
+    name: 'Inbound events',
+    status: 'active' as const,
+    lastFiredAt: null,
+    fireCount: 0,
+    lastSessionId: null,
+    createdBySessionId: null,
+    createdByUserId: 'owner-private-id',
+    model: null,
+    effort: null,
+    speed: null,
+    createdAt: new Date('2026-07-17T00:00:00Z'),
+    cancelledAt: null,
+    pausedAt: null,
+  }
+
+  it.each(['viewer', 'user'] as const)('redacts list rows for %s members', async (role) => {
+    mockAuthorizedAgentRole = role
+    vi.mocked(listWebhookTriggers).mockResolvedValueOnce([trigger])
+
+    const res = await getReq(createApp(), '/api/agents/test-agent/webhook-triggers')
+    const body = await res.json() as Array<Record<string, unknown>>
+
+    expect(res.status).toBe(200)
+    expect(body[0]).not.toHaveProperty('triggerConfig')
+    expect(body[0]).not.toHaveProperty('composioTriggerId')
+    expect(body[0]).not.toHaveProperty('connectedAccountId')
+    expect(body[0]).not.toHaveProperty('createdByUserId')
+    expect(JSON.stringify(body)).not.toContain('private-capability')
+  })
+
+  it('retains capability fields in list rows for owners', async () => {
+    vi.mocked(listWebhookTriggers).mockResolvedValueOnce([trigger])
+
+    const res = await getReq(createApp(), '/api/agents/test-agent/webhook-triggers')
+    const body = await res.json() as Array<Record<string, unknown>>
+
+    expect(res.status).toBe(200)
+    expect(body[0]).toMatchObject({
+      triggerConfig: trigger.triggerConfig,
+      composioTriggerId: 'whep_private-id',
+      connectedAccountId: 'account-private-id',
+      createdByUserId: 'owner-private-id',
+    })
+  })
+})
+
+// ============================================================================
+// Chat integrations — GET /:id/chat-integrations
+// ============================================================================
+
+describe('GET /:id/chat-integrations', () => {
+  it('redacts credentials from every list row', async () => {
+    vi.mocked(listChatIntegrations).mockReturnValueOnce([{
+      id: 'integration-1',
+      agentSlug: 'test-agent',
+      provider: 'telegram',
+      name: 'Alerts bot',
+      config: JSON.stringify({
+        botToken: 'telegram-viewer-secret',
+        chatId: 'private-chat-id',
+        draftStreaming: true,
+      }),
+      showToolCalls: false,
+      requireApproval: true,
+      sessionTimeout: null,
+      model: null,
+      effort: null,
+      speed: null,
+      status: 'active',
+      errorMessage: null,
+      createdByUserId: 'owner-user',
+      createdAt: new Date('2026-07-17T00:00:00Z'),
+      updatedAt: new Date('2026-07-17T00:00:00Z'),
+    }])
+
+    const res = await getReq(createApp(), '/api/agents/test-agent/chat-integrations')
+    const body = await res.json() as Array<Record<string, unknown>>
+
+    expect(res.status).toBe(200)
+    expect(body[0]).not.toHaveProperty('config')
+    expect(body[0]).toMatchObject({
+      id: 'integration-1',
+      hasCredentials: true,
+      settings: { draftStreaming: true },
+    })
+    expect(JSON.stringify(body)).not.toContain('telegram-viewer-secret')
+    expect(JSON.stringify(body)).not.toContain('private-chat-id')
+  })
+})
 
 describe('session usage — GET /:id/sessions/:sessionId/usage', () => {
   let app: ReturnType<typeof createApp>
@@ -2605,6 +2724,60 @@ describe('GET /api/agents (enriched summary)', () => {
     const body = await res.json()
 
     expect(body[0].hasSessionsAwaitingInput).toBe(true)
+  })
+
+  it('raises hasUnreadNotifications for an unread on a visible session', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-1'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-1'])]]))
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasUnreadNotifications).toBe(true)
+  })
+
+  it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-chat', 'sess-cron'],
+      sessionCount: 2,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(
+      new Map([['agent-1', new Set(['sess-chat', 'sess-cron'])]]),
+    )
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'sess-chat': { isChatIntegrationSession: true },
+      'sess-cron': { isScheduledExecution: true },
+    })
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasUnreadNotifications).toBe(false)
+  })
+
+  it('counts unread on a promoted automated session — it is visible again', async () => {
+    vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+    vi.mocked(getSessionSummary).mockResolvedValue({
+      sessionIds: ['sess-cron'],
+      sessionCount: 1,
+      lastActivityAt: new Date(),
+    })
+    vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-cron'])]]))
+    vi.mocked(readSessionMetadata).mockResolvedValue({
+      'sess-cron': { isScheduledExecution: true, promotedToInteractive: true },
+    })
+
+    const res = await getReq(app, '/api/agents')
+    const body = await res.json()
+
+    expect(body[0].hasUnreadNotifications).toBe(true)
   })
 
   it('detects awaiting input from agent-level proxy reviews on active sessions', async () => {

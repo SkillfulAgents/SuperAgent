@@ -6,7 +6,7 @@
 
 import { apiFetch } from '@renderer/lib/api'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import type { WebhookTrigger } from '@shared/lib/db/schema'
+import type { PublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
   useAutomationList,
   useAutomationDetail,
@@ -14,7 +14,7 @@ import {
   useAutomationSessions,
 } from './use-agent-automations'
 
-export type { WebhookTrigger }
+export type WebhookTrigger = PublicWebhookTrigger
 
 const TYPE = 'webhook-triggers' as const
 

@@ -25,6 +25,7 @@ import {
   ensureDirectory,
 } from '@shared/lib/utils/file-storage'
 import { sessionMetadataMapSchema } from './session-metadata-schema'
+import { isHiddenAutomatedSession } from './session-visibility'
 import {
   SessionInfo,
   SessionMetadata,
@@ -374,11 +375,7 @@ export async function listSessions(
   // Read session metadata (includes newly created sessions without JSONL yet)
   const metadata = await readSessionMetadata(agentSlug)
 
-  const isAutomated = (sessionId: string) => {
-    const meta = metadata[sessionId]
-    if (meta?.promotedToInteractive) return false
-    return meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession
-  }
+  const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metadata[sessionId])
 
   // Track which sessions we've processed
   const processedSessionIds = new Set<string>()
@@ -474,11 +471,7 @@ export async function listSessionsByIds(
 ): Promise<SessionInfo[]> {
   if (sessionIds.length === 0) return []
   const metadata = await readSessionMetadata(agentSlug)
-  const isAutomated = (sessionId: string) => {
-    const meta = metadata[sessionId]
-    if (meta?.promotedToInteractive) return false
-    return meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession
-  }
+  const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metadata[sessionId])
   const limit = pLimit(10)
   const sessions = await Promise.all(
     [...new Set(sessionIds)].map((sessionId) =>

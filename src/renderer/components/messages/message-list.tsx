@@ -178,7 +178,9 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // mid-turn (queued/steering) are re-id'd by the CLI on enqueue (see
   // normalizeQueuedCommandEntry in session-service), so those — and sends
   // whose POST response hasn't arrived yet — match by trimmed text + arrival
-  // window, claiming each persisted id at most once.
+  // window, claiming each persisted id at most once. Manual /compact is the
+  // exception: the runtime persists its effect as a compact boundary rather
+  // than as a user message, so that boundary materializes the command ghost.
   useEffect(() => {
     if (!messages) return
     const claimed = claimedMessageIdsRef.current
@@ -198,6 +200,15 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       // re-ids them) and sends still awaiting their POST response.
       if (!match && (pending.queued || !pending.uuid)) {
         match = findTextMatch(pending.text, pending.sentAt - 5000)
+        if (match) claimed.add(match.id)
+      }
+      if (!match && /^\/compact(?:\s|$)/.test(pending.text.trim())) {
+        match = messages.find(
+          (m) =>
+            m.type === 'compact_boundary' &&
+            !claimed.has(m.id) &&
+            new Date(m.createdAt).getTime() >= pending.sentAt - 5000
+        )
         if (match) claimed.add(match.id)
       }
       if (match) {

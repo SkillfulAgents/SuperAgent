@@ -221,6 +221,44 @@ test.describe('File Preview', () => {
     await expect(page.getByText('At 0:00', { exact: false }).first()).toBeVisible({ timeout: 10000 })
   })
 
+  test('renders an audio waveform and adds a timestamped comment from its hover affordance', async ({ page }) => {
+    await agentPage.createAgent(`AudioComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    // Rendering and annotation do not depend on successful decoding; the player
+    // retains a useful fallback waveform for unsupported or incomplete audio.
+    seedWorkspaceFile(agentSlug, 'output/voice-note.mp3', Buffer.from('49443304000000000000', 'hex'))
+
+    await sessionPage.sendMessage('deliver audio')
+    await sessionPage.waitForResponse(15000)
+
+    const filePill = getFilePill(page, 'voice-note.mp3').first()
+    await expect(filePill).toBeVisible({ timeout: 10000 })
+    await filePill.click()
+
+    const audioRenderer = page.getByTestId('audio-renderer')
+    await expect(audioRenderer).toBeVisible({ timeout: 10000 })
+    await expect(page.getByTestId('audio-element')).toBeAttached()
+    await expect(page.getByTestId('audio-waveform')).toBeVisible()
+    await expect(page.getByTestId('audio-add-comment')).toBeVisible()
+
+    await page.getByTestId('audio-waveform').hover({ position: { x: 160, y: 56 } })
+    const hoverComment = page.getByTestId('audio-hover-add-comment')
+    await expect(hoverComment).toBeVisible()
+    await hoverComment.click()
+
+    const overlay = page.locator('[data-comment-overlay]')
+    await expect(overlay.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await page.getByPlaceholder('Add your comment...').fill('Remove this background noise')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    const tray = page.getByTestId('file-preview-tray')
+    await expect(tray.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(tray.getByText('Remove this background noise')).toBeVisible()
+
+    await tray.getByRole('button', { name: 'Submit' }).click()
+    await expect(page.getByText('Remove this background noise').first()).toBeVisible({ timeout: 10000 })
+  })
+
   test.describe('narrow window', () => {
     test.use({ viewport: { width: 800, height: 700 } })
 

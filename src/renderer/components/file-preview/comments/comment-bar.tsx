@@ -48,7 +48,7 @@ export function formatComments(filePath: string, comments: FileComment[]): strin
       lines.push(`> "${comment.selectedText}"`)
       lines.push(comment.text)
     } else if (comment.timestamp != null) {
-      // Video comment: tie the feedback to the frame time and, when present, the
+      // Media comment: tie the feedback to playback time and, for video, the
       // in-frame position the user marked.
       const pos = comment.x != null && comment.y != null
         ? ` at position (${Math.round(comment.x)}%, ${Math.round(comment.y)}%)`
