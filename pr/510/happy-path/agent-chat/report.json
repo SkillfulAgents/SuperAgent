@@ -1,24 +1,27 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully tested agent messaging: navigated to app, found agent, sent math question, and verified correct response containing \"4\".",
+  "reason": "Successfully navigated to the application, found the target agent, sent a math question, and verified the agent responded correctly with the expected answer.",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully with title \"Gamut\"",
-    "Found \"QA-20260720-163443-k9s9\" agent in sidebar and clicked it - Agent page loaded successfully, showing agent details",
-    "Verified agent status is \"running\" or \"idle\" - Status shows \"idle\", which is one of the acceptable states",
-    "Sent message \"Hello! What is 2+2?\" - Message typed into input field and send button clicked successfully",
-    "Waited up to 3 minutes for a response - Agent processed the message and responded within 2 seconds",
-    "Verified the response mentions \"4\" and took screenshot - Response clearly displays \"4\" as the answer, screenshot captured showing the complete chat exchange"
+    "Navigated to http://localhost:47891 — Application loaded successfully with page title \"Gamut\"",
+    "Found and clicked the \"QA-20260720-224814-82v0\" agent button in the sidebar (ref=e116) — Agent page loaded, URL changed to /agents/qa-20260720-224814-82v0-nciljb64tt",
+    "Verified agent status is \"running\" or \"idle\" — Status shows \"idle\" in the agent header (ref=e184), which is a valid state per requirements",
+    "Clicked the message input field — Input field became active and ready for typing (textbox ref=e200)",
+    "Typed the message \"Hello! What is 2+2?\" — Message text appeared in the input field (paragraph ref=e201)",
+    "Clicked the send button (ref=e346) — Message was successfully sent, URL changed to the new session, and agent status changed to \"working\"",
+    "Waited for agent response using browser_run_code with 180-second timeout — Activity indicator disappeared after 1 second, confirming agent finished processing",
+    "Took snapshot to verify response — Conversation shows user message \"Hello! What is 2+2?\" and agent response \"4\" (paragraph ref=e441)",
+    "Took full page screenshot — Screenshot successfully captured showing the complete conversation with the agent's answer \"4\" prominently displayed"
   ],
   "bugs": [],
-  "durationMs": 245803,
-  "sessionId": "19695e89-02d0-415b-93ba-23d7a09fa8a4",
+  "durationMs": 78917,
+  "sessionId": "3bf6c72d-bfda-4417-a5b2-c5605f4d05a3",
   "cost": {
-    "inputTokens": 398,
-    "outputTokens": 11439,
-    "cacheCreationTokens": 108573,
-    "cacheReadTokens": 1042486,
+    "inputTokens": 448,
+    "outputTokens": 11923,
+    "cacheCreationTokens": 121271,
+    "cacheReadTokens": 1315766,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.297558
+    "totalCostUsd": 0.343228
   }
 }

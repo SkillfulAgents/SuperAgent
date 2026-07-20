@@ -1,23 +1,17 @@
 {
   "storyId": "browser-test",
-  "passed": true,
-  "reason": "The browser-use feature successfully enabled the agent to open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and return the correct result in the chat response.",
-  "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Application loaded successfully with \"Gamut\" title and sidebar showing available agents.",
-    "Step 2: Clicked on the \"QA-20260720-163444-3var\" agent in the sidebar — Successfully navigated to the agent's chat page with the session title \"Browser Page Title Lookup\".",
-    "Step 3: Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the chat input field and sent by clicking the send button.",
-    "Step 4: Waited for the agent's response — Agent completed processing in approximately 14 seconds (within the 3-minute timeout).",
-    "Step 5: Verified the response mentions \"Example Domain\" and took a screenshot — Response confirmed the page title is \"Example Domain\" with two mentions:"
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: https://example.com\n3. Retrieved the page title\n4. Reported the title as \"Example Domain\"\n5. Closed the browser\n\nAll tool calls show green checkmarks indicating successful execution. The session was created as \"Browser Page Title Lookup\" and shows the complete workflow with timing (Worked for 16s).\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 98922,
-  "sessionId": "02d60755-ec61-4780-a142-4529397309ec",
+  "durationMs": 336356,
+  "sessionId": "bbcec280-80cf-4891-93d9-daeda25b1b38",
   "cost": {
     "inputTokens": 524,
-    "outputTokens": 14309,
-    "cacheCreationTokens": 93018,
-    "cacheReadTokens": 1631567,
+    "outputTokens": 16615,
+    "cacheCreationTokens": 120941,
+    "cacheReadTokens": 1509775,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.351498
+    "totalCostUsd": 0.385753
   }
 }
