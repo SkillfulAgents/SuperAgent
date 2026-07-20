@@ -1,6 +1,7 @@
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { existsSync } from 'fs'
+import { monitorEventLoopDelay } from 'node:perf_hooks'
 import api from '../api'
 import { shutdownServices, setupServerHandlers } from '@shared/lib/startup'
 import { bindServerWithRetry, type BoundServer } from '@shared/lib/server-bind'
@@ -79,6 +80,27 @@ async function gracefulShutdown(signal: string) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
+// Cloud host-app only: log when the event loop stalls past 500ms (health-check hangs).
+function startEventLoopStallLog(): void {
+  if (process.env.SUPERAGENT_DIAG === '0') return
+  if (process.env.SUPERAGENT_DIAG !== '1' && !process.env.SUPERAGENT_ORG_ID) return
+  const h = monitorEventLoopDelay({ resolution: 20 })
+  h.enable()
+  setInterval(() => {
+    const delay_ms = Math.round(h.max / 1e6)
+    h.reset()
+    if (delay_ms < 500) return
+    console.error(
+      JSON.stringify({
+        event: 'event_loop_stall',
+        ts: new Date().toISOString(),
+        org_id: process.env.SUPERAGENT_ORG_ID ?? null,
+        delay_ms,
+      })
+    )
+  }, 1000).unref()
+}
+
 async function start() {
   const defaultPort = parseInt(process.env.PORT || '47891', 10)
 
@@ -95,6 +117,7 @@ async function start() {
 
   // Set up server-level handlers (WebSocket proxies, etc.)
   setupServerHandlers(server)
+  startEventLoopStallLog()
 }
 
 start().catch((error) => {
