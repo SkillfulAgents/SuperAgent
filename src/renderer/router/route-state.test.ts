@@ -38,6 +38,7 @@ const cases: AppLocation[] = [
   { selectedAgentSlug: SLUG, view: { kind: 'connections' } },
   { selectedAgentSlug: SLUG, view: { kind: 'connections', detail: { rowKey: 'account-123', source: 'home' } } },
   { selectedAgentSlug: SLUG, view: { kind: 'connections', detail: { rowKey: 'mcp-456', source: 'list' } } },
+  { selectedAgentSlug: SLUG, view: { kind: 'connections', detail: { rowKey: 'account-123', source: 'home', view: 'logs' } } },
 ]
 
 describe('route-state codec', () => {

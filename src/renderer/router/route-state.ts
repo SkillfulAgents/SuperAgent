@@ -21,7 +21,7 @@ export type AgentView =
        * is where it was opened from — it decides the breadcrumb trail and where
        * Back leads (agent home vs. the connections list).
        */
-      detail?: { rowKey: string; source: 'home' | 'list' }
+      detail?: { rowKey: string; source: 'home' | 'list'; view?: 'logs' }
     }
   | { kind: 'notifications' }
 
@@ -88,7 +88,13 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
       return {
         to: '/agents/$slug/connections',
         params: { slug },
-        search: view.detail ? { detail: view.detail.rowKey, source: view.detail.source } : {},
+        search: view.detail
+          ? {
+              detail: view.detail.rowKey,
+              source: view.detail.source,
+              ...(view.detail.view ? { connectionView: view.detail.view } : {}),
+            }
+          : {},
       }
     default:
       return assertNever(view)
@@ -131,9 +137,15 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
     case '/agents/$slug/connections': {
       const detail = typeof search.detail === 'string' ? search.detail : undefined
       const source = search.source === 'home' || search.source === 'list' ? search.source : undefined
+      const detailView = search.connectionView === 'logs' ? 'logs' : undefined
       return {
         selectedAgentSlug: p.slug ?? null,
-        view: { kind: 'connections', ...(detail && source ? { detail: { rowKey: detail, source } } : {}) },
+        view: {
+          kind: 'connections',
+          ...(detail && source
+            ? { detail: { rowKey: detail, source, ...(detailView ? { view: detailView } : {}) } }
+            : {}),
+        },
       }
     }
     default:

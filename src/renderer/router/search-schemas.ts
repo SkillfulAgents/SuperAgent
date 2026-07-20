@@ -32,9 +32,13 @@ export const connectionsSearchSchema = z
   .object({
     detail: connectionDetailKey.optional(),
     source: z.enum(['home', 'list']).optional(),
+    connectionView: z.literal('logs').optional(),
   })
   .refine((s) => (s.detail == null) === (s.source == null), {
     message: 'detail and source must be set together',
+  })
+  .refine((s) => !s.connectionView || !!s.detail, {
+    message: 'a connection subview requires detail',
   })
 
 // Open-redirect-safe internal path. ONE definition for the whole app: the same
@@ -63,10 +67,15 @@ export const homeSearchSchema = z.object({
 // URL-driven for parity with the agent connections route (deep-linkable +
 // reload-durable). Only the Connections tab reads it; `lenient()` drops it on
 // other tabs. No `source` here — settings detail always returns to its own list.
-export const settingsSearchSchema = z.object({
-  from: internalPath.optional(),
-  detail: connectionDetailKey.optional(),
-})
+export const settingsSearchSchema = z
+  .object({
+    from: internalPath.optional(),
+    detail: connectionDetailKey.optional(),
+    connectionView: z.literal('logs').optional(),
+  })
+  .refine((s) => !s.connectionView || !!s.detail, {
+    message: 'a connection subview requires detail',
+  })
 
 // The 18 GLOBAL settings tabs (settings/global-settings-page.tsx user/admin/auth
 // sections, flattened in display order). NOTE: `system-prompt` and `secrets` are

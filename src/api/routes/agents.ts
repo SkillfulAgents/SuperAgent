@@ -71,6 +71,7 @@ import { eq, and, inArray, desc, count, like, or } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
+import { normalizeMcpRequestLog, normalizeProxyRequestLog } from '@shared/lib/types/request-log'
 import { getProvider } from '@shared/lib/account-providers'
 // getAgentSkills is superseded by getAgentSkillsWithStatus from skillset-service
 // import { getAgentSkills } from '@shared/lib/skills'
@@ -4115,36 +4116,10 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
         .where(eq(mcpAuditLog.agentSlug, slug)),
     ])
 
-    // Normalize to a common shape
+    // Normalize to the shared request-log shape used by connection logs too.
     const normalized = [
-      ...proxyEntries.map((e) => ({
-        id: e.id,
-        source: 'proxy' as const,
-        agentSlug: e.agentSlug,
-        label: e.toolkit,
-        targetUrl: `${e.targetHost}/${e.targetPath}`,
-        method: e.method,
-        statusCode: e.statusCode ?? null,
-        errorMessage: e.errorMessage ?? null,
-        durationMs: e.durationMs ?? null,
-        policyDecision: e.policyDecision ?? null,
-        matchedScopes: e.matchedScopes ?? null,
-        createdAt: e.createdAt,
-      })),
-      ...mcpEntries.map((e) => ({
-        id: e.id,
-        source: 'mcp' as const,
-        agentSlug: e.agentSlug,
-        label: e.remoteMcpName,
-        targetUrl: e.requestPath,
-        method: e.method,
-        statusCode: e.statusCode ?? null,
-        errorMessage: e.errorMessage ?? null,
-        durationMs: e.durationMs ?? null,
-        policyDecision: e.policyDecision ?? null,
-        matchedScopes: e.matchedTool ? JSON.stringify([e.matchedTool]) : null,
-        createdAt: e.createdAt,
-      })),
+      ...proxyEntries.map(normalizeProxyRequestLog),
+      ...mcpEntries.map(normalizeMcpRequestLog),
     ]
 
     // Sort by time descending, then paginate

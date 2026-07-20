@@ -3,6 +3,7 @@ import { Button } from '@renderer/components/ui/button'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { ConnectionAgentsList } from '@renderer/components/connections/connection-agents-list'
 import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
+import { ConnectionUsageCard } from '@renderer/components/connections/connection-usage-card'
 import { ScopePolicyEditorBody } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditorBody } from '@renderer/components/settings/tool-policy-editor'
 import {
@@ -20,13 +21,14 @@ interface ConnectionDetailPageProps {
    * the agent connections page, or the agent's name for a home-card deep link.
    */
   backLabel?: string
+  onViewLogs: () => void
 }
 
 /**
  * Detail view for a single connection: two columns showing which agents have
  * access and the per-scope / per-tool permissions for the connection.
  */
-export function ConnectionDetailPage({ row, onBack, backLabel = 'Connections' }: ConnectionDetailPageProps) {
+export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Connections' }: ConnectionDetailPageProps) {
   // Hide the default SettingsPage header — the detail page owns its own — and
   // use the full inset width so the two columns can lay out like the agent home.
   useHideSettingsHeader(true)
@@ -90,23 +92,27 @@ export function ConnectionDetailPage({ row, onBack, backLabel = 'Connections' }:
         </section>
 
         {/* Permissions column */}
-        <section className="space-y-2 min-w-0">
-          <h3 className="text-xs font-normal text-muted-foreground">Permissions</h3>
-          <div className="rounded-xl border bg-background p-3">
-            {row.type === 'oauth' && row.toolkit ? (
-              <ScopePolicyEditorBody accountId={row.id} toolkit={row.toolkit} />
-            ) : row.type === 'mcp' ? (
-              <ToolPolicyEditorBody
-                mcpId={row.id}
-                tools={row.mcpTools ?? []}
-              />
-            ) : (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No permissions configurable for this connection.
-              </p>
-            )}
-          </div>
-        </section>
+        <div className="space-y-4 min-w-0">
+          <ConnectionUsageCard row={row} onViewLogs={onViewLogs} />
+
+          <section className="space-y-2 min-w-0">
+            <h3 className="text-xs font-normal text-muted-foreground">Permissions</h3>
+            <div className="rounded-xl border bg-background p-3">
+              {row.type === 'oauth' && row.toolkit ? (
+                <ScopePolicyEditorBody accountId={row.id} toolkit={row.toolkit} />
+              ) : row.type === 'mcp' ? (
+                <ToolPolicyEditorBody
+                  mcpId={row.id}
+                  tools={row.mcpTools ?? []}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No permissions configurable for this connection.
+                </p>
+              )}
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   )

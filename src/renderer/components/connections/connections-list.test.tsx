@@ -59,6 +59,8 @@ describe('ConnectionsList shared capabilities', () => {
       <ConnectionsList
         agentSlug="test-agent"
         detailRowKey={null}
+        detailView="details"
+        onDetailViewChange={vi.fn()}
         onDetailRowKeyChange={vi.fn()}
       />,
     )
@@ -78,6 +80,8 @@ describe('ConnectionsList shared capabilities', () => {
       <ConnectionsList
         agentSlug="test-agent"
         detailRowKey="foreign-account-slack-0"
+        detailView="details"
+        onDetailViewChange={vi.fn()}
         onDetailRowKeyChange={onDetailRowKeyChange}
       />,
     )
