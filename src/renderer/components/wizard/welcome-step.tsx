@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
@@ -55,6 +55,9 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
   const redeemNonce = useRedeemDownloadNonce()
   const dismissNonce = useDismissDownloadNonce()
   const nonceEmail = nonceOffer?.available ? nonceOffer.email : undefined
+  // Broken/blocked avatar URLs degrade to the text-only button.
+  const [avatarFailed, setAvatarFailed] = useState(false)
+  const nonceAvatarUrl = !avatarFailed && nonceOffer?.available ? nonceOffer.avatarUrl : undefined
 
   async function handleContinueAsOffer() {
     try {
@@ -104,7 +107,17 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
                   {redeemNonce.isPending ? (
                     <><Loader2 className="h-4 w-4 animate-spin mr-2" />Signing in...</>
                   ) : (
-                    `Continue as ${nonceEmail}`
+                    <>
+                      {nonceAvatarUrl && (
+                        <img
+                          src={nonceAvatarUrl}
+                          alt=""
+                          className="h-5 w-5 rounded-full object-cover mr-2 shrink-0"
+                          onError={() => setAvatarFailed(true)}
+                        />
+                      )}
+                      <span className="truncate">{`Continue as ${nonceEmail}`}</span>
+                    </>
                   )}
                 </Button>
               ) : (

@@ -152,6 +152,7 @@ export interface DownloadNonceOffer {
   available: boolean
   email?: string
   orgName?: string
+  avatarUrl?: string
 }
 
 export function useDownloadNonceOffer(enabled: boolean) {

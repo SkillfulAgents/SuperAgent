@@ -8,6 +8,11 @@ export const DownloadNonceIdentitySchema = z.object({
   email: z.string().min(1),
   org_name: z.string().optional().default(''),
   role: z.string().optional().default(''),
+  // Rendered in an <img src>; anything non-http(s) is dropped at the boundary.
+  avatar_url: z
+    .string()
+    .nullish()
+    .transform((v) => (v && /^https?:\/\//.test(v) ? v : null)),
 })
 export type DownloadNonceIdentity = z.infer<typeof DownloadNonceIdentitySchema>
 

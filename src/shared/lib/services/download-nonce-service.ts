@@ -214,6 +214,7 @@ export interface DownloadNonceOffer {
   available: boolean
   email?: string
   orgName?: string
+  avatarUrl?: string
 }
 
 /**
@@ -223,9 +224,7 @@ export interface DownloadNonceOffer {
 export async function getDownloadNonceOffer(): Promise<DownloadNonceOffer> {
   if (isAuthMode() || getPlatformAuthStatus().connected) return { available: false }
   if (cachedOffer !== undefined) {
-    return cachedOffer
-      ? { available: true, email: cachedOffer.identity.email, orgName: cachedOffer.identity.org_name }
-      : { available: false }
+    return cachedOffer ? offerFromIdentity(cachedOffer.identity) : { available: false }
   }
 
   const code = await recoverNonceOnce()
@@ -248,7 +247,16 @@ export async function getDownloadNonceOffer(): Promise<DownloadNonceOffer> {
   }
 
   cachedOffer = { code, identity: parsed.data }
-  return { available: true, email: parsed.data.email, orgName: parsed.data.org_name }
+  return offerFromIdentity(parsed.data)
+}
+
+function offerFromIdentity(identity: DownloadNonceIdentity): DownloadNonceOffer {
+  return {
+    available: true,
+    email: identity.email,
+    orgName: identity.org_name,
+    avatarUrl: identity.avatar_url ?? undefined,
+  }
 }
 
 export function dismissDownloadNonceOffer(): void {
