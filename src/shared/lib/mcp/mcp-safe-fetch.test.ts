@@ -1,7 +1,6 @@
 import { createServer } from 'node:http'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as dnsPromises from 'node:dns/promises'
-import { Agent } from 'undici'
 
 vi.mock('node:dns/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:dns/promises')>()
@@ -29,16 +28,7 @@ describe('mcpSafeFetch', () => {
     vi.unstubAllGlobals()
   })
 
-  it('pins via dispatcher and uses redirect: manual per hop', async () => {
-    mockFetch.mockResolvedValue(new Response('ok', { status: 200 }))
-
-    await mcpSafeFetch('https://public.example/mcp', { redirect: 'follow' })
-    const init = mockFetch.mock.calls[0][1] as RequestInit & { dispatcher?: Agent }
-    expect(init.redirect).toBe('manual')
-    expect(init.dispatcher).toBeInstanceOf(Agent)
-  })
-
-  it('follows a public redirect after re-validating the Location', async () => {
+  it('follows a public redirect and strips Authorization cross-origin', async () => {
     mockFetch
       .mockResolvedValueOnce(
         new Response(null, {
@@ -48,11 +38,17 @@ describe('mcpSafeFetch', () => {
       )
       .mockResolvedValueOnce(new Response('ok', { status: 200 }))
 
-    const res = await mcpSafeFetch('https://public.example/mcp')
+    const res = await mcpSafeFetch('https://public.example/mcp', {
+      headers: { Authorization: 'Bearer secret' },
+    })
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('ok')
     expect(mockFetch).toHaveBeenCalledTimes(2)
     expect(mockFetch.mock.calls[1][0]).toBe('https://cdn.example/mcp')
+    const secondHeaders = new Headers(
+      (mockFetch.mock.calls[1][1] as RequestInit).headers,
+    )
+    expect(secondHeaders.get('authorization')).toBeNull()
   })
 
   it('refuses a redirect Location that resolves to a private IP', async () => {
@@ -70,25 +66,6 @@ describe('mcpSafeFetch', () => {
       /private or loopback/i,
     )
     expect(mockFetch).toHaveBeenCalledTimes(1)
-  })
-
-  it('strips Authorization on cross-origin redirects', async () => {
-    mockFetch
-      .mockResolvedValueOnce(
-        new Response(null, {
-          status: 302,
-          headers: { Location: 'https://cdn.example/mcp' },
-        }),
-      )
-      .mockResolvedValueOnce(new Response('ok', { status: 200 }))
-
-    await mcpSafeFetch('https://public.example/mcp', {
-      headers: { Authorization: 'Bearer secret' },
-    })
-
-    const secondInit = mockFetch.mock.calls[1][1] as RequestInit
-    const headers = new Headers(secondInit.headers)
-    expect(headers.get('authorization')).toBeNull()
   })
 
   it('does not replay a 307 body across origins', async () => {

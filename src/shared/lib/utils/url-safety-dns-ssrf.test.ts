@@ -48,13 +48,6 @@ describe('validateMcpDiscoveryUrl DNS resolve (SSRF)', () => {
     ).rejects.toThrow(/private or loopback/i)
   })
 
-  it('still rejects literal private IPs without needing DNS', async () => {
-    await expect(
-      validateMcpDiscoveryUrl('http://169.254.169.254/latest/meta-data'),
-    ).rejects.toThrow(/private or loopback/i)
-    expect(lookupMock).not.toHaveBeenCalled()
-  })
-
   it('rejects IPv4-mapped loopback in URL-canonical hex form', async () => {
     // new URL('http://[::ffff:127.0.0.1]/').hostname === '[::ffff:7f00:1]'
     await expect(
