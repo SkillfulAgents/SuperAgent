@@ -796,6 +796,71 @@ export class UserInputRequestScenario implements MockScenario {
   }
 }
 
+/**
+ * A BACKGROUND subagent parks on request_browser_input while the main turn
+ * stays open: the request arrives as a sidechain assistant message
+ * (parent_tool_use_id set), not on the main stream. The card must appear AND
+ * the agent-level status must flip to awaiting_input — the sidebar/header
+ * orange dot reads the persister's awaiting flag, which only the main-stream
+ * path used to set. Replicates the stuck "working" session with an
+ * unanswerable browser card.
+ */
+export class SubagentBrowserInputScenario implements MockScenario {
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const parentToolId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const subToolId = `subtool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+
+    // One pending input: resolving/declining the card ends the turn — after a
+    // gap long enough for tests to assert the agent-resumed (working, NOT
+    // awaiting) window between the user's answer and the session settling.
+    client.registerPendingInputs(sessionId, 1, { completionDelayMs: 2500 })
+    // The result must come back on the sidechain, like the real SDK delivers
+    // subagent tool results — a top-level result would bypass the sidechain
+    // bookkeeping this scenario exists to exercise.
+    client.registerSidechainToolParent(subToolId, parentToolId)
+
+    client.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content: userMessage },
+      timestamp: new Date().toISOString(),
+    })
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, 10)
+
+    // The subagent's request arrives as a complete sidechain assistant message
+    // (the SDK often delivers subagent tool calls without stream deltas).
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          parent_tool_use_id: parentToolId,
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: subToolId,
+                name: 'mcp__user-input__request_browser_input',
+                input: {
+                  message: 'Log in to GitHub to finish the submission.',
+                  requirements: ['Log in to GitHub', 'Complete 2FA if prompted'],
+                },
+              },
+            ],
+          },
+        },
+      })
+    }, 60)
+    // No 'result' here: the main turn stays open, matching the incident where
+    // the subagent parked mid-turn waiting on the user.
+  }
+}
+
 function getMessageParam(userMessage: string, key: string): string | undefined {
   const prefix = `${key}=`
   const rawValue = userMessage
@@ -1465,6 +1530,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         input: { subagent_type: 'Explore', description: 'Scan the repo', prompt: 'Look at the files and report back' },
       },
     ])],
+    ['subagent browser input', new SubagentBrowserInputScenario()],
     // Proxy review scenario for E2E tests
     ['proxy review', new ProxyReviewScenario(
       'slack',
@@ -1657,6 +1723,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   private sessionToApiSession: Map<string, string> = new Map()
   // Track pending user input requests per session for auto-completion
   private pendingInputCounts: Map<string, number> = new Map()
+  // Delay between the last input resolving and the turn-ending 'result', per
+  // session (default 50ms). Scenarios that must expose the post-resolve window
+  // (agent resumed, not yet settled) register a longer one.
+  private inputCompletionDelays: Map<string, number> = new Map()
+  // toolUseId → parent_tool_use_id for input requests that a SUBAGENT issued.
+  // The real SDK returns their tool_results on the sidechain (parent id set),
+  // which the persister routes through handleSidechainMessage — a top-level
+  // result here would exercise the wrong production path.
+  private sidechainToolParents: Map<string, string> = new Map()
 
   constructor(config: ContainerConfig) {
     super()
@@ -1752,10 +1827,24 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   /**
    * Register pending input count for a session. When all inputs are resolved/rejected
    * via fetch(), the session emits a result event to complete.
+   * `completionDelayMs` stretches the gap between the last resolve and that
+   * result, for tests that assert the agent-resumed-but-not-settled window.
    */
-  registerPendingInputs(sessionId: string, count: number): void {
+  registerPendingInputs(sessionId: string, count: number, opts?: { completionDelayMs?: number }): void {
     this.pendingInputCounts.set(sessionId, count)
+    if (opts?.completionDelayMs !== undefined) {
+      this.inputCompletionDelays.set(sessionId, opts.completionDelayMs)
+    }
     console.log(`[MockContainerClient] Registered ${count} pending inputs for session ${sessionId}`)
+  }
+
+  /**
+   * Mark an input-request toolUseId as issued by a subagent under the given
+   * parent tool: its resolve/reject tool_result is then emitted as a SIDECHAIN
+   * user message (parent_tool_use_id preserved), matching the real SDK.
+   */
+  registerSidechainToolParent(toolUseId: string, parentToolId: string): void {
+    this.sidechainToolParents.set(toolUseId, parentToolId)
   }
 
   /**
@@ -1944,18 +2033,36 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
             tool_use_id: toolUseId,
             content: resolveMatch[2] === 'resolve' ? 'User provided input' : 'User declined the request',
           }]
-          this.writeJsonlEntry(sessionId, {
-            type: 'user',
-            message: { content: toolResultBlocks },
-            timestamp: new Date().toISOString(),
-          })
-          this.emitStreamMessage(sessionId, {
-            type: 'user',
-            content: { type: 'user', message: { content: toolResultBlocks } },
-          })
+          const sidechainParent = this.sidechainToolParents.get(toolUseId)
+          if (sidechainParent) {
+            // Subagent-issued request: the result comes back on the sidechain
+            // (parent_tool_use_id set) and is persisted to the SUBAGENT
+            // transcript in production, so no main-transcript JSONL write here.
+            this.sidechainToolParents.delete(toolUseId)
+            this.emitStreamMessage(sessionId, {
+              type: 'user',
+              content: {
+                type: 'user',
+                parent_tool_use_id: sidechainParent,
+                message: { content: toolResultBlocks },
+              },
+            })
+          } else {
+            this.writeJsonlEntry(sessionId, {
+              type: 'user',
+              message: { content: toolResultBlocks },
+              timestamp: new Date().toISOString(),
+            })
+            this.emitStreamMessage(sessionId, {
+              type: 'user',
+              content: { type: 'user', message: { content: toolResultBlocks } },
+            })
+          }
           if (remaining === 0) {
             this.pendingInputCounts.delete(sessionId)
-            // Complete the session after a short delay
+            // Complete the session after the configured delay (default: short)
+            const completionDelay = this.inputCompletionDelays.get(sessionId) ?? 50
+            this.inputCompletionDelays.delete(sessionId)
             setTimeout(() => {
               this.writeJsonlEntry(sessionId, {
                 type: 'assistant',
@@ -1968,7 +2075,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
                 type: 'result',
                 content: { type: 'result', subtype: 'success' },
               })
-            }, 50)
+            }, completionDelay)
           }
           break
         }

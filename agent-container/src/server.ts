@@ -1085,6 +1085,16 @@ app.post('/browser/close', async (c) => {
     _setBrowserState({ active: false, sessionId: null, cdpUrl: null });
     tabManager.resetTabCount();
 
+    // A browser_input request is only answerable while the browser exists —
+    // and it may belong to a session OTHER than the closer (e.g. a background
+    // subagent parked on a login while the main agent closes the browser).
+    // Reject them all so blocked awaiters unblock instead of hanging for the
+    // 24h human-input TTL behind a card the user can no longer act on.
+    inputManager.rejectByType(
+      'browser_input',
+      'The browser was closed before the user completed this request'
+    );
+
     return c.json({ success: true });
   } catch (error: any) {
     console.error('[Browser] Error closing browser:', error);
@@ -1125,6 +1135,12 @@ app.post('/browser/notify-closed', (c) => {
     tabManager.resetTabCount();
     console.log('[Browser] Browser closed externally, state cleaned up');
   }
+  // Outside the guard: an external close can race the active flag, and a
+  // pending browser_input is unanswerable once the browser is gone either way.
+  inputManager.rejectByType(
+    'browser_input',
+    'The browser was closed before the user completed this request'
+  );
   return c.json({ success: true });
 });
 

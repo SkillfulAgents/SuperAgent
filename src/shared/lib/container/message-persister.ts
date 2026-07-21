@@ -1842,6 +1842,15 @@ class MessagePersister {
     // Complete messages have been persisted to the subagent JSONL by the SDK,
     // so the frontend can refetch them via the API endpoint.
     if (content.type === 'user' || content.type === 'assistant') {
+      // A subagent's tool_result arrives here, NOT via the main-path 'user'
+      // handler — so a resolved input request (user clicked Complete on a
+      // subagent's browser_input card) must run the same bookkeeping: drop
+      // the replayable card and clear the awaiting status while the subagent
+      // resumes. Without this the UI stays "needs input" behind a stale card
+      // until the whole turn ends.
+      if (content.type === 'user') {
+        this.resolveSidechainInputRequests(sessionId, state, content)
+      }
       if (content.type === 'assistant') {
         const messageContent = content.message?.content
         if (Array.isArray(messageContent)) {
@@ -4030,6 +4039,13 @@ ${continuation}`
         agentSlug,
       })
 
+      // The request always blocks on the user, no matter which stream it came
+      // from. Marking here (not only in the main-stream content_block_stop
+      // handler) covers SUBAGENT-originated requests, whose sidechain paths
+      // bypass that handler — without this the orange awaiting-input status
+      // never flips and the agent shows "working" while parked on the user.
+      this.markSessionAwaitingInput(sessionId)
+
       // Renderer-side gate handles suppression; see session_complete trigger.
       if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'browser_input').catch((err) => {
@@ -4402,6 +4418,42 @@ ${continuation}`
   }
 
   // Handle tool results - broadcast to SSE clients
+  // Sidechain counterpart of handleToolResults, scoped to tracked input
+  // requests only: ordinary subagent tool results (Bash, Read, …) stream
+  // constantly and must not broadcast main-path `tool_result` events or touch
+  // the awaiting flag. Unlike the main path's unconditional clear, awaiting is
+  // cleared only when NO tracked request remains — a main-agent question can
+  // be open in parallel with a subagent's browser_input.
+  private resolveSidechainInputRequests(
+    sessionId: string,
+    state: StreamingState,
+    content: { message?: { content?: Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }> } }
+  ): void {
+    const blocks = content.message?.content
+    if (!Array.isArray(blocks)) return
+    for (const block of blocks) {
+      if (block.type !== 'tool_result' || !block.tool_use_id) continue
+      if (!state.pendingInputRequests.has(block.tool_use_id)) continue
+      state.pendingInputRequests.delete(block.tool_use_id)
+      // Same broadcast the main path emits — the resolving tab already removed
+      // its card optimistically; every other tab drops it off this event.
+      this.broadcastToSSE(sessionId, {
+        type: 'tool_result',
+        toolUseId: block.tool_use_id,
+        result: block.content,
+        isError: block.is_error || false,
+      })
+    }
+    if (state.isAwaitingInput && state.pendingInputRequests.size === 0) {
+      state.isAwaitingInput = false
+      this.broadcastGlobal({
+        type: 'session_input_provided',
+        sessionId,
+        agentSlug: state.agentSlug,
+      })
+    }
+  }
+
   private handleToolResults(
     sessionId: string,
     content: { message?: { content?: Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }> } }
