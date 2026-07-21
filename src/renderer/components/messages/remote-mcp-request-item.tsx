@@ -59,6 +59,9 @@ export function RemoteMcpRequestItem({
   const [newUrl, setNewUrl] = useState(url)
   const [showTokenInput, setShowTokenInput] = useState(authHint === 'bearer')
   const [bearerToken, setBearerToken] = useState('')
+  // Bearer-server re-auth: which stale server is getting a replacement token
+  const [reauthMcpId, setReauthMcpId] = useState<string | null>(null)
+  const [reauthToken, setReauthToken] = useState('')
   const [isMcpPickerOpen, setIsMcpPickerOpen] = useState(false)
   const [editingMcpId, setEditingMcpId] = useState<string | null>(null)
   const [editMcpName, setEditMcpName] = useState('')
@@ -166,16 +169,25 @@ export function RemoteMcpRequestItem({
     }
   }, [servers, targetServiceServers, targetUrl])
 
+  // When re-authenticating an existing server, remember which one: several
+  // servers can share the same URL (multiple accounts), so a URL match after
+  // OAuth could select a sibling instead of the server that was reconnected.
+  const reconnectMcpIdRef = useRef<string | null>(null)
+
   // Handle OAuth completion from Electron IPC, postMessage, BroadcastChannel, or storage fallback.
   const handleOAuthComplete = useCallback((success: boolean, errorMessage?: string) => {
     if (success) {
       setError(null)
-      // Refetch servers to find the newly created one
+      // Refetch servers to find the reconnected or newly created one
       refetch().then(({ data: refreshedData }) => {
         const refreshedServers = Array.isArray(refreshedData?.servers) ? refreshedData.servers : []
-        const newServer = refreshedServers.find((s) => s.url === targetUrl && s.status === 'active')
-        if (newServer) {
-          setSelectedMcpIds(new Set([newServer.id]))
+        const reconnectedId = reconnectMcpIdRef.current
+        reconnectMcpIdRef.current = null
+        const completedServer = reconnectedId
+          ? refreshedServers.find((s) => s.id === reconnectedId && s.status === 'active')
+          : refreshedServers.find((s) => s.url === targetUrl && s.status === 'active')
+        if (completedServer) {
+          setSelectedMcpIds((prev) => new Set(prev).add(completedServer.id))
         }
         setStatus('pending')
       }).catch(() => {
@@ -196,6 +208,7 @@ export function RemoteMcpRequestItem({
     // Pass { mcpId } to re-authenticate an existing server instead of registering a new one.
     params?: { mcpId: string }
   ) => {
+    reconnectMcpIdRef.current = params?.mcpId ?? null
     try {
       const isElectron = !!window.electronAPI
       const result = await initiateOAuth.mutateAsync(
@@ -219,11 +232,81 @@ export function RemoteMcpRequestItem({
     }
   }
 
+  // Recovery for a non-active server depends on how it authenticates: OAuth
+  // servers re-run the OAuth flow, bearer servers need a fresh token, and
+  // unauthenticated servers just get re-probed (the outage may have passed).
   const handleReconnect = async (server: RemoteMcpServer) => {
+    setError(null)
+    if (server.authType === 'oauth') {
+      setStatus('registering')
+      const popup = prepareOAuthPopup()
+      await startOAuthFlow(popup, { mcpId: server.id })
+      return
+    }
+    if (server.authType === 'bearer') {
+      setReauthMcpId(server.id)
+      setReauthToken('')
+      return
+    }
+    await rediscoverServer(server.id)
+  }
+
+  // Re-probe a server via discover-tools, which flips it back to active on
+  // success, then select it so it can be provided.
+  const rediscoverServer = async (mcpId: string) => {
+    setStatus('registering')
+    try {
+      const response = await apiFetch(`/api/remote-mcps/${mcpId}/discover-tools`, {
+        method: 'POST',
+      })
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error || 'Server is still unreachable')
+      }
+      queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      await refetch()
+      setSelectedMcpIds((prev) => new Set(prev).add(mcpId))
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Reconnect failed')
+    } finally {
+      setStatus('pending')
+    }
+  }
+
+  const handleSubmitReauthToken = async () => {
+    const mcpId = reauthMcpId
+    const token = reauthToken.trim()
+    if (!mcpId || !token) return
+
     setStatus('registering')
     setError(null)
-    const popup = prepareOAuthPopup()
-    await startOAuthFlow(popup, { mcpId: server.id })
+    try {
+      const patchResponse = await apiFetch(`/api/remote-mcps/${mcpId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessToken: token }),
+      })
+      if (!patchResponse.ok) {
+        const data = await patchResponse.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to update token')
+      }
+      const discoverResponse = await apiFetch(`/api/remote-mcps/${mcpId}/discover-tools`, {
+        method: 'POST',
+      })
+      if (!discoverResponse.ok) {
+        const data = await discoverResponse.json().catch(() => ({}))
+        throw new Error(data.error || 'The server rejected the token')
+      }
+      queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      await refetch()
+      setSelectedMcpIds((prev) => new Set(prev).add(mcpId))
+      setReauthMcpId(null)
+      setReauthToken('')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to update token')
+    } finally {
+      setStatus('pending')
+    }
   }
 
   const handleRegisterNew = async () => {
@@ -642,6 +725,47 @@ export function RemoteMcpRequestItem({
             )}
           </div>
         )}
+        {reauthMcpId && status !== 'oauth_pending' ? (
+          <div className="mt-2 flex items-center gap-2">
+            <Input
+              type="password"
+              value={reauthToken}
+              onChange={(e) => setReauthToken(e.target.value)}
+              placeholder="New bearer token"
+              className="h-8 flex-1 text-sm"
+              autoFocus
+              disabled={status !== 'pending'}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSubmitReauthToken()
+                if (e.key === 'Escape') {
+                  setReauthMcpId(null)
+                  setReauthToken('')
+                }
+              }}
+            />
+            <Button
+              size="xs"
+              onClick={handleSubmitReauthToken}
+              loading={status === 'registering'}
+              disabled={!reauthToken.trim() || status !== 'pending'}
+              className="shrink-0 bg-foreground text-background hover:bg-foreground/90"
+            >
+              Save Token
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => {
+                setReauthMcpId(null)
+                setReauthToken('')
+              }}
+              disabled={status === 'registering'}
+              className="shrink-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {/* Action buttons */}
