@@ -37,10 +37,32 @@ export type InteractiveResponseHandler = (toolUseId: string, response: unknown, 
 export type ErrorHandler = (error: Error) => void
 export type TypingHintHandler = (chatId: string) => void
 
+/** Context available at chat-session creation, passed to generateSystemPrompt. */
+export type SystemPromptContext = Pick<IncomingMessage, 'chatId' | 'chatName' | 'userName'>
+
+/**
+ * Static surface of a connector class, for capability lookups that never
+ * construct (concrete connectors have provider-specific constructor args, so
+ * `typeof ChatClientConnector` — which carries a construct signature — would
+ * not admit them).
+ */
+export type ChatConnectorClass = Pick<typeof ChatClientConnector, 'generateSystemPrompt'>
+
 // ── Abstract class ──────────────────────────────────────────────────────
 
 export abstract class ChatClientConnector {
   abstract readonly provider: ChatProvider
+
+  /**
+   * Optional provider-specific system prompt attached to every NEW chat
+   * session for this provider. Implement it to tell the agent what kind of
+   * conversation it is serving (e.g. Slack DM vs channel thread) and any
+   * provider conventions (delivery semantics, reaction tags, …).
+   *
+   * Static rather than an instance method: the prompt derives from the
+   * incoming message alone and must not depend on live connection state.
+   */
+  static generateSystemPrompt?: (message: SystemPromptContext) => string
 
   protected messageHandlers: MessageHandler[] = []
   protected interactiveResponseHandlers: InteractiveResponseHandler[] = []

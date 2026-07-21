@@ -80,14 +80,35 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
 }))
 
 // Both connector classes return the shared mock so one harness drives slack
-// and telegram integrations alike.
-vi.mock('./slack-connector', () => ({
-  SlackConnector: class {
-    constructor() {
-      return mockConnector
-    }
-  },
-}))
+// and telegram integrations alike. The slack mock keeps the REAL static
+// generateSystemPrompt (and the module's other exports): the manager resolves
+// the connector CLASS through this module for static capability lookups, so
+// stripping the static would silently disable the very wiring under test.
+vi.mock('./slack-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./slack-connector')>()
+  return {
+    ...actual,
+    SlackConnector: class {
+      static generateSystemPrompt = actual.SlackConnector.generateSystemPrompt
+      constructor() {
+        return mockConnector
+      }
+    },
+  }
+})
+
+vi.mock('./imessage-connector', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./imessage-connector')>()
+  return {
+    ...actual,
+    IMessageConnector: class {
+      static generateSystemPrompt = actual.IMessageConnector.generateSystemPrompt
+      constructor() {
+        return mockConnector
+      }
+    },
+  }
+})
 
 vi.mock('./telegram-connector', () => ({
   TelegramConnector: class {
@@ -99,7 +120,8 @@ vi.mock('./telegram-connector', () => ({
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
-import { chatIntegrationManager, buildSlackSystemPrompt } from './chat-integration-manager'
+import { chatIntegrationManager } from './chat-integration-manager'
+import { buildSlackSystemPrompt } from './slack-connector'
 import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
@@ -198,16 +220,20 @@ describe('slack session system prompt wiring', () => {
     await fs.promises.rm(testDir, { recursive: true, force: true }).catch(() => {})
   })
 
+  const TEST_CONFIGS = {
+    slack: { botToken: 'xoxb-test', appToken: 'xapp-test' },
+    telegram: { botToken: 'test-token-123' },
+    imessage: { gatewayUrl: 'https://imsgw.example.com', phoneNumber: '+15551234567', token: 'imsg-token' },
+  } as const
+
   async function startSession(
-    provider: 'slack' | 'telegram',
+    provider: keyof typeof TEST_CONFIGS,
     messageOpts: { chatId: string; userName?: string; chatName?: string },
   ) {
     const integrationId = createChatIntegration({
       agentSlug: 'test-agent',
       provider,
-      config: provider === 'slack'
-        ? { botToken: 'xoxb-test', appToken: 'xapp-test' }
-        : { botToken: 'test-token-123' },
+      config: TEST_CONFIGS[provider],
       name: 'Test Bot',
     })
     // These tests exercise session-spawn context, not access control — disable
@@ -232,6 +258,11 @@ describe('slack session system prompt wiring', () => {
   it('passes a channel-flavored system prompt for slack channel messages', async () => {
     const args = await startSession('slack', { chatId: 'C0BBB222', userName: 'Iddo Gino', chatName: '#office' })
     expect(args.systemPrompt).toContain('the channel #office')
+  })
+
+  it('passes the iMessage system prompt for imessage sessions', async () => {
+    const args = await startSession('imessage', { chatId: '+15559876543', userName: 'Iddo Gino' })
+    expect(args.systemPrompt).toContain('iMessage-based conversation')
   })
 
   it('does not attach a system prompt for telegram sessions', async () => {

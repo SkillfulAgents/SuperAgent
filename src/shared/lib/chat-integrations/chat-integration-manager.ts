@@ -10,7 +10,7 @@
  * Follows the TaskScheduler / TriggerManager singleton pattern.
  */
 
-import type { ChatClientConnector, IncomingMessage } from './base-connector'
+import type { ChatClientConnector, ChatConnectorClass, IncomingMessage } from './base-connector'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
@@ -90,39 +90,6 @@ function isTrustedSlackDownloadHost(u: URL): boolean {
 }
 
 // ── Constants ───────────────────────────────────────────────────────────
-
-const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow these rules:
-- Keep responses concise and conversational — this is a text message, not a document.
-- Use tools, skills, and capabilities as you normally would.
-- Prefer asking questions directly in natural language rather than using the ask questions tool.
-- You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
-- The user may send voice notes which are automatically transcribed.`
-
-/**
- * Session-level context for Slack conversations, built per session so it names
- * the concrete destination (DM vs channel vs thread). Without this the agent
- * cannot tell where its replies land or that its transcript streams straight
- * into the chat — it has misrouted messages by replying through
- * send_chat_message and guessing a DM target.
- */
-export function buildSlackSystemPrompt(
-  message: Pick<IncomingMessage, 'chatId' | 'chatName' | 'userName'>,
-): string {
-  const pipeIdx = message.chatId.indexOf('|')
-  const isThread = pipeIdx > 0
-  const channelLabel = message.chatName || (isThread ? `channel ${message.chatId.slice(0, pipeIdx)}` : undefined)
-  const where = isThread
-    ? `a message thread in ${channelLabel}`
-    : channelLabel
-      ? `the channel ${channelLabel}`
-      : `a direct message conversation with ${message.userName || 'a Slack user'}`
-  const isGroupContext = isThread || !!message.chatName
-  return `This session is a live Slack conversation: you are responding inside ${where} (chat id: ${message.chatId}). Follow these rules:
-- Everything you write is posted to this conversation as the bot. Your response text IS the Slack message participants read, delivered automatically — including interim text between tool calls. There is no private narration; write only what participants should see.
-- Never use send_chat_message to reply to this conversation — your reply is already delivered automatically, so that would post it twice. Only use send_chat_message to reach a DIFFERENT chat (for example, to DM a specific person or post to another channel).${isGroupContext ? `
-- Multiple people can take part. Incoming messages are prefixed with the sender's name (for example "[Jane Doe]: ..."); the prefix is added for attribution — the sender did not type it. Keep track of who is asking for what.` : ''}
-- Keep responses concise and conversational — this is a chat, not a document.`
-}
 
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
@@ -606,6 +573,26 @@ class ChatIntegrationManager {
       }
       default:
         throw new Error(`Unknown chat integration provider: ${integration.provider}`)
+    }
+  }
+
+  /**
+   * Resolve a provider's connector CLASS for static capability lookups (e.g.
+   * generateSystemPrompt). Mirrors createConnector's lazy imports — connector
+   * modules stay unloaded until their provider is actually used. Returns
+   * undefined for unknown providers rather than throwing: static lookups are
+   * best-effort decorations, not connection attempts.
+   */
+  private async getConnectorClass(provider: string): Promise<ChatConnectorClass | undefined> {
+    switch (provider) {
+      case 'telegram':
+        return (await import('./telegram-connector')).TelegramConnector
+      case 'slack':
+        return (await import('./slack-connector')).SlackConnector
+      case 'imessage':
+        return (await import('./imessage-connector')).IMessageConnector
+      default:
+        return undefined
     }
   }
 
@@ -1132,6 +1119,9 @@ class ChatIntegrationManager {
     const { readAgentPreferences } = await import('@shared/lib/services/agent-preferences-service')
 
     const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
+    // Provider-specific session context (DM vs channel vs thread, delivery
+    // semantics) — owned by each connector class, not the manager.
+    const systemPrompt = (await this.getConnectorClass(integration.provider))?.generateSystemPrompt?.(message)
     // Model/effort/speed preference order: integration override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(integration.agentSlug)
@@ -1146,8 +1136,7 @@ class ChatIntegrationManager {
       dashboardBuilderModel: models.dashboardBuilderModel,
       ...(effort ? { effort: effort as EffortLevel } : {}),
       ...(speed ? { speed: speed as SpeedLevel } : {}),
-      ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
-      ...(integration.provider === 'slack' ? { systemPrompt: buildSlackSystemPrompt(message) } : {}),
+      ...(systemPrompt ? { systemPrompt } : {}),
     })
 
     const sessionId = containerSession.id
