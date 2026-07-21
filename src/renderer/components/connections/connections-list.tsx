@@ -6,6 +6,7 @@ import { ChevronRight, Loader2, Plus } from 'lucide-react'
 import { IntegrationDirectoryDialog, type NewApiConnection, type NewMcpConnection } from '@renderer/components/connections/integration-directory-dialog'
 import { IntegrationList } from '@renderer/components/connections/integration-row'
 import { ConnectionDetailPage } from '@renderer/components/connections/connection-detail-page'
+import { ConnectionLogsView } from '@renderer/components/connections/connection-logs-view'
 import { ConnectionRow } from '@renderer/components/connections/connection-row'
 import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
@@ -37,19 +38,23 @@ interface ConnectionsListProps {
   agentSlug: string
   /** Key of the row whose detail page is shown instead of the list. */
   detailRowKey: string | null
+  detailView: 'details' | 'logs'
   /** Breadcrumb label for the detail page's Back button. */
   detailBackLabel?: string
   onDetailRowKeyChange: (key: string | null) => void
+  onDetailViewChange: (view: 'details' | 'logs') => void
 }
 
-export function ConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetailRowKeyChange }: ConnectionsListProps) {
+export function ConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLabel, onDetailRowKeyChange, onDetailViewChange }: ConnectionsListProps) {
   return (
     <div className="flex flex-col gap-4">
       <AllConnectionsList
         agentSlug={agentSlug}
         detailRowKey={detailRowKey}
+        detailView={detailView}
         detailBackLabel={detailBackLabel}
         onDetailRowKeyChange={onDetailRowKeyChange}
+        onDetailViewChange={onDetailViewChange}
       />
     </div>
   )
@@ -111,11 +116,13 @@ export function NewIntegrationButton() {
 interface AllConnectionsListProps {
   agentSlug: string
   detailRowKey: string | null
+  detailView: 'details' | 'logs'
   detailBackLabel?: string
   onDetailRowKeyChange: (key: string | null) => void
+  onDetailViewChange: (view: 'details' | 'logs') => void
 }
 
-function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetailRowKeyChange }: AllConnectionsListProps) {
+function AllConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLabel, onDetailRowKeyChange, onDetailViewChange }: AllConnectionsListProps) {
   const { data: allAccountsData, isLoading: isLoadingAllAccounts } = useConnectedAccounts()
   const { data: agentAccountsData, isLoading: isLoadingAgentAccounts } = useAgentConnectedAccounts(agentSlug)
   const { data: allMcpsData, isLoading: isLoadingAllMcps } = useRemoteMcps()
@@ -270,11 +277,20 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailBackLabel, onDetail
   }
 
   if (selectedRow) {
+    if (detailView === 'logs') {
+      return (
+        <ConnectionLogsView
+          row={selectedRow}
+          onBack={() => onDetailViewChange('details')}
+        />
+      )
+    }
     return (
       <ConnectionDetailPage
         row={selectedRow}
         backLabel={detailBackLabel}
         onBack={() => onDetailRowKeyChange(null)}
+        onViewLogs={() => onDetailViewChange('logs')}
       />
     )
   }

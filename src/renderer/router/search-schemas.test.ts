@@ -34,6 +34,10 @@ describe('connectionsSearchSchema (detail+source coupling)', () => {
   it('accepts account/mcp detail with a source', () => {
     expect(connectionsSearchSchema.safeParse({ detail: 'mcp-1', source: 'list' }).success).toBe(true)
     expect(connectionsSearchSchema.safeParse({ detail: 'account-9', source: 'home' }).success).toBe(true)
+    expect(connectionsSearchSchema.safeParse({ detail: 'account-9', source: 'home', connectionView: 'logs' }).success).toBe(true)
+  })
+  it('rejects logs without a selected connection', () => {
+    expect(connectionsSearchSchema.safeParse({ connectionView: 'logs' }).success).toBe(false)
   })
   it('rejects a malformed detail prefix', () => {
     expect(connectionsSearchSchema.safeParse({ detail: 'garbage', source: 'home' }).success).toBe(false)
@@ -99,6 +103,10 @@ describe('settingsSearchSchema (from close-target)', () => {
   })
   it('accepts no from', () => {
     expect(settingsSearchSchema.safeParse({}).success).toBe(true)
+  })
+  it('accepts connection logs only with a selected connection', () => {
+    expect(settingsSearchSchema.safeParse({ detail: 'account-1', connectionView: 'logs' }).success).toBe(true)
+    expect(settingsSearchSchema.safeParse({ connectionView: 'logs' }).success).toBe(false)
   })
 })
 

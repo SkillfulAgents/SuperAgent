@@ -2104,6 +2104,27 @@ describe('audit log — GET /:id/audit-log', () => {
     expect(body.entries).toHaveLength(20)
   })
 
+  it('falls back to default pagination for invalid query values', async () => {
+    const entries = Array.from({ length: 25 }, (_, i) => ({
+      id: `p${i}`,
+      agentSlug: 'test-agent',
+      toolkit: `toolkit-${i}`,
+      targetHost: 'https://example.com',
+      targetPath: `/${i}`,
+      method: 'GET',
+      statusCode: 200,
+      errorMessage: null,
+      createdAt: new Date(2026, 0, 1, 0, i).toISOString(),
+    }))
+
+    setupAuditLogMocks(entries, 25, [], 0)
+
+    const res = await getReq(app, `${AUDIT_URL}?offset=invalid&limit=invalid`)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.entries).toHaveLength(20)
+  })
+
   it('caps limit at 100', async () => {
     setupAuditLogMocks([], 0, [], 0)
 

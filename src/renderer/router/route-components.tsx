@@ -59,11 +59,14 @@ export function ApiLogsRoute() {
 // present and well-formed, else fall back to list.
 export function ConnectionsRoute() {
   const slug = useAgentSlug()
-  const search = useSearch({ strict: false }) as { detail?: unknown; source?: unknown }
+  const search = useSearch({ strict: false }) as { detail?: unknown; source?: unknown; connectionView?: unknown }
   const detailKey = typeof search.detail === 'string' ? search.detail : undefined
   const source: 'home' | 'list' | undefined =
     search.source === 'home' ? 'home' : search.source === 'list' ? 'list' : undefined
-  const detail = detailKey && source ? { rowKey: detailKey, source } : null
+  const detailView = search.connectionView === 'logs' ? 'logs' as const : undefined
+  const detail = detailKey && source
+    ? { rowKey: detailKey, source, ...(detailView ? { view: detailView } : {}) }
+    : null
   if (!slug) return null
   return <ConnectionsView agentSlug={slug} detail={detail} />
 }

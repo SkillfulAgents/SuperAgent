@@ -4,6 +4,13 @@ import {
   type DailyActivityPoint,
 } from '@shared/lib/types/activity'
 import { cn } from '@shared/lib/utils/cn'
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from '@renderer/components/ui/chart'
+import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 
 const WIDTH = 96
 const HEIGHT = 26
@@ -43,10 +50,14 @@ function plural(value: number, singular: string, multiple = `${singular}s`): str
   return value === 1 ? singular : multiple
 }
 
-export function ActivitySparkChart({ label, data, className }: ActivitySparkChartProps) {
+export function summarizeDailyActivity(data: DailyActivityPoint[]) {
   const succeeded = data.reduce((sum, point) => sum + point.succeeded, 0)
   const failed = data.reduce((sum, point) => sum + point.failed, 0)
-  const total = succeeded + failed
+  return { succeeded, failed, total: succeeded + failed }
+}
+
+export function ActivitySparkChart({ label, data, className }: ActivitySparkChartProps) {
+  const { succeeded, failed, total } = summarizeDailyActivity(data)
   const max = Math.max(1, ...data.map((point) => point.succeeded + point.failed))
   const barWidth = data.length > 0
     ? Math.max(1, (WIDTH - BAR_GAP * (data.length - 1)) / data.length)
@@ -92,6 +103,84 @@ export function ActivitySparkChart({ label, data, className }: ActivitySparkChar
         )
       })}
     </svg>
+  )
+}
+
+const activityChartConfig = {
+  succeeded: {
+    label: 'Succeeded',
+    color: 'hsl(160 84% 39%)',
+  },
+  failed: {
+    label: 'Failed',
+    color: 'hsl(0 84% 60%)',
+  },
+} satisfies ChartConfig
+
+interface ActivityBarChartProps {
+  label: string
+  data: DailyActivityPoint[]
+  className?: string
+}
+
+/** Larger companion to ActivitySparkChart with a real date axis + hover data. */
+export function ActivityBarChart({ label, data, className }: ActivityBarChartProps) {
+  const { succeeded, failed, total } = summarizeDailyActivity(data)
+  const ticks = data.length > 1
+    ? [data[0].date, data[data.length - 1].date]
+    : data.map((point) => point.date)
+  const accessibleLabel = total === 0
+    ? `${label}: no calls over the last ${data.length} ${plural(data.length, 'day')}.`
+    : `${label}: ${total} ${plural(total, 'call')} over ${data.length} ${plural(data.length, 'day')}, ${succeeded} succeeded and ${failed} failed.`
+
+  return (
+    <ChartContainer
+      config={activityChartConfig}
+      className={cn('h-[150px] w-full aspect-auto', className)}
+      role="img"
+      aria-label={accessibleLabel}
+      data-testid="activity-bar-chart"
+    >
+      <BarChart data={data} margin={{ top: 8, right: 4, bottom: 0, left: 4 }}>
+        <CartesianGrid vertical={false} strokeDasharray="3 3" />
+        <XAxis
+          dataKey="date"
+          ticks={ticks}
+          tickFormatter={dayLabel}
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          interval={0}
+          padding={{ left: 12, right: 12 }}
+        />
+        <YAxis hide allowDecimals={false} />
+        <ChartTooltip
+          cursor={{ fill: 'hsl(var(--muted) / 0.45)' }}
+          content={
+            <ChartTooltipContent
+              labelFormatter={(value) => dayLabel(String(value))}
+              valueFormatter={(value) => `${value} ${plural(value, 'call')}`}
+            />
+          }
+        />
+        <Bar
+          dataKey="succeeded"
+          stackId="requests"
+          fill="var(--color-succeeded)"
+          radius={[2, 2, 0, 0]}
+          maxBarSize={22}
+          isAnimationActive={false}
+        />
+        <Bar
+          dataKey="failed"
+          stackId="requests"
+          fill="var(--color-failed)"
+          radius={[2, 2, 0, 0]}
+          maxBarSize={22}
+          isAnimationActive={false}
+        />
+      </BarChart>
+    </ChartContainer>
   )
 }
 
