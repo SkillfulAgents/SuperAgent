@@ -107,14 +107,35 @@ interface PendingReview {
 export class ReviewManager {
   private pending: Map<string, PendingReview> = new Map()
 
+  private markAgentSessionsAwaiting(agentSlug: string): void {
+    for (const sessionId of messagePersister.getActiveSessionIdsForAgent(agentSlug)) {
+      messagePersister.markAwaitingInput(sessionId)
+    }
+  }
+
+  // Caller deletes the review from `pending` first. No-op while any review remains.
+  private clearAgentSessionsAwaitingIfIdle(agentSlug: string): void {
+    if (this.getPendingReviewsForAgent(agentSlug).length > 0) return
+    messagePersister.clearAwaitingInputForAgentIfUnblocked(agentSlug)
+  }
+
   requestReview(details: ReviewDetails, signal?: AbortSignal): Promise<'allow' | 'deny'> {
     const id = crypto.randomUUID()
 
     return new Promise<'allow' | 'deny'>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const settleTimedOut = () => {
+        if (!this.pending.has(id)) return
         this.pending.delete(id)
+        broadcastReview(details.agentSlug, {
+          type: 'proxy_review_resolved',
+          reviewId: id,
+          decision: 'deny',
+        })
+        this.clearAgentSessionsAwaitingIfIdle(details.agentSlug)
         reject(new Error('Review timeout'))
-      }, REVIEW_TIMEOUT_MS)
+      }
+
+      const timer = setTimeout(settleTimedOut, REVIEW_TIMEOUT_MS)
 
       const cleanup = () => {
         clearTimeout(timer)
@@ -124,6 +145,7 @@ export class ReviewManager {
           reviewId: id,
           decision: 'deny',
         })
+        this.clearAgentSessionsAwaitingIfIdle(details.agentSlug)
       }
 
       // If the request is aborted (e.g. task stopped), clean up the orphaned review
@@ -158,6 +180,10 @@ export class ReviewManager {
         displayText,
         ...(details.xAgent ? { xAgent: details.xAgent } : {}),
       })
+
+      // Mark active sessions awaiting so chat tick / activity strip stop lying
+      // "Working…" while the Allow/Deny card is up.
+      this.markAgentSessionsAwaiting(details.agentSlug)
 
       // Fire ONE OS notification per review, attributed to the first active
       // session of this agent. The proxy call is agent-scoped (no sessionId
@@ -207,6 +233,7 @@ export class ReviewManager {
       reviewId: id,
       decision,
     })
+    this.clearAgentSessionsAwaitingIfIdle(review.details.agentSlug)
 
     return true
   }
@@ -232,6 +259,7 @@ export class ReviewManager {
         })
       }
     }
+    this.clearAgentSessionsAwaitingIfIdle(agentSlug)
   }
 
   /**
@@ -261,6 +289,7 @@ export class ReviewManager {
         decision,
       })
     }
+    this.clearAgentSessionsAwaitingIfIdle(agentSlug)
   }
 
   /**
@@ -290,6 +319,7 @@ export class ReviewManager {
         })
       }
     }
+    this.clearAgentSessionsAwaitingIfIdle(agentSlug)
   }
 
   getPendingReviewsForAgent(
@@ -372,13 +402,24 @@ export class ReviewManager {
         decision: 'deny',
       })
     }
+    this.clearAgentSessionsAwaitingIfIdle(agentSlug)
   }
 
   rejectAll(): void {
+    const agentSlugs = new Set<string>()
     for (const [id, review] of this.pending) {
       clearTimeout(review.timer)
       this.pending.delete(id)
+      agentSlugs.add(review.details.agentSlug)
+      broadcastReview(review.details.agentSlug, {
+        type: 'proxy_review_resolved',
+        reviewId: id,
+        decision: 'deny',
+      })
       review.reject(new Error('Review timeout'))
+    }
+    for (const agentSlug of agentSlugs) {
+      this.clearAgentSessionsAwaitingIfIdle(agentSlug)
     }
   }
 }

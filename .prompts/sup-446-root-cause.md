@@ -1,4 +1,4 @@
-status: draft
+status: signed-off 2026-07-20
 
 # SUP-446 root cause
 

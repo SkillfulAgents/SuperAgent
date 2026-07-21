@@ -865,6 +865,36 @@ class MessagePersister {
     }
   }
 
+  // Public door for host-owned waits that park outside the tool_use stream
+  // (proxy / MCP / x-agent review). Same bit as markSessionAwaitingInput.
+  markAwaitingInput(sessionId: string): void {
+    this.markSessionAwaitingInput(sessionId)
+  }
+
+  // Real waits only: non-auto pocket-A asks + any pocket-B computer-use approval.
+  // Proxy reviews live in ReviewManager and are gated by the caller before this runs.
+  private hasBlockingPendingRequests(state: StreamingState): boolean {
+    return (
+      [...state.pendingInputRequests.values()].some((r) => r.autoApproved !== true) ||
+      state.pendingComputerUseRequests.size > 0
+    )
+  }
+
+  // Clear awaiting on every session for an agent that has no remaining stream
+  // blockers. Caller must ensure no proxy reviews remain for the agent first.
+  clearAwaitingInputForAgentIfUnblocked(agentSlug: string): void {
+    for (const [sessionId, state] of this.streamingStates) {
+      if (state.agentSlug !== agentSlug || !state.isAwaitingInput) continue
+      if (this.hasBlockingPendingRequests(state)) continue
+      state.isAwaitingInput = false
+      this.broadcastGlobal({
+        type: 'session_input_provided',
+        sessionId,
+        agentSlug: state.agentSlug,
+      })
+    }
+  }
+
   // Recover awaiting-input state from persisted messages when the one-shot
   // request stream event was missed but the unresolved tool call is visible.
   recoverSessionAwaitingInput(sessionId: string, agentSlug?: string): void {
