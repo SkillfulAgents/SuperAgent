@@ -2669,6 +2669,11 @@ agents.post('/:id/sessions/:sessionId/run-script', AgentUser(), async (c) => {
       return c.json({ error: `Script type "${scriptType}" is not supported on ${platform}` }, 400)
     }
 
+    // The user approved — the host now runs the script (up to 30s below). The wait has
+    // flipped from the human to the machine, so clear the awaiting light now instead of
+    // leaving the session stuck "needs input" until the script's tool_result lands.
+    messagePersister.clearPendingScriptRun(c.req.param('sessionId'), toolUseId)
+
     // Execute the script with a 30s timeout
     const { exec, execFile } = await import('child_process')
     const { promisify } = await import('util')

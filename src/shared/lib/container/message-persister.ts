@@ -564,6 +564,26 @@ class MessagePersister {
     }
   }
 
+  // Clear a pending script_run request once the user approves it, before the host
+  // runs the script. Like an approved subagent, an approved script runs on the host
+  // (up to a 30s timeout) before its tool_result lands — the wait now belongs to the
+  // machine, not the human — so drop the awaiting light here instead of leaving it
+  // stuck until the result arrives. Same both-shelves rule as the other clear sites.
+  clearPendingScriptRun(sessionId: string, toolUseId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (state) {
+      state.pendingInputRequests.delete(toolUseId)
+      if (state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
+        state.isAwaitingInput = false
+        this.broadcastGlobal({
+          type: 'session_input_provided',
+          sessionId,
+          agentSlug: state.agentSlug,
+        })
+      }
+    }
+  }
+
   // When a new message arrives while the session is awaiting user input, cancel the
   // pending request(s) so the message starts a fresh turn instead of deadlocking behind
   // the blocked tool.
