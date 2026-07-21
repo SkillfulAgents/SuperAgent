@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report it back in the chat interface.",
+  "reason": "Browser-use feature successfully executes browser navigation and page title retrieval, returning the correct \"Example Domain\" page title from example.com",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully showing Gamut interface with sidebar containing available agents",
-    "Found and clicked the \"QA-20260721-175118-kz8h\" agent in the sidebar - Agent page opened successfully with chat interface ready for input",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input field - Message displayed in input field",
-    "Sent the message using Ctrl+Enter - Message was successfully sent and session was created with URL showing /sessions/f9922aca-2e41-4a33-bce6-77f627ca5172",
-    "Waited up to 3 minutes for agent response - Agent completed processing in approximately 13 seconds",
-    "Verified the response contains \"Example Domain\" - Response clearly displays \"The page title is 'Example Domain'\" and confirms \"The page at https://example.com has the title 'Example Domain'. Browser closed.\" All tool calls (ToolSearch, Open Browser, Browser MCP: Browser Get State, Close Browser) completed successfully with green checkmarks"
+    "Navigated to http://localhost:47891 — Application loaded successfully with Gamut interface and \"Your Agents\" list displayed",
+    "Found the \"QA-20260721-181013-sq3u\" agent in the sidebar and clicked it — Agent page opened successfully, displaying the chat interface with input field and model selector (Opus 4.8)",
+    "Sent message: \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was typed and sent successfully using Cmd+Enter, creating a new session titled \"Browser Page Title Verification\"",
+    "Waited up to 3 minutes for response — Agent completed processing in 17 seconds",
+    "Verified the response mentions \"Example Domain\" — Response confirmed: \"The page title is \"Example Domain\". Closing the browser now.\" and \"The page at https://example.com has the title \"Example Domain\".\" (2 instances found)"
   ],
   "bugs": [],
-  "durationMs": 91200,
-  "sessionId": "06f39a9f-219f-493e-b7c9-896361d2b8cb",
+  "durationMs": 194615,
+  "sessionId": "de5c54c7-1c48-434d-bad3-fde8fd16eff5",
   "cost": {
-    "inputTokens": 434,
-    "outputTokens": 15706,
-    "cacheCreationTokens": 115695,
-    "cacheReadTokens": 1186672,
+    "inputTokens": 530,
+    "outputTokens": 15114,
+    "cacheCreationTokens": 103911,
+    "cacheReadTokens": 1419228,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.34225
+    "totalCostUsd": 0.347912
   }
 }
