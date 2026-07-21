@@ -1,0 +1,1 @@
+[  409714ms] [WARNING] WebSocket connection to 'ws://localhost:47891/api/agents/qa-20260721-224940-g9mk-n0it11six2/browser/stream' failed: WebSocket is closed before the connection is established. @ http://localhost:47891/assets/index-DpAp6msQ.js:304
