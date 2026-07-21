@@ -1,0 +1,17 @@
+{
+  "storyId": "browser-test",
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: onfirming it will open the browser\n- Tool calls executed (Open Browser, Browser Get State)\n- **Final response explicitly mentioning \"Example Domain\"**\n- Session duration: 19 seconds\n- All operations completed successfully with green checkmarks\n\nThe feature is working as expected with no bugs found.\n",
+  "steps": [],
+  "bugs": [],
+  "durationMs": 62532,
+  "sessionId": "87763c98-b3db-4731-b3ec-76b899db0c61",
+  "cost": {
+    "inputTokens": 350,
+    "outputTokens": 9955,
+    "cacheCreationTokens": 119221,
+    "cacheReadTokens": 927897,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.291941
+  }
+}
