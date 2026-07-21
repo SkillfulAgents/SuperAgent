@@ -106,6 +106,7 @@ import api from '../api'
 import { initializeServices, shutdownServices } from '@shared/lib/startup'
 import { setupServerHandlers } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
+import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
@@ -1341,6 +1342,24 @@ function stopNotificationListener(): void {
 
 // Start the API server and app
 async function startApp() {
+  // Download-carried enrollment nonce recovery. The channels are all
+  // best-effort reads of the install's surroundings; the handoff file is the
+  // Windows installer's note of its own (stamped) filename, and the dev-only
+  // override lets a harness point the scanner at a fake install source.
+  configureDownloadNonceRecovery({
+    // The literal 'Gamut' must match the installer's `$APPDATA\Gamut` drop
+    // location in build/installer.nsh (NOT getPath('userData'), which the
+    // legacy 'SuperAgent' app.name pins elsewhere).
+    windowsHandoffFile:
+      process.platform === 'win32'
+        ? path.join(app.getPath('appData'), 'Gamut', 'pending-download-source')
+        : undefined,
+    testSourcePath:
+      !app.isPackaged && process.env.SUPERAGENT_FAKE_INSTALLER_SOURCE
+        ? process.env.SUPERAGENT_FAKE_INSTALLER_SOURCE
+        : undefined,
+  })
+
   // Bind the API server atomically, retrying on a port race until a port is
   // claimed (no probe-then-bind TOCTOU gap; an EADDRINUSE retries instead of
   // crashing the app via uncaughtException). See bindServerWithRetry.
@@ -1580,7 +1599,14 @@ app.on('open-file', (event, filePath) => {
 // second process spawns. It MUST bail out immediately — if it falls through to
 // startApp() it boots its own API server and briefly shows a window before the
 // quit lands, which is the "ghost window" flash on re-launch.
-const gotTheLock = app.requestSingleInstanceLock()
+// Dev/test escape hatch: the lock identity derives from app.name
+// ('SuperAgent', shared with installed builds), so a dev instance silently
+// dies whenever the installed app is running. Harnesses that use their own
+// SUPERAGENT_DATA_DIR can opt out; packaged builds never can.
+const gotTheLock =
+  !app.isPackaged && process.env.SUPERAGENT_DISABLE_SINGLE_INSTANCE === '1'
+    ? true
+    : app.requestSingleInstanceLock()
 
 if (!gotTheLock) {
   // Exit hard without running startApp() or the before-quit graceful-shutdown
