@@ -375,6 +375,13 @@ describe('provide-remote-mcp handler', () => {
   }
 
   it('writes REMOTE_MCPS proxyUrl from getHostApiBaseUrl, not host.docker.internal', async () => {
+    // requested servers status check → active
+    mockSelectFrom.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        { id: 'mcp-1', name: 'DialMCP', status: 'active' },
+      ]),
+    })
+
     // existing mappings lookup → none yet
     mockSelectFrom.mockReturnValueOnce({
       where: vi.fn().mockResolvedValue([]),
@@ -417,5 +424,30 @@ describe('provide-remote-mcp handler', () => {
     expect(configs).toHaveLength(1)
     expect(configs[0].proxyUrl).toBe('http://10.20.107.8:3000/api/mcp-proxy/test-agent/mcp-1')
     expect(configs[0].proxyUrl).not.toContain('host.docker.internal')
+  })
+
+  it('rejects non-active servers with 409 instead of resolving a no-op grant', async () => {
+    // requested servers status check → needs re-auth
+    mockSelectFrom.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([
+        { id: 'mcp-1', name: 'Granola', status: 'auth_required' },
+      ]),
+    })
+
+    const res = await postJson({
+      toolUseId: 'tu-1',
+      remoteMcpId: 'mcp-1',
+    })
+
+    expect(res.status).toBe(409)
+    const body = await res.json() as { error: string; needsReauth: boolean; inactiveMcpIds: string[] }
+    expect(body.needsReauth).toBe(true)
+    expect(body.inactiveMcpIds).toEqual(['mcp-1'])
+    expect(body.error).toContain('Granola')
+    expect(body.error).toContain('re-authentication')
+
+    // Neither the agent mapping nor the pending input in the container is touched
+    expect(mockInsertValues).not.toHaveBeenCalled()
+    expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 })

@@ -3459,6 +3459,31 @@ agents.post('/:id/sessions/:sessionId/provide-remote-mcp', AgentUser(), async (c
       return c.json({ success: true, status: 'declined' })
     }
 
+    // Reject non-active servers instead of resolving a no-op grant: the env
+    // update below filters to status 'active', so a stale server (e.g. expired
+    // OAuth → 'auth_required') would be silently dropped while the agent is
+    // still told access was granted and waits for tools that never appear.
+    const requestedServers = await db
+      .select({
+        id: remoteMcpServers.id,
+        name: remoteMcpServers.name,
+        status: remoteMcpServers.status,
+      })
+      .from(remoteMcpServers)
+      .where(inArray(remoteMcpServers.id, requestedMcpIds))
+    const inactiveServers = requestedServers.filter((s) => s.status !== 'active')
+    if (inactiveServers.length > 0) {
+      const names = inactiveServers.map((s) => s.name).join(', ')
+      return c.json(
+        {
+          error: `MCP server${inactiveServers.length > 1 ? 's' : ''} ${names} need${inactiveServers.length > 1 ? '' : 's'} re-authentication. Reconnect before granting access.`,
+          needsReauth: true,
+          inactiveMcpIds: inactiveServers.map((s) => s.id),
+        },
+        409
+      )
+    }
+
     // Map MCP to agent if not already mapped
     const existingMapping = await db
       .select()

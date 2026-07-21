@@ -267,4 +267,79 @@ describe('RemoteMcpRequestItem', () => {
       expect(screen.getByTestId('remote-mcp-request')).toBeInTheDocument()
     })
   })
+
+  describe('stale server needing re-auth', () => {
+    const staleServer = {
+      ...defaultServer,
+      status: 'auth_required',
+      errorMessage: 'Token refresh failed',
+    }
+
+    beforeEach(() => {
+      mockServerListResponse([staleServer])
+    })
+
+    it('shows re-auth pill and Reconnect instead of allowing access', async () => {
+      renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
+
+      await waitFor(() => {
+        expect(screen.getByText('Example MCP')).toBeInTheDocument()
+      })
+
+      expect(screen.getByText('Re-auth needed')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Reconnect/i })).toBeInTheDocument()
+      // Nothing providable is selected, so Allow Access must be disabled
+      expect(screen.getByRole('button', { name: /Allow Access/i })).toBeDisabled()
+    })
+
+    it('starts re-auth OAuth for the existing server on Reconnect', async () => {
+      const user = userEvent.setup()
+      mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/oauth' })
+
+      renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
+
+      await user.click(await screen.findByRole('button', { name: /Reconnect/i }))
+
+      await waitFor(() => {
+        expect(mockInitiateOAuthMutateAsync).toHaveBeenCalledWith(
+          expect.objectContaining({ mcpId: 'mcp-1' })
+        )
+      })
+      // Re-auth targets the existing server, never a new registration
+      expect(mockInitiateOAuthMutateAsync).not.toHaveBeenCalledWith(
+        expect.objectContaining({ url: expect.anything() })
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText(/Waiting for authorization/i)).toBeInTheDocument()
+      })
+    })
+
+    it('enables Allow Access after re-auth completes and the server is active', async () => {
+      const user = userEvent.setup()
+      mockInitiateOAuthMutateAsync.mockResolvedValue({ redirectUrl: 'https://auth.example.com/oauth' })
+
+      renderWithProviders(<RemoteMcpRequestItem {...defaultProps} />)
+
+      await user.click(await screen.findByRole('button', { name: /Reconnect/i }))
+
+      await waitFor(() => {
+        expect(mockUseMcpOAuthListener).toHaveBeenCalledWith(true, expect.any(Function))
+      })
+
+      // Server comes back active after OAuth
+      mockServerListResponse([{ ...defaultServer }])
+
+      const activeCall = mockUseMcpOAuthListener.mock.calls.find(([active]) => active === true)
+      const onOAuthComplete = activeCall?.[1] as ((result: { success: boolean; error?: string }) => void) | undefined
+      act(() => {
+        onOAuthComplete?.({ success: true })
+      })
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Allow Access/i })).toBeEnabled()
+      })
+      expect(screen.queryByText('Re-auth needed')).not.toBeInTheDocument()
+    })
+  })
 })

@@ -105,11 +105,18 @@ export function RemoteMcpRequestItem({
     [selectedServiceKey, servers]
   )
   const connectCardSlug = COMMON_MCP_SERVERS.find((server) => server.url === targetUrl)?.slug || mcpSlug
+  // Only active servers can be provided — a non-active server (e.g. expired
+  // OAuth) would be dropped from the container env and the grant becomes a
+  // silent no-op. Those servers get a Reconnect affordance instead.
+  const activeServerIds = useMemo(
+    () => new Set(servers.filter((server) => server.status === 'active').map((server) => server.id)),
+    [servers]
+  )
   const selectedMcpIdsForProvide = useMemo(() => {
-    if (selectedMcpIds.size > 0) return Array.from(selectedMcpIds)
-    if (displayedServiceServers.length <= 1 && activeMcpId) return [activeMcpId]
+    if (selectedMcpIds.size > 0) return Array.from(selectedMcpIds).filter((id) => activeServerIds.has(id))
+    if (displayedServiceServers.length <= 1 && activeMcpId && activeServerIds.has(activeMcpId)) return [activeMcpId]
     return []
-  }, [activeMcpId, displayedServiceServers.length, selectedMcpIds])
+  }, [activeMcpId, activeServerIds, displayedServiceServers.length, selectedMcpIds])
   const pickerServiceOptions = useMemo(() => {
     const grouped = new Map<
       string,
@@ -145,11 +152,14 @@ export function RemoteMcpRequestItem({
     return Array.from(grouped.values())
   }, [servers])
 
-  // Auto-select matching server on first load only
+  // Auto-select matching server on first load only. Non-active servers are
+  // never auto-selected — they need re-auth before they can be provided.
   const hasAutoSelected = useRef(false)
   useEffect(() => {
     if (hasAutoSelected.current) return
-    const initialSelection = servers.find((server) => server.url === targetUrl) || targetServiceServers[0]
+    const initialSelection =
+      servers.find((server) => server.url === targetUrl && server.status === 'active') ||
+      targetServiceServers.find((server) => server.status === 'active')
     if (initialSelection) {
       setSelectedMcpIds(new Set([initialSelection.id]))
       hasAutoSelected.current = true
@@ -163,7 +173,7 @@ export function RemoteMcpRequestItem({
       // Refetch servers to find the newly created one
       refetch().then(({ data: refreshedData }) => {
         const refreshedServers = Array.isArray(refreshedData?.servers) ? refreshedData.servers : []
-        const newServer = refreshedServers.find((s) => s.url === targetUrl)
+        const newServer = refreshedServers.find((s) => s.url === targetUrl && s.status === 'active')
         if (newServer) {
           setSelectedMcpIds(new Set([newServer.id]))
         }
@@ -181,14 +191,18 @@ export function RemoteMcpRequestItem({
     handleOAuthComplete(success, oauthError)
   })
 
-  const startOAuthFlow = async (popup: ReturnType<typeof prepareOAuthPopup>) => {
+  const startOAuthFlow = async (
+    popup: ReturnType<typeof prepareOAuthPopup>,
+    // Pass { mcpId } to re-authenticate an existing server instead of registering a new one.
+    params?: { mcpId: string }
+  ) => {
     try {
       const isElectron = !!window.electronAPI
-      const result = await initiateOAuth.mutateAsync({
-        name: newName.trim() || url,
-        url: targetUrl,
-        electron: isElectron,
-      })
+      const result = await initiateOAuth.mutateAsync(
+        params
+          ? { mcpId: params.mcpId, electron: isElectron }
+          : { name: newName.trim() || url, url: targetUrl, electron: isElectron }
+      )
 
       if (result.redirectUrl) {
         await popup.navigate(result.redirectUrl)
@@ -203,6 +217,13 @@ export function RemoteMcpRequestItem({
       setError(oauthErr instanceof Error ? oauthErr.message : 'Failed to initiate OAuth')
       setStatus('pending')
     }
+  }
+
+  const handleReconnect = async (server: RemoteMcpServer) => {
+    setStatus('registering')
+    setError(null)
+    const popup = prepareOAuthPopup()
+    await startOAuthFlow(popup, { mcpId: server.id })
   }
 
   const handleRegisterNew = async () => {
@@ -466,6 +487,7 @@ export function RemoteMcpRequestItem({
     onMenuOpenChange: (open: boolean) => setMenuOpenMcpId(open ? server.id : null),
     onStartRename: () => handleStartRename(server),
     onOpenPolicies: () => openPolicyEditor(server),
+    onReconnect: server.status !== 'active' ? () => handleReconnect(server) : undefined,
   })
 
   // Build completed config
