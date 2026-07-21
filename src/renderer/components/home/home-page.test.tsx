@@ -46,17 +46,39 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useSessions: () => ({ data: [] }),
 }))
 
+vi.mock('@renderer/hooks/use-activity-stats', () => ({
+  useAgentActivityStats: () => ({ data: undefined, isPending: true }),
+}))
+
+// The home page fetches the /api/home-graph topology snapshot for the cards'
+// health carousels; return an empty topology so no carousel renders.
+vi.mock('@renderer/lib/api', () => ({
+  apiFetch: vi.fn(async () => ({
+    ok: true,
+    json: async () => ({
+      accountLinks: [],
+      mcpLinks: [],
+      chats: [],
+      webhooks: [],
+      crons: [],
+      permissions: [],
+      invocations: [],
+      accountUsage: {},
+      mcpUsage: {},
+    }),
+  })),
+}))
+
 const mockAgentsData = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockAgentsData(),
+  useStartAgent: () => ({ mutate: vi.fn(), isPending: false }),
+  useStopAgent: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUserSettings: () => ({ data: null }),
-}))
-
-vi.mock('@renderer/hooks/use-usage', () => ({
-  useUsageData: () => ({ data: undefined, refetch: vi.fn() }),
+  useUpdateUserSettings: () => ({ mutate: vi.fn(), isPending: false }),
 }))
 
 vi.mock('@renderer/lib/agent-ordering', () => ({
@@ -67,10 +89,6 @@ vi.mock('@renderer/components/agents/agent-context-menu', () => ({
   AgentContextMenu: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }))
 
-vi.mock('@renderer/components/agents/agent-status', () => ({
-  AgentStatus: ({ status }: { status: string }) => <span data-testid="agent-status">{status}</span>,
-  getAgentActivityStatus: () => 'sleeping',
-}))
 
 vi.mock('@renderer/hooks/use-create-untitled-agent', () => ({
   useCreateUntitledAgent: () => ({
@@ -136,14 +154,14 @@ describe('HomePage AgentCard', () => {
     vi.useRealTimers()
   })
 
-  it('renders agent name and description', () => {
+  it('renders agent name without the description (compact card)', () => {
     mockAgentsData.mockReturnValue({
       data: [makeAgent()],
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
-    expect(screen.getByText('A test description')).toBeInTheDocument()
+    expect(screen.queryByText('A test description')).not.toBeInTheDocument()
   })
 
   it('renders last worked time when lastActivityAt is set', () => {
@@ -152,7 +170,7 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('about 3 hours ago')).toBeInTheDocument()
+    expect(screen.getByText('Last run about 3 hours ago')).toBeInTheDocument()
   })
 
   it('does not render last worked when lastActivityAt is null', () => {
@@ -164,32 +182,13 @@ describe('HomePage AgentCard', () => {
     expect(screen.queryByText(/ago/)).not.toBeInTheDocument()
   })
 
-  it('renders scheduled task count with singular form', () => {
-    mockAgentsData.mockReturnValue({
-      data: [makeAgent({ scheduledTaskCount: 1, nextScheduledTaskAt: new Date('2026-03-26T14:00:00Z') })],
-      isLoading: false,
-    })
-    renderWithProviders(<HomePage />)
-    expect(screen.getByText('1 task')).toBeInTheDocument()
-    expect(screen.getByText(/in about 2 hours/)).toBeInTheDocument()
-  })
-
-  it('renders scheduled task count with plural form', () => {
+  it('does not render scheduled task details (removed from the compact card)', () => {
     mockAgentsData.mockReturnValue({
       data: [makeAgent({ scheduledTaskCount: 3, nextScheduledTaskAt: new Date('2026-03-27T12:00:00Z') })],
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('3 tasks')).toBeInTheDocument()
-  })
-
-  it('does not render scheduled tasks when count is 0', () => {
-    mockAgentsData.mockReturnValue({
-      data: [makeAgent({ scheduledTaskCount: 0 })],
-      isLoading: false,
-    })
-    renderWithProviders(<HomePage />)
-    expect(screen.queryByText(/task/)).not.toBeInTheDocument()
+    expect(screen.queryByText('3 tasks')).not.toBeInTheDocument()
   })
 
   it('renders a dashboard card per dashboard alongside the agent card', () => {
@@ -205,8 +204,8 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    const cards = document.querySelectorAll('[class*="h-24"]')
-    expect(cards.length).toBeGreaterThanOrEqual(2)
+    // Each dashboard tile is an "Open app" screenshot card; agent cards aren't.
+    expect(screen.getAllByText('Open app').length).toBeGreaterThanOrEqual(2)
   })
 
   it('renders a screenshot img when hasScreenshot is true', () => {
@@ -267,19 +266,18 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('about 1 hour ago')).toBeInTheDocument()
-    expect(screen.getByText('2 tasks')).toBeInTheDocument()
-    expect(screen.getByText(/in about 1 hour/)).toBeInTheDocument()
+    expect(screen.getByText('Last run about 1 hour ago')).toBeInTheDocument()
   })
 
-  it('passes pre-aggregated status to AgentStatus', () => {
+  it('surfaces the aggregated activity status on the card indicator', () => {
     mockAgentsData.mockReturnValue({
       data: [makeAgent({ hasActiveSessions: true, hasSessionsAwaitingInput: true })],
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    // The mocked AgentStatus just renders the status prop
-    expect(screen.getByTestId('agent-status')).toBeInTheDocument()
+    // status='running' + hasSessionsAwaitingInput → getAgentActivityStatus aggregates
+    // to 'awaiting_input', surfaced as the dot-matrix indicator's aria-label.
+    expect(screen.getByRole('img', { name: 'awaiting_input' })).toBeInTheDocument()
   })
 })
 

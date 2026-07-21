@@ -52,6 +52,21 @@ export const userSettingsSchema = z.object({
   // Home graph view: the "Details" toggle (pin every resource's detail card
   // + count chips open). Absent = off.
   graphShowDetails: z.boolean().optional(),
+  // Home page widget grid: per-card position + footprint in grid cells,
+  // keyed by card id (agent slug or dashboard key). Absent = never customized
+  // (the board auto-packs responsively until the user drags/resizes).
+  homeGridLayout: z.record(
+    z.string(),
+    z.object({
+      x: z.number().int().min(0),
+      y: z.number().int().min(0),
+      w: z.number().int().min(1).max(2),
+      h: z.number().int().min(1).max(2),
+    })
+  ).optional(),
+  // Agent slugs whose associated app/dashboard card is hidden from the home grid
+  // (toggled from the agent card). Absent/empty = all app cards shown.
+  hiddenAppCards: z.array(z.string()).optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),
