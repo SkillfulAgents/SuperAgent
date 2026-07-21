@@ -1674,6 +1674,16 @@ class MessagePersister {
         })
         break
 
+      case 'capability_review_cancelled':
+        // The container's gate hook stopped waiting for this review (the CLI
+        // abandoned the parked hook — its timeout elapsed or the turn was
+        // aborted). No decision can land anymore: close the approval card
+        // everywhere instead of leaving it dangling until reconnect cleanup.
+        if (typeof content.toolUseId === 'string') {
+          this.completeCapabilityReview(sessionId, content.toolUseId)
+        }
+        break
+
       case 'connection_closed':
         // WebSocket connection to container was lost
         // Check if session is still actually running in the container

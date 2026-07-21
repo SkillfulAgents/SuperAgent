@@ -50,12 +50,10 @@ import {
   applyCapabilityPolicies,
   blockBoundaryChanged,
   blockedCapabilityMessage,
-  capabilityGateFor,
-  parseReviewDecisionScope,
   policyFor,
-  reviewDeclinedMessage,
   type Capability,
 } from './capability-policies';
+import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './capability-gate-hook';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/renderer/components/messages/message-list.tsx
@@ -794,65 +792,32 @@ export class ClaudeCodeProcess extends EventEmitter {
               ],
             },
             {
-              // Three-tier launch policy for subagents (Task/Agent) and
-              // workflows (Workflow). This MUST be a PreToolUse hook, not a
-              // canUseTool branch: under permissionMode 'bypassPermissions'
-              // the SDK auto-approves every regular tool call before
-              // canUseTool is consulted (CLAUDE_SDK_CAN_USE_TOOL_SHADOWED) —
-              // only hook denies still apply. Review parks the launch on a
-              // pending input (same round-trip as AskUserQuestion): the host
-              // renders the approval card and answers via
-              // /inputs/:toolUseId/resolve|reject. Block is enforced at query
-              // creation (tools stripped); the deny here is the backstop for
-              // a policy that tightened mid-session.
+              // Launch-policy gate for subagents/workflows — see
+              // createCapabilityGateHook for why this is a hook and not
+              // canUseTool.
               matcher: '^(Task|Agent|Workflow)$',
+              timeout: CAPABILITY_REVIEW_HOOK_TIMEOUT_S,
               hooks: [
-                async (input, toolUseId) => {
-                  const hookToolName = (input as any).tool_name as string | undefined;
-                  const gate = capabilityGateFor(hookToolName ?? '', this.capabilityPolicies, this.sessionCapabilityGrants);
-                  if (!gate) return {};
-                  if (gate.policy === 'block') {
-                    console.log(`[PreToolUse] Denying ${hookToolName} (${gate.capability} blocked)`);
-                    return {
-                      hookSpecificOutput: {
-                        hookEventName: 'PreToolUse' as const,
-                        permissionDecision: 'deny' as const,
-                        permissionDecisionReason: blockedCapabilityMessage(gate.capability),
-                      },
-                    };
-                  }
-
-                  const requestId = toolUseId || `capability-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-                  console.log(`[PreToolUse] Capability review for ${hookToolName} (${gate.capability}), toolUseId: ${requestId}`);
-                  try {
-                    // Park until the user decides via the approval card
-                    const decision = await inputManager.createPendingWithType<Record<string, string>>(
-                      requestId,
-                      'capability_review',
-                      { capability: gate.capability, toolName: hookToolName },
-                      this.sessionId
-                    );
-                    if (parseReviewDecisionScope(decision) === 'session') {
-                      console.log(`[PreToolUse] Session-scoped grant for ${gate.capability}`);
-                      this.sessionCapabilityGrants.add(gate.capability);
-                      // Session-manager persists it so the grant survives eviction+resume.
-                      this.emit('capability-grant', { capability: gate.capability });
-                    }
-                    return {};
-                  } catch (error) {
-                    console.log(`[PreToolUse] Capability launch declined:`, error);
-                    return {
-                      hookSpecificOutput: {
-                        hookEventName: 'PreToolUse' as const,
-                        permissionDecision: 'deny' as const,
-                        permissionDecisionReason: reviewDeclinedMessage(
-                          gate.capability,
-                          error instanceof Error ? error.message : undefined
-                        ),
-                      },
-                    };
-                  }
-                },
+                createCapabilityGateHook({
+                  sessionId: this.sessionId,
+                  getPolicies: () => this.capabilityPolicies,
+                  getSessionGrants: () => this.sessionCapabilityGrants,
+                  onSessionGrant: (capability) => {
+                    this.sessionCapabilityGrants.add(capability);
+                    // Session-manager persists it so the grant survives eviction+resume.
+                    this.emit('capability-grant', { capability });
+                  },
+                  onReviewCancelled: (cancelledToolUseId, capability) => {
+                    // Same relay as SDK frames (persister → SSE → renderer),
+                    // so the host closes the orphaned approval card.
+                    this.emit('message', {
+                      type: 'capability_review_cancelled',
+                      toolUseId: cancelledToolUseId,
+                      capability,
+                      session_id: this.claudeSessionId || this.sessionId,
+                    });
+                  },
+                }),
               ],
             },
             {

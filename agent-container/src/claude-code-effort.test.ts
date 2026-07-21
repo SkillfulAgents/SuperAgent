@@ -82,6 +82,7 @@ vi.mock('./file-hooks', () => ({
 
 vi.mock('./input-manager', () => ({
   inputManager: {},
+  HUMAN_INPUT_TTL_MS: 24 * 60 * 60 * 1000,
 }))
 
 import { ClaudeCodeProcess } from './claude-code'

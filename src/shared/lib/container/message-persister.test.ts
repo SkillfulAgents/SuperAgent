@@ -3276,6 +3276,29 @@ describe('MessagePersister', () => {
       expect(sseEvents.filter(e => e.type === 'capability_review_request')).toHaveLength(0)
       expect(mockClient.fetch).not.toHaveBeenCalled()
     })
+
+    it('a container cancellation frame closes the card like a decision does', async () => {
+      // The container's gate hook emits this when the CLI abandons the parked
+      // hook (per-hook timeout or turn abort) — no decision can ever land, so
+      // the card must not linger for live clients or reconnect replay.
+      simulateToolUse('Workflow', 'wf-5', { script: 'export const meta = {}' })
+      await vi.waitFor(() => {
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+      })
+
+      mockClient._sendMessage({
+        type: 'capability_review_cancelled',
+        toolUseId: 'wf-5',
+        capability: 'workflows',
+      })
+
+      await vi.waitFor(() => {
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+      })
+      const resolved = sseEvents.filter(e => e.type === 'capability_review_resolved')
+      expect(resolved).toHaveLength(1)
+      expect(resolved[0]).toMatchObject({ toolUseId: 'wf-5' })
+    })
   })
 
   // ============================================================================
