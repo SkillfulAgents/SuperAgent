@@ -106,6 +106,20 @@ interface PendingReview {
 
 export class ReviewManager {
   private pending: Map<string, PendingReview> = new Map()
+  private awaitingBlockerRegistered = false
+
+  // Teach MessagePersister that a parked review counts as "still waiting on the
+  // human", so its tool-result clear won't drop the awaiting bit while a review is
+  // up. Registered lazily on first review (not at module load): review-manager and
+  // message-persister form an import cycle, so the persister singleton isn't ready
+  // at module-eval time — mirrors container-manager wiring its callback at startup.
+  private ensureAwaitingBlockerRegistered(): void {
+    if (this.awaitingBlockerRegistered) return
+    this.awaitingBlockerRegistered = true
+    messagePersister.registerAwaitingBlockerSource(
+      (agentSlug) => this.getPendingReviewsForAgent(agentSlug).length > 0,
+    )
+  }
 
   private markAgentSessionsAwaiting(agentSlug: string): void {
     for (const sessionId of messagePersister.getActiveSessionIdsForAgent(agentSlug)) {
@@ -120,6 +134,7 @@ export class ReviewManager {
   }
 
   requestReview(details: ReviewDetails, signal?: AbortSignal): Promise<'allow' | 'deny'> {
+    this.ensureAwaitingBlockerRegistered()
     const id = crypto.randomUUID()
 
     return new Promise<'allow' | 'deny'>((resolve, reject) => {
@@ -424,4 +439,16 @@ export class ReviewManager {
   }
 }
 
-export const reviewManager = new ReviewManager()
+// Use globalThis to persist across Next.js hot reloads in development, matching
+// messagePersister. The two are coupled: reviewManager registers an awaiting-blocker
+// source on the persister, and the persister survives reloads — so reviewManager must
+// too, or each reload leaks a new stale predicate into the persister's blocker set.
+const globalForReviewManager = globalThis as unknown as {
+  reviewManager: ReviewManager | undefined
+}
+
+export const reviewManager = globalForReviewManager.reviewManager ?? new ReviewManager()
+
+if (process.env.NODE_ENV !== 'production') {
+  globalForReviewManager.reviewManager = reviewManager
+}

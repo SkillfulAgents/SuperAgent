@@ -2756,6 +2756,52 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
     })
 
+    it('keeps isAwaitingInput on tool result while an external blocker (parked review) is active', () => {
+      messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
+
+      // A parked proxy/x-agent review keeps the agent awaiting even as an unrelated
+      // tool result lands. The review lives outside the stream maps, so it registers
+      // a blocker source rather than being visible in pendingInputRequests.
+      let reviewPending = true
+      // The persister singleton is shared across tests; unregister in finally so a
+      // failing assertion can't leak this predicate into later tests' blocker set.
+      const unregister = messagePersister.registerAwaitingBlockerSource(
+        (slug) => slug === AGENT_SLUG && reviewPending,
+      )
+
+      try {
+        simulateToolUse('mcp__user-input__request_secret', 'tool-1', { secretName: 'KEY' })
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        // User answers the secret; its tool result arrives while the review is still up.
+        mockClient._sendMessage({
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'tool-1', content: 'secret-value' },
+            ],
+          },
+        })
+
+        // Must stay awaiting — the review blocker is still active.
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+
+        // Once the review resolves, a later tool result settles the session normally.
+        reviewPending = false
+        mockClient._sendMessage({
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'tool-2', content: 'done' },
+            ],
+          },
+        })
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      } finally {
+        unregister()
+      }
+    })
+
     it('broadcasts session_input_provided globally when input is received', () => {
       messagePersister.markSessionActive(SESSION_ID, AGENT_SLUG)
 

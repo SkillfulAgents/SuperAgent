@@ -895,6 +895,28 @@ class MessagePersister {
     }
   }
 
+  // External "still waiting on the human" signals that live outside the stream's
+  // pending maps — proxy / x-agent reviews own their store in ReviewManager, which
+  // already imports this module, so it registers a source here rather than being
+  // imported back (that would cycle). Returns an unregister fn, mirroring
+  // addGlobalNotificationClient.
+  private awaitingBlockerSources = new Set<(agentSlug: string) => boolean>()
+
+  registerAwaitingBlockerSource(fn: (agentSlug: string) => boolean): () => void {
+    this.awaitingBlockerSources.add(fn)
+    return () => {
+      this.awaitingBlockerSources.delete(fn)
+    }
+  }
+
+  private hasExternalAwaitingBlocker(agentSlug: string | undefined): boolean {
+    if (!agentSlug) return false
+    for (const isBlocking of this.awaitingBlockerSources) {
+      if (isBlocking(agentSlug)) return true
+    }
+    return false
+  }
+
   // Recover awaiting-input state from persisted messages when the one-shot
   // request stream event was missed but the unresolved tool call is visible.
   recoverSessionAwaitingInput(sessionId: string, agentSlug?: string): void {
@@ -1248,8 +1270,11 @@ class MessagePersister {
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
           break
         }
-        // Clear awaiting input when tool results arrive (user provided input)
-        if (state.isAwaitingInput) {
+        // Clear awaiting input when tool results arrive (user provided input),
+        // unless a proxy / x-agent review is still parked for this agent. Those
+        // reviews live in ReviewManager, outside the stream's pending maps, so we
+        // ask via a registered blocker source instead of clearing blindly.
+        if (state.isAwaitingInput && !this.hasExternalAwaitingBlocker(state.agentSlug)) {
           state.isAwaitingInput = false
           this.broadcastGlobal({
             type: 'session_input_provided',
