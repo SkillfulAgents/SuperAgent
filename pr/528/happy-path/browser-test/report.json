@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser use feature successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported back correctly.",
+  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report it back in the response.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page showing the agent list and sidebar.",
-    "Found and clicked the \"QA-20260721-184410-a6hy\" agent in the sidebar (ref=e40) — Successfully navigated to the agent's chat interface showing the message input box.",
-    "Clicked on the chat message input box (ref=e190) — Successfully focused the input field for text entry.",
-    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input box — Successfully populated the message in the input field as shown in the snapshot.",
-    "Clicked the \"Send message\" button (ref=e336) — Message was successfully sent, agent status changed to \"working\", and a new session \"Browser Page Title Retrieval Test\" was created.",
-    "Waited for agent response (up to 3 minutes) — Agent completed the task in 19 seconds, as indicated by \"Worked for 19s\" in the response.",
-    "Verified the response mentions \"Example Domain\" and took a screenshot — Response clearly states: \"The page title is \"Example Domain\".\" and \"The page at https://example.com loaded with the title \"Example Domain\". Browser closed.\" The agent successfully used browser tools (Open Browser, Browser Get State, Close Browser) to complete the task. Screenshot saved as final_response.png."
+    "Navigated to http://localhost:47891 - Application loaded successfully showing the agent list with \"QA-20260721-193059-oov4\" visible in the sidebar",
+    "Clicked on \"QA-20260721-193059-oov4\" agent in the sidebar - Agent chat interface opened successfully",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field - Message displayed in the input field",
+    "Sent the message using Cmd+Enter - Message was sent and session created with title \"Browser Navigation and Page Title Check\"",
+    "Waited up to 3 minutes for response - Agent completed the task in 13 seconds, successfully executing:",
+    "Verified response contains \"Example Domain\" - Response explicitly states \"The page title is \"Example Domain\"\" and \"Done — the page at https://example.com has the title \"Example Domain\". Browser closed.\""
   ],
   "bugs": [],
-  "durationMs": 79839,
-  "sessionId": "c8a2af0d-a595-452f-a41e-7befc04ee82c",
+  "durationMs": 166290,
+  "sessionId": "1f53fb03-9a01-4df4-8293-1649b180c927",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 10300,
-    "cacheCreationTokens": 65633,
-    "cacheReadTokens": 842658,
+    "inputTokens": 494,
+    "outputTokens": 11428,
+    "cacheCreationTokens": 110554,
+    "cacheReadTokens": 1305683,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.218127
+    "totalCostUsd": 0.326395
   }
 }
