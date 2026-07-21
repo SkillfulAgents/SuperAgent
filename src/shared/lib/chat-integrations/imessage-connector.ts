@@ -60,10 +60,21 @@ interface PendingQuestion {
   }>
 }
 
+// ── Session system prompt ───────────────────────────────────────────────
+
+const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow these rules:
+- Keep responses concise and conversational — this is a text message, not a document.
+- Use tools, skills, and capabilities as you normally would.
+- Prefer asking questions directly in natural language rather than using the ask questions tool.
+- You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
+- The user may send voice notes which are automatically transcribed.`
+
 // ── Connector ───────────────────────────────────────────────────────────
 
 export class IMessageConnector extends ChatClientConnector {
   readonly provider = 'imessage' as const
+
+  static generateSystemPrompt = () => IMESSAGE_SYSTEM_PROMPT
 
   private ws: WebSocket | null = null
   private _connected = false

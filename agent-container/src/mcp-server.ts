@@ -49,7 +49,7 @@ import { getSessionTranscriptTool } from './tools/agents/get-session-transcript'
 import { listAvailableChatProvidersTool } from './tools/chat/list-available-chat-providers'
 import { listChatIntegrationsTool } from './tools/chat/list-chat-integrations'
 import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
-import { sendChatMessageTool } from './tools/chat/send-chat-message'
+import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
 
 // TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
 
@@ -142,7 +142,13 @@ export function createAgentsMcpServer(getCallerSessionId: () => string) {
   })
 }
 
-export function createChatMcpServer() {
+/**
+ * @param getCallerSessionId - getter that returns the current Claude session ID
+ *   at tool-invocation time (same pattern as createAgentsMcpServer). Lets the
+ *   host recognize sends coming from a chat-conversation session and block the
+ *   ones that would double-post into that session's own chat.
+ */
+export function createChatMcpServer(getCallerSessionId: () => string) {
   return createSdkMcpServer({
     name: 'chat',
     version: '1.0.0',
@@ -150,7 +156,7 @@ export function createChatMcpServer() {
       listAvailableChatProvidersTool,
       listChatIntegrationsTool,
       addChatIntegrationTool,
-      sendChatMessageTool,
+      makeSendChatMessageTool(getCallerSessionId),
     ],
   })
 }

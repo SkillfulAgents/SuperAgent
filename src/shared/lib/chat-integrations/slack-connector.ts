@@ -10,7 +10,7 @@
 import { App as SlackApp, SocketModeReceiver } from '@slack/bolt'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
-import { ChatClientConnector, type OutgoingMessage } from './base-connector'
+import { ChatClientConnector, type OutgoingMessage, type SystemPromptContext } from './base-connector'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { isUnrecoverableSlackError } from './slack-error'
 import { captureException } from '@shared/lib/error-reporting'
@@ -115,6 +115,39 @@ export function markdownToSlackMrkdwn(md: string): string {
   result = result.replace(/\n{3,}/g, '\n\n')
 
   return result.trim()
+}
+
+// ── Session system prompt ───────────────────────────────────────────────
+
+/**
+ * Session-level context for Slack conversations, built per session so it names
+ * the concrete destination (DM vs channel vs thread). Without this the agent
+ * cannot tell where its replies land or that its transcript streams straight
+ * into the chat — it has misrouted messages by replying through
+ * send_chat_message and guessing a DM target.
+ */
+export function buildSlackSystemPrompt(message: SystemPromptContext): string {
+  const pipeIdx = message.chatId.indexOf('|')
+  const isThread = pipeIdx > 0
+  const baseChannelId = isThread ? message.chatId.slice(0, pipeIdx) : message.chatId
+  // Classify by conversation-id prefix (D* = DM, C*/G* = channel/group), NOT
+  // by whether chatName resolved: resolveChannelName returns undefined when
+  // conversations.info fails, and misclassifying a channel as a DM would drop
+  // the multi-user attribution guidance below.
+  const isDm = baseChannelId.startsWith('D')
+  const where = isThread
+    ? `a message thread in ${message.chatName || `channel ${baseChannelId}`}`
+    : isDm
+      ? `a direct message conversation with ${message.userName || 'a Slack user'}`
+      : message.chatName
+        ? `the channel ${message.chatName}`
+        : `a channel (id ${baseChannelId})`
+  const isGroupContext = !isDm
+  return `This session is a live Slack conversation: you are responding inside ${where} (chat id: ${message.chatId}). Follow these rules:
+- Everything you write is posted to this conversation as the bot. Your response text IS the Slack message participants read, delivered automatically — including interim text between tool calls. There is no private narration; write only what participants should see.
+- Never use send_chat_message to reply to this conversation — your reply is already delivered automatically, so that would post it twice. Only use send_chat_message to reach a DIFFERENT chat (for example, to DM a specific person or post to another channel).${isGroupContext ? `
+- Multiple people can take part. Incoming messages are prefixed with the sender's name (for example "[Jane Doe]: ..."); the prefix is added for attribution — the sender did not type it. Keep track of who is asking for what.` : ''}
+- Keep responses concise and conversational — this is a chat, not a document.`
 }
 
 // ── Message routing (exported for testing) ──────────────────────────────
@@ -255,6 +288,8 @@ export function reactionsForChat(activeReactions: Set<string>, chatId: string): 
 
 export class SlackConnector extends ChatClientConnector {
   readonly provider = 'slack' as const
+
+  static generateSystemPrompt = buildSlackSystemPrompt
 
   private app: SlackApp | null = null
   private receiver: SocketModeReceiver | null = null
