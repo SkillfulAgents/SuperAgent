@@ -2,13 +2,13 @@ import { useCallback } from 'react'
 import { MessageSquare, X, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
-import { useSendMessage } from '@renderer/hooks/use-messages'
+import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { focusSessionComposer } from '@renderer/components/messages/composer-focus'
 import { formatMediaTime } from './format-media-time'
 
 interface CommentBarProps {
   comments: FileComment[]
   filePath: string
-  agentSlug: string
   sessionId: string
 }
 
@@ -67,20 +67,17 @@ export function formatComments(filePath: string, comments: FileComment[]): strin
   return lines.join('\n')
 }
 
-export function CommentBar({ comments, filePath, agentSlug, sessionId }: CommentBarProps) {
+export function CommentBar({ comments, filePath, sessionId }: CommentBarProps) {
   const { clearComments, removeComment } = useFilePreview()
-  const sendMessage = useSendMessage()
+  const draftsStore = useDraftsStore()
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(() => {
     if (comments.length === 0) return
     const content = formatComments(filePath, comments)
-    try {
-      await sendMessage.mutateAsync({ sessionId, agentSlug, content })
-      clearComments(filePath)
-    } catch (err) {
-      console.error('Failed to send comment:', err)
-    }
-  }, [comments, filePath, sessionId, agentSlug, sendMessage, clearComments])
+    appendToSessionDraft(draftsStore, sessionId, content, { prepend: false })
+    clearComments(filePath)
+    queueMicrotask(() => focusSessionComposer(sessionId))
+  }, [comments, filePath, sessionId, draftsStore, clearComments])
 
   if (comments.length === 0) return null
 
@@ -145,7 +142,6 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
             size="sm"
             className="h-7 text-xs"
             onClick={handleSubmit}
-            disabled={sendMessage.isPending}
           >
             Submit
           </Button>

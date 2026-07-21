@@ -2,10 +2,23 @@ import { createContext, useCallback, useContext, useMemo, useRef, useSyncExterna
 
 type Listener = () => void
 
-interface DraftsStore {
+export interface DraftsStore {
   get<T>(key: string): T | undefined
   set<T>(key: string, value: T | undefined): void
   subscribe(key: string, listener: Listener): () => void
+}
+
+export function appendToSessionDraft(
+  store: Pick<DraftsStore, 'get' | 'set'>,
+  sessionId: string,
+  content: string,
+  { prepend }: { prepend: boolean },
+): void {
+  const draftKey = `session:${sessionId}`
+  const existing = store.get<string>(draftKey)?.trim() ?? ''
+  const addition = content.trim()
+  const parts = prepend ? [addition, existing] : [existing, addition]
+  store.set(draftKey, parts.filter(Boolean).join('\n\n') || undefined)
 }
 
 const DraftsContext = createContext<DraftsStore | null>(null)

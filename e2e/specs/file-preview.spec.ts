@@ -150,7 +150,10 @@ test.describe('File Preview', () => {
     await expect(csv.getByRole('columnheader', { name: 'Email' })).toBeVisible()
   })
 
-  test('pins a comment to a CSV cell and sends it to the agent', async ({ page }) => {
+  test('pins a comment to a CSV cell and focuses feedback in a narrow composer without sending', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 700 })
+    await page.evaluate(() => localStorage.setItem('tray_drawer_width', '700'))
+
     await agentPage.createAgent(`CsvComment ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
     seedWorkspaceFile(
@@ -183,9 +186,25 @@ test.describe('File Preview', () => {
     await expect(tray.getByText('Cell 1:Email', { exact: false })).toBeVisible({ timeout: 5000 })
     await expect(tray.getByText('This email looks wrong')).toBeVisible()
 
-    // Submitting posts the formatted feedback back into the conversation.
+    // Submitting moves the formatted feedback into the composer for review. It
+    // must not POST a message until the user explicitly sends from there.
+    const userMessageCount = await sessionPage.getUserMessages().count()
+    let feedbackPostCount = 0
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && /\/sessions\/[^/]+\/messages$/.test(request.url())) {
+        feedbackPostCount += 1
+      }
+    })
+
     await tray.getByRole('button', { name: 'Submit' }).click()
-    await expect(page.getByText('At cell 1:Email', { exact: false })).toBeVisible({ timeout: 10000 })
+
+    const composer = sessionPage.getMessageInput()
+    await expect(composer).toContainText('File feedback on data.csv:')
+    await expect(composer).toContainText('At cell 1:Email (col 2, value: "alice@example.com"):')
+    await expect(composer).toContainText('This email looks wrong')
+    await expect(composer).toBeFocused()
+    await expect(sessionPage.getUserMessages()).toHaveCount(userMessageCount)
+    expect(feedbackPostCount).toBe(0)
   })
 
   test('renders a video and pins a timestamped comment via the Add Comment button', async ({ page }) => {
@@ -219,9 +238,12 @@ test.describe('File Preview', () => {
     await expect(tray.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
     await expect(tray.getByText('Trim the intro here')).toBeVisible()
 
-    // Submitting posts the formatted feedback back into the conversation.
+    // The video feedback follows the same review-before-send flow.
     await tray.getByRole('button', { name: 'Submit' }).click()
-    await expect(page.getByText('At 0:00', { exact: false }).first()).toBeVisible({ timeout: 10000 })
+    const composer = sessionPage.getMessageInput()
+    await expect(composer).toContainText('File feedback on clip.mp4:')
+    await expect(composer).toContainText('At 0:00 at position (50%, 50%):')
+    await expect(composer).toContainText('Trim the intro here')
   })
 
   test('renders an audio waveform and adds a timestamped comment from its hover affordance', async ({ page }) => {

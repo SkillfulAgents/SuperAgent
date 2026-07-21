@@ -27,7 +27,6 @@ describe('FilePreviewTrayContent', () => {
     const onClose = vi.fn()
     render(
       <FilePreviewTrayContent
-        agentSlug="test-agent"
         sessionId="test-session"
         onClose={onClose}
       />,

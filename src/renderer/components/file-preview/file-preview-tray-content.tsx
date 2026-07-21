@@ -6,7 +6,6 @@ import { CommentBar } from './comments/comment-bar'
 import { getApiBaseUrl } from '@renderer/lib/env'
 
 interface FilePreviewTrayContentProps {
-  agentSlug: string
   sessionId: string
   onClose: () => void
 }
@@ -15,7 +14,7 @@ function getRelativePath(filePath: string): string {
   return filePath.replace(/^\/workspace\//, '')
 }
 
-export function FilePreviewTrayContent({ agentSlug, sessionId, onClose }: FilePreviewTrayContentProps) {
+export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
   const { openFiles, activeFileIndex, setActiveFile, closeFile, comments } = useFilePreview()
 
   const activeFile = openFiles[activeFileIndex]
@@ -82,7 +81,6 @@ export function FilePreviewTrayContent({ agentSlug, sessionId, onClose }: FilePr
       <CommentBar
         comments={activeComments}
         filePath={activeFile.filePath}
-        agentSlug={agentSlug}
         sessionId={sessionId}
       />
     </div>
