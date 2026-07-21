@@ -1,4 +1,4 @@
-status: draft
+status: signed-off 2026-07-20
 
 # SUP-446 framing (bug-fix Gate A)
 
@@ -48,8 +48,8 @@ Formal Phase 2 still requires 3 consecutive confirms after Gate A sign-off.
 - Unifying the two awaiting stores (SUP-213).
 - Changing review policy defaults or the Allow/Deny card UX itself.
 
-**Open scope pick (needs Gate A answer)**
-- Desktop open-chat "Working…" strip: card already shows via pending-request stack; the strip computes awaiting from a different list that omits proxy reviews. Persister-only fix may leave that strip lying. Include strip honesty in this PR, or flag as adjacent follow-up?
+**Desktop strip (signed-off in scope)**
+- Include open-chat "Working…" strip honesty in this PR. Card already shows via pending-request stack; the strip must also treat a parked proxy review as awaiting, not working.
 
 ## Proposed Phase 2 harness
 
