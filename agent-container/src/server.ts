@@ -13,9 +13,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
-import * as dns from 'dns';
 
 import { inputManager } from './input-manager';
+import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
@@ -741,6 +741,25 @@ interface HostBrowserInfo {
   hostDownloadDir: string;
 }
 
+// Relay a container-side browser-launch failure to the host for Sentry.
+// Only called for failures after the launch request itself succeeded — the
+// host is known reachable at that point, but has no other way to learn this
+// half of the launch broke (the error otherwise surfaces only in the agent's
+// tool result). Fire-and-forget: reporting must never mask the real error.
+function reportHostBrowserLaunchError(
+  hostAppUrl: string,
+  headers: Record<string, string>,
+  stage: string,
+  err: unknown,
+): void {
+  const message = err instanceof Error ? err.message : String(err);
+  void fetch(`${hostAppUrl}/api/browser/report-launch-error`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ agentId: process.env.AGENT_ID || 'default', stage, message }),
+  }).catch(() => {});
+}
+
 // Launch the host browser via CDP if AGENT_BROWSER_USE_HOST is set.
 // Returns the CDP WebSocket URL and host download dir, or undefined if not using host browser.
 // Throws if host browser mode is enabled but the browser fails to launch.
@@ -800,18 +819,19 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
     throw new Error('Host browser response missing both cdpUrl and port');
   }
 
-  // Resolve host.docker.internal to its IP address. Chrome's CDP server
-  // validates the Host header and only accepts "localhost" or IP addresses,
-  // rejecting hostnames like "host.docker.internal". Using the resolved IP
-  // ensures the Host header passes Chrome's check for both HTTP requests
-  // and WebSocket connections from agent-browser.
-  const hostDockerInternal = 'host.docker.internal';
+  // Derive the CDP host from HOST_APP_URL - the same address the
+  // launch-host-browser request above already reached the host at. Chrome's CDP
+  // server validates the Host header and rejects hostnames, so resolveCdpIp
+  // returns an IP. Apple containers can't resolve host.docker.internal (no
+  // --add-host equivalent), so there HOST_APP_URL is the host gateway IP and no
+  // DNS is needed; Docker/Lima/WSL2 keep host.docker.internal, which their
+  // runtime maps.
   let cdpIp: string;
   try {
-    const { address } = await dns.promises.lookup(hostDockerInternal);
-    cdpIp = address;
-  } catch {
-    throw new Error(`Failed to resolve ${hostDockerInternal}`);
+    cdpIp = await resolveCdpIp(hostAppUrl);
+  } catch (err) {
+    reportHostBrowserLaunchError(hostAppUrl, browserAuthHeaders, 'resolve-cdp-host', err);
+    throw err;
   }
 
   // Chrome's CDP requires connecting to the full debugger WebSocket URL
@@ -827,12 +847,14 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
     versionRes = await fetch(`http://${cdpHost}/json/version`);
   } catch (err) {
     const cause = err instanceof Error ? err.message : String(err);
-    throw new Error(
+    const error = new Error(
       `The host browser launched, but its debugging endpoint at ${cdpHost} is unreachable from inside the agent container (${cause}). ` +
       `This usually means a firewall on the host machine is blocking container-to-host connections ` +
       `(on Windows: Windows Defender Firewall or antivirus blocking the app on the "vEthernet (WSL)" network). ` +
       `Ask the user to allow the app through their firewall, or to switch Browser Host to the built-in browser in Settings.`
     );
+    reportHostBrowserLaunchError(hostAppUrl, browserAuthHeaders, 'cdp-endpoint-unreachable', error);
+    throw error;
   }
   if (!versionRes.ok) {
     throw new Error(`Failed to query CDP /json/version: ${versionRes.status}`);

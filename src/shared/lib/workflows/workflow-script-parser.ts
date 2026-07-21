@@ -304,11 +304,20 @@ function callParenAt(src: string, i: number, kw: string): number {
   return src[j] === '(' ? j : -1
 }
 
+// `args.<key>.map(` — a fan-out over a Workflow `args` array. Direct `.map` only:
+// an intervening `.filter(...)` would make args[key].length an OVER-estimate, and
+// pending cells that can never fill must not be rendered.
+const ARGS_MAP_RE = /args\s*\.\s*([A-Za-z0-9_$]+)\s*\.\s*(?:map|flatMap)\s*\(/y
+// `pipeline(args.<key>,` / `parallel(args.<key>.` — first arg is the fan-out list.
+const ARGS_FIRST_ARG_RE = /\s*args\s*\.\s*([A-Za-z0-9_$]+)\s*[,)]/y
+
 export function parseWorkflowScript(src: string): ParsedScript {
   const { name, description, phases } = extractMeta(src)
   const agentCalls: ParsedAgentCall[] = []
   let currentSourcePhase: string | null = null
   let parallelEnd = -1
+  let fanOutEnd = -1
+  let fanOutKey: string | null = null
   let sourceIndex = 0
 
   let i = 0
@@ -345,6 +354,32 @@ export function parseWorkflowScript(src: string): ParsedScript {
       continue
     }
 
+    // pipeline(args.<key>, stage1, ...) — every stage runs once per element.
+    const pipelineParen = callParenAt(src, i, 'pipeline')
+    if (pipelineParen >= 0) {
+      ARGS_FIRST_ARG_RE.lastIndex = pipelineParen + 1
+      const firstArg = ARGS_FIRST_ARG_RE.exec(src)
+      if (firstArg) {
+        fanOutKey = firstArg[1]
+        fanOutEnd = skipBalanced(src, pipelineParen, '(', ')')
+      }
+      i = pipelineParen + 1 // walk INTO it so inner agent() calls are seen
+      continue
+    }
+
+    // args.<key>.map(cb) — agent() calls inside cb spawn once per element.
+    if (c === 'a' && !isIdentChar(src[i - 1])) {
+      ARGS_MAP_RE.lastIndex = i
+      const m = ARGS_MAP_RE.exec(src)
+      if (m) {
+        const mapParen = i + m[0].length - 1
+        fanOutKey = m[1]
+        fanOutEnd = skipBalanced(src, mapParen, '(', ')')
+        i = mapParen + 1 // walk INTO the callback
+        continue
+      }
+    }
+
     const agentParen = callParenAt(src, i, 'agent')
     if (agentParen >= 0) {
       const end = skipBalanced(src, agentParen, '(', ')')
@@ -359,6 +394,7 @@ export function parseWorkflowScript(src: string): ParsedScript {
         sourcePhase: currentSourcePhase,
         sourceIndex: sourceIndex++,
         inParallel: agentParen < parallelEnd,
+        fanOutArgsKey: agentParen < fanOutEnd ? fanOutKey : null,
       })
       i = end
       continue

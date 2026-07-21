@@ -17,6 +17,7 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import { discoverTools } from '@shared/lib/mcp/discover-tools'
 
@@ -141,7 +142,7 @@ function mcpOAuthCallbackBody(
 // Entry-path SSRF guard for the user-supplied MCP server URL. Delegates to the
 // shared policy so it cannot drift from the OAuth-discovery checks, which must
 // reject the same private/loopback hosts on every server-supplied metadata URL.
-function validateMcpServerUrl(url: string): URL {
+async function validateMcpServerUrl(url: string): Promise<URL> {
   return validateMcpDiscoveryUrl(url)
 }
 
@@ -177,7 +178,7 @@ remoteMcps.post('/', async (c) => {
   }
 
   try {
-    validateMcpServerUrl(body.url.trim())
+    await validateMcpServerUrl(body.url.trim())
   } catch (e: any) {
     return c.json({ error: e.message }, 400)
   }
@@ -326,7 +327,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     return c.json({ redirectUrl: result.authorizationUrl, state: result.state })
   } else if (body.name && body.url) {
     try {
-      validateMcpServerUrl(body.url.trim())
+      await validateMcpServerUrl(body.url.trim())
     } catch (e: any) {
       return c.json({ error: e.message }, 400)
     }
@@ -493,7 +494,7 @@ remoteMcps.patch('/:id', Or(UsersMcpServer(), IsAdmin()), async (c) => {
 
   if (body.url !== undefined) {
     try {
-      validateMcpServerUrl(body.url.trim())
+      await validateMcpServerUrl(body.url.trim())
     } catch (e: any) {
       return c.json({ error: e.message }, 400)
     }
@@ -605,7 +606,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
   }
 
   try {
-    validateMcpServerUrl(server.url)
+    await validateMcpServerUrl(server.url)
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -615,7 +616,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
       headers['Authorization'] = `Bearer ${server.accessToken}`
     }
 
-    const res = await fetch(server.url, {
+    const res = await mcpSafeFetch(server.url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -624,7 +625,7 @@ remoteMcps.post('/:id/test-connection', Or(UsersMcpServer(), IsAdmin()), async (
         params: {
           protocolVersion: '2025-03-26',
           capabilities: {},
-          clientInfo: { name: 'Superagent', version: '1.0.0' },
+          clientInfo: { name: 'Gamut', version: '1.0.0' },
         },
         id: 1,
       }),

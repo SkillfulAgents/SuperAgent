@@ -64,10 +64,15 @@ export function overlayLiveStatus(
   return base.map((a) => {
     const live = liveAgents[a.agentId]
     if (!live) return a
-    // `failed` is live-only and wins; otherwise `done` from either source wins; a stale
-    // live `running` never overrides a tree `done` (the tailer can miss the last line).
+    // `done` from either source wins (a result on disk or wire is definitive), then
+    // `failed` from either (the tree detects it durably from a trailing transcript
+    // error frame); a stale `running` on one side never downgrades the other.
     const status: WorkflowAgentNode['status'] =
-      live.status === 'failed' ? 'failed' : a.status === 'done' || live.status === 'done' ? 'done' : 'running'
+      a.status === 'done' || live.status === 'done'
+        ? 'done'
+        : a.status === 'failed' || live.status === 'failed'
+          ? 'failed'
+          : 'running'
     return {
       ...a,
       status,
@@ -84,19 +89,34 @@ export type ProgressSegment = 'done' | 'running' | 'failed' | 'pending'
 
 /**
  * One progress cell per agent: known agents colored by status, plus gray "pending"
- * cells for declared-but-not-yet-started agents (`expectedAgents` = script call sites,
- * a lower bound — so a dynamic fan-out just grows the bar, never shows phantom pending).
+ * cells for expected-but-not-yet-started agents (`expectedAgents` sizes `args`
+ * fan-outs from the invocation but is still a lower bound — a runtime fan-out just
+ * grows the bar, never shows phantom pending). A finished run (`active` false)
+ * never shows pending: whatever didn't start by then never will.
  */
 export function workflowProgressSegments(
   agents: Pick<WorkflowAgentNode, 'status'>[],
-  expectedAgents: number
+  expectedAgents: number,
+  active = true
 ): ProgressSegment[] {
   const segs: ProgressSegment[] = agents.map((a) =>
     a.status === 'done' ? 'done' : a.status === 'failed' ? 'failed' : 'running'
   )
-  const pending = Math.max(0, expectedAgents - agents.length)
+  const pending = active ? Math.max(0, expectedAgents - agents.length) : 0
   for (let i = 0; i < pending; i++) segs.push('pending')
   return segs
+}
+
+/**
+ * Summary line under the bar. Failed agents are FINISHED — counting only green
+ * would read "22/24" with 23 over ("22 done, 1 failed"), so the numerator counts
+ * both and failures get called out explicitly.
+ */
+export function progressSummary(segments: ProgressSegment[]): string {
+  const done = segments.filter((s) => s === 'done').length
+  const failed = segments.filter((s) => s === 'failed').length
+  if (failed === 0) return `${done}/${segments.length} agents done`
+  return `${done + failed}/${segments.length} agents finished · ${failed} failed`
 }
 
 const SEGMENT_CLASS: Record<ProgressSegment, string> = {
@@ -109,13 +129,14 @@ const SEGMENT_CLASS: Record<ProgressSegment, string> = {
 function WorkflowProgressBar({
   agents,
   expectedAgents,
+  active,
 }: {
   agents: WorkflowAgentNode[]
   expectedAgents: number
+  active: boolean
 }) {
-  const segments = workflowProgressSegments(agents, expectedAgents)
+  const segments = workflowProgressSegments(agents, expectedAgents, active)
   if (segments.length === 0) return null
-  const done = segments.filter((s) => s === 'done').length
   return (
     <div className="px-4 pt-2.5 pb-2 shrink-0">
       <div className="flex items-center gap-1">
@@ -123,9 +144,7 @@ function WorkflowProgressBar({
           <div key={i} className={cn('h-1.5 flex-1 rounded-full transition-colors', SEGMENT_CLASS[s])} />
         ))}
       </div>
-      <div className="mt-1 text-[10px] text-muted-foreground">
-        {done}/{segments.length} agents done
-      </div>
+      <div className="mt-1 text-[10px] text-muted-foreground">{progressSummary(segments)}</div>
     </div>
   )
 }
@@ -206,7 +225,7 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
         </button>
       </div>
 
-      <WorkflowProgressBar agents={agents} expectedAgents={treeQuery.data?.expectedAgents ?? 0} />
+      <WorkflowProgressBar agents={agents} expectedAgents={treeQuery.data?.expectedAgents ?? 0} active={isActive} />
 
       {openWorkflows.length > 1 && (
         <div className="px-4 pb-2 shrink-0">
@@ -312,7 +331,8 @@ function WorkflowAgentRow({
         <span className="flex h-4 w-4 shrink-0 items-center justify-center">
           <StatusIndicator status={indicatorStatus} />
         </span>
-        <span className="text-xs text-foreground/80 truncate">{agent.label}</span>
+        {/* shrink-0 + cap: a long result/tool string must truncate itself, not crush the label to zero width */}
+        <span className="text-xs text-foreground/80 truncate shrink-0 max-w-[70%]">{agent.label}</span>
         {/* While running, show the current tool (live from the wire). */}
         {isRunning && agent.lastTool && (
           <>
@@ -320,8 +340,16 @@ function WorkflowAgentRow({
             <span className="text-[11px] text-muted-foreground/70 truncate min-w-0 font-mono">{agent.lastTool}</span>
           </>
         )}
-        {agent.status === 'done' && agent.result && (
-          <span className="text-[11px] text-muted-foreground/80 truncate min-w-0">{agent.result}</span>
+        {/* Terminal agents show their return value — or, for failed ones, the error. */}
+        {(agent.status === 'done' || agent.status === 'failed') && agent.result && (
+          <span
+            className={cn(
+              'text-[11px] truncate min-w-0',
+              agent.status === 'failed' ? 'text-destructive/80' : 'text-muted-foreground/80'
+            )}
+          >
+            {agent.result}
+          </span>
         )}
         <span className="ml-auto shrink-0 text-muted-foreground/60">
           {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -336,10 +364,14 @@ function WorkflowAgentRow({
             </div>
           )}
           <StatsLine durationMs={agent.durationMs} toolCount={agent.toolCount} tokens={agent.tokens} />
-          {agent.status === 'done' && agent.result && (
+          {(agent.status === 'done' || agent.status === 'failed') && agent.result && (
             <div className="text-[11px] break-words">
-              <span className="font-medium text-foreground/70">Result: </span>
-              <span className="text-muted-foreground">{agent.result}</span>
+              <span className="font-medium text-foreground/70">
+                {agent.status === 'failed' ? 'Error: ' : 'Result: '}
+              </span>
+              <span className={agent.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}>
+                {agent.result}
+              </span>
             </div>
           )}
           <WorkflowAgentTranscript messages={messages.data} agentSlug={agentSlug} isRunning={isRunning} />

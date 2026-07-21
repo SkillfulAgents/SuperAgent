@@ -108,6 +108,21 @@ Use this when you need to interact with an MCP server that hasn't been configure
 
       console.log(`[request_remote_mcp] Access to MCP server granted`)
 
+      // Approval resolved but the server never made it into REMOTE_MCPS (e.g.
+      // it is not active and was filtered out). Without this warning the model
+      // is told "granted" and then hunts for tools that will never register.
+      if (!mcpInfo) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'The remote MCP request was approved, but the server is not active in this session and its tools were NOT registered. The server most likely needs to be re-authenticated. Tell the user the MCP connection needs to be reconnected (via its connection settings) before its tools can be used — do not assume the tools are available.',
+            },
+          ],
+          isError: true,
+        }
+      }
+
       return {
         content: [
           {

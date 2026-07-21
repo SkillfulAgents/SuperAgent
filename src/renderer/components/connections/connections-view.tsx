@@ -7,7 +7,7 @@ import { useRenderTracker } from '@renderer/lib/perf'
 interface ConnectionsViewProps {
   agentSlug: string
   /** Open detail overlay, decoded from the route's `?detail&source` search. */
-  detail: { rowKey: string; source: 'home' | 'list' } | null
+  detail: { rowKey: string; source: 'home' | 'list'; view?: 'logs' } | null
 }
 
 export function ConnectionsView({ agentSlug, detail }: ConnectionsViewProps) {
@@ -34,6 +34,18 @@ export function ConnectionsView({ agentSlug, detail }: ConnectionsViewProps) {
       search: { detail: rowKey, source: 'list' },
     })
   }
+  const setDetailView = (view: 'details' | 'logs') => {
+    if (!detail) return
+    void navigate({
+      to: '/agents/$slug/connections',
+      params: { slug: agentSlug },
+      search: {
+        detail: detail.rowKey,
+        source: detail.source,
+        connectionView: view === 'logs' ? 'logs' : undefined,
+      },
+    })
+  }
   // Back returns to wherever the detail view was opened from: the agent home for
   // a home-card deep link, otherwise the connections list.
   const closeDetail = () => {
@@ -56,7 +68,9 @@ export function ConnectionsView({ agentSlug, detail }: ConnectionsViewProps) {
       <ConnectionsList
         agentSlug={agentSlug}
         detailRowKey={detail?.rowKey ?? null}
+        detailView={detail?.view ?? 'details'}
         detailBackLabel={detail?.source === 'home' ? agentName : `${agentName} Connections`}
+        onDetailViewChange={setDetailView}
         onDetailRowKeyChange={(key) => {
           if (key) openDetail(key)
           else closeDetail()

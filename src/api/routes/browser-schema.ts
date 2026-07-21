@@ -15,3 +15,17 @@ export const hostBrowserRequestSchema = z.object({
 })
 
 export type HostBrowserRequest = z.infer<typeof hostBrowserRequestSchema>
+
+/**
+ * Request body for `/api/browser/report-launch-error` — a container relaying a
+ * browser-launch failure that happened on its side (after launch-host-browser
+ * succeeded) so the host can report it to Sentry. Lengths are capped because
+ * the body is attacker-influenceable (any container holding a valid token).
+ */
+export const browserLaunchErrorReportSchema = z.object({
+  agentId: z.string().min(1).optional(),
+  stage: z.string().min(1).max(64),
+  message: z.string().min(1).max(4000),
+})
+
+export type BrowserLaunchErrorReport = z.infer<typeof browserLaunchErrorReportSchema>

@@ -10,11 +10,12 @@ import { useFileContent } from './use-file-content'
 interface MarkdownRendererProps {
   url: string
   filePath: string
+  commentsEnabled?: boolean
 }
 
-export function MarkdownRenderer({ url, filePath }: MarkdownRendererProps) {
+export function MarkdownRenderer({ url, filePath, commentsEnabled = true }: MarkdownRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const { selection, clearSelection } = useTextSelection(containerRef)
+  const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
 
   // Shares the ['file-content', url] cache with the text/CSV renderers, so all
   // consumers of that key must agree on the cached shape (see use-file-content).

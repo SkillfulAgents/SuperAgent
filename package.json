@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.4.14",
+  "version": "0.4.15",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -128,6 +128,7 @@
     "tailwind-merge": "^2.6.0",
     "tailwindcss-animate": "^1.0.7",
     "tar": "^7.5.15",
+    "undici": "^7.28.0",
     "uuid": "^14.0.1",
     "ws": "^8.18.0",
     "yauzl": "^3.3.0",

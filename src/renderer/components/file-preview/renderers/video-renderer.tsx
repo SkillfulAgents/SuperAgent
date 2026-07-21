@@ -8,6 +8,7 @@ import { formatMediaTime } from '../comments/format-media-time'
 interface VideoRendererProps {
   url: string
   filePath: string
+  commentsEnabled?: boolean
 }
 
 /** An in-progress comment: a locked frame time plus a draggable in-frame point. */
@@ -31,7 +32,7 @@ function clampPct(value: number): number {
   return Math.min(100, Math.max(0, value))
 }
 
-export function VideoRenderer({ url, filePath }: VideoRendererProps) {
+export function VideoRenderer({ url, filePath, commentsEnabled = true }: VideoRendererProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
@@ -121,8 +122,8 @@ export function VideoRenderer({ url, filePath }: VideoRendererProps) {
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
       <div
         ref={frameRef}
-        className="relative inline-block max-w-full cursor-crosshair"
-        onClick={handleFrameClick}
+        className={`relative inline-block max-w-full ${commentsEnabled ? 'cursor-crosshair' : ''}`}
+        onClick={commentsEnabled ? handleFrameClick : undefined}
       >
         {/* Agent-delivered videos have no caption track to offer. */}
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
@@ -141,14 +142,14 @@ export function VideoRenderer({ url, filePath }: VideoRendererProps) {
         />
 
         {/* Pins for comments anchored near the current frame. */}
-        {videoComments.map((comment, i) =>
+        {commentsEnabled && videoComments.map((comment, i) =>
           comment.x != null && comment.y != null && Math.abs(comment.timestamp - currentTime) <= PIN_VISIBLE_WINDOW ? (
             <CommentPin key={comment.id} x={comment.x} y={comment.y} number={i + 1} />
           ) : null,
         )}
 
         {/* Draggable point for the comment being placed. */}
-        {pending && (
+        {commentsEnabled && pending && (
           <div
             data-comment-box
             role="presentation"
@@ -163,7 +164,7 @@ export function VideoRenderer({ url, filePath }: VideoRendererProps) {
           </div>
         )}
 
-        {pending && (
+        {commentsEnabled && pending && (
           <CommentOverlay
             selection={{
               text: '',
@@ -185,7 +186,7 @@ export function VideoRenderer({ url, filePath }: VideoRendererProps) {
         <div className="space-y-1">
           <div className="relative h-2">
             {maxSeek > 0 &&
-              videoComments.map(comment => (
+              commentsEnabled && videoComments.map(comment => (
                 <button
                   key={comment.id}
                   type="button"
@@ -222,16 +223,18 @@ export function VideoRenderer({ url, filePath }: VideoRendererProps) {
           <span className="text-xs text-muted-foreground tabular-nums">
             {formatMediaTime(currentTime)} / {formatMediaTime(duration)}
           </span>
-          <button
-            type="button"
-            onClick={() => beginComment(null)}
-            disabled={pending != null}
-            className="ml-auto flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-default"
-            data-testid="video-add-comment"
-          >
-            <MessageSquarePlus className="h-3.5 w-3.5" />
-            Add Comment
-          </button>
+          {commentsEnabled && (
+            <button
+              type="button"
+              onClick={() => beginComment(null)}
+              disabled={pending != null}
+              className="ml-auto flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50 disabled:cursor-default"
+              data-testid="video-add-comment"
+            >
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              Add Comment
+            </button>
+          )}
         </div>
       </div>
     </div>

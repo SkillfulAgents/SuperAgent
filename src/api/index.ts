@@ -33,6 +33,7 @@ import { getLlmPolyfillJs } from './llm-polyfill'
 import { ANTHROPIC_SDK_BUNDLE } from './llm-sdk-bundle'
 import adminUsersRouter from './routes/admin-users'
 import auditLogRouter from './routes/audit-log'
+import connectionLogsRouter from './routes/connection-logs'
 import debugRouter from './routes/debug'
 import platformAuth from './routes/platform-auth'
 import agentBootstrap from './routes/agent-bootstrap'
@@ -200,6 +201,7 @@ app.route('/api/runtime-status', runtimeStatusRouter)
 app.route('/api/firewall', firewallRouter)
 app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/audit-log', auditLogRouter)
+app.route('/api/connection-logs', connectionLogsRouter)
 app.route('/api/platform-auth', platformAuth)
 app.route('/api/stt', sttRouter)
 app.route('/api/llm', llmRouter)

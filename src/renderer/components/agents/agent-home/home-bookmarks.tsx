@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ExternalLink, FileDown, Pencil, Trash2 } from 'lucide-react'
+import { ExternalLink, PanelRightOpen, Pencil, Trash2 } from 'lucide-react'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -28,8 +28,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { getApiBaseUrl } from '@renderer/lib/env'
 import { useBookmarks, useUpdateBookmarks, type Bookmark } from '@renderer/hooks/use-bookmarks'
+import { useFilePreview } from '@renderer/context/file-preview-context'
 
 interface HomeBookmarksProps {
   agentSlug: string
@@ -38,10 +38,6 @@ interface HomeBookmarksProps {
 
 function getFilename(filePath: string): string {
   return filePath.split('/').pop() || filePath
-}
-
-function getRelativePath(filePath: string): string {
-  return filePath.replace(/^\/workspace\//, '')
 }
 
 function faviconUrl(link: string): string | null {
@@ -73,16 +69,16 @@ function LinkIcon({ link }: { link: string }) {
 
 function BookmarkRow({
   bookmark,
-  agentSlug,
   isOwner,
   onRename,
   onDelete,
+  onOpenFile,
 }: {
   bookmark: Bookmark
-  agentSlug: string
   isOwner: boolean
   onRename: () => void
   onDelete: () => void
+  onOpenFile: (filePath: string) => void
 }) {
   const inner = bookmark.link ? (
     <a
@@ -96,16 +92,17 @@ function BookmarkRow({
       <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
     </a>
   ) : bookmark.file ? (
-    <a
-      href={`${getApiBaseUrl()}/api/agents/${agentSlug}/files/${getRelativePath(bookmark.file)}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group flex items-center gap-3 py-2.5 px-1 hover:bg-muted/50 transition-colors"
+    <button
+      type="button"
+      onClick={() => onOpenFile(bookmark.file!)}
+      className="group flex w-full items-center gap-3 py-2.5 px-1 text-left hover:bg-muted/50 transition-colors"
+      title={`Preview ${getFilename(bookmark.file)}`}
+      aria-label={bookmark.name}
     >
       <FileTypeIcon filename={getFilename(bookmark.file)} size={16} />
       <span className="text-xs font-medium truncate">{bookmark.name}</span>
-      <FileDown className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
-    </a>
+      <PanelRightOpen className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
+    </button>
   ) : null
 
   if (!inner) return null
@@ -133,6 +130,7 @@ function BookmarkRow({
 }
 
 export function HomeBookmarks({ agentSlug, isOwner = false }: HomeBookmarksProps) {
+  const { openFile } = useFilePreview()
   const { data: bookmarks } = useBookmarks(agentSlug)
   const updateBookmarks = useUpdateBookmarks(agentSlug)
   const [renameIndex, setRenameIndex] = useState<number | null>(null)
@@ -169,10 +167,10 @@ export function HomeBookmarks({ agentSlug, isOwner = false }: HomeBookmarksProps
           <BookmarkRow
             key={bookmark.link ?? bookmark.file ?? i}
             bookmark={bookmark}
-            agentSlug={agentSlug}
             isOwner={isOwner}
             onRename={() => { setNewName(bookmark.name); setRenameIndex(i) }}
             onDelete={() => setDeleteIndex(i)}
+            onOpenFile={(filePath) => openFile(filePath, agentSlug)}
           />
         ))}
       </div>

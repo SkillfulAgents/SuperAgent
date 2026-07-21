@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { RequestItemShell } from './request-item-shell'
+import { RequestItemActions } from './request-item-actions'
 import { PendingRequestStack } from './pending-request-stack'
 import { HelpCircle, Key, Terminal } from 'lucide-react'
 
@@ -39,6 +40,9 @@ describe('RequestItemShell', () => {
       render(
         <RequestItemShell title="Test" icon={<HelpCircle />} theme="blue" error="Something failed">
           <div>Content</div>
+          <RequestItemActions>
+            <button type="button">Submit</button>
+          </RequestItemActions>
         </RequestItemShell>
       )
 
@@ -49,6 +53,9 @@ describe('RequestItemShell', () => {
       render(
         <RequestItemShell title="Test" icon={<HelpCircle />} theme="blue" error={null}>
           <div>Content</div>
+          <RequestItemActions>
+            <button type="button">Submit</button>
+          </RequestItemActions>
         </RequestItemShell>
       )
 

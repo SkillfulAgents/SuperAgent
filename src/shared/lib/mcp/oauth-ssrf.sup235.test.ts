@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import * as dnsPromises from 'node:dns/promises'
 
 // ---------------------------------------------------------------------------
 // SUP-235 — MCP OAuth discovery follows unvalidated metadata URLs (SSRF).
@@ -15,6 +16,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // private/loopback metadata URLs (never fetching them) while still discovering
 // fully-public metadata.
 // ---------------------------------------------------------------------------
+
+vi.mock('node:dns/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:dns/promises')>()
+  return {
+    ...actual,
+    lookup: vi.fn(),
+  }
+})
 
 // Mock DB so importing oauth.ts does not pull in a real connection. The
 // discovery path under test issues no DB queries, so the chain stubs below are
@@ -42,6 +51,8 @@ vi.mock('drizzle-orm', () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
+const lookupMock = dnsPromises.lookup as unknown as ReturnType<typeof vi.fn>
+
 // Must import after mocks
 import { discoverOAuthMetadata } from './oauth'
 
@@ -57,6 +68,9 @@ describe('SUP-235: discoverOAuthMetadata SSRF guard', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // Public hostnames used in these fixtures resolve to a public IP so the
+    // DNS-resolve SSRF gate does not reject them.
+    lookupMock.mockResolvedValue({ address: '93.184.216.34', family: 4 })
     // Any fetch we did not explicitly script returns a benign 404 so a leaked
     // call cannot crash on `undefined.ok` (and stays visible in mock.calls).
     mockFetch.mockResolvedValue(new Response(null, { status: 404 }))

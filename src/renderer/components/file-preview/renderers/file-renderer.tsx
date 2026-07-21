@@ -6,8 +6,10 @@ import { TextRenderer } from './text-renderer'
 import { CsvRenderer } from './csv-renderer'
 import { ImageRenderer } from './image-renderer'
 import { VideoRenderer } from './video-renderer'
+import { AudioRenderer } from './audio-renderer'
 import { HtmlRenderer } from './html-renderer'
 import { UnsupportedRenderer } from './unsupported-renderer'
+import { useFilePreview } from '@renderer/context/file-preview-context'
 
 const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
 
@@ -22,6 +24,7 @@ const TEXT_EXTS = new Set([
 ])
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'])
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'webm', 'm4v', 'ogv'])
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'weba'])
 
 interface FileRendererProps {
   filePath: string
@@ -31,9 +34,10 @@ interface FileRendererProps {
 
 export function FileRenderer({ filePath, fileUrl, agentSlug }: FileRendererProps) {
   const ext = getFileExtension(filePath)
+  const { commentsEnabled } = useFilePreview()
 
   if (MARKDOWN_EXTS.has(ext)) {
-    return <MarkdownRenderer url={fileUrl} filePath={filePath} />
+    return <MarkdownRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
   }
 
   if (ext === 'html' || ext === 'htm') {
@@ -41,19 +45,23 @@ export function FileRenderer({ filePath, fileUrl, agentSlug }: FileRendererProps
   }
 
   if (CSV_EXTS.has(ext)) {
-    return <CsvRenderer url={fileUrl} filePath={filePath} />
+    return <CsvRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
   }
 
   if (TEXT_EXTS.has(ext)) {
-    return <TextRenderer url={fileUrl} filePath={filePath} />
+    return <TextRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
   }
 
   if (IMAGE_EXTS.has(ext)) {
-    return <ImageRenderer url={fileUrl} filePath={filePath} />
+    return <ImageRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
   }
 
   if (VIDEO_EXTS.has(ext)) {
-    return <VideoRenderer url={fileUrl} filePath={filePath} />
+    return <VideoRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
+  }
+
+  if (AUDIO_EXTS.has(ext)) {
+    return <AudioRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
   }
 
   if (ext === 'pdf') {
@@ -63,7 +71,7 @@ export function FileRenderer({ filePath, fileUrl, agentSlug }: FileRendererProps
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
       }>
-        <PdfRenderer url={fileUrl} filePath={filePath} />
+        <PdfRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
       </Suspense>
     )
   }

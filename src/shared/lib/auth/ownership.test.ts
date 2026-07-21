@@ -9,13 +9,28 @@ const { mockIsAuthMode, mockGetCurrentUserId } = vi.hoisted(() => ({
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: mockIsAuthMode }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: mockGetCurrentUserId }))
 
-import { ownerScope, isOwnedByCaller } from './ownership'
+import { getViewerUserId, ownerScope, isOwnedByCaller } from './ownership'
 import { connectedAccounts } from '@shared/lib/db/schema'
 
 const c = {} as Context
 
 beforeEach(() => {
   vi.clearAllMocks()
+})
+
+describe('getViewerUserId', () => {
+  it('returns null without reading user context in non-auth mode', () => {
+    mockIsAuthMode.mockReturnValue(false)
+    expect(getViewerUserId(c)).toBeNull()
+    expect(mockGetCurrentUserId).not.toHaveBeenCalled()
+  })
+
+  it('returns the acting user in auth mode', () => {
+    mockIsAuthMode.mockReturnValue(true)
+    mockGetCurrentUserId.mockReturnValue('user-123')
+    expect(getViewerUserId(c)).toBe('user-123')
+    expect(mockGetCurrentUserId).toHaveBeenCalledWith(c)
+  })
 })
 
 describe('ownerScope', () => {

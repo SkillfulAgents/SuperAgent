@@ -11,6 +11,9 @@ import { useAgent } from '@renderer/hooks/use-agents'
 import { usePendingMessages } from '@renderer/context/pending-messages-context'
 import { GlobalSettingsPage } from '@renderer/components/settings/global-settings-page'
 import { useDialogs } from '@renderer/context/dialog-context'
+import { FilePreviewProvider } from '@renderer/context/file-preview-context'
+import { WorkflowProvider } from '@renderer/context/workflow-context'
+import { TrayManager } from '@renderer/components/tray/tray-manager'
 
 /**
  * Leaf route components for the agent sub-views. The shared header chrome +
@@ -22,15 +25,26 @@ function useAgentSlug(): string | null {
 }
 
 // The agent `home` index leaf. AgentHome owns its own agent-scoped dialogs and
-// the new-agent morph (via NavTransientContext); this wrapper just resolves the
-// agent + the optimistic-message creator from context. `key` on the slug remounts
-// AgentHome per agent so the morph's first-mount read fires.
+// the new-agent morph (via NavTransientContext); this wrapper resolves the agent,
+// optimistic-message creator, and the read-only file-preview tray used by local
+// bookmarks. `key` on the slug remounts AgentHome per agent so the morph's
+// first-mount read fires.
 export function AgentHomeRoute() {
   const slug = useAgentSlug()
   const { data: agent } = useAgent(slug)
   const { onSessionCreated } = usePendingMessages()
   if (!slug || !agent) return null
-  return <AgentHome key={agent.slug} agent={agent} onSessionCreated={onSessionCreated} />
+  const homePreviewId = `agent-home:${agent.slug}`
+  return (
+    <FilePreviewProvider sessionId={homePreviewId} commentsEnabled={false}>
+      <WorkflowProvider sessionId={homePreviewId}>
+        <div className="file-preview-container relative flex flex-1 min-h-0 min-w-0">
+          <AgentHome key={agent.slug} agent={agent} onSessionCreated={onSessionCreated} />
+          <TrayManager agentSlug={agent.slug} sessionId={homePreviewId} browserActive={false} />
+        </div>
+      </WorkflowProvider>
+    </FilePreviewProvider>
+  )
 }
 
 // api-logs route: the agent slug is read from the URL.
@@ -45,11 +59,14 @@ export function ApiLogsRoute() {
 // present and well-formed, else fall back to list.
 export function ConnectionsRoute() {
   const slug = useAgentSlug()
-  const search = useSearch({ strict: false }) as { detail?: unknown; source?: unknown }
+  const search = useSearch({ strict: false }) as { detail?: unknown; source?: unknown; connectionView?: unknown }
   const detailKey = typeof search.detail === 'string' ? search.detail : undefined
   const source: 'home' | 'list' | undefined =
     search.source === 'home' ? 'home' : search.source === 'list' ? 'list' : undefined
-  const detail = detailKey && source ? { rowKey: detailKey, source } : null
+  const detailView = search.connectionView === 'logs' ? 'logs' as const : undefined
+  const detail = detailKey && source
+    ? { rowKey: detailKey, source, ...(detailView ? { view: detailView } : {}) }
+    : null
   if (!slug) return null
   return <ConnectionsView agentSlug={slug} detail={detail} />
 }
