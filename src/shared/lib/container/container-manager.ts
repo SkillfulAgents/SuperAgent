@@ -113,6 +113,10 @@ class ContainerManager {
     return client
   }
 
+  shouldRunHostAutoSleep(agentId: string): boolean {
+    return this.getClient(agentId).shouldRunHostAutoSleep()
+  }
+
   /**
    * Get cached container info. Returns cached status if available,
    * otherwise returns stopped (will be corrected on next sync).

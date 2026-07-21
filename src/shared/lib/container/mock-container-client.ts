@@ -1831,6 +1831,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   // Lifecycle management
 
+  shouldRunHostAutoSleep(): boolean {
+    return true
+  }
+
   async start(options?: StartOptions): Promise<void> {
     this.running = true
     // Surface the container env that carries the proxy credentials so E2E
