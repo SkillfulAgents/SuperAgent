@@ -76,6 +76,10 @@ class AutoSleepMonitor {
 
       for (const agentId of runningAgentIds) {
         try {
+          if (!containerManager.shouldRunHostAutoSleep(agentId)) {
+            continue
+          }
+
           // Skip if any session is currently processing a request
           if (messagePersister.hasActiveSessionsForAgent(agentId)) {
             continue
