@@ -62,19 +62,37 @@ describe('extractNonceFromUrlText', () => {
 })
 
 describe('extractNonceFromWhereFromsHex', () => {
-  it('recovers the code from xattr hex output of a binary plist', () => {
-    // Real kMDItemWhereFroms values are binary plists; the URL is stored as a
-    // plain UTF-8 run inside, which is all the parser relies on.
+  it('recovers the code from real `xattr -px` output', () => {
+    // Verbatim `xattr -px com.apple.metadata:kMDItemWhereFroms` output
+    // (macOS 15) for a binary-plist WhereFroms of
+    //   [https://updates.gamutagents.com/download/mac?dl=<NONCE>,
+    //    https://platform.gamutagents.com/]
+    // — uppercase hex pairs, 16 per line, trailing space before each newline.
+    const realXattrOutput = [
+      '62 70 6C 69 73 74 30 30 A2 01 02 5F 10 60 68 74 ',
+      '74 70 73 3A 2F 2F 75 70 64 61 74 65 73 2E 67 61 ',
+      '6D 75 74 61 67 65 6E 74 73 2E 63 6F 6D 2F 64 6F ',
+      '77 6E 6C 6F 61 64 2F 6D 61 63 3F 64 6C 3D 61 31 ',
+      '62 32 63 33 64 34 65 35 66 36 61 37 62 38 63 39 ',
+      '64 30 61 31 62 32 63 33 64 34 65 35 66 36 61 37 ',
+      '62 38 63 39 64 30 61 31 62 32 63 33 64 34 5F 10 ',
+      '21 68 74 74 70 73 3A 2F 2F 70 6C 61 74 66 6F 72 ',
+      '6D 2E 67 61 6D 75 74 61 67 65 6E 74 73 2E 63 6F ',
+      '6D 2F 08 0B 6E 00 00 00 00 00 00 01 01 00 00 00 ',
+      '00 00 00 00 03 00 00 00 00 00 00 00 00 00 00 00 ',
+      '00 00 00 00 92',
+      '',
+    ].join('\n')
+    expect(extractNonceFromWhereFromsHex(realXattrOutput)).toBe(NONCE)
+  })
+
+  it('tolerates lowercase, unspaced hex', () => {
     const fakePlist = Buffer.concat([
       Buffer.from('bplist00\xa2\x01\x02_\x10', 'latin1'),
       Buffer.from(`https://updates.gamutagents.com/download/mac?dl=${NONCE}`),
       Buffer.from('_\x10https://platform.gamutagents.com/', 'latin1'),
     ])
-    const hex = fakePlist
-      .toString('hex')
-      .replace(/(..)/g, '$1 ')
-      .trim()
-    expect(extractNonceFromWhereFromsHex(hex)).toBe(NONCE)
+    expect(extractNonceFromWhereFromsHex(fakePlist.toString('hex'))).toBe(NONCE)
   })
 
   it('returns null for empty or malformed output', () => {

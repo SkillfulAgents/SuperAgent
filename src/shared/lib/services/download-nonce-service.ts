@@ -102,9 +102,11 @@ export function extractNoncesFromHdiutilPlist(plistXml: string): string[] {
 
 async function readWhereFromsNonce(targetPath: string): Promise<string | null> {
   try {
+    // -x is required: without it xattr prints the attribute's raw binary
+    // plist bytes, which the hex parser below would reduce to garbage.
     const { stdout } = await execFileAsync(
       'xattr',
-      ['-p', WHERE_FROMS_ATTR, targetPath],
+      ['-px', WHERE_FROMS_ATTR, targetPath],
       { timeout: EXEC_TIMEOUT_MS, maxBuffer: EXEC_MAX_BUFFER },
     )
     return extractNonceFromWhereFromsHex(stdout)
