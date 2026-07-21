@@ -534,7 +534,11 @@ class MessagePersister {
     if (!state) return
     state.pendingInputRequests.delete(toolUseId)
     this.broadcastToSSE(sessionId, { type: 'capability_review_resolved', toolUseId })
-    if (state.pendingInputRequests.size === 0) {
+    // Approval flips the wait from the human to the subagent — an approved
+    // Task/Workflow runs for minutes before its tool_result arrives, so clear the
+    // awaiting light here instead of leaving it stuck until the result lands.
+    if (state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
+      state.isAwaitingInput = false
       this.broadcastGlobal({
         type: 'session_input_provided',
         sessionId,
