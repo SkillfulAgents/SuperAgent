@@ -44,9 +44,11 @@ vi.mock('@shared/lib/services/chat-integration-service', () => ({
 }))
 
 const mockListChatIntegrationSessions = vi.fn()
+const mockGetChatIntegrationSessionBySessionId = vi.fn()
 
 vi.mock('@shared/lib/services/chat-integration-session-service', () => ({
   listChatIntegrationSessions: (...args: unknown[]) => mockListChatIntegrationSessions(...args),
+  getChatIntegrationSessionBySessionId: (...args: unknown[]) => mockGetChatIntegrationSessionBySessionId(...args),
 }))
 
 const mockAddIntegration = vi.fn()
@@ -161,6 +163,7 @@ describe('x-agent chat route', () => {
     mockListChatIntegrationSessions.mockReturnValue([
       { externalChatId: 'chat-1', displayName: 'General', archivedAt: null },
     ])
+    mockGetChatIntegrationSessionBySessionId.mockReturnValue(null)
     mockGetConnector.mockReturnValue(connector)
     mockGetActiveIntegrationIds.mockReturnValue(['integration-1'])
     mockEnsureSession.mockResolvedValue('session-1')
@@ -311,6 +314,116 @@ describe('x-agent chat route', () => {
     expect(res.status).toBe(403)
     expect(await res.json()).toEqual({ error: 'This conversation is not approved for this integration.' })
     expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  // Own-chat guard: a chat-conversation session's replies already stream back
+  // to its chat, so sends into that same chat are rejected as double-posts.
+
+  it('rejects a send from a chat session that omits chat_id (own chat implied)', async () => {
+    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'chat-1', displayName: 'General', archivedAt: null,
+    })
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        integration_id: 'integration-1',
+        message: 'Thanks for the feedback!',
+        session_id: 'caller-session',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    const { error } = await res.json() as { error: string }
+    expect(error).toContain('chat chat-1 (General)')
+    expect(error).toContain('delivered to that chat automatically')
+    expect(mockGetChatIntegrationSessionBySessionId).toHaveBeenCalledWith('caller-session')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects a send from a chat session that explicitly targets its own chat', async () => {
+    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'chat-1', displayName: null, archivedAt: null,
+    })
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        integration_id: 'integration-1',
+        message: 'Thanks for the feedback!',
+        chat_id: 'chat-1',
+        session_id: 'caller-session',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toContain('post it twice')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('allows a chat session to message a different chat on the same integration', async () => {
+    immediateTimeout()
+    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'chat-1', displayName: 'General', archivedAt: null,
+    })
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        integration_id: 'integration-1',
+        message: 'Heads up — your order arrived.',
+        chat_id: 'dm-other-user',
+        session_id: 'caller-session',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(connector.sendMessage).toHaveBeenCalledWith('dm-other-user', { text: 'Heads up — your order arrived.' })
+  })
+
+  it('does not guard sends from an archived chat session (streaming is torn down)', async () => {
+    immediateTimeout()
+    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'chat-1', displayName: 'General', archivedAt: new Date(),
+    })
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        integration_id: 'integration-1',
+        message: 'Follow-up after rotation',
+        chat_id: 'chat-1',
+        session_id: 'caller-session',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(connector.sendMessage).toHaveBeenCalledWith('chat-1', { text: 'Follow-up after rotation' })
+  })
+
+  it('does not guard sends whose calling session serves a different integration', async () => {
+    immediateTimeout()
+    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-2', externalChatId: 'chat-1', displayName: null, archivedAt: null,
+    })
+
+    const res = await app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        integration_id: 'integration-1',
+        message: 'Cross-integration notify',
+        chat_id: 'chat-1',
+        session_id: 'caller-session',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(connector.sendMessage).toHaveBeenCalledWith('chat-1', { text: 'Cross-integration notify' })
   })
 
   it('sends message when the integration has no access restriction (real DB allows it)', async () => {

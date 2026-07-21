@@ -13,6 +13,7 @@ import {
 } from '@shared/lib/services/chat-integration-service'
 import {
   listChatIntegrationSessions,
+  getChatIntegrationSessionBySessionId,
 } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
 import {
@@ -168,7 +169,7 @@ xAgentChat.post('/send', async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
     const body = await c.req.json()
-    const { integration_id, message, chat_id, context } = body
+    const { integration_id, message, chat_id, context, session_id } = body
 
     if (!integration_id || !message) {
       return c.json({ error: 'Missing required fields: integration_id, message' }, 400)
@@ -180,6 +181,29 @@ xAgentChat.post('/send', async (c) => {
     }
     if (integration.agentSlug !== callerSlug) {
       return c.json({ error: 'Chat integration does not belong to this agent' }, 403)
+    }
+
+    // A session spawned BY a chat conversation already has its replies streamed
+    // back to that chat, so a send targeting its own chat would double-post —
+    // and omitting chat_id historically made such agents guess a target from
+    // the integration-wide list and misroute DMs. Reject both; explicit sends
+    // to a DIFFERENT chat stay allowed (the legitimate "DM someone while
+    // responding in a channel" case). Archived rows don't guard: once a chat
+    // session is rotated out, its SSE forwarding is torn down, so an outbound
+    // send is the only remaining delivery path.
+    if (session_id) {
+      const callerChatSession = getChatIntegrationSessionBySessionId(session_id)
+      if (
+        callerChatSession
+        && !callerChatSession.archivedAt
+        && callerChatSession.integrationId === integration_id
+        && (!chat_id || chat_id === callerChatSession.externalChatId)
+      ) {
+        const label = callerChatSession.displayName ? ` (${callerChatSession.displayName})` : ''
+        return c.json({
+          error: `Not sent: this session IS the live conversation for chat ${callerChatSession.externalChatId}${label}. Everything you write in your response is delivered to that chat automatically — sending it here too would post it twice. To message a different chat, pass its chat_id (see list_chat_integrations).`,
+        }, 400)
+      }
     }
 
     // Resolve chatId
