@@ -29,6 +29,18 @@ afterEach(() => {
 })
 
 describe('AudioRenderer', () => {
+  it('hides annotation controls in a read-only preview', () => {
+    render(
+      <AudioRenderer
+        url="/voice-note.mp3"
+        filePath="/workspace/voice-note.mp3"
+        commentsEnabled={false}
+      />,
+    )
+
+    expect(screen.queryByTestId('audio-add-comment')).not.toBeInTheDocument()
+  })
+
   it('renders custom playback controls and a waveform timeline', () => {
     render(<AudioRenderer url="/voice-note.mp3" filePath="/workspace/voice-note.mp3" />)
 

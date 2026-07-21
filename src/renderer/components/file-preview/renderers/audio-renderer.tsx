@@ -8,6 +8,7 @@ import { createFallbackWaveform, createWaveformPeaks } from './audio-waveform'
 interface AudioRendererProps {
   url: string
   filePath: string
+  commentsEnabled?: boolean
 }
 
 interface PendingComment {
@@ -33,7 +34,7 @@ function getFilename(filePath: string): string {
   return filePath.split('/').pop() || filePath
 }
 
-export function AudioRenderer({ url, filePath }: AudioRendererProps) {
+export function AudioRenderer({ url, filePath, commentsEnabled = true }: AudioRendererProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const timelineRef = useRef<HTMLDivElement>(null)
   const hoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -222,8 +223,8 @@ export function AudioRenderer({ url, filePath }: AudioRendererProps) {
         <div
           className="group relative h-28 rounded-lg border border-border/60 bg-muted/30 focus-within:ring-1 focus-within:ring-primary"
           data-testid="audio-waveform"
-          onPointerMove={handlePointerMove}
-          onPointerLeave={scheduleHoverClose}
+          onPointerMove={commentsEnabled ? handlePointerMove : undefined}
+          onPointerLeave={commentsEnabled ? scheduleHoverClose : undefined}
         >
           {/* Every time-based element lives in this shared inset coordinate
               system so a ratio maps to the same physical x-position. */}
@@ -283,7 +284,7 @@ export function AudioRenderer({ url, filePath }: AudioRendererProps) {
               />
             )}
 
-            {commentMarkers.map((comment, index) => (
+            {commentsEnabled && commentMarkers.map((comment, index) => (
               <button
                 key={comment.id}
                 type="button"
@@ -310,7 +311,7 @@ export function AudioRenderer({ url, filePath }: AudioRendererProps) {
               data-testid="audio-seek"
             />
 
-            {hoverTime != null && !pending && (
+            {commentsEnabled && hoverTime != null && !pending && (
               <div
                 className="pointer-events-none absolute -top-2 z-40 -translate-x-1/2 -translate-y-full pb-1"
                 style={{ left: `${hoverRatio * 100}%` }}
@@ -336,7 +337,7 @@ export function AudioRenderer({ url, filePath }: AudioRendererProps) {
               </div>
             )}
 
-            {pending && (
+            {commentsEnabled && pending && (
               <CommentOverlay
                 selection={{ text: '', rect: pending.rect, timestamp: pending.timestamp }}
                 filePath={filePath}
@@ -360,16 +361,18 @@ export function AudioRenderer({ url, filePath }: AudioRendererProps) {
           <span className="text-xs tabular-nums text-muted-foreground">
             {formatMediaTime(currentTime)} / {formatMediaTime(duration)}
           </span>
-          <button
-            type="button"
-            onClick={() => beginComment(currentTime)}
-            disabled={pending != null}
-            className="ml-auto flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
-            data-testid="audio-add-comment"
-          >
-            <MessageSquarePlus className="h-3.5 w-3.5" />
-            Add Comment
-          </button>
+          {commentsEnabled && (
+            <button
+              type="button"
+              onClick={() => beginComment(currentTime)}
+              disabled={pending != null}
+              className="ml-auto flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-50"
+              data-testid="audio-add-comment"
+            >
+              <MessageSquarePlus className="h-3.5 w-3.5" />
+              Add Comment
+            </button>
+          )}
         </div>
       </div>
     </div>

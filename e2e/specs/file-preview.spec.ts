@@ -105,6 +105,9 @@ test.describe('File Preview', () => {
 
     await expect(markdown(page).getByRole('heading', { name: 'Version 1' })).toBeVisible({ timeout: 10000 })
 
+    // The file tray intentionally overlays the composer. Close it before asking
+    // the agent to deliver the updated version, then reopen it from the new pill.
+    await page.getByRole('button', { name: 'Hide files panel' }).click()
     seedWorkspaceFile(agentSlug, 'output/report.md', '# Version 2')
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
@@ -283,11 +286,11 @@ test.describe('File Preview', () => {
       const header = page.getByTestId('file-preview-header')
       await expect(header).toBeVisible({ timeout: 5000 })
 
-      // Poll: the drawer animates open (300ms width transition), during which
-      // header controls are transiently clipped even in the fixed layout.
+      // Poll while the full-width tray slides in. Compact mode replaces the
+      // right-side panel control with a left-side close button.
       const viewportWidth = page.viewportSize()!.width
       await expect(async () => {
-        for (const control of [header.getByTitle('Download file'), header.getByTitle('Hide files panel')]) {
+        for (const control of [header.getByTitle('Close file preview'), header.getByTitle('Download file')]) {
           await expect(control).toBeVisible()
           const box = await control.boundingBox()
           expect(box).not.toBeNull()
@@ -317,6 +320,10 @@ test.describe('File Preview', () => {
     await reportPill.click()
     await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
     await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 10000 })
+
+    // The overlay covers the composer by design, so close it before delivering
+    // the next file. Existing tabs remain available when the tray reopens.
+    await page.getByRole('button', { name: 'Hide files panel' }).click()
 
     // Deliver and open the image file → second tab, image renderer.
     await sessionPage.sendMessage('deliver image')
