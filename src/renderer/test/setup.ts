@@ -18,6 +18,24 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
   }) as unknown as MediaQueryList
 }
 
+// jsdom has no ResizeObserver; recharts' ResponsiveContainer (used by the home
+// page usage sparklines) needs it. Stub it as a no-op so chart-rendering
+// components can mount in tests.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+}
+
+// jsdom doesn't implement canvas; the Halftone banner calls getContext('2d').
+// Stub it to null so the component takes its no-context bail path quietly
+// (instead of jsdom logging "Not implemented" for every card it renders).
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = () => null
+}
+
 const signIn = {
   email: vi.fn(),
   oauth2: vi.fn(),
