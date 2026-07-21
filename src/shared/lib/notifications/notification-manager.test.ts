@@ -166,6 +166,19 @@ describe('triggerSessionWaitingInput — NOT gated by automated-session flag', (
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'file')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
+
+  it('names the capability under review — a workflow launch is not "launch agents"', async () => {
+    mockGetSessionMetadata.mockResolvedValue(null)
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'capability_review_workflows')
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('wants to run a workflow') })
+    )
+
+    await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', 'capability_review_subagents')
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('wants to launch a subagent') })
+    )
+  })
 })
 
 describe('session_waiting promotes automated sessions to interactive', () => {
