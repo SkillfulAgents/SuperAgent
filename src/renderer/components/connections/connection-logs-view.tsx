@@ -14,7 +14,7 @@ import {
   RequestLogsTable,
 } from '@renderer/components/api-logs/request-logs-table'
 import type { UnifiedRow } from '@renderer/components/connections/unified-rows'
-import type { RequestLogPage } from '@shared/lib/types/request-log'
+import { requestLogPageSchema } from '@shared/lib/types/request-log'
 
 interface ConnectionLogsViewProps {
   row: UnifiedRow
@@ -33,14 +33,14 @@ export function ConnectionLogsView({ row, onBack }: ConnectionLogsViewProps) {
 
   useEffect(() => setPage(0), [row.key])
 
-  const { data, isLoading, refetch, isRefetching } = useQuery<RequestLogPage>({
+  const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['connection-request-log', kind, row.id, page],
     queryFn: async () => {
       const response = await apiFetch(
         `/api/connection-logs/${kind}/${encodeURIComponent(row.id)}?offset=${page * REQUEST_LOG_PAGE_SIZE}&limit=${REQUEST_LOG_PAGE_SIZE}`,
       )
       if (!response.ok) throw new Error('Failed to fetch connection request logs')
-      return response.json()
+      return requestLogPageSchema.parse(await response.json())
     },
   })
 

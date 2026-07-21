@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type { McpAuditLogEntry, ProxyAuditLogEntry } from '@shared/lib/db/schema'
 
 export interface RequestLogEntry {
@@ -20,6 +21,26 @@ export interface RequestLogPage {
   entries: RequestLogEntry[]
   total: number
 }
+
+export const requestLogEntrySchema = z.object({
+  id: z.string(),
+  source: z.enum(['proxy', 'mcp']),
+  agentSlug: z.string(),
+  label: z.string(),
+  targetUrl: z.string(),
+  method: z.string(),
+  statusCode: z.number().nullable(),
+  errorMessage: z.string().nullable(),
+  durationMs: z.number().nullable(),
+  policyDecision: z.string().nullable(),
+  matchedScopes: z.string().nullable(),
+  createdAt: z.string(),
+}) satisfies z.ZodType<RequestLogEntry>
+
+export const requestLogPageSchema = z.object({
+  entries: z.array(requestLogEntrySchema),
+  total: z.number().int().nonnegative(),
+}) satisfies z.ZodType<RequestLogPage>
 
 export function normalizeProxyRequestLog(entry: ProxyAuditLogEntry): RequestLogEntry {
   return {

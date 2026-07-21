@@ -7,25 +7,17 @@ import {
   proxyAuditLog,
   remoteMcpServers,
 } from '@shared/lib/db/schema'
-import { getViewerUserId } from '@shared/lib/auth/ownership'
+import { ownerScope } from '@shared/lib/auth/ownership'
 import {
   normalizeMcpRequestLog,
   normalizeProxyRequestLog,
 } from '@shared/lib/types/request-log'
 import { Authenticated } from '../middleware/auth'
+import { parsePagination } from '../pagination'
 
 const connectionLogsRouter = new Hono()
 
 connectionLogsRouter.use('*', Authenticated())
-
-function parsePagination(rawOffset: string | undefined, rawLimit: string | undefined) {
-  const parsedOffset = Number.parseInt(rawOffset ?? '0', 10)
-  const parsedLimit = Number.parseInt(rawLimit ?? '20', 10)
-  return {
-    offset: Number.isFinite(parsedOffset) ? Math.max(0, parsedOffset) : 0,
-    limit: Number.isFinite(parsedLimit) ? Math.min(100, Math.max(1, parsedLimit)) : 20,
-  }
-}
 
 /**
  * Connection-wide request logs. Ownership is checked against the selected
@@ -39,7 +31,6 @@ connectionLogsRouter.get('/:kind/:id', async (c) => {
     }
 
     const id = c.req.param('id')
-    const ownerId = getViewerUserId(c)
     const { offset, limit } = parsePagination(c.req.query('offset'), c.req.query('limit'))
 
     if (kind === 'account') {
@@ -48,7 +39,7 @@ connectionLogsRouter.get('/:kind/:id', async (c) => {
         .from(connectedAccounts)
         .where(and(
           eq(connectedAccounts.id, id),
-          ownerId ? eq(connectedAccounts.userId, ownerId) : undefined,
+          ownerScope(c, connectedAccounts.userId),
         ))
         .limit(1)
 
@@ -79,7 +70,7 @@ connectionLogsRouter.get('/:kind/:id', async (c) => {
       .from(remoteMcpServers)
       .where(and(
         eq(remoteMcpServers.id, id),
-        ownerId ? eq(remoteMcpServers.userId, ownerId) : undefined,
+        ownerScope(c, remoteMcpServers.userId),
       ))
       .limit(1)
 

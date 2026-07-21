@@ -109,7 +109,7 @@ export function ActivitySparkChart({ label, data, className }: ActivitySparkChar
 const activityChartConfig = {
   succeeded: {
     label: 'Succeeded',
-    color: 'hsl(142 71% 45%)',
+    color: 'hsl(160 84% 39%)',
   },
   failed: {
     label: 'Failed',

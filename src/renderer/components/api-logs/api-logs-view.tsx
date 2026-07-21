@@ -11,7 +11,7 @@ import {
   RequestLogsTable,
 } from '@renderer/components/api-logs/request-logs-table'
 import { useRenderTracker } from '@renderer/lib/perf'
-import type { RequestLogPage } from '@shared/lib/types/request-log'
+import { requestLogPageSchema } from '@shared/lib/types/request-log'
 
 interface ApiLogsViewProps {
   agentSlug: string
@@ -27,14 +27,14 @@ export function ApiLogsView({ agentSlug }: ApiLogsViewProps) {
     track('api_logs_viewed')
   }, [track])
 
-  const { data, isLoading, refetch, isRefetching } = useQuery<RequestLogPage>({
+  const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['agent-audit-log', agentSlug, page],
     queryFn: async () => {
       const res = await apiFetch(
         `/api/agents/${agentSlug}/audit-log?offset=${page * REQUEST_LOG_PAGE_SIZE}&limit=${REQUEST_LOG_PAGE_SIZE}`,
       )
       if (!res.ok) throw new Error('Failed to fetch audit log')
-      return res.json()
+      return requestLogPageSchema.parse(await res.json())
     },
   })
 

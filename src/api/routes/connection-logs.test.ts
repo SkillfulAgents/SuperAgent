@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   limited: vi.fn(),
   offset: vi.fn(),
   viewerUserId: 'user-1' as string | null,
+  ownerScope: vi.fn(),
 }))
 
 vi.mock('../middleware/auth', () => ({
@@ -16,7 +17,7 @@ vi.mock('../middleware/auth', () => ({
 }))
 
 vi.mock('@shared/lib/auth/ownership', () => ({
-  getViewerUserId: () => mocks.viewerUserId,
+  ownerScope: (...args: unknown[]) => mocks.ownerScope(...args),
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
@@ -87,6 +88,9 @@ describe('connection request logs API', () => {
     mocks.auditRows = []
     mocks.total = 0
     mocks.viewerUserId = 'user-1'
+    mocks.ownerScope.mockImplementation((_context, column) => (
+      mocks.viewerUserId === null ? undefined : { eq: [column, mocks.viewerUserId] }
+    ))
   })
 
   it('returns normalized, paginated API requests for an owned account', async () => {
@@ -160,6 +164,16 @@ describe('connection request logs API', () => {
       targetUrl: '/tools/call',
       matchedScopes: '["search_docs"]',
     })
+  })
+
+  it('falls back to safe pagination defaults for invalid query values', async () => {
+    const response = await createApp().request(
+      'http://localhost/api/connection-logs/account/connection-1?offset=invalid&limit=invalid',
+    )
+
+    expect(response.status).toBe(200)
+    expect(mocks.limited).toHaveBeenCalledWith(20)
+    expect(mocks.offset).toHaveBeenCalledWith(0)
   })
 
   it('does not expose logs when the owned connection cannot be resolved', async () => {

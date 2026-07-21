@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { getPolyfillJs } from '../speech-recognition-polyfill'
 import { getLlmPolyfillJs } from '../llm-polyfill'
+import { parsePagination } from '../pagination'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole } from '../middleware/auth'
 import {
   listAgentsWithStatus,
@@ -4087,8 +4088,7 @@ agents.get('/:id/audit-log', AgentAdmin(), async (c) => {
   try {
     const slug = getAgentId(c)
 
-    const offset = parseInt(c.req.query('offset') ?? '0', 10)
-    const limit = Math.min(parseInt(c.req.query('limit') ?? '20', 10), 100)
+    const { offset, limit } = parsePagination(c.req.query('offset'), c.req.query('limit'))
 
     // Fetch a window from each table (offset+limit from each, already sorted by time desc)
     // then merge, sort, and slice for the requested page
