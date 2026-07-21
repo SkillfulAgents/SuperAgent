@@ -7,11 +7,12 @@ import { useFileContent } from './use-file-content'
 interface TextRendererProps {
   url: string
   filePath: string
+  commentsEnabled?: boolean
 }
 
-export function TextRenderer({ url, filePath }: TextRendererProps) {
+export function TextRenderer({ url, filePath, commentsEnabled = true }: TextRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const { selection, clearSelection } = useTextSelection(containerRef)
+  const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
 
   const { data, isLoading, error } = useFileContent(url)
   const sizeTruncated = data?.truncated ?? false

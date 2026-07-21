@@ -19,15 +19,16 @@ try {
 interface PdfRendererProps {
   url: string
   filePath: string
+  commentsEnabled?: boolean
 }
 
-export function PdfRenderer({ url, filePath }: PdfRendererProps) {
+export function PdfRenderer({ url, filePath, commentsEnabled = true }: PdfRendererProps) {
   const [numPages, setNumPages] = useState<number | null>(null)
   const [currentPage, setCurrentPage] = useState(1)
   const [loadError, setLoadError] = useState(false)
   const [pageWidth, setPageWidth] = useState(400)
   const containerRef = useRef<HTMLDivElement>(null)
-  const { selection, clearSelection } = useTextSelection(containerRef)
+  const { selection, clearSelection } = useTextSelection(containerRef, commentsEnabled)
 
   const updateWidth = useCallback(() => {
     if (containerRef.current) {

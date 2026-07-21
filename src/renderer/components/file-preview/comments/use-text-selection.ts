@@ -12,7 +12,7 @@ export interface TextSelectionInfo {
   timestamp?: number
 }
 
-export function useTextSelection(containerRef: RefObject<HTMLElement | null>) {
+export function useTextSelection(containerRef: RefObject<HTMLElement | null>, enabled = true) {
   const [selection, setSelection] = useState<TextSelectionInfo | null>(null)
 
   const clearSelection = useCallback(() => {
@@ -22,7 +22,7 @@ export function useTextSelection(containerRef: RefObject<HTMLElement | null>) {
 
   useEffect(() => {
     const container = containerRef.current
-    if (!container) return
+    if (!container || !enabled) return
 
     const handleMouseUp = () => {
       requestAnimationFrame(() => {
@@ -57,11 +57,11 @@ export function useTextSelection(containerRef: RefObject<HTMLElement | null>) {
     return () => {
       container.removeEventListener('mouseup', handleMouseUp)
     }
-  }, [containerRef])
+  }, [containerRef, enabled])
 
   // Dismiss the pending comment affordance on any mousedown, unless the click
   // is inside the comment overlay itself (marked with data-comment-overlay).
-  useDismissOnOutsideClick(selection != null, () => setSelection(null), DISMISS_IGNORE)
+  useDismissOnOutsideClick(enabled && selection != null, () => setSelection(null), DISMISS_IGNORE)
 
   return { selection, clearSelection }
 }
