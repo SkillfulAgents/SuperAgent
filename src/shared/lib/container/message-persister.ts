@@ -1281,8 +1281,16 @@ class MessagePersister {
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
           break
         }
-        // Clear awaiting input when tool results arrive (user provided input)
-        if (state.isAwaitingInput) {
+        // Tool results come as 'user' type messages. Delete the resolved input
+        // requests from the pending map FIRST (handleToolResults does the delete)
+        // so the both-shelves check below reflects only requests still open.
+        this.handleToolResults(sessionId, content)
+        // Clear awaiting only when no genuine wait remains across BOTH shelves.
+        // A background subagent's ask (or a parallel top-level ask, or a pending
+        // computer_use) can still need the human while this main-agent tool_result
+        // lands — the old unconditional clear dropped the "needs input" pill in
+        // those cases. Same rule as every other clear site.
+        if (state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
           state.isAwaitingInput = false
           this.broadcastGlobal({
             type: 'session_input_provided',
@@ -1290,8 +1298,6 @@ class MessagePersister {
             agentSlug: state.agentSlug,
           })
         }
-        // Tool results come as 'user' type messages
-        this.handleToolResults(sessionId, content)
         // Broadcast refresh so frontend can detect the persisted user message
         // and clear the optimistic pending copy promptly.
         this.broadcastToSSE(sessionId, { type: 'messages_updated' })
