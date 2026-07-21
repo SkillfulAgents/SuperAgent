@@ -2750,6 +2750,104 @@ describe('MessagePersister', () => {
 
         cleanup()
       })
+
+      // The resolve side of the same asymmetry: a subagent's tool_result comes
+      // back on the SIDECHAIN (parent_tool_use_id set), which never reaches the
+      // main-path 'user' handler that clears isAwaitingInput and drops the
+      // replayable card. After the user clicks Complete, the subagent resumes —
+      // the UI must stop saying "needs input" and must not replay a stale card.
+      function sendSidechainBrowserInputRequest(parentToolId: string, subToolId: string) {
+        mockClient._sendMessage({
+          type: 'assistant',
+          parent_tool_use_id: parentToolId,
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: subToolId,
+                name: 'mcp__user-input__request_browser_input',
+                input: { message: 'Log in to GitHub.', requirements: [] },
+              },
+            ],
+          },
+        })
+      }
+
+      it('clears awaiting state and the replayable card when the sidechain tool_result arrives', () => {
+        const { events: globalEvents, cleanup } = collectGlobalEvents()
+
+        sendSidechainBrowserInputRequest('agent-tool-3', 'sub-tool-3')
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+
+        sseEvents.length = 0
+
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'agent-tool-3',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'sub-tool-3',
+                content: 'User has completed the requested browser interaction.',
+              },
+            ],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(0)
+        // Same broadcast the main path uses — other windows drop their card copy off it
+        const results = sseEvents.filter(e => e.type === 'tool_result')
+        expect(results).toHaveLength(1)
+        expect(results[0].toolUseId).toBe('sub-tool-3')
+        expect(globalEvents.filter(e => e.type === 'session_input_provided')).toHaveLength(1)
+
+        cleanup()
+      })
+
+      it('does not clear awaiting state on unrelated sidechain tool results', () => {
+        sendSidechainBrowserInputRequest('agent-tool-4', 'sub-tool-4')
+
+        // An ordinary subagent tool result (e.g. Bash) while the request is open
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'agent-tool-4',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'other-tool-9', content: 'file listing' },
+            ],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+      })
+
+      it('keeps awaiting when another input request is still open after the sidechain result', () => {
+        // Main-agent question open in parallel with the subagent's browser input
+        simulateToolUse('AskUserQuestion', 'main-q-1', {
+          questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+        })
+        sendSidechainBrowserInputRequest('agent-tool-5', 'sub-tool-5')
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(2)
+
+        // Only the subagent's request resolves
+        mockClient._sendMessage({
+          type: 'user',
+          parent_tool_use_id: 'agent-tool-5',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'sub-tool-5', content: 'done' },
+            ],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)).toHaveLength(1)
+        expect(messagePersister.getPendingInputRequests(SESSION_ID)[0].toolUseId).toBe('main-q-1')
+      })
     })
 
     it('does NOT set isAwaitingInput for schedule_task tool', () => {

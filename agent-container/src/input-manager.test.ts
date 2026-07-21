@@ -474,6 +474,11 @@ describe('InputManager', () => {
       const toolUseId = `rbt-tool-${Date.now()}`
       inputManager.setCurrentToolUseId(toolUseId)
 
+      // The handler only registers a pending while a browser is active
+      // (see the browser-lifecycle guard test file)
+      const { setBrowserState, resetBrowserState } = await import('./browser-state')
+      setBrowserState({ active: true, sessionId: 'rbt-sess', cdpUrl: 'ws://127.0.0.1:9222' })
+
       const { requestBrowserInputTool } = await import('./tools/request-browser-input')
       const handler = (requestBrowserInputTool as any).handler
 
@@ -492,6 +497,8 @@ describe('InputManager', () => {
       expect(result.isError).toBe(true)
       expect(result.content[0].text).toContain('Browser input request cancelled')
       expect(result.content[0].text).toContain('The browser was closed')
+
+      resetBrowserState()
     })
   })
 })

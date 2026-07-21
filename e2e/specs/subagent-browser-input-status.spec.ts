@@ -42,6 +42,27 @@ test.describe('Subagent Browser Input Status', () => {
     await agentPage.waitForStatus('awaiting_input', 15000)
   })
 
+  test('completing the request clears awaiting while the subagent resumes, then the session settles', async ({ page }, testInfo) => {
+    await sessionPage.sendMessage(`subagent browser input ${uniqueSuffix(testInfo)}`)
+
+    await expect(page.getByTestId('browser-input-request')).toBeVisible({ timeout: 15000 })
+    await agentPage.waitForStatus('awaiting_input', 15000)
+
+    await page.getByTestId('browser-input-complete-btn').click()
+
+    // The subagent's tool_result comes back on the SIDECHAIN (the mock
+    // preserves parent_tool_use_id) and the subagent resumes: the card must
+    // drop and the status must leave awaiting_input BEFORE the session
+    // settles — the mock holds the turn open ~2.5s after the resolve.
+    // Regression: the sidechain result path never cleared isAwaitingInput,
+    // so the UI stayed "needs input" behind a stale, replayable card.
+    await expect(page.getByTestId('browser-input-request')).toHaveCount(0, { timeout: 10000 })
+    await agentPage.waitForStatus('working', 5000)
+
+    // …and the turn then completes normally.
+    await agentPage.waitForStatus('idle', 15000)
+  })
+
   test('declining the subagent browser input request returns the agent to idle', async ({ page }, testInfo) => {
     await sessionPage.sendMessage(`subagent browser input ${uniqueSuffix(testInfo)}`)
 
