@@ -245,6 +245,16 @@ describe('AgentHome', () => {
     expect(screen.getByText('Test Agent')).toBeInTheDocument()
   })
 
+  it('keeps the non-owner layout full-width below the desktop breakpoint', () => {
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    const layout = screen.getByTestId('agent-home-layout')
+    expect(layout).toHaveClass('w-full', 'xl:max-w-2xl')
+    expect(layout).not.toHaveClass('max-w-2xl')
+  })
+
   it('reuses the agent context menu on the agent title', () => {
     renderWithProviders(
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
