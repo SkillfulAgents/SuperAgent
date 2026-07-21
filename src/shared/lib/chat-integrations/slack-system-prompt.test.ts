@@ -173,6 +173,21 @@ describe('buildSlackSystemPrompt', () => {
     expect(prompt).toContain('a message thread in channel C0BBB222')
   })
 
+  it('still classifies an unnamed top-level channel as a channel, not a DM', () => {
+    // resolveChannelName returns undefined when conversations.info fails, so a
+    // missing chatName must not demote a channel to DM treatment.
+    const prompt = buildSlackSystemPrompt({ chatId: 'C0BBB222', userName: 'Iddo Gino' })
+    expect(prompt).toContain('a channel (id C0BBB222)')
+    expect(prompt).not.toContain('direct message conversation')
+    expect(prompt).toContain('[Jane Doe]')
+  })
+
+  it('classifies unnamed private groups (G-prefix) as group contexts', () => {
+    const prompt = buildSlackSystemPrompt({ chatId: 'G0CCC333', userName: 'Iddo Gino' })
+    expect(prompt).toContain('a channel (id G0CCC333)')
+    expect(prompt).toContain('[Jane Doe]')
+  })
+
   it('always explains automatic delivery and forbids self-sends', () => {
     for (const message of [
       { chatId: 'D0AAA111', userName: 'Iddo Gino' },
