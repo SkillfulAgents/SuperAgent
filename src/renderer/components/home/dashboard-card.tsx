@@ -3,12 +3,12 @@ import { getApiBaseUrl } from '@renderer/lib/env'
 import { SquareMousePointer, ArrowUpRight } from 'lucide-react'
 import type { ApiAgentDashboard } from '@shared/lib/types/api'
 
-function CardContent({ screenshotUrl }: { screenshotUrl: string | null }) {
+function CardContent({ screenshotUrl, objectClass = 'object-top' }: { screenshotUrl: string | null; objectClass?: string }) {
   return screenshotUrl ? (
     <img
       src={screenshotUrl}
       alt=""
-      className="absolute inset-0 h-full w-full object-cover object-top"
+      className={`absolute inset-0 h-full w-full object-cover ${objectClass}`}
       loading="lazy"
       draggable={false}
     />
@@ -23,10 +23,13 @@ export function DashboardCard({
   dashboard,
   agentSlug,
   variant = 'push',
+  align = 'top',
 }: {
   dashboard: ApiAgentDashboard
   agentSlug: string
-  variant?: 'overlay' | 'push'
+  variant?: 'fill' | 'push'
+  /** Screenshot crop anchor for the fill variant (Small tiles read better top-left). */
+  align?: 'top' | 'top-left'
 }) {
   const linkProps = {
     to: '/agents/$slug/dashboards/$dashSlug',
@@ -37,22 +40,21 @@ export function DashboardCard({
     ? `${getApiBaseUrl()}/api/agents/${encodeURIComponent(agentSlug)}/artifacts/${encodeURIComponent(dashboard.slug)}/screenshot.png`
     : null
 
-  if (variant === 'overlay') {
+  if (variant === 'fill') {
+    // Fills its container (a widget-grid tile) — the screenshot is just the card.
     return (
-      <div className="relative h-24 group z-0 hover:z-20 [transition:z-index_0s_420ms] hover:[transition:z-index_0s]">
-        <AppLink
-          {...linkProps}
-          className="absolute inset-x-0 top-0 h-24 group-hover:h-40 group-hover:scale-x-[1.04] group-hover:shadow-lg rounded-lg border bg-card hover:border-accent-foreground/20 text-left overflow-hidden origin-top [transition:transform_150ms_ease-out,height_300ms_cubic-bezier(0.2,0.8,0.2,1)_120ms,box-shadow_250ms_ease-out,border-color_200ms_ease-out]"
-        >
-          <CardContent screenshotUrl={screenshotUrl} />
-          <div className="relative z-10 flex h-full flex-col items-end justify-end p-3 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
-            <span className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-3 h-8 text-xs font-medium shadow-sm [&_svg]:size-4">
-              Open app
-              <ArrowUpRight />
-            </span>
-          </div>
-        </AppLink>
-      </div>
+      <AppLink
+        {...linkProps}
+        className="group relative block h-full w-full overflow-hidden rounded-lg border bg-card text-left shadow-sm transition-[box-shadow,border-color] duration-150 hover:border-accent-foreground/20 group-hover/widget:shadow-md"
+      >
+        <CardContent screenshotUrl={screenshotUrl} objectClass={align === 'top-left' ? 'object-left-top' : 'object-top'} />
+        <div className="relative z-10 flex h-full flex-col items-end justify-end p-2.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+          <span className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 h-6 text-xs font-medium shadow-sm [&_svg]:size-3.5">
+            Open app
+            <ArrowUpRight />
+          </span>
+        </div>
+      </AppLink>
     )
   }
 
