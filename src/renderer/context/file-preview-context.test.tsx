@@ -36,6 +36,7 @@ describe('FilePreviewContext', () => {
       expect(result.current.openFiles[0].filePath).toBe('/workspace/report.md')
       expect(result.current.openFiles[0].displayName).toBe('report.md')
       expect(result.current.openFiles[0].version).toBe(0)
+      expect(result.current.openFiles[0].pdfPage).toBe(1)
       expect(result.current.isOpen).toBe(true)
       expect(result.current.activeFileIndex).toBe(0)
     })
@@ -60,6 +61,34 @@ describe('FilePreviewContext', () => {
 
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))
       expect(result.current.openFiles[0].version).toBe(2)
+    })
+  })
+
+  describe('PDF pagination', () => {
+    it('keeps a separate page for each open file', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('/workspace/long.pdf', 'agent-1'))
+      act(() => result.current.openFile('/workspace/short.pdf', 'agent-1'))
+
+      act(() => result.current.setPdfPage('/workspace/long.pdf', 8))
+      act(() => result.current.setPdfPage('/workspace/short.pdf', 2))
+
+      expect(result.current.openFiles[0].pdfPage).toBe(8)
+      expect(result.current.openFiles[1].pdfPage).toBe(2)
+
+      act(() => result.current.setActiveFile(0))
+      expect(result.current.openFiles[result.current.activeFileIndex].pdfPage).toBe(8)
+      act(() => result.current.setActiveFile(1))
+      expect(result.current.openFiles[result.current.activeFileIndex].pdfPage).toBe(2)
+    })
+
+    it('clamps page updates to the first page', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('/workspace/report.pdf', 'agent-1'))
+
+      act(() => result.current.setPdfPage('/workspace/report.pdf', 0))
+
+      expect(result.current.openFiles[0].pdfPage).toBe(1)
     })
   })
 

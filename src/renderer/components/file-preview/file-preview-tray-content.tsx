@@ -15,7 +15,7 @@ function getRelativePath(filePath: string): string {
 }
 
 export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
-  const { openFiles, activeFileIndex, setActiveFile, closeFile, comments } = useFilePreview()
+  const { openFiles, activeFileIndex, setActiveFile, setPdfPage, closeFile, comments } = useFilePreview()
 
   const activeFile = openFiles[activeFileIndex]
   if (!activeFile) return null
@@ -74,6 +74,8 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
           filePath={activeFile.filePath}
           fileUrl={fileUrl}
           agentSlug={activeFile.agentSlug}
+          pdfPage={activeFile.pdfPage}
+          onPdfPageChange={(page) => setPdfPage(activeFile.filePath, page)}
         />
       </div>
 

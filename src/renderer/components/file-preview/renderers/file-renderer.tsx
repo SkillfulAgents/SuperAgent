@@ -30,9 +30,17 @@ interface FileRendererProps {
   filePath: string
   fileUrl: string
   agentSlug: string
+  pdfPage?: number
+  onPdfPageChange?: (page: number) => void
 }
 
-export function FileRenderer({ filePath, fileUrl, agentSlug }: FileRendererProps) {
+export function FileRenderer({
+  filePath,
+  fileUrl,
+  agentSlug,
+  pdfPage = 1,
+  onPdfPageChange = () => {},
+}: FileRendererProps) {
   const ext = getFileExtension(filePath)
   const { commentsEnabled } = useFilePreview()
 
@@ -71,7 +79,14 @@ export function FileRenderer({ filePath, fileUrl, agentSlug }: FileRendererProps
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
       }>
-        <PdfRenderer url={fileUrl} filePath={filePath} commentsEnabled={commentsEnabled} />
+        <PdfRenderer
+          key={`${filePath}:${fileUrl}`}
+          url={fileUrl}
+          filePath={filePath}
+          pageNumber={pdfPage}
+          onPageChange={onPdfPageChange}
+          commentsEnabled={commentsEnabled}
+        />
       </Suspense>
     )
   }

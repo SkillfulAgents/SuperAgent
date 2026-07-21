@@ -19,12 +19,19 @@ try {
 interface PdfRendererProps {
   url: string
   filePath: string
+  pageNumber: number
+  onPageChange: (page: number) => void
   commentsEnabled?: boolean
 }
 
-export function PdfRenderer({ url, filePath, commentsEnabled = true }: PdfRendererProps) {
+export function PdfRenderer({
+  url,
+  filePath,
+  pageNumber,
+  onPageChange,
+  commentsEnabled = true,
+}: PdfRendererProps) {
   const [numPages, setNumPages] = useState<number | null>(null)
-  const [currentPage, setCurrentPage] = useState(1)
   const [loadError, setLoadError] = useState(false)
   const [pageWidth, setPageWidth] = useState(400)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -43,11 +50,19 @@ export function PdfRenderer({ url, filePath, commentsEnabled = true }: PdfRender
     return () => observer.disconnect()
   }, [updateWidth])
 
+  const currentPage = numPages ? Math.min(pageNumber, numPages) : pageNumber
+
+  const handleLoadSuccess = ({ numPages: loadedPages }: { numPages: number }) => {
+    setNumPages(loadedPages)
+    setLoadError(false)
+    if (pageNumber > loadedPages) onPageChange(loadedPages)
+  }
+
   return (
     <div ref={containerRef} className="relative flex flex-col items-center">
       <Document
         file={url}
-        onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+        onLoadSuccess={handleLoadSuccess}
         onLoadError={() => setLoadError(true)}
         loading={
           <div className="flex items-center justify-center py-12">
@@ -75,8 +90,9 @@ export function PdfRenderer({ url, filePath, commentsEnabled = true }: PdfRender
       {numPages && numPages > 1 && (
         <div className="sticky bottom-0 flex items-center gap-2 py-2 px-3 bg-background/90 backdrop-blur-sm border-t border-border/40 w-full justify-center">
           <button
-            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+            onClick={() => onPageChange(Math.max(1, currentPage - 1))}
             disabled={currentPage <= 1}
+            aria-label="Previous PDF page"
             className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronLeft className="h-4 w-4" />
@@ -85,8 +101,9 @@ export function PdfRenderer({ url, filePath, commentsEnabled = true }: PdfRender
             {currentPage} / {numPages}
           </span>
           <button
-            onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
+            onClick={() => onPageChange(Math.min(numPages, currentPage + 1))}
             disabled={currentPage >= numPages}
+            aria-label="Next PDF page"
             className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronRight className="h-4 w-4" />

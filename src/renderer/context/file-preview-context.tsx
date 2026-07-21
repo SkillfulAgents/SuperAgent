@@ -7,6 +7,8 @@ export interface FileTab {
   displayName: string
   description?: string
   version: number
+  /** 1-based page currently shown when this tab contains a PDF. */
+  pdfPage: number
 }
 
 export interface CellRef {
@@ -43,6 +45,7 @@ interface FilePreviewContextType {
   openFile: (filePath: string, agentSlug: string, description?: string) => void
   closeFile: (filePath: string) => void
   setActiveFile: (index: number) => void
+  setPdfPage: (filePath: string, page: number) => void
   close: () => void
 
   addComment: (comment: Omit<FileComment, 'id'>) => void
@@ -95,7 +98,14 @@ export function FilePreviewProvider({
         next[existingIndex] = { ...next[existingIndex], version: next[existingIndex].version + 1 }
         return next
       }
-      const newTab: FileTab = { filePath, agentSlug, displayName: getDisplayName(filePath), description, version: 0 }
+      const newTab: FileTab = {
+        filePath,
+        agentSlug,
+        displayName: getDisplayName(filePath),
+        description,
+        version: 0,
+        pdfPage: 1,
+      }
       const next = [...prev, newTab]
       setActiveFileIndex(next.length - 1)
       setIsOpen(true)
@@ -129,6 +139,18 @@ export function FilePreviewProvider({
 
   const setActiveFile = useCallback((index: number) => {
     setActiveFileIndex(index)
+  }, [])
+
+  const setPdfPage = useCallback((filePath: string, page: number) => {
+    const nextPage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1
+    setOpenFiles(prev => {
+      const index = prev.findIndex(file => file.filePath === filePath)
+      if (index < 0 || prev[index].pdfPage === nextPage) return prev
+
+      const next = [...prev]
+      next[index] = { ...next[index], pdfPage: nextPage }
+      return next
+    })
   }, [])
 
   const close = useCallback(() => {
@@ -176,11 +198,12 @@ export function FilePreviewProvider({
     openFile,
     closeFile,
     setActiveFile,
+    setPdfPage,
     close,
     addComment,
     removeComment,
     clearComments,
-  }), [openFiles, activeFileIndex, comments, isOpen, commentsEnabled, openFile, closeFile, setActiveFile, close, addComment, removeComment, clearComments])
+  }), [openFiles, activeFileIndex, comments, isOpen, commentsEnabled, openFile, closeFile, setActiveFile, setPdfPage, close, addComment, removeComment, clearComments])
 
   return (
     <FilePreviewContext.Provider value={value}>
