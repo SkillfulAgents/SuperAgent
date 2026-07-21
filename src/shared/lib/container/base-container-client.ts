@@ -360,6 +360,15 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
+   * Hostname/IP the guest should use to reach the host when rewriting a
+   * loopback LLM endpoint. Default is the Docker-convention name (also used
+   * by Lima/WSL2 via --add-host). Apple overrides with the gateway IP.
+   */
+  getContainerHostAddress(): string {
+    return getContainerHostUrl()
+  }
+
+  /**
    * Probe whether a host-side TCP endpoint is reachable from the runner's
    * network side. Default 'unknown' — most runtimes have no vantage point
    * inside the runner network to test from. Runners that do (WSL2) override
@@ -1605,7 +1614,10 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   protected buildAgentEnv(extra?: Record<string, string>): Record<string, string> {
     const settings = getSettings()
     const merged: Record<string, string | undefined> = {
-      ...getActiveLlmProvider().getContainerEnvVars(this.agentIdentityForEnv()),
+      ...getActiveLlmProvider().getContainerEnvVars(
+        this.agentIdentityForEnv(),
+        this.getContainerHostAddress(),
+      ),
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       ENABLE_TOOL_SEARCH: settings.enableToolSearch !== false ? 'true' : 'false',
       ...this.config.envVars,
