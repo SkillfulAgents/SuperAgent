@@ -1,5 +1,5 @@
 import type { McpToolInfo } from './types'
-import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { captureMessage } from '@shared/lib/error-reporting'
 
 /**
@@ -36,8 +36,6 @@ export async function parseMcpResponse(res: Response): Promise<unknown> {
  * speaks MCP. Kept in @shared so the two cannot drift.
  */
 export async function discoverTools(url: string, accessToken?: string | null): Promise<McpToolInfo[]> {
-  validateMcpDiscoveryUrl(url)
-
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Accept': 'application/json, text/event-stream',
@@ -46,7 +44,7 @@ export async function discoverTools(url: string, accessToken?: string | null): P
     headers['Authorization'] = `Bearer ${accessToken}`
   }
 
-  const initRes = await fetch(url, {
+  const initRes = await mcpSafeFetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -111,7 +109,7 @@ export async function discoverTools(url: string, accessToken?: string | null): P
     toolHeaders['Mcp-Session-Id'] = mcpSessionId
   }
 
-  await fetch(url, {
+  await mcpSafeFetch(url, {
     method: 'POST',
     headers: toolHeaders,
     body: JSON.stringify({
@@ -120,7 +118,7 @@ export async function discoverTools(url: string, accessToken?: string | null): P
     }),
   })
 
-  const toolsRes = await fetch(url, {
+  const toolsRes = await mcpSafeFetch(url, {
     method: 'POST',
     headers: toolHeaders,
     body: JSON.stringify({

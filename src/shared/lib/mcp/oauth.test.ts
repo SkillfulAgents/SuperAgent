@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import * as dnsPromises from 'node:dns/promises'
 
 // Mock DB with chainable query builder
 const mockLimit = vi.fn()
@@ -6,6 +7,14 @@ const mockWhere = vi.fn()
 const mockSet = vi.fn()
 const mockDbFrom = vi.fn()
 const mockInsertValues = vi.fn()
+
+vi.mock('node:dns/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:dns/promises')>()
+  return {
+    ...actual,
+    lookup: vi.fn(),
+  }
+})
 
 vi.mock('@shared/lib/db', () => ({
   db: {
@@ -27,6 +36,8 @@ vi.mock('drizzle-orm', () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
+const lookupMock = dnsPromises.lookup as unknown as ReturnType<typeof vi.fn>
+
 // Must import after mocks
 import {
   discoverOAuthMetadata,
@@ -42,6 +53,8 @@ import {
 describe('oauth', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Public fixture hostnames must resolve publicly for the DNS SSRF gate.
+    lookupMock.mockResolvedValue({ address: '93.184.216.34', family: 4 })
   })
 
   // =========================================================================
