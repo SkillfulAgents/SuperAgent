@@ -5,15 +5,17 @@ import userEvent from '@testing-library/user-event'
 import { HomeBookmarks } from './home-bookmarks'
 
 const openFile = vi.fn()
+const openFolder = vi.fn()
 
 vi.mock('@renderer/context/file-preview-context', () => ({
-  useFilePreview: () => ({ openFile }),
+  useFilePreview: () => ({ openFile, openFolder }),
 }))
 
 vi.mock('@renderer/hooks/use-bookmarks', () => ({
   useBookmarks: () => ({
     data: [
       { name: 'Daily report', file: '/workspace/reports/daily.csv' },
+      { name: 'Reports', folder: '/workspace/reports' },
       { name: 'Project site', link: 'https://example.com/project' },
     ],
   }),
@@ -26,6 +28,16 @@ vi.mock('@renderer/hooks/use-bookmarks', () => ({
 describe('HomeBookmarks', () => {
   beforeEach(() => {
     openFile.mockReset()
+    openFolder.mockReset()
+  })
+
+  it('opens workspace folders in the file preview context', async () => {
+    const user = userEvent.setup()
+    render(<HomeBookmarks agentSlug="test-agent" />)
+
+    await user.click(screen.getByRole('button', { name: 'Reports' }))
+
+    expect(openFolder).toHaveBeenCalledWith('/workspace/reports', 'test-agent')
   })
 
   it('opens workspace files in the file preview context', async () => {

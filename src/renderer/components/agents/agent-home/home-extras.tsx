@@ -1,9 +1,8 @@
-import { useState, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowUpRight, ChevronRight, Copy } from 'lucide-react'
+import { ChevronRight, PanelRightOpen } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
-import { apiFetch } from '@renderer/lib/api'
-import { isElectron } from '@renderer/lib/env'
+import { useFilePreview } from '@renderer/context/file-preview-context'
 
 interface HomeExtrasProps {
   agentSlug: string
@@ -12,43 +11,19 @@ interface HomeExtrasProps {
 }
 
 export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasProps) {
-  const [error, setError] = useState<string | null>(null)
   const navigate = useNavigate()
-
-  const handleOpenDirectory = async () => {
-    setError(null)
-    try {
-      const res = await apiFetch(`/api/agents/${agentSlug}/open-directory`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ open: isElectron() }),
-      })
-      if (!res.ok) throw new Error('Failed to open agent directory')
-      if (!isElectron()) {
-        const { path } = await res.json()
-        try {
-          await navigator.clipboard.writeText(path)
-        } catch {
-          setError(`Clipboard blocked. Path: ${path}`)
-        }
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to open agent directory')
-    }
-  }
-
-  const directoryHoverIcon = isElectron() ? (
-    <ArrowUpRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-  ) : (
-    <Copy className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-  )
-  const directoryLabel = isElectron() ? 'Agent Directory' : 'Copy Agent Path'
+  const { openFolder } = useFilePreview()
 
   return (
     <div className={cn("rounded-xl border bg-background py-2", className)}>
       <div className="divide-y divide-border/50">
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
-        <ExtrasButton label={directoryLabel} onClick={handleOpenDirectory} hoverIcon={directoryHoverIcon} />
+        <ExtrasButton
+          label="Agent Directory"
+          onClick={() => openFolder('/workspace', agentSlug)}
+          hoverIcon={<PanelRightOpen className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
+          testId="home-agent-directory-open-browser"
+        />
         <ExtrasButton label="Secrets" onClick={() => onOpenSettings?.('secrets')} />
         <ExtrasButton
           label="API Logs"
@@ -58,9 +33,6 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
           testId="home-api-logs-open-page"
         />
       </div>
-      {error && (
-        <p className="px-4 pt-2 text-xs text-destructive" role="alert">{error}</p>
-      )}
     </div>
   )
 }

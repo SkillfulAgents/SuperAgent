@@ -156,6 +156,187 @@ import {
   toAgentRemoteMcpDto,
 } from '@shared/lib/agent-connections/public'
 
+const WorkspaceBookmarkSchema = z.object({
+  name: z.string().min(1),
+  link: z.string().url().startsWith('https://').optional(),
+  file: z.string().min(1).optional(),
+  folder: z.string().min(1).optional(),
+}).superRefine((bookmark, ctx) => {
+  const resourceCount = [bookmark.link, bookmark.file, bookmark.folder]
+    .filter(value => value != null).length
+  if (resourceCount !== 1) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Each bookmark must have exactly one of link, file, or folder',
+    })
+  }
+  if (bookmark.folder && normalizeWorkspaceContainerPath(bookmark.folder) == null) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['folder'],
+      message: 'Folder path must be inside /workspace',
+    })
+  }
+})
+
+const WorkspaceBookmarksSchema = z.array(WorkspaceBookmarkSchema)
+type WorkspaceBookmark = z.infer<typeof WorkspaceBookmarkSchema>
+
+const WorkspaceFolderFileSchema = z.object({
+  root: z.string().min(1),
+  path: z.string().min(1),
+})
+
+const RenameWorkspaceFolderFileSchema = WorkspaceFolderFileSchema.extend({
+  name: z.string()
+    .trim()
+    .min(1)
+    .max(255)
+    .refine(
+      name => name !== '.' && name !== '..' && !name.includes('/') && !name.includes('\\') && !name.includes('\0'),
+      'Invalid file name',
+    ),
+})
+
+const MAX_FOLDER_ENTRIES = 1_000
+
+class WorkspaceFolderAccessError extends Error {
+  constructor(
+    message: string,
+    readonly status: 400 | 403 | 404 | 409,
+  ) {
+    super(message)
+  }
+}
+
+function normalizeWorkspaceContainerPath(rawPath: string): string | null {
+  if (!rawPath.startsWith('/') || rawPath.includes('\0')) return null
+  const normalized = path.posix.normalize(rawPath)
+  if (normalized !== '/workspace' && !normalized.startsWith('/workspace/')) return null
+  return normalized
+}
+
+function isContainerPathWithin(basePath: string, candidatePath: string): boolean {
+  const relative = path.posix.relative(basePath, candidatePath)
+  return relative === '' || (!relative.startsWith('../') && relative !== '..' && !path.posix.isAbsolute(relative))
+}
+
+function workspaceContainerPathToHost(workspaceDir: string, containerPath: string): string | null {
+  const normalized = normalizeWorkspaceContainerPath(containerPath)
+  if (!normalized) return null
+  const relative = path.posix.relative('/workspace', normalized)
+  return path.resolve(workspaceDir, ...relative.split('/').filter(Boolean))
+}
+
+async function readWorkspaceBookmarks(agentSlug: string): Promise<WorkspaceBookmark[]> {
+  const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
+  const content = await fs.promises.readFile(bookmarksPath, 'utf-8').catch(() => null)
+  if (!content) return []
+  try {
+    const parsed = WorkspaceBookmarksSchema.safeParse(JSON.parse(content))
+    return parsed.success ? parsed.data : []
+  } catch {
+    return []
+  }
+}
+
+function workspaceFolderFsError(error: unknown): WorkspaceFolderAccessError | null {
+  const code = error instanceof Error && 'code' in error
+    ? (error as NodeJS.ErrnoException).code
+    : undefined
+  if (code === 'ENOENT' || code === 'ENOTDIR') {
+    return new WorkspaceFolderAccessError('Folder or file not found', 404)
+  }
+  if (code === 'EACCES' || code === 'EPERM') {
+    return new WorkspaceFolderAccessError('Folder is not accessible', 403)
+  }
+  return null
+}
+
+async function resolveBookmarkedWorkspacePath(
+  agentSlug: string,
+  rawRoot: string,
+  rawCurrentPath: string,
+) {
+  const rootPath = normalizeWorkspaceContainerPath(rawRoot)
+  const currentPath = normalizeWorkspaceContainerPath(rawCurrentPath)
+  if (!rootPath || !currentPath || !isContainerPathWithin(rootPath, currentPath)) {
+    throw new WorkspaceFolderAccessError('Invalid folder path', 400)
+  }
+
+  // The full workspace is the built-in Agent Directory root. All other roots
+  // remain bookmark-gated so an arbitrary nested path cannot be promoted into
+  // a browser root by a client request alone.
+  if (rootPath !== '/workspace') {
+    const bookmarks = await readWorkspaceBookmarks(agentSlug)
+    const isBookmarkedRoot = bookmarks.some(bookmark => (
+      bookmark.folder != null && normalizeWorkspaceContainerPath(bookmark.folder) === rootPath
+    ))
+    if (!isBookmarkedRoot) {
+      throw new WorkspaceFolderAccessError('Folder bookmark not found', 404)
+    }
+  }
+
+  const workspaceDir = getAgentWorkspaceDir(agentSlug)
+  const hostRoot = workspaceContainerPathToHost(workspaceDir, rootPath)
+  const hostCurrentPath = workspaceContainerPathToHost(workspaceDir, currentPath)
+  if (!hostRoot || !hostCurrentPath) {
+    throw new WorkspaceFolderAccessError('Invalid folder path', 400)
+  }
+
+  try {
+    const [canonicalWorkspace, canonicalRoot, canonicalCurrentPath] = await Promise.all([
+      fs.promises.realpath(workspaceDir),
+      fs.promises.realpath(hostRoot),
+      fs.promises.realpath(hostCurrentPath),
+    ])
+    if (
+      !isPathWithinDir(canonicalWorkspace, canonicalRoot)
+      || !isPathWithinDir(canonicalRoot, canonicalCurrentPath)
+    ) {
+      throw new WorkspaceFolderAccessError('Invalid folder path', 400)
+    }
+
+    return {
+      rootPath,
+      currentPath,
+      hostCurrentPath,
+      canonicalRoot,
+      canonicalCurrentPath,
+    }
+  } catch (error) {
+    if (error instanceof WorkspaceFolderAccessError) throw error
+    throw workspaceFolderFsError(error) ?? error
+  }
+}
+
+async function requestContainerWorkspaceMutation<T>(
+  agentSlug: string,
+  method: 'PATCH' | 'DELETE',
+  body: {
+    path: string
+    type: 'file' | 'directory'
+    name?: string
+  },
+): Promise<T> {
+  await containerManager.ensureRunning(agentSlug)
+  const response = await containerManager.getClient(agentSlug).fetch('/workspace/entries', {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const payload = await response.json().catch(() => null) as (T & { error?: string }) | null
+  if (!response.ok) {
+    const message = payload?.error ?? 'Workspace operation failed'
+    if (response.status === 400 || response.status === 404 || response.status === 409) {
+      throw new WorkspaceFolderAccessError(message, response.status)
+    }
+    throw new Error(message)
+  }
+  if (!payload) throw new Error('Workspace operation returned an invalid response')
+  return payload
+}
+
 function getConfiguredSkillsets() {
   return getSettings().skillsets || []
 }
@@ -4389,6 +4570,238 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
   }
 })
 
+// GET /api/agents/:id/folders - Lazily list one level of a bookmarked workspace folder
+agents.get('/:id/folders', AgentRead(), async (c) => {
+  const agentSlug = getAgentId(c)
+  const rawRoot = c.req.query('root')
+  const rawCurrentPath = c.req.query('path') ?? rawRoot
+  if (!rawRoot || !rawCurrentPath) {
+    return c.json({ error: 'root and path are required' }, 400)
+  }
+
+  // Explicit folder bookmarks are shareable with viewers. The built-in full
+  // workspace browser is an owner-only surface and must not become an API-level
+  // directory enumeration capability for shared users.
+  if (normalizeWorkspaceContainerPath(rawRoot) === '/workspace' && getAuthorizedAgentRole(c) !== 'owner') {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  try {
+    const { rootPath, currentPath, canonicalCurrentPath } = await resolveBookmarkedWorkspacePath(
+      agentSlug,
+      rawRoot,
+      rawCurrentPath,
+    )
+
+    const stat = await fs.promises.stat(canonicalCurrentPath)
+    if (!stat.isDirectory()) {
+      return c.json({ error: 'Folder not found' }, 404)
+    }
+
+    const dirents = await fs.promises.readdir(canonicalCurrentPath, { withFileTypes: true })
+    const entries = dirents
+      .filter(entry => !entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()))
+      .map(entry => ({
+        name: entry.name,
+        path: path.posix.join(currentPath, entry.name),
+        type: entry.isDirectory() ? 'directory' as const : 'file' as const,
+      }))
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      })
+
+    return c.json({
+      root: rootPath,
+      path: currentPath,
+      entries: entries.slice(0, MAX_FOLDER_ENTRIES),
+      truncated: entries.length > MAX_FOLDER_ENTRIES,
+    })
+  } catch (error) {
+    const accessError = error instanceof WorkspaceFolderAccessError
+      ? error
+      : workspaceFolderFsError(error)
+    if (accessError) return c.json({ error: accessError.message }, accessError.status)
+    console.error('Failed to list bookmarked folder:', error)
+    return c.json({ error: 'Failed to list folder' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/folders/file - Rename a regular file inside a bookmarked folder
+agents.patch('/:id/folders/file', AgentAdmin(), async (c) => {
+  const parsed = RenameWorkspaceFolderFileSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid file rename request', issues: parsed.error.issues }, 400)
+  }
+
+  const agentSlug = getAgentId(c)
+  try {
+    const resolved = await resolveBookmarkedWorkspacePath(
+      agentSlug,
+      parsed.data.root,
+      parsed.data.path,
+    )
+    const destinationContainerPath = path.posix.join(
+      path.posix.dirname(resolved.currentPath),
+      parsed.data.name,
+    )
+    if (!isContainerPathWithin(resolved.rootPath, destinationContainerPath)) {
+      throw new WorkspaceFolderAccessError('Invalid file path', 400)
+    }
+
+    const result = await requestContainerWorkspaceMutation<{ path: string; name: string }>(
+      agentSlug,
+      'PATCH',
+      { path: resolved.currentPath, name: parsed.data.name, type: 'file' },
+    )
+    return c.json(result)
+  } catch (error) {
+    const accessError = error instanceof WorkspaceFolderAccessError
+      ? error
+      : workspaceFolderFsError(error)
+    if (accessError) return c.json({ error: accessError.message }, accessError.status)
+    console.error('Failed to rename bookmarked folder file:', error)
+    return c.json({ error: 'Failed to rename file' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/folders/file - Delete a regular file inside a bookmarked folder
+agents.delete('/:id/folders/file', AgentAdmin(), async (c) => {
+  const parsed = WorkspaceFolderFileSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid file delete request', issues: parsed.error.issues }, 400)
+  }
+
+  const agentSlug = getAgentId(c)
+  try {
+    const resolved = await resolveBookmarkedWorkspacePath(
+      agentSlug,
+      parsed.data.root,
+      parsed.data.path,
+    )
+    const result = await requestContainerWorkspaceMutation<{ success: true }>(
+      agentSlug,
+      'DELETE',
+      { path: resolved.currentPath, type: 'file' },
+    )
+    return c.json(result)
+  } catch (error) {
+    const accessError = error instanceof WorkspaceFolderAccessError
+      ? error
+      : workspaceFolderFsError(error)
+    if (accessError) return c.json({ error: accessError.message }, accessError.status)
+    console.error('Failed to delete bookmarked folder file:', error)
+    return c.json({ error: 'Failed to delete file' }, 500)
+  }
+})
+
+// PATCH /api/agents/:id/folders/directory - Rename a directory inside a browser root
+agents.patch('/:id/folders/directory', AgentAdmin(), async (c) => {
+  const parsed = RenameWorkspaceFolderFileSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid directory rename request', issues: parsed.error.issues }, 400)
+  }
+
+  const agentSlug = getAgentId(c)
+  try {
+    const resolved = await resolveBookmarkedWorkspacePath(
+      agentSlug,
+      parsed.data.root,
+      parsed.data.path,
+    )
+    if (resolved.currentPath === resolved.rootPath) {
+      throw new WorkspaceFolderAccessError('The browser root cannot be renamed', 400)
+    }
+
+    const destinationContainerPath = path.posix.join(
+      path.posix.dirname(resolved.currentPath),
+      parsed.data.name,
+    )
+    if (!isContainerPathWithin(resolved.rootPath, destinationContainerPath)) {
+      throw new WorkspaceFolderAccessError('Invalid directory path', 400)
+    }
+
+    const result = await requestContainerWorkspaceMutation<{ path: string; name: string }>(
+      agentSlug,
+      'PATCH',
+      { path: resolved.currentPath, name: parsed.data.name, type: 'directory' },
+    )
+    return c.json(result)
+  } catch (error) {
+    const accessError = error instanceof WorkspaceFolderAccessError
+      ? error
+      : workspaceFolderFsError(error)
+    if (accessError) return c.json({ error: accessError.message }, accessError.status)
+    console.error('Failed to rename bookmarked folder directory:', error)
+    return c.json({ error: 'Failed to rename directory' }, 500)
+  }
+})
+
+// DELETE /api/agents/:id/folders/directory - Recursively delete a directory
+agents.delete('/:id/folders/directory', AgentAdmin(), async (c) => {
+  const parsed = WorkspaceFolderFileSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid directory delete request', issues: parsed.error.issues }, 400)
+  }
+
+  const agentSlug = getAgentId(c)
+  try {
+    const resolved = await resolveBookmarkedWorkspacePath(
+      agentSlug,
+      parsed.data.root,
+      parsed.data.path,
+    )
+    if (resolved.currentPath === resolved.rootPath) {
+      throw new WorkspaceFolderAccessError('The browser root cannot be deleted', 400)
+    }
+
+    const result = await requestContainerWorkspaceMutation<{ success: true }>(
+      agentSlug,
+      'DELETE',
+      { path: resolved.currentPath, type: 'directory' },
+    )
+    return c.json(result)
+  } catch (error) {
+    const accessError = error instanceof WorkspaceFolderAccessError
+      ? error
+      : workspaceFolderFsError(error)
+    if (accessError) return c.json({ error: accessError.message }, accessError.status)
+    console.error('Failed to delete bookmarked folder directory:', error)
+    return c.json({ error: 'Failed to delete directory' }, 500)
+  }
+})
+
+// POST /api/agents/:id/folders/reveal-path - Resolve an entry to its local host path.
+// The renderer only exposes this action in Electron; keeping resolution here
+// preserves the same root-containment and symlink protections as browsing.
+agents.post('/:id/folders/reveal-path', AgentAdmin(), async (c) => {
+  const parsed = WorkspaceFolderFileSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid reveal request', issues: parsed.error.issues }, 400)
+  }
+
+  const agentSlug = getAgentId(c)
+  try {
+    const resolved = await resolveBookmarkedWorkspacePath(
+      agentSlug,
+      parsed.data.root,
+      parsed.data.path,
+    )
+    const sourceStat = await fs.promises.lstat(resolved.hostCurrentPath)
+    if (sourceStat.isSymbolicLink() || (!sourceStat.isDirectory() && !sourceStat.isFile())) {
+      throw new WorkspaceFolderAccessError('File or directory not found', 404)
+    }
+    return c.json({ hostPath: resolved.canonicalCurrentPath })
+  } catch (error) {
+    const accessError = error instanceof WorkspaceFolderAccessError
+      ? error
+      : workspaceFolderFsError(error)
+    if (accessError) return c.json({ error: accessError.message }, accessError.status)
+    console.error('Failed to resolve folder entry for reveal:', error)
+    return c.json({ error: 'Failed to reveal file or directory' }, 500)
+  }
+})
+
 // GET /api/agents/:id/files/* - Download a file from the agent workspace
 agents.get('/:id/files/*', AgentRead(), async (c) => {
   try {
@@ -4420,7 +4833,16 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
       return c.json({ error: 'Invalid path' }, 400)
     }
 
-    const stat = await fs.promises.stat(fullPath).catch(() => null)
+    const canonicalWorkspace = await fs.promises.realpath(workspaceDir).catch(() => null)
+    const canonicalFile = await fs.promises.realpath(fullPath).catch(() => null)
+    if (!canonicalWorkspace || !canonicalFile) {
+      return c.json({ error: 'File not found' }, 404)
+    }
+    if (!isPathWithinDir(canonicalWorkspace, canonicalFile)) {
+      return c.json({ error: 'Invalid path' }, 400)
+    }
+
+    const stat = await fs.promises.stat(canonicalFile).catch(() => null)
     if (!stat || !stat.isFile()) {
       return c.json({ error: 'File not found' }, 404)
     }
@@ -4453,13 +4875,13 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
 
     if (parsedRange) {
       const { start, end } = parsedRange
-      const chunk = Readable.toWeb(fs.createReadStream(fullPath, { start, end })) as ReadableStream
+      const chunk = Readable.toWeb(fs.createReadStream(canonicalFile, { start, end })) as ReadableStream
       c.header('Content-Range', `bytes ${start}-${end}/${size}`)
       c.header('Content-Length', (end - start + 1).toString())
       return c.body(chunk, 206)
     }
 
-    const webStream = Readable.toWeb(fs.createReadStream(fullPath)) as ReadableStream
+    const webStream = Readable.toWeb(fs.createReadStream(canonicalFile)) as ReadableStream
     c.header('Content-Length', size.toString())
     return c.body(webStream)
   } catch (error) {
@@ -5241,36 +5663,22 @@ agents.delete('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) =>
 
 // GET /api/agents/:id/bookmarks - Read bookmarks from agent workspace
 agents.get('/:id/bookmarks', AgentRead(), async (c) => {
-  try {
-    const agentSlug = getAgentId(c)
-    const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
-    const content = await fs.promises.readFile(bookmarksPath, 'utf-8').catch(() => null)
-    if (!content) {
-      return c.json([])
-    }
-    const parsed = JSON.parse(content)
-    if (!Array.isArray(parsed)) {
-      return c.json([])
-    }
-    return c.json(parsed)
-  } catch {
-    return c.json([])
-  }
+  return c.json(await readWorkspaceBookmarks(getAgentId(c)))
 })
 
 // PUT /api/agents/:id/bookmarks - Write bookmarks to agent workspace
 agents.put('/:id/bookmarks', AgentAdmin(), async (c) => {
   try {
     const agentSlug = getAgentId(c)
-    const bookmarks = await c.req.json()
-    if (!Array.isArray(bookmarks)) {
-      return c.json({ error: 'Bookmarks must be an array' }, 400)
+    const parsed = WorkspaceBookmarksSchema.safeParse(await c.req.json())
+    if (!parsed.success) {
+      return c.json({ error: 'Invalid bookmarks', issues: parsed.error.issues }, 400)
     }
     const bookmarksPath = path.join(getAgentWorkspaceDir(agentSlug), 'bookmarks.json')
     // Atomic write: full-replace from client input, but crash-safe so
     // an interrupted write can't truncate bookmarks.json.
-    await writeJsonFileAtomic(bookmarksPath, bookmarks)
-    return c.json(bookmarks)
+    await writeJsonFileAtomic(bookmarksPath, parsed.data)
+    return c.json(parsed.data)
   } catch (error) {
     console.error('Failed to update bookmarks:', error)
     return c.json({ error: 'Failed to update bookmarks' }, 500)

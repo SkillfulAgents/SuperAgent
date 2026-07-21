@@ -7,6 +7,7 @@ import { Hono } from 'hono'
 
 // FS mock (for path traversal tests)
 const mockFsStat = vi.fn()
+const mockFsLstat = vi.fn()
 const mockFsReadFile = vi.fn()
 const mockFsWriteFile = vi.fn()
 const mockFsMkdir = vi.fn()
@@ -14,27 +15,41 @@ const mockFsReaddir = vi.fn()
 const mockFsCp = vi.fn()
 const mockFsExistsSync = vi.fn()
 const mockCreateReadStream = vi.fn()
+const mockFsRealpath = vi.fn(async (value: unknown) => value)
+const mockFsRename = vi.fn()
+const mockFsUnlink = vi.fn()
+const mockFsRm = vi.fn()
 
 vi.mock('fs', () => ({
   default: {
     promises: {
       stat: (...args: unknown[]) => mockFsStat(...args),
+      lstat: (...args: unknown[]) => mockFsLstat(...args),
       readFile: (...args: unknown[]) => mockFsReadFile(...args),
       writeFile: (...args: unknown[]) => mockFsWriteFile(...args),
       mkdir: (...args: unknown[]) => mockFsMkdir(...args),
       readdir: (...args: unknown[]) => mockFsReaddir(...args),
       cp: (...args: unknown[]) => mockFsCp(...args),
+      realpath: (...args: unknown[]) => mockFsRealpath(args[0]),
+      rename: (...args: unknown[]) => mockFsRename(...args),
+      unlink: (...args: unknown[]) => mockFsUnlink(...args),
+      rm: (...args: unknown[]) => mockFsRm(...args),
     },
     existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
     createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
   },
   promises: {
     stat: (...args: unknown[]) => mockFsStat(...args),
+    lstat: (...args: unknown[]) => mockFsLstat(...args),
     readFile: (...args: unknown[]) => mockFsReadFile(...args),
     writeFile: (...args: unknown[]) => mockFsWriteFile(...args),
     mkdir: (...args: unknown[]) => mockFsMkdir(...args),
     readdir: (...args: unknown[]) => mockFsReaddir(...args),
     cp: (...args: unknown[]) => mockFsCp(...args),
+    realpath: (...args: unknown[]) => mockFsRealpath(args[0]),
+    rename: (...args: unknown[]) => mockFsRename(...args),
+    unlink: (...args: unknown[]) => mockFsUnlink(...args),
+    rm: (...args: unknown[]) => mockFsRm(...args),
   },
   existsSync: (...args: unknown[]) => mockFsExistsSync(...args),
   createReadStream: (...args: unknown[]) => mockCreateReadStream(...args),
@@ -1627,11 +1642,433 @@ describe('path traversal security — GET /:id/files/*', () => {
     expect(res.status).not.toBe(400)
   })
 
+  it('rejects a workspace symlink whose real path escapes the workspace', async () => {
+    mockFsRealpath
+      .mockResolvedValueOnce('/mock/workspace')
+      .mockResolvedValueOnce('/etc/passwd')
+
+    const res = await getReq(app, '/api/agents/test-agent/files/linked-secret.txt')
+
+    expect(res.status).toBe(400)
+    expect(mockCreateReadStream).not.toHaveBeenCalled()
+  })
+
   // Note: path traversal with ../ in URLs (e.g. /files/../../etc/passwd) is typically
   // resolved by the HTTP layer/URL parser before reaching the route handler. The
   // server-side guard (fullPath.startsWith(workspaceDir)) protects against any
   // path that resolves outside the workspace after path.resolve() is called.
   // The absolute path test above (//etc/passwd) tests this guard directly.
+})
+
+// ============================================================================
+// Bookmarked folder browser — GET /:id/folders
+// ============================================================================
+
+describe('bookmarked workspace folder listing', () => {
+  let app: ReturnType<typeof createApp>
+
+  const dirent = (name: string, type: 'file' | 'directory' | 'symlink') => ({
+    name,
+    isFile: () => type === 'file',
+    isDirectory: () => type === 'directory',
+    isSymbolicLink: () => type === 'symlink',
+  })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
+  })
+
+  function folderUrl(root: string, currentPath = root) {
+    const params = new URLSearchParams({ root, path: currentPath })
+    return `/api/agents/test-agent/folders?${params.toString()}`
+  }
+
+  it('lists one level, sorts directories first, and omits symlinks', async () => {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
+    mockFsReaddir.mockResolvedValueOnce([
+      dirent('z-last.txt', 'file'),
+      dirent('linked', 'symlink'),
+      dirent('2026', 'directory'),
+      dirent('Alpha.md', 'file'),
+    ])
+
+    const res = await getReq(app, folderUrl('/workspace/reports'))
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body).toMatchObject({
+      root: '/workspace/reports',
+      path: '/workspace/reports',
+      truncated: false,
+    })
+    expect(body.entries).toEqual([
+      { name: '2026', path: '/workspace/reports/2026', type: 'directory' },
+      { name: 'Alpha.md', path: '/workspace/reports/Alpha.md', type: 'file' },
+      { name: 'z-last.txt', path: '/workspace/reports/z-last.txt', type: 'file' },
+    ])
+  })
+
+  it('allows a descendant of the bookmarked root', async () => {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
+    mockFsReaddir.mockResolvedValueOnce([])
+
+    const res = await getReq(app, folderUrl('/workspace/reports', '/workspace/reports/2026'))
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ path: '/workspace/reports/2026', entries: [] })
+  })
+
+  it('opens the full workspace as the built-in Agent Directory without a bookmark', async () => {
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
+    mockFsReaddir.mockResolvedValueOnce([dirent('reports', 'directory')])
+
+    const res = await getReq(app, folderUrl('/workspace'))
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      root: '/workspace',
+      entries: [{ name: 'reports', path: '/workspace/reports', type: 'directory' }],
+    })
+    expect(mockFsReadFile).not.toHaveBeenCalled()
+  })
+
+  it.each(['viewer', 'user'] as const)('does not expose the full workspace to the %s role', async (role) => {
+    mockAuthorizedAgentRole = role
+
+    const res = await getReq(app, folderUrl('/workspace'))
+
+    expect(res.status).toBe(403)
+    expect(mockFsStat).not.toHaveBeenCalled()
+    expect(mockFsReaddir).not.toHaveBeenCalled()
+  })
+
+  it('does not expose a workspace folder that is not bookmarked', async () => {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+
+    const res = await getReq(app, folderUrl('/workspace/secrets'))
+
+    expect(res.status).toBe(404)
+    expect(mockFsReaddir).not.toHaveBeenCalled()
+  })
+
+  it('rejects navigation outside the bookmarked root', async () => {
+    const res = await getReq(app, folderUrl('/workspace/reports', '/workspace/other'))
+
+    expect(res.status).toBe(400)
+    expect(mockFsReadFile).not.toHaveBeenCalled()
+  })
+
+  it('rejects a descendant symlink whose canonical path escapes the root', async () => {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+    mockFsRealpath.mockImplementation(async value => {
+      if (value === '/mock/workspace/reports/linked') return '/private/outside'
+      return value
+    })
+
+    const res = await getReq(app, folderUrl('/workspace/reports', '/workspace/reports/linked'))
+
+    expect(res.status).toBe(400)
+    expect(mockFsReaddir).not.toHaveBeenCalled()
+  })
+
+  it('round-trips special characters and Unicode names', async () => {
+    const root = '/workspace/Reports & 2026'
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([{ name: 'Reports', folder: root }]))
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
+    mockFsReaddir.mockResolvedValueOnce([dirent('résumé #1.md', 'file')])
+
+    const res = await getReq(app, folderUrl(root))
+
+    expect(res.status).toBe(200)
+    expect((await res.json()).entries[0]).toEqual({
+      name: 'résumé #1.md',
+      path: '/workspace/Reports & 2026/résumé #1.md',
+      type: 'file',
+    })
+  })
+
+  it('caps a listing at 1,000 entries and reports truncation', async () => {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+    mockFsStat.mockResolvedValueOnce({ isDirectory: () => true })
+    mockFsReaddir.mockResolvedValueOnce(
+      Array.from({ length: 1_001 }, (_, index) => dirent(`file-${index}.txt`, 'file')),
+    )
+
+    const res = await getReq(app, folderUrl('/workspace/reports'))
+    const body = await res.json()
+
+    expect(res.status).toBe(200)
+    expect(body.entries).toHaveLength(1_000)
+    expect(body.truncated).toBe(true)
+  })
+})
+
+describe('bookmarked workspace folder file actions', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
+    mockContainerFetch.mockImplementation(async (_path: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { path: string; name?: string }
+      if (init?.method === 'PATCH') {
+        return new Response(JSON.stringify({
+          path: `${body.path.slice(0, body.path.lastIndexOf('/'))}/${body.name}`,
+          name: body.name,
+        }), { headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+  })
+
+  function seedBookmarkedFile() {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+  }
+
+  it('renames a regular file without overwriting an existing destination', async () => {
+    seedBookmarkedFile()
+
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/file', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/old.txt',
+        name: 'new.txt',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ path: '/workspace/reports/new.txt', name: 'new.txt' })
+    expect(mockContainerFetch).toHaveBeenCalledWith('/workspace/entries', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ path: '/workspace/reports/old.txt', name: 'new.txt', type: 'file' }),
+    }))
+    expect(mockFsRename).not.toHaveBeenCalled()
+  })
+
+  it('rejects rename when the destination already exists', async () => {
+    seedBookmarkedFile()
+    mockContainerFetch.mockResolvedValueOnce(new Response(
+      JSON.stringify({ error: 'A file or directory with that name already exists' }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } },
+    ))
+
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/file', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/old.txt',
+        name: 'existing.txt',
+      }),
+    })
+
+    expect(res.status).toBe(409)
+    expect(mockFsRename).not.toHaveBeenCalled()
+  })
+
+  it('rejects rename names containing path separators', async () => {
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/file', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/old.txt',
+        name: '../secret.txt',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(mockFsReadFile).not.toHaveBeenCalled()
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('deletes a regular file inside the bookmarked root', async () => {
+    seedBookmarkedFile()
+
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/file', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/old.txt',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockContainerFetch).toHaveBeenCalledWith('/workspace/entries', expect.objectContaining({
+      method: 'DELETE',
+      body: JSON.stringify({ path: '/workspace/reports/old.txt', type: 'file' }),
+    }))
+    expect(mockFsUnlink).not.toHaveBeenCalled()
+  })
+
+  it('propagates a container-side leaf symlink rejection', async () => {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+    mockContainerFetch.mockResolvedValueOnce(new Response(
+      JSON.stringify({ error: 'File not found' }),
+      { status: 404, headers: { 'Content-Type': 'application/json' } },
+    ))
+
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/file', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/linked.txt',
+      }),
+    })
+
+    expect(res.status).toBe(404)
+    expect(mockFsUnlink).not.toHaveBeenCalled()
+  })
+})
+
+describe('workspace folder directory actions and native reveal', () => {
+  let app: ReturnType<typeof createApp>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    app = createApp()
+    mockGetAgentWorkspaceDir.mockReturnValue('/mock/workspace')
+    mockContainerFetch.mockImplementation(async (_path: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { path: string; name?: string }
+      if (init?.method === 'PATCH') {
+        return new Response(JSON.stringify({
+          path: `${body.path.slice(0, body.path.lastIndexOf('/'))}/${body.name}`,
+          name: body.name,
+        }), { headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+  })
+
+  function seedBookmarkedDirectory() {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+  }
+
+  it('renames a directory without overwriting an existing entry', async () => {
+    seedBookmarkedDirectory()
+
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/directory', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/drafts',
+        name: 'archive',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ path: '/workspace/reports/archive', name: 'archive' })
+    expect(mockContainerFetch).toHaveBeenCalledWith('/workspace/entries', expect.objectContaining({
+      method: 'PATCH',
+      body: JSON.stringify({ path: '/workspace/reports/drafts', name: 'archive', type: 'directory' }),
+    }))
+    expect(mockFsRename).not.toHaveBeenCalled()
+  })
+
+  it('recursively deletes a nested directory', async () => {
+    seedBookmarkedDirectory()
+
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/directory', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/drafts',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockContainerFetch).toHaveBeenCalledWith('/workspace/entries', expect.objectContaining({
+      method: 'DELETE',
+      body: JSON.stringify({ path: '/workspace/reports/drafts', type: 'directory' }),
+    }))
+    expect(mockFsRm).not.toHaveBeenCalled()
+  })
+
+  it('never allows deleting the browser root itself', async () => {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/directory', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(mockContainerFetch).not.toHaveBeenCalled()
+  })
+
+  it('resolves a contained regular entry for Electron reveal', async () => {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+    mockFsLstat.mockResolvedValueOnce({
+      isDirectory: () => false,
+      isFile: () => true,
+      isSymbolicLink: () => false,
+    })
+
+    const res = await app.request('http://localhost/api/agents/test-agent/folders/reveal-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/notes.md',
+      }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ hostPath: '/mock/workspace/reports/notes.md' })
+  })
+})
+
+describe('bookmark validation', () => {
+  it('rejects a folder bookmark outside /workspace', async () => {
+    vi.mocked(writeJsonFileAtomic).mockClear()
+    const app = createApp()
+    const res = await app.request('http://localhost/api/agents/test-agent/bookmarks', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([{ name: 'Secrets', folder: '/etc' }]),
+    })
+
+    expect(res.status).toBe(400)
+    expect(writeJsonFileAtomic).not.toHaveBeenCalled()
+  })
 })
 
 // ============================================================================

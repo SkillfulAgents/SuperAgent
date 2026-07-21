@@ -453,6 +453,70 @@ describe('SUP-200: GET /api/agents/:id/files/* — workspace containment', () =>
     expect(res.status).toBe(200)
     expect(await res.text()).toBe('hello world')
   })
+
+  it('rejects a file symlink that resolves outside the agent workspace', async () => {
+    if (process.platform === 'win32') return
+    const workspace = path.join(agentDataRoot, 'agent')
+    const outsideFile = path.join(agentDataRoot, 'outside-secret.txt')
+    fs.mkdirSync(workspace, { recursive: true })
+    fs.writeFileSync(outsideFile, 'outside secret')
+    fs.symlinkSync(outsideFile, path.join(workspace, 'linked-secret.txt'))
+
+    const res = await appWithAgents().request('http://localhost/api/agents/agent/files/linked-secret.txt')
+
+    expect(res.status).toBe(400)
+  })
+
+  it('does not delete through a bookmarked-folder symlink that escapes the root', async () => {
+    if (process.platform === 'win32') return
+    const workspace = path.join(agentDataRoot, 'agent')
+    const reports = path.join(workspace, 'reports')
+    const outsideFile = path.join(agentDataRoot, 'outside-secret.txt')
+    fs.mkdirSync(reports, { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'bookmarks.json'), JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+    fs.writeFileSync(outsideFile, 'outside secret')
+    fs.symlinkSync(outsideFile, path.join(reports, 'linked-secret.txt'))
+
+    const res = await appWithAgents().request('http://localhost/api/agents/agent/folders/file', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/linked-secret.txt',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fs.existsSync(outsideFile)).toBe(true)
+  })
+
+  it('does not recursively delete through a directory symlink that escapes the root', async () => {
+    if (process.platform === 'win32') return
+    const workspace = path.join(agentDataRoot, 'agent')
+    const reports = path.join(workspace, 'reports')
+    const outsideDirectory = path.join(agentDataRoot, 'outside-directory')
+    fs.mkdirSync(reports, { recursive: true })
+    fs.mkdirSync(outsideDirectory, { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'bookmarks.json'), JSON.stringify([
+      { name: 'Reports', folder: '/workspace/reports' },
+    ]))
+    fs.writeFileSync(path.join(outsideDirectory, 'keep.txt'), 'do not delete')
+    fs.symlinkSync(outsideDirectory, path.join(reports, 'linked-directory'))
+
+    const res = await appWithAgents().request('http://localhost/api/agents/agent/folders/directory', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        root: '/workspace/reports',
+        path: '/workspace/reports/linked-directory',
+      }),
+    })
+
+    expect(res.status).toBe(400)
+    expect(fs.existsSync(path.join(outsideDirectory, 'keep.txt'))).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------
