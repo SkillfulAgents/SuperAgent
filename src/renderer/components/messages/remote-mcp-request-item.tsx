@@ -59,6 +59,9 @@ export function RemoteMcpRequestItem({
   const [newUrl, setNewUrl] = useState(url)
   const [showTokenInput, setShowTokenInput] = useState(authHint === 'bearer')
   const [bearerToken, setBearerToken] = useState('')
+  // Bearer-server re-auth: which stale server is getting a replacement token
+  const [reauthMcpId, setReauthMcpId] = useState<string | null>(null)
+  const [reauthToken, setReauthToken] = useState('')
   const [isMcpPickerOpen, setIsMcpPickerOpen] = useState(false)
   const [editingMcpId, setEditingMcpId] = useState<string | null>(null)
   const [editMcpName, setEditMcpName] = useState('')
@@ -105,11 +108,18 @@ export function RemoteMcpRequestItem({
     [selectedServiceKey, servers]
   )
   const connectCardSlug = COMMON_MCP_SERVERS.find((server) => server.url === targetUrl)?.slug || mcpSlug
+  // Only active servers can be provided — a non-active server (e.g. expired
+  // OAuth) would be dropped from the container env and the grant becomes a
+  // silent no-op. Those servers get a Reconnect affordance instead.
+  const activeServerIds = useMemo(
+    () => new Set(servers.filter((server) => server.status === 'active').map((server) => server.id)),
+    [servers]
+  )
   const selectedMcpIdsForProvide = useMemo(() => {
-    if (selectedMcpIds.size > 0) return Array.from(selectedMcpIds)
-    if (displayedServiceServers.length <= 1 && activeMcpId) return [activeMcpId]
+    if (selectedMcpIds.size > 0) return Array.from(selectedMcpIds).filter((id) => activeServerIds.has(id))
+    if (displayedServiceServers.length <= 1 && activeMcpId && activeServerIds.has(activeMcpId)) return [activeMcpId]
     return []
-  }, [activeMcpId, displayedServiceServers.length, selectedMcpIds])
+  }, [activeMcpId, activeServerIds, displayedServiceServers.length, selectedMcpIds])
   const pickerServiceOptions = useMemo(() => {
     const grouped = new Map<
       string,
@@ -145,27 +155,39 @@ export function RemoteMcpRequestItem({
     return Array.from(grouped.values())
   }, [servers])
 
-  // Auto-select matching server on first load only
+  // Auto-select matching server on first load only. Non-active servers are
+  // never auto-selected — they need re-auth before they can be provided.
   const hasAutoSelected = useRef(false)
   useEffect(() => {
     if (hasAutoSelected.current) return
-    const initialSelection = servers.find((server) => server.url === targetUrl) || targetServiceServers[0]
+    const initialSelection =
+      servers.find((server) => server.url === targetUrl && server.status === 'active') ||
+      targetServiceServers.find((server) => server.status === 'active')
     if (initialSelection) {
       setSelectedMcpIds(new Set([initialSelection.id]))
       hasAutoSelected.current = true
     }
   }, [servers, targetServiceServers, targetUrl])
 
+  // When re-authenticating an existing server, remember which one: several
+  // servers can share the same URL (multiple accounts), so a URL match after
+  // OAuth could select a sibling instead of the server that was reconnected.
+  const reconnectMcpIdRef = useRef<string | null>(null)
+
   // Handle OAuth completion from Electron IPC, postMessage, BroadcastChannel, or storage fallback.
   const handleOAuthComplete = useCallback((success: boolean, errorMessage?: string) => {
     if (success) {
       setError(null)
-      // Refetch servers to find the newly created one
+      // Refetch servers to find the reconnected or newly created one
       refetch().then(({ data: refreshedData }) => {
         const refreshedServers = Array.isArray(refreshedData?.servers) ? refreshedData.servers : []
-        const newServer = refreshedServers.find((s) => s.url === targetUrl)
-        if (newServer) {
-          setSelectedMcpIds(new Set([newServer.id]))
+        const reconnectedId = reconnectMcpIdRef.current
+        reconnectMcpIdRef.current = null
+        const completedServer = reconnectedId
+          ? refreshedServers.find((s) => s.id === reconnectedId && s.status === 'active')
+          : refreshedServers.find((s) => s.url === targetUrl && s.status === 'active')
+        if (completedServer) {
+          setSelectedMcpIds((prev) => new Set(prev).add(completedServer.id))
         }
         setStatus('pending')
       }).catch(() => {
@@ -181,14 +203,19 @@ export function RemoteMcpRequestItem({
     handleOAuthComplete(success, oauthError)
   })
 
-  const startOAuthFlow = async (popup: ReturnType<typeof prepareOAuthPopup>) => {
+  const startOAuthFlow = async (
+    popup: ReturnType<typeof prepareOAuthPopup>,
+    // Pass { mcpId } to re-authenticate an existing server instead of registering a new one.
+    params?: { mcpId: string }
+  ) => {
+    reconnectMcpIdRef.current = params?.mcpId ?? null
     try {
       const isElectron = !!window.electronAPI
-      const result = await initiateOAuth.mutateAsync({
-        name: newName.trim() || url,
-        url: targetUrl,
-        electron: isElectron,
-      })
+      const result = await initiateOAuth.mutateAsync(
+        params
+          ? { mcpId: params.mcpId, electron: isElectron }
+          : { name: newName.trim() || url, url: targetUrl, electron: isElectron }
+      )
 
       if (result.redirectUrl) {
         await popup.navigate(result.redirectUrl)
@@ -201,6 +228,83 @@ export function RemoteMcpRequestItem({
     } catch (oauthErr: unknown) {
       popup.close()
       setError(oauthErr instanceof Error ? oauthErr.message : 'Failed to initiate OAuth')
+      setStatus('pending')
+    }
+  }
+
+  // Recovery for a non-active server depends on how it authenticates: OAuth
+  // servers re-run the OAuth flow, bearer servers need a fresh token, and
+  // unauthenticated servers just get re-probed (the outage may have passed).
+  const handleReconnect = async (server: RemoteMcpServer) => {
+    setError(null)
+    if (server.authType === 'oauth') {
+      setStatus('registering')
+      const popup = prepareOAuthPopup()
+      await startOAuthFlow(popup, { mcpId: server.id })
+      return
+    }
+    if (server.authType === 'bearer') {
+      setReauthMcpId(server.id)
+      setReauthToken('')
+      return
+    }
+    await rediscoverServer(server.id)
+  }
+
+  // Re-probe a server via discover-tools, which flips it back to active on
+  // success, then select it so it can be provided.
+  const rediscoverServer = async (mcpId: string) => {
+    setStatus('registering')
+    try {
+      const response = await apiFetch(`/api/remote-mcps/${mcpId}/discover-tools`, {
+        method: 'POST',
+      })
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.error || 'Server is still unreachable')
+      }
+      queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      await refetch()
+      setSelectedMcpIds((prev) => new Set(prev).add(mcpId))
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Reconnect failed')
+    } finally {
+      setStatus('pending')
+    }
+  }
+
+  const handleSubmitReauthToken = async () => {
+    const mcpId = reauthMcpId
+    const token = reauthToken.trim()
+    if (!mcpId || !token) return
+
+    setStatus('registering')
+    setError(null)
+    try {
+      const patchResponse = await apiFetch(`/api/remote-mcps/${mcpId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessToken: token }),
+      })
+      if (!patchResponse.ok) {
+        const data = await patchResponse.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to update token')
+      }
+      const discoverResponse = await apiFetch(`/api/remote-mcps/${mcpId}/discover-tools`, {
+        method: 'POST',
+      })
+      if (!discoverResponse.ok) {
+        const data = await discoverResponse.json().catch(() => ({}))
+        throw new Error(data.error || 'The server rejected the token')
+      }
+      queryClient.invalidateQueries({ queryKey: ['remote-mcps'] })
+      await refetch()
+      setSelectedMcpIds((prev) => new Set(prev).add(mcpId))
+      setReauthMcpId(null)
+      setReauthToken('')
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to update token')
+    } finally {
       setStatus('pending')
     }
   }
@@ -466,6 +570,7 @@ export function RemoteMcpRequestItem({
     onMenuOpenChange: (open: boolean) => setMenuOpenMcpId(open ? server.id : null),
     onStartRename: () => handleStartRename(server),
     onOpenPolicies: () => openPolicyEditor(server),
+    onReconnect: server.status !== 'active' ? () => handleReconnect(server) : undefined,
   })
 
   // Build completed config
@@ -620,6 +725,47 @@ export function RemoteMcpRequestItem({
             )}
           </div>
         )}
+        {reauthMcpId && status !== 'oauth_pending' ? (
+          <div className="mt-2 flex items-center gap-2">
+            <Input
+              type="password"
+              value={reauthToken}
+              onChange={(e) => setReauthToken(e.target.value)}
+              placeholder="New bearer token"
+              className="h-8 flex-1 text-sm"
+              autoFocus
+              disabled={status !== 'pending'}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSubmitReauthToken()
+                if (e.key === 'Escape') {
+                  setReauthMcpId(null)
+                  setReauthToken('')
+                }
+              }}
+            />
+            <Button
+              size="xs"
+              onClick={handleSubmitReauthToken}
+              loading={status === 'registering'}
+              disabled={!reauthToken.trim() || status !== 'pending'}
+              className="shrink-0 bg-foreground text-background hover:bg-foreground/90"
+            >
+              Save Token
+            </Button>
+            <Button
+              size="xs"
+              variant="ghost"
+              onClick={() => {
+                setReauthMcpId(null)
+                setReauthToken('')
+              }}
+              disabled={status === 'registering'}
+              className="shrink-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {/* Action buttons */}

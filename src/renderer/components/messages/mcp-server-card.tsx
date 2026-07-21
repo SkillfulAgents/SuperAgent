@@ -4,6 +4,7 @@ import {
   Check,
   MoreVertical,
   Pencil,
+  RefreshCw,
   X,
 } from 'lucide-react'
 import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
@@ -11,6 +12,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { ToolPolicySummaryPill } from '@renderer/components/ui/tool-policy-summary-pill'
+import { McpStatusPill } from '@renderer/components/connections/mcp-status-pill'
 import { cn } from '@shared/lib/utils/cn'
 
 export interface RemoteMcpServer {
@@ -18,7 +20,8 @@ export interface RemoteMcpServer {
   name: string
   url: string
   authType: string
-  status: string
+  status: 'active' | 'error' | 'auth_required'
+  errorMessage?: string | null
   tools: Array<{ name: string; description?: string }>
 }
 
@@ -82,6 +85,8 @@ export interface McpServerCardProps {
   onStartRename: () => void
   // Policy
   onOpenPolicies: () => void
+  // Re-auth (shown when the server is not active)
+  onReconnect?: () => void
   // State
   disabled?: boolean
 }
@@ -100,9 +105,27 @@ export function McpServerCard({
   onMenuOpenChange,
   onStartRename,
   onOpenPolicies,
+  onReconnect,
   disabled,
 }: McpServerCardProps) {
   const serverSlug = COMMON_MCP_SERVERS.find((commonServer) => commonServer.url === server.url)?.slug || ''
+  const needsReauth = server.status !== 'active'
+
+  const reconnectButton = onReconnect ? (
+    <Button
+      size="xs"
+      variant="outline"
+      className="mx-1 h-6 shrink-0 gap-1 px-2 text-xs"
+      disabled={disabled}
+      onClick={(e) => {
+        e.stopPropagation()
+        onReconnect()
+      }}
+    >
+      <RefreshCw className="h-3 w-3" />
+      Reconnect
+    </Button>
+  ) : null
 
   const renameMenu = (
     <Popover
@@ -213,6 +236,7 @@ export function McpServerCard({
           <p className="truncate text-sm font-normal text-foreground">
             {server.name}
           </p>
+          <McpStatusPill status={server.status} errorMessage={server.errorMessage} />
         </div>
         <p className="truncate text-xs text-muted-foreground">
           {server.url}
@@ -233,13 +257,14 @@ export function McpServerCard({
 
   // Selectable variant (used in lists with multiple servers)
   if (onToggle) {
+    const canToggle = !disabled && !needsReauth
     return (
       <div
         role="button"
         tabIndex={0}
-        onClick={() => !disabled && onToggle()}
+        onClick={() => canToggle && onToggle()}
         onKeyDown={(e) => {
-          if ((e.key === 'Enter' || e.key === ' ') && !disabled) {
+          if ((e.key === 'Enter' || e.key === ' ') && canToggle) {
             e.preventDefault()
             onToggle()
           }
@@ -249,17 +274,21 @@ export function McpServerCard({
           selected
             ? 'border-blue-300 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
             : 'border-border bg-white hover:bg-muted/40 dark:bg-background',
-          disabled && 'cursor-not-allowed opacity-70'
+          needsReauth ? 'cursor-default' : disabled && 'cursor-not-allowed opacity-70'
         )}
       >
-        <input
-          type="checkbox"
-          checked={selected ?? false}
-          disabled={disabled}
-          onChange={() => !disabled && onToggle()}
-          onClick={(e) => e.stopPropagation()}
-          className="mx-1 shrink-0"
-        />
+        {needsReauth && reconnectButton ? (
+          reconnectButton
+        ) : (
+          <input
+            type="checkbox"
+            checked={selected ?? false}
+            disabled={disabled || needsReauth}
+            onChange={() => canToggle && onToggle()}
+            onClick={(e) => e.stopPropagation()}
+            className="mx-1 shrink-0"
+          />
+        )}
         {displayContent}
       </div>
     )
@@ -269,6 +298,7 @@ export function McpServerCard({
   return (
     <div className="group rounded-[12px] border border-border bg-white px-4 py-3 dark:bg-background">
       <div className="flex items-center gap-2">
+        {needsReauth && reconnectButton ? reconnectButton : null}
         {displayContent}
       </div>
     </div>

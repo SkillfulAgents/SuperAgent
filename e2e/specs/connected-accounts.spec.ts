@@ -364,6 +364,61 @@ test.describe('Remote MCP - Full Connection Flow', () => {
     })
   })
 
+  test('stale server blocks granting until reconnected', async ({ page, request }, testInfo) => {
+    await withMockMcp(async (mockMcp) => {
+      const mcpName = uniqueName(testInfo, 'Stale MCP')
+      const mcpUrl = mockMcp.url
+      const mcp = await createRemoteMcp(request, { name: mcpName, url: mcpUrl })
+
+      try {
+        // Simulate a broken credential (e.g. expired OAuth / revoked token)
+        const patchResponse = await request.patch(`/api/remote-mcps/${mcp.id}`, {
+          data: { status: 'auth_required' },
+        })
+        expect(patchResponse.ok()).toBeTruthy()
+
+        const { agent, requestCard, sessionPage, agentPage } = await openRemoteMcpRequest(page, request, testInfo, {
+          label: 'MCP Stale',
+          mcpUrl,
+          mcpName,
+        })
+
+        await expect(requestCard.getByText(mcpName)).toBeVisible({ timeout: 10000 })
+        await expect(requestCard).toContainText('Re-auth needed')
+        await expect(requestCard.getByRole('button', { name: /^Reconnect$/ })).toBeVisible()
+        await expect(requestCard.getByRole('button', { name: /Allow Access/i })).toBeDisabled()
+
+        // The provide endpoint refuses non-active servers outright — a grant
+        // that resolves while the server is filtered out of REMOTE_MCPS would
+        // be a silent no-op the agent can't detect.
+        const provideResponse = await request.post(
+          `/api/agents/${agent.slug}/sessions/e2e-stale-check/provide-remote-mcp`,
+          { data: { toolUseId: 'e2e-stale-check', remoteMcpIds: [mcp.id] } },
+        )
+        expect(provideResponse.status()).toBe(409)
+        const provideBody = await provideResponse.json() as { needsReauth?: boolean }
+        expect(provideBody.needsReauth).toBe(true)
+
+        // Reconnect re-probes the (unauthenticated) server and restores it
+        await requestCard.getByRole('button', { name: /^Reconnect$/ }).click()
+
+        await expect(requestCard).not.toContainText('Re-auth needed', { timeout: 10000 })
+        const grantBtn = requestCard.getByRole('button', { name: /Allow Access/i })
+        await expect(grantBtn).toBeEnabled()
+
+        const recovered = await expectRemoteMcpByUrl(request, mcpUrl, mcpName)
+        expect(recovered.status).toBe('active')
+
+        await grantBtn.click()
+        await sessionPage.waitForInputEnabled(15000)
+        await agentPage.waitForStatus('idle', 10000)
+        await expectAgentHasRemoteMcp(request, agent.slug, mcp.id)
+      } finally {
+        await deleteRemoteMcp(request, mcp.id)
+      }
+    })
+  })
+
   test('previously registered MCP server appears in selection list', async ({ page, request }, testInfo) => {
     await withMockMcp(async (mockMcp) => {
       const mcpName = uniqueName(testInfo, 'Existing MCP')
