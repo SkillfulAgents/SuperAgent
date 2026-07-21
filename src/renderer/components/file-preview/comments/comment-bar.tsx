@@ -3,6 +3,7 @@ import { MessageSquare, X, Trash2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { useFilePreview, type FileComment } from '@renderer/context/file-preview-context'
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { focusSessionComposer } from '@renderer/components/messages/composer-focus'
 import { formatMediaTime } from './format-media-time'
 
 interface CommentBarProps {
@@ -75,9 +76,7 @@ export function CommentBar({ comments, filePath, sessionId }: CommentBarProps) {
     const content = formatComments(filePath, comments)
     appendToSessionDraft(draftsStore, sessionId, content, { prepend: false })
     clearComments(filePath)
-    queueMicrotask(() => {
-      document.querySelector<HTMLElement>('[data-testid="message-input"]')?.focus()
-    })
+    queueMicrotask(() => focusSessionComposer(sessionId))
   }, [comments, filePath, sessionId, draftsStore, clearComments])
 
   if (comments.length === 0) return null
