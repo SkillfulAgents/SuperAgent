@@ -2683,6 +2683,75 @@ describe('MessagePersister', () => {
       expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
     })
 
+    // A background subagent's request_browser_input must flip the SAME awaiting
+    // flag the main agent's does: the in-chat card is renderer-local state, but
+    // the sidebar/header orange dot reads the persister's isAwaitingInput. A
+    // request surfaced only as a card leaves the agent labeled "working" while
+    // it is actually blocked on the user.
+    describe('subagent-originated browser input requests', () => {
+      function sendSidechainStreamEvent(event: any, parentToolId = 'agent-tool-1') {
+        mockClient._sendMessage({
+          type: 'stream_event',
+          parent_tool_use_id: parentToolId,
+          event,
+        })
+      }
+
+      it('sets isAwaitingInput when a subagent streams request_browser_input', () => {
+        sendSidechainStreamEvent({
+          type: 'content_block_start',
+          content_block: {
+            type: 'tool_use',
+            id: 'sub-tool-1',
+            name: 'mcp__user-input__request_browser_input',
+          },
+        })
+        sendSidechainStreamEvent({
+          type: 'content_block_delta',
+          delta: {
+            type: 'input_json_delta',
+            partial_json: JSON.stringify({
+              message: 'Log in to GitHub.',
+              requirements: ['Complete 2FA'],
+            }),
+          },
+        })
+        sendSidechainStreamEvent({ type: 'content_block_stop' })
+
+        // The card broadcast fires either way — the status flag is the fix target.
+        const cards = sseEvents.filter(e => e.type === 'browser_input_request')
+        expect(cards).toHaveLength(1)
+        expect(cards[0].toolUseId).toBe('sub-tool-1')
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      })
+
+      it('sets isAwaitingInput when a subagent complete assistant message carries request_browser_input', () => {
+        const { events: globalEvents, cleanup } = collectGlobalEvents()
+
+        mockClient._sendMessage({
+          type: 'assistant',
+          parent_tool_use_id: 'agent-tool-2',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'sub-tool-2',
+                name: 'mcp__user-input__request_browser_input',
+                input: { message: 'Log in to GitHub.', requirements: [] },
+              },
+            ],
+          },
+        })
+
+        expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+        const awaiting = globalEvents.filter(e => e.type === 'session_awaiting_input')
+        expect(awaiting).toHaveLength(1)
+        expect(awaiting[0].sessionId).toBe(SESSION_ID)
+
+        cleanup()
+      })
+    })
+
     it('does NOT set isAwaitingInput for schedule_task tool', () => {
       simulateToolUse('mcp__user-input__schedule_task', 'tool-1', {
         scheduleType: 'at',

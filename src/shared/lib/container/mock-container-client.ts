@@ -796,6 +796,65 @@ export class UserInputRequestScenario implements MockScenario {
   }
 }
 
+/**
+ * A BACKGROUND subagent parks on request_browser_input while the main turn
+ * stays open: the request arrives as a sidechain assistant message
+ * (parent_tool_use_id set), not on the main stream. The card must appear AND
+ * the agent-level status must flip to awaiting_input — the sidebar/header
+ * orange dot reads the persister's awaiting flag, which only the main-stream
+ * path used to set. Replicates the stuck "working" session with an
+ * unanswerable browser card.
+ */
+export class SubagentBrowserInputScenario implements MockScenario {
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const parentToolId = `agent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const subToolId = `subtool_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+
+    // One pending input: resolving/declining the card ends the turn.
+    client.registerPendingInputs(sessionId, 1)
+
+    client.writeJsonlEntry(sessionId, {
+      type: 'user',
+      message: { content: userMessage },
+      timestamp: new Date().toISOString(),
+    })
+
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'stream_event',
+        content: { type: 'stream_event', event: { type: 'message_start' } },
+      })
+    }, 10)
+
+    // The subagent's request arrives as a complete sidechain assistant message
+    // (the SDK often delivers subagent tool calls without stream deltas).
+    setTimeout(() => {
+      client.emitStreamMessage(sessionId, {
+        type: 'assistant',
+        content: {
+          type: 'assistant',
+          parent_tool_use_id: parentToolId,
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: subToolId,
+                name: 'mcp__user-input__request_browser_input',
+                input: {
+                  message: 'Log in to GitHub to finish the submission.',
+                  requirements: ['Log in to GitHub', 'Complete 2FA if prompted'],
+                },
+              },
+            ],
+          },
+        },
+      })
+    }, 60)
+    // No 'result' here: the main turn stays open, matching the incident where
+    // the subagent parked mid-turn waiting on the user.
+  }
+}
+
 function getMessageParam(userMessage: string, key: string): string | undefined {
   const prefix = `${key}=`
   const rawValue = userMessage
@@ -1465,6 +1524,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         input: { subagent_type: 'Explore', description: 'Scan the repo', prompt: 'Look at the files and report back' },
       },
     ])],
+    ['subagent browser input', new SubagentBrowserInputScenario()],
     // Proxy review scenario for E2E tests
     ['proxy review', new ProxyReviewScenario(
       'slack',

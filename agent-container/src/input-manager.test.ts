@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   inputManager,
   AUTOMATED_INPUT_TTL_MS,
@@ -428,6 +428,70 @@ describe('InputManager', () => {
 
       expect(inputManager.consumeCurrentToolUseId()).toBe('hook-B')
       expect(inputManager.consumeCurrentToolUseId()).toBeNull()
+    })
+  })
+
+  // A browser_input request is only answerable while the browser exists — the
+  // card literally instructs the user to act "in the open browser tab". When
+  // the browser closes (browser_close from ANY session sharing it, or the user
+  // closing the window), every pending browser_input must be rejected so the
+  // blocked caller (often a background subagent) unblocks and can finish its
+  // turn instead of parking for the 24h human-input TTL.
+  describe('rejectByType (browser lifecycle cleanup)', () => {
+    it('rejects all pending browser_input requests and leaves other types pending', async () => {
+      const p1 = inputManager.createPendingWithType('rbt-browser-1', 'browser_input', {
+        message: 'Log in to GitHub.',
+        requirements: [],
+      })
+      const p2 = inputManager.createPendingWithType('rbt-browser-2', 'browser_input', {
+        message: 'Approve the OAuth consent screen.',
+        requirements: [],
+      })
+      const secret = inputManager.createPendingWithType('rbt-secret-1', 'secret', {
+        secretName: 'API_KEY',
+      })
+
+      const rejected = inputManager.rejectByType('browser_input', 'The browser was closed')
+
+      expect(rejected).toBe(2)
+      await expect(p1).rejects.toThrow('The browser was closed')
+      await expect(p2).rejects.toThrow('The browser was closed')
+
+      expect(inputManager.hasPending('rbt-browser-1')).toBe(false)
+      expect(inputManager.hasPending('rbt-browser-2')).toBe(false)
+      expect(inputManager.hasPending('rbt-secret-1')).toBe(true)
+
+      // Clean up the secret pending
+      inputManager.reject('rbt-secret-1', 'test cleanup')
+      await expect(secret).rejects.toThrow('test cleanup')
+    })
+
+    it('returns 0 when nothing of that type is pending', () => {
+      expect(inputManager.rejectByType('browser_input', 'The browser was closed')).toBe(0)
+    })
+
+    it('unblocks the real request_browser_input tool with a cancelled error result', async () => {
+      const toolUseId = `rbt-tool-${Date.now()}`
+      inputManager.setCurrentToolUseId(toolUseId)
+
+      const { requestBrowserInputTool } = await import('./tools/request-browser-input')
+      const handler = (requestBrowserInputTool as any).handler
+
+      const resultPromise = handler({
+        message: 'Log in to GitHub to finish the submission.',
+        requirements: ['Complete 2FA'],
+      })
+
+      await vi.waitFor(() => {
+        expect(inputManager.hasPending(toolUseId)).toBe(true)
+      })
+
+      inputManager.rejectByType('browser_input', 'The browser was closed')
+
+      const result = await resultPromise
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toContain('Browser input request cancelled')
+      expect(result.content[0].text).toContain('The browser was closed')
     })
   })
 })

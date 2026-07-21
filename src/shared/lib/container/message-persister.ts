@@ -4030,6 +4030,13 @@ ${continuation}`
         agentSlug,
       })
 
+      // The request always blocks on the user, no matter which stream it came
+      // from. Marking here (not only in the main-stream content_block_stop
+      // handler) covers SUBAGENT-originated requests, whose sidechain paths
+      // bypass that handler — without this the orange awaiting-input status
+      // never flips and the agent shows "working" while parked on the user.
+      this.markSessionAwaitingInput(sessionId)
+
       // Renderer-side gate handles suppression; see session_complete trigger.
       if (agentSlug) {
         notificationManager.triggerSessionWaitingInput(sessionId, agentSlug, 'browser_input').catch((err) => {
