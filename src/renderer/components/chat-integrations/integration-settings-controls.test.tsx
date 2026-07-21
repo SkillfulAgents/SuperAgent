@@ -26,14 +26,18 @@ vi.mock('@renderer/hooks/use-chat-integrations', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
+  useModelConfig: () => ({
     data: {
       llmProvider: 'anthropic',
-      llmProviderStatus: [{
-        id: 'anthropic',
-        catalog: CATALOG,
-        defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
-      }],
+      catalog: CATALOG,
+      defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+      models: {
+        agentModel: 'opus',
+        summarizerModel: 'haiku',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'sonnet',
+      },
+      webProvider: 'native',
     },
   }),
 }))

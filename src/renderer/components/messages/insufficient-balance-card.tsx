@@ -2,7 +2,7 @@ import { ArrowUpRight, Wallet } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelConfig } from '@renderer/hooks/use-settings'
 
 // A platform billing 402 is the only provider error we can resolve in-product
 // (subscribe / top up the org wallet).
@@ -21,10 +21,10 @@ function isInsufficientBalanceError(message: string): boolean {
 // e.g. a BYOK provider returning a 402 must not surface a platform billing CTA.
 export function usePlatformBillingUrl(message: string): string | null {
   const { data: platformAuth } = usePlatformAuthStatus()
-  const { data: settings } = useSettings()
+  const { data: modelConfig } = useModelConfig()
 
   if (!isInsufficientBalanceError(message)) return null
-  if (settings?.llmProvider !== 'platform') return null
+  if (modelConfig?.llmProvider !== 'platform') return null
   if (!platformAuth?.connected) return null
 
   const platformBaseUrl = platformAuth.platformBaseUrl

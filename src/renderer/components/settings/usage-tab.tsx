@@ -19,7 +19,7 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts'
 import { AlertTriangle, ExternalLink, RefreshCw, Loader2 } from 'lucide-react'
 import { useUsageData } from '@renderer/hooks/use-usage'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelConfig } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
 import { format, parseISO } from 'date-fns'
 import type { LlmProviderId } from '@shared/lib/config/settings'
@@ -60,7 +60,7 @@ const PROVIDER_USAGE_LINKS: Partial<Record<LlmProviderId, { label: string; href:
 
 export function UsageTab() {
   const { isAuthMode, isAdmin } = useUser()
-  const { data: settings } = useSettings()
+  const { data: modelConfig } = useModelConfig()
   const [days, setDays] = useState(7)
   const [globalView, setGlobalView] = useState(!isAuthMode || isAdmin)
   const [segmentation, setSegmentation] = useState<Segmentation>('total')
@@ -121,8 +121,8 @@ export function UsageTab() {
   }, [data, segmentation])
 
   const totalCost = data?.daily?.reduce((sum, d) => sum + d.totalCost, 0) ?? 0
-  const providerUsageLink = settings?.llmProvider
-    ? PROVIDER_USAGE_LINKS[settings.llmProvider]
+  const providerUsageLink = modelConfig?.llmProvider
+    ? PROVIDER_USAGE_LINKS[modelConfig.llmProvider]
     : undefined
 
   return (

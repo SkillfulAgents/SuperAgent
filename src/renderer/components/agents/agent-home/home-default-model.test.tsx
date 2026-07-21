@@ -3,9 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const useSettingsMock = vi.fn()
+const useModelConfigMock = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => useSettingsMock(),
+  useModelConfig: () => useModelConfigMock(),
 }))
 
 const usePreferencesMock = vi.fn()
@@ -40,27 +40,27 @@ const NO_SPEED_CATALOG = [
   },
 ]
 
-function mockSettings(catalog: unknown[]) {
-  useSettingsMock.mockReturnValue({
+function mockModelConfig(catalog: unknown[]) {
+  useModelConfigMock.mockReturnValue({
     data: {
       llmProvider: 'anthropic',
-      llmProviderStatus: [
-        {
-          id: 'anthropic',
-          name: 'Anthropic',
-          isConfigured: true,
-          catalog,
-          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
-        },
-      ],
-      models: { agentModel: 'claude-opus-4-8', agentEffort: 'medium' },
+      catalog,
+      defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+      models: {
+        agentModel: 'claude-opus-4-8',
+        summarizerModel: 'haiku',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'sonnet',
+        agentEffort: 'medium',
+      },
+      webProvider: 'native',
     },
   })
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockSettings(SPEEDY_CATALOG)
+  mockModelConfig(SPEEDY_CATALOG)
   usePreferencesMock.mockReturnValue({ data: {} })
 })
 
@@ -89,7 +89,7 @@ describe('HomeDefaultModel speed override', () => {
   it('clears the override (not a literal normal) when the speed clamp auto-fires', async () => {
     // A stored 'fast' on a model whose serving path offers no speed choice
     // gets clamped on render — the clamp write must clear the key too.
-    mockSettings(NO_SPEED_CATALOG)
+    mockModelConfig(NO_SPEED_CATALOG)
     usePreferencesMock.mockReturnValue({ data: { defaultSpeed: 'fast' } })
     render(<HomeDefaultModel agentSlug="agent-one" />)
 

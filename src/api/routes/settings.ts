@@ -2,7 +2,7 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { Hono, type Context } from 'hono'
-import { getLlmProvider, getAllProviderInfo, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
+import { getLlmProvider, getAllProviderInfo, getEffectiveCatalog, defaultModelsFor, modelCatalogSettingsSchema, GenericLlmProvider } from '@shared/lib/llm-provider'
 import type { LlmProviderId } from '@shared/lib/llm-provider'
 import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provider'
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
@@ -32,6 +32,10 @@ import {
   type ApiKeySettings,
   type ContainerSettings,
   type GlobalSettingsResponse,
+  type ModelConfigResponse,
+  type ClientConfigResponse,
+  type AnalyticsTarget,
+  type AnalyticsTargetType,
 } from '@shared/lib/config/settings'
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from '@shared/lib/config/capability-policy-schema'
 import { validateFaviconDataUrl } from '@shared/lib/config/favicon'
@@ -195,6 +199,62 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
 // Custom model icons are used in regular model pickers, so any authenticated
 // user may read them. Writes and the rest of settings stay admin-only.
 settings.get('/model-icons/:fileName', Authenticated(), serveUploadedModelIcon)
+
+// GET /api/settings/model-config - Safe model-picker configuration for every
+// authenticated user. The full settings response below intentionally remains
+// admin-only because it includes host paths, custom env vars, and auth/runtime
+// configuration that ordinary workspace members must not receive.
+settings.get('/model-config', Authenticated(), (c) => {
+  const appSettings = getSettings()
+  const llmProvider = appSettings.llmProvider ?? 'anthropic'
+  const provider = getLlmProvider(llmProvider)
+  const response: ModelConfigResponse = {
+    llmProvider,
+    catalog: getEffectiveCatalog(llmProvider),
+    defaultModels: defaultModelsFor(provider),
+    models: getEffectiveModels(),
+    webProvider: resolveEffectiveWebVendor(),
+  }
+  return c.json(response)
+})
+
+/** The single client-side config key each analytics target type is allowed to
+ * expose to members. Keyed exhaustively so adding a target type without
+ * deciding its public key is a compile error, not a silent leak. */
+const CLIENT_ANALYTICS_CONFIG_KEYS: Record<AnalyticsTargetType, string> = {
+  amplitude: 'apiKey',
+  'google-analytics': 'measurementId',
+  mixpanel: 'token',
+}
+
+function sanitizeClientAnalyticsTargets(targets: AnalyticsTarget[] | undefined): AnalyticsTarget[] | undefined {
+  return targets?.map((target) => {
+    const configKey = CLIENT_ANALYTICS_CONFIG_KEYS[target.type]
+    const value = target.config[configKey]
+    return {
+      type: target.type,
+      enabled: target.enabled,
+      config: value ? { [configKey]: value } : {},
+    }
+  })
+}
+
+// GET /api/settings/client-config - Safe renderer configuration for every
+// authenticated user. Keep this deliberately narrower than the admin settings
+// response: only values needed by member-visible surfaces belong here.
+settings.get('/client-config', Authenticated(), (c) => {
+  const appSettings = getSettings()
+  const response: ClientConfigResponse = {
+    appDefaultAutoDeleteInactiveDays: appSettings.app?.autoDeleteInactiveDays,
+    setupCompleted: !!appSettings.app?.setupCompleted,
+    tenantId: getTenantId(),
+    shareAnalytics: appSettings.shareAnalytics !== false,
+    analyticsTargets: sanitizeClientAnalyticsTargets(appSettings.analyticsTargets),
+    shareErrorReports: appSettings.shareErrorReports !== false,
+    composioApiKeyConfigured: getComposioApiKeyStatus().isConfigured,
+  }
+  return c.json(response)
+})
 
 settings.use('*', Authenticated(), IsAdmin())
 

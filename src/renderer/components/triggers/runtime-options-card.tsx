@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RotateCcw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelConfig } from '@renderer/hooks/use-settings'
 import { SettingsModelSelect } from '@renderer/components/settings/settings-model-select'
 import { DetailCard } from './detail-card'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
@@ -15,10 +15,10 @@ interface RuntimeOptionsCardProps {
 }
 
 export function RuntimeOptionsCard({ model, effort, speed, disabled, onUpdate }: RuntimeOptionsCardProps) {
-  const { data: settings } = useSettings()
+  const { data: modelConfig } = useModelConfig()
   // The override falls back to the user's default-model setting (a bare alias
   // or pinned id) when no per-run model is set. The picker resolves it for display.
-  const fallbackModel = settings?.models?.agentModel
+  const fallbackModel = modelConfig?.models?.agentModel
 
   const [localEffort, setLocalEffort] = useState<EffortLevel>((effort as EffortLevel) || 'high')
   const [localSpeed, setLocalSpeed] = useState<SpeedLevel>((speed as SpeedLevel) || 'normal')

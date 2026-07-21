@@ -15,7 +15,7 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({ data: settings }),
+  useModelConfig: () => ({ data: settings }),
 }))
 
 const BILLING_MESSAGE = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'

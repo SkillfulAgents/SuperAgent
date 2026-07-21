@@ -4,11 +4,11 @@ import { render, screen } from '@testing-library/react'
 import { UsageTab } from './usage-tab'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 
-const useSettingsMock = vi.fn()
+const useModelConfigMock = vi.fn()
 const refetchMock = vi.fn()
 
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => useSettingsMock(),
+  useModelConfig: () => useModelConfigMock(),
 }))
 
 vi.mock('@renderer/hooks/use-usage', () => ({
@@ -24,9 +24,26 @@ vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({ isAuthMode: false, isAdmin: false }),
 }))
 
+function modelConfigFor(llmProvider: LlmProviderId) {
+  return {
+    data: {
+      llmProvider,
+      catalog: [],
+      defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+      models: {
+        agentModel: 'opus',
+        summarizerModel: 'haiku',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'sonnet',
+      },
+      webProvider: 'native',
+    },
+  }
+}
+
 describe('UsageTab estimate notice', () => {
   it('explains that deleted agents and sessions are excluded', () => {
-    useSettingsMock.mockReturnValue({ data: { llmProvider: 'anthropic' } })
+    useModelConfigMock.mockReturnValue(modelConfigFor('anthropic'))
 
     render(<UsageTab />)
 
@@ -43,7 +60,7 @@ describe('UsageTab estimate notice', () => {
       ['platform', 'Gamut Platform', 'https://platform.gamutagents.com'],
     ] satisfies Array<[LlmProviderId, string, string]>,
   )('links the %s provider to its definitive usage view', (provider, label, href) => {
-    useSettingsMock.mockReturnValue({ data: { llmProvider: provider } })
+    useModelConfigMock.mockReturnValue(modelConfigFor(provider))
 
     render(<UsageTab />)
 
@@ -51,7 +68,7 @@ describe('UsageTab estimate notice', () => {
   })
 
   it('falls back to provider billing guidance when there is no known dashboard', () => {
-    useSettingsMock.mockReturnValue({ data: { llmProvider: 'generic' } })
+    useModelConfigMock.mockReturnValue(modelConfigFor('generic'))
 
     render(<UsageTab />)
 

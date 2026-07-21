@@ -61,26 +61,25 @@ vi.mock('@renderer/hooks/use-sessions', () => ({
   useUpdateSessionName: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
 }))
 
-// Settings drive ComposerOptions: the catalog comes from llmProviderStatus,
-// fallback model from settings.models.agentModel.
+// Model config drives ComposerOptions: the catalog is returned directly and
+// the fallback model comes from models.agentModel.
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
+  useModelConfig: () => ({
     data: {
       llmProvider: 'anthropic',
-      models: { agentModel: 'sonnet' },
-      llmProviderStatus: [
-        {
-          id: 'anthropic',
-          name: 'Anthropic',
-          isConfigured: true,
-          catalog: [
-            { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-            { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
-            { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
-          ],
-          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
-        },
+      models: {
+        agentModel: 'sonnet',
+        summarizerModel: 'haiku',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'sonnet',
+      },
+      catalog: [
+        { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+        { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
+        { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: ['low', 'medium', 'high'] },
       ],
+      defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+      webProvider: 'native',
     },
   }),
 }))
@@ -289,6 +288,26 @@ describe('AgentHome', () => {
       <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
     )
     expect(screen.getByTestId('home-send-button')).toBeInTheDocument()
+  })
+
+  it('hides the agent default-model card from non-owners', () => {
+    mockCanAdminAgent = false
+
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    expect(screen.queryByTestId('home-default-model-card')).not.toBeInTheDocument()
+  })
+
+  it('shows the agent default-model card to agent owners', () => {
+    mockCanAdminAgent = true
+
+    renderWithProviders(
+      <AgentHome agent={testAgent} onSessionCreated={onSessionCreated} />
+    )
+
+    expect(screen.getByTestId('home-default-model-card')).toBeInTheDocument()
   })
 
   // --- New-agent intro morph ---

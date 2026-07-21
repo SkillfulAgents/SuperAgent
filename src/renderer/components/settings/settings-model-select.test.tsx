@@ -3,9 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-const useSettingsMock = vi.fn()
+const useModelConfigMock = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => useSettingsMock(),
+  useModelConfig: () => useModelConfigMock(),
 }))
 
 import { SettingsModelSelect } from './settings-model-select'
@@ -22,37 +22,36 @@ const CATALOG = [
   { id: 'glm-4-6', label: 'GLM 4.6', family: 'glm', icon: 'anthropic', supportedEfforts: STD, supportsWebSearch: false },
 ]
 
-function settingsWith(web: { webProvider: string; webProviderIsDefault?: boolean }) {
+function settingsWith(webProvider: string) {
   return {
     data: {
       llmProvider: 'anthropic',
-      llmProviderStatus: [
-        {
-          id: 'anthropic',
-          name: 'Anthropic',
-          isConfigured: true,
-          catalog: CATALOG,
-          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
-        },
-      ],
-      ...web,
+      catalog: CATALOG,
+      defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+      models: {
+        agentModel: 'opus',
+        summarizerModel: 'haiku',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'sonnet',
+      },
+      webProvider,
     },
   }
 }
 
 beforeEach(() => {
-  useSettingsMock.mockReturnValue({
+  useModelConfigMock.mockReturnValue({
     data: {
       llmProvider: 'anthropic',
-      llmProviderStatus: [
-        {
-          id: 'anthropic',
-          name: 'Anthropic',
-          isConfigured: true,
-          catalog: CATALOG,
-          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
-        },
-      ],
+      catalog: CATALOG,
+      defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+      models: {
+        agentModel: 'opus',
+        summarizerModel: 'haiku',
+        browserModel: 'sonnet',
+        dashboardBuilderModel: 'sonnet',
+      },
+      webProvider: 'native',
     },
   })
 })
@@ -117,7 +116,7 @@ describe('SettingsModelSelect (flat picker)', () => {
 
   describe('web-tools warning reads the active vendor', () => {
     it('stays hidden when a host vendor is active', async () => {
-      useSettingsMock.mockReturnValue(settingsWith({ webProvider: 'platform', webProviderIsDefault: true }))
+      useModelConfigMock.mockReturnValue(settingsWith('platform'))
       const user = userEvent.setup()
       render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
 
@@ -126,7 +125,7 @@ describe('SettingsModelSelect (flat picker)', () => {
     })
 
     it('shows when the active vendor is native and the model has no web tools', async () => {
-      useSettingsMock.mockReturnValue(settingsWith({ webProvider: 'native', webProviderIsDefault: true }))
+      useModelConfigMock.mockReturnValue(settingsWith('native'))
       const user = userEvent.setup()
       render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
 

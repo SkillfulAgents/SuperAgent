@@ -49,7 +49,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 }))
 
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({ data: { apiKeyStatus: {} } }),
+  useClientConfig: () => ({ data: { composioApiKeyConfigured: false } }),
 }))
 
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
