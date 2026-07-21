@@ -11,6 +11,7 @@ import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
 import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
 import { db } from '@shared/lib/db'
 import { authAccount } from '@shared/lib/db/schema'
+import { runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
@@ -373,9 +374,6 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
   const token = getPlatformAccessToken()
   if (!token) return null
   try {
-    // Dynamic import breaks the module cycle (platform-attribution imports this
-    // service for the token + stored member id).
-    const { runWithRequestUser } = await import('@shared/lib/platform-attribution')
     const account = await runWithRequestUser(userId, () =>
       fetchPlatformJson({
         path: '/v1/account',
