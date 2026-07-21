@@ -13,9 +13,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
-import * as dns from 'dns';
 
 import { inputManager } from './input-manager';
+import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager } from './dashboard-manager';
 import { tabManager } from './tab-manager';
@@ -800,19 +800,14 @@ async function launchHostBrowserIfNeeded(): Promise<HostBrowserInfo | undefined>
     throw new Error('Host browser response missing both cdpUrl and port');
   }
 
-  // Resolve host.docker.internal to its IP address. Chrome's CDP server
-  // validates the Host header and only accepts "localhost" or IP addresses,
-  // rejecting hostnames like "host.docker.internal". Using the resolved IP
-  // ensures the Host header passes Chrome's check for both HTTP requests
-  // and WebSocket connections from agent-browser.
-  const hostDockerInternal = 'host.docker.internal';
-  let cdpIp: string;
-  try {
-    const { address } = await dns.promises.lookup(hostDockerInternal);
-    cdpIp = address;
-  } catch {
-    throw new Error(`Failed to resolve ${hostDockerInternal}`);
-  }
+  // Derive the CDP host from HOST_APP_URL - the same address the
+  // launch-host-browser request above already reached the host at. Chrome's CDP
+  // server validates the Host header and rejects hostnames, so resolveCdpIp
+  // returns an IP. Apple containers can't resolve host.docker.internal (no
+  // --add-host equivalent), so there HOST_APP_URL is the host gateway IP and no
+  // DNS is needed; Docker/Lima/WSL2 keep host.docker.internal, which their
+  // runtime maps.
+  const cdpIp = await resolveCdpIp(hostAppUrl);
 
   // Chrome's CDP requires connecting to the full debugger WebSocket URL
   // (ws://host:port/devtools/browser/<id>), not just ws://host:port.
