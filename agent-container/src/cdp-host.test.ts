@@ -22,10 +22,10 @@ describe('resolveCdpIp', () => {
     expect(ip).toBe('10.4.0.2');
   });
 
-  it('throws "Failed to resolve <name>" when DNS lookup fails', async () => {
+  it('throws "Failed to resolve <name>" with the DNS cause when lookup fails', async () => {
     const lookup = vi.fn().mockRejectedValue(new Error('ENOTFOUND'));
     await expect(
       resolveCdpIp('http://host.docker.internal:47891', lookup),
-    ).rejects.toThrow('Failed to resolve host.docker.internal');
+    ).rejects.toThrow('Failed to resolve host.docker.internal (ENOTFOUND)');
   });
 });

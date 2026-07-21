@@ -30,7 +30,8 @@ export async function resolveCdpIp(
   if (net.isIP(hostname) !== 0) return hostname;
   try {
     return await lookup(hostname);
-  } catch {
-    throw new Error(`Failed to resolve ${hostname}`);
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to resolve ${hostname} (${cause})`);
   }
 }
