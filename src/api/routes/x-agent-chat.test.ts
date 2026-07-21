@@ -55,6 +55,7 @@ const mockAddIntegration = vi.fn()
 const mockGetConnector = vi.fn()
 const mockGetActiveIntegrationIds = vi.fn()
 const mockEnsureSession = vi.fn()
+const mockGetConnectorClass = vi.fn()
 
 vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
   chatIntegrationManager: {
@@ -62,6 +63,7 @@ vi.mock('@shared/lib/chat-integrations/chat-integration-manager', () => ({
     getConnector: (...args: unknown[]) => mockGetConnector(...args),
     getActiveIntegrationIds: (...args: unknown[]) => mockGetActiveIntegrationIds(...args),
     ensureSession: (...args: unknown[]) => mockEnsureSession(...args),
+    getConnectorClass: (...args: unknown[]) => mockGetConnectorClass(...args),
   },
 }))
 
@@ -165,6 +167,7 @@ describe('x-agent chat route', () => {
     ])
     mockGetChatIntegrationSessionBySessionId.mockReturnValue(null)
     mockGetConnector.mockReturnValue(connector)
+    mockGetConnectorClass.mockResolvedValue(undefined)
     mockGetActiveIntegrationIds.mockReturnValue(['integration-1'])
     mockEnsureSession.mockResolvedValue('session-1')
     mockEnsureRunning.mockResolvedValue({ sendMessage: containerSendMessage })
@@ -208,10 +211,35 @@ describe('x-agent chat route', () => {
         provider: 'slack',
         name: 'Team Slack',
         status: 'connected',
+        capabilities: [],
         chats: [{ chatId: 'chat-1', displayName: 'General' }],
       }],
     })
     expect(mockListChatIntegrations).toHaveBeenCalledWith('agent-one')
+  })
+
+  it('labels chats and advertises capabilities from the connector class statics', async () => {
+    mockGetConnectorClass.mockResolvedValue({
+      discoveryCapabilities: ['list_users', 'list_channels', 'dm_by_user_id'],
+      classifyChatId: (chatId: string) => (chatId.startsWith('D') ? 'dm' : chatId.includes('|') ? 'thread' : 'channel'),
+    })
+    mockListChatIntegrationSessions.mockReturnValue([
+      { externalChatId: 'D0AAA111', displayName: 'Iddo Gino', archivedAt: null },
+      { externalChatId: 'C0BBB222|123.456', displayName: '#office', archivedAt: null },
+    ])
+
+    const res = await app.request('http://localhost/api/x-agent/chat/list', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token' },
+    })
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.integrations[0].capabilities).toEqual(['list_users', 'list_channels', 'dm_by_user_id'])
+    expect(body.integrations[0].chats).toEqual([
+      { chatId: 'D0AAA111', displayName: 'Iddo Gino', type: 'dm' },
+      { chatId: 'C0BBB222|123.456', displayName: '#office', type: 'thread' },
+    ])
   })
 
   it('does not send through integrations owned by another agent', async () => {
@@ -443,5 +471,144 @@ describe('x-agent chat route', () => {
 
     expect(res.status).toBe(200)
     expect(connector.sendMessage).toHaveBeenCalledWith('chat-1', { text: 'Hello' })
+  })
+
+  // ── Discovery: send by user_id ─────────────────────────────────────
+
+  function sendRequest(body: Record<string, unknown>) {
+    return app.request('http://localhost/api/x-agent/chat/send', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ integration_id: 'integration-1', message: 'DM for Mike', ...body }),
+    })
+  }
+
+  it('resolves a user_id to a direct chat and sends there', async () => {
+    immediateTimeout()
+    const resolveDirectChat = vi.fn().mockResolvedValue('D0NEWCHAT')
+    mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
+
+    const res = await sendRequest({ user_id: 'U0MIKE' })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ chatId: 'D0NEWCHAT', provider: 'slack' })
+    expect(resolveDirectChat).toHaveBeenCalledWith('U0MIKE')
+    expect(connector.sendMessage).toHaveBeenCalledWith('D0NEWCHAT', { text: 'DM for Mike' })
+  })
+
+  it('rejects passing both chat_id and user_id', async () => {
+    const res = await sendRequest({ chat_id: 'chat-1', user_id: 'U0MIKE' })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('either chat_id or user_id')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects user_id sends on providers without dm_by_user_id support', async () => {
+    // The default connector mock has no resolveDirectChat — the capability is absent
+    const res = await sendRequest({ user_id: 'U0MIKE' })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('does not support messaging by user_id')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('surfaces DM-resolution failures as a clear error', async () => {
+    const resolveDirectChat = vi.fn().mockRejectedValue(new Error('user_not_found'))
+    mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
+
+    const res = await sendRequest({ user_id: 'U0GONE' })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('Could not open a direct chat with user U0GONE')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  it('applies the own-chat guard to the chat a user_id resolves to', async () => {
+    // The caller session IS the DM conversation with this user: resolving the
+    // user id lands on the caller's own chat, which must still be rejected.
+    const resolveDirectChat = vi.fn().mockResolvedValue('D0AAA111')
+    mockGetConnector.mockReturnValue({ ...connector, resolveDirectChat })
+    mockGetChatIntegrationSessionBySessionId.mockReturnValue({
+      integrationId: 'integration-1', externalChatId: 'D0AAA111', displayName: 'Iddo Gino', archivedAt: null,
+    })
+
+    const res = await sendRequest({ user_id: 'U0IDDO', session_id: 'caller-session' })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('post it twice')
+    expect(connector.sendMessage).not.toHaveBeenCalled()
+  })
+
+  // ── Discovery: directory endpoints ─────────────────────────────────
+
+  function directoryRequest(op: 'users' | 'channels', body: Record<string, unknown> = { integration_id: 'integration-1' }) {
+    return app.request(`http://localhost/api/x-agent/chat/${op}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it('lists directory users through the connector', async () => {
+    const listChatUsers = vi.fn().mockResolvedValue({
+      items: [{ id: 'U0MIKE', name: 'Mike Reid', title: 'Office Manager' }],
+      truncated: false,
+    })
+    mockGetConnector.mockReturnValue({ ...connector, listChatUsers })
+
+    const res = await directoryRequest('users')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      provider: 'slack',
+      users: [{ id: 'U0MIKE', name: 'Mike Reid', title: 'Office Manager' }],
+      truncated: false,
+    })
+  })
+
+  it('lists directory channels and passes the truncation flag through', async () => {
+    const listChatChannels = vi.fn().mockResolvedValue({
+      items: [{ id: 'C0OFFICE', name: '#office', isPrivate: false, isMember: true }],
+      truncated: true,
+    })
+    mockGetConnector.mockReturnValue({ ...connector, listChatChannels })
+
+    const res = await directoryRequest('channels')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({
+      provider: 'slack',
+      channels: [{ id: 'C0OFFICE', name: '#office', isPrivate: false, isMember: true }],
+      truncated: true,
+    })
+  })
+
+  it('returns a graceful 400 when the provider has no directory support', async () => {
+    // Default connector mock lacks listChatUsers/listChatChannels
+    const usersRes = await directoryRequest('users')
+    expect(usersRes.status).toBe(400)
+    expect((await usersRes.json()).error).toBe('The slack provider does not support listing users.')
+
+    const channelsRes = await directoryRequest('channels')
+    expect(channelsRes.status).toBe(400)
+    expect((await channelsRes.json()).error).toBe('The slack provider does not support listing channels.')
+  })
+
+  it('rejects directory listings for integrations owned by another agent', async () => {
+    mockGetChatIntegration.mockReturnValue(createIntegration({ agentSlug: 'agent-two' }))
+    const listChatUsers = vi.fn()
+    mockGetConnector.mockReturnValue({ ...connector, listChatUsers })
+
+    const res = await directoryRequest('users')
+
+    expect(res.status).toBe(403)
+    expect(listChatUsers).not.toHaveBeenCalled()
+  })
+
+  it('requires integration_id on directory listings', async () => {
+    const res = await directoryRequest('users', {})
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('integration_id')
   })
 })

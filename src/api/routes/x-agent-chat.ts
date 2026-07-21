@@ -16,6 +16,7 @@ import {
   getChatIntegrationSessionBySessionId,
 } from '@shared/lib/services/chat-integration-session-service'
 import { chatIntegrationManager } from '@shared/lib/chat-integrations/chat-integration-manager'
+import type { ChatClientConnector } from '@shared/lib/chat-integrations/base-connector'
 import {
   validateChatIntegrationConfig,
   CHAT_PROVIDERS,
@@ -54,19 +55,31 @@ xAgentChat.post('/list', async (c) => {
     const callerSlug = getCallerSlug(c)
     const integrations = listChatIntegrations(callerSlug)
 
-    const result = integrations.map((i) => {
+    const result = await Promise.all(integrations.map(async (i) => {
+      // Static (per-provider) lookups: label each chat with its conversation
+      // type where the provider's ids encode one, and advertise discovery
+      // capabilities so agents know which discovery tools apply here.
+      const connectorClass = await chatIntegrationManager.getConnectorClass(i.provider)
       const sessions = listChatIntegrationSessions(i.id)
       const activeChats = sessions
         .filter((s) => !s.archivedAt)
-        .map((s) => ({ chatId: s.externalChatId, displayName: s.displayName }))
+        .map((s) => {
+          const type = connectorClass?.classifyChatId?.(s.externalChatId)
+          return {
+            chatId: s.externalChatId,
+            displayName: s.displayName,
+            ...(type ? { type } : {}),
+          }
+        })
       return {
         id: i.id,
         provider: i.provider,
         name: i.name,
         status: i.status,
+        capabilities: connectorClass?.discoveryCapabilities ?? [],
         chats: activeChats,
       }
-    })
+    }))
 
     return c.json({ integrations: result })
   } catch (error) {
@@ -169,10 +182,13 @@ xAgentChat.post('/send', async (c) => {
   try {
     const callerSlug = getCallerSlug(c)
     const body = await c.req.json()
-    const { integration_id, message, chat_id, context, session_id } = body
+    const { integration_id, message, chat_id, user_id, context, session_id } = body
 
     if (!integration_id || !message) {
       return c.json({ error: 'Missing required fields: integration_id, message' }, 400)
+    }
+    if (chat_id && user_id) {
+      return c.json({ error: 'Pass either chat_id or user_id, not both.' }, 400)
     }
 
     const integration = getChatIntegration(integration_id)
@@ -183,9 +199,35 @@ xAgentChat.post('/send', async (c) => {
       return c.json({ error: 'Chat integration does not belong to this agent' }, 403)
     }
 
+    const connector = await resolveLiveConnector(integration_id, integration.status)
+    if (!connector) {
+      return c.json({ error: 'Integration is not connected and reconnection failed.' }, 400)
+    }
+
+    // A user_id targets a person rather than a chat: resolve (or open) the 1:1
+    // conversation up front so the own-chat guard below sees the REAL chat id —
+    // a DM addressed by user id can still land in the caller's own chat.
+    let resolvedChatId: string | undefined = chat_id
+    if (user_id) {
+      if (typeof connector.resolveDirectChat !== 'function') {
+        return c.json({
+          error: `The ${integration.provider} provider does not support messaging by user_id. Pass a chat_id instead (see list_chat_integrations).`,
+        }, 400)
+      }
+      try {
+        resolvedChatId = await connector.resolveDirectChat(user_id)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return c.json({ error: `Could not open a direct chat with user ${user_id}: ${msg}` }, 400)
+      }
+      // Audit trail for proactive first contact: the send itself is also logged
+      // into the chat's session transcript via notifySessionOfOutboundMessage.
+      console.log(`[x-agent-chat] Resolved user ${user_id} to direct chat ${resolvedChatId} on integration ${integration_id}`)
+    }
+
     // A session spawned BY a chat conversation already has its replies streamed
     // back to that chat, so a send targeting its own chat would double-post —
-    // and omitting chat_id historically made such agents guess a target from
+    // and omitting the target historically made such agents guess one from
     // the integration-wide list and misroute DMs. Reject both; explicit sends
     // to a DIFFERENT chat stay allowed (the legitimate "DM someone while
     // responding in a channel" case). Archived rows don't guard: once a chat
@@ -197,7 +239,7 @@ xAgentChat.post('/send', async (c) => {
         callerChatSession
         && !callerChatSession.archivedAt
         && callerChatSession.integrationId === integration_id
-        && (!chat_id || chat_id === callerChatSession.externalChatId)
+        && (!resolvedChatId || resolvedChatId === callerChatSession.externalChatId)
       ) {
         const label = callerChatSession.displayName ? ` (${callerChatSession.displayName})` : ''
         return c.json({
@@ -206,8 +248,7 @@ xAgentChat.post('/send', async (c) => {
       }
     }
 
-    // Resolve chatId
-    let resolvedChatId: string = chat_id
+    // No explicit target: fall back to the integration's single active chat
     if (!resolvedChatId) {
       const sessions = listChatIntegrationSessions(integration_id)
       const activeChats = sessions.filter((s) => !s.archivedAt)
@@ -232,22 +273,6 @@ xAgentChat.post('/send', async (c) => {
     }
 
     // Send through connector (with a brief "working" indicator first)
-    let connector = chatIntegrationManager.getConnector(integration_id)
-    if (!connector) {
-      // Connector not live — attempt to reconnect
-      // This can happen if the connector dropped or the manager restarted (HMR)
-      console.warn(`[x-agent-chat] getConnector returned undefined for ${integration_id} (status: ${integration.status}), active IDs: [${chatIntegrationManager.getActiveIntegrationIds().join(', ')}]. Attempting reconnect.`)
-      try {
-        await chatIntegrationManager.addIntegration(integration_id)
-        connector = chatIntegrationManager.getConnector(integration_id)
-      } catch {
-        // reconnection failed
-      }
-    }
-    if (!connector) {
-      return c.json({ error: 'Integration is not connected and reconnection failed.' }, 400)
-    }
-
     const typingDelay = 100 + Math.random() * 1100
     await connector.startWorking(resolvedChatId, 'working').catch(() => {})
     await new Promise((resolve) => setTimeout(resolve, typingDelay))
@@ -277,7 +302,97 @@ xAgentChat.post('/send', async (c) => {
   }
 })
 
+// POST /users — list people reachable through the integration's directory
+xAgentChat.post('/users', async (c) => {
+  try {
+    const directory = await resolveDirectoryConnector(c, 'listChatUsers')
+    if ('response' in directory) return directory.response
+    const page = await directory.connector.listChatUsers!()
+    return c.json({ provider: directory.provider, users: page.items, truncated: page.truncated })
+  } catch (error) {
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'users' } })
+    return c.json({ error: 'Failed to list chat users' }, 500)
+  }
+})
+
+// POST /channels — list channels/groups the bot could post into
+xAgentChat.post('/channels', async (c) => {
+  try {
+    const directory = await resolveDirectoryConnector(c, 'listChatChannels')
+    if ('response' in directory) return directory.response
+    const page = await directory.connector.listChatChannels!()
+    return c.json({ provider: directory.provider, channels: page.items, truncated: page.truncated })
+  } catch (error) {
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'channels' } })
+    return c.json({ error: 'Failed to list chat channels' }, 500)
+  }
+})
+
 // --- Helpers ---
+
+/**
+ * Get the live connector for an integration, attempting one reconnect when it
+ * isn't registered (connector dropped, or the manager restarted under HMR).
+ */
+async function resolveLiveConnector(
+  integrationId: string,
+  integrationStatus: string,
+): Promise<ChatClientConnector | undefined> {
+  let connector = chatIntegrationManager.getConnector(integrationId)
+  if (!connector) {
+    console.warn(`[x-agent-chat] getConnector returned undefined for ${integrationId} (status: ${integrationStatus}), active IDs: [${chatIntegrationManager.getActiveIntegrationIds().join(', ')}]. Attempting reconnect.`)
+    try {
+      await chatIntegrationManager.addIntegration(integrationId)
+      connector = chatIntegrationManager.getConnector(integrationId)
+    } catch {
+      // reconnection failed
+    }
+  }
+  return connector
+}
+
+const DIRECTORY_CAPABILITY_LABEL = {
+  listChatUsers: 'listing users',
+  listChatChannels: 'listing channels',
+} as const
+
+/**
+ * Shared preamble for the directory endpoints: auth/ownership checks, live
+ * connector resolution, and a graceful 400 when the provider lacks the
+ * capability. Returns { response } to short-circuit, or the ready connector.
+ */
+async function resolveDirectoryConnector(
+  c: { get: (k: 'callerSlug') => string; req: { json: () => Promise<unknown> }; json: (body: unknown, status?: 400 | 403 | 404) => Response },
+  capability: keyof typeof DIRECTORY_CAPABILITY_LABEL,
+): Promise<{ response: Response } | { connector: ChatClientConnector; provider: string }> {
+  const callerSlug = getCallerSlug(c)
+  const body = await c.req.json() as { integration_id?: string }
+  const integrationId = body?.integration_id
+  if (!integrationId) {
+    return { response: c.json({ error: 'Missing required field: integration_id' }, 400) }
+  }
+
+  const integration = getChatIntegration(integrationId)
+  if (!integration) {
+    return { response: c.json({ error: 'Chat integration not found' }, 404) }
+  }
+  if (integration.agentSlug !== callerSlug) {
+    return { response: c.json({ error: 'Chat integration does not belong to this agent' }, 403) }
+  }
+
+  const connector = await resolveLiveConnector(integrationId, integration.status)
+  if (!connector) {
+    return { response: c.json({ error: 'Integration is not connected and reconnection failed.' }, 400) }
+  }
+  if (typeof connector[capability] !== 'function') {
+    return {
+      response: c.json({
+        error: `The ${integration.provider} provider does not support ${DIRECTORY_CAPABILITY_LABEL[capability]}.`,
+      }, 400),
+    }
+  }
+  return { connector, provider: integration.provider }
+}
 
 async function notifySessionOfOutboundMessage(
   integrationId: string,

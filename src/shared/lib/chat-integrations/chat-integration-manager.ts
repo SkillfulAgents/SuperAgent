@@ -578,12 +578,14 @@ class ChatIntegrationManager {
 
   /**
    * Resolve a provider's connector CLASS for static capability lookups (e.g.
-   * generateSystemPrompt). Mirrors createConnector's lazy imports — connector
-   * modules stay unloaded until their provider is actually used. Returns
-   * undefined for unknown providers rather than throwing: static lookups are
-   * best-effort decorations, not connection attempts.
+   * generateSystemPrompt, discoveryCapabilities, classifyChatId). Mirrors
+   * createConnector's lazy imports — connector modules stay unloaded until
+   * their provider is actually used. Returns undefined for unknown providers
+   * rather than throwing: static lookups are best-effort decorations, not
+   * connection attempts. Public so API routes can label listings and advertise
+   * capabilities without a live connector.
    */
-  private async getConnectorClass(provider: string): Promise<ChatConnectorClass | undefined> {
+  async getConnectorClass(provider: string): Promise<ChatConnectorClass | undefined> {
     switch (provider) {
       case 'telegram':
         return (await import('./telegram-connector')).TelegramConnector
