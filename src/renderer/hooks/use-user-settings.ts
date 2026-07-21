@@ -32,8 +32,12 @@ export function useUpdateUserSettings() {
       }
       return res.json()
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['user-settings'] })
+    onSuccess: (data) => {
+      // The PUT returns the full merged settings — write them straight into
+      // the cache. (invalidate + refetch left a window where consumers that
+      // clear optimistic state on settle briefly rendered the stale cache,
+      // e.g. a resized home card flickering back to its old size.)
+      queryClient.setQueryData(['user-settings'], data)
     },
   })
 }
