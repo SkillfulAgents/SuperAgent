@@ -278,9 +278,18 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   listUserSecrets: vi.fn(),
   getSecret: vi.fn(),
   setSecret: vi.fn(),
+  updateSecret: vi.fn(),
   deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(),
   getSecretEnvVars: vi.fn(),
+}))
+
+vi.mock('@shared/lib/utils/secrets', () => ({
+  keyToEnvVar: vi.fn(),
+}))
+
+vi.mock('@shared/lib/services/audit-log-service', () => ({
+  logAuditEvent: vi.fn(),
+  logAuditEventOrThrow: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
@@ -468,7 +477,9 @@ import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadNotifications, 
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 import { containerManager } from '@shared/lib/container/container-manager'
-import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { listUserSecrets, setSecret, updateSecret, getSecret, getSecretEnvVars } from '@shared/lib/services/secrets-service'
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
+import { logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
 import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
@@ -4869,7 +4880,109 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
     })
   })
 
+  describe('GET /:id/secrets/:secretId/value', () => {
+    it('returns a raw value with cache prevention headers', async () => {
+      vi.mocked(getSecret).mockResolvedValue({
+        envVar: 'MY_API_KEY',
+        key: 'My API Key',
+        value: 'secret-value',
+      })
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MY_API_KEY/value')
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ value: 'secret-value' })
+      expect(res.headers.get('cache-control')).toBe('no-store')
+      expect(res.headers.get('pragma')).toBe('no-cache')
+      expect(logAuditEventOrThrow).toHaveBeenCalledWith({
+        userId: 'test-user-id',
+        object: 'secret',
+        objectId: 'my-agent/MY_API_KEY',
+        action: 'revealed',
+      })
+    })
+
+    it('fails closed when the reveal audit row cannot be written', async () => {
+      vi.mocked(getSecret).mockResolvedValue({
+        envVar: 'MY_API_KEY',
+        key: 'My API Key',
+        value: 'secret-value',
+      })
+      vi.mocked(logAuditEventOrThrow).mockRejectedValueOnce(new Error('audit unavailable'))
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MY_API_KEY/value')
+
+      expect(res.status).toBe(500)
+      expect(await res.json()).toEqual({ error: 'Failed to reveal secret' })
+    })
+
+    it('returns a retryable response when the audit database is busy', async () => {
+      vi.mocked(getSecret).mockResolvedValue({
+        envVar: 'MY_API_KEY',
+        key: 'My API Key',
+        value: 'secret-value',
+      })
+      vi.mocked(logAuditEventOrThrow).mockRejectedValueOnce(
+        Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }),
+      )
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MY_API_KEY/value')
+
+      expect(res.status).toBe(503)
+      expect(await res.json()).toEqual({
+        error: 'The audit log is temporarily busy. Please try revealing the secret again.',
+      })
+      expect(res.headers.get('retry-after')).toBe('1')
+    })
+
+    it('returns 404 when the requested user secret does not exist', async () => {
+      vi.mocked(getSecret).mockResolvedValue(null)
+
+      const res = await getReq(app, '/api/agents/my-agent/secrets/MISSING/value')
+
+      expect(res.status).toBe(404)
+      expect(logAuditEventOrThrow).not.toHaveBeenCalled()
+    })
+
+    it('does not reveal reserved runtime variables', async () => {
+      const res = await getReq(app, '/api/agents/my-agent/secrets/CONNECTED_ACCOUNTS/value')
+
+      expect(res.status).toBe(404)
+      expect(getSecret).not.toHaveBeenCalled()
+    })
+  })
+
   describe('POST /:id/secrets (bug 2 — reject reserved names)', () => {
+    it('returns field-specific errors for missing required values', async () => {
+      const missingKey = await postJson(app, '/api/agents/my-agent/secrets', {
+        value: 'secret',
+      })
+      expect(missingKey.status).toBe(400)
+      expect(await missingKey.json()).toEqual({ error: 'Key is required' })
+
+      const missingValue = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: 'My Key',
+      })
+      expect(missingValue.status).toBe(400)
+      expect(await missingValue.json()).toEqual({ error: 'Value is required' })
+      expect(setSecret).not.toHaveBeenCalled()
+    })
+
+    it('rejects a key that cannot produce an environment variable', async () => {
+      vi.mocked(keyToEnvVar).mockReturnValue('')
+
+      const res = await postJson(app, '/api/agents/my-agent/secrets', {
+        key: '!!!',
+        value: 'pwned',
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({
+        error: 'Key must contain at least one letter or number',
+      })
+      expect(setSecret).not.toHaveBeenCalled()
+    })
+
     it('rejects a reserved env var (CONNECTED_ACCOUNTS) with 400 and never writes', async () => {
       vi.mocked(keyToEnvVar).mockReturnValue('CONNECTED_ACCOUNTS')
 
@@ -4917,9 +5030,37 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
   })
 
   describe('PUT /:id/secrets/:secretId (bug 2 — reject renaming onto reserved)', () => {
+    it('rejects non-string patch values at the request boundary', async () => {
+      const res = await app.request('http://localhost/api/agents/my-agent/secrets/MY_API_KEY', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: null }),
+      })
+
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'Invalid request body' })
+      expect(updateSecret).not.toHaveBeenCalled()
+    })
+
+    it('rejects empty and no-op patches at the request boundary', async () => {
+      for (const body of [{}, { value: '' }]) {
+        const res = await app.request(
+          'http://localhost/api/agents/my-agent/secrets/MY_API_KEY',
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          },
+        )
+
+        expect(res.status).toBe(400)
+        expect(await res.json()).toEqual({ error: 'Invalid request body' })
+      }
+      expect(updateSecret).not.toHaveBeenCalled()
+    })
+
     it('rejects renaming a secret onto a reserved env var with 400 and never writes', async () => {
-      vi.mocked(getSecret).mockResolvedValue({ envVar: 'MY_API_KEY', value: 'k', key: 'My API Key' })
-      vi.mocked(keyToEnvVar).mockReturnValue('REMOTE_MCPS')
+      vi.mocked(updateSecret).mockResolvedValue({ status: 'reserved', envVar: 'REMOTE_MCPS' })
 
       const res = await app.request('http://localhost/api/agents/my-agent/secrets/MY_API_KEY', {
         method: 'PUT',
@@ -4930,7 +5071,21 @@ describe('Secrets routes — reserved-env-var enforcement (SUP-239)', () => {
       expect(res.status).toBe(400)
       const body = await res.json()
       expect(body.error).toContain('REMOTE_MCPS')
-      expect(setSecret).not.toHaveBeenCalled()
+    })
+
+    it('returns 409 rather than overwriting a rename destination', async () => {
+      vi.mocked(updateSecret).mockResolvedValue({ status: 'conflict', envVar: 'EXISTING' })
+
+      const res = await app.request('http://localhost/api/agents/my-agent/secrets/SOURCE', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'Existing' }),
+      })
+
+      expect(res.status).toBe(409)
+      expect(await res.json()).toEqual({
+        error: 'A secret with env var "EXISTING" already exists',
+      })
     })
   })
 })

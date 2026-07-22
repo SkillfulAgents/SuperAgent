@@ -1,4 +1,3 @@
-
 import * as React from 'react'
 import { Plus, Trash2, Eye, EyeOff } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
@@ -12,15 +11,7 @@ import {
   type ApiSecretDisplay,
 } from '@renderer/hooks/use-secrets'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
-
-// Convert a display key to an environment variable name (preview)
-function keyToEnvVar(key: string): string {
-  return key
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .replace(/_+/g, '_')
-}
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
 
 interface SecretRowProps {
   secret: ApiSecretDisplay

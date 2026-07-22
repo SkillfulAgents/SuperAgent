@@ -118,8 +118,8 @@ vi.mock('@shared/lib/services/secrets-service', () => ({
   listSecrets: vi.fn(),
   getSecret: vi.fn(),
   setSecret: vi.fn(),
+  updateSecret: vi.fn(),
   deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(),
   getSecretEnvVars: vi.fn(),
 }))
 

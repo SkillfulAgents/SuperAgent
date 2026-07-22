@@ -64,11 +64,12 @@ import {
   listUserSecrets,
   getSecret,
   setSecret,
+  updateSecret,
   deleteSecret,
-  keyToEnvVar,
   getSecretEnvVars,
 } from '@shared/lib/services/secrets-service'
 import { isReservedEnvVar } from '@shared/lib/container/reserved-env-vars'
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import {
   listScheduledTasks,
   listPendingScheduledTasks,
@@ -153,7 +154,7 @@ import { AGENT_PACKAGE_EXTENSION, SKILL_PACKAGE_EXTENSION } from '@shared/lib/ut
 import { readAgentPreferences, updateAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { agentPreferencesUpdateSchema } from '@shared/lib/types/agent-preferences'
 import { cleanupAgentData } from '@shared/lib/services/agent-cleanup-service'
-import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { captureException } from '@shared/lib/error-reporting'
 import * as fs from 'fs'
@@ -167,6 +168,7 @@ import {
   toAgentConnectedAccountDto,
   toAgentRemoteMcpDto,
 } from '@shared/lib/agent-connections/public'
+import { createSecretRequestSchema, updateSecretRequestSchema } from './secrets-schema'
 
 const WorkspaceBookmarkSchema = z.object({
   name: z.string().min(1),
@@ -3346,23 +3348,80 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
   }
 })
 
+function isRetryableAuditWriteError(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof current !== 'object' || current === null) return false
+    const code = 'code' in current ? current.code : undefined
+    if (
+      typeof code === 'string' &&
+      (code.startsWith('SQLITE_BUSY') || code.startsWith('SQLITE_LOCKED'))
+    ) {
+      return true
+    }
+    current = 'cause' in current ? current.cause : undefined
+  }
+  return false
+}
+
+// GET /api/agents/:id/secrets/:secretId/value - Reveal the raw value of a single secret
+agents.get('/:id/secrets/:secretId/value', AgentAdmin(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const envVar = c.req.param('secretId')
+
+    // Reserved runtime vars are system-managed and hidden from the secrets
+    // list (SUP-239 bug 3), so they don't exist as user secrets here either —
+    // 404 rather than confirming the var and leaking e.g. CONNECTED_ACCOUNTS.
+    const secret = isReservedEnvVar(envVar) ? null : await getSecret(slug, envVar)
+    if (!secret) {
+      return c.json({ error: 'Secret not found' }, 404)
+    }
+
+    // Revealing plaintext is fail-closed on audit storage: the endpoint must
+    // never disclose a value unless its durable `revealed` row was written.
+    await logAuditEventOrThrow({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${envVar}`, action: 'revealed' })
+    return c.json(
+      { value: secret.value },
+      200,
+      { 'Cache-Control': 'no-store', Pragma: 'no-cache' },
+    )
+  } catch (error) {
+    console.error('Failed to reveal secret:', error)
+    if (isRetryableAuditWriteError(error)) {
+      return c.json(
+        { error: 'The audit log is temporarily busy. Please try revealing the secret again.' },
+        503,
+        { 'Retry-After': '1' },
+      )
+    }
+    return c.json({ error: 'Failed to reveal secret' }, 500)
+  }
+})
+
 // POST /api/agents/:id/secrets - Create or update a secret
 agents.post('/:id/secrets', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
-    const body = await c.req.json()
-    const { key, value } = body
+    const parsedBody = createSecretRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    )
+    if (!parsedBody.success) {
+      return c.json({ error: 'Invalid request body' }, 400)
+    }
+    const { key, value } = parsedBody.data
 
-    if (!key?.trim()) {
+    if (!key.trim()) {
       return c.json({ error: 'Key is required' }, 400)
     }
-
-    if (value === undefined || value === null) {
+    if (!value) {
       return c.json({ error: 'Value is required' }, 400)
     }
 
-
     const envVar = keyToEnvVar(key.trim())
+    if (!envVar) {
+      return c.json({ error: 'Key must contain at least one letter or number' }, 400)
+    }
 
     // A secret is just an env var injected into the container, so it must obey
     // the same reserved-runtime-var rule as global custom env vars (SUP-210 /
@@ -3395,39 +3454,37 @@ agents.put('/:id/secrets/:secretId', AgentUser(), async (c) => {
   try {
     const slug = getAgentId(c)
     const envVar = c.req.param('secretId')
-    const body = await c.req.json()
-    const { key, value } = body
+    const parsedBody = updateSecretRequestSchema.safeParse(
+      await c.req.json().catch(() => null),
+    )
+    if (!parsedBody.success) {
+      return c.json({ error: 'Invalid request body' }, 400)
+    }
+    const { key, value } = parsedBody.data
 
-
-    const existing = await getSecret(slug, envVar)
-    if (!existing) {
+    const result = await updateSecret(slug, envVar, { key, value })
+    if (result.status === 'not_found') {
       return c.json({ error: 'Secret not found' }, 404)
     }
-
-    const newKey = key?.trim() || existing.key
-    const newEnvVar = keyToEnvVar(newKey)
-    const newValue = value !== undefined ? value : existing.value
-
-    // Renaming a secret onto a reserved runtime var is blocked too (SUP-239 bug 2).
-    if (isReservedEnvVar(newEnvVar)) {
+    if (result.status === 'invalid_key') {
+      return c.json({ error: 'Key must contain at least one letter or number' }, 400)
+    }
+    if (result.status === 'reserved') {
       return c.json(
-        { error: `"${newEnvVar}" is a reserved runtime variable and cannot be used as a secret` },
+        { error: `"${result.envVar}" is a reserved runtime variable and cannot be used as a secret` },
         400
       )
     }
-
-    if (newEnvVar !== envVar) {
-      await deleteSecret(slug, envVar)
+    if (result.status === 'conflict') {
+      return c.json(
+        { error: `A secret with env var "${result.envVar}" already exists` },
+        409,
+      )
     }
 
-    await setSecret(slug, {
-      key: newKey,
-      envVar: newEnvVar,
-      value: newValue,
-    })
-
-    logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${newEnvVar}`, action: 'updated', details: { key: newKey } })
-    return c.json({ id: newEnvVar, key: newKey, envVar: newEnvVar, hasValue: true })
+    const updated = result.secret
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${updated.envVar}`, action: 'updated', details: { key: updated.key } })
+    return c.json({ id: updated.envVar, key: updated.key, envVar: updated.envVar, hasValue: true })
   } catch (error) {
     console.error('Failed to update secret:', error)
     return c.json({ error: 'Failed to update secret' }, 500)

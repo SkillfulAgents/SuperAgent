@@ -255,8 +255,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
 }))
 
 vi.mock('@shared/lib/services/secrets-service', () => ({
-  listSecrets: vi.fn(), getSecret: vi.fn(), setSecret: vi.fn(), deleteSecret: vi.fn(),
-  keyToEnvVar: vi.fn(), getSecretEnvVars: vi.fn(),
+  listSecrets: vi.fn(), getSecret: vi.fn(), setSecret: vi.fn(), updateSecret: vi.fn(), deleteSecret: vi.fn(),
+  getSecretEnvVars: vi.fn(),
 }))
 
 vi.mock('@shared/lib/services/scheduled-task-service', () => ({
