@@ -1,10 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import type { MiddlewareHandler } from 'hono'
+import * as dnsPromises from 'node:dns/promises'
 
 // ---------------------------------------------------------------------------
 // Mocks — must be set up before importing the module under test
 // ---------------------------------------------------------------------------
+
+vi.mock('node:dns/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:dns/promises')>()
+  return {
+    ...actual,
+    lookup: vi.fn(),
+  }
+})
 
 // Mock auth middleware — always pass through
 vi.mock('../middleware/auth', () => {
@@ -87,6 +96,8 @@ vi.mock('drizzle-orm', () => ({
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
 
+const lookupMock = dnsPromises.lookup as unknown as ReturnType<typeof vi.fn>
+
 // Import after mocks
 import remoteMcps from './remote-mcps'
 
@@ -95,6 +106,10 @@ function createApp() {
   app.route('/api/remote-mcps', remoteMcps)
   return app
 }
+
+beforeEach(() => {
+  lookupMock.mockResolvedValue({ address: '93.184.216.34', family: 4 })
+})
 
 // ---------------------------------------------------------------------------
 // parseMcpResponse tests — exercised through POST / which uses discoverTools,
@@ -413,7 +428,7 @@ describe('discoverTools (via POST /)', () => {
     expect(initCall[0]).toBe('https://mcp.example.com')
     const initBody = JSON.parse(initCall[1].body)
     expect(initBody.method).toBe('initialize')
-    expect(initBody.params.clientInfo.name).toBe('Superagent')
+    expect(initBody.params.clientInfo.name).toBe('Gamut')
 
     // Call 2: notifications/initialized — includes session ID
     const notifCall = mockFetch.mock.calls[1]

@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
+import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import type { OAuthMetadata, OAuthTokenResponse } from './types'
 
@@ -99,7 +100,7 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
 } | null> {
   try {
     // Step 1: Make unauthenticated request to get 401
-    const probeResponse = await fetch(mcpUrl, {
+    const probeResponse = await mcpSafeFetch(mcpUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }),
@@ -129,13 +130,10 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
 
     if (resourceMetadataMatch) {
       // RFC 9728: Fetch Protected Resource Metadata.
-      // SSRF guard (SUP-235): this URL comes straight from the server-controlled
-      // WWW-Authenticate header, so apply the same private/loopback host policy
-      // as the entry path before fetching. Rejection throws -> discovery fails
-      // closed (returns null) instead of fetching an internal address.
+      // SSRF: server-controlled WWW-Authenticate URL — mcpSafeFetch rejects
+      // private/loopback (incl. DNS-rebind) before connecting.
       const resourceMetadataUrl = resourceMetadataMatch[1]
-      validateMcpDiscoveryUrl(resourceMetadataUrl)
-      const resourceRes = await fetch(resourceMetadataUrl)
+      const resourceRes = await mcpSafeFetch(resourceMetadataUrl)
       if (!resourceRes.ok) {
         throw new Error(`Failed to fetch resource metadata: ${resourceRes.status}`)
       }
@@ -168,17 +166,14 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
     // protected-resource metadata's authorization_servers[0] or the MCP
     // origin). Reject private/loopback auth servers before deriving and
     // fetching any well-known URLs from them; throwing fails discovery closed.
-    validateMcpDiscoveryUrl(authServerUrl)
+    await validateMcpDiscoveryUrl(authServerUrl)
 
     const wellKnownUrls = buildAuthServerMetadataUrls(authServerUrl)
 
     for (const url of wellKnownUrls) {
       try {
-        // Defense in depth: re-validate each generated URL so a future change
-        // to buildAuthServerMetadataUrls can never reintroduce an unchecked
-        // fetch. A rejected URL is skipped, not fetched.
-        validateMcpDiscoveryUrl(url)
-        const res = await fetch(url)
+        // mcpSafeFetch rejects private/loopback; catch skips to the next candidate.
+        const res = await mcpSafeFetch(url)
         if (res.ok) {
           const metadata = (await res.json()) as OAuthMetadata
           if (metadata.authorization_endpoint && metadata.token_endpoint) {
@@ -215,7 +210,7 @@ export async function registerDynamicClient(
 ): Promise<{ clientId: string; clientSecret?: string; scope?: string }> {
   let res: Response
   try {
-    res = await fetch(registrationEndpoint, {
+    res = await mcpSafeFetch(registrationEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -444,7 +439,7 @@ export async function initiateOAuthFlow(
       const registration = await registerDynamicClientWithFallback(
         metadata.registration_endpoint,
         redirectCandidates,
-        clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
+        clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Gamut',
       )
       clientId = registration.clientId
       clientSecret = registration.clientSecret
@@ -584,7 +579,7 @@ export async function initiateNewServerOAuth(
     const registration = await registerDynamicClientWithFallback(
       metadata.registration_endpoint,
       redirectCandidates,
-      clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Superagent',
+      clientNameOverride && clientNameOverride.length > 0 ? clientNameOverride : 'Gamut',
     )
     clientId = registration.clientId
     clientSecret = registration.clientSecret
@@ -691,7 +686,7 @@ export async function completeOAuthFlow(
       body.set('client_secret', flow.clientSecret)
     }
 
-    const res = await fetch(flow.tokenEndpoint, {
+    const res = await mcpSafeFetch(flow.tokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
@@ -780,7 +775,7 @@ export async function refreshMcpToken(mcpId: string): Promise<string | null> {
       body.set('resource', mcp.oauthResource)
     }
 
-    const res = await fetch(mcp.oauthTokenEndpoint, {
+    const res = await mcpSafeFetch(mcp.oauthTokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,

@@ -4,6 +4,10 @@ import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { Provider } from '@shared/lib/account-providers/service-catalog'
+import type {
+  AgentConnectedAccountDto,
+  PublicAgentConnectedAccount,
+} from '@shared/lib/agent-connections/public'
 
 export interface ConnectedAccount {
   id: string
@@ -17,10 +21,7 @@ export interface ConnectedAccount {
   provider?: Provider
 }
 
-export interface AgentConnectedAccount extends ConnectedAccount {
-  mappingId: string
-  mappedAt: string
-}
+export type AgentConnectedAccount = PublicAgentConnectedAccount
 
 interface ConnectedAccountsResponse {
   accounts: ConnectedAccount[]
@@ -50,7 +51,7 @@ export function useConnectedAccounts() {
  * Hook to fetch connected accounts assigned to a specific agent
  */
 export function useAgentConnectedAccounts(agentSlug: string) {
-  return useQuery<{ accounts: AgentConnectedAccount[] }>({
+  return useQuery<{ accounts: AgentConnectedAccountDto[] }>({
     queryKey: ['agent-connected-accounts', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/connected-accounts`)

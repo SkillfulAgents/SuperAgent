@@ -31,6 +31,8 @@ import { readSessionMetadata } from './session-service'
 
 export interface ActivityStatsOptions {
   days: number
+  /** Undefined in local/single-user mode; set to the acting user in auth mode. */
+  ownerId?: string
   /** Viewer's `Date.prototype.getTimezoneOffset()`; buckets days locally. */
   tzOffsetMinutes?: number
   now?: Date
@@ -45,10 +47,7 @@ export interface ActivityStatsOptions {
   isSessionLive?: (sessionId: string) => boolean
 }
 
-export interface ConnectionStatsOptions extends ActivityStatsOptions {
-  /** Undefined in local/single-user mode; set to the acting user in auth mode. */
-  ownerId?: string
-}
+export type ConnectionStatsOptions = ActivityStatsOptions
 
 function dailyEventsById(
   ids: string[],
@@ -178,6 +177,12 @@ export async function getAgentActivityStats(
   const now = options.now ?? new Date()
   const tzOffsetMinutes = options.tzOffsetMinutes ?? 0
   const from = getActivityWindowStart(options.days, now, tzOffsetMinutes)
+  const accountOwnerCondition = options.ownerId
+    ? eq(connectedAccounts.userId, options.ownerId)
+    : undefined
+  const mcpOwnerCondition = options.ownerId
+    ? eq(remoteMcpServers.userId, options.ownerId)
+    : undefined
 
   const [
     tasks,
@@ -193,10 +198,24 @@ export async function getAgentActivityStats(
     readSessionMetadata(agentSlug),
     db.select({ id: agentConnectedAccounts.connectedAccountId })
       .from(agentConnectedAccounts)
-      .where(eq(agentConnectedAccounts.agentSlug, agentSlug)),
+      .innerJoin(
+        connectedAccounts,
+        eq(agentConnectedAccounts.connectedAccountId, connectedAccounts.id),
+      )
+      .where(and(
+        eq(agentConnectedAccounts.agentSlug, agentSlug),
+        accountOwnerCondition,
+      )),
     db.select({ id: agentRemoteMcps.remoteMcpId })
       .from(agentRemoteMcps)
-      .where(eq(agentRemoteMcps.agentSlug, agentSlug)),
+      .innerJoin(
+        remoteMcpServers,
+        eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id),
+      )
+      .where(and(
+        eq(agentRemoteMcps.agentSlug, agentSlug),
+        mcpOwnerCondition,
+      )),
     auditRollupQuery(proxyAuditLog, proxyAuditLog.accountId, and(
       eq(proxyAuditLog.agentSlug, agentSlug),
       gte(proxyAuditLog.createdAt, from),

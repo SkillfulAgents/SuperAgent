@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { IntegrationRowActions } from './integration-row-actions'
 import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
 import { renderWithProviders } from '@renderer/test/test-utils'
+import { isPublicAgentConnectedAccount } from '@shared/lib/agent-connections/public'
 
 // Mock apiFetch so the real mutation hooks run end-to-end against a fake
 // network. This is the level of integration that exercises the cache-key
@@ -44,7 +45,11 @@ function jsonResponse(body: unknown, ok = true): Response {
 function AgentAccountsProbe() {
   const { data } = useAgentConnectedAccounts('test-agent')
   const accounts = Array.isArray(data?.accounts) ? data.accounts : []
-  return <div data-testid="agent-accounts">{accounts.map((a) => a.displayName).join(',')}</div>
+  return (
+    <div data-testid="agent-accounts">
+      {accounts.filter(isPublicAgentConnectedAccount).map((a) => a.displayName).join(',')}
+    </div>
+  )
 }
 
 describe('IntegrationRowActions — delete account flow', () => {

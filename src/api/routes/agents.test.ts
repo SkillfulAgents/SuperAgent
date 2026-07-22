@@ -48,15 +48,16 @@ vi.mock('stream', () => ({
 
 // Auth middleware — passthrough (sets mock user on context for auth mode tests)
 const mockAuthUser = { id: 'test-user-id', name: 'Test User', email: 'test@example.com' }
+let mockAuthorizedAgentRole: 'owner' | 'user' | 'viewer' = 'owner'
 // Display-slug -> canonical-id resolution applied by the ResolveAgent mock. Defaults
 // to identity (test slugs are already canonical); a test can override it to exercise
 // routes where the URL display slug differs from the resolved id.
 let mockResolveSlug: (slug: string) => string = (slug) => slug
 vi.mock('../middleware/auth', () => ({
   Authenticated: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
-  AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
-  AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
-  AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); return next() },
+  AgentRead: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
+  AgentUser: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
+  AgentAdmin: () => async (c: any, next: () => Promise<void>) => { c.set('user', mockAuthUser); c.set('authorizedAgentRole', mockAuthorizedAgentRole); return next() },
   // Mirrors the real ResolveAgent: 404 on a missing agent (via the agentExists
   // mock) and stash the resolved id, which getAgentId reads back. For test slugs
   // (already canonical), resolution is the identity.
@@ -67,6 +68,7 @@ vi.mock('../middleware/auth', () => ({
     return next()
   },
   getAgentId: (c: any) => c.get('agentId') ?? c.req.param('id'),
+  getAuthorizedAgentRole: (c: any) => c.get('authorizedAgentRole') ?? null,
 }))
 
 // Container manager
@@ -296,6 +298,12 @@ vi.mock('@shared/lib/services/chat-integration-service', () => ({
   listChatIntegrationsByAgents: vi.fn(() => new Map()),
 }))
 
+vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
+  listWebhookTriggers: vi.fn(() => Promise.resolve([])),
+  listActiveWebhookTriggers: vi.fn(() => Promise.resolve([])),
+  listCancelledWebhookTriggers: vi.fn(() => Promise.resolve([])),
+}))
+
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
@@ -437,6 +445,7 @@ import { containerManager } from '@shared/lib/container/container-manager'
 import { listUserSecrets, setSecret, getSecret, keyToEnvVar, getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
 import { listChatIntegrations } from '@shared/lib/services/chat-integration-service'
+import { listWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 
 // ============================================================================
 // Test Helpers
@@ -447,6 +456,10 @@ function createApp() {
   app.route('/api/agents', agents)
   return app
 }
+
+beforeEach(() => {
+  mockAuthorizedAgentRole = 'owner'
+})
 
 async function patchJson(app: Hono, url: string, body: unknown): Promise<Response> {
   return app.request(`http://localhost${url}`, {
@@ -478,6 +491,237 @@ async function postFormData(app: Hono, url: string, body: FormData): Promise<Res
     body,
   })
 }
+
+// ============================================================================
+// Shared-agent connection projections
+// ============================================================================
+
+describe('shared-agent connection projections', () => {
+  const ownAccount = {
+    id: 'own-account',
+    providerConnectionId: 'own-provider-connection',
+    providerName: 'composio',
+    toolkitSlug: 'github',
+    displayName: 'My GitHub',
+    status: 'active' as const,
+    userId: 'test-user-id',
+    createdAt: new Date('2026-07-18T10:00:00Z'),
+    updatedAt: new Date('2026-07-18T11:00:00Z'),
+  }
+  const foreignAccount = {
+    ...ownAccount,
+    id: 'victim-account-id',
+    providerConnectionId: 'victim-provider-connection',
+    toolkitSlug: 'slack',
+    displayName: 'Victim Workspace',
+    userId: 'victim-user-id',
+  }
+  const ownAccountMapping = {
+    id: 'own-account-mapping',
+    agentSlug: 'test-agent',
+    connectedAccountId: ownAccount.id,
+    createdAt: new Date('2026-07-18T12:00:00Z'),
+  }
+  const foreignAccountMapping = {
+    ...ownAccountMapping,
+    id: 'victim-account-mapping',
+    connectedAccountId: foreignAccount.id,
+  }
+  const ownMcp = {
+    id: 'own-mcp',
+    name: 'My MCP',
+    url: 'https://mine.example.test/mcp',
+    userId: 'test-user-id',
+    authType: 'bearer' as const,
+    accessToken: 'own-token',
+    refreshToken: null,
+    tokenExpiresAt: null,
+    oauthTokenEndpoint: null,
+    oauthClientId: null,
+    oauthClientSecret: null,
+    oauthResource: null,
+    toolsJson: JSON.stringify([{ name: 'search', description: 'Search' }]),
+    toolsDiscoveredAt: new Date('2026-07-18T11:00:00Z'),
+    status: 'active' as const,
+    errorMessage: null,
+    createdAt: new Date('2026-07-18T10:00:00Z'),
+    updatedAt: new Date('2026-07-18T11:00:00Z'),
+  }
+  const foreignMcp = {
+    ...ownMcp,
+    id: 'victim-mcp-id',
+    name: 'Victim private MCP',
+    url: 'https://victim.example.test/private-mcp',
+    userId: 'victim-user-id',
+    accessToken: 'victim-token',
+    toolsJson: JSON.stringify([{ name: 'victim_private_tool' }]),
+    errorMessage: 'victim-only error detail',
+  }
+  const ownMcpMapping = {
+    id: 'own-mcp-mapping',
+    agentSlug: 'test-agent',
+    remoteMcpId: ownMcp.id,
+    createdAt: new Date('2026-07-18T12:00:00Z'),
+  }
+  const foreignMcpMapping = {
+    ...ownMcpMapping,
+    id: 'victim-mcp-mapping',
+    remoteMcpId: foreignMcp.id,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockAgentExists.mockResolvedValue(true)
+    mockIsAuthMode.mockReturnValue(true)
+  })
+
+  afterEach(() => {
+    mockIsAuthMode.mockReturnValue(false)
+  })
+
+  it('returns owned account details and only a capability marker for foreign accounts', async () => {
+    mockDbSelectFrom.mockReturnValue({
+      innerJoin: () => ({
+        where: () => Promise.resolve([
+          { mapping: ownAccountMapping, account: ownAccount },
+          { mapping: foreignAccountMapping, account: foreignAccount },
+        ]),
+      }),
+    })
+
+    const res = await getReq(createApp(), '/api/agents/test-agent/connected-accounts')
+    const body = await res.json() as { accounts: Array<Record<string, unknown>> }
+
+    expect(res.status).toBe(200)
+    expect(body.accounts[0]).toMatchObject({
+      id: 'own-account',
+      providerConnectionId: 'own-provider-connection',
+      mappingId: 'own-account-mapping',
+    })
+    expect(body.accounts[0]).not.toHaveProperty('userId')
+    expect(body.accounts[1]).toEqual({ kind: 'connected-account', toolkitSlug: 'slack' })
+    expect(JSON.stringify(body)).not.toContain('victim-account-id')
+    expect(JSON.stringify(body)).not.toContain('victim-provider-connection')
+    expect(JSON.stringify(body)).not.toContain('Victim Workspace')
+    expect(JSON.stringify(body)).not.toContain('victim-user-id')
+  })
+
+  it('applies the same projection to the account assignment response', async () => {
+    mockDbSelectFrom
+      .mockReturnValueOnce({ where: () => Promise.resolve([ownAccount]) })
+      .mockReturnValueOnce({
+        innerJoin: () => ({
+          where: () => Promise.resolve([
+            { mapping: ownAccountMapping, account: ownAccount },
+            { mapping: foreignAccountMapping, account: foreignAccount },
+          ]),
+        }),
+      })
+
+    const res = await postJson(createApp(), '/api/agents/test-agent/connected-accounts', {
+      accountIds: [ownAccount.id],
+    })
+    const body = await res.json() as { accounts: Array<Record<string, unknown>> }
+
+    expect(res.status).toBe(200)
+    expect(body.accounts[1]).toEqual({ kind: 'connected-account', toolkitSlug: 'slack' })
+    expect(JSON.stringify(body)).not.toContain('victim-account-id')
+    expect(JSON.stringify(body)).not.toContain('victim-provider-connection')
+    expect(JSON.stringify(body)).not.toContain('victim-user-id')
+  })
+
+  it('returns owned MCP details and a fully opaque marker for foreign MCPs', async () => {
+    mockDbSelectFrom.mockReturnValue({
+      innerJoin: () => ({
+        where: () => Promise.resolve([
+          { mapping: ownMcpMapping, mcp: ownMcp },
+          { mapping: foreignMcpMapping, mcp: foreignMcp },
+        ]),
+      }),
+    })
+
+    const res = await getReq(createApp(), '/api/agents/test-agent/remote-mcps')
+    const body = await res.json() as { mcps: Array<Record<string, unknown>> }
+
+    expect(res.status).toBe(200)
+    expect(body.mcps[0]).toMatchObject({
+      id: 'own-mcp',
+      name: 'My MCP',
+      url: 'https://mine.example.test/mcp',
+      tools: [{ name: 'search', description: 'Search' }],
+      mappingId: 'own-mcp-mapping',
+    })
+    expect(body.mcps[0]).not.toHaveProperty('userId')
+    expect(body.mcps[0]).not.toHaveProperty('accessToken')
+    expect(body.mcps[1]).toEqual({ kind: 'remote-mcp' })
+    expect(JSON.stringify(body)).not.toContain('victim-mcp-id')
+    expect(JSON.stringify(body)).not.toContain('Victim private MCP')
+    expect(JSON.stringify(body)).not.toContain('victim.example.test')
+    expect(JSON.stringify(body)).not.toContain('victim_private_tool')
+    expect(JSON.stringify(body)).not.toContain('victim-only error detail')
+    expect(JSON.stringify(body)).not.toContain('victim-user-id')
+  })
+})
+
+// ============================================================================
+// Webhook triggers — GET /:id/webhook-triggers
+// ============================================================================
+
+describe('GET /:id/webhook-triggers', () => {
+  const trigger = {
+    id: 'trigger-1',
+    agentSlug: 'test-agent',
+    kind: 'custom' as const,
+    composioTriggerId: 'whep_private-id',
+    connectedAccountId: 'account-private-id',
+    triggerType: 'CUSTOM_WEBHOOK',
+    triggerConfig: JSON.stringify({ url: 'https://hooks.example.test/private-capability' }),
+    prompt: 'Handle the event',
+    name: 'Inbound events',
+    status: 'active' as const,
+    lastFiredAt: null,
+    fireCount: 0,
+    lastSessionId: null,
+    createdBySessionId: null,
+    createdByUserId: 'owner-private-id',
+    model: null,
+    effort: null,
+    speed: null,
+    createdAt: new Date('2026-07-17T00:00:00Z'),
+    cancelledAt: null,
+    pausedAt: null,
+  }
+
+  it.each(['viewer', 'user'] as const)('redacts list rows for %s members', async (role) => {
+    mockAuthorizedAgentRole = role
+    vi.mocked(listWebhookTriggers).mockResolvedValueOnce([trigger])
+
+    const res = await getReq(createApp(), '/api/agents/test-agent/webhook-triggers')
+    const body = await res.json() as Array<Record<string, unknown>>
+
+    expect(res.status).toBe(200)
+    expect(body[0]).not.toHaveProperty('triggerConfig')
+    expect(body[0]).not.toHaveProperty('composioTriggerId')
+    expect(body[0]).not.toHaveProperty('connectedAccountId')
+    expect(body[0]).not.toHaveProperty('createdByUserId')
+    expect(JSON.stringify(body)).not.toContain('private-capability')
+  })
+
+  it('retains capability fields in list rows for owners', async () => {
+    vi.mocked(listWebhookTriggers).mockResolvedValueOnce([trigger])
+
+    const res = await getReq(createApp(), '/api/agents/test-agent/webhook-triggers')
+    const body = await res.json() as Array<Record<string, unknown>>
+
+    expect(res.status).toBe(200)
+    expect(body[0]).toMatchObject({
+      triggerConfig: trigger.triggerConfig,
+      composioTriggerId: 'whep_private-id',
+      connectedAccountId: 'account-private-id',
+      createdByUserId: 'owner-private-id',
+    })
+  })
+})
 
 // ============================================================================
 // Chat integrations — GET /:id/chat-integrations
@@ -1856,6 +2100,27 @@ describe('audit log — GET /:id/audit-log', () => {
     setupAuditLogMocks(entries, 50, [], 0)
 
     const res = await getReq(app, AUDIT_URL)
+    const body = await res.json()
+    expect(body.entries).toHaveLength(20)
+  })
+
+  it('falls back to default pagination for invalid query values', async () => {
+    const entries = Array.from({ length: 25 }, (_, i) => ({
+      id: `p${i}`,
+      agentSlug: 'test-agent',
+      toolkit: `toolkit-${i}`,
+      targetHost: 'https://example.com',
+      targetPath: `/${i}`,
+      method: 'GET',
+      statusCode: 200,
+      errorMessage: null,
+      createdAt: new Date(2026, 0, 1, 0, i).toISOString(),
+    }))
+
+    setupAuditLogMocks(entries, 25, [], 0)
+
+    const res = await getReq(app, `${AUDIT_URL}?offset=invalid&limit=invalid`)
+    expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.entries).toHaveLength(20)
   })

@@ -13,6 +13,7 @@ import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { registerSessionComposerFocus } from './composer-focus'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
@@ -59,6 +60,8 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, onMessageUui
     agentDefaultsReady: agentPrefsFetched,
   })
   const textareaRef = useRef<HTMLDivElement>(null)
+  // Let out-of-tree components (file-preview comment bar) focus this composer.
+  useEffect(() => registerSessionComposerFocus(sessionId, () => textareaRef.current?.focus()), [sessionId])
   const sendMessage = useSendMessage()
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()

@@ -297,7 +297,15 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
           </div>
         </div>
       )}
-      <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
+      <div
+        data-testid="agent-home-layout"
+        className={cn(
+          'grid gap-10 items-start w-full mx-auto',
+          showRightColumn
+            ? 'grid-cols-1 max-w-6xl xl:grid-cols-[1fr_minmax(320px,400px)]'
+            : 'xl:max-w-2xl',
+        )}
+      >
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <div className="flex items-center justify-between gap-2 intro-step intro-step-1">

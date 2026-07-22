@@ -8,6 +8,7 @@ import { useDismissOnOutsideClick } from '../comments/use-dismiss-on-outside-cli
 interface ImageRendererProps {
   url: string
   filePath: string
+  commentsEnabled?: boolean
 }
 
 interface ClickPoint {
@@ -18,7 +19,7 @@ interface ClickPoint {
 
 const IMAGE_DISMISS_IGNORE = ['[data-comment-overlay]']
 
-export function ImageRenderer({ url, filePath }: ImageRendererProps) {
+export function ImageRenderer({ url, filePath, commentsEnabled = true }: ImageRendererProps) {
   const [loaded, setLoaded] = useState(false)
   const [clickPoint, setClickPoint] = useState<ClickPoint | null>(null)
   const imgContainerRef = useRef<HTMLDivElement>(null)
@@ -29,6 +30,7 @@ export function ImageRenderer({ url, filePath }: ImageRendererProps) {
   useDismissOnOutsideClick(clickPoint != null, () => setClickPoint(null), IMAGE_DISMISS_IGNORE)
 
   const handleImageClick = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
+    if (!commentsEnabled) return
     const img = e.currentTarget
     const rect = img.getBoundingClientRect()
     const x = ((e.clientX - rect.left) / rect.width) * 100
@@ -45,7 +47,7 @@ export function ImageRenderer({ url, filePath }: ImageRendererProps) {
         0
       ),
     })
-  }, [])
+  }, [commentsEnabled])
 
   return (
     <div ref={imgContainerRef} className="relative flex items-center justify-center p-4 min-h-[200px]">
@@ -59,7 +61,7 @@ export function ImageRenderer({ url, filePath }: ImageRendererProps) {
         <img
           src={url}
           alt={filePath.split('/').pop() || 'Preview'}
-          className="max-w-full max-h-[60vh] object-contain cursor-crosshair rounded"
+          className={`max-w-full max-h-[60vh] object-contain rounded ${commentsEnabled ? 'cursor-crosshair' : ''}`}
           onLoad={() => setLoaded(true)}
           onClick={handleImageClick}
         />

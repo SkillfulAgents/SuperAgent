@@ -2,6 +2,10 @@ import { apiFetch } from '@renderer/lib/api'
 
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import type {
+  AgentRemoteMcpDto,
+  PublicAgentRemoteMcp,
+} from '@shared/lib/agent-connections/public'
 
 export interface RemoteMcpServer {
   id: string
@@ -16,10 +20,7 @@ export interface RemoteMcpServer {
   updatedAt: string
 }
 
-export interface AgentRemoteMcp extends RemoteMcpServer {
-  mappingId: string
-  mappedAt: string
-}
+export type AgentRemoteMcp = PublicAgentRemoteMcp
 
 /**
  * Fetch all registered remote MCP servers
@@ -39,7 +40,7 @@ export function useRemoteMcps() {
  * Fetch remote MCPs assigned to a specific agent
  */
 export function useAgentRemoteMcps(agentSlug: string) {
-  return useQuery<{ mcps: AgentRemoteMcp[] }>({
+  return useQuery<{ mcps: AgentRemoteMcpDto[] }>({
     queryKey: ['agent-remote-mcps', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/remote-mcps`)

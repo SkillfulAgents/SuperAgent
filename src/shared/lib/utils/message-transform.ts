@@ -171,8 +171,14 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i]
     if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'memory_recall') {
-      memoryRecalls.set(i, entry as JsonlSystemEntry)
+      const sysEntry = entry as JsonlSystemEntry
       skipIndices.add(i)
+      // Dedupe by uuid: resume history replay re-appends system entries
+      // verbatim too (see the message-entry dedup below)
+      const isDuplicate = [...memoryRecalls.values()].some((e) => e.uuid === sysEntry.uuid)
+      if (!isDuplicate) {
+        memoryRecalls.set(i, sysEntry)
+      }
     } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'informational') {
       const sysEntry = entry as JsonlSystemEntry
       skipIndices.add(i)
@@ -199,6 +205,17 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       }
     } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary') {
       const sysEntry = entry as JsonlSystemEntry
+      // Dedupe replayed copies (same uuid). Today a duplicate is also masked
+      // by boundaryBeforeUuid keying on the NEXT message's uuid (the replayed
+      // pair overwrites the original slot), but that only holds when the
+      // following entry replays too — dedupe explicitly instead. The replayed
+      // summary user message needs no pairing here: the standalone
+      // isCompactSummary skip below hides it.
+      const isDuplicate = [...compactBoundaries.values()].some((e) => e.boundary.uuid === sysEntry.uuid)
+      if (isDuplicate) {
+        skipIndices.add(i)
+        continue
+      }
       let summaryContent = ''
 
       // Look ahead for the next isCompactSummary user message (within a few entries)
@@ -223,13 +240,24 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     }
   }
 
-  // Filter to only message entries for the main transform pipeline
+  // Filter to only message entries for the main transform pipeline.
+  // Dedupe by uuid: when a session is resumed into a fresh CLI process, the
+  // CLI can re-append the prior history to the transcript VERBATIM (same
+  // uuids, same message.ids). Without this, the merge-by-message.id pass
+  // below would stack the replayed content blocks onto the original
+  // messages (tripled text, duplicated tool calls).
   const messageEntries: JsonlMessageEntry[] = []
+  const seenUuids = new Set<string>()
 
   for (let i = 0; i < entries.length; i++) {
     if (skipIndices.has(i)) continue
     const entry = entries[i]
     if (entry.type === 'user' || entry.type === 'assistant') {
+      const uuid = (entry as JsonlMessageEntry).uuid
+      if (uuid) {
+        if (seenUuids.has(uuid)) continue
+        seenUuids.add(uuid)
+      }
       messageEntries.push(entry as JsonlMessageEntry)
     }
   }

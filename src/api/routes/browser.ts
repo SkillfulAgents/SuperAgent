@@ -5,7 +5,8 @@ import { getSettings } from '@shared/lib/config/settings'
 import { containerManager } from '@shared/lib/container/container-manager'
 import { messagePersister } from '@shared/lib/container/message-persister'
 import { IsAgent } from '../middleware/auth'
-import { hostBrowserRequestSchema } from './browser-schema'
+import { captureException } from '@shared/lib/error-reporting'
+import { hostBrowserRequestSchema, browserLaunchErrorReportSchema } from './browser-schema'
 
 const browser = new Hono()
 
@@ -18,7 +19,7 @@ const browser = new Hono()
  */
 async function resolveTokenBoundAgentId(
   c: Context,
-): Promise<{ agentId: string } | { error: Response }> {
+): Promise<{ agentId: string; raw: unknown } | { error: Response }> {
   const tokenAgentId = c.get('agentSlug' as never) as string | undefined
   if (!tokenAgentId) {
     // IsAgent() should always stash this; fail closed if it did not.
@@ -35,7 +36,7 @@ async function resolveTokenBoundAgentId(
     return { error: c.json({ error: 'Forbidden: agentId does not match token agent' }, 403) }
   }
 
-  return { agentId: tokenAgentId }
+  return { agentId: tokenAgentId, raw }
 }
 
 // POST /api/browser/launch-host-browser - Launch browser on host for CDP connection
@@ -66,6 +67,29 @@ browser.post('/launch-host-browser', IsAgent(), async (c) => {
     console.error('[Browser] Failed to launch host browser:', message)
     return c.json({ error: message }, 503)
   }
+})
+
+// POST /api/browser/report-launch-error - A container reports a browser-launch
+// failure that happened on its side AFTER launch-host-browser succeeded (e.g.
+// it cannot resolve or reach the CDP endpoint). The host is the only side with
+// Sentry, so relay it — otherwise the failure exists only in the agent's tool
+// result and never reaches error tracking.
+browser.post('/report-launch-error', IsAgent(), async (c) => {
+  const resolved = await resolveTokenBoundAgentId(c)
+  if ('error' in resolved) return resolved.error
+
+  const parsed = browserLaunchErrorReportSchema.safeParse(resolved.raw)
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request body' }, 400)
+  }
+
+  const { stage, message } = parsed.data
+  console.error(`[Browser] Container launch failure (${stage}) for ${resolved.agentId}: ${message}`)
+  captureException(new Error(message), {
+    tags: { component: 'browser', operation: 'container-launch-failure', stage },
+    extra: { agentId: resolved.agentId },
+  })
+  return c.json({ success: true })
 })
 
 // POST /api/browser/stop-host-browser - Stop the host browser process for a specific agent

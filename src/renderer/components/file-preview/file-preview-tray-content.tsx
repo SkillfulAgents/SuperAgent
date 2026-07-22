@@ -1,4 +1,4 @@
-import { Download, FileText, PanelRightClose } from 'lucide-react'
+import { Download, FileText, PanelRightClose, X } from 'lucide-react'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { FileTabBar } from './file-tab-bar'
 import { FileRenderer } from './renderers/file-renderer'
@@ -6,7 +6,6 @@ import { CommentBar } from './comments/comment-bar'
 import { getApiBaseUrl } from '@renderer/lib/env'
 
 interface FilePreviewTrayContentProps {
-  agentSlug: string
   sessionId: string
   onClose: () => void
 }
@@ -15,7 +14,7 @@ function getRelativePath(filePath: string): string {
   return filePath.replace(/^\/workspace\//, '')
 }
 
-export function FilePreviewTrayContent({ agentSlug, sessionId, onClose }: FilePreviewTrayContentProps) {
+export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
   const { openFiles, activeFileIndex, setActiveFile, closeFile, comments } = useFilePreview()
 
   const activeFile = openFiles[activeFileIndex]
@@ -32,6 +31,14 @@ export function FilePreviewTrayContent({ agentSlug, sessionId, onClose }: FilePr
     <div className="contents" data-testid="file-preview-tray">
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-2 text-sm text-muted-foreground select-none shrink-0" data-testid="file-preview-header">
+        <button
+          className="file-preview-compact-close -ml-1 hidden p-0.5 rounded hover:bg-muted transition-colors"
+          onClick={onClose}
+          title="Close file preview"
+          aria-label="Close file preview"
+        >
+          <X className="h-4 w-4" />
+        </button>
         <FileText className="h-4 w-4 shrink-0" />
         <span className="flex-1 text-xs truncate font-medium">Files</span>
         <a
@@ -44,9 +51,10 @@ export function FilePreviewTrayContent({ agentSlug, sessionId, onClose }: FilePr
           <Download className="h-4 w-4" />
         </a>
         <button
-          className="p-0.5 rounded hover:bg-muted transition-colors"
+          className="file-preview-wide-close inline-flex p-0.5 rounded hover:bg-muted transition-colors"
           onClick={onClose}
           title="Hide files panel"
+          aria-label="Hide files panel"
         >
           <PanelRightClose className="h-4 w-4" />
         </button>
@@ -73,7 +81,6 @@ export function FilePreviewTrayContent({ agentSlug, sessionId, onClose }: FilePr
       <CommentBar
         comments={activeComments}
         filePath={activeFile.filePath}
-        agentSlug={agentSlug}
         sessionId={sessionId}
       />
     </div>

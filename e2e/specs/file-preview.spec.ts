@@ -105,6 +105,9 @@ test.describe('File Preview', () => {
 
     await expect(markdown(page).getByRole('heading', { name: 'Version 1' })).toBeVisible({ timeout: 10000 })
 
+    // The file tray intentionally overlays the composer. Close it before asking
+    // the agent to deliver the updated version, then reopen it from the new pill.
+    await page.getByRole('button', { name: 'Hide files panel' }).click()
     seedWorkspaceFile(agentSlug, 'output/report.md', '# Version 2')
     await sessionPage.sendMessage('deliver file')
     await sessionPage.waitForResponse(15000)
@@ -147,7 +150,10 @@ test.describe('File Preview', () => {
     await expect(csv.getByRole('columnheader', { name: 'Email' })).toBeVisible()
   })
 
-  test('pins a comment to a CSV cell and sends it to the agent', async ({ page }) => {
+  test('pins a comment to a CSV cell and focuses feedback in a narrow composer without sending', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 700 })
+    await page.evaluate(() => localStorage.setItem('tray_drawer_width', '700'))
+
     await agentPage.createAgent(`CsvComment ${Date.now()}`)
     const agentSlug = await getLatestAgentSlug(page)
     seedWorkspaceFile(
@@ -180,9 +186,25 @@ test.describe('File Preview', () => {
     await expect(tray.getByText('Cell 1:Email', { exact: false })).toBeVisible({ timeout: 5000 })
     await expect(tray.getByText('This email looks wrong')).toBeVisible()
 
-    // Submitting posts the formatted feedback back into the conversation.
+    // Submitting moves the formatted feedback into the composer for review. It
+    // must not POST a message until the user explicitly sends from there.
+    const userMessageCount = await sessionPage.getUserMessages().count()
+    let feedbackPostCount = 0
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && /\/sessions\/[^/]+\/messages$/.test(request.url())) {
+        feedbackPostCount += 1
+      }
+    })
+
     await tray.getByRole('button', { name: 'Submit' }).click()
-    await expect(page.getByText('At cell 1:Email', { exact: false })).toBeVisible({ timeout: 10000 })
+
+    const composer = sessionPage.getMessageInput()
+    await expect(composer).toContainText('File feedback on data.csv:')
+    await expect(composer).toContainText('At cell 1:Email (col 2, value: "alice@example.com"):')
+    await expect(composer).toContainText('This email looks wrong')
+    await expect(composer).toBeFocused()
+    await expect(sessionPage.getUserMessages()).toHaveCount(userMessageCount)
+    expect(feedbackPostCount).toBe(0)
   })
 
   test('renders a video and pins a timestamped comment via the Add Comment button', async ({ page }) => {
@@ -216,9 +238,50 @@ test.describe('File Preview', () => {
     await expect(tray.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
     await expect(tray.getByText('Trim the intro here')).toBeVisible()
 
-    // Submitting posts the formatted feedback back into the conversation.
+    // The video feedback follows the same review-before-send flow.
     await tray.getByRole('button', { name: 'Submit' }).click()
-    await expect(page.getByText('At 0:00', { exact: false }).first()).toBeVisible({ timeout: 10000 })
+    const composer = sessionPage.getMessageInput()
+    await expect(composer).toContainText('File feedback on clip.mp4:')
+    await expect(composer).toContainText('At 0:00 at position (50%, 50%):')
+    await expect(composer).toContainText('Trim the intro here')
+  })
+
+  test('renders an audio waveform and adds a timestamped comment from its hover affordance', async ({ page }) => {
+    await agentPage.createAgent(`AudioComment ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    // Rendering and annotation do not depend on successful decoding; the player
+    // retains a useful fallback waveform for unsupported or incomplete audio.
+    seedWorkspaceFile(agentSlug, 'output/voice-note.mp3', Buffer.from('49443304000000000000', 'hex'))
+
+    await sessionPage.sendMessage('deliver audio')
+    await sessionPage.waitForResponse(15000)
+
+    const filePill = getFilePill(page, 'voice-note.mp3').first()
+    await expect(filePill).toBeVisible({ timeout: 10000 })
+    await filePill.click()
+
+    const audioRenderer = page.getByTestId('audio-renderer')
+    await expect(audioRenderer).toBeVisible({ timeout: 10000 })
+    await expect(page.getByTestId('audio-element')).toBeAttached()
+    await expect(page.getByTestId('audio-waveform')).toBeVisible()
+    await expect(page.getByTestId('audio-add-comment')).toBeVisible()
+
+    await page.getByTestId('audio-waveform').hover({ position: { x: 160, y: 56 } })
+    const hoverComment = page.getByTestId('audio-hover-add-comment')
+    await expect(hoverComment).toBeVisible()
+    await hoverComment.click()
+
+    const overlay = page.locator('[data-comment-overlay]')
+    await expect(overlay.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await page.getByPlaceholder('Add your comment...').fill('Remove this background noise')
+    await overlay.getByRole('button', { name: 'Add' }).click()
+
+    const tray = page.getByTestId('file-preview-tray')
+    await expect(tray.getByText('At 0:00', { exact: false })).toBeVisible({ timeout: 5000 })
+    await expect(tray.getByText('Remove this background noise')).toBeVisible()
+
+    await tray.getByRole('button', { name: 'Submit' }).click()
+    await expect(page.getByText('Remove this background noise').first()).toBeVisible({ timeout: 10000 })
   })
 
   test.describe('narrow window', () => {
@@ -245,11 +308,11 @@ test.describe('File Preview', () => {
       const header = page.getByTestId('file-preview-header')
       await expect(header).toBeVisible({ timeout: 5000 })
 
-      // Poll: the drawer animates open (300ms width transition), during which
-      // header controls are transiently clipped even in the fixed layout.
+      // Poll while the full-width tray slides in. Compact mode replaces the
+      // right-side panel control with a left-side close button.
       const viewportWidth = page.viewportSize()!.width
       await expect(async () => {
-        for (const control of [header.getByTitle('Download file'), header.getByTitle('Hide files panel')]) {
+        for (const control of [header.getByTitle('Close file preview'), header.getByTitle('Download file')]) {
           await expect(control).toBeVisible()
           const box = await control.boundingBox()
           expect(box).not.toBeNull()
@@ -279,6 +342,10 @@ test.describe('File Preview', () => {
     await reportPill.click()
     await expect(page.getByTestId('file-preview-header')).toBeVisible({ timeout: 5000 })
     await expect(markdown(page).getByRole('heading', { name: 'Report Content' })).toBeVisible({ timeout: 10000 })
+
+    // The overlay covers the composer by design, so close it before delivering
+    // the next file. Existing tabs remain available when the tray reopens.
+    await page.getByRole('button', { name: 'Hide files panel' }).click()
 
     // Deliver and open the image file → second tab, image renderer.
     await sessionPage.sendMessage('deliver image')

@@ -104,7 +104,7 @@ function titleForAgentView(view: AgentView, input: DocumentTitleInput): string {
     case 'apiLogs':
       return joinView(agentTitle, 'API Logs')
     case 'connections':
-      return joinView(agentTitle, 'Connections')
+      return joinView(agentTitle, view.detail?.view === 'logs' ? 'Connection Logs' : 'Connections')
     case 'notifications':
       return joinWithBrand('Notifications')
     default:

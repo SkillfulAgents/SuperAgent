@@ -15,6 +15,10 @@ function wrapper({ children }: { children: ReactNode }) {
   return createElement(FilePreviewProvider, null, children)
 }
 
+function readOnlyWrapper({ children }: { children: ReactNode }) {
+  return <FilePreviewProvider commentsEnabled={false}>{children}</FilePreviewProvider>
+}
+
 beforeEach(() => {
   mockView = { kind: 'session', id: 'session-1' }
 })
@@ -137,6 +141,15 @@ describe('FilePreviewContext', () => {
   })
 
   describe('comments', () => {
+    it('ignores comments when the preview is read-only', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper: readOnlyWrapper })
+
+      expect(result.current.commentsEnabled).toBe(false)
+      act(() => result.current.addComment({ filePath: '/workspace/a.md', text: 'fix this' }))
+
+      expect(result.current.comments.size).toBe(0)
+    })
+
     it('adds a comment with generated id', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.addComment({ filePath: '/workspace/a.md', text: 'fix this', selectedText: 'broken code' }))

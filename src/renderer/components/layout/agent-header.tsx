@@ -365,13 +365,14 @@ function AgentHeaderMobileMenu({
  * an open detail view appends the connection name — including the
  * "Connections" segment (clickable, back to the list) only when the detail
  * was opened from the list, so a home-card deep link reads "Agent / Account".
+ * The logs subview makes the connection crumb clickable and appends "/ Logs".
  */
 function ConnectionsCrumbs({
   slug,
   detail,
 }: {
   slug: string
-  detail: { rowKey: string; source: 'home' | 'list' } | null
+  detail: { rowKey: string; source: 'home' | 'list'; view?: 'logs' } | null
 }) {
   const { data: accountsData } = useConnectedAccounts()
   const { data: mcpsData } = useRemoteMcps()
@@ -415,8 +416,26 @@ function ConnectionsCrumbs({
       )}
       <div className="flex items-center gap-1.5 min-w-0">
         {separator}
-        <span className="truncate text-sm font-light text-foreground">{connectionName}</span>
+        {detail.view === 'logs' ? (
+          <AppLink
+            to="/agents/$slug/connections"
+            params={{ slug }}
+            search={{ detail: detail.rowKey, source: detail.source }}
+            noDrag
+            className="truncate text-sm font-light text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {connectionName}
+          </AppLink>
+        ) : (
+          <span className="truncate text-sm font-light text-foreground">{connectionName}</span>
+        )}
       </div>
+      {detail.view === 'logs' && (
+        <div className="flex items-center gap-1.5 min-w-0">
+          {separator}
+          <span className="truncate text-sm font-light text-foreground">Logs</span>
+        </div>
+      )}
     </>
   )
 }

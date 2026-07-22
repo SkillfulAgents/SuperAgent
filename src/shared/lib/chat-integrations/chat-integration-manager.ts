@@ -10,7 +10,7 @@
  * Follows the TaskScheduler / TriggerManager singleton pattern.
  */
 
-import type { ChatClientConnector, IncomingMessage } from './base-connector'
+import type { ChatClientConnector, ChatConnectorClass, IncomingMessage } from './base-connector'
 import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { getToolDefinition } from '@shared/lib/tool-definitions/registry'
@@ -90,13 +90,6 @@ function isTrustedSlackDownloadHost(u: URL): boolean {
 }
 
 // ── Constants ───────────────────────────────────────────────────────────
-
-const IMESSAGE_SYSTEM_PROMPT = `This is an iMessage-based conversation. Follow these rules:
-- Keep responses concise and conversational — this is a text message, not a document.
-- Use tools, skills, and capabilities as you normally would.
-- Prefer asking questions directly in natural language rather than using the ask questions tool.
-- You can react to the user's last message by starting your response with a reaction tag. Available reactions: [[reaction:heart]], [[reaction:thumbs_up]], [[reaction:thumbs_down]], [[reaction:haha]], [[reaction:emphasize]], [[reaction:question]]. The tag will be stripped from the message and sent as a tapback reaction. If your entire response is just a reaction tag, only the reaction is sent (no text message).
-- The user may send voice notes which are automatically transcribed.`
 
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000
 const HEALTH_CHECK_ERROR_THRESHOLD_MS = 5 * 60 * 1000
@@ -580,6 +573,26 @@ class ChatIntegrationManager {
       }
       default:
         throw new Error(`Unknown chat integration provider: ${integration.provider}`)
+    }
+  }
+
+  /**
+   * Resolve a provider's connector CLASS for static capability lookups (e.g.
+   * generateSystemPrompt). Mirrors createConnector's lazy imports — connector
+   * modules stay unloaded until their provider is actually used. Returns
+   * undefined for unknown providers rather than throwing: static lookups are
+   * best-effort decorations, not connection attempts.
+   */
+  private async getConnectorClass(provider: string): Promise<ChatConnectorClass | undefined> {
+    switch (provider) {
+      case 'telegram':
+        return (await import('./telegram-connector')).TelegramConnector
+      case 'slack':
+        return (await import('./slack-connector')).SlackConnector
+      case 'imessage':
+        return (await import('./imessage-connector')).IMessageConnector
+      default:
+        return undefined
     }
   }
 
@@ -1106,6 +1119,9 @@ class ChatIntegrationManager {
     const { readAgentPreferences } = await import('@shared/lib/services/agent-preferences-service')
 
     const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
+    // Provider-specific session context (DM vs channel vs thread, delivery
+    // semantics) — owned by each connector class, not the manager.
+    const systemPrompt = (await this.getConnectorClass(integration.provider))?.generateSystemPrompt?.(message)
     // Model/effort/speed preference order: integration override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(integration.agentSlug)
@@ -1120,7 +1136,7 @@ class ChatIntegrationManager {
       dashboardBuilderModel: models.dashboardBuilderModel,
       ...(effort ? { effort: effort as EffortLevel } : {}),
       ...(speed ? { speed: speed as SpeedLevel } : {}),
-      ...(integration.provider === 'imessage' ? { systemPrompt: IMESSAGE_SYSTEM_PROMPT } : {}),
+      ...(systemPrompt ? { systemPrompt } : {}),
     })
 
     const sessionId = containerSession.id

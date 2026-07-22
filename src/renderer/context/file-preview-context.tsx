@@ -29,7 +29,7 @@ export interface FileComment {
   x?: number
   y?: number
   cell?: CellRef
-  /** Playback position in seconds for video comments (paired with x/y in-frame). */
+  /** Playback position in seconds for audio/video comments (optionally paired with x/y in-frame). */
   timestamp?: number
 }
 
@@ -38,6 +38,7 @@ interface FilePreviewContextType {
   activeFileIndex: number
   comments: Map<string, FileComment[]>
   isOpen: boolean
+  commentsEnabled: boolean
 
   openFile: (filePath: string, agentSlug: string, description?: string) => void
   closeFile: (filePath: string) => void
@@ -57,7 +58,15 @@ function getDisplayName(filePath: string): string {
 
 let commentIdCounter = 0
 
-export function FilePreviewProvider({ children, sessionId: sessionIdProp }: { children: ReactNode; sessionId?: string | null }) {
+export function FilePreviewProvider({
+  children,
+  sessionId: sessionIdProp,
+  commentsEnabled = true,
+}: {
+  children: ReactNode
+  sessionId?: string | null
+  commentsEnabled?: boolean
+}) {
   const { view } = useRouteLocation()
   // Views that own a session (e.g. chat integrations) can pass it explicitly so
   // state clears when switching sessions; otherwise derive from the active route.
@@ -127,6 +136,7 @@ export function FilePreviewProvider({ children, sessionId: sessionIdProp }: { ch
   }, [])
 
   const addComment = useCallback((comment: Omit<FileComment, 'id'>) => {
+    if (!commentsEnabled) return
     const id = `comment-${++commentIdCounter}`
     setComments(prev => {
       const next = new Map(prev)
@@ -134,7 +144,7 @@ export function FilePreviewProvider({ children, sessionId: sessionIdProp }: { ch
       next.set(comment.filePath, [...existing, { ...comment, id }])
       return next
     })
-  }, [])
+  }, [commentsEnabled])
 
   const removeComment = useCallback((filePath: string, commentId: string) => {
     setComments(prev => {
@@ -162,6 +172,7 @@ export function FilePreviewProvider({ children, sessionId: sessionIdProp }: { ch
     activeFileIndex,
     comments,
     isOpen,
+    commentsEnabled,
     openFile,
     closeFile,
     setActiveFile,
@@ -169,7 +180,7 @@ export function FilePreviewProvider({ children, sessionId: sessionIdProp }: { ch
     addComment,
     removeComment,
     clearComments,
-  }), [openFiles, activeFileIndex, comments, isOpen, openFile, closeFile, setActiveFile, close, addComment, removeComment, clearComments])
+  }), [openFiles, activeFileIndex, comments, isOpen, commentsEnabled, openFile, closeFile, setActiveFile, close, addComment, removeComment, clearComments])
 
   return (
     <FilePreviewContext.Provider value={value}>

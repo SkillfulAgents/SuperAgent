@@ -697,3 +697,50 @@ html[data-keyboard-open] [data-composer-footer] {
   .h-screen { height: 100vh !important; height: 100lvh !important; }
   .min-h-svh { min-height: 100vh !important; min-height: 100lvh !important; }
 }
+
+/*
+  File previews can render in the agent body or in a smaller embedded session
+  mirror. A viewport or app-level query cannot describe both spaces. Make each
+  immediate tray host a query container and switch the file tray between a
+  fixed-width overlay and a full-width overlay at 768px. Neither mode
+  participates in flex layout, so opening a file never reflows or squeezes the
+  content beneath it.
+*/
+.file-preview-container {
+  container-type: inline-size;
+}
+
+.file-preview-responsive-overlay {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  z-index: 30;
+}
+
+@container (max-width: 767px) {
+  .file-preview-responsive-overlay {
+    left: 0;
+    width: 100% !important; /* overrides the persisted inline drawer width */
+    border-left-width: 0;
+    box-shadow: none;
+    transform: translateX(0);
+    transition-property: transform;
+  }
+
+  .file-preview-responsive-overlay-closed {
+    transform: translateX(100%);
+    pointer-events: none;
+  }
+
+  .file-preview-responsive-resize-handle {
+    display: none;
+  }
+
+  .file-preview-compact-close {
+    display: inline-flex;
+  }
+
+  .file-preview-wide-close {
+    display: none;
+  }
+}

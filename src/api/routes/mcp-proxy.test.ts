@@ -1,10 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
+import * as dnsPromises from 'node:dns/promises'
 
 // ---------------------------------------------------------------------------
 // Mock dependencies
 // ---------------------------------------------------------------------------
 const mockValidateProxyToken = vi.fn()
+
+vi.mock('node:dns/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:dns/promises')>()
+  return {
+    ...actual,
+    lookup: vi.fn(),
+  }
+})
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (...args: unknown[]) => mockValidateProxyToken(...args),
@@ -58,6 +67,8 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
 // Mock fetch for forwarded requests
 const mockFetch = vi.fn()
 vi.stubGlobal('fetch', mockFetch)
+
+const lookupMock = dnsPromises.lookup as unknown as ReturnType<typeof vi.fn>
 
 import mcpProxy from './mcp-proxy'
 
@@ -137,6 +148,7 @@ describe('mcp-proxy route', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    lookupMock.mockResolvedValue({ address: '93.184.216.34', family: 4 })
     app = createApp()
     // Default: DB writes succeed
     mockInsertValues.mockResolvedValue(undefined)

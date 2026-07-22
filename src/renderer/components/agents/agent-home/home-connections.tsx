@@ -13,6 +13,11 @@ import { COMMON_MCP_SERVERS } from '@shared/lib/mcp/common-servers'
 import { FeaturedServicesStack } from '@renderer/components/connections/featured-services-stack'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
 import { ActivitySparkChart, ActivitySparkChartSkeleton } from '@renderer/components/activity/activity-spark-chart'
+import {
+  isForeignAgentConnectedAccount,
+  isForeignAgentRemoteMcp,
+} from '@shared/lib/agent-connections/public'
+import { buildForeignConnectionRows } from '@renderer/components/connections/unified-rows'
 
 interface HomeConnectionsProps {
   agentSlug: string
@@ -20,14 +25,16 @@ interface HomeConnectionsProps {
 }
 
 interface ConnectionRow {
-  /** Matches the UnifiedRow key format so it can deep-link to the detail view. */
+  /** Owned rows match UnifiedRow keys for deep links; foreign rows are synthetic. */
   id: string
   name: string
   subtitle?: string
   iconSlug?: string
   iconFallback: 'oauth' | 'mcp' | 'blocks'
   type: 'oauth' | 'mcp'
-  date: string | number
+  date?: string | number
+  /** Opaque link owned by another member; never navigable. */
+  foreign?: true
   mcpStatus?: RemoteMcpServer['status']
   mcpErrorMessage?: string | null
 }
@@ -42,7 +49,10 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
     const rows: ConnectionRow[] = []
 
     const accounts = Array.isArray(accountsData?.accounts) ? accountsData.accounts : []
+    const foreignAccounts = accounts.filter(isForeignAgentConnectedAccount)
     for (const account of accounts) {
+      if (isForeignAgentConnectedAccount(account)) continue
+
       rows.push({
         id: `account-${account.id}`,
         name: account.provider?.displayName ?? account.toolkitSlug,
@@ -55,7 +65,10 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
     }
 
     const mcps = Array.isArray(mcpsData?.mcps) ? mcpsData.mcps : []
+    const foreignMcps = mcps.filter(isForeignAgentRemoteMcp)
     for (const mcp of mcps) {
+      if (isForeignAgentRemoteMcp(mcp)) continue
+
       rows.push({
         id: `mcp-${mcp.id}`,
         name: mcp.name,
@@ -69,7 +82,16 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
       })
     }
 
-    rows.sort((a, b) => safeDate(b.date).getTime() - safeDate(a.date).getTime())
+    rows.push(...buildForeignConnectionRows({
+      accounts: foreignAccounts,
+      mcps: foreignMcps,
+    }))
+
+    rows.sort((a, b) => {
+      if (a.date === undefined) return b.date === undefined ? 0 : 1
+      if (b.date === undefined) return -1
+      return safeDate(b.date).getTime() - safeDate(a.date).getTime()
+    })
 
     return rows
   }, [accountsData, mcpsData])
@@ -94,22 +116,28 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
                       <span className="truncate">{conn.subtitle}</span>
                     </>
                   )}
-                  <span className="shrink-0">·</span>
-                  <span className="whitespace-nowrap shrink-0">
-                    {formatDistanceToNow(safeDate(conn.date), { addSuffix: true })}
-                  </span>
+                  {conn.date !== undefined && (
+                    <>
+                      <span className="shrink-0">·</span>
+                      <span className="whitespace-nowrap shrink-0">
+                        {formatDistanceToNow(safeDate(conn.date), { addSuffix: true })}
+                      </span>
+                    </>
+                  )}
                 </>
               }
-              onActivate={() => {
+              onActivate={conn.foreign ? undefined : () => {
                 void navigate({
                   to: '/agents/$slug/connections',
                   params: { slug: agentSlug },
                   search: { detail: conn.id, source: 'home' },
                 })
               }}
-              ariaLabel={`Open ${conn.name} connection details`}
+              ariaLabel={conn.foreign ? undefined : `Open ${conn.name} connection details`}
               right={
-                <>
+                conn.foreign ? (
+                  <span className="text-xs text-muted-foreground">Shared</span>
+                ) : <>
                   {activityStats?.connectionById[conn.id] !== undefined ? (
                     <ActivitySparkChart
                       label={`${conn.name} activity`}

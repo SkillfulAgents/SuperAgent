@@ -62,6 +62,13 @@ describe('getDocumentTitle', () => {
     expect(getDocumentTitle({ location: location({ kind: 'connections' }, 'agent-one'), agentName: 'Agent One' })).toBe(
       `Agent One${DASH}Connections`,
     )
+    expect(getDocumentTitle({
+      location: location({
+        kind: 'connections',
+        detail: { rowKey: 'account-1', source: 'home', view: 'logs' },
+      }, 'agent-one'),
+      agentName: 'Agent One',
+    })).toBe(`Agent One${DASH}Connection Logs`)
     expect(getDocumentTitle({ location: location({ kind: 'apiLogs' }, 'agent-one'), agentName: 'Agent One' })).toBe(
       `Agent One${DASH}API Logs`,
     )

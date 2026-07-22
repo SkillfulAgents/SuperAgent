@@ -634,7 +634,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           'browser': createBrowserMcpServer(browserMcpTools),
           'dashboards': createDashboardsMcpServer(),
           'agents': createAgentsMcpServer(() => this.sessionId),
-          'chat': createChatMcpServer(),
+          'chat': createChatMcpServer(() => this.sessionId),
           ...((this.webSearchProvider || this.webFetchProvider)
             ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
             : {}),
