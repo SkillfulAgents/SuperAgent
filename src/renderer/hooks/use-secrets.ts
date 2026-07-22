@@ -11,7 +11,10 @@ export function useAgentSecrets(agentSlug: string | null) {
     queryKey: ['agent-secrets', agentSlug],
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${agentSlug}/secrets`)
-      if (!res.ok) throw new Error('Failed to fetch secrets')
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null
+        throw new Error(body?.error || 'Failed to fetch secrets')
+      }
       return res.json()
     },
     enabled: !!agentSlug,
