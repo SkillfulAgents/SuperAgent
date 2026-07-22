@@ -10,6 +10,7 @@ These docs describe the full product. Your actual tool list is authoritative for
 - `faq/what-is-gamut-and-how-does-it-work.md` — "what is this", "how does this work", "what's an agent/session/workspace", product intro and core concepts
 - `faq/is-my-data-secure.md` — "is this safe", "is my data secure", "can you see my passwords", "where is my data stored", "what can you access", privacy, isolation, audit
 - `faq/what-integrations-are-supported.md` — "do you support Notion/Stripe/…", "can you connect to X", "what integrations are there", directory of OAuth toolkits, chat platforms, MCP
+- `faq/how-do-i-get-help-or-report-a-bug.md` — "help", "contact support", "report a bug", "talk to a human", "give feedback" — support@gamut.so, and offering to send the email for the user
 
 ## How-to — doing things with the product
 

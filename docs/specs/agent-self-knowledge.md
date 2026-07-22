@@ -55,7 +55,7 @@ File names are the retrieval mechanism, so they read as the questions/tasks the 
 │   ├── what-is-gamut-and-how-does-it-work.md  ← getting-started/{introduction,core-concepts}
 │   ├── is-my-data-secure.md          # security & privacy FAQ (written fresh — see below)
 │   ├── what-integrations-are-supported.md
-│   └── how-do-i-get-help-or-report-a-bug.md   # DEFERRED until support channel decided (open question 3)
+│   └── how-do-i-get-help-or-report-a-bug.md   # support@gamut.so + agent-sends-the-email flow
 ├── how-to/                           # seeded from gamut-website "Using SuperAgent" tab
 │   ├── connect-external-accounts-oauth.md        ← integrations/connected-accounts.mdx
 │   ├── use-secrets-and-api-keys.md               ← agents/secrets.mdx
@@ -164,4 +164,4 @@ Risk & mitigation: shortening trades always-loaded instructions for read-on-dema
 
 1. **Path branding:** `/opt/gamut/docs` (matches "Gamut Platform" in the prompt) vs `/opt/superagent/docs` (matches the website's "Using SuperAgent"). Spec assumes `gamut`.
 2. **Self-hosting depth:** ship the full Self-Hosting tab or just `platform/self-hosting-basics.md`? Spec assumes the condensed single file; full tab is a cheap follow-up if self-host admins use agents for ops debugging.
-3. **`faq/how-do-i-get-help-or-report-a-bug.md`** needs a real support channel to point at (email? GitHub issues?) — needs a decision from West.
+3. ~~Support channel~~ — resolved: **support@gamut.so**. The FAQ file also teaches the agent to offer sending the support email via the user's connected email account (draft from a brief idea + session context, always shown for approval before sending).
