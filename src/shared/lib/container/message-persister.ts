@@ -1947,34 +1947,6 @@ class MessagePersister {
           }
         }
       }
-      // Sidechain skips the main awaiting clear; only match pending input asks
-      // (not every child tool_result — that would flicker the parent stream).
-      if (content.type === 'user') {
-        const blocks = content.message?.content
-        if (Array.isArray(blocks)) {
-          let clearedPending = false
-          for (const block of blocks) {
-            if (block?.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue
-            if (!state.pendingInputRequests.has(block.tool_use_id)) continue
-            state.pendingInputRequests.delete(block.tool_use_id)
-            clearedPending = true
-            this.broadcastToSSE(sessionId, {
-              type: 'tool_result',
-              toolUseId: block.tool_use_id,
-              result: block.content,
-              isError: block.is_error || false,
-            })
-          }
-          if (clearedPending && state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
-            state.isAwaitingInput = false
-            this.broadcastGlobal({
-              type: 'session_input_provided',
-              sessionId,
-              agentSlug: state.agentSlug,
-            })
-          }
-        }
-      }
       this.broadcastToSSE(sessionId, {
         type: 'subagent_updated',
         parentToolId,
@@ -4422,8 +4394,9 @@ ${continuation}`
   // requests only: ordinary subagent tool results (Bash, Read, …) stream
   // constantly and must not broadcast main-path `tool_result` events or touch
   // the awaiting flag. Unlike the main path's unconditional clear, awaiting is
-  // cleared only when NO tracked request remains — a main-agent question can
-  // be open in parallel with a subagent's browser_input.
+  // cleared only when no OTHER blocking request remains (the shared both-shelves
+  // rule) — a main-agent question or a pending computer-use can be open in
+  // parallel with a subagent's browser_input.
   private resolveSidechainInputRequests(
     sessionId: string,
     state: StreamingState,
@@ -4444,7 +4417,7 @@ ${continuation}`
         isError: block.is_error || false,
       })
     }
-    if (state.isAwaitingInput && state.pendingInputRequests.size === 0) {
+    if (state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
       state.isAwaitingInput = false
       this.broadcastGlobal({
         type: 'session_input_provided',
