@@ -49,7 +49,13 @@ export function HomeExtras({ agentSlug, onOpenSettings, className }: HomeExtrasP
       <div className="divide-y divide-border/50">
         <ExtrasButton label="System Prompt" onClick={() => onOpenSettings?.('system-prompt')} />
         <ExtrasButton label={directoryLabel} onClick={handleOpenDirectory} hoverIcon={directoryHoverIcon} />
-        <ExtrasButton label="Secrets" onClick={() => onOpenSettings?.('secrets')} />
+        <ExtrasButton
+          label="Secrets"
+          onClick={() => {
+            void navigate({ to: '/agents/$slug/secrets', params: { slug: agentSlug } })
+          }}
+          testId="home-secrets-open-page"
+        />
         <ExtrasButton
           label="API Logs"
           onClick={() => {
