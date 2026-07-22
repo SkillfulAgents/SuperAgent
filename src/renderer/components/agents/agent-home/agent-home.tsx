@@ -118,8 +118,8 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // so the post-submit deriveAgentName fallback doesn't clobber it.
   const nameAssignedRef = useRef(false)
   // Agent-scoped settings dialogs — opened from the settings button and
-  // HomeExtras (system-prompt/secrets). NOT the global /settings route; they
-  // stay local dialog state here.
+  // HomeExtras (system prompt). Secrets now have a standalone route; these
+  // settings remain local dialog state rather than global /settings routes.
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
