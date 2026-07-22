@@ -14,6 +14,7 @@ export type AgentView =
   | { kind: 'chat'; integrationId: string; sessionId?: string }
   | { kind: 'dashboard'; slug: string }
   | { kind: 'apiLogs' }
+  | { kind: 'secrets' }
   | {
       kind: 'connections'
       /**
@@ -84,6 +85,8 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
       return { to: '/agents/$slug/dashboards/$dashSlug', params: { slug, dashSlug: view.slug } }
     case 'apiLogs':
       return { to: '/agents/$slug/api-logs', params: { slug } }
+    case 'secrets':
+      return { to: '/agents/$slug/secrets', params: { slug } }
     case 'connections':
       return {
         to: '/agents/$slug/connections',
@@ -134,6 +137,8 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'dashboard', slug: p.dashSlug ?? '' } }
     case '/agents/$slug/api-logs':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'apiLogs' } }
+    case '/agents/$slug/secrets':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'secrets' } }
     case '/agents/$slug/connections': {
       const detail = typeof search.detail === 'string' ? search.detail : undefined
       const source = search.source === 'home' || search.source === 'list' ? search.source : undefined

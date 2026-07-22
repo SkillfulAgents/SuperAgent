@@ -1,5 +1,6 @@
 import { Outlet, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { ApiLogsView } from '@renderer/components/api-logs/api-logs-view'
+import { AgentSecretsView } from '@renderer/components/agents/agent-secrets/agent-secrets-view'
 import { ConnectionsView } from '@renderer/components/connections/connections-view'
 import { ScheduledTaskView } from '@renderer/components/scheduled-tasks/scheduled-task-view'
 import { WebhookTriggerView } from '@renderer/components/webhook-triggers/webhook-trigger-view'
@@ -52,6 +53,13 @@ export function ApiLogsRoute() {
   const slug = useAgentSlug()
   if (!slug) return null
   return <ApiLogsView agentSlug={slug} />
+}
+
+// secrets route: the agent slug is read from the URL.
+export function SecretsRoute() {
+  const slug = useAgentSlug()
+  if (!slug) return null
+  return <AgentSecretsView agentSlug={slug} />
 }
 
 // The open detail overlay travels in the URL search (`?detail&source`),
