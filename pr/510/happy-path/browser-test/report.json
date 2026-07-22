@@ -1,23 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully tested browser use feature - agent opened browser, navigated to https://example.com, retrieved page title, and returned response mentioning \"Example Domain\"",
+  "reason": "Browser-use feature successfully executed browser commands to open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and close the browser.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully, showing Gamut home page with two agents listed in the sidebar",
-    "Clicked on \"QA-20260720-225917-3zqi\" agent in the sidebar — Successfully opened the agent detail page with message input field ready",
-    "Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed into the input field and sent via the Send message button",
-    "Waited for agent response — Agent executed the following browser tools in sequence:",
-    "Verified response mentions \"Example Domain\" — Agent's final response was: \"The page title is 'Example Domain'.\" — Test requirement satisfied. The agent correctly identified and reported the page title. Task completed in 15 seconds, well within the 3-minute timeout limit."
+    "Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
+    "Found agent \"QA-20260722-003604-htd0\" in the sidebar and clicked it — Agent page loaded with chat interface",
+    "Clicked on message input field — Input field became active and ready for typing",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" and sent with cmd+enter — Message sent successfully",
+    "Agent executed browser tools including Open Browser, Get State, and Close Browser — All tools completed with green checkmarks",
+    "Waited for response from agent — Response received within 15 seconds",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response clearly states \"The page title is 'Example Domain'\" and \"Its title/heading is 'Example Domain'\""
   ],
   "bugs": [],
-  "durationMs": 74208,
-  "sessionId": "3ff28f08-c117-402b-8c11-407138378313",
+  "durationMs": 157070,
+  "sessionId": "c2aba68e-9c6b-4394-b535-7c75c27ca608",
   "cost": {
-    "inputTokens": 400,
-    "outputTokens": 12764,
-    "cacheCreationTokens": 73182,
-    "cacheReadTokens": 1085467,
+    "inputTokens": 452,
+    "outputTokens": 14866,
+    "cacheCreationTokens": 61432,
+    "cacheReadTokens": 1211201,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.264244
+    "totalCostUsd": 0.272692
   }
 }
