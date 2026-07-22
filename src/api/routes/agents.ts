@@ -3030,6 +3030,28 @@ agents.get('/:id/secrets', AgentRead(), async (c) => {
   }
 })
 
+// GET /api/agents/:id/secrets/:secretId/value - Reveal the raw value of a single secret
+agents.get('/:id/secrets/:secretId/value', AgentUser(), async (c) => {
+  try {
+    const slug = getAgentId(c)
+    const envVar = c.req.param('secretId')
+
+    // Reserved runtime vars are system-managed and hidden from the secrets
+    // list (SUP-239 bug 3), so they don't exist as user secrets here either —
+    // 404 rather than confirming the var and leaking e.g. CONNECTED_ACCOUNTS.
+    const secret = isReservedEnvVar(envVar) ? null : await getSecret(slug, envVar)
+    if (!secret) {
+      return c.json({ error: 'Secret not found' }, 404)
+    }
+
+    logAuditEvent({ userId: getCurrentUserId(c), object: 'secret', objectId: `${slug}/${envVar}`, action: 'revealed' })
+    return c.json({ value: secret.value })
+  } catch (error) {
+    console.error('Failed to reveal secret:', error)
+    return c.json({ error: 'Failed to reveal secret' }, 500)
+  }
+})
+
 // POST /api/agents/:id/secrets - Create or update a secret
 agents.post('/:id/secrets', AgentUser(), async (c) => {
   try {

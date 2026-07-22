@@ -88,6 +88,26 @@ export function useUpdateSecret() {
   })
 }
 
+export function useRevealSecretValue() {
+  return useMutation({
+    mutationFn: async ({
+      agentSlug,
+      secretId,
+    }: {
+      agentSlug: string
+      secretId: string
+    }) => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/secrets/${secretId}/value`)
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ error: 'Failed to reveal secret' }))
+        throw new Error(error.error || 'Failed to reveal secret')
+      }
+      const data = (await res.json()) as { value: string }
+      return data.value
+    },
+  })
+}
+
 export function useDeleteSecret() {
   const queryClient = useQueryClient()
 

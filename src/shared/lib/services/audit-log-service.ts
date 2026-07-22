@@ -13,7 +13,7 @@ export const AUDIT_EVENT_MAP = {
   task:             ['created', 'updated', 'deleted', 'paused', 'resumed'],
   chat_integration: ['created', 'updated', 'deleted'],
   skill:            ['created', 'updated', 'deleted', 'exported'],
-  secret:           ['created', 'updated', 'deleted'],
+  secret:           ['created', 'updated', 'deleted', 'revealed'],
   file:             ['uploaded'],
   mount:            ['created', 'deleted'],
   settings:         ['updated', 'factory_reset'],
