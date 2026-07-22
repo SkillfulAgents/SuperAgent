@@ -57,6 +57,7 @@ import {
   proxyTokens,
   agentConnectedAccounts,
   scheduledTasks,
+  classifierRuns,
   notifications,
   connectedAccounts,
   userSettings,
@@ -173,6 +174,8 @@ const FACTORY_RESET_TABLES: SQLiteTable[] = [
   xAgentPolicies,
   webhookTriggers,
   notifications,
+  // classifier_runs are per-fire children of scheduled_tasks — delete before the parent
+  classifierRuns,
   scheduledTasks,
   // chat integrations (access + sessions cascade from integrations)
   chatIntegrationAccess,

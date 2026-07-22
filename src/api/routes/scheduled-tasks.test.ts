@@ -281,6 +281,19 @@ describe('scheduled-tasks route', () => {
     expect(mockRecordManualExecution).not.toHaveBeenCalled()
   })
 
+  it('rejects run-now on a classifier task without starting a session', async () => {
+    task = createTask({ executionMode: 'classifier' })
+
+    const res = await app.request('http://localhost/api/scheduled-tasks/task-1/run-now', {
+      method: 'POST',
+    })
+
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Classifier scheduled tasks cannot be run manually' })
+    expect(mockEnsureRunning).not.toHaveBeenCalled()
+    expect(mockCreateSession).not.toHaveBeenCalled()
+  })
+
   describe('session wakes (resume tasks)', () => {
     function createWakeTask(overrides: Record<string, unknown> = {}) {
       return createTask({

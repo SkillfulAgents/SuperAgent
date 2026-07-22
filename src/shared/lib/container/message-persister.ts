@@ -22,6 +22,12 @@ import {
   resumeScheduledTask,
   type ScheduledTask,
 } from '@shared/lib/services/scheduled-task-service'
+import { parseExecutionMode } from '@shared/lib/scheduler/classifier-config-schema'
+
+/** Classifier crons are hidden from agent schedule tools until the fire path ships. */
+export function isAgentVisibleScheduledTask(task: ScheduledTask): boolean {
+  return parseExecutionMode(task.executionMode) === 'session'
+}
 import {
   createWebhookTrigger,
   listActiveWebhookTriggers,
@@ -2765,7 +2771,8 @@ class MessagePersister {
         // hangs.
         let resultMessage = this.formatScheduleTaskResult(input, taskId, timezone)
         try {
-          const activeTasks = await listPendingScheduledTasks(agentSlug)
+          const activeTasks = (await listPendingScheduledTasks(agentSlug))
+            .filter(isAgentVisibleScheduledTask)
           resultMessage += this.formatActiveScheduleSummary(activeTasks)
         } catch (summaryError) {
           console.error('[MessagePersister] Failed to build active-schedule summary:', summaryError)
@@ -2967,7 +2974,8 @@ ${continuation}`
           return
         }
 
-        const tasks = await listPendingScheduledTasks(agentSlug)
+        const tasks = (await listPendingScheduledTasks(agentSlug))
+          .filter(isAgentVisibleScheduledTask)
         const formatted = tasks.length === 0
           ? 'No scheduled tasks on the schedule for this agent.'
           : `Scheduled tasks:\n\n${tasks.map((t) => {
@@ -3019,7 +3027,7 @@ ${continuation}`
         // Verify the task exists and belongs to this agent before cancelling, so
         // an agent can't cancel another agent's scheduled tasks by guessing IDs.
         const task = await getScheduledTask(input.task_id)
-        if (!task || task.agentSlug !== agentSlug) {
+        if (!task || task.agentSlug !== agentSlug || !isAgentVisibleScheduledTask(task)) {
           await this.rejectContainerInput(agentSlug, toolUseId, `Scheduled task ${input.task_id} not found`)
           return
         }
@@ -3088,7 +3096,7 @@ ${continuation}`
 
         // Verify the task exists and belongs to this agent before mutating it.
         const task = await getScheduledTask(input.task_id)
-        if (!task || task.agentSlug !== agentSlug) {
+        if (!task || task.agentSlug !== agentSlug || !isAgentVisibleScheduledTask(task)) {
           await this.rejectContainerInput(agentSlug, toolUseId, `Scheduled task ${input.task_id} not found`)
           return
         }

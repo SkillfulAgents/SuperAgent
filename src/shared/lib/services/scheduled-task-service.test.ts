@@ -575,4 +575,66 @@ describe('scheduled-task-service', () => {
       expect(result).toBe(false)
     })
   })
+
+  // ============================================================================
+  // Classifier write path (executionMode=classifier)
+  // ============================================================================
+
+  describe('classifier execution mode', () => {
+    it('writes a classifier row and leaves session jobs unchanged', async () => {
+      const sessionId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '0 9 * * *',
+        prompt: 'Session job',
+      })
+      const classifierId = await createScheduledTask({
+        agentSlug: 'test-agent',
+        scheduleType: 'cron',
+        scheduleExpression: '0 10 * * *',
+        prompt: 'Triage inbox items.',
+        name: 'inbox-triage',
+        executionMode: 'classifier',
+        classifierConfig: {
+          gather: { version: 1, sources: [] },
+          criteria: 'Escalate on bills.',
+          escalateModel: 'opus',
+          escalateEffort: 'high',
+        },
+      })
+
+      const session = await getScheduledTask(sessionId)
+      const classifier = await getScheduledTask(classifierId)
+      expect(session!.executionMode).toBe('session')
+      expect(session!.classifierConfig).toBeNull()
+      expect(classifier!.executionMode).toBe('classifier')
+      expect(classifier!.prompt).toBe('Triage inbox items.')
+      expect(JSON.parse(classifier!.classifierConfig!)).toMatchObject({
+        criteria: 'Escalate on bills.',
+        classifyModel: 'haiku',
+        escalateModel: 'opus',
+      })
+    })
+
+    it('rejects non-empty gather at the write boundary', async () => {
+      await expect(
+        createScheduledTask({
+          agentSlug: 'test-agent',
+          scheduleType: 'cron',
+          scheduleExpression: '0 10 * * *',
+          prompt: 'Triage inbox items.',
+          executionMode: 'classifier',
+          classifierConfig: {
+            gather: {
+              version: 1,
+              sources: [{ id: 'inbox', kind: 'inbox_window', windowHours: 24 }],
+            },
+            criteria: 'Escalate on bills.',
+            escalateModel: 'opus',
+            escalateEffort: 'high',
+          },
+        }),
+      ).rejects.toThrow()
+    })
+  })
 })

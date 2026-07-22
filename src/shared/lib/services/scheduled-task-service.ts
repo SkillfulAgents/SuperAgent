@@ -8,6 +8,10 @@
 import { db } from '@shared/lib/db'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
 import { eq, and, lte, inArray, isNotNull } from 'drizzle-orm'
+import {
+  type ClassifierConfig,
+  validateClassifierConfig,
+} from '@shared/lib/scheduler/classifier-config-schema'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
 
@@ -34,6 +38,13 @@ export interface CreateScheduledTaskParams {
   // creating a new one. Prefer createSessionWake(), which also enforces the
   // one-pending-wake-per-session invariant.
   resumeSessionId?: string
+  /** Defaults to session (today's always-spawn path). */
+  executionMode?: 'session' | 'classifier'
+  /**
+   * Required when executionMode=classifier. Validated by Zod at this boundary
+   * and stored as JSON text. Ignored for session mode.
+   */
+  classifierConfig?: ClassifierConfig | unknown
 }
 
 export interface CreateSessionWakeParams {
@@ -76,6 +87,14 @@ export async function createScheduledTask(
     nextExecutionAt = getNextCronTime(params.scheduleExpression, tz)
   }
 
+  const executionMode = params.executionMode ?? 'session'
+  let classifierConfigJson: string | null = null
+  if (executionMode === 'classifier') {
+    // Zod at the write boundary — rejects non-empty gather and missing escalate*.
+    const validated = validateClassifierConfig(params.classifierConfig)
+    classifierConfigJson = JSON.stringify(validated)
+  }
+
   const newTask: NewScheduledTask = {
     id,
     agentSlug: params.agentSlug,
@@ -95,6 +114,8 @@ export async function createScheduledTask(
     effort: params.effort || null,
     speed: params.speed || null,
     resumeSessionId: params.resumeSessionId || null,
+    executionMode,
+    classifierConfig: classifierConfigJson,
   }
 
   await db.insert(scheduledTasks).values(newTask)

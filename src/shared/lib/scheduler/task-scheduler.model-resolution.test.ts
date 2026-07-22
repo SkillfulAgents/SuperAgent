@@ -117,6 +117,8 @@ function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     effort: null,
     speed: null,
     resumeSessionId: null,
+    executionMode: 'session',
+    classifierConfig: null,
     createdAt: new Date('2026-06-26T16:00:00.000Z'),
     cancelledAt: null,
     pausedAt: null,

@@ -173,6 +173,14 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   effort: text('effort'),
   speed: text('speed'),
 
+  // Execution mode: session = today's always-spawn; classifier =
+  // classify session → settle | escalate. classifier_config is Zod-validated
+  // JSON (null when session).
+  executionMode: text('execution_mode', { enum: ['session', 'classifier'] })
+    .notNull()
+    .default('session'),
+  classifierConfig: text('classifier_config'),
+
   // Timestamps
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   cancelledAt: integer('cancelled_at', { mode: 'timestamp_ms' }),
@@ -185,6 +193,34 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
   pendingWakePerSession: uniqueIndex('scheduled_tasks_pending_wake_unique')
     .on(table.resumeSessionId)
     .where(sql`status = 'pending' AND resume_session_id IS NOT NULL`),
+}))
+
+/**
+ * Per-fire durable state for classifier crons.
+ * Keyed by (scheduledTaskId, fireAt) — the source of truth for in-flight
+ * dedup, escalate spawn, and crash recovery.
+ */
+export const classifierRuns = sqliteTable('classifier_runs', {
+  id: text('id').primaryKey(),
+  scheduledTaskId: text('scheduled_task_id').notNull(),
+  agentSlug: text('agent_slug').notNull(),
+  /** The task's next_execution_at value at fire time (fire identity). */
+  fireAt: integer('fire_at', { mode: 'timestamp_ms' }).notNull(),
+  status: text('status', { enum: ['classifying', 'resolved'] })
+    .notNull()
+    .default('classifying'),
+  classifySessionId: text('classify_session_id'),
+  verdict: text('verdict', { enum: ['settle', 'escalate'] }),
+  reason: text('reason'),
+  escalateSessionId: text('escalate_session_id'),
+  /** Stalled-run deadline; past this with no durable terminal evidence → escalate. */
+  deadlineAt: integer('deadline_at', { mode: 'timestamp_ms' }).notNull(),
+  resolvedAt: integer('resolved_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  fireUnique: uniqueIndex('classifier_runs_task_fire_unique')
+    .on(table.scheduledTaskId, table.fireAt),
+  openStatusIdx: index('classifier_runs_status_idx').on(table.status),
 }))
 
 // Notifications - user notifications for session events
@@ -538,6 +574,8 @@ export type AgentConnectedAccount = typeof agentConnectedAccounts.$inferSelect
 export type NewAgentConnectedAccount = typeof agentConnectedAccounts.$inferInsert
 export type ScheduledTask = typeof scheduledTasks.$inferSelect
 export type NewScheduledTask = typeof scheduledTasks.$inferInsert
+export type ClassifierRun = typeof classifierRuns.$inferSelect
+export type NewClassifierRun = typeof classifierRuns.$inferInsert
 export type Notification = typeof notifications.$inferSelect
 export type NewNotification = typeof notifications.$inferInsert
 export type ProxyToken = typeof proxyTokens.$inferSelect
