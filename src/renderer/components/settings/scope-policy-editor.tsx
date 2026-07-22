@@ -430,7 +430,7 @@ export function ScopePolicyEditorBody({
                         )}
                       />
                       <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      <span className="text-xs font-semibold">{g.title}</span>
+                      <span className="text-xs font-medium">{g.title}</span>
                       <span className="text-xs text-muted-foreground tabular-nums">
                         ({rows.length})
                       </span>
@@ -464,7 +464,7 @@ export function ScopePolicyEditorBody({
                       (openGroups.other ?? filtering) && 'rotate-90',
                     )}
                   />
-                  <span className="text-xs font-semibold">Other</span>
+                  <span className="text-xs font-medium">Other</span>
                   <span className="text-xs text-muted-foreground tabular-nums">
                     ({groupedPolicies.other.length})
                   </span>

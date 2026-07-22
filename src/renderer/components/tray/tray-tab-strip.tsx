@@ -45,7 +45,7 @@ export function TrayTabStrip({ trays, selectedTrayId, onSelect }: TrayTabStripPr
               {tray.label}
             </span>
             {tray.badge != null && tray.badge > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] rounded-full bg-primary text-primary-foreground text-[9px] font-bold flex items-center justify-center px-0.5">
+              <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] rounded-full bg-primary text-primary-foreground text-[9px] font-medium flex items-center justify-center px-0.5">
                 {tray.badge > 9 ? '9+' : tray.badge}
               </span>
             )}

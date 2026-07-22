@@ -270,7 +270,7 @@ export function WorkflowTrayContent({ agentSlug, sessionId, onClose }: WorkflowT
           <div key={group.title ?? `__ungrouped-${gi}`} className="space-y-1.5">
             {group.title && (
               <div className="flex items-baseline gap-2 px-1">
-                <span className="text-xs font-semibold text-foreground/80">{group.title}</span>
+                <span className="text-xs font-medium text-foreground/80">{group.title}</span>
                 {group.detail && (
                   <span className="text-[11px] text-muted-foreground truncate">{group.detail}</span>
                 )}

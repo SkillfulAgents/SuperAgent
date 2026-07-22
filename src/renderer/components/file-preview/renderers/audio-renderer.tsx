@@ -289,7 +289,7 @@ export function AudioRenderer({ url, filePath, commentsEnabled = true }: AudioRe
                 key={comment.id}
                 type="button"
                 onClick={() => seekTo(comment.timestamp)}
-                className="absolute -top-2 z-30 flex h-4 w-4 -translate-x-1/2 items-center justify-center rounded-full bg-primary text-[9px] font-semibold text-primary-foreground shadow ring-2 ring-background transition-transform hover:scale-110"
+                className="absolute -top-2 z-30 flex h-4 w-4 -translate-x-1/2 items-center justify-center rounded-full bg-primary text-[9px] font-medium text-primary-foreground shadow ring-2 ring-background transition-transform hover:scale-110"
                 style={{ left: `${comment.ratio * 100}%` }}
                 title={`Comment at ${formatMediaTime(comment.timestamp)}`}
                 aria-label={`Seek to comment ${index + 1} at ${formatMediaTime(comment.timestamp)}`}

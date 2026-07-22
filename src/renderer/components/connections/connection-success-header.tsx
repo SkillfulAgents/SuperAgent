@@ -12,7 +12,7 @@ export function ConnectionSuccessHeader({ toolkit, displayName }: ConnectionSucc
         <ServiceIcon slug={toolkit} fallback="oauth" className="h-6 w-6 text-green-600 dark:text-green-400" />
       </div>
       <div className="text-center">
-        <p className="text-base font-semibold capitalize">
+        <p className="text-base font-medium capitalize">
           {displayName} Successfully Connected!
         </p>
         <p className="text-xs text-muted-foreground mt-1">

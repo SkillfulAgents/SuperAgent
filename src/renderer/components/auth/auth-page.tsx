@@ -403,7 +403,7 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
     <div className="flex items-center justify-center h-screen bg-background" data-testid="auth-page">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <h1 className="text-2xl font-bold">Gamut</h1>
+          <h1 className="text-2xl font-medium">Gamut</h1>
         </CardHeader>
         <CardContent className="space-y-4">
           {isLoading ? (

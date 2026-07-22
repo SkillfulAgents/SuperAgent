@@ -52,7 +52,7 @@ const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, on
           {columnLabels.map((label, c) => (
             <th
               key={c}
-              className="sticky top-0 z-10 bg-muted px-3 py-1.5 text-left font-semibold whitespace-nowrap border-b border-r border-border/40"
+              className="sticky top-0 z-10 bg-muted px-3 py-1.5 text-left font-medium whitespace-nowrap border-b border-r border-border/40"
             >
               {label}
             </th>
@@ -83,7 +83,7 @@ const CsvTable = memo(function CsvTable({ rows, columnLabels, commentsByCell, on
                     {value}
                     {cellComments && (
                       <span
-                        className="absolute top-0.5 right-0.5 min-w-3.5 h-3.5 px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-bold leading-[0.875rem] text-center shadow-sm pointer-events-none"
+                        className="absolute top-0.5 right-0.5 min-w-3.5 h-3.5 px-1 rounded-full bg-primary text-primary-foreground text-[9px] font-medium leading-[0.875rem] text-center shadow-sm pointer-events-none"
                         title={`${cellComments.length} comment${cellComments.length === 1 ? '' : 's'}`}
                       >
                         {cellComments.length}
