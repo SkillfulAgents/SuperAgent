@@ -78,9 +78,9 @@ export const settingsSearchSchema = z
   })
 
 // The 18 GLOBAL settings tabs (settings/global-settings-page.tsx user/admin/auth
-// sections, flattened in display order). NOTE: `system-prompt` and `secrets` are
-// deliberately absent — those are agent-scoped local dialogs, not global settings
-// routes.
+// sections, flattened in display order). NOTE: `system-prompt` (agent-scoped
+// local dialog) and `secrets` (agent-scoped page, /agents/$slug/secrets) are
+// deliberately absent — they are not global settings routes.
 export const SETTINGS_TABS = [
   'profile',
   'general',
