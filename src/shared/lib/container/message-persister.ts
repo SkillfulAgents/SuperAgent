@@ -534,7 +534,11 @@ class MessagePersister {
     if (!state) return
     state.pendingInputRequests.delete(toolUseId)
     this.broadcastToSSE(sessionId, { type: 'capability_review_resolved', toolUseId })
-    if (state.pendingInputRequests.size === 0) {
+    // Approval flips the wait from the human to the subagent — an approved
+    // Task/Workflow runs for minutes before its tool_result arrives, so clear the
+    // awaiting light here instead of leaving it stuck until the result lands.
+    if (state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
+      state.isAwaitingInput = false
       this.broadcastGlobal({
         type: 'session_input_provided',
         sessionId,
@@ -549,6 +553,26 @@ class MessagePersister {
     if (state) {
       state.pendingComputerUseRequests.delete(toolUseId)
       // Same waiting-light rule as sidechain input clear: both shelves, skip auto-approved.
+      if (state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
+        state.isAwaitingInput = false
+        this.broadcastGlobal({
+          type: 'session_input_provided',
+          sessionId,
+          agentSlug: state.agentSlug,
+        })
+      }
+    }
+  }
+
+  // Clear a pending script_run request once the user approves it, before the host
+  // runs the script. Like an approved subagent, an approved script runs on the host
+  // (up to a 30s timeout) before its tool_result lands — the wait now belongs to the
+  // machine, not the human — so drop the awaiting light here instead of leaving it
+  // stuck until the result arrives. Same both-shelves rule as the other clear sites.
+  clearPendingScriptRun(sessionId: string, toolUseId: string): void {
+    const state = this.streamingStates.get(sessionId)
+    if (state) {
+      state.pendingInputRequests.delete(toolUseId)
       if (state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
         state.isAwaitingInput = false
         this.broadcastGlobal({
@@ -1257,8 +1281,16 @@ class MessagePersister {
           this.broadcastToSSE(sessionId, { type: 'messages_updated' })
           break
         }
-        // Clear awaiting input when tool results arrive (user provided input)
-        if (state.isAwaitingInput) {
+        // Tool results come as 'user' type messages. Delete the resolved input
+        // requests from the pending map FIRST (handleToolResults does the delete)
+        // so the both-shelves check below reflects only requests still open.
+        this.handleToolResults(sessionId, content)
+        // Clear awaiting only when no genuine wait remains across BOTH shelves.
+        // A background subagent's ask (or a parallel top-level ask, or a pending
+        // computer_use) can still need the human while this main-agent tool_result
+        // lands — the old unconditional clear dropped the "needs input" pill in
+        // those cases. Same rule as every other clear site.
+        if (state.isAwaitingInput && !this.hasBlockingPendingRequests(state)) {
           state.isAwaitingInput = false
           this.broadcastGlobal({
             type: 'session_input_provided',
@@ -1266,8 +1298,6 @@ class MessagePersister {
             agentSlug: state.agentSlug,
           })
         }
-        // Tool results come as 'user' type messages
-        this.handleToolResults(sessionId, content)
         // Broadcast refresh so frontend can detect the persisted user message
         // and clear the optimistic pending copy promptly.
         this.broadcastToSSE(sessionId, { type: 'messages_updated' })
