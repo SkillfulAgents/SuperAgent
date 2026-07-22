@@ -128,6 +128,29 @@ function parseConnectedAccounts(): Map<string, Array<{ name: string; id: string 
   return accounts;
 }
 
+// Wire mirror of the host's AgentEnvironment (src/shared/lib/container/agent-environment.ts).
+// agent-container is an isolated package, so it re-declares the shape it expects from the
+// AGENT_ENVIRONMENT env var rather than importing the host type - same contract pattern as
+// parseRemoteMcps / parseConnectedAccounts. Kept LENIENT (no .strict()) on purpose: during a
+// rollout the host image can be newer than this container image and send an added field; a
+// strict parse would reject it and wrongly fall back to desktop. Extra keys are harmless here.
+const agentEnvironmentSchema = z.discriminatedUnion('surface', [
+  z.object({ surface: z.literal('desktop') }),
+  z.object({ surface: z.literal('web'), publicUrl: z.string().min(1).optional() }),
+]);
+type AgentEnvironment = z.infer<typeof agentEnvironmentSchema>;
+
+function parseAgentEnvironment(): AgentEnvironment {
+  const raw = process.env.AGENT_ENVIRONMENT;
+  if (!raw) return { surface: 'desktop' };
+  try {
+    const parsed = agentEnvironmentSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : { surface: 'desktop' };
+  } catch {
+    return { surface: 'desktop' };
+  }
+}
+
 /** One toolkit's connected accounts, as the template's `connectedAccounts` list. */
 interface ConnectedAccountGroup {
   displayName: string;
@@ -233,6 +256,9 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   userInstructions: string;
+  environmentIsWeb: boolean;
+  environmentHasPublicUrl: boolean;
+  environmentPublicUrl: string;
 }
 
 /**
@@ -256,6 +282,8 @@ export function buildSystemPromptVars(
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
+  const environment = parseAgentEnvironment();
+  const environmentPublicUrl = environment.surface === 'web' ? (environment.publicUrl ?? '') : '';
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
     webSearchToolName: webSearchProvider ? 'mcp__web__web_search' : 'WebSearch',
@@ -276,6 +304,9 @@ export function buildSystemPromptVars(
     hasEnvVars: envVars.length > 0,
     envVars,
     userInstructions,
+    environmentIsWeb: environment.surface === 'web',
+    environmentHasPublicUrl: environmentPublicUrl.length > 0,
+    environmentPublicUrl,
   };
 }
 

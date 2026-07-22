@@ -34,6 +34,10 @@ describe('reserved-env-vars', () => {
     expect(isReservedEnvVar('MY_CUSTOM')).toBe(false)
   })
 
+  it('reserves AGENT_ENVIRONMENT so custom env cannot clobber the resolved surface fact', () => {
+    expect(isReservedEnvVar('AGENT_ENVIRONMENT')).toBe(true)
+  })
+
   describe('mergeCustomEnvVars', () => {
     it('skips reserved keys and warns, but passes non-reserved through', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
