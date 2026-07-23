@@ -8,6 +8,7 @@ import type { SessionInfo } from '@shared/lib/types/agent'
 const mockGetRunningAgentIds = vi.fn<() => string[]>(() => [])
 const mockGetContainerStartTime = vi.fn<(id: string) => number | undefined>()
 const mockGetLastKeepAlive = vi.fn<(id: string) => number | undefined>()
+const mockGetCachedLastActivityMs = vi.fn<(id: string) => number | undefined>()
 const mockStopContainer = vi.fn()
 
 vi.mock('@shared/lib/container/container-manager', () => ({
@@ -15,6 +16,7 @@ vi.mock('@shared/lib/container/container-manager', () => ({
     getRunningAgentIds: () => mockGetRunningAgentIds(),
     getContainerStartTime: (id: string) => mockGetContainerStartTime(id),
     getLastKeepAlive: (id: string) => mockGetLastKeepAlive(id),
+    getCachedLastActivityMs: (id: string) => mockGetCachedLastActivityMs(id),
     stopContainer: (...args: unknown[]) => mockStopContainer(...args),
   },
 }))
@@ -73,6 +75,8 @@ describe('AutoSleepMonitor', () => {
     mockListSessions.mockResolvedValue([])
     mockGetContainerStartTime.mockReturnValue(undefined)
     mockGetLastKeepAlive.mockReturnValue(undefined)
+    mockGetCachedLastActivityMs.mockReturnValue(undefined)
+    mockHasActiveSessions.mockReturnValue(false)
     mockStopContainer.mockResolvedValue(undefined)
   })
 
@@ -194,6 +198,36 @@ describe('AutoSleepMonitor', () => {
     await autoSleepMonitor.start()
     await tick()
 
+    expect(mockStopContainer).not.toHaveBeenCalled()
+  })
+
+  it('uses in-memory activity and skips listSessions when the runtime provides a cache', async () => {
+    const now = Date.now()
+    mockGetRunningAgentIds.mockReturnValue(['agent-1'])
+    mockGetCachedLastActivityMs.mockReturnValue(now - THIRTY_MINUTES_MS - 1000)
+    mockGetContainerStartTime.mockReturnValue(now - THIRTY_MINUTES_MS - 1000)
+
+    await autoSleepMonitor.start()
+    await tick()
+
+    expect(mockListSessions).not.toHaveBeenCalled()
+    expect(mockStopContainer).toHaveBeenCalledWith('agent-1', {
+      stopTimeoutMs: 60_000,
+      killTimeoutMs: 30_000,
+      escalateToForceStop: false,
+    })
+  })
+
+  it('does not stop when in-memory activity is recent', async () => {
+    const now = Date.now()
+    mockGetRunningAgentIds.mockReturnValue(['agent-1'])
+    mockGetCachedLastActivityMs.mockReturnValue(now - 5 * 60 * 1000)
+    mockGetContainerStartTime.mockReturnValue(now - THIRTY_MINUTES_MS - 1000)
+
+    await autoSleepMonitor.start()
+    await tick()
+
+    expect(mockListSessions).not.toHaveBeenCalled()
     expect(mockStopContainer).not.toHaveBeenCalled()
   })
 })

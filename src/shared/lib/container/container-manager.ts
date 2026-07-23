@@ -696,6 +696,12 @@ class ContainerManager {
     return this.lastKeepAliveAt.get(agentId)
   }
 
+  // Runtime-provided in-memory activity (e.g. MicroVM proxy traffic). undefined
+  // means AutoSleepMonitor should fall back to listSessions() filesystem I/O.
+  getCachedLastActivityMs(agentId: string): number | undefined {
+    return this.getClient(agentId).getCachedLastActivityMs()
+  }
+
   // Remove a client from the cache
   removeClient(agentId: string): void {
     this.clients.delete(agentId)

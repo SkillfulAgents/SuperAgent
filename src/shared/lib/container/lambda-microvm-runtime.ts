@@ -228,6 +228,8 @@ export interface ProxyOptions {
   agentPort: number
   /** Mints a fresh auth-token map ({ "X-aws-proxy-auth": "<jwe>", ... }). */
   mintToken: () => Promise<MicrovmAuthToken>
+  /** Called on real user/agent traffic (not /health liveness probes). */
+  onActivity?: () => void
 }
 
 export class LocalAuthForwardProxy {
@@ -338,6 +340,7 @@ export class LocalAuthForwardProxy {
 
   // Replay requests across the brief resume window, where AWS may 502/refuse.
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!isLivenessProbePath(req.url)) this.options.onActivity?.()
     let body: Buffer
     try {
       body = await this.readBody(req)
@@ -385,6 +388,7 @@ export class LocalAuthForwardProxy {
   }
 
   private async handleUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer): Promise<void> {
+    this.options.onActivity?.()
     // A WS upgrade can't be replayed once piped, so kick the VM awake over HTTP
     // (with the same resume-retry HTTP requests get) before opening the stream.
     if (!(await this.waitForUpstreamReady())) {
@@ -461,9 +465,9 @@ export class LocalAuthForwardProxy {
 // ---------------------------------------------------------------------------
 
 // MicroVM ids are AWS-generated (no deterministic name, no tag-filtered lookup),
-// so the agentId→microvm mapping + its loopback proxy live in process memory.
-// Lost on host-app restart: the orphaned VM is reclaimed by its idlePolicy
-// (idle→suspend→suspended-timeout→terminate) and the next start() re-runs.
+// so the agentId→microvm mapping + loopback proxy + activity clock live in RAM.
+// Lost on host-app restart: orphaned VMs are reclaimed by idlePolicy
+// (idle→suspend→suspended-timeout→terminate); the next start() re-runs.
 interface AgentMicrovmState {
   microvmId: string
   endpoint: string
@@ -471,6 +475,19 @@ interface AgentMicrovmState {
   proxyPort: number
 }
 const agentStates = new Map<string, AgentMicrovmState>()
+
+// Host-side activity clock for AutoSleepMonitor (avoids S3 Files listSessions I/O).
+// Touched on real proxy traffic + start; /health liveness probes are excluded.
+const agentLastActivityAt = new Map<string, number>()
+
+function touchAgentActivity(agentId: string): void {
+  agentLastActivityAt.set(agentId, Date.now())
+}
+
+function isLivenessProbePath(url: string | undefined): boolean {
+  const path = (url ?? '/').split('?')[0] ?? '/'
+  return path === '/health'
+}
 
 type MicrovmDetail = { state?: string; endpoint?: string }
 
@@ -718,6 +735,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       endpoint: run.endpoint,
       agentPort: config.agentPort,
       mintToken: () => this.mintToken(run.microvmId),
+      onActivity: () => touchAgentActivity(this.config.agentId),
     })
     const proxyPort = await proxy.start()
     // Stop any stale proxy before overwriting state (no leaked port/listener); stash
@@ -725,6 +743,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     this.cleanupLocal()
     if (hasEnv) setBootstrapEnv(this.config.agentId, env)
     agentStates.set(this.config.agentId, { microvmId: run.microvmId, endpoint: run.endpoint, proxy, proxyPort })
+    touchAgentActivity(this.config.agentId)
 
     try {
       await this.waitForRunning(config.region, run.microvmId, 300_000)
@@ -739,14 +758,16 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   // Proxy-level retry handles the suspend→resume 502 window for all HTTP calls.
 
-  async stop(options?: StopOptions): Promise<StopResult> {
+  async stop(_options?: StopOptions): Promise<StopResult> {
     this.terminateWebSocketConnections()
-    // Auto-sleep is handled by AWS idlePolicy; the host-app sweep is a no-op.
-    if (options?.escalateToForceStop === false) {
-      return { forceStopUsed: false, stopped: true }
-    }
+    // Host AutoSleepMonitor owns product idle via in-memory activity; both the
+    // background sweep and an explicit stop suspend (idlePolicy is the orphan GC).
     await this.suspend()
     return { forceStopUsed: false, stopped: true }
+  }
+
+  getCachedLastActivityMs(): number | undefined {
+    return agentLastActivityAt.get(this.config.agentId)
   }
 
   stopSync(): void {
@@ -855,6 +876,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const state = agentStates.get(this.config.agentId)
     state?.proxy.stop()
     agentStates.delete(this.config.agentId)
+    agentLastActivityAt.delete(this.config.agentId)
     clearBootstrapEnv(this.config.agentId)
   }
 }
@@ -862,6 +884,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 export function resetMicrovmRuntimeForTests(): void {
   for (const state of agentStates.values()) state.proxy.stop()
   agentStates.clear()
+  agentLastActivityAt.clear()
   memoizedClient = null
   memoizedConfig = null
   memoizedHostPrivateIp = undefined

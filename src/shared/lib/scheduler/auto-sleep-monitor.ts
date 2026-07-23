@@ -81,14 +81,6 @@ class AutoSleepMonitor {
             continue
           }
 
-          // Check last activity across all sessions
-          const sessions = await listSessions(agentId)
-
-          // No sessions — container was just started, skip it
-          if (sessions.length === 0) {
-            continue
-          }
-
           // Use container start time as a floor — when an agent is woken up
           // to view its dashboard, session timestamps are stale from before
           // the previous sleep and would cause immediate re-sleep.
@@ -97,11 +89,33 @@ class AutoSleepMonitor {
           const lastKeepAlive =
             containerManager.getLastKeepAlive(agentId) ?? 0
 
-          const lastActivity = Math.max(
-            containerStartTime,
-            lastKeepAlive,
-            ...sessions.map((s) => s.lastActivityAt.getTime())
-          )
+          // Runtimes with an in-memory activity clock (Lambda MicroVM) skip
+          // listSessions — that path hits S3 Files and was pure cost when the
+          // eventual stop was a no-op / when activity is already known in RAM.
+          const cachedActivity =
+            containerManager.getCachedLastActivityMs(agentId)
+
+          let lastActivity: number
+          if (cachedActivity !== undefined) {
+            lastActivity = Math.max(
+              containerStartTime,
+              lastKeepAlive,
+              cachedActivity
+            )
+          } else {
+            const sessions = await listSessions(agentId)
+
+            // No sessions — container was just started, skip it
+            if (sessions.length === 0) {
+              continue
+            }
+
+            lastActivity = Math.max(
+              containerStartTime,
+              lastKeepAlive,
+              ...sessions.map((s) => s.lastActivityAt.getTime())
+            )
+          }
 
           if (now - lastActivity > timeoutMs) {
             console.log(
