@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { BookmarksFileHook } from './bookmarks-hook'
+import { bookmarkSchema } from './bookmarks-schema'
 import { resolveToolFilePath } from './file-hook'
 
 const hook = new BookmarksFileHook()
@@ -74,6 +75,13 @@ describe('BookmarksFileHook.onWrite — valid', () => {
     const result = hook.onWrite('/workspace/bookmarks.json', content)
     expect(result.error).toBeUndefined()
     expect(result.warning).toBeUndefined()
+  })
+
+  it('canonicalizes trailing slashes on workspace folder bookmarks', () => {
+    const result = bookmarkSchema.safeParse({ name: 'Workspace', folder: '/workspace/' })
+
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.folder).toBe('/workspace')
   })
 
   it('accepts a mix of link and file bookmarks', () => {

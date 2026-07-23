@@ -207,9 +207,9 @@ function FolderDirectory({
           </FolderEntryContextMenu>
         )
       })}
-      {data?.truncated && isRoot && (
+      {data?.truncated && (
         <div className="px-3 py-1.5 text-[11px] text-muted-foreground">
-          Showing the first 1,000 entries.
+          Showing the first {data.entries.length.toLocaleString()} {data.entries.length === 1 ? 'entry' : 'entries'}.
         </div>
       )}
     </>

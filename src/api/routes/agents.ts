@@ -160,7 +160,10 @@ const WorkspaceBookmarkSchema = z.object({
   name: z.string().min(1),
   link: z.string().url().startsWith('https://').optional(),
   file: z.string().min(1).optional(),
-  folder: z.string().min(1).optional(),
+  folder: z.string()
+    .min(1)
+    .transform(folderPath => normalizeWorkspaceContainerPath(folderPath) ?? folderPath)
+    .optional(),
 }).superRefine((bookmark, ctx) => {
   const resourceCount = [bookmark.link, bookmark.file, bookmark.folder]
     .filter(value => value != null).length
@@ -211,7 +214,8 @@ class WorkspaceFolderAccessError extends Error {
 
 function normalizeWorkspaceContainerPath(rawPath: string): string | null {
   if (!rawPath.startsWith('/') || rawPath.includes('\0')) return null
-  const normalized = path.posix.normalize(rawPath)
+  const normalizedPath = path.posix.normalize(rawPath)
+  const normalized = normalizedPath === '/' ? normalizedPath : normalizedPath.replace(/\/+$/, '')
   if (normalized !== '/workspace' && !normalized.startsWith('/workspace/')) return null
   return normalized
 }
@@ -233,8 +237,12 @@ async function readWorkspaceBookmarks(agentSlug: string): Promise<WorkspaceBookm
   const content = await fs.promises.readFile(bookmarksPath, 'utf-8').catch(() => null)
   if (!content) return []
   try {
-    const parsed = WorkspaceBookmarksSchema.safeParse(JSON.parse(content))
-    return parsed.success ? parsed.data : []
+    const parsed = JSON.parse(content)
+    if (!Array.isArray(parsed)) return []
+    return parsed.flatMap((entry): WorkspaceBookmark[] => {
+      const result = WorkspaceBookmarkSchema.safeParse(entry)
+      return result.success ? [result.data] : []
+    })
   } catch {
     return []
   }

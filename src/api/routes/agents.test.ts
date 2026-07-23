@@ -1749,6 +1749,17 @@ describe('bookmarked workspace folder listing', () => {
     expect(mockFsReaddir).not.toHaveBeenCalled()
   })
 
+  it.each(['viewer', 'user'] as const)('treats a trailing-slash workspace root as owner-only for the %s role', async (role) => {
+    mockAuthorizedAgentRole = role
+
+    const res = await getReq(app, folderUrl('/workspace/'))
+
+    expect(res.status).toBe(403)
+    expect(mockFsReadFile).not.toHaveBeenCalled()
+    expect(mockFsStat).not.toHaveBeenCalled()
+    expect(mockFsReaddir).not.toHaveBeenCalled()
+  })
+
   it('does not expose a workspace folder that is not bookmarked', async () => {
     mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
       { name: 'Reports', folder: '/workspace/reports' },
@@ -2057,8 +2068,30 @@ describe('workspace folder directory actions and native reveal', () => {
 })
 
 describe('bookmark validation', () => {
-  it('rejects a folder bookmark outside /workspace', async () => {
+  beforeEach(() => {
+    mockFsReadFile.mockReset()
     vi.mocked(writeJsonFileAtomic).mockClear()
+  })
+
+  it('returns valid bookmarks individually and canonicalizes folder paths', async () => {
+    mockFsReadFile.mockResolvedValueOnce(JSON.stringify([
+      { name: 'Docs', link: 'https://example.com/docs' },
+      { name: 'Legacy', link: 'http://legacy.example.com' },
+      { name: 'Workspace', folder: '/workspace/' },
+      { name: 'Invalid', file: '/workspace/a.txt', folder: '/workspace/a' },
+    ]))
+    const app = createApp()
+
+    const res = await getReq(app, '/api/agents/test-agent/bookmarks')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual([
+      { name: 'Docs', link: 'https://example.com/docs' },
+      { name: 'Workspace', folder: '/workspace' },
+    ])
+  })
+
+  it('rejects a folder bookmark outside /workspace', async () => {
     const app = createApp()
     const res = await app.request('http://localhost/api/agents/test-agent/bookmarks', {
       method: 'PUT',

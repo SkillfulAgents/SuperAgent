@@ -39,7 +39,7 @@ vi.mock('@renderer/hooks/use-folder-entries', () => ({
       : {
           root: '/workspace/reports',
           path: folderPath,
-          truncated: false,
+          truncated: true,
           entries: [{ name: 'july.md', path: '/workspace/reports/2026/july.md', type: 'file' }],
         },
     isLoading: false,
@@ -140,5 +140,15 @@ describe('FolderBrowser', () => {
     expect(mocks.useUpdateBookmarks).toHaveBeenCalledTimes(1)
     expect(mocks.useBookmarks).toHaveBeenCalledWith('test-agent')
     expect(mocks.useUpdateBookmarks).toHaveBeenCalledWith('test-agent')
+  })
+
+  it('shows a response-derived truncation notice for nested directories', () => {
+    render(
+      <FolderBrowser
+        folder={{ ...baseFolder, expandedPaths: [...baseFolder.expandedPaths, '/workspace/reports/2026'] }}
+      />,
+    )
+
+    expect(screen.getByText('Showing the first 1 entry.')).toBeVisible()
   })
 })

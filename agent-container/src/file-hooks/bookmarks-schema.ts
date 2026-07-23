@@ -1,10 +1,17 @@
 import { z } from 'zod'
 import path from 'path'
 
-function isWorkspaceFolderPath(folderPath: string): boolean {
-  if (!folderPath.startsWith('/') || folderPath.includes('\0')) return false
-  const normalized = path.posix.normalize(folderPath)
+function normalizeWorkspaceFolderPath(folderPath: string): string | null {
+  if (!folderPath.startsWith('/') || folderPath.includes('\0')) return null
+  const normalizedPath = path.posix.normalize(folderPath)
+  const normalized = normalizedPath === '/' ? normalizedPath : normalizedPath.replace(/\/+$/, '')
   return normalized === '/workspace' || normalized.startsWith('/workspace/')
+    ? normalized
+    : null
+}
+
+function isWorkspaceFolderPath(folderPath: string): boolean {
+  return normalizeWorkspaceFolderPath(folderPath) != null
 }
 
 export const bookmarkSchema = z.object({
@@ -17,6 +24,7 @@ export const bookmarkSchema = z.object({
       isWorkspaceFolderPath,
       'Folder path must be inside /workspace',
     )
+    .transform(folderPath => normalizeWorkspaceFolderPath(folderPath) ?? folderPath)
     .optional(),
 }).refine(
   (bookmark) => [bookmark.link, bookmark.file, bookmark.folder].filter((value) => value != null).length === 1,
