@@ -152,6 +152,7 @@ vi.mock('./container-manager', () => ({
 // Import after mocks are set up
 import { messagePersister } from './message-persister'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
 
 function createMockClient(): ContainerClient & {
   _messageCallback: ((message: StreamMessage) => void) | null
@@ -912,6 +913,178 @@ describe('pending user-input request lifecycle (characterization)', () => {
       } finally {
         unregister()
       }
+    })
+  })
+
+  // ==========================================================================
+  // Phase 2 shadow registry: every shelf mutation writes through to the
+  // UserInputRequestManager, whose per-shelf view must mirror the legacy
+  // shelves exactly (the persister asserts this inline at every mutation —
+  // shelfMismatches must stay 0). Its DERIVED awaiting projection is compared
+  // against the imperative bit: where the pinned split-brains make the bit
+  // wrong, the projection is right, and the divergence counter is the
+  // telemetry that sizes the Phase 3 flip.
+  // ==========================================================================
+
+  describe('shadow registry equivalence (Phase 2)', () => {
+    const KIND_BY_SSE_TYPE: Record<string, string> = {
+      secret_request: 'secret',
+      user_question_request: 'question',
+      connected_account_request: 'connected_account',
+      file_request: 'file',
+      remote_mcp_request: 'remote_mcp',
+      browser_input_request: 'browser_input',
+      script_run_request: 'script_run',
+    }
+
+    let consoleWarnSpy: ReturnType<typeof vi.spyOn>
+
+    beforeEach(() => {
+      userInputRequestManager.reset()
+      // Divergence telemetry warns on purpose in the split-brain tests below —
+      // keep the test output clean.
+      consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    })
+
+    afterEach(() => {
+      consoleWarnSpy.mockRestore()
+    })
+
+    it('every standard kind registers a typed entry mirroring the replay shelf, and settles with it', async () => {
+      for (const kindCase of STANDARD_KINDS) {
+        const toolId = `shadow-${kindCase.sseType}`
+        simulateToolUse(kindCase.toolName, toolId, kindCase.input)
+
+        await vi.waitFor(() => {
+          expect(
+            userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+          ).toContain(toolId)
+        })
+        const entry = userInputRequestManager
+          .getOpenRequestsForSession(SESSION_ID)
+          .find((r) => r.id === toolId)!
+        expect(entry.kind, kindCase.label).toBe(KIND_BY_SSE_TYPE[kindCase.sseType])
+        expect(entry.scope).toEqual({ agentSlug: AGENT_SLUG, sessionId: SESSION_ID })
+
+        // Exact mirror of the legacy replay shelf.
+        expect(
+          [...userInputRequestManager.getShelfIdsForSession(SESSION_ID, 'stream')].sort()
+        ).toEqual(
+          messagePersister
+            .getPendingInputRequests(SESSION_ID)
+            .map((r) => r.toolUseId)
+            .sort()
+        )
+
+        sendToolResult(toolId)
+        expect(
+          userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+        ).not.toContain(toolId)
+        expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+          id: toolId,
+          kind: KIND_BY_SSE_TYPE[kindCase.sseType],
+          outcome: 'answered',
+        })
+      }
+      expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
+    })
+
+    it('a stray main-path tool_result cannot evict the registry\'s computer-use entry (shelf-scoped resolve)', () => {
+      simulateToolUse('mcp__computer-use__computer_click', 'shadow-cu-1', { x: 1, y: 2 })
+      expect(userInputRequestManager.getShelfIdsForSession(SESSION_ID, 'computer_use')).toEqual([
+        'shadow-cu-1',
+      ])
+
+      // Pinned divergence: the tool_result leaves the computer-use shelf
+      // untouched. The registry mirrors the SHELF, not the tool_result — if it
+      // settled here, the inline parity assert would blow up this test.
+      sendToolResult('shadow-cu-1')
+      expect(userInputRequestManager.getShelfIdsForSession(SESSION_ID, 'computer_use')).toEqual([
+        'shadow-cu-1',
+      ])
+
+      messagePersister.clearPendingComputerUseRequest(SESSION_ID, 'shadow-cu-1')
+      expect(userInputRequestManager.getShelfIdsForSession(SESSION_ID, 'computer_use')).toEqual([])
+      expect(userInputRequestManager.stats.recentResolutions.at(-1)).toEqual({
+        id: 'shadow-cu-1',
+        kind: 'computer_use',
+        outcome: 'answered',
+      })
+      expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
+    })
+
+    it('parallel requests: the projection stays awaiting while the bit drops early (split-brain telemetry)', async () => {
+      simulateToolUse('mcp__user-input__request_secret', 'shadow-par-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      simulateToolUse('AskUserQuestion', 'shadow-par-2', {
+        questions: [{ question: 'Pick DB', header: 'DB', options: [], multiSelect: false }],
+      })
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(true)
+
+      // KNOWN SPLIT-BRAIN (pinned at the main-path user-message handler): the
+      // first tool_result clears the bit while the second card is still
+      // parked. The derived projection keeps the light on — this is the
+      // behavior Phase 3 promotes to authoritative.
+      sendToolResult('shadow-par-1')
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(false)
+      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(true)
+
+      // The divergence check is deferred a microtask past the mutation.
+      await vi.waitFor(() => {
+        expect(userInputRequestManager.stats.awaitingDivergences).toBeGreaterThan(0)
+      })
+
+      sendToolResult('shadow-par-2')
+      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
+      expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
+    })
+
+    it('capability review: the registry settles on complete; the stuck bit is divergence telemetry', async () => {
+      mockAgentCapabilities.subagents = 'allow'
+      mockAgentCapabilities.workflows = 'review'
+      vi.mocked(mockClient.fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({ grants: [] }),
+      } as unknown as Response)
+
+      simulateToolUse('Workflow', 'shadow-cap-1', { script: 'export const meta = {}' })
+      await vi.waitFor(() => {
+        expect(
+          userInputRequestManager.getOpenRequestsForSession(SESSION_ID).map((r) => r.id)
+        ).toContain('shadow-cap-1')
+      })
+      expect(
+        userInputRequestManager.getOpenRequestsForSession(SESSION_ID)[0].kind
+      ).toBe('capability_review')
+
+      messagePersister.completeCapabilityReview(SESSION_ID, 'shadow-cap-1')
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(userInputRequestManager.isSessionAwaiting(SESSION_ID, AGENT_SLUG)).toBe(false)
+      // Pinned: the early-clear door empties its shelf but never flips the
+      // bit. Projection right, bit wrong — counted, not thrown.
+      expect(messagePersister.isSessionAwaitingInput(SESSION_ID)).toBe(true)
+      await vi.waitFor(() => {
+        expect(userInputRequestManager.stats.awaitingDivergences).toBeGreaterThan(0)
+      })
+      expect(userInputRequestManager.stats.shelfMismatches).toBe(0)
+    })
+
+    it('unsubscribe drops every session-scoped registry entry as invalidated', () => {
+      simulateToolUse('mcp__user-input__request_secret', 'shadow-drop-1', {
+        secretName: 'API_KEY',
+        reason: 'Need it',
+      })
+      simulateToolUse('mcp__computer-use__computer_click', 'shadow-drop-2', { x: 1, y: 2 })
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(2)
+
+      messagePersister.unsubscribeFromSession(SESSION_ID)
+      expect(userInputRequestManager.getOpenRequestsForSession(SESSION_ID)).toHaveLength(0)
+      expect(
+        userInputRequestManager.stats.recentResolutions.slice(-2).map((r) => r.outcome)
+      ).toEqual(['invalidated', 'invalidated'])
     })
   })
 })

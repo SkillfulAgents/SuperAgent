@@ -8,6 +8,8 @@ import type { RequestRemoteMcpInput } from '@shared/lib/tool-definitions/request
 import type { RequestBrowserInputInput } from '@shared/lib/tool-definitions/request-browser-input'
 import type { RequestScriptRunInput } from '@shared/lib/tool-definitions/request-script-run'
 import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { streamEventToPendingRequest } from '@shared/lib/user-input/request-schema'
 import { classifyResult } from './result-classification'
 import { parseBackgroundTasksChanged } from './background-tasks-changed'
 import { parseCommandLifecycle } from './command-lifecycle'
@@ -352,6 +354,8 @@ class MessagePersister {
       this.subscriptions.delete(sessionId)
     }
     this.streamingStates.delete(sessionId)
+    // Shadow registry (Phase 2): every session-scoped entry dies with the state.
+    userInputRequestManager.dropSessionRequests(sessionId, 'invalidated')
     this.containerClients.delete(sessionId)
     // Safe to drop: the container's persisted grants are authoritative, so a
     // resubscribed session repopulates this on the next launch with one GET.
@@ -543,6 +547,8 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     if (!state) return
     state.pendingInputRequests.delete(toolUseId)
+    userInputRequestManager.resolveIfShelf(toolUseId, 'stream', 'answered')
+    this.shadowRegistryCheck(sessionId, 'completeCapabilityReview')
     this.broadcastToSSE(sessionId, { type: 'capability_review_resolved', toolUseId })
     if (state.pendingInputRequests.size === 0) {
       this.broadcastGlobal({
@@ -558,6 +564,8 @@ class MessagePersister {
     const state = this.streamingStates.get(sessionId)
     if (state) {
       state.pendingComputerUseRequests.delete(toolUseId)
+      userInputRequestManager.resolveIfShelf(toolUseId, 'computer_use', 'answered')
+      this.shadowRegistryCheck(sessionId, 'clearPendingComputerUseRequest')
       // Same waiting-light rule as the sidechain input clear: both shelves,
       // skip auto-approved — and defer to a parked proxy/x-agent review
       // (external blocker), which is also a real wait.
@@ -612,7 +620,11 @@ class MessagePersister {
     // Clear the host-side computer_use bookkeeping explicitly — session_idle only clears
     // pendingInputRequests, so a leftover entry would replay a phantom approval card on reconnect.
     const state = this.streamingStates.get(sessionId)
-    for (const id of computerUseIds) state?.pendingComputerUseRequests.delete(id)
+    for (const id of computerUseIds) {
+      state?.pendingComputerUseRequests.delete(id)
+      if (state) userInputRequestManager.resolveIfShelf(id, 'computer_use', 'superseded')
+    }
+    this.shadowRegistryCheck(sessionId, 'cancelAwaitingInput')
 
     // Cleanup-reject each pending request on the CONTAINER: the query is already aborted, so the
     // reason is never read by the model — this just clears the container-side pending entry so a
@@ -933,6 +945,34 @@ class MessagePersister {
     return false
   }
 
+  // Phase 2 shadow-registry parity (dev/test only, skipped in production).
+  // Shelf comparison runs synchronously — every mutation site writes through to
+  // the registry adjacent to the shelf mutation, so the two must already agree
+  // here. The awaiting-bit comparison is deferred a microtask: the imperative
+  // mark/clear that follows a shelf mutation lands later in the same
+  // synchronous stretch, and comparing early would report phantom divergence.
+  private shadowRegistryCheck(sessionId: string, context: string): void {
+    if (process.env.NODE_ENV === 'production') return
+    const state = this.streamingStates.get(sessionId)
+    if (!state) return
+    userInputRequestManager.verifyShelfParity({
+      sessionId,
+      context,
+      streamShelfIds: [...state.pendingInputRequests.keys()],
+      computerUseShelfIds: [...state.pendingComputerUseRequests.keys()],
+    })
+    queueMicrotask(() => {
+      const current = this.streamingStates.get(sessionId)
+      if (!current) return
+      userInputRequestManager.compareAwaitingProjection({
+        sessionId,
+        context,
+        agentSlug: current.agentSlug,
+        isAwaitingInput: current.isAwaitingInput,
+      })
+    })
+  }
+
   // Surface host-blocking user-input tools (main + sidechain). script_run /
   // computer-use / capability-review keep their own handlers (conditional await).
   // First delivery wins: stream stop and complete-assistant can both carry the same tool_use.
@@ -1090,8 +1130,18 @@ class MessagePersister {
       if (state) {
         if (evt.type === 'session_active' || evt.type === 'session_idle') {
           state.pendingInputRequests.clear()
+          // Shadow registry (Phase 2): mirror the turn-boundary wipe. A new
+          // turn supersedes parked asks; an idle boundary cancels them.
+          userInputRequestManager.clearSessionStreamRequests(
+            sessionId,
+            evt.type === 'session_active' ? 'superseded' : 'cancelled',
+          )
+          this.shadowRegistryCheck(sessionId, `broadcast:${evt.type}`)
         } else if (MessagePersister.INPUT_REQUEST_TYPES.has(evt.type) && typeof evt.toolUseId === 'string') {
           state.pendingInputRequests.set(evt.toolUseId, evt as { type: string; toolUseId: string })
+          const shadow = streamEventToPendingRequest(sessionId, evt as { type: string; toolUseId: string })
+          if (shadow) userInputRequestManager.register(shadow)
+          this.shadowRegistryCheck(sessionId, `broadcast:${evt.type}`)
         }
       }
     }
@@ -4291,7 +4341,16 @@ ${continuation}`
         // Guard against duplicate entries (e.g., SSE event replayed)
         if (!state.pendingComputerUseRequests.has(toolUseId)) {
           state.pendingComputerUseRequests.set(toolUseId, { toolUseId, method, params, permissionLevel, appName, agentSlug })
+          userInputRequestManager.register({
+            id: toolUseId,
+            kind: 'computer_use',
+            scope: { agentSlug, sessionId },
+            blocking: true,
+            autoApproved: false,
+            payload: { method, params, permissionLevel, appName },
+          })
         }
+        this.shadowRegistryCheck(sessionId, 'handleComputerUseRequestTool')
       }
       this.markSessionAwaitingInput(sessionId)
 
@@ -4508,6 +4567,12 @@ ${continuation}`
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
       if (!state.pendingInputRequests.has(block.tool_use_id)) continue
       state.pendingInputRequests.delete(block.tool_use_id)
+      userInputRequestManager.resolveIfShelf(
+        block.tool_use_id,
+        'stream',
+        block.is_error ? 'declined' : 'answered',
+      )
+      this.shadowRegistryCheck(sessionId, 'resolveSidechainInputRequests')
       // Same broadcast the main path emits — the resolving tab already removed
       // its card optimistically; every other tab drops it off this event.
       this.broadcastToSSE(sessionId, {
@@ -4545,6 +4610,14 @@ ${continuation}`
           // reconnects later (e.g. answer one of several parallel requests, then
           // refresh) — its tool_result is in, so drop it from the replay store.
           state?.pendingInputRequests.delete(block.tool_use_id)
+          if (state) {
+            userInputRequestManager.resolveIfShelf(
+              block.tool_use_id,
+              'stream',
+              block.is_error ? 'declined' : 'answered',
+            )
+            this.shadowRegistryCheck(sessionId, 'handleToolResults')
+          }
 
           // Broadcast update to SSE clients
           this.broadcastToSSE(sessionId, {
