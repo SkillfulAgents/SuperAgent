@@ -165,7 +165,7 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use' | 'capability_review',
+    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use' | 'capability_review_subagents' | 'capability_review_workflows',
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
@@ -195,8 +195,14 @@ class NotificationManager {
       case 'computer_use':
         waitingMessage = 'wants to control your computer'
         break
-      case 'capability_review':
-        waitingMessage = 'wants to launch agents'
+      // Mirror the review card's terminology ("Run this workflow?" /
+      // "Launch a subagent?") so the notification names what actually needs
+      // approving.
+      case 'capability_review_subagents':
+        waitingMessage = 'wants to launch a subagent'
+        break
+      case 'capability_review_workflows':
+        waitingMessage = 'wants to run a workflow'
         break
     }
 
