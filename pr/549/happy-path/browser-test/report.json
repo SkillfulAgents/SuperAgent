@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the browser-use feature allows an agent to open a browser, navigate to a URL, retrieve the page title, and return results mentioning \"Example Domain\" as expected.",
+  "steps": [
+    "Step 1: Navigate to http://localhost:47891 — Successfully navigated to the Gamut application homepage. Page title \"Gamut\" confirmed. Agent sidebar visible with \"QA-20260723-010440-t9tg\" agent listed as idle.",
+    "Step 2: Click on \"QA-20260723-010440-t9tg\" agent in sidebar — Successfully clicked the agent button. Navigation to agent page completed. Page URL changed to /agents/qa-20260723-010440-t9tg-b2rvt2mdh7. Chat interface loaded with message input field active.",
+    "Step 3: Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully typed into the chat input field. Send button became enabled after text was entered. Message sent successfully by clicking the Send button.",
+    "Step 4: Wait up to 3 minutes for response — Agent status changed from \"idle\" to \"working\" immediately after sending the message. A new session was created titled \"Browser Navigation and Page Title Check\". Agent completed browser operations within approximately 12 seconds (much faster than the 3-minute timeout).",
+    "Step 5: Verify response mentions \"Example Domain\" and take screenshot — Agent response clearly shows \"The page title is \\\"Example Domain\\\".\" Tool calls visible include: ToolSearch, Open Browser (to https://example.com), Browser Get State, and Close Browser. Final message from agent: \"Done — the page at https://example.com has the title \\\"Example Domain\\\". I've closed the browser.\" Screenshot captured showing complete conversation flow with agent response. Agent status returned to \"idle\" after completing the task."
+  ],
+  "bugs": [],
+  "durationMs": 62383,
+  "sessionId": "e4c142bd-0b8e-44d9-aab4-ae9a569e6108",
+  "cost": {
+    "inputTokens": 366,
+    "outputTokens": 10714,
+    "cacheCreationTokens": 74534,
+    "cacheReadTokens": 1030645,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.250168
+  }
+}
