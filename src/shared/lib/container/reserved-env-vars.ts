@@ -37,6 +37,7 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   // Runtime environment
   'TZ',
   'HOST_PLATFORM',
+  'AGENT_ENVIRONMENT',
   'COMPOSIO_PLATFORM_MODE',
   'PLATFORM_AUTH_ACTIVE',
   'CLAUDE_CODE_ATTRIBUTION_HEADER',

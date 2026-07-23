@@ -20,6 +20,7 @@ import { getMountsWithHealth } from '@shared/lib/services/mount-service'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { mergeCustomEnvVars } from './reserved-env-vars'
+import { resolveAgentEnvironment } from './agent-environment'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -599,6 +600,10 @@ class ContainerManager {
 
       // Tell the agent container which host OS is running (for script type selection)
       envVars['HOST_PLATFORM'] = process.platform
+
+      // Tell the agent container which surface it runs on (desktop vs web) so its
+      // own prose is surface-correct.
+      envVars['AGENT_ENVIRONMENT'] = JSON.stringify(resolveAgentEnvironment())
 
       // Enable Composio webhook trigger tools when platform Composio is active
       if (isPlatformComposioActive()) {

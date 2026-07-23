@@ -230,3 +230,46 @@ describe('subagent capability gating', () => {
     }
   })
 })
+
+describe('environment awareness', () => {
+  const orig = process.env.AGENT_ENVIRONMENT
+  afterEach(() => {
+    if (orig === undefined) delete process.env.AGENT_ENVIRONMENT
+    else process.env.AGENT_ENVIRONMENT = orig
+  })
+
+  // --- vars: env var → template-var bag (the stable logic layer) ---
+  // absent/malformed both fall back to desktop and must never throw (an
+  // exception in buildSystemPromptVars would fail the case outright).
+  it.each([
+    { name: 'desktop', env: JSON.stringify({ surface: 'desktop' }), isWeb: false, hasUrl: false, url: '' },
+    { name: 'web with url', env: JSON.stringify({ surface: 'web', publicUrl: 'https://app.example.com' }), isWeb: true, hasUrl: true, url: 'https://app.example.com' },
+    { name: 'web without url (self-hosted)', env: JSON.stringify({ surface: 'web' }), isWeb: true, hasUrl: false, url: '' },
+    { name: 'absent → desktop fallback', env: undefined, isWeb: false, hasUrl: false, url: '' },
+    { name: 'malformed → desktop fallback', env: '{not json', isWeb: false, hasUrl: false, url: '' },
+  ])('vars: $name', ({ env, isWeb, hasUrl, url }) => {
+    if (env === undefined) delete process.env.AGENT_ENVIRONMENT
+    else process.env.AGENT_ENVIRONMENT = env
+    const v = buildSystemPromptVars()
+    expect(v.environmentIsWeb).toBe(isWeb)
+    expect(v.environmentHasPublicUrl).toBe(hasUrl)
+    expect(v.environmentPublicUrl).toBe(url)
+  })
+
+  // --- render: proves the template gates on the right vars (thin wiring layer) ---
+  it('render: desktop shows the desktop line, not the web line', () => {
+    process.env.AGENT_ENVIRONMENT = JSON.stringify({ surface: 'desktop' })
+    const p = generateSystemPrompt()
+    expect(p).toContain('desktop app on the user')
+    expect(p).not.toContain('web app')
+  })
+  it('render: web+url names the browser and the url, with no desktop phrasing and no leaked tags', () => {
+    process.env.AGENT_ENVIRONMENT = JSON.stringify({ surface: 'web', publicUrl: 'https://app.example.com' })
+    const p = generateSystemPrompt()
+    expect(p).toContain('web app')
+    expect(p).toContain('https://app.example.com')
+    expect(p).not.toContain('desktop app')
+    expect(p).not.toContain('<%')
+    expect(p).not.toContain('%>')
+  })
+})
