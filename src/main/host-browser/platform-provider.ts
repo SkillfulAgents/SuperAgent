@@ -48,7 +48,7 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
         id: this.id,
         name: this.name,
         available: false,
-        reason: 'Sign in to Platform to use this provider',
+        reason: 'sign in required',
       }
     }
     return { id: this.id, name: this.name, available: true }

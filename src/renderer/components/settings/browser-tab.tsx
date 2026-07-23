@@ -59,7 +59,7 @@ function FieldRow({ name, subtitle, right, htmlFor, stack }: FieldRowProps) {
   return (
     <div className={cn('flex gap-3', stack ? 'flex-col items-stretch md:flex-row md:items-center' : 'items-center')}>
       <div className="min-w-0 flex-1">
-        <Name htmlFor={htmlFor} className="text-xs font-medium truncate block cursor-default">{name}</Name>
+        <Name htmlFor={htmlFor} className={cn('text-xs font-medium truncate block', htmlFor ? 'cursor-pointer' : 'cursor-default')}>{name}</Name>
         {subtitle && <div className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</div>}
       </div>
       <div className={cn('flex items-center gap-2 shrink-0', stack && 'w-full md:w-auto')}>{right}</div>

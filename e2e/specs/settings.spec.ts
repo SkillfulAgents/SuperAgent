@@ -333,18 +333,18 @@ test.describe('Settings persistence', () => {
       await openSettings(page)
       await goToTab(page, 'browser')
 
-      const input = page.locator('#max-browser-tabs')
-      await expect(input).toHaveValue('10')
+      const trigger = page.locator('#max-browser-tabs')
+      await expect(trigger).toContainText('10')
 
       const savePromise = waitForSettingsSave(page)
-      await input.fill('5')
+      await pickSelectOption(page, 'max-browser-tabs', '5')
       await savePromise
-      await expect(input).toHaveValue('5')
+      await expect(trigger).toContainText('5')
 
       await closeSettings(page)
       await openSettings(page)
       await goToTab(page, 'browser')
-      await expect(page.locator('#max-browser-tabs')).toHaveValue('5')
+      await expect(page.locator('#max-browser-tabs')).toContainText('5')
 
       const persisted = await settings(request)
       expect(persisted.app.maxBrowserTabs).toBe(5)
