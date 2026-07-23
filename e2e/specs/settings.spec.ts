@@ -202,7 +202,7 @@ test.describe('Settings Page', () => {
 
     await expect(page.locator('[data-testid="settings-model-trigger"]')).toBeVisible()
     await expect(page.locator('#max-browser-tabs')).toBeVisible()
-    await expect(page.locator('#browser-host')).toBeVisible()
+    await expect(page.locator('[data-testid="browser-host-card-container"]')).toBeVisible()
   })
 
   test('closes settings page', async ({ page }) => {

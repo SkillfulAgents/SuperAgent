@@ -40,7 +40,7 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
         id: this.id,
         name: this.name,
         available: false,
-        reason: 'Platform proxy URL is not configured',
+        reason: 'proxy URL not configured',
       }
     }
     if (!getPlatformAccessToken()) {
