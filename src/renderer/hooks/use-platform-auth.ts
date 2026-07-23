@@ -81,24 +81,6 @@ function useInitiatePlatformLogin() {
   })
 }
 
-function useRevokePlatformToken() {
-  return useMutation<{ success: boolean }, Error, { clearLocal?: boolean } | undefined>({
-    meta: { skipGlobalErrorToast: true },
-    mutationFn: async (options) => {
-      const res = await apiFetch('/api/platform-auth/revoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(options ?? {}),
-      })
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}))
-        throw new Error(error.error || 'Failed to revoke platform token')
-      }
-      return res.json()
-    },
-  })
-}
-
 function usePlatformAuthCallbackListener(
   onCallback?: (params: PlatformAuthCallbackParams) => void
 ) {
@@ -253,7 +235,6 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const platformAuth = platformAuthQuery.data
   const applyPlatformDefaults = useApplyPlatformDefaults()
   const initiateLogin = useInitiatePlatformLogin()
-  const revokePlatformToken = useRevokePlatformToken()
   const [isLaunching, setIsLaunching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
@@ -296,10 +277,9 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
     setMessage(null)
     setIsLaunching(true)
 
+    // No pre-revoke: the issue endpoint atomically swaps the old key for this
+    // client_instance_id, so an abandoned login can't leave a split-brain.
     try {
-      if (wasConnected) {
-        await revokePlatformToken.mutateAsync({ clearLocal: false }).catch(() => ({ success: false }))
-      }
       const result = await initiateLogin.mutateAsync()
       await popup.navigate(result.loginUrl)
     } catch (err) {
@@ -307,7 +287,7 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
       setIsLaunching(false)
       setError(err instanceof Error ? err.message : 'Failed to open platform login.')
     }
-  }, [initiateLogin, revokePlatformToken, wasConnected])
+  }, [initiateLogin])
 
   return {
     handleConnect,
