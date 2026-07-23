@@ -279,8 +279,16 @@ describe('pending user-input request lifecycle (characterization)', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let sseEvents: any[]
   let sseCleanup: () => void
+  let originalE2eMock: string | undefined
 
   beforeEach(async () => {
+    // Computer-use interception is platform-gated (darwin/win32 only) with an
+    // explicit E2E escape hatch (message-persister.ts:4269). Set it so the
+    // computer-use rows behave identically on Linux CI and macOS dev machines
+    // — same pattern the main persister suite uses in its computer-use tests.
+    originalE2eMock = process.env.E2E_MOCK
+    process.env.E2E_MOCK = 'true'
+
     mockClient = createMockClient()
     await messagePersister.subscribeToSession(SESSION_ID, mockClient, SESSION_ID, AGENT_SLUG)
 
@@ -293,6 +301,8 @@ describe('pending user-input request lifecycle (characterization)', () => {
   })
 
   afterEach(() => {
+    if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+    else process.env.E2E_MOCK = originalE2eMock
     sseCleanup()
     messagePersister.unsubscribeFromSession(SESSION_ID)
     vi.clearAllMocks()
