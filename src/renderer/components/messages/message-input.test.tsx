@@ -86,6 +86,7 @@ const mockSettings = {
 }
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => mockSettings,
+  useModelSettings: () => mockSettings,
 }))
 
 describe('MessageInput', () => {

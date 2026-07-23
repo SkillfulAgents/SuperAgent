@@ -4,7 +4,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { Separator } from '@renderer/components/ui/separator'
 import { ModelIcon } from '@renderer/components/ui/model-icon'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelSettings } from '@renderer/hooks/use-settings'
 import { ModelFamilyList, findCatalogModel, familyDisplayName } from '@renderer/components/messages/model-family-list'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from '@renderer/components/messages/effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from '@renderer/components/messages/speed-section'
@@ -56,7 +56,9 @@ function SettingsModelSelectImpl({
   disabled,
   align = 'end',
 }: SettingsModelSelectProps) {
-  const { data: settings } = useSettings()
+  // Picker-safe endpoint — this select also serves non-admin surfaces (the
+  // agent-home Default Model card), where the admin-gated settings 403.
+  const { data: settings } = useModelSettings()
   const activeProvider = (settings?.llmProvider ?? 'anthropic') as LlmProviderId
   const catalog = useMemo(
     () => settings?.llmProviderStatus?.find((p) => p.id === activeProvider)?.catalog ?? [],

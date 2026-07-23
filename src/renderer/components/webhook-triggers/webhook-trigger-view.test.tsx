@@ -50,6 +50,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => ({ data: { apiKeyStatus: {} } }),
+  useModelSettings: () => ({ data: undefined }),
 }))
 
 vi.mock('@renderer/hooks/use-platform-auth', () => ({

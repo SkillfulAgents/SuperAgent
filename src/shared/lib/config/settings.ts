@@ -333,6 +333,18 @@ export interface GlobalSettingsResponse {
 }
 
 /**
+ * Picker-safe subset of {@link GlobalSettingsResponse} served to EVERY
+ * authenticated user (GET /api/settings/models). Choosing a model is not an
+ * admin action — only editing provider config/catalog is — so the composer and
+ * default-model pickers read this instead of the admin-gated full settings.
+ * Must stay free of secrets and infra state.
+ */
+export type ModelPickerSettingsResponse = Pick<
+  GlobalSettingsResponse,
+  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider'
+>
+
+/**
  * Default container runner: Lima on macOS (bundled, no install needed),
  * WSL2 on Windows (bundled, no install needed), Docker elsewhere.
  */
